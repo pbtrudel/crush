@@ -91,6 +91,29 @@ func TestEditAndRename(t *testing.T) {
 	}, paths)
 }
 
+func TestRespondInteraction(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var bodies []string
+	c := newTestREST(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/interactions/i1/itok/callback", r.URL.Path)
+		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(data))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	require.NoError(t, c.respondInteraction(t.Context(), "i1", "itok", "hi", true))
+	require.NoError(t, c.respondInteraction(t.Context(), "i1", "itok", "public", false))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.JSONEq(t, `{"type":4,"data":{"content":"hi","flags":64}}`, bodies[0])
+	require.JSONEq(t, `{"type":4,"data":{"content":"public"}}`, bodies[1])
+}
+
 func TestAddReactionEscapesEmoji(t *testing.T) {
 	t.Parallel()
 	var gotPath string

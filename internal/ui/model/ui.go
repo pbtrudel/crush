@@ -2223,30 +2223,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Command dialog messages.
 	case dialog.ActionToggleRemoteControl:
 		m.dialog.CloseDialog(dialog.CommandsID)
-		if m.rc != nil {
-			b := m.rc
-			m.rc = nil
-			cmds = append(cmds, func() tea.Msg {
-				b.Stop()
-				return nil
-			})
-			cmds = append(cmds, util.ReportInfo("Remote control disconnected"))
-			break
-		}
-		if m.session == nil {
-			cmds = append(cmds, util.ReportWarn("Start a session before enabling remote control"))
-			break
-		}
-		sessionID := m.session.ID
-		mode := "code"
-		if m.mode == uiInputModePlan {
-			mode = "plan"
-		}
-		ws := m.com.Workspace
-		cmds = append(cmds, func() tea.Msg {
-			bridge, err := discord.Start(context.Background(), ws, sessionID, mode)
-			return remoteControlStartedMsg{bridge: bridge, err: err}
-		})
+		cmds = append(cmds, m.toggleRemoteControl()...)
 	case dialog.ActionToggleYoloMode:
 		if m.mode == uiInputModePlan {
 			// Same as Ctrl+Y in plan mode: YOLO only exists as YOLO
@@ -5275,6 +5252,47 @@ func (m *UI) ensureSession() (tea.Cmd, error) {
 	}
 	m.setState(uiChat, m.focus)
 	return cmd, nil
+}
+
+// toggleRemoteControl starts or stops the Discord remote-control bridge.
+// Starting requires a session to mirror, so one is created on the fly when
+// the command runs before any prompt started a session. It mutates UI state,
+// so callers must run on the Update goroutine.
+func (m *UI) toggleRemoteControl() []tea.Cmd {
+	var cmds []tea.Cmd
+	if m.rc != nil {
+		b := m.rc
+		m.rc = nil
+		cmds = append(cmds, func() tea.Msg {
+			b.Stop()
+			return nil
+		})
+		return append(cmds, util.ReportInfo("Remote control disconnected"))
+	}
+
+	if !m.hasSession() {
+		loadCmd, err := m.ensureSession()
+		if err != nil {
+			return append(cmds, util.ReportError(err))
+		}
+		if loadCmd != nil {
+			cmds = append(cmds, loadCmd)
+		}
+	}
+	if m.session == nil {
+		return append(cmds, util.ReportWarn("Start a session before enabling remote control"))
+	}
+
+	sessionID := m.session.ID
+	mode := "code"
+	if m.mode == uiInputModePlan {
+		mode = "plan"
+	}
+	ws := m.com.Workspace
+	return append(cmds, func() tea.Msg {
+		bridge, err := discord.Start(context.Background(), ws, sessionID, mode)
+		return remoteControlStartedMsg{bridge: bridge, err: err}
+	})
 }
 
 // sendMessage sends a message with the given content and attachments.

@@ -70,6 +70,14 @@ Type these in the thread:
 | `/rc off` | End remote control |
 | `/<custom-command> [args]` | Run a custom command from `~/.config/crush/commands` |
 
+If the bot's application has native slash commands registered (for
+example by the commandcode bridge), invoking one in the thread works
+too: it is acknowledged immediately and its output is posted in the
+thread. `/compact` is treated as `/summarize`; registered commands with
+no remote-control equivalent (such as `/clear` or `/effort`) reply with
+a hint pointing at `/help`. Native commands invoked outside the control
+thread are ignored.
+
 Anything else is sent to the agent as a prompt. A prompt that starts with
 a literal `/` can be escaped with a backslash: `\/hello`.
 
