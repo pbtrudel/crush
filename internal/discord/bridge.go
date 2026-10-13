@@ -1042,7 +1042,9 @@ func (b *Bridge) startTurn(msg message.Message) {
 		updates: make(chan struct{}, 1),
 		done:    make(chan struct{}),
 	}
+	t.mu.Lock()
 	t.applyLocked(msg, false)
+	t.mu.Unlock()
 	b.turnMu.Lock()
 	b.turn = t
 	b.turnMu.Unlock()
