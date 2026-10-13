@@ -88,6 +88,55 @@ type gatewayReaction struct {
 	} `json:"emoji"`
 }
 
+// gwInteractionApplicationCommand is the interaction type of a native
+// slash command; only these are answered.
+const gwInteractionApplicationCommand = 2
+
+// gatewayInteraction is the INTERACTION_CREATE payload subset for
+// application commands. Guild invocations carry the user under
+// member.user, direct-message invocations under user.
+type gatewayInteraction struct {
+	ID        string                   `json:"id"`
+	Token     string                   `json:"token"`
+	Type      int                      `json:"type"`
+	ChannelID string                   `json:"channel_id"`
+	Data      gatewayInteractionData   `json:"data"`
+	Member    gatewayInteractionMember `json:"member"`
+	User      gatewayInteractionUser   `json:"user"`
+}
+
+// gatewayInteractionData is the command payload of an interaction.
+type gatewayInteractionData struct {
+	Name    string                     `json:"name"`
+	Options []gatewayInteractionOption `json:"options"`
+}
+
+// gatewayInteractionOption is one command argument. The bridge only
+// registers string options (Discord type 3).
+type gatewayInteractionOption struct {
+	Name  string `json:"name"`
+	Type  int    `json:"type"`
+	Value string `json:"value"`
+}
+
+// gatewayInteractionMember is the guild member that invoked a command.
+type gatewayInteractionMember struct {
+	User gatewayInteractionUser `json:"user"`
+}
+
+// gatewayInteractionUser identifies an interaction's invoking user.
+type gatewayInteractionUser struct {
+	ID string `json:"id"`
+}
+
+// userID returns the invoking user's id.
+func (i gatewayInteraction) userID() string {
+	if i.Member.User.ID != "" {
+		return i.Member.User.ID
+	}
+	return i.User.ID
+}
+
 // gateway is a minimal Discord gateway (WebSocket) client: connect,
 // identify or resume, heartbeat, dispatch the few events the bridge
 // cares about, and reconnect with backoff. It is intentionally tiny;
@@ -97,9 +146,10 @@ type gateway struct {
 	intents int
 	url     string // gateway base url from GET /gateway/bot
 
-	onMessage  func(gatewayMessage)
-	onReaction func(gatewayReaction)
-	onReady    func()
+	onMessage     func(gatewayMessage)
+	onReaction    func(gatewayReaction)
+	onInteraction func(gatewayInteraction)
+	onReady       func()
 
 	// userID is the bot's own user id once READY arrives. MESSAGE_CREATE
 	// events authored by the bot are dropped.
@@ -329,6 +379,18 @@ func (g *gateway) dispatch(p gatewayPayload) {
 			return
 		}
 		g.onReaction(d)
+	case "INTERACTION_CREATE":
+		if g.onInteraction == nil {
+			return
+		}
+		var d gatewayInteraction
+		if err := json.Unmarshal(p.D, &d); err != nil {
+			return
+		}
+		if d.Type != gwInteractionApplicationCommand {
+			return
+		}
+		g.onInteraction(d)
 	}
 }
 

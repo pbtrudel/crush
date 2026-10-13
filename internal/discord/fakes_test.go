@@ -29,6 +29,7 @@ type fakeAPI struct {
 	typing      []string
 	reactions   []string
 	renames     []string
+	callbacks   []fakeCallback
 	gwURL       string
 	gwErr       error
 	createErr   error
@@ -38,6 +39,14 @@ type fakePost struct {
 	channelID string
 	messageID string
 	content   string
+}
+
+// fakeCallback records one interaction callback.
+type fakeCallback struct {
+	interactionID string
+	token         string
+	content       string
+	ephemeral     bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -95,6 +104,25 @@ func (f *fakeAPI) gatewayURL(ctx context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.gwURL, f.gwErr
+}
+
+func (f *fakeAPI) respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callbacks = append(f.callbacks, fakeCallback{
+		interactionID: interactionID,
+		token:         token,
+		content:       content,
+		ephemeral:     ephemeral,
+	})
+	return nil
+}
+
+// callbacksSnapshot returns a copy of the recorded interaction callbacks.
+func (f *fakeAPI) callbacksSnapshot() []fakeCallback {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeCallback(nil), f.callbacks...)
 }
 
 // hasPostContaining reports whether any posted message contains sub.
@@ -364,6 +392,12 @@ func (e *fakeEnv) cancelCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.cancels
+}
+
+func (e *fakeEnv) summarizeCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.summarizes
 }
 
 func (e *fakeEnv) grantCount() int {

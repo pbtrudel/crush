@@ -102,6 +102,23 @@ func (c *restClient) editMessage(ctx context.Context, channelID, messageID, cont
 	return err
 }
 
+// respondInteraction answers an application-command interaction with a
+// message. Ephemeral responses are visible only to the invoking user.
+func (c *restClient) respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error {
+	data := map[string]any{"content": content}
+	if ephemeral {
+		// 64: EPHEMERAL.
+		data["flags"] = 64
+	}
+	body := map[string]any{
+		// 4: CHANNEL_MESSAGE_WITH_SOURCE.
+		"type": 4,
+		"data": data,
+	}
+	_, err := c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+token+"/callback", body)
+	return err
+}
+
 // triggerTyping shows the typing indicator in a channel.
 func (c *restClient) triggerTyping(ctx context.Context, channelID string) error {
 	_, err := c.do(ctx, http.MethodPost, "/channels/"+channelID+"/typing", nil)
