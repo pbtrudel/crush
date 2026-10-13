@@ -21,7 +21,7 @@ import (
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/projects"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/spf13/cobra"
 )
 
@@ -236,7 +236,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 
 	fmt.Printf("Stats generated: %s\n", htmlPath)
 
-	if err := browser.OpenFile(htmlPath); err != nil {
+	if err := internalbrowser.OpenFile(htmlPath); err != nil {
 		fmt.Printf("Could not open browser: %v\n", err)
 		fmt.Println("Please open the file manually.")
 	}

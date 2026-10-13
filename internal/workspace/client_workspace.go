@@ -31,7 +31,7 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // ClientWorkspace implements the Workspace interface by delegating all
@@ -817,7 +817,7 @@ func (w *ClientWorkspace) MCPAuthenticate(ctx context.Context, name string) erro
 				continue
 			}
 			if u := w.MCPAuthURL(name); u != "" {
-				if err := browser.OpenURL(u); err != nil {
+				if err := internalbrowser.OpenURL(u); err != nil {
 					slog.Warn("Failed to open MCP OAuth URL in browser", "error", err)
 				}
 				opened = true

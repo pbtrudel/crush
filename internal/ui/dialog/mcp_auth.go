@@ -13,7 +13,7 @@ import (
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // MCPAuthID is the identifier for the MCP authentication dialog.
@@ -200,7 +200,7 @@ func (m *MCPAuth) advance() Action {
 
 func (m *MCPAuth) openAuthURL() {
 	if u := m.authURL(); u != "" {
-		browser.OpenURL(u)
+		internalbrowser.OpenURL(u)
 	}
 }
 

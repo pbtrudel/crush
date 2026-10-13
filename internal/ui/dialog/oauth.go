@@ -17,7 +17,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 type OAuthProvider interface {
@@ -580,7 +580,7 @@ func (m *OAuth) copyCodeAndOpenURL() tea.Cmd {
 	if m.userCode == "" {
 		// Browser flows have no code to copy; just open the URL.
 		return func() tea.Msg {
-			if err := browser.OpenURL(m.verificationURL); err != nil {
+			if err := internalbrowser.OpenURL(m.verificationURL); err != nil {
 				return ActionOAuthErrored{fmt.Errorf("failed to open browser: %w", err)}
 			}
 			return nil
@@ -590,7 +590,7 @@ func (m *OAuth) copyCodeAndOpenURL() tea.Cmd {
 		m.userCode,
 		"Code copied and URL opened",
 		func() tea.Msg {
-			if err := browser.OpenURL(m.verificationURL); err != nil {
+			if err := internalbrowser.OpenURL(m.verificationURL); err != nil {
 				return ActionOAuthErrored{fmt.Errorf("failed to open browser: %w", err)}
 			}
 			return nil

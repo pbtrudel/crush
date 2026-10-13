@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
@@ -116,7 +116,7 @@ func runCLI(ctx context.Context, platform string, newFlow func() flow) (*oauth.T
 // browser can't be opened, the URL is printed for the user to open
 // manually.
 func openBrowser(rawURL string) {
-	if err := browser.OpenURL(rawURL); err != nil {
+	if err := internalbrowser.OpenURL(rawURL); err != nil {
 		fmt.Printf("Please open this URL to authenticate:\n  %s\n", rawURL)
 	}
 }

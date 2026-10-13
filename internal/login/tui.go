@@ -15,7 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 
 	"github.com/charmbracelet/crush/internal/oauth"
 )
@@ -183,7 +183,7 @@ func (m authModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.verificationURL = msg.url
 		m.userCode = msg.userCode
 		if !m.browserFailed {
-			m.browserFailed = browser.OpenURL(msg.url) != nil
+			m.browserFailed = internalbrowser.OpenURL(msg.url) != nil
 		}
 		m.state = authStateWaiting
 		m.updateAuthKeymap()

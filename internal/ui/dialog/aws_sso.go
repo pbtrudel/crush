@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // AWSSSOID is the identifier for the AWS SSO auth dialog.
@@ -300,7 +300,7 @@ func (m *AWSSSO) openURLCmd() tea.Cmd {
 		if m.url == "" {
 			return nil
 		}
-		_ = browser.OpenURL(m.url)
+		_ = internalbrowser.OpenURL(m.url)
 		return nil
 	}
 }

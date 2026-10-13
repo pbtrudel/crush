@@ -20,7 +20,7 @@ import (
 	"github.com/charmbracelet/crush/internal/oauth/callback"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
-	"github.com/pkg/browser"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"golang.org/x/oauth2"
 )
 
@@ -157,7 +157,7 @@ func NewHandler(
 	h := &Handler{
 		receiver:       receiver,
 		serverURL:      serverURL,
-		openURL:        browser.OpenURL,
+		openURL:        internalbrowser.OpenURL,
 		interactive:    interactive,
 		onTokenRefresh: onTokenRefresh,
 	}
