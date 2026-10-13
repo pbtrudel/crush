@@ -201,4 +201,4 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
         run: |
           cd npm
-          npm stage publish
+          npm stage publish --tag latest
