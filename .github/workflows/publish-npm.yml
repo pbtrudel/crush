@@ -118,8 +118,7 @@ jobs:
           gh release create "v${VERSION}" dist/* \
             --repo "$RELEASE_REPO" \
             --title "v${VERSION}" \
-            --notes "Fork build ${VERSION} (see the fork README for what it changes over upstream)." \
-            --prerelease
+            --notes "Fork build ${VERSION} (see the fork README for what it changes over upstream)."
 
       - name: Generate npm package.json
         env:
