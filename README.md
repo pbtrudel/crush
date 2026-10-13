@@ -23,6 +23,27 @@
 
 ## Installation
 
+### This fork (patched build)
+
+This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing). CI publishes every merge to the default branch as the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush), whose postinstall downloads the patched binary for your platform from this fork's [releases](https://github.com/pbtrudel/crush/releases):
+
+```bash
+npm install -g @conanmontreal/crush
+
+# Update to the latest fork build:
+npm install -g @conanmontreal/crush@latest
+```
+
+Both this fork and upstream provide the same `crush` command, so uninstall the upstream package first if it is installed — the two fight over the global `crush` link:
+
+```bash
+npm uninstall -g @charmland/crush
+```
+
+The fork reads the same configuration as upstream (`~/.config/crush/`, project `.crush/` directories), so no config changes are needed.
+
+### Upstream
+
 Use a package manager:
 
 ```bash
