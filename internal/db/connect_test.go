@@ -11,8 +11,6 @@ import (
 )
 
 func TestConnect_SharesConnectionForSameDataDir(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 
 	conn1, err := Connect(context.Background(), dataDir)
@@ -33,8 +31,6 @@ func TestConnect_SharesConnectionForSameDataDir(t *testing.T) {
 }
 
 func TestConnect_SeparateConnectionsForDifferentDataDirs(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
 
@@ -51,8 +47,6 @@ func TestConnect_SeparateConnectionsForDifferentDataDirs(t *testing.T) {
 }
 
 func TestRelease_NoopForUnknownDataDir(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	require.NoError(t, Release("/nonexistent/path"), "releasing unknown data dir should not error")
 }
 
@@ -61,8 +55,6 @@ func TestRelease_NoopForUnknownDataDir(t *testing.T) {
 // file descriptor and then asserting that Connect surfaces a clean
 // ErrDataDirLocked instead of opening the database under contention.
 func TestConnect_FailsWhenDataDirLocked(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -78,8 +70,6 @@ func TestConnect_FailsWhenDataDirLocked(t *testing.T) {
 // TestConnect_SucceedsAfterContenderReleases ensures the lock is purely
 // advisory and that a clean release lets the next Connect proceed.
 func TestConnect_SucceedsAfterContenderReleases(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -101,8 +91,6 @@ func TestConnect_SucceedsAfterContenderReleases(t *testing.T) {
 // reference to a pool entry also drops the OS lock, so subsequent
 // processes can take the data dir.
 func TestConnect_LockReleasedOnFinalRelease(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -131,8 +119,6 @@ func TestConnect_LockReleasedOnFinalRelease(t *testing.T) {
 // is that the second Connect does not error and the lock is still held
 // after a single Release.
 func TestConnect_SharedPoolDoesNotReacquireLock(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -153,8 +139,6 @@ func TestConnect_SharedPoolDoesNotReacquireLock(t *testing.T) {
 // TestConnect_SkipLockEnvBypassesAcquisition exercises the escape
 // hatch used by users on filesystems where flock is unreliable.
 func TestConnect_SkipLockEnvBypassesAcquisition(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -175,8 +159,6 @@ func TestConnect_SkipLockEnvBypassesAcquisition(t *testing.T) {
 // hold lock.TryFile and Connect still succeeds. This pins the
 // local-mode default to its pre-lock behavior.
 func TestConnect_DefaultIgnoresContendedLock(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
@@ -195,8 +177,6 @@ func TestConnect_DefaultIgnoresContendedLock(t *testing.T) {
 // passing WithDataDirLock(true) must surface ErrDataDirLocked when a
 // contender already holds the lock.
 func TestConnect_ServerPathFailsWhenDataDirLocked(t *testing.T) {
-	t.Cleanup(ResetPool)
-
 	dataDir := t.TempDir()
 	lockPath := filepath.Join(dataDir, dataDirLockFile)
 
