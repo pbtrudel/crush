@@ -294,7 +294,6 @@ func rewriteMistralContentBlockChunk(raw []byte) []byte {
 				text.WriteString(textText)
 			default:
 				unusable = true
-				break
 			}
 		}
 		if unusable {

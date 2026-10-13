@@ -44,7 +44,7 @@ func (c *vibeRequestCapture) snapshot() capturedVibeRequest {
 // post sends one JSON request through client and returns what the server saw.
 func (c *vibeRequestCapture) post(t *testing.T, client *http.Client, url, body, sessionAffinity string) capturedVibeRequest {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	if sessionAffinity != "" {

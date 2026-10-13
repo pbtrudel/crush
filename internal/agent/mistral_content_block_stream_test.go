@@ -123,6 +123,7 @@ func TestRewriteMistralContentBlockChunk(t *testing.T) {
 	}
 
 	t.Run("mixed thinking and text blocks in one delta", func(t *testing.T) {
+		t.Parallel()
 		in := `{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"tail"},{"type":"thinking","thinking":[{"type":"text","text":"head"}]}]},"finish_reason":null}]}`
 		out := rewriteMistralContentBlockChunk([]byte(in))
 		require.NotEqual(t, string(out), in)
@@ -131,6 +132,7 @@ func TestRewriteMistralContentBlockChunk(t *testing.T) {
 	})
 
 	t.Run("preserve unrelated fields", func(t *testing.T) {
+		t.Parallel()
 		in := mk("frag", true)
 		out := string(rewriteMistralContentBlockChunk([]byte(in)))
 		require.Contains(t, out, `"finish_reason":null`)
@@ -140,11 +142,13 @@ func TestRewriteMistralContentBlockChunk(t *testing.T) {
 	})
 
 	t.Run("string content passes through untouched", func(t *testing.T) {
+		t.Parallel()
 		in := `{"choices":[{"index":0,"delta":{"content":"2"},"finish_reason":null}],"usage":{"prompt_tokens":7}}`
 		require.Equal(t, in, string(rewriteMistralContentBlockChunk([]byte(in))))
 	})
 
 	t.Run("numbeer fields survive round trip", func(t *testing.T) {
+		t.Parallel()
 		in := `{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"a"}],"settings":{}},"usage":{"tokens":123456}}]}`
 		out := string(rewriteMistralContentBlockChunk([]byte(in)))
 		require.Contains(t, out, `"tokens":123456`)
@@ -152,16 +156,19 @@ func TestRewriteMistralContentBlockChunk(t *testing.T) {
 	})
 
 	t.Run("unknown block types are passed through", func(t *testing.T) {
+		t.Parallel()
 		in := `{"choices":[{"index":0,"delta":{"content":[{"type":"tool_call","name":"f","args":{}}],"x":1}}]}`
 		require.Equal(t, in, string(rewriteMistralContentBlockChunk([]byte(in))))
 	})
 
 	t.Run("empty content array passes through", func(t *testing.T) {
+		t.Parallel()
 		in := `{"choices":[{"index":0,"delta":{"content":[],"x":1}}]}`
 		require.Equal(t, in, string(rewriteMistralContentBlockChunk([]byte(in))))
 	})
 
 	t.Run("malformed payloads pass through", func(t *testing.T) {
+		t.Parallel()
 		for _, in := range []string{
 			"",
 			"not json",
@@ -322,8 +329,9 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 	client := &http.Client{Transport: newMistralContentBlockTransport(http.DefaultTransport)}
 
 	t.Run("reasoning_content is converted in flight", func(t *testing.T) {
+		t.Parallel()
 		body := `{"model":"m","messages":[{"role":"assistant","content":"Hi","reasoning_content":"why"}]}`
-		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(body))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
@@ -338,7 +346,8 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 	})
 
 	t.Run("non-json and other endpoints pass through", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/models",
+		t.Parallel()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/models",
 			strings.NewReader(`{"reasoning_content":"x"}`))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")

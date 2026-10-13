@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/charmbracelet/x/term"
 	internalbrowser "github.com/charmbracelet/crush/internal/browser"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"

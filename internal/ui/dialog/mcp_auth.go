@@ -11,9 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // MCPAuthID is the identifier for the MCP authentication dialog.
