@@ -174,7 +174,7 @@ jobs:
             },
             license: "FSL-1.1-MIT",
             // Scoped packages default to restricted; publishing to npmjs must
-            // be public and npm stage publish takes no flags.
+            // be public; the dist-tag is passed on the npm stage publish line.
             publishConfig: { access: "public" },
             bugs: { url: `https://github.com/${releaseRepo}/issues` },
             homepage: `https://github.com/${releaseRepo}#readme`,
