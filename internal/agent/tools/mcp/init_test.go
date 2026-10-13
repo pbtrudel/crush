@@ -904,14 +904,16 @@ func TestCreateSession_Sessionless(t *testing.T) {
 		require.Zero(t, listenTotal.Load(), "no subscriptions/listen stream should be opened when disabled")
 	})
 
-	t.Run("default opens listen stream and breaks sessionless server", func(t *testing.T) {
-		srv, listenTotal := newStub(t)
+	t.Run("default connects even to a sessionless server", func(t *testing.T) {
+		srv, _ := newStub(t)
 		const name = "sessionless-default"
 		states.Del(name)
 		t.Cleanup(func() { states.Del(name) })
 
-		// Connect itself succeeds; the listen stream fails asynchronously
-		// and poisons the connection, so the subsequent tools/list fails.
+		// mcp-sdk v1.8.0: with default handlers the client still opens a
+		// listen stream, but a 404 from a sessionless server no longer
+		// poisons the connection, so tools/list succeeds. Sessionless stays
+		// the explicit way to skip the stream entirely.
 		cfg := config.MCPConfig{Type: config.MCPHttp, URL: srv.URL, Timeout: 15}
 		sess, err := createSession(t.Context(), nil, name, cfg, resolver, false)
 		require.NoError(t, err)
@@ -919,8 +921,6 @@ func TestCreateSession_Sessionless(t *testing.T) {
 		t.Cleanup(func() { sess.Close() })
 
 		_, err = sess.ListTools(t.Context(), &mcp.ListToolsParams{})
-		require.Error(t, err, "default handlers open a listen stream that the sessionless server 404s")
-		require.Contains(t, err.Error(), "session not found")
-		require.GreaterOrEqual(t, listenTotal.Load(), int64(1), "expected the listen stream attempt")
+		require.NoError(t, err, "the SDK tolerates the failed listen stream since v1.8.0")
 	})
 }
