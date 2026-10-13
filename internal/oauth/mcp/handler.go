@@ -16,11 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/callback"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"golang.org/x/oauth2"
 )
 

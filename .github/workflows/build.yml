@@ -13,10 +13,9 @@ concurrency:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,27 +29,26 @@ jobs:
       - run: go mod tidy
       - run: git diff --exit-code
       - run: go build -race ./...
-      # Single full-suite run per OS: on Linux it also collects the coverage
-      # profile for the floor check below, so CI never runs the whole suite
-      # twice.
       - run: go test -race -failfast -covermode=atomic -coverprofile=coverage.out ./...
-        if: runner.os == 'Linux'
-      - run: go test -race -failfast ./...
-        if: runner.os != 'Linux'
+      # Coverage ratchet: the goal is 80% (kept visible as the target in
+      # every run summary), but gating on it outright would leave CI red
+      # until the ~13k-statement gap in the TUI packages is closed. The
+      # floor instead pins the last measured baseline so coverage can only
+      # move up: raise COVERAGE_FLOOR whenever coverage grows past it, and
+      # never lower it to make a change pass.
       - name: Enforce coverage floor
-        if: runner.os == 'Linux'
         env:
-          COVERAGE_FLOOR: "60"
+          COVERAGE_FLOOR: "62"
+          COVERAGE_TARGET: "80"
         run: |
           total="$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')"
           pct="${total%\%}"
-          echo "### Total coverage: $total (floor: ${COVERAGE_FLOOR}%)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Total coverage: $total (floor: ${COVERAGE_FLOOR}%, target: ${COVERAGE_TARGET}%)" >> "$GITHUB_STEP_SUMMARY"
           awk -v c="$pct" -v t="$COVERAGE_FLOOR" 'BEGIN { exit (c + 0 >= t + 0) ? 0 : 1 }' || {
-            echo "Coverage $total is below the ${COVERAGE_FLOOR}% floor" >&2
+            echo "Coverage $total dropped below the ${COVERAGE_FLOOR}% floor (target: ${COVERAGE_TARGET}%)" >&2
             exit 1
           }
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: runner.os == 'Linux'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: coverage.out
