@@ -77,74 +77,37 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           set -e
-          # Download modules once up front: the six builds then share a warm
-          # module cache instead of racing concurrent downloads on first run.
           go mod download
-          targets=(
-            "linux amd64"
-            "linux arm64"
-            "darwin amd64"
-            "darwin arm64"
-            "windows amd64"
-            "windows arm64"
-          )
-          for t in "${targets[@]}"; do
-            read -r goos goarch <<<"$t"
-            echo "==> building $goos/$goarch"
-            (
-              export CGO_ENABLED=0 GOEXPERIMENT=greenteagc GOOS="$goos" GOARCH="$goarch"
-              ext=""
-              if [ "$goos" = "windows" ]; then ext=".exe"; fi
-              go build -buildvcs=false -trimpath \
-                -ldflags "-s -w -X github.com/charmbracelet/crush/internal/version.Version=${VERSION}" \
-                -o "dist/bin/${goos}_${goarch}/crush${ext}" .
-            )
-            echo "==> built $goos/$goarch"
-          done
-          ls -la dist/bin/*/
+          echo "==> building linux/amd64"
+          export CGO_ENABLED=0 GOEXPERIMENT=greenteagc GOOS=linux GOARCH=amd64
+          go build -buildvcs=false -trimpath \
+            -ldflags "-s -w -X github.com/charmbracelet/crush/internal/version.Version=${VERSION}" \
+            -o dist/bin/crush .
+          echo "==> built linux/amd64"
+          ls -la dist/bin/
 
       - name: Archive and checksum
         env:
           VERSION: ${{ env.VERSION }}
         run: |
           set -e
-          # Completions and man pages are generated once from the native
-          # build and shipped in every archive.
+          # Completions and man pages are generated from the built binary.
           mkdir -p completions manpages dist
-          ./dist/bin/linux_amd64/crush completion bash >completions/crush.bash
-          ./dist/bin/linux_amd64/crush completion zsh >completions/crush.zsh
-          ./dist/bin/linux_amd64/crush completion fish >completions/crush.fish
-          ./dist/bin/linux_amd64/crush man | gzip -c >manpages/crush.1.gz
-          for dir in dist/bin/*/; do
-            name="$(basename "$dir")"
-            goos="${name%%_*}"
-            goarch="${name#*_}"
-            case "$goos" in
-              linux)   osTitle="Linux";   ext="tar.gz"; ;;
-              darwin)  osTitle="Darwin";  ext="tar.gz"; ;;
-              windows) osTitle="Windows"; ext="zip";     ;;
-            esac
-            case "$goarch" in
-              amd64) archTitle="x86_64"; ;;
-              *)     archTitle="$goarch"; ;;
-            esac
-            base="crush_${VERSION}_${osTitle}_${archTitle}"
-            staging="dist/stage/${base}"
-            mkdir -p "$staging"
-            cp -r "$dir/crush"* "$staging/"
-            cp README.md LICENSE.md "$staging/"
-            cp -r completions manpages "$staging/"
-            (
-              cd dist/stage
-              if [ "$ext" = "zip" ]; then
-                zip -qr "../${base}.zip" "$base"
-              else
-                tar -czf "../${base}.tar.gz" "$base"
-              fi
-            )
-          done
+          ./dist/bin/crush completion bash >completions/crush.bash
+          ./dist/bin/crush completion zsh >completions/crush.zsh
+          ./dist/bin/crush completion fish >completions/crush.fish
+          ./dist/bin/crush man | gzip -c >manpages/crush.1.gz
+          base="crush_${VERSION}_Linux_x86_64"
+          mkdir -p "dist/stage/${base}"
+          cp dist/bin/crush "dist/stage/${base}/"
+          cp README.md LICENSE.md "dist/stage/${base}/"
+          cp -r completions manpages "dist/stage/${base}/"
+          (
+            cd dist/stage
+            tar -czf "../${base}.tar.gz" "$base"
+          )
           rm -rf dist/stage dist/bin
-          (cd dist && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
           ls -la dist/
 
       - name: Create GitHub release
@@ -177,14 +140,10 @@ jobs:
           }
 
           // Keys must match `${process.platform}-${process.arch}` as read by
-          // lib.js; archive names follow the goreleaser convention.
+          // lib.js. Fork builds are Linux x86_64 only; installs on other
+          // platforms fail loudly with "No archive available".
           const targets = [
-            ["linux-x64",   "linux",   "amd64", "Linux",   "x86_64", "tar.gz", "crush"],
-            ["linux-arm64", "linux",   "arm64", "Linux",   "arm64",  "tar.gz", "crush"],
-            ["darwin-x64",  "darwin",  "amd64", "Darwin",  "x86_64", "tar.gz", "crush"],
-            ["darwin-arm64","darwin",  "arm64", "Darwin",  "arm64",  "tar.gz", "crush"],
-            ["win32-x64",   "windows", "amd64", "Windows", "x86_64", "zip",    "crush.exe"],
-            ["win32-arm64", "windows", "arm64", "Windows", "arm64",  "zip",    "crush.exe"],
+            ["linux-x64", "linux", "amd64", "Linux", "x86_64", "tar.gz", "crush"],
           ];
 
           const archives = {};

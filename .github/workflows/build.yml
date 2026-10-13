@@ -30,12 +30,12 @@ jobs:
       - run: git diff --exit-code
       - run: go build -race ./...
       - run: go test -race -failfast -covermode=atomic -coverprofile=coverage.out ./...
-      # Coverage floor: the whole suite must never drop below the measured
-      # baseline (62.2% when this gate was introduced). Raise it deliberately
-      # as coverage improves; never lower it to make a change pass.
+      # Coverage floor: the whole suite must never drop below 80%. Raise it
+      # deliberately as coverage improves; never lower it to make a change
+      # pass.
       - name: Enforce coverage floor
         env:
-          COVERAGE_FLOOR: "60"
+          COVERAGE_FLOOR: "80"
         run: |
           total="$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')"
           pct="${total%\%}"
