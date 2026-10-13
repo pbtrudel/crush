@@ -36,3 +36,11 @@ type StatusNoteMsg struct {
 	Text  string
 	IsErr bool
 }
+
+// StoppedMsg reports that a bridge shut itself down (for example via
+// "/rc off" in Discord). Published with app.SendEvent so the TUI clears
+// its reference; the bridge pointer identifies which bridge stopped when
+// several were started over a session's lifetime.
+type StoppedMsg struct {
+	Bridge *Bridge
+}

@@ -161,6 +161,14 @@ func TestCommandStop(t *testing.T) {
 	require.Equal(t, 1, env.cancelCount())
 }
 
+func TestCommandRcOff(t *testing.T) {
+	t.Parallel()
+	b, _, api := newCommandBridge(t)
+	require.Empty(t, b.handleCommand(b.ctx, "rc", "off"))
+	require.True(t, api.hasPostContaining("Remote control ended"))
+	require.Contains(t, b.handleCommand(b.ctx, "rc", ""), "Usage")
+}
+
 func TestCommandQueueTokensTitle(t *testing.T) {
 	t.Parallel()
 	b, env, _ := newCommandBridge(t)

@@ -272,6 +272,12 @@ func (b *Bridge) Stop() {
 		if b.cancel != nil {
 			b.cancel()
 		}
+		if b.app != nil {
+			// Let the TUI clear its reference when the stop was initiated
+			// from Discord (e.g. "/rc off"); self-initiated stops have
+			// already cleared it and ignore this.
+			b.app.SendEvent(StoppedMsg{Bridge: b})
+		}
 	})
 }
 
@@ -857,7 +863,10 @@ func (b *Bridge) submitPrompt(text string, attachments []gatewayAttachment) {
 }
 
 // launchRun submits a prompt to the agent in the background. Run itself
-// blocks for the whole turn, so it never runs on an input path.
+// blocks for the whole turn, so it never runs on an input path. The run
+// is started with a background context: stopping remote control must not
+// cancel work the local session is still running, matching how the TUI
+// submits prompts.
 func (b *Bridge) launchRun(prompt string, attachments ...message.Attachment) {
 	if strings.TrimSpace(prompt) == "" && len(attachments) == 0 {
 		return
@@ -868,7 +877,7 @@ func (b *Bridge) launchRun(prompt string, attachments ...message.Attachment) {
 		b.post(fmt.Sprintf("📥 Queued (position %d) — the current turn is still running.", position))
 	}
 	go func() {
-		if err := b.env.AgentRun(b.ctx, b.sessionID, prompt, attachments...); err != nil && b.ctx.Err() == nil {
+		if err := b.env.AgentRun(context.Background(), b.sessionID, prompt, attachments...); err != nil && b.ctx.Err() == nil {
 			b.post(iconError + " Failed to send prompt: " + err.Error())
 		}
 	}()

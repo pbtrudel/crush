@@ -110,7 +110,9 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 		return iconCancelled + " Cancelling the running turn…"
 	case "summarize":
 		go func() {
-			if err := b.env.AgentSummarize(b.ctx, b.sessionID); err != nil && b.ctx.Err() == nil {
+			// Background context: a bridge stop must not cancel the
+			// compaction the local session is still running.
+			if err := b.env.AgentSummarize(context.Background(), b.sessionID); err != nil && b.ctx.Err() == nil {
 				b.post(iconError + " Summarize failed: " + err.Error())
 			}
 		}()

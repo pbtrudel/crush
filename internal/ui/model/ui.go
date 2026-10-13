@@ -952,6 +952,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			cmds = append(cmds, util.ReportInfo(msg.Text))
 		}
+	case discord.StoppedMsg:
+		// The bridge stopped itself (e.g. "/rc off" from Discord).
+		if m.rc == msg.Bridge {
+			m.rc = nil
+			cmds = append(cmds, util.ReportInfo("Remote control disconnected"))
+		}
 	case loadSessionMsg:
 		if m.forceCompactMode {
 			m.isCompact = true
