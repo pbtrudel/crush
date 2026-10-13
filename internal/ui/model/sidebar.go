@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	mcp "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -51,6 +52,7 @@ func (m *UI) modelInfo(width int) string {
 			Cost:           m.session.Cost,
 			ModelContext:   model.CatwalkCfg.ContextWindow,
 			EstimatedUsage: m.session.EstimatedUsage,
+			CachePercent:   cacheReadPercent(m.session),
 		}
 	}
 	var modelName string
@@ -58,6 +60,15 @@ func (m *UI) modelInfo(width int) string {
 		modelName = model.CatwalkCfg.Name
 	}
 	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits)
+}
+
+// cacheReadPercent returns the share of prompt tokens served from the
+// provider's prompt cache across the whole session.
+func cacheReadPercent(s *session.Session) int {
+	if s.TotalContextTokens <= 0 {
+		return 0
+	}
+	return int(float64(s.TotalCacheReadTokens) / float64(s.TotalContextTokens) * 100)
 }
 
 // updateSidebarScrollState renders the sidebar content and computes scroll

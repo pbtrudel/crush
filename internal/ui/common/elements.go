@@ -60,6 +60,9 @@ type ModelContextInfo struct {
 	ModelContext   int64
 	Cost           float64
 	EstimatedUsage bool
+	// CachePercent is the share of prompt tokens served from the
+	// provider's prompt cache over the whole session.
+	CachePercent int
 }
 
 // ModelInfo renders model information including name, provider, reasoning
@@ -100,6 +103,11 @@ func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, 
 	if context != nil {
 		formattedInfo := formatTokensAndCost(t, context.ContextUsed, context.ModelContext, context.Cost, context.EstimatedUsage)
 		parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(formattedInfo))
+
+		if context.CachePercent > 0 {
+			cachedInfo := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("%d%% cached", context.CachePercent))
+			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(cachedInfo))
+		}
 	}
 
 	if providerName == hyper.DisplayName && hyperCredits != nil {

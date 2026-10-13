@@ -23,6 +23,36 @@ func TestFormatTokensAndCostPrefixesEstimatedUsage(t *testing.T) {
 	require.True(t, strings.Contains(rendered, sty.ModelInfo.TokenPercentage.Render("~12%")))
 }
 
+func TestModelInfoRendersCachedPercentage(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+
+	context := &ModelContextInfo{
+		ContextUsed:  500,
+		ModelContext: 1000,
+		CachePercent: 43,
+	}
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+
+	require.Contains(t, actual, "43% cached")
+}
+
+func TestModelInfoOmitsCachedPercentageWhenZero(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+
+	context := &ModelContextInfo{
+		ContextUsed:  500,
+		ModelContext: 1000,
+		CachePercent: 0,
+	}
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+
+	require.NotContains(t, actual, "cached")
+}
+
 func TestFormatTokensAndCostOmitsEstimatedPrefix(t *testing.T) {
 	t.Parallel()
 
