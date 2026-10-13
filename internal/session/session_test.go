@@ -10,8 +10,11 @@ import (
 func TestEstimatedUsageStateSurvivesFetchModifySave(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
 		require.NoError(t, db.Release(dataDir))
-		db.ResetPool()
 	})
 
 	conn, err := db.Connect(t.Context(), dataDir)
@@ -52,8 +55,11 @@ func TestCacheTokenTotalsRoundTrip(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
 		require.NoError(t, db.Release(dataDir))
-		db.ResetPool()
 	})
 
 	conn, err := db.Connect(t.Context(), dataDir)
@@ -87,8 +93,11 @@ func TestSessionChannelPersists(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
 		require.NoError(t, db.Release(dataDir))
-		db.ResetPool()
 	})
 
 	conn, err := db.Connect(t.Context(), dataDir)
@@ -109,8 +118,11 @@ func TestSessionChannelPersists(t *testing.T) {
 func TestMCPServerDisabledRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
 		require.NoError(t, db.Release(dataDir))
-		db.ResetPool()
 	})
 
 	conn, err := db.Connect(t.Context(), dataDir)
@@ -150,8 +162,11 @@ func TestMCPServerDisabledRoundTrip(t *testing.T) {
 func TestEstimatedUsageStateCanBeClearedByExplicitSave(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
 		require.NoError(t, db.Release(dataDir))
-		db.ResetPool()
 	})
 
 	conn, err := db.Connect(t.Context(), dataDir)
