@@ -27,7 +27,7 @@
 
 ### This fork (patched build)
 
-This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary (Linux x86_64) from this fork's [releases](https://github.com/pbtrudel/crush/releases):
+This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing, and `/rc` Discord remote control). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary (Linux x86_64) from this fork's [releases](https://github.com/pbtrudel/crush/releases):
 
 ```bash
 npm install -g @conanmontreal/crush
@@ -43,6 +43,17 @@ npm uninstall -g @charmland/crush
 ```
 
 The fork reads the same configuration as upstream (`~/.config/crush/`, project `.crush/` directories), so no config changes are needed.
+
+#### Discord remote control (`/rc`)
+
+Run `/rc` inside a session to open a Discord thread bound to it: all
+output is mirrored there, messages typed in the thread drive the session,
+and `/model`, `/plan`, `/yolo`, `/stop`, permissions via reactions, and
+custom commands all work from Discord. Configure it with
+`DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_IDS` (plus an optional
+`DISCORD_ALLOWED_USER_IDS` allow-list) and see
+[docs/discord-remote-control.md](docs/discord-remote-control.md) for the
+bot setup and the full command reference.
 
 ### Upstream
 

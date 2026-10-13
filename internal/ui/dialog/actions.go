@@ -133,6 +133,9 @@ type (
 	ActionEnableDockerMCP struct{}
 	// ActionDisableDockerMCP is a message to disable Docker MCP.
 	ActionDisableDockerMCP struct{}
+	// ActionToggleRemoteControl is a message to start or stop the
+	// Discord remote-control bridge for the current session.
+	ActionToggleRemoteControl struct{}
 )
 
 // Messages for MCP OAuth authentication dialog.

@@ -35,6 +35,7 @@ import (
 	"github.com/charmbracelet/crush/internal/clipboard"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/discord"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/history"
@@ -269,6 +270,10 @@ type UI struct {
 	// modeSwitching is true while the async agent-model update kicked off
 	// by setInputMode is still in flight; sending is blocked meanwhile.
 	modeSwitching bool
+
+	// rc is the active Discord remote-control bridge, or nil when remote
+	// control is off. It is only ever touched from the Update goroutine.
+	rc *discord.Bridge
 
 	// cycleYolo is true while YOLO was enabled by the Shift+Tab input-mode
 	// cycle, which is the only case where the cycle may disable it again.
@@ -896,6 +901,62 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if cmd := m.dispatchPromptQueueRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+	case remoteControlStartedMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		if m.rc != nil {
+			// Defensive: replace a bridge that was somehow started twice.
+			old := m.rc
+			cmds = append(cmds, func() tea.Msg { old.Stop(); return nil })
+		}
+		m.rc = msg.bridge
+		cmds = append(cmds, util.ReportInfo("Remote control connected: "+msg.bridge.ThreadURL()))
+	case discord.ModeChangedMsg:
+		// Remote control already switched the agent; mirror the local mode
+		// so the badge and editor prompt track it.
+		if msg.Plan {
+			m.mode = uiInputModePlan
+		} else {
+			m.mode = uiInputModeCode
+		}
+		m.setEditorPrompt(m.yoloModeCached())
+		m.invalidateBusyCaches()
+		if cmd := m.dispatchBusyRefresh(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case discord.YoloChangedMsg:
+		// Remote control already flipped the workspace; mirror the local
+		// caches so the badge and prompt track it.
+		m.yoloCache.set(msg.On)
+		m.busyFetchGen++
+		m.setEditorPrompt(msg.On)
+		label := "disabled"
+		if msg.On {
+			label = "enabled"
+		}
+		cmds = append(cmds, util.ReportInfo("Yolo mode "+label+" (from Discord)"))
+	case discord.ModelChangedMsg:
+		// Remote control already rebuilt the coordinator's models; refresh
+		// the memoized state the header reads.
+		m.invalidateBusyCaches()
+		if cmd := m.dispatchBusyRefresh(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, agentModelChangedCmd)
+	case discord.StatusNoteMsg:
+		if msg.IsErr {
+			cmds = append(cmds, util.ReportWarn(msg.Text))
+		} else {
+			cmds = append(cmds, util.ReportInfo(msg.Text))
+		}
+	case discord.StoppedMsg:
+		// The bridge stopped itself (e.g. "/rc off" from Discord).
+		if m.rc == msg.Bridge {
+			m.rc = nil
+			cmds = append(cmds, util.ReportInfo("Remote control disconnected"))
 		}
 	case loadSessionMsg:
 		if m.forceCompactMode {
@@ -2160,6 +2221,32 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 	// Command dialog messages.
+	case dialog.ActionToggleRemoteControl:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		if m.rc != nil {
+			b := m.rc
+			m.rc = nil
+			cmds = append(cmds, func() tea.Msg {
+				b.Stop()
+				return nil
+			})
+			cmds = append(cmds, util.ReportInfo("Remote control disconnected"))
+			break
+		}
+		if m.session == nil {
+			cmds = append(cmds, util.ReportWarn("Start a session before enabling remote control"))
+			break
+		}
+		sessionID := m.session.ID
+		mode := "code"
+		if m.mode == uiInputModePlan {
+			mode = "plan"
+		}
+		ws := m.com.Workspace
+		cmds = append(cmds, func() tea.Msg {
+			bridge, err := discord.Start(context.Background(), ws, sessionID, mode)
+			return remoteControlStartedMsg{bridge: bridge, err: err}
+		})
 	case dialog.ActionToggleYoloMode:
 		if m.mode == uiInputModePlan {
 			// Same as Ctrl+Y in plan mode: YOLO only exists as YOLO
@@ -2497,6 +2584,18 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
+		if m.rc != nil {
+			// Stop the bridge (and post its farewell) before the program
+			// exits; the deferred quit message still terminates promptly
+			// because Stop bounds its own network time.
+			b := m.rc
+			m.rc = nil
+			cmds = append(cmds, func() tea.Msg {
+				b.Stop()
+				return tea.Quit()
+			})
+			break
+		}
 		cmds = append(cmds, tea.Quit)
 	case dialog.ActionEnableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
@@ -4770,6 +4869,11 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 	}
 	m.mode = msg.mode
 	m.setEditorPrompt(m.yoloModeCached())
+	if m.rc != nil {
+		// Keep the bridge's /status view of the mode in sync with local
+		// switches; the bridge only sees its own changes otherwise.
+		m.rc.SetMode(msg.mode == uiInputModePlan)
+	}
 	var cmds []tea.Cmd
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
@@ -4792,6 +4896,13 @@ type modeSwitchedMsg struct {
 	mode              uiInputMode
 	yolo              bool
 	err               error
+}
+
+// remoteControlStartedMsg carries the outcome of starting the Discord
+// remote-control bridge off the Update goroutine.
+type remoteControlStartedMsg struct {
+	bridge *discord.Bridge
+	err    error
 }
 
 // closeCompletions closes the completions popup and resets state.
