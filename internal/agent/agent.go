@@ -1967,7 +1967,7 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 
 	// Atomically update only title and usage fields to avoid overriding other
 	// concurrent session updates.
-	saveErr := a.sessions.UpdateTitleAndUsage(ctx, sessionID, title, promptTokens, completionTokens, cost)
+	saveErr := a.sessions.UpdateTitleAndUsage(ctx, sessionID, title, promptTokens, completionTokens, resp.TotalUsage.CacheReadTokens, promptTokens, cost)
 	if saveErr != nil {
 		slog.Error("Failed to save session title and usage", "error", saveErr)
 		return
@@ -2081,9 +2081,15 @@ func updateSessionTokenCounters(session *session.Session, usage fantasy.Usage) {
 	if usage.OutputTokens != 0 {
 		session.CompletionTokens = usage.OutputTokens
 	}
-	if promptTokens := contextTokens(usage); promptTokens != 0 {
+	promptTokens := contextTokens(usage)
+	if promptTokens != 0 {
 		session.PromptTokens = promptTokens
 	}
+	// Cache totals accumulate across every request of the session, like
+	// cost, so the cache hit percentage survives compaction, which only
+	// resets the snapshot counters.
+	session.TotalCacheReadTokens += usage.CacheReadTokens
+	session.TotalContextTokens += promptTokens
 }
 
 func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message) int64 {

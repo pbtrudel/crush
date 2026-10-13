@@ -46,6 +46,8 @@ SET
     title = ?,
     prompt_tokens = ?,
     completion_tokens = ?,
+    total_cache_read_tokens = ?,
+    total_context_tokens = ?,
     summary_message_id = ?,
     cost = ?,
     todos = ?,
@@ -65,6 +67,8 @@ SET
     title = ?,
     prompt_tokens = prompt_tokens + ?,
     completion_tokens = completion_tokens + ?,
+    total_cache_read_tokens = total_cache_read_tokens + ?,
+    total_context_tokens = total_context_tokens + ?,
     cost = cost + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
