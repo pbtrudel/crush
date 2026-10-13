@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema-pro.json
+# Fork release config: builds the patched binary, publishes the archives to a
+# GitHub release and ships the npm wrapper package (@conanmontreal/crush).
+# Trimmed from .goreleaser.yml: no AUR/brew/docker/winget publishers, and the
+# npm publish is NOT disabled for prereleases because fork builds are always
+# <upstream-tag>-fork.<run-number> prereleases.
+version: 2
+
+project_name: crush
+
+before:
+  hooks:
+    # Build the generator binary once and drive all four outputs from it;
+    # four separate `go run .` invocations would each compile the whole
+    # program. go mod tidy is not run here: go.sum is committed and CI is
+    # always built from a fresh checkout.
+    - sh -c 'go build -trimpath -o /tmp/cursh-gen . && mkdir -p completions manpages && /tmp/cursh-gen completion bash >./completions/crush.bash && /tmp/cursh-gen completion zsh >./completions/crush.zsh && /tmp/cursh-gen completion fish >./completions/crush.fish && /tmp/cursh-gen man | gzip -c >./manpages/crush.1.gz'
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+      - GOEXPERIMENT=greenteagc
+    # The npm wrapper installs for these six platforms only; keep the build
+    # matrix aligned with what lib.js/install.js can pick from the manifest.
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/charmbracelet/crush/internal/version.Version={{.Version}}
+    flags:
+      - -trimpath
+
+archives:
+  - name_template: >-
+      crush_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    wrap_in_directory: true
+    files:
+      - README*
+      - LICENSE*
+      - manpages/*
+      - completions/*
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  # Fork builds are tagged per CI run; a generated changelog between them is
+  # meaningless noise.
+  disable: true
+
+release:
+  prerelease: auto
+
+npms:
+  - name: "@conanmontreal/crush"
+    repository: "git+https://github.com/pbtrudel/crush.git"
+    bugs: https://github.com/pbtrudel/crush/issues
+    access: public

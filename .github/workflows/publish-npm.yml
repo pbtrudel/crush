@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: publish npm
+
+# Publishes the fork's npm package (@conanmontreal/crush) on every merge to
+# the default branch: tags the commit as v<upstream-tag>-fork.<run-number>,
+# builds the binaries with goreleaser (.goreleaser-fork.yml), creates the
+# GitHub release with the archives and publishes the npm wrapper package,
+# whose postinstall downloads the right archive from that release.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compute version and create tag
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # Base version: the latest tag in the repo (usually an upstream
+          # release tag, e.g. v0.98.1 -> 0.98.1). Fall back to 0.0.0 when the
+          # fork carries no tags. The run number makes every build unique so
+          # npm never sees a duplicate version.
+          base="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/+.*$//' || true)"
+          if [ -z "$base" ]; then base="0.0.0"; fi
+          version="${base}-fork.${RUN_NUMBER}"
+          git tag "v${version}"
+          # Force-push so a re-run of the same workflow run re-publishes the
+          # same version instead of failing on the existing tag.
+          git push -f origin "v${version}"
+          echo "PUBLISH_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Publishing @conanmontreal/crush@$version"
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: latest
+          args: release --clean --config .goreleaser-fork.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_KEY }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          retention-days: 30
+          name: dist
+          path: dist
