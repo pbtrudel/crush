@@ -541,6 +541,11 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	notificationLabel := "Notification Style"
 	commands = append(commands, NewCommandItem(c.com.Styles, "select_notifications", notificationLabel, "", ActionOpenDialog{DialogID: NotificationsID}))
 
+	// Remote control mirrors a session, so it needs one to exist.
+	if c.hasSession {
+		commands = append(commands, NewCommandItem(c.com.Styles, "remote_control", "Toggle Remote Control (Discord)", "", ActionToggleRemoteControl{}).WithAliases("rc", "discord"))
+	}
+
 	commands = append(
 		commands,
 		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
