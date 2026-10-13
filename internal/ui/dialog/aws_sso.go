@@ -8,10 +8,10 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // AWSSSOID is the identifier for the AWS SSO auth dialog.

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
@@ -31,7 +32,6 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 )
 
 // ClientWorkspace implements the Workspace interface by delegating all

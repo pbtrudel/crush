@@ -18,10 +18,11 @@ terminal-based AI coding assistant, carrying local patches:
 npm install -g @conanmontreal/crush
 ```
 
-The postinstall step downloads the patched binary for your platform
-(Linux/macOS/Windows, x64/arm64) from the fork's
-[GitHub releases](https://github.com/pbtrudel/crush/releases) and verifies its
-sha256 checksum.
+The postinstall step downloads the patched binary for Linux x86_64 from
+the fork's
+[GitHub releases](https://github.com/pbtrudel/crush/releases) and verifies
+its sha256 checksum. Fork builds are Linux-only; on other platforms install
+upstream crush or build the fork from source.
 
 Both this fork and upstream provide the same `crush` command, so uninstall the
 upstream package first if it is installed:
