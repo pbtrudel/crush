@@ -59,20 +59,23 @@ type gatewayPayload struct {
 
 // gatewayMessage is the MESSAGE_CREATE payload subset the bridge reads.
 type gatewayMessage struct {
-	ID          string `json:"id"`
-	ChannelID   string `json:"channel_id"`
-	Content     string `json:"content"`
-	Attachments []struct {
-		URL         string `json:"url"`
-		Filename    string `json:"filename"`
-		Size        int64  `json:"size"`
-		ContentType string `json:"content_type"`
-	} `json:"attachments"`
-	Author struct {
+	ID          string              `json:"id"`
+	ChannelID   string              `json:"channel_id"`
+	Content     string              `json:"content"`
+	Attachments []gatewayAttachment `json:"attachments"`
+	Author      struct {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 		Bot      bool   `json:"bot"`
 	} `json:"author"`
+}
+
+// gatewayAttachment is a Discord attachment reference.
+type gatewayAttachment struct {
+	URL         string `json:"url"`
+	Filename    string `json:"filename"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type"`
 }
 
 // gatewayReaction is the MESSAGE_REACTION_ADD payload subset.

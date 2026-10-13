@@ -852,13 +852,7 @@ func (b *Bridge) handleThreadReaction(r gatewayReaction) {
 
 // submitPrompt injects a prompt from the thread into the session,
 // mirroring any attachments.
-func (b *Bridge) submitPrompt(text string, attachments []struct {
-	URL         string `json:"url"`
-	Filename    string `json:"filename"`
-	Size        int64  `json:"size"`
-	ContentType string `json:"content_type"`
-},
-) {
+func (b *Bridge) submitPrompt(text string, attachments []gatewayAttachment) {
 	b.launchRun(text, b.fetchAttachments(attachments)...)
 }
 
@@ -882,13 +876,7 @@ func (b *Bridge) launchRun(prompt string, attachments ...message.Attachment) {
 
 // fetchAttachments downloads mirrored attachments; oversized or failed
 // downloads are skipped rather than failing the prompt.
-func (b *Bridge) fetchAttachments(atts []struct {
-	URL         string `json:"url"`
-	Filename    string `json:"filename"`
-	Size        int64  `json:"size"`
-	ContentType string `json:"content_type"`
-},
-) []message.Attachment {
+func (b *Bridge) fetchAttachments(atts []gatewayAttachment) []message.Attachment {
 	var out []message.Attachment
 	for _, a := range atts {
 		if a.Size > maxAttachmentBytes {
