@@ -1233,7 +1233,7 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	// request like the Mistral Vibe CLI (User-Agent, x-affinity, vibe_code
 	// metadata) so a subscription-linked key draws on the Vibe allowance.
 	if isMistralBaseURL(baseURL) {
-		var baseTransport http.RoundTripper = http.DefaultTransport
+		baseTransport := http.DefaultTransport
 		if httpClient != nil && httpClient.Transport != nil {
 			baseTransport = httpClient.Transport
 		}

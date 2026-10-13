@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/projects"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/spf13/cobra"
 )
 

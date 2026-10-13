@@ -2,12 +2,14 @@
 
 <p align="center">
     <a href="https://stuff.charm.sh/crush/charm-crush.png"><img width="450" alt="Charm Crush Logo" src="https://github.com/user-attachments/assets/cf8ca3ce-8b02-43f0-9d0f-5a331488da4b" /></a><br />
-    <a href="https://github.com/charmbracelet/crush/releases"><img src="https://img.shields.io/github/release/charmbracelet/crush" alt="Latest Release"></a>
-    <a href="https://github.com/charmbracelet/crush/actions"><img src="https://github.com/charmbracelet/crush/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
+    <a href="https://github.com/pbtrudel/crush/releases"><img src="https://img.shields.io/github/v/release/pbtrudel/crush?include_prereleases" alt="Latest Release"></a>
+    <a href="https://github.com/pbtrudel/crush/actions/workflows/build.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
+    <a href="https://github.com/pbtrudel/crush/actions/workflows/lint.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/lint.yml/badge.svg" alt="Lint Status"></a>
+    <a href="https://github.com/pbtrudel/crush/actions/workflows/security.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/security.yml/badge.svg" alt="Security Status"></a>
+    <a href="https://github.com/pbtrudel/crush/actions/workflows/publish-npm.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/publish-npm.yml/badge.svg" alt="Publish npm Status"></a>
 </p>
 
 <p align="center">Your new coding bestie, now available in your favourite terminal.<br />Your tools, your code, and your workflows, wired into your LLM of choice.</p>
-<p align="center">终端里的编程新搭档，<br />无缝接入你的工具、代码与工作流，全面兼容主流 LLM 模型。</p>
 
 <p align="center"><img width="800" alt="Crush Demo" src="https://github.com/user-attachments/assets/58280caf-851b-470a-b6f7-d5c4ea8a1968" /></p>
 
@@ -25,7 +27,7 @@
 
 ### This fork (patched build)
 
-This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary for your platform from this fork's [releases](https://github.com/pbtrudel/crush/releases):
+This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary (Linux x86_64) from this fork's [releases](https://github.com/pbtrudel/crush/releases):
 
 ```bash
 npm install -g @conanmontreal/crush
@@ -1067,4 +1069,4 @@ Part of [Charm](https://charm.land).
 <a href="https://charm.land/"><img alt="The Charm logo" width="400" src="https://stuff.charm.sh/charm-banner-softy.jpg" /></a>
 
 <!--prettier-ignore-->
-Charm热爱开源 • Charm loves open source
+Charm loves open source

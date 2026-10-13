@@ -13,9 +13,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
-	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 
 	"github.com/charmbracelet/crush/internal/oauth"
 )

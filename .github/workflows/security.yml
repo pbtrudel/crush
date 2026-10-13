@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   codeql:
-    runs-on: ubuntu-latest
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +39,9 @@ jobs:
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
 
   grype:
-    runs-on: ubuntu-latest
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     permissions:
       security-events: write
       actions: read
@@ -57,7 +61,9 @@ jobs:
           sarif_file: ${{ steps.scan.outputs.sarif }}
 
   govulncheck:
-    runs-on: ubuntu-latest
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     permissions:
       security-events: write
       contents: read
@@ -78,7 +84,9 @@ jobs:
           sarif_file: results.sarif
 
   dependency-review:
-    runs-on: ubuntu-latest
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
