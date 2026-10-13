@@ -92,6 +92,26 @@ var copilotResponsesModels = map[string]bool{
 	"grok-4.7":      true,
 }
 
+// Extra Copilot model ids that must use the Responses API are loaded from
+// the user's crush config directory (copilot-responses-models). This keeps
+// new Copilot models working across Crush updates without rebuilding the
+// map in code.
+func init() {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "crush", "copilot-responses-models"))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if id := strings.TrimSpace(line); id != "" && !strings.HasPrefix(id, "#") {
+			copilotResponsesModels[id] = true
+		}
+	}
+}
+
 // OpenCode models that use the Anthropic Messages API instead of Chat
 // Completions. Which endpoint serves each model differs per provider, see
 // https://opencode.ai/docs/zen and https://opencode.ai/docs/go.
