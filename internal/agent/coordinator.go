@@ -1225,6 +1225,20 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	if httpClient == nil && c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()
 	}
+	// Mistral's chat-completions endpoint streams delta.content as an array
+	// of content blocks; its SSE rewriter turns those into the standard
+	// reasoning_content / string content shapes the openai-compat layer
+	// already handles. The debug logger stays underneath so logs show the
+	// raw upstream wire format. The Vibe transport wraps it to sign every
+	// request like the Mistral Vibe CLI (User-Agent, x-affinity, vibe_code
+	// metadata) so a subscription-linked key draws on the Vibe allowance.
+	if isMistralBaseURL(baseURL) {
+		var baseTransport http.RoundTripper = http.DefaultTransport
+		if httpClient != nil && httpClient.Transport != nil {
+			baseTransport = httpClient.Transport
+		}
+		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
+	}
 	if httpClient != nil {
 		opts = append(opts, openaicompat.WithHTTPClient(httpClient))
 	}
