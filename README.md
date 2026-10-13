@@ -6,7 +6,6 @@
     <a href="https://github.com/pbtrudel/crush/actions/workflows/build.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
     <a href="https://github.com/pbtrudel/crush/actions/workflows/lint.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/lint.yml/badge.svg" alt="Lint Status"></a>
     <a href="https://github.com/pbtrudel/crush/actions/workflows/security.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/security.yml/badge.svg" alt="Security Status"></a>
-    <a href="https://github.com/pbtrudel/crush/actions/workflows/snapshot.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/snapshot.yml/badge.svg" alt="Snapshot Status"></a>
     <a href="https://github.com/pbtrudel/crush/actions/workflows/publish-npm.yml"><img src="https://github.com/pbtrudel/crush/actions/workflows/publish-npm.yml/badge.svg" alt="Publish npm Status"></a>
 </p>
 

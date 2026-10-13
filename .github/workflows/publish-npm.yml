@@ -31,7 +31,9 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Pinned to 26.04: ubuntu-latest migrates to Ubuntu 26 on 2026-10-19
+    # (runner-images#14748); opting in explicitly keeps runs predictable.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,11 +51,18 @@ jobs:
         env:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          # Base version: the latest tag in the repo (usually an upstream
-          # release tag, e.g. v0.98.1 -> 0.98.1). Fall back to 0.0.0 when the
-          # fork carries no tags. The run number makes every build unique so
-          # npm never sees a duplicate version.
-          base="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/+.*$//' || true)"
+          # Base version: the latest stable upstream release tag, read from
+          # charmbracelet/crush without importing tags (importing them would
+          # make the tag's own checkout of upstream workflows fire). Fall back
+          # to local tags, then 0.0.0. The run number makes every build unique
+          # so npm never sees a duplicate version.
+          base="$(git ls-remote --tags --refs --sort='-v:refname' \
+            https://github.com/charmbracelet/crush.git 'v*' \
+            | awk -F'refs/tags/' '$2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ {print $2; exit}' \
+            | sed 's/^v//;s/+.*$//')"
+          if [ -z "$base" ]; then
+            base="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/+.*$//' || true)"
+          fi
           if [ -z "$base" ]; then base="0.0.0"; fi
           version="${base}-fork.${RUN_NUMBER}"
           git tag "v${version}"
@@ -68,6 +77,9 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           set -e
+          # Download modules once up front: the six builds then share a warm
+          # module cache instead of racing concurrent downloads on first run.
+          go mod download
           targets=(
             "linux amd64"
             "linux arm64"
@@ -78,6 +90,7 @@ jobs:
           )
           for t in "${targets[@]}"; do
             read -r goos goarch <<<"$t"
+            echo "==> building $goos/$goarch"
             (
               export CGO_ENABLED=0 GOEXPERIMENT=greenteagc GOOS="$goos" GOARCH="$goarch"
               ext=""
@@ -85,9 +98,9 @@ jobs:
               go build -buildvcs=false -trimpath \
                 -ldflags "-s -w -X github.com/charmbracelet/crush/internal/version.Version=${VERSION}" \
                 -o "dist/bin/${goos}_${goarch}/crush${ext}" .
-            ) &
+            )
+            echo "==> built $goos/$goarch"
           done
-          wait
           ls -la dist/bin/*/
 
       - name: Archive and checksum
