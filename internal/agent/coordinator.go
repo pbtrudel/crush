@@ -1649,7 +1649,9 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg config.ProviderConfig) error {
 	newAPIKey, err := c.cfg.Resolve(providerCfg.APIKeyTemplate)
 	if err != nil {
-		slog.Error("Failed to re-resolve API key after 401 error", "provider", providerCfg.ID, "error", err)
+		// The error text can embed the unresolved template, which may
+		// contain the API key itself; keep it out of the log.
+		slog.Error("Failed to re-resolve API key after 401 error", "provider", providerCfg.ID)
 		return err
 	}
 
