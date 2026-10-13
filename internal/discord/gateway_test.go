@@ -148,6 +148,60 @@ func TestGatewayIdentifiesHeartbeatsAndDispatches(t *testing.T) {
 	require.Contains(t, string(identify.D), `"intents":`+strconv.Itoa(defaultGatewayIntents))
 }
 
+func TestGatewayDispatchesApplicationCommands(t *testing.T) {
+	t.Parallel()
+
+	interactions := make(chan gatewayInteraction, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpHello, D: json.RawMessage(`{"heartbeat_interval":40}`)})
+
+		// First client frame must be IDENTIFY.
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i1","token":"itok","type":2,"channel_id":"c1","data":{"name":"status"},"member":{"user":{"id":"u1"}}}`)})
+		// A component interaction is not an application command.
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i2","token":"itok","type":3,"channel_id":"c1","data":{"custom_id":"b1"}}`)})
+
+		// Give the client time to read both frames before the handler
+		// returns and the connection closes.
+		time.Sleep(250 * time.Millisecond)
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newGateway("tok", defaultGatewayIntents)
+	g.url = srv.URL
+	g.onInteraction = func(in gatewayInteraction) { interactions <- in }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = g.run(ctx, nil) }()
+
+	select {
+	case in := <-interactions:
+		require.Equal(t, "i1", in.ID)
+		require.Equal(t, "itok", in.Token)
+		require.Equal(t, "c1", in.ChannelID)
+		require.Equal(t, "status", in.Data.Name)
+		require.Equal(t, "u1", in.userID())
+	case <-time.After(5 * time.Second):
+		t.Fatal("INTERACTION_CREATE was not dispatched")
+	}
+	select {
+	case in := <-interactions:
+		t.Fatalf("component interaction was not filtered: %+v", in)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestGatewayResumesWithSessionState(t *testing.T) {
 	t.Parallel()
 

@@ -66,6 +66,7 @@ type discordAPI interface {
 	addReaction(ctx context.Context, channelID, messageID, emoji string) error
 	editChannelName(ctx context.Context, channelID, name string) error
 	gatewayURL(ctx context.Context) (string, error)
+	respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error
 }
 
 // Bridge mirrors a live Crush session into a Discord thread and injects
@@ -771,8 +772,9 @@ func renderQuestionCard(req question.Request) string {
 
 // inputEvent is one unit of Discord input, consumed in arrival order.
 type inputEvent struct {
-	message  *gatewayMessage
-	reaction *gatewayReaction
+	message     *gatewayMessage
+	reaction    *gatewayReaction
+	interaction *gatewayInteraction
 }
 
 func (b *Bridge) enqueueInput(ev inputEvent) {
@@ -795,6 +797,8 @@ func (b *Bridge) inputLoop() {
 				b.handleThreadMessage(*ev.message)
 			case ev.reaction != nil:
 				b.handleThreadReaction(*ev.reaction)
+			case ev.interaction != nil:
+				b.handleThreadInteraction(*ev.interaction)
 			}
 		}
 	}
@@ -826,6 +830,58 @@ func (b *Bridge) handleThreadMessage(msg gatewayMessage) {
 		return
 	}
 	b.submitPrompt(text, msg.Attachments)
+}
+
+// handleThreadInteraction answers native Discord slash commands. The
+// picker's commands are registered on the application by the
+// commandcode bridge, so they appear guild-wide; remote control only
+// answers them in its own thread. The command is acknowledged first
+// (ephemeral, inside Discord's three-second window) and then runs
+// through the same pipeline as a typed command, posting its output in
+// the thread.
+func (b *Bridge) handleThreadInteraction(in gatewayInteraction) {
+	if in.ChannelID != b.threadID {
+		return
+	}
+	if !b.cfg.allowedUser(in.userID()) {
+		b.answerInteraction(in, "⛔ Not authorized for this session.")
+		return
+	}
+	name, args := interactionCommand(in)
+	usage := "/" + name
+	if args != "" {
+		usage += " " + args
+	}
+	b.answerInteraction(in, "Running `"+usage+"`")
+	if reply := b.handleCommand(b.ctx, name, args); reply != "" {
+		b.post(reply)
+	}
+}
+
+// interactionCommand maps an application command onto the bridge's
+// command name and argument text. The picker's compact command is the
+// commandcode bridge's name for compaction.
+func interactionCommand(in gatewayInteraction) (name, args string) {
+	name = strings.ToLower(strings.TrimSpace(in.Data.Name))
+	if name == "compact" {
+		name = "summarize"
+	}
+	var values []string
+	for _, opt := range in.Data.Options {
+		if v := strings.TrimSpace(opt.Value); v != "" {
+			values = append(values, v)
+		}
+	}
+	return name, strings.Join(values, " ")
+}
+
+// answerInteraction posts an ephemeral interaction callback. Failures
+// are logged only: Discord shows "The application did not respond" when
+// no callback arrives, and there is nothing else the bridge can do.
+func (b *Bridge) answerInteraction(in gatewayInteraction, content string) {
+	if err := b.api.respondInteraction(b.ctx, in.ID, in.Token, content, true); err != nil {
+		slog.Debug("Discord bridge: interaction response failed", "error", err.Error())
+	}
 }
 
 // handleThreadReaction resolves a permission card from its reactions.
@@ -964,6 +1020,7 @@ func (b *Bridge) runGateway(ctx context.Context) {
 	b.gateway.url = url
 	b.gateway.onMessage = func(m gatewayMessage) { b.enqueueInput(inputEvent{message: &m}) }
 	b.gateway.onReaction = func(r gatewayReaction) { b.enqueueInput(inputEvent{reaction: &r}) }
+	b.gateway.onInteraction = func(in gatewayInteraction) { b.enqueueInput(inputEvent{interaction: &in}) }
 	_ = b.gateway.run(ctx, func(err error) {
 		b.note("Discord gateway error: "+err.Error()+" (check the bot token, MESSAGE CONTENT intent, and channel permissions)", true)
 	})
