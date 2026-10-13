@@ -30,18 +30,28 @@ type Info struct {
 // v0.0.0-0.20251231235959-06c807842604
 var goInstallRegexp = regexp.MustCompile(`^v?\d+\.\d+\.\d+-\d+\.\d{14}-[0-9a-f]{12}$`)
 
+// Matches the build suffix this fork's release pipeline appends to the
+// upstream tag it was cut from, e.g. the -fork.10 in 0.98.1-fork.10.
+var forkSuffixRegexp = regexp.MustCompile(`-fork\.\d+$`)
+
 func (i Info) IsDevelopment() bool {
 	return i.Current == "devel" || i.Current == "unknown" || strings.Contains(i.Current, "dirty") || goInstallRegexp.MatchString(i.Current)
 }
 
 // Available returns true if there's an update available.
 //
+// The -fork.N suffix this fork appends to upstream tags is ignored on the
+// current version, so a fork build of an upstream release counts as up to
+// date and only a newer upstream release is reported.
+//
 // If both current and latest are stable versions, returns true if versions are
 // different.
 // If current is a pre-release and latest isn't, returns true.
 // If latest is a pre-release and current isn't, returns false.
 func (i Info) Available() bool {
-	cpr := strings.Contains(i.Current, "-")
+	current := forkSuffixRegexp.ReplaceAllString(i.Current, "")
+
+	cpr := strings.Contains(current, "-")
 	lpr := strings.Contains(i.Latest, "-")
 	// current is pre release && latest isn't a prerelease
 	if cpr && !lpr {
@@ -51,7 +61,7 @@ func (i Info) Available() bool {
 	if lpr && !cpr {
 		return false
 	}
-	return i.Current != i.Latest
+	return current != i.Latest
 }
 
 // Check checks if a new version is available.
