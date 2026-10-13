@@ -4,9 +4,14 @@ name: publish npm
 
 # Publishes the fork's npm package (@conanmontreal/crush) on every merge to
 # the default branch: tags the commit as v<upstream-tag>-fork.<run-number>,
-# builds the binaries with goreleaser (.goreleaser-fork.yml), creates the
-# GitHub release with the archives and publishes the npm wrapper package,
-# whose postinstall downloads the right archive from that release.
+# cross-compiles the binaries, archives them goreleaser-style, publishes the
+# archives to a GitHub release and stages the npm wrapper package with
+# `npm stage publish` (no 2FA in CI; a maintainer approves the staged package
+# later with 2FA). The postinstall downloads the right archive from that
+# release.
+#
+# goreleaser itself is not used: its npm publisher (npms) is Pro-only, and a
+# single-job shell pipeline is faster than the equivalent goreleaser run.
 
 on:
   push:
@@ -19,6 +24,10 @@ permissions:
 concurrency:
   group: publish-npm
   cancel-in-progress: false
+
+env:
+  NPM_PACKAGE: "@conanmontreal/crush"
+  RELEASE_REPO: "pbtrudel/crush"
 
 jobs:
   publish:
@@ -51,21 +60,173 @@ jobs:
           # Force-push so a re-run of the same workflow run re-publishes the
           # same version instead of failing on the existing tag.
           git push -f origin "v${version}"
-          echo "PUBLISH_VERSION=$version" >> "$GITHUB_ENV"
-          echo "Publishing @conanmontreal/crush@$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Publishing ${NPM_PACKAGE}@${version}"
 
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
-        with:
-          version: latest
-          args: release --clean --config .goreleaser-fork.yml
+      - name: Build all platforms
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_KEY }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          set -e
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+            "windows arm64"
+          )
+          for t in "${targets[@]}"; do
+            read -r goos goarch <<<"$t"
+            (
+              export CGO_ENABLED=0 GOEXPERIMENT=greenteagc GOOS="$goos" GOARCH="$goarch"
+              ext=""
+              if [ "$goos" = "windows" ]; then ext=".exe"; fi
+              go build -buildvcs=false -trimpath \
+                -ldflags "-s -w -X github.com/charmbracelet/crush/internal/version.Version=${VERSION}" \
+                -o "dist/bin/${goos}_${goarch}/crush${ext}" .
+            ) &
+          done
+          wait
+          ls -la dist/bin/*/
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ always() }}
-        with:
-          retention-days: 30
-          name: dist
-          path: dist
+      - name: Archive and checksum
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          set -e
+          # Completions and man pages are generated once from the native
+          # build and shipped in every archive.
+          mkdir -p completions manpages dist
+          ./dist/bin/linux_amd64/crush completion bash >completions/crush.bash
+          ./dist/bin/linux_amd64/crush completion zsh >completions/crush.zsh
+          ./dist/bin/linux_amd64/crush completion fish >completions/crush.fish
+          ./dist/bin/linux_amd64/crush man | gzip -c >manpages/crush.1.gz
+          for dir in dist/bin/*/; do
+            name="$(basename "$dir")"
+            goos="${name%%_*}"
+            goarch="${name#*_}"
+            case "$goos" in
+              linux)   osTitle="Linux";   ext="tar.gz"; ;;
+              darwin)  osTitle="Darwin";  ext="tar.gz"; ;;
+              windows) osTitle="Windows"; ext="zip";     ;;
+            esac
+            case "$goarch" in
+              amd64) archTitle="x86_64"; ;;
+              *)     archTitle="$goarch"; ;;
+            esac
+            base="crush_${VERSION}_${osTitle}_${archTitle}"
+            staging="dist/stage/${base}"
+            mkdir -p "$staging"
+            cp -r "$dir/crush"* "$staging/"
+            cp README.md LICENSE.md "$staging/"
+            cp -r completions manpages "$staging/"
+            (
+              cd dist/stage
+              if [ "$ext" = "zip" ]; then
+                zip -qr "../${base}.zip" "$base"
+              else
+                tar -czf "../${base}.tar.gz" "$base"
+              fi
+            )
+          done
+          rm -rf dist/stage dist/bin
+          (cd dist && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          ls -la dist/
+
+      - name: Create GitHub release
+        env:
+          VERSION: ${{ env.VERSION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION}" dist/* \
+            --repo "$RELEASE_REPO" \
+            --title "v${VERSION}" \
+            --notes "Fork build ${VERSION} (see the fork README for what it changes over upstream)." \
+            --prerelease
+
+      - name: Generate npm package.json
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+
+          const version = process.env.VERSION;
+          const npmPackage = process.env.NPM_PACKAGE;
+          const releaseRepo = process.env.RELEASE_REPO;
+          const baseURL = `https://github.com/${releaseRepo}/releases/download/v${version}`;
+
+          const checksums = {};
+          for (const line of fs.readFileSync("dist/checksums.txt", "utf8").trim().split("\n")) {
+            const [digest, name] = line.trim().split(/\s+/);
+            checksums[name] = digest;
+          }
+
+          // Keys must match `${process.platform}-${process.arch}` as read by
+          // lib.js; archive names follow the goreleaser convention.
+          const targets = [
+            ["linux-x64",   "linux",   "amd64", "Linux",   "x86_64", "tar.gz", "crush"],
+            ["linux-arm64", "linux",   "arm64", "Linux",   "arm64",  "tar.gz", "crush"],
+            ["darwin-x64",  "darwin",  "amd64", "Darwin",  "x86_64", "tar.gz", "crush"],
+            ["darwin-arm64","darwin",  "arm64", "Darwin",  "arm64",  "tar.gz", "crush"],
+            ["win32-x64",   "windows", "amd64", "Windows", "x86_64", "zip",    "crush.exe"],
+            ["win32-arm64", "windows", "arm64", "Windows", "arm64",  "zip",    "crush.exe"],
+          ];
+
+          const archives = {};
+          for (const [key, goos, goarch, osTitle, archTitle, format, bin] of targets) {
+            const base = `crush_${version}_${osTitle}_${archTitle}`;
+            const name = `${base}.${format}`;
+            archives[key] = {
+              name,
+              url: `${baseURL}/${name}`,
+              bins: [bin],
+              format,
+              checksum: { algorithm: "sha256", digest: checksums[name] },
+              wrappedIn: base,
+            };
+          }
+
+          const pkg = {
+            name: npmPackage,
+            type: "module",
+            version,
+            description: "A powerful terminal-based AI assistant for developers, providing intelligent coding assistance directly in your terminal. (pbtrudel fork with local patches)",
+            scripts: {
+              postinstall: "node install.js",
+              run: "node run-crush.js",
+            },
+            repository: {
+              type: "git",
+              url: `git+https://github.com/${releaseRepo}.git`,
+            },
+            license: "FSL-1.1-MIT",
+            // Scoped packages default to restricted; publishing to npmjs must
+            // be public and npm stage publish takes no flags.
+            publishConfig: { access: "public" },
+            bugs: { url: `https://github.com/${releaseRepo}/issues` },
+            homepage: `https://github.com/${releaseRepo}#readme`,
+            bin: { crush: "run-crush.js" },
+            files: ["*.js"],
+            dependencies: {
+              jszip: "3.10.2",
+              "proxy-agent": "8.0.2",
+              tar: "7.5.22",
+            },
+            archives,
+          };
+
+          fs.writeFileSync("npm/package.json", JSON.stringify(pkg, null, 2) + "\n");
+          console.log("generated npm/package.json for", npmPackage, version);
+          EOF
+          node --check npm/lib.js && node --check npm/install.js && node --check npm/run-crush.js
+
+      # NPM_KEY can only stage, not publish; a maintainer approves the staged
+      # package on npm with 2FA afterwards.
+      - name: Stage package for maintainer approval
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+        run: |
+          cd npm
+          npm stage publish
