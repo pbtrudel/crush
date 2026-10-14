@@ -649,7 +649,9 @@ func (m *UI) Init() tea.Cmd {
 	// credentials predate it) refills lazily, so the models dialog shows
 	// the subscription section as soon as it is opened.
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-		_ = m.com.Workspace.UpdateAgentModel(context.TODO())
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		_ = m.com.Workspace.UpdateAgentModel(ctx)
 		return nil
 	}))
 	// Prime the memoized busy/permission state off-thread.
@@ -687,7 +689,9 @@ func (m *UI) loadInitialSession() tea.Cmd {
 		return m.loadSession(m.initialSessionID)
 	case m.continueLastSession:
 		return func() tea.Msg {
-			sessions, err := m.com.Workspace.ListSessions(context.Background())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			sessions, err := m.com.Workspace.ListSessions(ctx)
 			if err != nil || len(sessions) == 0 {
 				return nil
 			}
@@ -799,12 +803,14 @@ func (m *UI) setState(state uiState, focus uiFocusState) {
 // loadCustomCommands loads the custom commands asynchronously.
 func (m *UI) loadCustomCommands() tea.Cmd {
 	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		customCommands, err := commands.LoadCustomCommands(m.com.Config())
 		if err != nil {
 			slog.Error("Failed to load custom commands", "error", err)
 		}
 		// Append user-invocable skills as commands.
-		skillEntries, err := m.com.Workspace.ListSkills(context.Background())
+		skillEntries, err := m.com.Workspace.ListSkills(ctx)
 		if err != nil {
 			slog.Error("Failed to load skill commands", "error", err)
 		}
@@ -831,7 +837,9 @@ func (m *UI) applyChatScroll(lines int) {
 
 // loadMCPrompts loads the MCP prompts asynchronously.
 func (m *UI) loadMCPrompts() tea.Msg {
-	prompts, err := m.com.Workspace.ListMCPPrompts(context.Background())
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	prompts, err := m.com.Workspace.ListMCPPrompts(ctx)
 	if err != nil {
 		slog.Error("Failed to load MCP prompts", "error", err)
 	}
@@ -1823,7 +1831,9 @@ func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
 		agentSessionID := m.com.Workspace.CreateAgentToolSessionID(messageID, tc.ID)
 
 		// Fetch nested messages.
-		nestedMsgs, err := m.com.Workspace.ListMessages(context.Background(), agentSessionID)
+		nestedCtx, cancelNested := common.WorkspaceOpContext()
+		nestedMsgs, err := m.com.Workspace.ListMessages(nestedCtx, agentSessionID)
+		cancelNested()
 		if err != nil || len(nestedMsgs) == 0 {
 			continue
 		}
@@ -2314,7 +2324,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
 				return util.ReportError(err)()
 			}
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			m.com.Workspace.UpdateAgentModel(ctx)
 			status := "disabled"
 			if currentModel.Think {
 				status = "enabled"
@@ -2625,7 +2637,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			m.com.Workspace.UpdateAgentModel(ctx)
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))
 		m.dialog.CloseDialog(dialog.ReasoningID)
@@ -2867,7 +2881,9 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 	}
 
 	return m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
 			return util.ReportError(err)
 		}
 		slog.Info("Restored model from session",
@@ -2989,7 +3005,9 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
 			return util.ReportError(err)
 		}
 
@@ -3012,7 +3030,9 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	if isOnboarding {
 		m.setState(uiLanding, uiFocusEditor)
 		m.com.Config().SetupAgents()
-		if err := m.com.Workspace.InitCoderAgent(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.InitCoderAgent(ctx); err != nil {
 			cmds = append(cmds, util.ReportError(err))
 		}
 		// The agent just came up: re-fetch the memoized ready/model state
@@ -4830,9 +4850,11 @@ func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
 	// server's active agent does not match.
 	m.modeSwitching = true
 	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		err := m.com.Workspace.AgentSetMain(agentID)
 		if err == nil {
-			err = m.com.Workspace.UpdateAgentModel(context.Background())
+			err = m.com.Workspace.UpdateAgentModel(ctx)
 		}
 		return modeSwitchedMsg{
 			mode: target,
@@ -4930,7 +4952,9 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 
 		if m.hasSession() {
 			// Skip attachment if file was already read and hasn't been modified.
-			lastRead := m.com.Workspace.FileTrackerLastReadTime(context.Background(), m.session.ID, absPath)
+			trackerCtx, cancelTracker := common.WorkspaceOpContext()
+			lastRead := m.com.Workspace.FileTrackerLastReadTime(trackerCtx, m.session.ID, absPath)
+			cancelTracker()
 			if !lastRead.IsZero() {
 				if info, err := os.Stat(path); err == nil && !info.ModTime().After(lastRead) {
 					return nil
@@ -4971,8 +4995,10 @@ func (m *UI) insertMCPResourceCompletion(item completions.ResourceCompletionValu
 	heightCmd := m.handleTextareaHeightChange(prevHeight)
 
 	resourceCmd := func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		contents, err := m.com.Workspace.ReadMCPResource(
-			context.Background(),
+			ctx,
 			item.MCPName,
 			item.URI,
 		)
@@ -5186,7 +5212,9 @@ func (m *UI) refreshStyles() {
 // return one.
 func (m *UI) attachSkill(skillID, name string) tea.Cmd {
 	return func() tea.Msg {
-		content, result, err := m.com.Workspace.ReadSkill(context.Background(), skillID)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		content, result, err := m.com.Workspace.ReadSkill(ctx, skillID)
 		if err != nil {
 			return util.NewErrorMsg(err)
 		}
@@ -6394,7 +6422,9 @@ func (m *UI) handleStateChanged() []tea.Cmd {
 	return []tea.Cmd{
 		m.requestMCPRefresh(),
 		m.updateAgentModelCmd(func() tea.Msg {
-			m.com.Workspace.UpdateAgentModel(context.Background())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			m.com.Workspace.UpdateAgentModel(ctx)
 			return nil
 		}),
 		m.loadMCPrompts,
@@ -6403,21 +6433,27 @@ func (m *UI) handleStateChanged() []tea.Cmd {
 
 func handleMCPPromptsEvent(ws workspace.Workspace, name string) tea.Cmd {
 	return func() tea.Msg {
-		ws.MCPRefreshPrompts(context.Background(), name)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		ws.MCPRefreshPrompts(ctx, name)
 		return nil
 	}
 }
 
 func handleMCPToolsEvent(ws workspace.Workspace, name string) tea.Cmd {
 	return func() tea.Msg {
-		ws.RefreshMCPTools(context.Background(), name)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		ws.RefreshMCPTools(ctx, name)
 		return nil
 	}
 }
 
 func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 	return func() tea.Msg {
-		ws.MCPRefreshResources(context.Background(), name)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		ws.MCPRefreshResources(ctx, name)
 		return nil
 	}
 }
