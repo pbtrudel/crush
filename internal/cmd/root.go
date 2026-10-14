@@ -185,14 +185,14 @@ const defaultVersionTemplate = `{{with .DisplayName}}{{printf "%s " .}}{{end}}{{
 `
 
 func Execute() {
-	// FIXME: config.Load uses slog internally during provider resolution,
-	// but the file-based logger isn't set up until after config is loaded
-	// (because the log path depends on the data directory from config).
-	// This creates a window where slog calls in config.Load leak to
-	// stderr. We discard early logs here as a workaround. The proper
-	// fix is to remove slog calls from config.Load and have it return
-	// warnings/diagnostics instead of logging them as a side effect.
-	slog.SetDefault(slog.New(slog.DiscardHandler))
+	// config.Load and provider resolution log through slog before the
+	// file logger exists (its path comes from the loaded config), which
+	// used to leak to stderr or get discarded. Capture those records in
+	// memory instead; crushlog.Setup replays them into the real handlers
+	// once the log path is known, so startup diagnostics are not lost.
+	// The proper fix remains to make config.Load return diagnostics
+	// instead of logging them as a side effect.
+	crushlog.CaptureEarly()
 
 	// NOTE: very hacky: we create a colorprofile writer with STDOUT, then make
 	// it forward to a bytes.Buffer, write the colored heartbit to it, and then
