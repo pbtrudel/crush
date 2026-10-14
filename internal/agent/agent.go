@@ -86,6 +86,12 @@ const (
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
+
+	// overflowRecoveryTimeout bounds the summarize-and-retry recovery
+	// after a provider context-overflow rejection. The recovery runs on
+	// a context detached from the failed run, so the timeout caps how
+	// long a stalled provider can pin the run goroutine.
+	overflowRecoveryTimeout = 5 * time.Minute
 )
 
 var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version.Version)
@@ -170,6 +176,10 @@ type SessionAgentCall struct {
 	// is rewritten and no longer carries the element, so the reply
 	// target is not lost when a long channel turn is summarized.
 	channelMeta map[string]string
+	// overflowRetried marks a call that already consumed its one-time
+	// context-overflow recovery, so a second overflow fails normally
+	// instead of looping between summarize and retry.
+	overflowRetried bool
 }
 
 // filterToolsForChannel scopes the tool list for a turn. A channel-originated
@@ -1147,6 +1157,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	a.eventPromptResponded(call.SessionID, time.Since(startTime).Truncate(time.Second))
 
+	// overflowRecovery tracks a failed turn that will be recovered by
+	// compacting the session and requeueing the same call once (see the
+	// compaction block below). origOverflowErr keeps the provider error
+	// so a failed recovery still reports why the turn was rejected.
+	overflowRecovery := false
+	var origOverflowErr error
+
 	if err != nil {
 		isHyper := largeModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
@@ -1155,6 +1172,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			"error_type", fmt.Sprintf("%T", err),
 			"is_hyper", isHyper,
 			"is_cancel", isCancelErr)
+		// A provider context-overflow rejection is recoverable: instead
+		// of failing the turn, compact the session and requeue this call
+		// once so the work resumes. This is the backstop for overflows
+		// the mid-turn guard missed and the only recovery for models
+		// whose context window is unknown; the call flag bounds it to a
+		// single retry.
+		overflowRecovery = shouldRecoverFromOverflow(err, call.overflowRetried)
+		if overflowRecovery {
+			call.overflowRetried = true
+			origOverflowErr = err
+		}
 		if currentAssistant == nil {
 			// Cancel-before-assistant-creation window: the run was
 			// canceled after activeRequests.Set but before PrepareStep
@@ -1168,137 +1196,172 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					return nil, persistErr
 				}
 			}
-			return result, err
+			if !overflowRecovery {
+				return result, err
+			}
 		}
-		// Persist final state with a context detached from the run
-		// context. The run context (ctx) is derived from the
-		// workspace context, which workspace shutdown cancels before
-		// agent goroutines finish; using ctx here would drop the
-		// final assistant state. WithoutCancel keeps the values
-		// (e.g. session ID) while ignoring cancellation, and a short
-		// timeout bounds the cleanup writes.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cleanupCancel()
-		// Ensure we finish thinking on error to close the reasoning state.
-		currentAssistant.FinishThinking()
-		toolCalls := currentAssistant.ToolCalls()
-		// INFO: we use the cleanup context here because the genCtx has been cancelled.
-		msgs, createErr := a.messages.List(cleanupCtx, currentAssistant.SessionID)
-		if createErr != nil {
-			return nil, createErr
-		}
-		for _, tc := range toolCalls {
-			if !tc.Finished {
-				tc.Finished = true
-				tc.Input = "{}"
-				currentAssistant.AddToolCall(tc)
-				updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
-				if updateErr != nil {
-					return nil, updateErr
-				}
-			}
-
-			found := false
-			for _, msg := range msgs {
-				if msg.Role == message.Tool {
-					for _, tr := range msg.ToolResults() {
-						if tr.ToolCallID == tc.ID {
-							found = true
-							break
-						}
-					}
-				}
-				if found {
-					break
-				}
-			}
-			if found {
-				continue
-			}
-			content := "There was an error while executing the tool"
-			if isCancelErr {
-				content = "Error: user cancelled assistant tool calling"
-			}
-			toolResult := message.ToolResult{
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-				Content:    content,
-				IsError:    true,
-			}
-			_, createErr = a.messages.Create(cleanupCtx, currentAssistant.SessionID, message.CreateMessageParams{
-				Role: message.Tool,
-				Parts: []message.ContentPart{
-					toolResult,
-				},
-			})
+		if currentAssistant != nil {
+			// Persist final state with a context detached from the run
+			// context. The run context (ctx) is derived from the
+			// workspace context, which workspace shutdown cancels before
+			// agent goroutines finish; using ctx here would drop the
+			// final assistant state. WithoutCancel keeps the values
+			// (e.g. session ID) while ignoring cancellation, and a short
+			// timeout bounds the cleanup writes.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cleanupCancel()
+			// Ensure we finish thinking on error to close the reasoning state.
+			currentAssistant.FinishThinking()
+			toolCalls := currentAssistant.ToolCalls()
+			// INFO: we use the cleanup context here because the genCtx has been cancelled.
+			msgs, createErr := a.messages.List(cleanupCtx, currentAssistant.SessionID)
 			if createErr != nil {
 				return nil, createErr
 			}
-		}
-		var fantasyErr *fantasy.Error
-		var providerErr *fantasy.ProviderError
-		var requestTimedOutErr *requestTimeoutError
-		const defaultTitle = "Provider Error"
-		linkStyle := lipgloss.NewStyle().Foreground(charmtone.Guac).Underline(true)
-		if isCancelErr {
-			currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
-		} else if errors.As(err, &requestTimedOutErr) {
-			// Checked before the provider branches so a deadline our own
-			// request timeout imposed is never reported as a provider error.
-			currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", requestTimedOutErr.userMessage())
-		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
-			currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
-		} else if errors.As(err, &providerErr) {
-			if providerErr.Message == "The requested model is not supported." {
-				url := "https://github.com/settings/copilot/features"
-				link := linkStyle.Hyperlink(url, "id=copilot").Render(url)
-				currentAssistant.AddFinish(
-					message.FinishReasonError,
-					"Copilot model not enabled",
-					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatwalkCfg.Name, link),
-				)
-			} else {
-				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
+			for _, tc := range toolCalls {
+				if !tc.Finished {
+					tc.Finished = true
+					tc.Input = "{}"
+					currentAssistant.AddToolCall(tc)
+					updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
+					if updateErr != nil {
+						return nil, updateErr
+					}
+				}
+
+				found := false
+				for _, msg := range msgs {
+					if msg.Role == message.Tool {
+						for _, tr := range msg.ToolResults() {
+							if tr.ToolCallID == tc.ID {
+								found = true
+								break
+							}
+						}
+					}
+					if found {
+						break
+					}
+				}
+				if found {
+					continue
+				}
+				content := "There was an error while executing the tool"
+				if isCancelErr {
+					content = "Error: user cancelled assistant tool calling"
+				}
+				toolResult := message.ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    content,
+					IsError:    true,
+				}
+				_, createErr = a.messages.Create(cleanupCtx, currentAssistant.SessionID, message.CreateMessageParams{
+					Role: message.Tool,
+					Parts: []message.ContentPart{
+						toolResult,
+					},
+				})
+				if createErr != nil {
+					return nil, createErr
+				}
 			}
-		} else if errors.As(err, &fantasyErr) {
-			currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(fantasyErr.Title), defaultTitle), fantasyErr.Message)
-		} else if fantasy.IsTransportError(err) {
-			wrapped := fantasy.NewTransportError(err)
-			currentAssistant.AddFinish(message.FinishReasonError, stringext.Capitalize(wrapped.Title), wrapped.Message)
+			var fantasyErr *fantasy.Error
+			var providerErr *fantasy.ProviderError
+			var requestTimedOutErr *requestTimeoutError
+			const defaultTitle = "Provider Error"
+			linkStyle := lipgloss.NewStyle().Foreground(charmtone.Guac).Underline(true)
+			if isCancelErr {
+				currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+			} else if errors.As(err, &requestTimedOutErr) {
+				// Checked before the provider branches so a deadline our own
+				// request timeout imposed is never reported as a provider error.
+				currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", requestTimedOutErr.userMessage())
+			} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
+				currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
+			} else if errors.As(err, &providerErr) {
+				if providerErr.Message == "The requested model is not supported." {
+					url := "https://github.com/settings/copilot/features"
+					link := linkStyle.Hyperlink(url, "id=copilot").Render(url)
+					currentAssistant.AddFinish(
+						message.FinishReasonError,
+						"Copilot model not enabled",
+						fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatwalkCfg.Name, link),
+					)
+				} else {
+					currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
+				}
+			} else if errors.As(err, &fantasyErr) {
+				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(fantasyErr.Title), defaultTitle), fantasyErr.Message)
+			} else if fantasy.IsTransportError(err) {
+				wrapped := fantasy.NewTransportError(err)
+				currentAssistant.AddFinish(message.FinishReasonError, stringext.Capitalize(wrapped.Title), wrapped.Message)
+			} else {
+				currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
+			}
+			// Note: we use the cleanup context here because the genCtx has been
+			// cancelled.
+			updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
+			if updateErr != nil {
+				return nil, updateErr
+			}
+		}
+		if overflowRecovery {
+			// Fall through to the compaction block below, which
+			// summarizes the session and requeues this call so the turn
+			// resumes.
+			shouldSummarize = true
+			err = nil
 		} else {
-			currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
+			// A channel-originated turn has no caller watching the error, so
+			// tell the channel side something went wrong instead of leaving
+			// the sender hanging. sendChannelReply detaches from the run
+			// context so the notice survives a provider error that tore it down.
+			if channelErrorReplyWanted(call.Channel, err) {
+				a.sendChannelReply(ctx, call,
+					"Something went wrong while handling your message. Please try again.",
+					completedToolCalls)
+			}
+			return nil, err
 		}
-		// Note: we use the cleanup context here because the genCtx has been
-		// cancelled.
-		updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
-		if updateErr != nil {
-			return nil, updateErr
-		}
-		// A channel-originated turn has no caller watching the error, so
-		// tell the channel side something went wrong instead of leaving
-		// the sender hanging. sendChannelReply detaches from the run
-		// context so the notice survives a provider error that tore it down.
-		if channelErrorReplyWanted(call.Channel, err) {
-			a.sendChannelReply(ctx, call,
-				"Something went wrong while handling your message. Please try again.",
-				completedToolCalls)
-		}
-		return nil, err
 	}
 
-	// Compact when the mid-turn overflow guard tripped, or when the
-	// finished turn left the session at or above the configured
-	// threshold. Only the guard path requeues the prompt: there the turn
-	// was cut short mid-work and has to resume, while the threshold path
+	// Compact when the mid-turn overflow guard tripped, when a provider
+	// context overflow is being recovered, or when the finished turn left
+	// the session at or above the configured threshold. The guard and
+	// recovery paths requeue the prompt: there the turn was cut short or
+	// rejected mid-work and has to resume, while the threshold path
 	// compacted a turn that already completed, and re-running the prompt
 	// would repeat finished work.
 	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
 		a.activeRequests.Del(call.SessionID)
-		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
+		summarizeCtx := genCtx
+		if overflowRecovery {
+			// The run context's cancellation state after a failed
+			// stream is unreliable, so derive a fresh context the
+			// recovery summary can complete on; the timeout bounds how
+			// long a stalled provider can pin the run.
+			var cancelSummarize context.CancelFunc
+			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
+			defer cancelSummarize()
+		}
+		if summarizeErr := a.Summarize(summarizeCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
+			if overflowRecovery {
+				// The recovery failed, so the continuation that would
+				// have carried the channel reply never runs; the
+				// channel side still needs its failure notice.
+				if channelErrorReplyWanted(call.Channel, origOverflowErr) {
+					a.sendChannelReply(ctx, call,
+						"Something went wrong while handling your message. Please try again.",
+						completedToolCalls)
+				}
+				// A failed recovery must not mask why the turn failed.
+				return nil, origOverflowErr
+			}
 			return nil, summarizeErr
 		}
 		// If the agent wasn't done...
-		if shouldSummarize && len(currentAssistant.ToolCalls()) > 0 {
+		if shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}
@@ -1315,7 +1378,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// replies when it actually finishes. Runs before the busy state is
 	// released so a follow-up push queued behind this turn cannot
 	// overtake its reply.
-	if currentAssistant != nil && (!shouldSummarize || len(currentAssistant.ToolCalls()) == 0) {
+	if currentAssistant != nil && (!shouldSummarize || (!overflowRecovery && len(currentAssistant.ToolCalls()) == 0)) {
 		a.sendChannelReply(ctx, call, currentAssistant.Content().String(), completedToolCalls)
 	}
 

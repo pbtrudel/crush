@@ -154,6 +154,32 @@ func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {
 	require.Equal(t, 0, perms.requestCount, "plain ls should not trigger permission request")
 }
 
+func TestBashTool_UnsafeReadOnlyLookalikesRequirePermission(t *testing.T) {
+	workingDir := t.TempDir()
+	tool, perms := newBashToolWithRecordingPerms(workingDir, true)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{"redirect output", "ls > out.txt"},
+		{"environment dump", "env"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			perms.requestCount = 0
+			resp := runBashTool(t, tool, ctx, BashParams{
+				Description: tt.name,
+				Command:     tt.command,
+			})
+			require.False(t, resp.IsError)
+			require.Equal(t, 1, perms.requestCount, "command %q must trigger a permission request", tt.command)
+		})
+	}
+}
+
 func TestBashTool_ChainedCommandsDenied(t *testing.T) {
 	workingDir := t.TempDir()
 	tool, perms := newBashToolWithRecordingPerms(workingDir, false)
