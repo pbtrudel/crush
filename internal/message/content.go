@@ -147,6 +147,32 @@ type ShellCommand struct {
 
 func (ShellCommand) isPart() {}
 
+// CompactionStats records the measured outcome of a session compaction.
+// It rides on the summary message so the numbers persist with the session
+// and reach every surface that renders the message. It is display
+// metadata only: replay paths ignore it when rebuilding provider
+// requests, so it never reaches the model.
+type CompactionStats struct {
+	TokensBefore  int64 `json:"tokens_before"`
+	SummaryTokens int64 `json:"summary_tokens"`
+	TailTokens    int64 `json:"tail_tokens"`
+	SavedTokens   int64 `json:"saved_tokens"`
+	KeptMessages  int   `json:"kept_messages"`
+}
+
+func (CompactionStats) isPart() {}
+
+// CompactionStatsPart returns the compaction stats part, if the message
+// carries one.
+func (m *Message) CompactionStatsPart() (CompactionStats, bool) {
+	for _, part := range m.Parts {
+		if cs, ok := part.(CompactionStats); ok {
+			return cs, true
+		}
+	}
+	return CompactionStats{}, false
+}
+
 // HasShellCommand reports whether the message contains any ShellCommand parts.
 func (m *Message) HasShellCommand() bool {
 	for _, part := range m.Parts {

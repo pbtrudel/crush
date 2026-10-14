@@ -467,3 +467,51 @@ func TestGetSessionMessages_TailReconstruction(t *testing.T) {
 	require.Equal(t, summary.ID, got[0].ID)
 	require.Equal(t, newer.ID, got[1].ID)
 }
+
+// TestSummarize_AttachesCompactionStats pins the display contract: the
+// measured outcome rides on the summary message itself, so every surface
+// that renders the message (live chat, transcript reload, remote clients)
+// can show the stats line without new event plumbing.
+func TestSummarize_AttachesCompactionStats(t *testing.T) {
+	env := testEnv(t)
+	stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
+	agent := newCompactionAgent(env, stub, nil, false)
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	for range 4 {
+		_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role:  message.User,
+			Parts: []message.ContentPart{message.TextContent{Text: bigText(100)}},
+		})
+		require.NoError(t, err)
+	}
+
+	// A real session carries its last turn's usage counters; Summarize
+	// reads them for tokens_before. The harness never ran a live turn, so
+	// set them the way Run would have left them: 400 prompt tokens.
+	sess.PromptTokens = 400
+	_, err = env.sessions.Save(ctx, sess)
+	require.NoError(t, err)
+
+	err = agent.Summarize(ctx, sess.ID, nil, nil)
+	require.NoError(t, err)
+
+	updated, err := env.sessions.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	summary, err := env.messages.Get(ctx, updated.SummaryMessageID)
+	require.NoError(t, err)
+
+	stats, ok := summary.CompactionStatsPart()
+	require.True(t, ok, "summary message must carry compaction stats")
+	// The stub reports 100 output tokens. The tail budget clamps to half
+	// of the compacted context (200 tokens), so the last two of the four
+	// 100-token messages are kept verbatim.
+	require.Equal(t, int64(400), stats.TokensBefore)
+	require.Equal(t, int64(100), stats.SummaryTokens)
+	require.Equal(t, int64(200), stats.TailTokens)
+	require.Equal(t, int64(100), stats.SavedTokens)
+	require.Equal(t, 2, stats.KeptMessages)
+}

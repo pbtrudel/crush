@@ -72,6 +72,7 @@ func TestMessageJSONRoundTrip(t *testing.T) {
 			ToolResult{ToolCallID: "t1", Name: "tool", Content: "done", IsError: true},
 			Finish{Reason: FinishReasonEndTurn, Time: 300, Message: "msg", Details: "det"},
 			ShellCommand{Command: "ls", Output: "out", ExitCode: 0},
+			CompactionStats{TokensBefore: 397088, SummaryTokens: 8192, TailTokens: 22179, SavedTokens: 366717, KeptMessages: 60},
 		},
 	}
 

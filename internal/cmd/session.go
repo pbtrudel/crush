@@ -628,6 +628,13 @@ type sessionShowPart struct {
 	// Finish
 	Reason string `json:"reason,omitempty"`
 	Time   int64  `json:"time,omitempty"`
+
+	// Compaction stats
+	TokensBefore  int64 `json:"tokens_before,omitempty"`
+	SummaryTokens int64 `json:"summary_tokens,omitempty"`
+	TailTokens    int64 `json:"tail_tokens,omitempty"`
+	SavedTokens   int64 `json:"saved_tokens,omitempty"`
+	KeptMessages  int   `json:"kept_messages,omitempty"`
 }
 
 func extractSkillsFromMessages(msgs []*message.Message) []sessionShowSkill {
@@ -713,6 +720,15 @@ func convertParts(parts []message.ContentPart) []sessionShowPart {
 				Type:   "finish",
 				Reason: string(p.Reason),
 				Time:   p.Time,
+			})
+		case message.CompactionStats:
+			result = append(result, sessionShowPart{
+				Type:          "compaction_stats",
+				TokensBefore:  p.TokensBefore,
+				SummaryTokens: p.SummaryTokens,
+				TailTokens:    p.TailTokens,
+				SavedTokens:   p.SavedTokens,
+				KeptMessages:  p.KeptMessages,
 			})
 		default:
 			result = append(result, sessionShowPart{

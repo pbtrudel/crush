@@ -1404,6 +1404,14 @@ func protoToMessage(m proto.Message) message.Message {
 				Output:   v.Output,
 				ExitCode: v.ExitCode,
 			})
+		case proto.CompactionStats:
+			msg.Parts = append(msg.Parts, message.CompactionStats{
+				TokensBefore:  v.TokensBefore,
+				SummaryTokens: v.SummaryTokens,
+				TailTokens:    v.TailTokens,
+				SavedTokens:   v.SavedTokens,
+				KeptMessages:  v.KeptMessages,
+			})
 		}
 	}
 

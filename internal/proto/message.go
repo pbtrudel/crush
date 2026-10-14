@@ -188,6 +188,17 @@ type ShellCommand struct {
 
 func (ShellCommand) isPart() {}
 
+// CompactionStats records the measured outcome of a session compaction.
+type CompactionStats struct {
+	TokensBefore  int64 `json:"tokens_before"`
+	SummaryTokens int64 `json:"summary_tokens"`
+	TailTokens    int64 `json:"tail_tokens"`
+	SavedTokens   int64 `json:"saved_tokens"`
+	KeptMessages  int   `json:"kept_messages"`
+}
+
+func (CompactionStats) isPart() {}
+
 // MarshalJSON implements the [json.Marshaler] interface.
 func (m Message) MarshalJSON() ([]byte, error) {
 	parts, err := MarshalParts(m.Parts)
@@ -511,14 +522,15 @@ func (m *Message) AddBinary(mimeType string, data []byte) {
 type partType string
 
 const (
-	reasoningType    partType = "reasoning"
-	textType         partType = "text"
-	imageURLType     partType = "image_url"
-	binaryType       partType = "binary"
-	toolCallType     partType = "tool_call"
-	toolResultType   partType = "tool_result"
-	finishType       partType = "finish"
-	shellCommandType partType = "shell_command"
+	reasoningType       partType = "reasoning"
+	textType            partType = "text"
+	imageURLType        partType = "image_url"
+	binaryType          partType = "binary"
+	toolCallType        partType = "tool_call"
+	toolResultType      partType = "tool_result"
+	finishType          partType = "finish"
+	shellCommandType    partType = "shell_command"
+	compactionStatsType partType = "compaction_stats"
 )
 
 type partWrapper struct {
@@ -550,6 +562,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = finishType
 		case ShellCommand:
 			typ = shellCommandType
+		case CompactionStats:
+			typ = compactionStatsType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -627,6 +641,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case shellCommandType:
 			part := ShellCommand{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case compactionStatsType:
+			part := CompactionStats{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

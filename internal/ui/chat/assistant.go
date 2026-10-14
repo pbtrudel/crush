@@ -779,8 +779,6 @@ func (a *AssistantMessageItem) renderMarkdown(content string, width int) string 
 func (a *AssistantMessageItem) renderSpinning() string {
 	if a.message.IsThinking() {
 		a.anim.SetLabel("Thinking")
-	} else if a.message.IsSummaryMessage {
-		a.anim.SetLabel("Compacting")
 	}
 	return a.anim.Render()
 }
