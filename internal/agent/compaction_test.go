@@ -55,7 +55,7 @@ func (m *stubSummaryModel) StreamObject(context.Context, fantasy.ObjectCall) (fa
 // newCompactionAgent builds a sessionAgent for compaction tests, optionally
 // with a config store and auto-compaction disabled.
 func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.ConfigStore, disableAutoSummarize bool, tools ...fantasy.AgentTool) *sessionAgent {
-	gitCfg := catwalk.Model{ContextWindow: 200_000, DefaultMaxTokens: 10_000}
+	gitCfg := catwalk.Model{ContextWindow: 200_000, DefaultMaxTokens: 32_000}
 	m := Model{Model: model, CatwalkCfg: gitCfg}
 	return NewSessionAgent(SessionAgentOptions{
 		LargeModel:           m,

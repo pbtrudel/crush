@@ -69,9 +69,12 @@ const (
 	defaultCompactTailTokens = config.DefaultCompactTailTokens
 
 	// defaultCompactionMaxOutputTokens bounds the summary a compaction
-	// request may generate. A handoff summary needs a few thousand
-	// tokens; more than this is the model ignoring its instructions.
-	defaultCompactionMaxOutputTokens = 8_192
+	// request may generate. Reasoning models spend part of this budget on
+	// reasoning, and the summary must fit entirely inside it: an 8k cap
+	// was observed truncating a live summary mid-sentence, dropping the
+	// final required section. The prompt asks for a shorter summary; this
+	// is only the hard ceiling.
+	defaultCompactionMaxOutputTokens = 16_384
 
 	// compactionMaxSteps bounds the compaction run against a model that
 	// keeps calling tools despite the instruction not to. The tools
