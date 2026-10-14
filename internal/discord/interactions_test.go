@@ -112,7 +112,10 @@ func TestBridgeInteractionViaInputQueue(t *testing.T) {
 	b.enqueueInput(inputEvent{interaction: &in})
 
 	require.Eventually(t, func() bool { return env.cancelCount() == 1 }, 2*time.Second, 10*time.Millisecond)
-	require.True(t, api.hasPostContaining("Cancelling"))
+	// The cancel confirmation is posted asynchronously after the counter
+	// increments; wait for it instead of racing it (the immediate
+	// assertion was flaky on Windows CI runners).
+	require.Eventually(t, func() bool { return api.hasPostContaining("Cancelling") }, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestInteractionCommandMapping(t *testing.T) {
