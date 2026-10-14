@@ -649,7 +649,9 @@ func (m *UI) Init() tea.Cmd {
 	// credentials predate it) refills lazily, so the models dialog shows
 	// the subscription section as soon as it is opened.
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-		_ = m.com.Workspace.UpdateAgentModel(context.TODO())
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		_ = m.com.Workspace.UpdateAgentModel(ctx)
 		return nil
 	}))
 	// Prime the memoized busy/permission state off-thread.
@@ -2314,7 +2316,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
 				return util.ReportError(err)()
 			}
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			m.com.Workspace.UpdateAgentModel(ctx)
 			status := "disabled"
 			if currentModel.Think {
 				status = "enabled"
@@ -2625,7 +2629,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			m.com.Workspace.UpdateAgentModel(ctx)
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))
 		m.dialog.CloseDialog(dialog.ReasoningID)
@@ -2867,7 +2873,9 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 	}
 
 	return m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
 			return util.ReportError(err)
 		}
 		slog.Info("Restored model from session",
@@ -2989,7 +2997,9 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
 			return util.ReportError(err)
 		}
 
@@ -3012,7 +3022,9 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	if isOnboarding {
 		m.setState(uiLanding, uiFocusEditor)
 		m.com.Config().SetupAgents()
-		if err := m.com.Workspace.InitCoderAgent(context.TODO()); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.InitCoderAgent(ctx); err != nil {
 			cmds = append(cmds, util.ReportError(err))
 		}
 		// The agent just came up: re-fetch the memoized ready/model state

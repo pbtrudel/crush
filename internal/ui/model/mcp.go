@@ -335,13 +335,15 @@ func (m *UI) applyMCPToggle(msg dialog.ActionToggleMCP) tea.Cmd {
 		status = "disabled"
 	}
 	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		if msg.Global {
-			if err := m.com.Workspace.MCPSetServerConfigDisabled(context.TODO(), name, disable); err != nil {
+			if err := m.com.Workspace.MCPSetServerConfigDisabled(ctx, name, disable); err != nil {
 				return util.NewErrorMsg(err)
 			}
 			return util.NewInfoMsg(fmt.Sprintf("MCP %q %s globally", name, status))
 		}
-		if err := m.com.Workspace.MCPSetServerDisabled(context.TODO(), name, disable); err != nil {
+		if err := m.com.Workspace.MCPSetServerDisabled(ctx, name, disable); err != nil {
 			return util.NewErrorMsg(err)
 		}
 		return util.NewInfoMsg(fmt.Sprintf("MCP %q %s for this repository", name, status))
