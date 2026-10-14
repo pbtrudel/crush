@@ -1,6 +1,4 @@
-You are summarizing a conversation to preserve context for continuing work later.
-
-**Critical**: This summary will be the ONLY context available when the conversation resumes. Assume all previous messages will be lost. Be thorough.
+Compact the conversation above into a handoff summary so work can continue on a smaller context. The summary you write, plus the messages preserved after it, is everything the next turn will know about this session: assume the rest of the conversation above is about to be dropped.
 
 **Required sections**:
 
@@ -39,10 +37,15 @@ You are summarizing a conversation to preserve context for continuing work later
 
 Be specific. Don't write "implement authentication" - write:
 
-1. Add JWT middleware to src/middleware/auth.js:15
+1. Add JWT middleware to src/middleware/auth.go:15
 2. Update login handler in src/routes/user.js:45 to return token
 3. Test with: npm test -- auth.test.js
 
-**Tone**: Write as if briefing a teammate taking over mid-task. Include everything they'd need to continue without asking questions. No emojis ever.
+**Rules**:
 
-**Length**: No limit. Err on the side of too much detail rather than too little. Critical context is worth the tokens.
+- Preserve opaque identifiers exactly as written: file paths, symbols, command lines, error messages, and versions.
+- Start your reply with a `# Conversation Summary` heading.
+- Write as if briefing a teammate taking over mid-task. Include everything they'd need to continue without asking questions.
+- Do not call any tools. Respond with the summary text only.
+
+**Tone**: Factual and dense. No emojis ever. Err on the side of too much detail rather than too little; prioritize concrete facts (paths, commands, decisions) over narrative.
