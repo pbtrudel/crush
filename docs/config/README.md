@@ -474,7 +474,7 @@ Boolean Keys:
   auto-lsp                       automatically configure language servers
   progress                       show progress indicators
   metrics                        send anonymous usage metrics
-  auto-summarize                 automatically summarize long conversations
+  auto-summarize                 automatically compact long conversations
   provider-auto-update           update the provider catalog automatically
   default-providers              include built-in providers
   attribution-generated-with     add the Generated with Crush line
@@ -492,6 +492,14 @@ Integer Keys:
                                    streaming responses are only aborted after
                                    this much inactivity; 0 waits forever
                                    (default 60)
+  compact-tail-tokens int          tokens of recent conversation kept
+                                   verbatim next to the compaction summary;
+                                   0 keeps only the summary (default 24576)
+
+Number Keys:
+  auto-compact-threshold float     fraction of the context window at which a
+                                   finished turn compacts automatically;
+                                   0 disables it (default 0.85)
 
 List Keys:
   context-path string             append a project context path
@@ -504,6 +512,8 @@ List Keys:
 option progress false
 option skill-path ./skills
 option attribution-trailer-style none
+option auto-compact-threshold 0.5
+option compact-tail-tokens 16384
 ```
 
 #### `option reset`
