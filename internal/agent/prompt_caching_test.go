@@ -2,10 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,4 +205,104 @@ func TestNormalizePromptMessages(t *testing.T) {
 	agent.normalizePromptMessages(messages)
 	toolCall, _ = fantasy.AsMessagePart[fantasy.ToolCallPart](messages[0].Content[0])
 	assert.Equal(t, "{}", toolCall.Input)
+}
+
+// TestMCPInstructionsSortedDeterministic pins the ordering of the
+// <mcp-instructions> system-prompt suffix. The caller feeds servers in map
+// order, so only the sort inside buildMCPInstructions guarantees that two
+// sessions seeing the same connected servers get byte-identical system
+// prompts, and therefore share one cached prefix on content-addressed
+// provider caches.
+func TestMCPInstructionsSortedDeterministic(t *testing.T) {
+	t.Parallel()
+
+	pairs := []namedInstruction{
+		{name: "zeta", instructions: "zeta instructions"},
+		{name: "alpha", instructions: "alpha instructions"},
+		{name: "mid", instructions: "mid instructions"},
+	}
+	first := buildMCPInstructions(slices.Clone(pairs))
+	slices.Reverse(pairs)
+	second := buildMCPInstructions(pairs)
+
+	require.Equal(t, first, second, "block order must not depend on input order")
+	require.Less(t, strings.Index(first, "alpha instructions"), strings.Index(first, "mid instructions"))
+	require.Less(t, strings.Index(first, "mid instructions"), strings.Index(first, "zeta instructions"))
+
+	require.Empty(t, buildMCPInstructions(nil))
+	require.Equal(t,
+		"\n\n<mcp-instructions>\nalone\n\n\n</mcp-instructions>",
+		buildMCPInstructions([]namedInstruction{{name: "s", instructions: "alone"}}),
+		"single-server bytes must match the pre-sorting format")
+}
+
+// TestBuildToolsByteStableAcrossBuilds pins the tools-block cache invariant:
+// buildTools runs before every turn, so with the config and the MCP registry
+// unchanged its output must serialize byte-for-byte identically from one call
+// to the next. A description that embeds time, cwd, or any other
+// turn-varying value, or an unsorted insertion, would rewrite the tools
+// prefix and invalidate the provider's prompt cache without any visible
+// error.
+func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
+	env := testEnv(t)
+
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	// Pin every input buildTools reads so the test is hermetic against the
+	// developer's user config (same reasoning as coderAgent in common_test).
+	cfg.Config().Options.Attribution = &config.Attribution{}
+	cfg.Config().Options.SkillsPaths = nil
+	cfg.Config().Options.ContextPaths = nil
+	cfg.Config().Options.GlobalContextPaths = nil
+	cfg.Config().LSP = nil
+	cfg.Config().MCP = nil
+	cfg.Config().Hooks = nil
+
+	c := &coordinator{
+		cfg:         cfg,
+		permissions: env.permissions,
+		history:     env.history,
+		filetracker: *env.filetracker,
+	}
+	agentCfg := config.Agent{
+		Name: "test",
+		AllowedTools: []string{
+			tools.BashToolName,
+			tools.CrushInfoToolName,
+			tools.CrushLogsToolName,
+			tools.DownloadToolName,
+			tools.EditToolName,
+			tools.FetchToolName,
+			tools.GlobToolName,
+			tools.GrepToolName,
+			tools.JobKillToolName,
+			tools.JobOutputToolName,
+			tools.LSToolName,
+			tools.MultiEditToolName,
+			tools.SourcegraphToolName,
+			tools.TodosToolName,
+			tools.ViewToolName,
+			tools.WriteToolName,
+		},
+	}
+
+	first, err := c.buildTools(t.Context(), agentCfg, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, first)
+	require.True(t, slices.IsSortedFunc(first, func(a, b fantasy.AgentTool) int {
+		return strings.Compare(a.Info().Name, b.Info().Name)
+	}), "tool lists must be sorted by name")
+
+	second, err := c.buildTools(t.Context(), agentCfg, false)
+	require.NoError(t, err)
+	require.Len(t, second, len(first))
+
+	for i, tool := range first {
+		firstData, err := json.Marshal(tool.Info())
+		require.NoError(t, err)
+		secondData, err := json.Marshal(second[i].Info())
+		require.NoError(t, err)
+		require.Equal(t, string(firstData), string(secondData),
+			"tool %q must serialize identically across builds", tool.Info().Name)
+	}
 }

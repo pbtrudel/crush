@@ -272,6 +272,10 @@ type sessionAgent struct {
 	// prompt sent, so a cache-busting change can be attributed to the message
 	// that caused it. See recordPromptFingerprint.
 	promptHashes *csync.Map[string, []string]
+	// toolsHashes records, per session, a hash of every tool definition in
+	// the last request, so a cache-busting change to the tools block can be
+	// attributed to the tool that caused it. See recordToolsFingerprint.
+	toolsHashes *csync.Map[string, []string]
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -348,6 +352,7 @@ func NewSessionAgent(
 		activeRequests:       csync.NewMap[string, *activeCancel](),
 		mcpInstructions:      csync.NewMap[string, string](),
 		promptHashes:         csync.NewMap[string, []string](),
+		toolsHashes:          csync.NewMap[string, []string](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:         csync.NewMap[string, int](),
 		cancelMark:           csync.NewMap[string, uint64](),
@@ -915,6 +920,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
+			a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1910,22 +1916,48 @@ func (a *sessionAgent) mcpInstructionsForSession(sessionID string) string {
 	if suffix, ok := a.mcpInstructions.Get(sessionID); ok {
 		return suffix
 	}
-	var instructions strings.Builder
-	for _, server := range mcp.GetStates() {
+	var pairs []namedInstruction
+	for name, server := range mcp.GetStates() {
 		if server.State != mcp.StateConnected {
 			continue
 		}
 		if s := server.Client.InitializeResult().Instructions; s != "" {
-			instructions.WriteString(s)
-			instructions.WriteString("\n\n")
+			pairs = append(pairs, namedInstruction{name: name, instructions: s})
 		}
 	}
-	var suffix string
-	if s := instructions.String(); s != "" {
-		suffix = "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
-	}
+	suffix := buildMCPInstructions(pairs)
 	a.mcpInstructions.Set(sessionID, suffix)
 	return suffix
+}
+
+// namedInstruction pairs a connected MCP server's name with the instructions
+// it contributed at initialization.
+type namedInstruction struct {
+	name         string
+	instructions string
+}
+
+// buildMCPInstructions renders the <mcp-instructions> system-prompt suffix
+// from a set of server instructions, ordered by server name.
+//
+// Sorting is what makes the suffix deterministic across sessions in the same
+// process: GetStates is a map, so without it two sessions that see the same
+// connected servers could get the blocks in different orders: different
+// system-prompt bytes and therefore separate cache entries on providers whose
+// prefix cache is content-addressed (Anthropic especially).
+func buildMCPInstructions(pairs []namedInstruction) string {
+	if len(pairs) == 0 {
+		return ""
+	}
+	slices.SortFunc(pairs, func(a, b namedInstruction) int {
+		return strings.Compare(a.name, b.name)
+	})
+	var instructions strings.Builder
+	for _, pair := range pairs {
+		instructions.WriteString(pair.instructions)
+		instructions.WriteString("\n\n")
+	}
+	return "\n\n<mcp-instructions>\n" + instructions.String() + "\n</mcp-instructions>"
 }
 
 // recordPromptFingerprint hashes the prompt about to be sent and compares it
@@ -1970,6 +2002,59 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 			)
 			return
 		}
+	}
+}
+
+// recordToolsFingerprint hashes the tools about to be sent and compares them
+// with the previous request of the same session, logging the first tool that
+// changed.
+//
+// The message fingerprint (recordPromptFingerprint) covers the conversation
+// but not the tools block, yet a tool whose serialized definition drifts
+// between requests (a dynamic description, an unsorted insertion, an MCP
+// server re-listing with different schema bytes) rewrites the tools prefix
+// and invalidates the cache for everything after it. The provider reports
+// that only as a low cache-read count; this names the tool. The cost is one
+// hash per tool and only while debug logging is on.
+func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	hashes := make([]string, len(tools))
+	for i, tool := range tools {
+		data, err := json.Marshal(tool.Info())
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		hashes[i] = hex.EncodeToString(sum[:8])
+	}
+	previous, hadPrevious := a.toolsHashes.Get(sessionID)
+	a.toolsHashes.Set(sessionID, hashes)
+	if !hadPrevious {
+		return
+	}
+	common := min(len(hashes), len(previous))
+	for i := range common {
+		if hashes[i] != previous[i] {
+			slog.Debug(
+				"Tools block diverged from the previous request",
+				"session_id", sessionID,
+				"tool_index", i,
+				"tool", tools[i].Info().Name,
+				"previous_tools", len(previous),
+				"current_tools", len(hashes),
+			)
+			return
+		}
+	}
+	if len(hashes) != len(previous) {
+		slog.Debug(
+			"Tools block size changed since the previous request",
+			"session_id", sessionID,
+			"previous_tools", len(previous),
+			"current_tools", len(hashes),
+		)
 	}
 }
 
