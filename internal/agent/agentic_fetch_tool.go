@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"charm.land/fantasy"
@@ -172,6 +174,12 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				tools.NewSourcegraphTool(client),
 				tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, nil, tmpDir),
 			}
+			// Keep the sub-agent's palette sorted by name like every other
+			// tool list in the codebase; a stable order is what lets the
+			// provider's prompt cache match the tools block between steps.
+			slices.SortFunc(fetchTools, func(a, b fantasy.AgentTool) int {
+				return strings.Compare(a.Info().Name, b.Info().Name)
+			})
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's

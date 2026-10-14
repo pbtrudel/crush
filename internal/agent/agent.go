@@ -1910,22 +1910,48 @@ func (a *sessionAgent) mcpInstructionsForSession(sessionID string) string {
 	if suffix, ok := a.mcpInstructions.Get(sessionID); ok {
 		return suffix
 	}
-	var instructions strings.Builder
-	for _, server := range mcp.GetStates() {
+	var pairs []namedInstruction
+	for name, server := range mcp.GetStates() {
 		if server.State != mcp.StateConnected {
 			continue
 		}
 		if s := server.Client.InitializeResult().Instructions; s != "" {
-			instructions.WriteString(s)
-			instructions.WriteString("\n\n")
+			pairs = append(pairs, namedInstruction{name: name, instructions: s})
 		}
 	}
-	var suffix string
-	if s := instructions.String(); s != "" {
-		suffix = "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
-	}
+	suffix := buildMCPInstructions(pairs)
 	a.mcpInstructions.Set(sessionID, suffix)
 	return suffix
+}
+
+// namedInstruction pairs a connected MCP server's name with the instructions
+// it contributed at initialization.
+type namedInstruction struct {
+	name         string
+	instructions string
+}
+
+// buildMCPInstructions renders the <mcp-instructions> system-prompt suffix
+// from a set of server instructions, ordered by server name.
+//
+// Sorting is what makes the suffix deterministic across sessions in the same
+// process: GetStates is a map, so without it two sessions that see the same
+// connected servers could get the blocks in different orders: different
+// system-prompt bytes and therefore separate cache entries on providers whose
+// prefix cache is content-addressed (Anthropic especially).
+func buildMCPInstructions(pairs []namedInstruction) string {
+	if len(pairs) == 0 {
+		return ""
+	}
+	slices.SortFunc(pairs, func(a, b namedInstruction) int {
+		return strings.Compare(a.name, b.name)
+	})
+	var instructions strings.Builder
+	for _, pair := range pairs {
+		instructions.WriteString(pair.instructions)
+		instructions.WriteString("\n\n")
+	}
+	return "\n\n<mcp-instructions>\n" + instructions.String() + "\n</mcp-instructions>"
 }
 
 // recordPromptFingerprint hashes the prompt about to be sent and compares it
