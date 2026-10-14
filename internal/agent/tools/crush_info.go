@@ -399,6 +399,8 @@ func writeOptions(b *strings.Builder, cfg *config.ConfigStore) {
 	opts = append(opts, kv{"auto_lsp", fmt.Sprintf("%v", autoLSP)})
 	autoSummarize := !c.Options.DisableAutoSummarize
 	opts = append(opts, kv{"auto_summarize", fmt.Sprintf("%v", autoSummarize)})
+	opts = append(opts, kv{"auto_compact_threshold", fmt.Sprintf("%g", c.Options.GetAutoCompactThreshold())})
+	opts = append(opts, kv{"compact_tail_tokens", fmt.Sprintf("%d", c.Options.GetCompactTailTokens())})
 
 	if c.Options.TUI != nil {
 		opts = append(opts, kv{"compact_mode", fmt.Sprintf("%v", c.Options.TUI.CompactMode)})

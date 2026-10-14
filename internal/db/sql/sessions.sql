@@ -49,6 +49,7 @@ SET
     total_cache_read_tokens = ?,
     total_context_tokens = ?,
     summary_message_id = ?,
+    summary_cut_message_id = ?,
     cost = ?,
     todos = ?,
     channel = ?

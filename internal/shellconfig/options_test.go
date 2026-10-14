@@ -255,5 +255,39 @@ func TestOption_RequestTimeoutInvalid(t *testing.T) {
 
 	_, err := LoadShellConfig(t.Context(), path, []byte(script))
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "expects a number of seconds")
+	require.Contains(t, err.Error(), "expects an integer")
+}
+
+func TestOption_CompactionTuning(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option auto-compact-threshold 0.5
+option compact-tail-tokens 16384`))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, float64(0.5), opts["auto_compact_threshold"])
+	require.Equal(t, float64(16384), opts["compact_tail_tokens"])
+}
+
+func TestOption_AutoCompactThresholdInvalid(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	_, err := LoadShellConfig(t.Context(), path, []byte(`option auto-compact-threshold soon`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expects a number")
+}
+
+func TestOption_CompactTailTokensInvalid(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	_, err := LoadShellConfig(t.Context(), path, []byte(`option compact-tail-tokens many`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expects an integer")
 }

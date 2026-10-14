@@ -636,7 +636,7 @@ func makeTestTodos(n int) []session.Todo {
 	return todos
 }
 
-func BenchmarkBuildSummaryPrompt(b *testing.B) {
+func BenchmarkBuildCompactionPrompt(b *testing.B) {
 	cases := []struct {
 		name     string
 		numTodos int
@@ -648,12 +648,12 @@ func BenchmarkBuildSummaryPrompt(b *testing.B) {
 	}
 
 	for _, tc := range cases {
-		todos := makeTestTodos(tc.numTodos)
+		sess := session.Session{Todos: makeTestTodos(tc.numTodos), SummaryMessageID: "summary-1"}
 
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				_ = buildSummaryPrompt(todos)
+				_ = buildCompactionPrompt(sess, 12, 90)
 			}
 		})
 	}

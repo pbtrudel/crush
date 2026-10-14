@@ -19,6 +19,17 @@ WHERE m.session_id = ?
   AND m.created_at >= (SELECT s.created_at FROM messages s WHERE s.id = ?)
 ORDER BY m.created_at ASC;
 
+-- name: ListMessagesBySessionFromCut :many
+-- Messages from the compaction cut point onward: the verbatim tail kept by
+-- a compaction, the summary message itself, and everything created after
+-- it. rowid (insertion order) is exact, unlike created_at, whose
+-- one-second resolution cannot separate same-second inserts.
+SELECT m.*
+FROM messages m
+WHERE m.session_id = ?
+  AND m.rowid >= (SELECT c.rowid FROM messages c WHERE c.id = ?)
+ORDER BY m.rowid ASC;
+
 -- name: CreateMessage :one
 INSERT INTO messages (
     id,

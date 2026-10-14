@@ -55,7 +55,31 @@ import (
 const (
 	DefaultSessionName = "Untitled Session"
 
-	// Constants for auto-summarization thresholds
+	// defaultAutoCompactThreshold is the fraction of the context window
+	// at which a finished turn triggers automatic compaction when the
+	// user has not configured one. The mid-turn guard below still fires
+	// near the hard limit regardless; this controls how much headroom
+	// remains before the session is compacted.
+	defaultAutoCompactThreshold = config.DefaultAutoCompactThreshold
+
+	// defaultCompactTailTokens is how many tokens of recent conversation
+	// a compaction keeps verbatim when the user has not configured a
+	// budget. The recent working set — file reads, command outputs, and
+	// edits — is worth far more to the model than more summary prose.
+	defaultCompactTailTokens = config.DefaultCompactTailTokens
+
+	// defaultCompactionMaxOutputTokens bounds the summary a compaction
+	// request may generate. A handoff summary needs a few thousand
+	// tokens; more than this is the model ignoring its instructions.
+	defaultCompactionMaxOutputTokens = 8_192
+
+	// compactionMaxSteps bounds the compaction run against a model that
+	// keeps calling tools despite the instruction not to. The tools
+	// themselves refuse to run during compaction, so each retry returns
+	// a refusal tool result and the model gets one more step.
+	compactionMaxSteps = 4
+
+	// Constants for the mid-turn overflow guard.
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
@@ -66,8 +90,11 @@ var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version
 //go:embed templates/title.md
 var titlePrompt []byte
 
+// compactionPrompt is the body of the trailing instruction sent to the
+// model when a session is compacted.
+//
 //go:embed templates/summary.md
-var summaryPrompt []byte
+var compactionPrompt []byte
 
 // Used to remove <think> tags from generated titles.
 var (
@@ -1256,13 +1283,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, err
 	}
 
-	if shouldSummarize {
+	// Compact when the mid-turn overflow guard tripped, or when the
+	// finished turn left the session at or above the configured
+	// threshold. Only the guard path requeues the prompt: there the turn
+	// was cut short mid-work and has to resume, while the threshold path
+	// compacted a turn that already completed, and re-running the prompt
+	// would repeat finished work.
+	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
 		a.activeRequests.Del(call.SessionID)
 		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
 			return nil, summarizeErr
 		}
 		// If the agent wasn't done...
-		if len(currentAssistant.ToolCalls()) > 0 {
+		if shouldSummarize && len(currentAssistant.ToolCalls()) > 0 {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}
@@ -1424,6 +1457,38 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		// Nothing to summarize.
 		return nil
 	}
+	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
+
+	// The compaction request re-enters through the same system prompt,
+	// tools, and message stream the live turn ended on, so the provider's
+	// prefix cache still covers the whole conversation and only the
+	// instruction and the summary are billed as new tokens. Rebuilding
+	// the prompt from a different system prompt or tool list — as this
+	// path once did — discards the cache for the entire context.
+	systemPrompt := a.systemPrompt.Get() + a.mcpInstructionsForSession(sessionID)
+	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+	for i, tool := range compactionTools {
+		compactionTools[i] = compactionGuardTool{inner: tool}
+	}
+	a.applyToolCacheBreakpoint(compactionTools)
+
+	// Everything before the cut is summarized; the matching suffix is
+	// kept verbatim so recent reads, command outputs, and edits survive
+	// into the next context. The budget is clamped so a small session is
+	// never kept whole, which would leave the summary with nothing to
+	// summarize.
+	cutIndex := len(msgs)
+	cutID := ""
+	if tailBudget := a.compactionTailBudget(largeModel, msgs); tailBudget > 0 {
+		cutIndex = selectCompactionTail(msgs, tailBudget)
+		if cutIndex < len(msgs) {
+			cutID = msgs[cutIndex].ID
+		}
+	}
+	var tailTokens int64
+	for _, msg := range msgs[cutIndex:] {
+		tailTokens += messageTokens(msg)
+	}
 
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages)
 
@@ -1440,8 +1505,11 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
-		fantasy.WithSystemPrompt(string(summaryPrompt)),
+		fantasy.WithSystemPrompt(systemPrompt),
+		fantasy.WithTools(compactionTools...),
 		fantasy.WithUserAgent(userAgent),
+		fantasy.WithMaxOutputTokens(compactionMaxOutputTokens(largeModel)),
+		fantasy.WithStopConditions(fantasy.StepCountIs(compactionMaxSteps)),
 	)
 	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
@@ -1453,10 +1521,10 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		return err
 	}
 
-	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
+	instruction := buildCompactionPrompt(currentSession, len(msgs)-cutIndex, len(msgs))
 
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
-		Prompt:          summaryPromptText,
+		Prompt:          instruction,
 		Messages:        aiMsgs,
 		Headers:         sessionHeaders(sessionID),
 		ProviderOptions: opts,
@@ -1466,8 +1534,15 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = options.Messages
-			// Compaction reads the same cached prefix the turn that
-			// triggered it wrote, so it must carry the same breakpoints.
+			for i := range prepared.Messages {
+				prepared.Messages[i].ProviderOptions = nil
+			}
+			a.normalizePromptMessages(prepared.Messages)
+			prepared.Tools = compactionTools
+			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			// The last-message marker lands on the message that closed
+			// the live turn, so a provider with explicit caching serves
+			// the conversation from cache instead of rewriting it.
 			a.applyCacheBreakpoints(prepared.Messages)
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
@@ -1509,6 +1584,18 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		return err
 	}
 
+	if strings.TrimSpace(summaryMessage.Content().Text) == "" {
+		// The model never produced a summary — most likely it burned
+		// every step retrying a (refused) tool call. Leave the session
+		// pointer untouched so the conversation survives intact.
+		emptyErr := errors.New("compaction produced an empty summary")
+		summaryMessage.AddFinish(message.FinishReasonError, "Compaction Error", emptyErr.Error())
+		if updateErr := a.messages.Update(genCtx, summaryMessage); updateErr != nil {
+			return updateErr
+		}
+		return emptyErr
+	}
+
 	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
@@ -1532,6 +1619,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	// Just in case, get just the last usage info.
 	usage := resp.Response.Usage
 	currentSession.SummaryMessageID = summaryMessage.ID
+	currentSession.SummaryCutMessageID = cutID
 	currentSession.CompletionTokens = summaryCompletionTokens(usage, summaryMessage)
 	currentSession.PromptTokens = 0
 	currentSession.EstimatedUsage = usageIsZero(usage)
@@ -1539,6 +1627,17 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	if err != nil {
 		return err
 	}
+
+	keptMessages := len(msgs) - cutIndex
+	slog.Info(
+		"Context compacted",
+		"session_id", sessionID,
+		"tokens_before", tokensBefore,
+		"summary_tokens", currentSession.CompletionTokens,
+		"tail_tokens", tailTokens,
+		"saved_tokens", max(0, tokensBefore-currentSession.CompletionTokens-tailTokens),
+		"kept_messages", keptMessages,
+	)
 
 	// Release the active request before processing queued messages so that
 	// Run() does not see the session as busy.
@@ -1554,6 +1653,170 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	a.messageQueue.Set(sessionID, queuedMessages[1:])
 	_, qErr := a.Run(ctx, firstQueuedMessage)
 	return qErr
+}
+
+// compactionConfig returns the auto-compaction threshold (as a fraction of
+// the context window) and the verbatim tail budget in tokens. Both fall
+// back to their defaults when no config store is available (tests,
+// sub-agents) or the user left them unset.
+func (a *sessionAgent) compactionConfig() (threshold float64, tailTokens int64) {
+	threshold = defaultAutoCompactThreshold
+	tailTokens = defaultCompactTailTokens
+	if a.cfg == nil {
+		return threshold, tailTokens
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return threshold, tailTokens
+	}
+	threshold = cfg.Options.GetAutoCompactThreshold()
+	tailTokens = cfg.Options.GetCompactTailTokens()
+	return threshold, tailTokens
+}
+
+// shouldAutoCompact reports whether a finished turn left the session at or
+// above the configured compaction threshold. Unlike the mid-turn guard,
+// this runs between turns, so crossing it never interrupts work in flight.
+func (a *sessionAgent) shouldAutoCompact(model Model, sess session.Session) bool {
+	if a.disableAutoSummarize {
+		return false
+	}
+	cw := int64(model.CatwalkCfg.ContextWindow)
+	if cw == 0 {
+		return false
+	}
+	threshold, _ := a.compactionConfig()
+	if threshold <= 0 {
+		return false
+	}
+	return float64(sess.PromptTokens+sess.CompletionTokens) >= threshold*float64(cw)
+}
+
+// compactionTailBudget resolves the verbatim tail budget for a compaction:
+// the configured or default value, clamped to what the model's window can
+// afford and to half of the context being compacted, so a small session is
+// never kept whole (which would leave a summary with nothing to summarize).
+func (a *sessionAgent) compactionTailBudget(model Model, msgs []message.Message) int64 {
+	_, budget := a.compactionConfig()
+	if budget <= 0 {
+		return 0
+	}
+	if cw := int64(model.CatwalkCfg.ContextWindow); cw > 0 && cw/4 < budget {
+		budget = cw / 4
+	}
+	var total int64
+	for _, msg := range msgs {
+		total += messageTokens(msg)
+	}
+	if total > 0 && total/2 < budget {
+		budget = total / 2
+	}
+	return budget
+}
+
+// compactionMaxOutputTokens bounds the summary a compaction may generate,
+// clamped down for small windows and models with a lower output limit.
+func compactionMaxOutputTokens(model Model) int64 {
+	maxTokens := int64(defaultCompactionMaxOutputTokens)
+	if cw := int64(model.CatwalkCfg.ContextWindow); cw > 0 && cw/4 < maxTokens {
+		maxTokens = cw / 4
+	}
+	if model.CatwalkCfg.DefaultMaxTokens > 0 && model.CatwalkCfg.DefaultMaxTokens < maxTokens {
+		maxTokens = model.CatwalkCfg.DefaultMaxTokens
+	}
+	return maxTokens
+}
+
+// selectCompactionTail returns the index of the first message a compaction
+// keeps verbatim: the largest suffix of msgs whose estimated token size
+// fits budget, trimmed forward to a boundary that stays valid for the
+// provider and complete for the model.
+//
+// A cut at index i keeps msgs[i:]. It is valid only when every tool call
+// before i already has its result before i (a request may not carry a tool
+// call without its result) and msgs[i] is neither a tool result, which
+// would be orphaned from its call, nor a previous summary message, whose
+// content the new summary absorbs. Returns len(msgs) when nothing fits.
+func selectCompactionTail(msgs []message.Message, budget int64) int {
+	if budget <= 0 || len(msgs) == 0 {
+		return len(msgs)
+	}
+	// pending[i] counts tool calls made before i that have no result
+	// before i, i.e. results the cut at i would strip away.
+	pending := make([]int, len(msgs))
+	count := 0
+	for i := range msgs {
+		pending[i] = count
+		switch msgs[i].Role {
+		case message.Assistant:
+			count += len(msgs[i].ToolCalls())
+		case message.Tool:
+			count -= len(msgs[i].ToolResults())
+			if count < 0 {
+				count = 0
+			}
+		}
+	}
+
+	cut := len(msgs)
+	var tokens int64
+	for i := len(msgs) - 1; i >= 0; i-- {
+		tokens += messageTokens(msgs[i])
+		if tokens > budget {
+			break
+		}
+		cut = i
+	}
+	for cut < len(msgs) {
+		msg := msgs[cut]
+		if pending[cut] == 0 && msg.Role != message.Tool && !msg.IsSummaryMessage {
+			break
+		}
+		cut++
+	}
+	return cut
+}
+
+// messageTokens estimates the token footprint of a persisted message, the
+// same way session usage estimates are produced: every text, reasoning,
+// tool input, and tool output part counts.
+func messageTokens(msg message.Message) int64 {
+	total := approxTokenCount(msg.Content().Text) + approxTokenCount(msg.ReasoningContent().String())
+	for _, tc := range msg.ToolCalls() {
+		total += approxTokenCount(tc.Name) + approxTokenCount(tc.Input)
+	}
+	for _, tr := range msg.ToolResults() {
+		total += approxTokenCount(tr.Content)
+	}
+	return total
+}
+
+// compactionGuardTool keeps a tool's definition byte-identical to the live
+// turn's so the compaction request still matches every provider's prefix
+// cache, while refusing to execute it. The compaction instruction forbids
+// tool calls; if a model calls one anyway, the refusal arrives as an error
+// tool result and the model gets another step to write the summary. The
+// inner tool receives provider-option mutations untouched, so the cache
+// marker placed by applyToolCacheBreakpoint still serializes identically.
+type compactionGuardTool struct {
+	inner fantasy.AgentTool
+}
+
+func (t compactionGuardTool) Info() fantasy.ToolInfo { return t.inner.Info() }
+
+func (t compactionGuardTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	return fantasy.ToolResponse{
+		Content: "Tool execution is disabled during context compaction. Respond with the summary only.",
+		IsError: true,
+	}, nil
+}
+
+func (t compactionGuardTool) ProviderOptions() fantasy.ProviderOptions {
+	return t.inner.ProviderOptions()
+}
+
+func (t compactionGuardTool) SetProviderOptions(opts fantasy.ProviderOptions) {
+	t.inner.SetProviderOptions(opts)
 }
 
 // mcpInstructionsForSession returns the MCP server instruction suffix for a
@@ -1993,6 +2256,31 @@ func toolResultsForCalls(m message.Message, toolResultsByCall map[string][]fanta
 }
 
 func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.Session) ([]message.Message, error) {
+	if session.SummaryMessageID != "" && session.SummaryCutMessageID != "" {
+		cutMsgs, err := a.messages.ListFromCut(ctx, session.ID, session.SummaryCutMessageID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list messages from the compaction cut point: %w", err)
+		}
+		for i, msg := range cutMsgs {
+			if msg.ID != session.SummaryMessageID {
+				continue
+			}
+			// A compacted session sends: the summary (as a user message,
+			// since the assistant never literally said it), the verbatim
+			// tail the summary was written around, then everything newer.
+			out := make([]message.Message, 0, len(cutMsgs))
+			summary := cutMsgs[i]
+			summary.Role = message.User
+			out = append(out, summary)
+			out = append(out, cutMsgs[:i]...)
+			out = append(out, cutMsgs[i+1:]...)
+			return out, nil
+		}
+		// The summary or the cut message no longer exists: fall back to
+		// the summary-only view rather than re-sending the full
+		// transcript.
+	}
+
 	// Read only the tail a compacted session actually sends. The full
 	// transcript can be tens of megabytes on the single shared connection.
 	msgs, err := a.messages.ListFromSummary(ctx, session.ID, session.SummaryMessageID)
@@ -2609,13 +2897,30 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 	return convertedMessages
 }
 
-// buildSummaryPrompt constructs the prompt text for session summarization.
-func buildSummaryPrompt(todos []session.Todo) string {
+// buildCompactionPrompt constructs the trailing instruction for a
+// compaction request. It is a user message rather than a system prompt so
+// the request's system prompt, tools, and message prefix stay
+// byte-identical to the live turn, letting providers with prefix caching
+// serve the conversation from cache.
+func buildCompactionPrompt(sess session.Session, keptMessages, totalMessages int) string {
 	var sb strings.Builder
-	sb.WriteString("Provide a detailed summary of our conversation above.")
-	if len(todos) > 0 {
+	sb.WriteString(string(compactionPrompt))
+	if sess.SummaryMessageID != "" {
+		sb.WriteString("\n\n## Previous Summary\n\n")
+		sb.WriteString("The first message in the conversation above is a summary written at an earlier compaction. ")
+		sb.WriteString("It is your starting point: preserve everything in it that is still relevant and add everything that happened since it was written. ")
+		sb.WriteString("Do not spend space restating what it already says well.")
+	}
+	if keptMessages > 0 {
+		fmt.Fprintf(
+			&sb,
+			"\n\n## Preserved Tail\n\nThe most recent %d of the conversation's %d messages are preserved verbatim after your summary and will still be readable. Do not re-summarize their contents in detail; concentrate on the earlier conversation.",
+			keptMessages, totalMessages,
+		)
+	}
+	if len(sess.Todos) > 0 {
 		sb.WriteString("\n\n## Current Todo List\n\n")
-		for _, t := range todos {
+		for _, t := range sess.Todos {
 			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Content)
 		}
 		sb.WriteString("\nInclude these tasks and their statuses in your summary. ")

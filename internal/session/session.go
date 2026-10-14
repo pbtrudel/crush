@@ -59,6 +59,7 @@ type Session struct {
 	TotalContextTokens   int64
 	EstimatedUsage       bool
 	SummaryMessageID     string
+	SummaryCutMessageID  string
 	Cost                 float64
 	Todos                []Todo
 	Channel              string
@@ -213,6 +214,10 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 			String: session.SummaryMessageID,
 			Valid:  session.SummaryMessageID != "",
 		},
+		SummaryCutMessageID: sql.NullString{
+			String: session.SummaryCutMessageID,
+			Valid:  session.SummaryCutMessageID != "",
+		},
 		Cost: session.Cost,
 		Todos: sql.NullString{
 			String: todosJSON,
@@ -343,6 +348,7 @@ func (s *service) fromDBItem(item db.Session) Session {
 		TotalCacheReadTokens: item.TotalCacheReadTokens,
 		TotalContextTokens:   item.TotalContextTokens,
 		SummaryMessageID:     item.SummaryMessageID.String,
+		SummaryCutMessageID:  item.SummaryCutMessageID.String,
 		Cost:                 item.Cost,
 		Todos:                todos,
 		Channel:              item.Channel.String,

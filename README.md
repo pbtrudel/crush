@@ -554,6 +554,31 @@ tool/prompt/resource list-changed notifications.
 Crush has preliminary support for hooks. For details, see
 [the hook guide](./docs/hooks/).
 
+### Context Compaction
+
+When a session approaches the model's context window, Crush compacts it: the
+conversation up to a cut point is rewritten into a structured handoff summary,
+and the most recent messages are kept verbatim beside it. Everything the model
+sends afterwards is the summary, the preserved tail, and new messages — the
+full transcript stays in the session log, so scrolling back still shows every
+message.
+
+- `/compact` compacts the current session on demand.
+- Auto-compaction runs after a finished turn once the context reaches
+  `option auto-compact-threshold` (default `0.85`). Set `0.5` to compact at
+  half the window, or `0` to disable.
+- `option compact-tail-tokens` tunes how many tokens of recent conversation
+  are kept verbatim (default `24576`; `0` keeps only the summary).
+- `option auto-summarize false` disables automatic compaction entirely;
+  `/compact` stays available.
+
+Compaction is prompt-cache friendly: the request that writes the summary
+re-enters through the exact system prompt, tool palette, and conversation
+prefix of the live session, so providers with automatic prefix caching
+(OpenAI, Mistral, and OpenAI-compatible endpoints) serve it almost entirely
+from cache. The post-compaction context opens a fresh prefix that later turns
+extend instead of rewriting.
+
 ### Sharing a workspace across clients
 
 When Crush is run against a shared backend (for example two TUIs talking to

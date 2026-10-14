@@ -464,6 +464,12 @@ type Options struct {
 	Debug                bool        `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
 	DebugLSP             bool        `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
 	DisableAutoSummarize bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	// AutoCompactThreshold is the fraction of the model's context window
+	// at which a finished turn triggers automatic compaction.
+	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.85,example=0.5"`
+	// CompactTailTokens is how many tokens of recent conversation a
+	// compaction keeps verbatim next to its summary.
+	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
 	// DataDirectory is where Crush keeps per-project state such as
 	// the SQLite database and workspace overrides. Relative paths are
 	// resolved against the working directory; absolute paths are used
@@ -502,6 +508,43 @@ func (o *Options) GetRequestTimeout() time.Duration {
 		return 0
 	}
 	return time.Duration(*o.RequestTimeout) * time.Second
+}
+
+// DefaultAutoCompactThreshold is the fraction of the context window at
+// which a finished turn triggers automatic compaction when the user has
+// not configured one.
+const DefaultAutoCompactThreshold = 0.85
+
+// DefaultCompactTailTokens is the verbatim tail budget used when the user
+// has not configured one.
+const DefaultCompactTailTokens = 24576
+
+// GetAutoCompactThreshold returns the auto-compaction threshold as a
+// fraction of the context window. The nil receiver and the unset field
+// both mean DefaultAutoCompactThreshold; 0 or a negative value disables
+// automatic compaction, and values above 1 are capped at 1 so a bad
+// config cannot turn the threshold into a no-op that never fires before
+// the mid-turn overflow guard.
+func (o *Options) GetAutoCompactThreshold() float64 {
+	if o == nil || o.AutoCompactThreshold == nil {
+		return DefaultAutoCompactThreshold
+	}
+	threshold := *o.AutoCompactThreshold
+	if threshold <= 0 {
+		return 0
+	}
+	return min(threshold, 1)
+}
+
+// GetCompactTailTokens returns the verbatim tail budget in tokens. The nil
+// receiver and the unset field both mean DefaultCompactTailTokens; an
+// explicit 0 disables the verbatim tail, and a negative value is treated
+// as 0.
+func (o *Options) GetCompactTailTokens() int64 {
+	if o == nil || o.CompactTailTokens == nil {
+		return DefaultCompactTailTokens
+	}
+	return max(0, int64(*o.CompactTailTokens))
 }
 
 type MCPs map[string]MCPConfig

@@ -14,20 +14,24 @@ package proto
 // live SSE stream. Hold-only clients (streams == 0) do not contribute.
 // Like IsBusy, it is computed on read by REST handlers.
 type Session struct {
-	ID               string  `json:"id"`
-	ParentSessionID  string  `json:"parent_session_id"`
-	Title            string  `json:"title"`
-	MessageCount     int64   `json:"message_count"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	SummaryMessageID string  `json:"summary_message_id"`
-	Cost             float64 `json:"cost"`
-	Todos            []Todo  `json:"todos,omitempty"`
-	Channel          string  `json:"channel,omitempty"`
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
-	IsBusy           bool    `json:"is_busy"`
-	AttachedClients  int     `json:"attached_clients"`
+	ID               string `json:"id"`
+	ParentSessionID  string `json:"parent_session_id"`
+	Title            string `json:"title"`
+	MessageCount     int64  `json:"message_count"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	SummaryMessageID string `json:"summary_message_id"`
+	// SummaryCutMessageID is the first message a compaction keeps
+	// verbatim; it travels with SummaryMessageID so remote clients can
+	// see where the compacted window begins.
+	SummaryCutMessageID string  `json:"summary_cut_message_id,omitempty"`
+	Cost                float64 `json:"cost"`
+	Todos               []Todo  `json:"todos,omitempty"`
+	Channel             string  `json:"channel,omitempty"`
+	CreatedAt           int64   `json:"created_at"`
+	UpdatedAt           int64   `json:"updated_at"`
+	IsBusy              bool    `json:"is_busy"`
+	AttachedClients     int     `json:"attached_clients"`
 }
 
 // Todo represents a single todo entry on a session in the proto layer.

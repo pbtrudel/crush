@@ -780,7 +780,7 @@ func (a *AssistantMessageItem) renderSpinning() string {
 	if a.message.IsThinking() {
 		a.anim.SetLabel("Thinking")
 	} else if a.message.IsSummaryMessage {
-		a.anim.SetLabel("Summarizing")
+		a.anim.SetLabel("Compacting")
 	}
 	return a.anim.Render()
 }
