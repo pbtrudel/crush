@@ -144,10 +144,22 @@ func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		}
 		n, err := strconv.Atoi(val)
 		if err != nil {
-			return usage(stderr, fmt.Sprintf("option: %s expects a number of seconds, got %q", key, val))
+			return usage(stderr, fmt.Sprintf("option: %s expects an integer, got %q", key, val))
 		}
 		o[spec.jsonKey] = n
 		slog.Info("Option set in shell config", "key", key, "value", n)
+		return nil
+
+	case optFloat:
+		if val == "" {
+			return usage(stderr, fmt.Sprintf("option: %s requires a value", key))
+		}
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return usage(stderr, fmt.Sprintf("option: %s expects a number, got %q", key, val))
+		}
+		o[spec.jsonKey] = f
+		slog.Info("Option set in shell config", "key", key, "value", f)
 		return nil
 
 	default: // optString
@@ -168,6 +180,7 @@ const (
 	optBool
 	optList
 	optInt
+	optFloat
 )
 
 // optionSpec describes one user-facing option key: the JSON field it writes,
@@ -209,6 +222,10 @@ var optionSpecs = map[string]optionSpec{
 
 	// Integer fields, in seconds.
 	"request-timeout": {jsonKey: "request_timeout", kind: optInt},
+
+	// Compaction tuning.
+	"auto-compact-threshold": {jsonKey: "auto_compact_threshold", kind: optFloat},
+	"compact-tail-tokens":    {jsonKey: "compact_tail_tokens", kind: optInt},
 
 	// List fields. Keys are singular because each call appends one value.
 	"context-path":        {jsonKey: "context_paths", kind: optList},

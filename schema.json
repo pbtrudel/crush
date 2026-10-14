@@ -567,6 +567,22 @@
           "description": "Disable automatic conversation summarization",
           "default": false
         },
+        "auto_compact_threshold": {
+          "type": "number",
+          "description": "Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.",
+          "default": 0.85,
+          "examples": [
+            0.5
+          ]
+        },
+        "compact_tail_tokens": {
+          "type": "integer",
+          "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",
+          "default": 24576,
+          "examples": [
+            16384
+          ]
+        },
         "data_directory": {
           "type": "string",
           "description": "Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.",
