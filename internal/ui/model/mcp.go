@@ -247,6 +247,9 @@ func mcpList(t *styles.Styles, mcps []mcp.ClientInfo, width, maxItems int) strin
 		case mcp.StateDisabled:
 			icon = t.Resource.DisabledIcon.String()
 			description = t.Resource.StatusText.Render("disabled")
+		case mcp.StateLazy:
+			icon = t.Resource.OfflineIcon.String()
+			description = t.Resource.StatusText.Render("lazy (starts on demand)")
 		default:
 			icon = t.Resource.OfflineIcon.String()
 		}
@@ -363,6 +366,8 @@ func mcpStatusText(info mcp.ClientInfo) string {
 		return "needs authentication"
 	case mcp.StateDisabled:
 		return "disabled"
+	case mcp.StateLazy:
+		return "lazy (starts on demand)"
 	default:
 		return "offline"
 	}

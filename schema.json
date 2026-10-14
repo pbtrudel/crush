@@ -322,6 +322,11 @@
           "description": "Whether this MCP server is disabled",
           "default": false
         },
+        "lazy": {
+          "type": "boolean",
+          "description": "Start this MCP server only when the agent activates it",
+          "default": false
+        },
         "disabled_tools": {
           "items": {
             "type": "string",

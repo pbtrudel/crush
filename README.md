@@ -467,6 +467,30 @@ mcp add streaming-service --type sse --url "https://example.com/mcp/sse" \
   --timeout 10 --header API-Key "$API_KEY"
 ```
 
+#### Lazy MCP servers
+
+A server marked `"lazy": true` is enabled but not started at launch. Crush
+leaves its tools and instructions out of every request until the server is
+activated, so a server you rarely use costs no tokens and cannot invalidate the
+prompt cache when it connects.
+
+```json
+{
+  "mcp": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "lazy": true
+    }
+  }
+}
+```
+
+Ask the agent for something the server provides and it calls the `mcp_servers`
+tool to start it on demand; you can also start it yourself from `/mcp`.
+`lazy` is ignored for servers enabled as channels (`channel_enabled` or
+`--channels`), which must connect at startup.
+
 #### MCP OAuth
 
 HTTP and SSE MCP servers that require OAuth can use Crush's built-in

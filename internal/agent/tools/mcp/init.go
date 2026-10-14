@@ -155,6 +155,9 @@ const (
 	StateConnected
 	StateError
 	StateNeedsAuth
+	// StateLazy marks a server configured with lazy loading: it stays
+	// unconnected (and costs no tokens) until a turn activates it.
+	StateLazy
 )
 
 func (s State) String() string {
@@ -169,6 +172,8 @@ func (s State) String() string {
 		return "error"
 	case StateNeedsAuth:
 		return "needs auth"
+	case StateLazy:
+		return "lazy"
 	default:
 		return "unknown"
 	}
@@ -355,6 +360,21 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 				continue
 			}
 			slog.Info("Starting config-disabled MCP with repository enabled override", "name", name)
+		}
+
+		// Lazy servers stay unconnected until a turn activates them, so they
+		// cost nothing in the tool palette or the system prompt while unused
+		// and cannot invalidate a running session's prompt cache when they
+		// connect. A server that is also a channel must start now: channels
+		// receive messages and cannot be started on demand.
+		if m.Lazy {
+			if ChannelOptIn(m, cfg.Overrides().EnabledChannels, name) {
+				slog.Info("Lazy MCP server is also a channel; starting it at startup", "name", name)
+			} else {
+				updateState(name, StateLazy, nil, nil, Counts{})
+				slog.Debug("Deferring lazy MCP server until first use", "name", name)
+				continue
+			}
 		}
 
 		// Set initial starting state

@@ -18,6 +18,9 @@ const (
 	reinitDisable reinitAction = iota + 1
 	reinitRemove
 	reinitStart
+	// reinitLazy keeps a lazily-configured server unstarted, recording the
+	// lazy state so the UI can show why it is not running.
+	reinitLazy
 )
 
 // reconcile diffs running MCP state against the current config and returns
@@ -58,6 +61,15 @@ func reconcile(current config.MCPs, running map[string]ClientInfo) map[string]re
 			if exists && info.State != StateDisabled {
 				actions[name] = reinitDisable
 			}
+			continue
+		}
+
+		// A lazy server stays unstarted until a turn activates it: a new
+		// config entry or a config edit must not start it (that would pay its
+		// tokens and rewrite the prompt cache). Once activated it follows the
+		// normal rules below, so a config change restarts it.
+		if m.Lazy && (!exists || info.State == StateLazy) {
+			actions[name] = reinitLazy
 			continue
 		}
 
@@ -136,6 +148,8 @@ func reconcileOnce(ctx context.Context, cfg *config.ConfigStore) {
 		case reinitDisable:
 			slog.Info("Disabling MCP server", "name", name)
 			DisableSingle(cfg, name)
+		case reinitLazy:
+			updateState(name, StateLazy, nil, nil, Counts{})
 		case reinitStart:
 			m := current[name]
 			if _, exists := states.Get(name); exists {
@@ -185,7 +199,8 @@ func mcpConfigEqual(a, b config.MCPConfig) bool {
 		a.OAuthClientID == b.OAuthClientID &&
 		a.OAuthClientSecret == b.OAuthClientSecret &&
 		a.OAuthCallbackPort == b.OAuthCallbackPort &&
-		a.ChannelEnabled == b.ChannelEnabled
+		a.ChannelEnabled == b.ChannelEnabled &&
+		a.Lazy == b.Lazy
 }
 
 // boolPtrEqual compares two *bool by value, treating two nils as equal.
