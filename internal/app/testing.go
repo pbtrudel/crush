@@ -41,17 +41,17 @@ func NewForTest(ctx context.Context) *App {
 
 	eventsCtx, cancel := context.WithCancel(ctx)
 	app.eventsCtx = eventsCtx
-	app.subscribeMustDeliver(eventsCtx, "permissions",
+	subscribeMustDeliver(app, eventsCtx, "permissions",
 		app.Permissions.Subscribe)
-	app.subscribeMustDeliver(eventsCtx, "permissions-notifications",
+	subscribeMustDeliver(app, eventsCtx, "permissions-notifications",
 		app.Permissions.SubscribeNotifications)
-	app.subscribeMustDeliver(eventsCtx, "question-batches",
+	subscribeMustDeliver(app, eventsCtx, "question-batches",
 		app.Questions.Subscribe)
-	app.subscribeMustDeliver(eventsCtx, "question-notifications",
+	subscribeMustDeliver(app, eventsCtx, "question-notifications",
 		app.Questions.SubscribeNotifications)
-	app.subscribe(eventsCtx, "agent-notifications",
+	subscribe(app, eventsCtx, "agent-notifications",
 		app.agentNotifications.Subscribe)
-	app.subscribe(eventsCtx, "run-completions",
+	subscribe(app, eventsCtx, "run-completions",
 		app.runCompletions.Subscribe)
 	app.cleanupFuncs = append(app.cleanupFuncs, func(context.Context) error {
 		cancel()

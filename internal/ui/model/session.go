@@ -73,24 +73,26 @@ type SessionFile struct {
 // UI never blocks on the call.
 func (m *UI) loadSession(sessionID string) tea.Cmd {
 	load := func() tea.Msg {
-		session, err := m.com.Workspace.GetSession(context.Background(), sessionID)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		session, err := m.com.Workspace.GetSession(ctx, sessionID)
 		if err != nil {
 			return util.ReportError(err)
 		}
 
-		sessionFiles, err := m.loadSessionFiles(sessionID)
+		sessionFiles, err := m.loadSessionFiles(ctx, sessionID)
 		if err != nil {
 			return util.ReportError(err)
 		}
 
-		readFiles, err := m.com.Workspace.FileTrackerListReadFiles(context.Background(), sessionID)
+		readFiles, err := m.com.Workspace.FileTrackerListReadFiles(ctx, sessionID)
 		if err != nil {
 			slog.Error("Failed to load read files for session", "error", err)
 		}
 
 		// Read the transcript here, not in Update: a long session is tens
 		// of megabytes and would freeze the event loop while it loads.
-		messages, err := m.com.Workspace.ListMessages(context.Background(), sessionID)
+		messages, err := m.com.Workspace.ListMessages(ctx, sessionID)
 		if err != nil {
 			return util.ReportError(err)
 		}
@@ -112,15 +114,17 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 // state.
 func (m *UI) reportCurrentSession(sessionID string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.com.Workspace.SetCurrentSession(context.Background(), sessionID); err != nil {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := m.com.Workspace.SetCurrentSession(ctx, sessionID); err != nil {
 			slog.Debug("Failed to report current session", "session_id", sessionID, "error", err)
 		}
 		return nil
 	}
 }
 
-func (m *UI) loadSessionFiles(sessionID string) ([]SessionFile, error) {
-	files, err := m.com.Workspace.ListSessionHistory(context.Background(), sessionID)
+func (m *UI) loadSessionFiles(ctx context.Context, sessionID string) ([]SessionFile, error) {
+	files, err := m.com.Workspace.ListSessionHistory(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +180,9 @@ func (m *UI) handleFileEvent(file history.File) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		sessionFiles, err := m.loadSessionFiles(m.session.ID)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		sessionFiles, err := m.loadSessionFiles(ctx, m.session.ID)
 		// could not load session files
 		if err != nil {
 			return util.NewErrorMsg(err)
@@ -274,7 +280,8 @@ func (m *UI) startLSPs(paths []string) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		for _, path := range paths {
 			m.com.Workspace.LSPStart(ctx, path)
 		}

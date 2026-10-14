@@ -18,7 +18,18 @@ import (
 var (
 	initOnce    sync.Once
 	initialized atomic.Bool
+	// earlyLogs buffers records logged before Setup installs the real
+	// handlers. CaptureEarly makes it the default sink.
+	earlyLogs = newBufferHandler()
 )
+
+// CaptureEarly redirects the default logger into an in-memory buffer so
+// startup diagnostics (config loading, provider resolution) emitted before
+// the log file location is known are not lost. Setup replays the buffer
+// into the real handlers.
+func CaptureEarly() {
+	slog.SetDefault(slog.New(earlyLogs))
+}
 
 func Setup(logFile string, debug bool, ws ...io.Writer) {
 	initOnce.Do(func() {
@@ -55,6 +66,9 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 		}
 
 		slog.SetDefault(slog.New(slog.NewMultiHandler(handlers...)))
+		// Replay records captured before the log path was known so
+		// startup diagnostics land in the log instead of vanishing.
+		earlyLogs.replay(slog.Default())
 		initialized.Store(true)
 	})
 }
