@@ -1,5 +1,7 @@
 name: build
 on:
+  push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -50,3 +52,25 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+
+  cross-platform:
+    # Windows and macOS run a plain build and the test suite (no race
+    # detector: it needs cgo/MinGW on Windows, and the Linux job already
+    # covers -race). This catches platform-specific compile breaks in the
+    # _windows.go files on every PR and on pushes to main.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go test -failfast ./...
