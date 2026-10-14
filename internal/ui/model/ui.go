@@ -2013,6 +2013,11 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 			assistantItem.SetMessage(&msg)
 			assistantItem.SetPlanAgent(m.mode == uiInputModePlan)
 		}
+		// A compaction streams its summary like any assistant message;
+		// its status line re-derives from the updated message.
+		if compactionItem, ok := existingItem.(*chat.CompactionItem); ok {
+			compactionItem.SetMessage(&msg)
+		}
 	}
 
 	shouldRenderAssistant := chat.ShouldRenderAssistantMessage(&msg)

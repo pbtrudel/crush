@@ -572,6 +572,11 @@ message.
 - `option auto-summarize false` disables automatic compaction entirely;
   `/compact` stays available.
 
+The chat shows a compaction as a single status line with the measured
+outcome ("Context compacted · 397,088 → 30,371 tokens · 366,717 saved ·
+60 messages kept") rather than the summary text itself, and the same
+numbers are logged as a structured `Context compacted` entry.
+
 Compaction is prompt-cache friendly: the request that writes the summary
 re-enters through the exact system prompt, tool palette, and conversation
 prefix of the live session, so providers with automatic prefix caching

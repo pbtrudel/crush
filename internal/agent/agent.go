@@ -1596,6 +1596,22 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		return emptyErr
 	}
 
+	// The measured outcome rides on the summary message itself so it
+	// persists with the session and reaches the UI wherever the message
+	// does. It is display metadata: replay paths never send it to the
+	// provider.
+	usage := resp.Response.Usage
+	summaryTokens := summaryCompletionTokens(usage, summaryMessage)
+	keptMessages := len(msgs) - cutIndex
+	savedTokens := max(0, tokensBefore-summaryTokens-tailTokens)
+	summaryMessage.Parts = append(summaryMessage.Parts, message.CompactionStats{
+		TokensBefore:  tokensBefore,
+		SummaryTokens: summaryTokens,
+		TailTokens:    tailTokens,
+		SavedTokens:   savedTokens,
+		KeptMessages:  keptMessages,
+	})
+
 	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
@@ -1616,11 +1632,9 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost, false)
 
-	// Just in case, get just the last usage info.
-	usage := resp.Response.Usage
 	currentSession.SummaryMessageID = summaryMessage.ID
 	currentSession.SummaryCutMessageID = cutID
-	currentSession.CompletionTokens = summaryCompletionTokens(usage, summaryMessage)
+	currentSession.CompletionTokens = summaryTokens
 	currentSession.PromptTokens = 0
 	currentSession.EstimatedUsage = usageIsZero(usage)
 	_, err = a.sessions.Save(genCtx, currentSession)
@@ -1628,14 +1642,13 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		return err
 	}
 
-	keptMessages := len(msgs) - cutIndex
 	slog.Info(
 		"Context compacted",
 		"session_id", sessionID,
 		"tokens_before", tokensBefore,
-		"summary_tokens", currentSession.CompletionTokens,
+		"summary_tokens", summaryTokens,
 		"tail_tokens", tailTokens,
-		"saved_tokens", max(0, tokensBefore-currentSession.CompletionTokens-tailTokens),
+		"saved_tokens", savedTokens,
 		"kept_messages", keptMessages,
 	)
 

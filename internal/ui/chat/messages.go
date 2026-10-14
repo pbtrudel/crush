@@ -285,6 +285,11 @@ func AssistantInfoID(messageID string) string {
 // available, since that is the only case where the footer adds
 // per-turn information.
 func ShouldShowAssistantInfo(msg *message.Message) bool {
+	// Compactions render as their own single-line status item; a model
+	// info footer under a summary the user cannot see would be noise.
+	if msg.IsSummaryMessage {
+		return false
+	}
 	finishData := msg.FinishPart()
 	if finishData == nil {
 		return false
@@ -458,6 +463,11 @@ func ExtractMessageItems(sty *styles.Styles, msg *message.Message, toolResults m
 		r := attachments.NewRenderer(sty.Attachments)
 		return []MessageItem{NewUserMessageItem(sty, msg, r)}
 	case message.Assistant:
+		// A compaction renders as a single status line with the measured
+		// outcome, not as the summary text the model produced.
+		if msg.IsSummaryMessage {
+			return []MessageItem{NewCompactionItem(sty, msg)}
+		}
 		var items []MessageItem
 		if ShouldRenderAssistantMessage(msg) {
 			items = append(items, NewAssistantMessageItem(sty, msg))
