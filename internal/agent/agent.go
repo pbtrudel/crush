@@ -86,6 +86,12 @@ const (
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
+
+	// overflowRecoveryTimeout bounds the summarize-and-retry recovery
+	// after a provider context-overflow rejection. The recovery runs on
+	// a context detached from the failed run, so the timeout caps how
+	// long a stalled provider can pin the run goroutine.
+	overflowRecoveryTimeout = 5 * time.Minute
 )
 
 var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version.Version)
@@ -1331,12 +1337,24 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		a.activeRequests.Del(call.SessionID)
 		summarizeCtx := genCtx
 		if overflowRecovery {
-			// The failed stream cancelled genCtx; the recovery summary
-			// must run on a live context.
-			summarizeCtx = context.WithoutCancel(ctx)
+			// The run context's cancellation state after a failed
+			// stream is unreliable, so derive a fresh context the
+			// recovery summary can complete on; the timeout bounds how
+			// long a stalled provider can pin the run.
+			var cancelSummarize context.CancelFunc
+			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
+			defer cancelSummarize()
 		}
 		if summarizeErr := a.Summarize(summarizeCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
 			if overflowRecovery {
+				// The recovery failed, so the continuation that would
+				// have carried the channel reply never runs; the
+				// channel side still needs its failure notice.
+				if channelErrorReplyWanted(call.Channel, origOverflowErr) {
+					a.sendChannelReply(ctx, call,
+						"Something went wrong while handling your message. Please try again.",
+						completedToolCalls)
+				}
 				// A failed recovery must not mask why the turn failed.
 				return nil, origOverflowErr
 			}
