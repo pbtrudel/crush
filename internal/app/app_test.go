@@ -29,7 +29,7 @@ func TestSetupSubscriber_NormalFlow(t *testing.T) {
 
 	var wg sync.WaitGroup
 	app := &App{serviceEventsWG: &wg, events: out}
-	app.subscribe(ctx, "test", src.Subscribe)
+	subscribe(app, ctx, "test", src.Subscribe)
 
 	// Yield so the subscriber goroutine can call src.Subscribe before we publish.
 	time.Sleep(10 * time.Millisecond)
@@ -63,7 +63,7 @@ func TestSetupSubscriber_ContextCancellation(t *testing.T) {
 
 	var wg sync.WaitGroup
 	app := &App{serviceEventsWG: &wg, events: out}
-	app.subscribe(ctx, "test", src.Subscribe)
+	subscribe(app, ctx, "test", src.Subscribe)
 
 	src.Publish(pubsub.CreatedEvent, "event")
 	cancel()
