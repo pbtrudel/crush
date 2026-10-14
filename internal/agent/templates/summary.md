@@ -46,6 +46,7 @@ Be specific. Don't write "implement authentication" - write:
 - Preserve opaque identifiers exactly as written: file paths, symbols, command lines, error messages, and versions.
 - Start your reply with a `# Conversation Summary` heading.
 - Write as if briefing a teammate taking over mid-task. Include everything they'd need to continue without asking questions.
+- Keep the summary within about 8,000 tokens: the most recent messages are preserved verbatim after your summary, so compress the older history densely instead of exhaustively.
 - Do not call any tools. Respond with the summary text only.
 
-**Tone**: Factual and dense. No emojis ever. Err on the side of too much detail rather than too little; prioritize concrete facts (paths, commands, decisions) over narrative.
+**Tone**: Factual and dense. No emojis ever. Prioritize concrete facts (paths, commands, decisions) over narrative.
