@@ -76,16 +76,39 @@ func containsCommandChaining(s string) bool {
 	})
 }
 
+// unsafeReadOnlyFlags lists option substrings that make an otherwise
+// read-only command write files or execute other programs: `git diff
+// --output=<file>` truncates the file, `--ext-diff` runs an external diff
+// driver, and `-O`/`--open-files-in-pager` hands content to a pager
+// command. Prefix matching cannot see into option values, so any
+// occurrence forces the permission prompt. The `-O` check is
+// case-sensitive so read-only short flags like `git grep -o` are not
+// caught.
+var unsafeReadOnlyFlags = []string{
+	"--output",
+	"--ext-diff",
+	"--open-files-in-pager",
+}
+
 // isSafeReadOnlyCommand reports whether cmd is a read-only command that
 // can run without a permission prompt. Commands containing shell
-// metacharacters are never considered safe, and only known read-only
-// command prefixes qualify. The prefix must be followed by a space, a
-// dash, or the end of the string so that "lsof" does not match "ls".
+// metacharacters or side-effecting flags are never considered safe, and
+// only known read-only command prefixes qualify. The prefix must be
+// followed by a space, a dash, or the end of the string so that "lsof"
+// does not match "ls".
 func isSafeReadOnlyCommand(cmd string) bool {
 	if containsCommandChaining(cmd) {
 		return false
 	}
 	cmdLower := strings.ToLower(cmd)
+	if slices.ContainsFunc(unsafeReadOnlyFlags, func(f string) bool {
+		return strings.Contains(cmdLower, f)
+	}) {
+		return false
+	}
+	if strings.Contains(cmd, "-O") {
+		return false
+	}
 	for _, safe := range safeCommands {
 		if strings.HasPrefix(cmdLower, safe) {
 			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
