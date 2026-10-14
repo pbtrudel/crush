@@ -13,7 +13,7 @@
             "assisted-by"
           ],
           "description": "Style of attribution trailer to add to commits",
-          "default": "assisted-by"
+          "default": "none"
         },
         "co_authored_by": {
           "type": "boolean",
@@ -23,7 +23,7 @@
         "generated_with": {
           "type": "boolean",
           "description": "Add Generated with Crush line to commit messages and issues and PRs",
-          "default": true
+          "default": false
         }
       },
       "additionalProperties": false,

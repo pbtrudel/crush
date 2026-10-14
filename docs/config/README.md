@@ -503,7 +503,7 @@ List Keys:
 ```bash
 option progress false
 option skill-path ./skills
-option attribution-trailer-style assisted-by
+option attribution-trailer-style none
 ```
 
 #### `option reset`

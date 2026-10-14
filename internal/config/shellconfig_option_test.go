@@ -78,7 +78,7 @@ func TestShellConfigOptionAttributionTrailerStylePreservesGeneratedWithDefault(t
 	attribution := store.Config().Options.Attribution
 	require.NotNil(t, attribution)
 	require.Equal(t, "co-authored-by", string(attribution.TrailerStyle))
-	require.True(t, attribution.GeneratedWith)
+	require.False(t, attribution.GeneratedWith, "setting a trailer style must not switch on the generated-with line")
 }
 
 func TestShellConfigOptionAttributionGeneratedWithCaseInsensitive(t *testing.T) {

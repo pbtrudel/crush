@@ -199,8 +199,8 @@ option reset <list-key>    # clear a list option back to empty
 option progress false
 option skill-path ./skills
 option disable-skill crush-config
-option attribution-trailer-style assisted-by
-option attribution-generated-with true
+option attribution-trailer-style none
+option attribution-generated-with false
 option ui compact true
 option ui diff unified
 option ui exit-banner compact

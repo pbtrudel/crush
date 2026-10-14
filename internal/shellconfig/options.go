@@ -87,9 +87,6 @@ func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, s
 			return usage(stderr, fmt.Sprintf("option: attribution-trailer-style expects none, co-authored-by, or assisted-by, got %q", val))
 		}
 		attribution := childMap(o, "attribution")
-		if _, ok := attribution["generated_with"]; !ok {
-			attribution["generated_with"] = true
-		}
 		attribution["trailer_style"] = val
 		slog.Info("Option set in shell config", "key", key, "value", val)
 		return nil
