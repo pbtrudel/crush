@@ -64,4 +64,5 @@ type Session struct {
 	Channel              sql.NullString `json:"channel"`
 	TotalCacheReadTokens int64          `json:"total_cache_read_tokens"`
 	TotalContextTokens   int64          `json:"total_context_tokens"`
+	SummaryCutMessageID  sql.NullString `json:"summary_cut_message_id"`
 }

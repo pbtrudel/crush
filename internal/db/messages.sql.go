@@ -238,6 +238,61 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 	return items, nil
 }
 
+const listMessagesBySessionFromCut = `-- name: ListMessagesBySessionFromCut :many
+SELECT m.id, m.session_id, m.role, m.parts, m.model, m.created_at, m.updated_at, m.finished_at, m.provider, m.is_summary_message, m.prism_model_id, m.prism_model_name, m.prism_hypercredit_savings, m.prism_dollar_savings
+FROM messages m
+WHERE m.session_id = ?
+  AND m.rowid >= (SELECT c.rowid FROM messages c WHERE c.id = ?)
+ORDER BY m.rowid ASC
+`
+
+type ListMessagesBySessionFromCutParams struct {
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
+}
+
+// Messages from the compaction cut point onward: the verbatim tail kept by
+// a compaction, the summary message itself, and everything created after
+// it. rowid (insertion order) is exact, unlike created_at, whose
+// one-second resolution cannot separate same-second inserts.
+func (q *Queries) ListMessagesBySessionFromCut(ctx context.Context, arg ListMessagesBySessionFromCutParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listMessagesBySessionFromCutStmt, listMessagesBySessionFromCut, arg.SessionID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+			&i.PrismModelID,
+			&i.PrismModelName,
+			&i.PrismHypercreditSavings,
+			&i.PrismDollarSavings,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessagesBySessionFromSummary = `-- name: ListMessagesBySessionFromSummary :many
 SELECT m.id, m.session_id, m.role, m.parts, m.model, m.created_at, m.updated_at, m.finished_at, m.provider, m.is_summary_message, m.prism_model_id, m.prism_model_name, m.prism_hypercredit_savings, m.prism_dollar_savings
 FROM messages m

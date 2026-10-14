@@ -46,6 +46,11 @@ type Querier interface {
 	ListMCPDisabledServers(ctx context.Context) ([]string, error)
 	ListMCPEnabledServers(ctx context.Context) ([]string, error)
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
+	// Messages from the compaction cut point onward: the verbatim tail kept by
+	// a compaction, the summary message itself, and everything created after
+	// it. rowid (insertion order) is exact, unlike created_at, whose
+	// one-second resolution cannot separate same-second inserts.
+	ListMessagesBySessionFromCut(ctx context.Context, arg ListMessagesBySessionFromCutParams) ([]Message, error)
 	// Messages from the summary onward, which is all a compacted session sends.
 	// created_at has one-second resolution, so a few messages preceding the
 	// summary can come back too; the caller slices from the summary by ID.

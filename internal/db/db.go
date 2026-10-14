@@ -129,6 +129,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
 	}
+	if q.listMessagesBySessionFromCutStmt, err = db.PrepareContext(ctx, listMessagesBySessionFromCut); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMessagesBySessionFromCut: %w", err)
+	}
 	if q.listMessagesBySessionFromSummaryStmt, err = db.PrepareContext(ctx, listMessagesBySessionFromSummary); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySessionFromSummary: %w", err)
 	}
@@ -342,6 +345,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listMessagesBySessionFromCutStmt != nil {
+		if cerr := q.listMessagesBySessionFromCutStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMessagesBySessionFromCutStmt: %w", cerr)
+		}
+	}
 	if q.listMessagesBySessionFromSummaryStmt != nil {
 		if cerr := q.listMessagesBySessionFromSummaryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listMessagesBySessionFromSummaryStmt: %w", cerr)
@@ -471,6 +479,7 @@ type Queries struct {
 	listMCPDisabledServersStmt           *sql.Stmt
 	listMCPEnabledServersStmt            *sql.Stmt
 	listMessagesBySessionStmt            *sql.Stmt
+	listMessagesBySessionFromCutStmt     *sql.Stmt
 	listMessagesBySessionFromSummaryStmt *sql.Stmt
 	listNewFilesStmt                     *sql.Stmt
 	listSessionReadFilesStmt             *sql.Stmt
@@ -523,6 +532,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listMCPDisabledServersStmt:           q.listMCPDisabledServersStmt,
 		listMCPEnabledServersStmt:            q.listMCPEnabledServersStmt,
 		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
+		listMessagesBySessionFromCutStmt:     q.listMessagesBySessionFromCutStmt,
 		listMessagesBySessionFromSummaryStmt: q.listMessagesBySessionFromSummaryStmt,
 		listNewFilesStmt:                     q.listNewFilesStmt,
 		listSessionReadFilesStmt:             q.listSessionReadFilesStmt,

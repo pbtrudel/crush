@@ -85,14 +85,16 @@ func TestSessionCRUD(t *testing.T) {
 
 	todos := sql.NullString{String: `[]`, Valid: true}
 	summary := sql.NullString{String: "m1", Valid: true}
+	summaryCut := sql.NullString{String: "m2", Valid: true}
 	updated, err := q.UpdateSession(ctx, UpdateSessionParams{
-		ID:               "s1",
-		Title:            "updated",
-		PromptTokens:     10,
-		CompletionTokens: 20,
-		Cost:             0.25,
-		Todos:            todos,
-		SummaryMessageID: summary,
+		ID:                  "s1",
+		Title:               "updated",
+		PromptTokens:        10,
+		CompletionTokens:    20,
+		Cost:                0.25,
+		Todos:               todos,
+		SummaryMessageID:    summary,
+		SummaryCutMessageID: summaryCut,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "updated", updated.Title)
@@ -101,6 +103,7 @@ func TestSessionCRUD(t *testing.T) {
 	assert.Equal(t, 0.25, updated.Cost)
 	assert.Equal(t, todos, updated.Todos)
 	assert.Equal(t, summary, updated.SummaryMessageID)
+	assert.Equal(t, summaryCut, updated.SummaryCutMessageID)
 
 	require.NoError(t, q.UpdateSessionTitleAndUsage(ctx, UpdateSessionTitleAndUsageParams{
 		ID:               "s1",

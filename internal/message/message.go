@@ -52,6 +52,13 @@ type Service interface {
 	// ListFromSummary returns the messages at or after summaryMessageID,
 	// which is all a compacted session still sends.
 	ListFromSummary(ctx context.Context, sessionID, summaryMessageID string) ([]Message, error)
+	// ListFromCut returns the messages at or after cutMessageID, the first
+	// message a compaction keeps verbatim. Together with ListFromSummary
+	// it reconstructs a compacted session: the summary, then the verbatim
+	// tail the summary was written around, then everything newer. An empty
+	// result means the cut message no longer exists; callers fall back to
+	// the summary-only view.
+	ListFromCut(ctx context.Context, sessionID, cutMessageID string) ([]Message, error)
 	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
 	GetLastAssistantMessage(ctx context.Context, sessionID string) (Message, error)
@@ -540,6 +547,30 @@ func (s *service) ListFromSummary(ctx context.Context, sessionID, summaryMessage
 	if len(dbMessages) == 0 {
 		return s.List(ctx, sessionID)
 	}
+	messages := make([]Message, len(dbMessages))
+	for i, dbMessage := range dbMessages {
+		messages[i], err = s.fromDBItem(dbMessage)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
+func (s *service) ListFromCut(ctx context.Context, sessionID, cutMessageID string) ([]Message, error) {
+	if cutMessageID == "" {
+		return s.List(ctx, sessionID)
+	}
+	dbMessages, err := s.q.ListMessagesBySessionFromCut(ctx, db.ListMessagesBySessionFromCutParams{
+		SessionID: sessionID,
+		ID:        cutMessageID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// An empty result means the cut message no longer exists; a live cut
+	// always has the summary message behind it. The caller falls back to
+	// the summary-only view rather than re-sending the full transcript.
 	messages := make([]Message, len(dbMessages))
 	for i, dbMessage := range dbMessages {
 		messages[i], err = s.fromDBItem(dbMessage)
