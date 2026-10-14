@@ -713,20 +713,20 @@ func grokSmallModel(pc config.ProviderConfig) *catwalk.Model {
 func (app *App) setupEvents() {
 	ctx, cancel := context.WithCancel(app.globalCtx)
 	app.eventsCtx = ctx
-	app.subscribe(ctx, "sessions", app.Sessions.Subscribe)
-	app.subscribe(ctx, "messages", app.Messages.Subscribe)
-	app.subscribeMustDeliver(ctx, "permissions", app.Permissions.Subscribe)
-	app.subscribeMustDeliver(ctx, "permissions-notifications", app.Permissions.SubscribeNotifications)
-	app.subscribeMustDeliver(ctx, "question-batches", app.Questions.Subscribe)
-	app.subscribeMustDeliver(ctx, "question-notifications", app.Questions.SubscribeNotifications)
-	app.subscribe(ctx, "history", app.History.Subscribe)
-	app.subscribe(ctx, "agent-notifications", app.agentNotifications.Subscribe)
-	app.subscribeMustDeliver(ctx, "run-completions", app.runCompletions.Subscribe)
-	app.subscribe(ctx, "mcp", mcp.SubscribeEvents)
-	app.subscribe(ctx, "mcp-channels", app.subscribeScopedChannelEvents)
-	app.subscribe(ctx, "lsp", SubscribeLSPEvents)
+	subscribe(app, ctx, "sessions", app.Sessions.Subscribe)
+	subscribe(app, ctx, "messages", app.Messages.Subscribe)
+	subscribeMustDeliver(app, ctx, "permissions", app.Permissions.Subscribe)
+	subscribeMustDeliver(app, ctx, "permissions-notifications", app.Permissions.SubscribeNotifications)
+	subscribeMustDeliver(app, ctx, "question-batches", app.Questions.Subscribe)
+	subscribeMustDeliver(app, ctx, "question-notifications", app.Questions.SubscribeNotifications)
+	subscribe(app, ctx, "history", app.History.Subscribe)
+	subscribe(app, ctx, "agent-notifications", app.agentNotifications.Subscribe)
+	subscribeMustDeliver(app, ctx, "run-completions", app.runCompletions.Subscribe)
+	subscribe(app, ctx, "mcp", mcp.SubscribeEvents)
+	subscribe(app, ctx, "mcp-channels", app.subscribeScopedChannelEvents)
+	subscribe(app, ctx, "lsp", SubscribeLSPEvents)
 	if app.Skills != nil {
-		app.subscribe(ctx, "skills", app.Skills.SubscribeEvents)
+		subscribe(app, ctx, "skills", app.Skills.SubscribeEvents)
 	}
 	cleanupFunc := func(context.Context) error {
 		cancel()
@@ -771,9 +771,11 @@ func (app *App) subscribeScopedChannelEvents(ctx context.Context) <-chan pubsub.
 // subscribe fans a service's event stream into the shared app.events
 // broker on app.serviceEventsWG, re-publishing each upstream event as a
 // tea.Msg. The goroutine exits when ctx is cancelled or the upstream
-// channel closes. It is a generic method (Go 1.27) so it can live in the
-// App namespace while still inferring the upstream event type T.
-func (app *App) subscribe[T any](
+// channel closes. It is a free function rather than a method because
+// generic methods are flagged by gopls ("method must have no type
+// parameters"), which broke editor diagnostics for this package.
+func subscribe[T any](
+	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
@@ -797,13 +799,14 @@ func (app *App) subscribe[T any](
 }
 
 // subscribeMustDeliver is the bounded-blocking fan-in variant of
-// [App.subscribe]: it re-publishes upstream events onto the shared
+// [subscribe]: it re-publishes upstream events onto the shared
 // app.events broker using PublishMustDeliver instead of Publish. Use
 // this for terminal events that subscribers cannot tolerate losing —
 // notably RunComplete, which is the authoritative end-of-run signal
 // for `crush run`. A lossy fan-in here can drop the only terminal
 // event and hang non-interactive clients waiting on it.
-func (app *App) subscribeMustDeliver[T any](
+func subscribeMustDeliver[T any](
+	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
