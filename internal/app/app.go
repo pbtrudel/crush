@@ -461,8 +461,11 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 				part := content[readBytes:]
 				// Trim leading whitespace. Sometimes the LLM includes leading
 				// formatting and indentation, which we don't want here.
+				// Newlines are included because assistant text is stored
+				// verbatim (see OnTextDelta) to keep prompt-cache prefixes
+				// byte-stable across turns.
 				if readBytes == 0 {
-					part = strings.TrimLeft(part, " \t")
+					part = strings.TrimLeft(part, " \t\r\n")
 				}
 				// Ignore initial whitespace-only messages.
 				if printed || strings.TrimSpace(part) != "" {

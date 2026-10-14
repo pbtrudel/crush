@@ -10,8 +10,10 @@ package agent
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -220,6 +223,15 @@ type sessionAgent struct {
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
+	// mcpInstructions freezes the MCP server instruction suffix per session
+	// so a server that connects mid-session cannot rewrite the system prompt
+	// (and with it the whole prompt-cache prefix). See
+	// mcpInstructionsForSession.
+	mcpInstructions *csync.Map[string, string]
+	// promptHashes records, per session, a hash of every message in the last
+	// prompt sent, so a cache-busting change can be attributed to the message
+	// that caused it. See recordPromptFingerprint.
+	promptHashes *csync.Map[string, []string]
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -294,6 +306,8 @@ func NewSessionAgent(
 		runComplete:          opts.RunComplete,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, *activeCancel](),
+		mcpInstructions:      csync.NewMap[string, string](),
+		promptHashes:         csync.NewMap[string, []string](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:         csync.NewMap[string, int](),
 		cancelMark:           csync.NewMap[string, uint64](),
@@ -700,30 +714,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	defer a.activeRequests.CompareAndDelete(call.SessionID, ac)
 
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
-	agentTools := filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates())
 	largeModel := a.largeModel.Get()
 	systemPrompt := a.systemPrompt.Get()
 	promptPrefix := a.systemPromptPrefix.Get()
-	var instructions strings.Builder
 
-	for _, server := range mcp.GetStates() {
-		if server.State != mcp.StateConnected {
-			continue
-		}
-		if s := server.Client.InitializeResult().Instructions; s != "" {
-			instructions.WriteString(s)
-			instructions.WriteString("\n\n")
-		}
-	}
+	// Resolve the tool list and the MCP instruction block once per turn and
+	// reuse them for every step (see the PrepareStep closure below).
+	// Recomputing either mid-turn, or letting a server that connects
+	// mid-session rewrite them, would move the tools/system prefix and
+	// invalidate the provider's prompt cache for the whole conversation. The
+	// MCP registry keeps a server's tools after a disconnect, so a flaky
+	// server cannot drop them from the palette either.
+	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
+	systemPrompt += a.mcpInstructionsForSession(call.SessionID)
 
-	if s := instructions.String(); s != "" {
-		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
-	}
-
-	if len(agentTools) > 0 {
-		// Add Anthropic caching to the last tool.
-		agentTools[len(agentTools)-1].SetProviderOptions(a.getCacheControlOptions())
-	}
+	a.applyToolCacheBreakpoint(agentTools)
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
@@ -858,14 +863,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			for i := range prepared.Messages {
 				prepared.Messages[i].ProviderOptions = nil
 			}
+			a.normalizePromptMessages(prepared.Messages)
 
-			// Use latest tools (updated by SetTools when MCP tools
-			// change), filtered for the session's channel and minus MCP
-			// servers disabled for this repository.
-			prepared.Tools = a.filterDisabledMCPTools(
-				callContext,
-				filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()),
-			)
+			// Reuse the turn's tool list, adopting anything registered since
+			// the turn began (a lazy MCP server the model just activated, a
+			// server that finished connecting). Rebuilding the list from
+			// scratch per step, or letting a flaky server shrink it, would
+			// move the tools block and its cache breakpoint.
+			stepTools, adopted := a.toolsForStep(callContext, call.Channel, agentTools)
+			if adopted {
+				a.applyToolCacheBreakpoint(stepTools)
+			}
+			prepared.Tools = stepTools
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -890,25 +899,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
 
-			lastSystemRoleInx := 0
-			systemMessageUpdated := false
-			for i, msg := range prepared.Messages {
-				// Only add cache control to the last message.
-				if msg.Role == fantasy.MessageRoleSystem {
-					lastSystemRoleInx = i
-				} else if !systemMessageUpdated {
-					prepared.Messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
-					systemMessageUpdated = true
-				}
-				// Than add cache control to the last 2 messages.
-				if i > len(prepared.Messages)-3 {
-					prepared.Messages[i].ProviderOptions = a.getCacheControlOptions()
-				}
-			}
+			a.applyCacheBreakpoints(prepared.Messages)
 
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
+
+			a.recordPromptFingerprint(call.SessionID, prepared.Messages)
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
@@ -960,13 +957,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnTextDelta: func(id string, text string) error {
-			// Strip leading newline from initial text content. This is is
-			// particularly important in non-interactive mode where leading
-			// newlines are very visible.
-			if len(currentAssistant.Parts) == 0 {
-				text = strings.TrimPrefix(text, "\n")
-			}
-
+			// Persist the model's text verbatim. Trimming it here (for
+			// example a leading newline) would make the stored message
+			// differ from the bytes sent in this same turn, so the next
+			// turn's replay would miss the prompt cache. Display code
+			// trims leading whitespace instead.
 			currentAssistant.AppendContent(text)
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
@@ -1471,6 +1466,9 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = options.Messages
+			// Compaction reads the same cached prefix the turn that
+			// triggered it wrote, so it must carry the same breakpoints.
+			a.applyCacheBreakpoints(prepared.Messages)
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
@@ -1558,6 +1556,170 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	return qErr
 }
 
+// mcpInstructionsForSession returns the MCP server instruction suffix for a
+// session, computed on the session's first turn and reused afterwards.
+//
+// MCP servers connect asynchronously, so recomputing the suffix per turn would
+// let a server that connects mid-session rewrite the system prompt — the first
+// thing in every request — and invalidate the provider's prompt cache for the
+// whole conversation. A server that appears later still contributes its tools
+// to later turns; only its instructions stay out of the system prompt.
+func (a *sessionAgent) mcpInstructionsForSession(sessionID string) string {
+	if suffix, ok := a.mcpInstructions.Get(sessionID); ok {
+		return suffix
+	}
+	var instructions strings.Builder
+	for _, server := range mcp.GetStates() {
+		if server.State != mcp.StateConnected {
+			continue
+		}
+		if s := server.Client.InitializeResult().Instructions; s != "" {
+			instructions.WriteString(s)
+			instructions.WriteString("\n\n")
+		}
+	}
+	var suffix string
+	if s := instructions.String(); s != "" {
+		suffix = "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
+	}
+	a.mcpInstructions.Set(sessionID, suffix)
+	return suffix
+}
+
+// recordPromptFingerprint hashes the prompt about to be sent and compares it
+// with the previous request of the same session, logging the first message
+// that changed.
+//
+// Providers cache a request prefix only while it stays byte-identical between
+// turns, so a cache that stops paying off always means "some message changed".
+// This points at that message directly, which is otherwise hard to see: the
+// provider reports a low cache-read count, but not what caused it. The cost is
+// one hash per message and only while debug logging is on.
+func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fantasy.Message) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	hashes := make([]string, len(messages))
+	for i := range messages {
+		data, err := json.Marshal(messages[i])
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		hashes[i] = hex.EncodeToString(sum[:8])
+	}
+	previous, hadPrevious := a.promptHashes.Get(sessionID)
+	a.promptHashes.Set(sessionID, hashes)
+	if !hadPrevious {
+		return
+	}
+	for i := range hashes {
+		if i >= len(previous) {
+			break
+		}
+		if hashes[i] != previous[i] {
+			slog.Debug(
+				"Prompt prefix diverged from the previous request",
+				"session_id", sessionID,
+				"message_index", i,
+				"message_role", string(messages[i].Role),
+				"previous_messages", len(previous),
+				"current_messages", len(hashes),
+			)
+			return
+		}
+	}
+}
+
+// applyToolCacheBreakpoint puts the cache breakpoint on the last tool
+// definition and clears it from every other tool in the list, so the tool
+// block caches independently of the conversation while the request stays
+// within the provider's breakpoint limit.
+func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
+	if len(tools) == 0 {
+		return
+	}
+	cacheOptions := a.getCacheControlOptions()
+	for i, tool := range tools {
+		if i == len(tools)-1 {
+			tool.SetProviderOptions(cacheOptions)
+			continue
+		}
+		tool.SetProviderOptions(fantasy.ProviderOptions{})
+	}
+}
+
+// toolsForStep returns the tool list for one step of a turn: the list the
+// turn started with, plus anything registered since (an MCP server the model
+// activated, a server that finished connecting). Additions are adopted —
+// costing one prompt-cache rewrite, which is the point of activating a server
+// — while removals are ignored, so a flaky server cannot shrink the palette
+// and invalidate the cache for no reason. The second return value reports
+// whether anything was adopted, so the caller knows the tool cache breakpoint
+// has to move.
+func (a *sessionAgent) toolsForStep(ctx context.Context, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
+	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
+	known := make(map[string]struct{}, len(turnTools))
+	for _, tool := range turnTools {
+		known[tool.Info().Name] = struct{}{}
+	}
+	var added []fantasy.AgentTool
+	for _, tool := range current {
+		if _, ok := known[tool.Info().Name]; !ok {
+			added = append(added, tool)
+		}
+	}
+	if len(added) == 0 {
+		return turnTools, false
+	}
+	merged := append(slices.Clone(turnTools), added...)
+	slices.SortFunc(merged, func(a, b fantasy.AgentTool) int {
+		return strings.Compare(a.Info().Name, b.Info().Name)
+	})
+	slog.Debug(
+		"Adopted newly registered tools mid-turn; the prompt cache will be rewritten once",
+		"channel", channel,
+		"added", len(added),
+	)
+	return merged, true
+}
+
+// applyCacheBreakpoints marks the prompt-cache boundaries for providers with
+// explicit caching (Anthropic, Bedrock, and Claude models served through
+// Vercel). The layout matches what Anthropic's own clients use: one breakpoint
+// on the last system message (covering the system prompt and, in providers
+// that serialize them ahead of it, the tool definitions) and one on each of
+// the final two messages. The tail breakpoints are what let a turn extend the
+// cached prefix instead of rewriting it, so they must land on messages that
+// the next turn replays unchanged.
+//
+// Providers that cache automatically (OpenAI, DeepSeek, Gemini) ignore these
+// markers entirely; for them only prefix stability matters.
+func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message) {
+	if len(messages) == 0 {
+		return
+	}
+	lastSystemRoleInx := -1
+	systemMarked := false
+	for i := range messages {
+		if messages[i].Role == fantasy.MessageRoleSystem {
+			lastSystemRoleInx = i
+			continue
+		}
+		if !systemMarked && lastSystemRoleInx >= 0 {
+			messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
+			systemMarked = true
+		}
+		if i >= len(messages)-2 {
+			messages[i].ProviderOptions = a.getCacheControlOptions()
+		}
+	}
+	// A prompt made up only of system messages still gets its breakpoint.
+	if !systemMarked && lastSystemRoleInx >= 0 {
+		messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
+	}
+}
+
 func (a *sessionAgent) getCacheControlOptions() fantasy.ProviderOptions {
 	if t, _ := strconv.ParseBool(os.Getenv("CRUSH_DISABLE_ANTHROPIC_CACHE")); t {
 		return fantasy.ProviderOptions{}
@@ -1592,7 +1754,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	parts := []message.ContentPart{message.TextContent{Text: call.Prompt, Hidden: call.HiddenUserMessage}}
 	var attachmentParts []message.ContentPart
 	for _, attachment := range call.Attachments {
-		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
+		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.Ref(), MIMEType: attachment.MimeType, Data: attachment.Content})
 	}
 	parts = append(parts, attachmentParts...)
 	msg, err := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
@@ -1700,13 +1862,54 @@ If not, please feel free to ignore. Again do not mention this message to the use
 			continue
 		}
 		files = append(files, fantasy.FilePart{
-			Filename:  attachment.FileName,
+			// Ref matches what createUserMessage stores in
+			// BinaryContent.Path and what replay sends back, keeping the
+			// request prefix byte-stable for prompt caching.
+			Filename:  attachment.Ref(),
 			Data:      attachment.Content,
 			MediaType: attachment.MimeType,
 		})
 	}
 
 	return history, files
+}
+
+// normalizePromptMessages rewrites in-flight messages so the bytes sent to
+// the provider match the form that will be replayed from the session store
+// on the next turn. Anything the persistence path normalizes (tool-call
+// input repair, media captions) must be applied here too, otherwise the
+// replayed prefix diverges from the live one and the provider's prompt
+// cache misses on every turn.
+func (a *sessionAgent) normalizePromptMessages(messages []fantasy.Message) {
+	for mi := range messages {
+		msg := &messages[mi]
+		for pi := range msg.Content {
+			part := msg.Content[pi]
+			if tc, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part); ok {
+				if input, changed := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input); changed {
+					tc.Input = input
+					msg.Content[pi] = tc
+				}
+				continue
+			}
+			tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
+			if !ok {
+				continue
+			}
+			media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tr.Output)
+			if !ok || media.Text != "" {
+				continue
+			}
+			// convertToToolResult stores this same default caption when the
+			// tool returned media without text, so replay carries it too.
+			tr.Output = fantasy.ToolResultOutputContentMedia{
+				Data:      media.Data,
+				MediaType: media.MediaType,
+				Text:      fmt.Sprintf("Loaded %s content", media.MediaType),
+			}
+			msg.Content[pi] = tr
+		}
+	}
 }
 
 // filterDisabledMCPTools removes tools from MCP servers disabled via the
@@ -2046,6 +2249,28 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 
 	if !estimated {
 		a.eventTokensUsed(session.ID, model, usage, cost)
+	}
+
+	// Prompt-cache visibility. A low read share means the request prefix
+	// changed between turns (see recordPromptFingerprint, which names the
+	// message that changed), which is the usual reason caching stops paying
+	// off.
+	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
+		totalInput := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+		var readPercent int64
+		if totalInput > 0 {
+			readPercent = usage.CacheReadTokens * 100 / totalInput
+		}
+		slog.Debug(
+			"Prompt cache usage",
+			"session_id", session.ID,
+			"provider", model.ModelCfg.Provider,
+			"model", model.ModelCfg.Model,
+			"cache_read_tokens", usage.CacheReadTokens,
+			"cache_write_tokens", usage.CacheCreationTokens,
+			"input_tokens", usage.InputTokens,
+			"cache_read_percent", readPercent,
+		)
 	}
 
 	if estimated {

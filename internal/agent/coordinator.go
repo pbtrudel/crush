@@ -413,7 +413,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			HiddenUserMessage: message.HiddenUserMessage(ctx),
 			Attachments:       attachments,
 			MaxOutputTokens:   maxTokens,
-			ProviderOptions:   mergedOptions,
+			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg, sessionID),
 			Temperature:       temp,
 			TopP:              topP,
 			TopK:              callTopK(providerCfg, topK),
@@ -942,6 +942,11 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 			tools.NewListMCPResourcesTool(c.cfg, c.permissions),
 			tools.NewReadMCPResourceTool(c.cfg, c.permissions),
 		)
+		// The activation tool is only useful (and only costs tokens) when a
+		// server is actually configured with lazy loading.
+		if tools.HasLazyMCPServers(c.cfg) {
+			allTools = append(allTools, tools.NewMCPServersTool(c.cfg))
+		}
 	}
 
 	var filteredTools []fantasy.AgentTool
@@ -1091,6 +1096,51 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 // next credits fetch.
 func (c *coordinator) hyperAPIKey() string {
 	return config.ResolveHyperAPIKey(c.cfg.Config())
+}
+
+// withPromptCacheKey adds the provider's prompt-cache routing hint to the
+// per-call provider options. The hint is derived from the session ID so every
+// request in a session routes to the same cache shard, which is what makes
+// provider-side prefix caching reliable. It has to be applied per call (not
+// per provider) because the value varies per session while the rest of the
+// provider options come from static config.
+//
+// Only providers with documented support get the hint here. For other
+// OpenAI-compatible providers (Hyper, Command Code, custom endpoints) a static
+// key can be set through the provider's extra_body config instead.
+func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig, sessionID string) fantasy.ProviderOptions {
+	if sessionID == "" {
+		return options
+	}
+	key := session.HashID(sessionID)
+
+	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+
+	switch {
+	case providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI):
+		// The Responses API and Chat Completions carry the key on different
+		// option structs; mutating the existing entry keeps whatever else
+		// getProviderOptions put there (reasoning summary, include, ...).
+		switch opts := options[openai.Name].(type) {
+		case *openai.ResponsesProviderOptions:
+			opts.PromptCacheKey = &key
+		case *openai.ProviderOptions:
+			opts.PromptCacheKey = &key
+		default:
+			options[openai.Name] = &openai.ProviderOptions{PromptCacheKey: &key}
+		}
+	case isMistralBaseURL(baseURL):
+		opts, _ := options[openaicompat.Name].(*openaicompat.ProviderOptions)
+		if opts == nil {
+			opts = &openaicompat.ProviderOptions{}
+		}
+		if opts.ExtraBody == nil {
+			opts.ExtraBody = map[string]any{}
+		}
+		opts.ExtraBody["prompt_cache_key"] = key
+		options[openaicompat.Name] = opts
+	}
+	return options
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
@@ -1523,7 +1573,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 
 	// Auth failures during summarize flow through fantasy's OnAuthRefresh,
 	// the same path used by regular turns.
-	return agent.Summarize(ctx, sessionID, getProviderOptions(agent.Model(), providerCfg), c.makeAuthRefreshCallback(providerCfg))
+	return agent.Summarize(ctx, sessionID, c.withPromptCacheKey(getProviderOptions(agent.Model(), providerCfg), providerCfg, sessionID), c.makeAuthRefreshCallback(providerCfg))
 }
 
 // GenerateTitle generates a session title using the current agent.
@@ -1722,7 +1772,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  getProviderOptions(model, providerCfg),
+			ProviderOptions:  c.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, session.ID),
 			Temperature:      model.ModelCfg.Temperature,
 			TopP:             model.ModelCfg.TopP,
 			TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
