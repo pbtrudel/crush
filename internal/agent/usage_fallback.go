@@ -1,7 +1,11 @@
 package agent
 
 import (
-	"fmt"
+	"bytes"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 
 	"charm.land/fantasy"
 )
@@ -137,26 +141,52 @@ func estimateToolResultContentTokens(toolCallID, toolName, metadata string, outp
 			tokens += approxTokenCount(result.Error.Error())
 		}
 	case fantasy.ToolResultOutputContentMedia:
-		tokens += estimateMediaTokens(result.MediaType, result.Text, len(result.Data))
+		tokens += estimateMediaTokens(result.MediaType, result.Text, []byte(result.Data))
 	case *fantasy.ToolResultOutputContentMedia:
-		tokens += estimateMediaTokens(result.MediaType, result.Text, len(result.Data))
+		tokens += estimateMediaTokens(result.MediaType, result.Text, []byte(result.Data))
 	}
 	return tokens
 }
 
 func estimateFilePartTokens(file fantasy.FilePart) int64 {
-	return estimateMediaTokens(file.MediaType, file.Filename, len(file.Data))
+	return estimateMediaTokens(file.MediaType, file.Filename, file.Data)
 }
 
 func estimateGeneratedFileTokens(file fantasy.FileContent) int64 {
-	return estimateMediaTokens(file.MediaType, "", len(file.Data))
+	return estimateMediaTokens(file.MediaType, "", file.Data)
 }
 
-func estimateMediaTokens(mediaType, text string, dataBytes int) int64 {
-	if dataBytes == 0 {
-		return approxTokenCount(mediaType) + approxTokenCount(text)
+const (
+	// imageTokensPerPixel follows the common vision tiling model of
+	// roughly one token per 750 pixels.
+	imageTokensPerPixel = 750
+	// minImageTokens and maxImageTokens bound a single image's estimate
+	// so a tiny thumbnail still costs its fixed overhead and a huge
+	// screenshot cannot dominate the budget.
+	minImageTokens = 85
+	maxImageTokens = 16000
+)
+
+// estimateMediaTokens estimates the tokens of a media payload. Images are
+// costed from their pixel dimensions; payloads that do not decode as a
+// known image format fall back to a conservative byte-size approximation.
+func estimateMediaTokens(mediaType, text string, data []byte) int64 {
+	tokens := approxTokenCount(mediaType) + approxTokenCount(text)
+	if len(data) == 0 {
+		return tokens
 	}
-	return approxTokenCount(fmt.Sprintf("%s %s %d bytes", mediaType, text, dataBytes))
+	return tokens + estimateImageDataTokens(data)
+}
+
+func estimateImageDataTokens(data []byte) int64 {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		// Not a decodable image: approximate the binary payload by size,
+		// bounded so a corrupt large blob cannot blow up the estimate.
+		return min(int64((len(data)+3)/4), int64(maxImageTokens))
+	}
+	tokens := int64(cfg.Width) * int64(cfg.Height) / imageTokensPerPixel
+	return min(max(tokens, int64(minImageTokens)), int64(maxImageTokens))
 }
 
 func estimateSourceTokens(source fantasy.SourceContent) int64 {

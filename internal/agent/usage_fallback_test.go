@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -364,4 +369,104 @@ func TestUpdateSessionUsageAddsProviderCost(t *testing.T) {
 	require.Equal(t, int64(1000), currentSession.PromptTokens)
 	require.Equal(t, int64(2000), currentSession.CompletionTokens)
 	require.False(t, currentSession.EstimatedUsage)
+}
+
+func encodeTestImage(t *testing.T, format string, width, height int) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	var buf bytes.Buffer
+	var err error
+	switch format {
+	case "png":
+		err = png.Encode(&buf, img)
+	case "jpeg":
+		err = jpeg.Encode(&buf, img, nil)
+	case "gif":
+		err = gif.Encode(&buf, img, nil)
+	default:
+		t.Fatalf("unsupported test format %q", format)
+	}
+	require.NoError(t, err)
+	return buf.Bytes()
+}
+
+func TestEstimateMessagePartTokensCountsImageDimensions(t *testing.T) {
+	t.Parallel()
+
+	// 512x512 / 750 = 349 image tokens, plus 3 for "image/png" and 4 for
+	// "screenshot.png" via the chars heuristic.
+	part := fantasy.FilePart{
+		Filename:  "screenshot.png",
+		MediaType: "image/png",
+		Data:      encodeTestImage(t, "png", 512, 512),
+	}
+
+	require.Equal(t, int64(356), estimateMessagePartTokens(part))
+}
+
+func TestEstimateMessagePartTokensClampsImageDimensions(t *testing.T) {
+	t.Parallel()
+
+	tiny := fantasy.FilePart{
+		Filename:  "tiny.png",
+		MediaType: "image/png",
+		Data:      encodeTestImage(t, "png", 10, 10),
+	}
+	// 10x10 / 750 rounds to 0 and clamps up to the 85-token floor.
+	require.Equal(t, int64(90), estimateMessagePartTokens(tiny))
+
+	huge := fantasy.FilePart{
+		Filename:  "huge.png",
+		MediaType: "image/png",
+		Data:      encodeTestImage(t, "png", 4000, 4000),
+	}
+	// 4000x4000 / 750 = 21333 clamps down to the 16000-token ceiling.
+	require.Equal(t, int64(16005), estimateMessagePartTokens(huge))
+}
+
+func TestEstimateMessagePartTokensSupportsJPEGAndGIF(t *testing.T) {
+	t.Parallel()
+
+	jpegPart := fantasy.FilePart{
+		Filename:  "shot.jpg",
+		MediaType: "image/jpeg",
+		Data:      encodeTestImage(t, "jpeg", 512, 512),
+	}
+	require.Equal(t, int64(354), estimateMessagePartTokens(jpegPart))
+
+	gifPart := fantasy.FilePart{
+		Filename:  "shot.gif",
+		MediaType: "image/gif",
+		Data:      encodeTestImage(t, "gif", 512, 512),
+	}
+	require.Equal(t, int64(354), estimateMessagePartTokens(gifPart))
+}
+
+func TestEstimateMessagePartTokensFallsBackForUndecodableMedia(t *testing.T) {
+	t.Parallel()
+
+	part := fantasy.FilePart{
+		Filename:  "blob.bin",
+		MediaType: "application/octet-stream",
+		Data:      []byte("not an image"),
+	}
+
+	// 6 for the media type, 2 for the filename, and 3 for the 12-byte
+	// payload at 4 bytes per token, with no image floor applied.
+	require.Equal(t, int64(11), estimateMessagePartTokens(part))
+}
+
+func TestEstimateToolResultContentTokensCountsMediaDimensions(t *testing.T) {
+	t.Parallel()
+
+	output := fantasy.ToolResultOutputContentMedia{
+		MediaType: "image/png",
+		Text:      "screenshot",
+		Data:      string(encodeTestImage(t, "png", 512, 512)),
+	}
+
+	// 3 for the tool call ID, 3 for "image/png", 3 for "screenshot", and
+	// 349 for the image itself.
+	require.Equal(t, int64(358), estimateToolResultContentTokens("tool-call-1", "", "", output))
 }
