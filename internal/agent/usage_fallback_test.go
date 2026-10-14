@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/gif"
@@ -460,13 +461,25 @@ func TestEstimateMessagePartTokensFallsBackForUndecodableMedia(t *testing.T) {
 func TestEstimateToolResultContentTokensCountsMediaDimensions(t *testing.T) {
 	t.Parallel()
 
+	// Tool-result media is base64-encoded by contract, so the fixture
+	// encodes the PNG the same way a provider response would.
 	output := fantasy.ToolResultOutputContentMedia{
 		MediaType: "image/png",
 		Text:      "screenshot",
-		Data:      string(encodeTestImage(t, "png", 512, 512)),
+		Data:      base64.StdEncoding.EncodeToString(encodeTestImage(t, "png", 512, 512)),
 	}
 
 	// 3 for the tool call ID, 3 for "image/png", 3 for "screenshot", and
 	// 349 for the image itself.
 	require.Equal(t, int64(358), estimateToolResultContentTokens("tool-call-1", "", "", output))
+}
+
+func TestEstimateImageDataTokensFallsBackForLargeUndecodableData(t *testing.T) {
+	t.Parallel()
+
+	data := bytes.Repeat([]byte{'x'}, 65_536)
+	// 65536 bytes at 4 bytes per token = 16384, above the per-image
+	// ceiling: the byte-size fallback is deliberately not clamped so a
+	// large binary payload still weighs on the context budget.
+	require.Equal(t, int64(16384), estimateImageDataTokens(data))
 }

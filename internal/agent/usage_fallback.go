@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -141,9 +142,9 @@ func estimateToolResultContentTokens(toolCallID, toolName, metadata string, outp
 			tokens += approxTokenCount(result.Error.Error())
 		}
 	case fantasy.ToolResultOutputContentMedia:
-		tokens += estimateMediaTokens(result.MediaType, result.Text, []byte(result.Data))
+		tokens += estimateMediaTokens(result.MediaType, result.Text, decodeMediaData(result.Data))
 	case *fantasy.ToolResultOutputContentMedia:
-		tokens += estimateMediaTokens(result.MediaType, result.Text, []byte(result.Data))
+		tokens += estimateMediaTokens(result.MediaType, result.Text, decodeMediaData(result.Data))
 	}
 	return tokens
 }
@@ -157,9 +158,9 @@ func estimateGeneratedFileTokens(file fantasy.FileContent) int64 {
 }
 
 const (
-	// imageTokensPerPixel follows the common vision tiling model of
-	// roughly one token per 750 pixels.
-	imageTokensPerPixel = 750
+	// pixelsPerToken follows the common vision tiling model of roughly
+	// one token per 750 pixels.
+	pixelsPerToken = 750
 	// minImageTokens and maxImageTokens bound a single image's estimate
 	// so a tiny thumbnail still costs its fixed overhead and a huge
 	// screenshot cannot dominate the budget.
@@ -167,9 +168,20 @@ const (
 	maxImageTokens = 16000
 )
 
+// decodeMediaData returns the raw bytes of a base64-encoded media payload
+// (the contract for tool-result media), falling back to the original
+// string when it is not valid base64.
+func decodeMediaData(data string) []byte {
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return []byte(data)
+	}
+	return raw
+}
+
 // estimateMediaTokens estimates the tokens of a media payload. Images are
 // costed from their pixel dimensions; payloads that do not decode as a
-// known image format fall back to a conservative byte-size approximation.
+// known image format fall back to a byte-size approximation.
 func estimateMediaTokens(mediaType, text string, data []byte) int64 {
 	tokens := approxTokenCount(mediaType) + approxTokenCount(text)
 	if len(data) == 0 {
@@ -181,11 +193,12 @@ func estimateMediaTokens(mediaType, text string, data []byte) int64 {
 func estimateImageDataTokens(data []byte) int64 {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		// Not a decodable image: approximate the binary payload by size,
-		// bounded so a corrupt large blob cannot blow up the estimate.
-		return min(int64((len(data)+3)/4), int64(maxImageTokens))
+		// Not a decodable image: approximate the payload by size. No
+		// per-image clamp here; a large binary payload must still
+		// weigh on the context budget.
+		return int64((len(data) + 3) / 4)
 	}
-	tokens := int64(cfg.Width) * int64(cfg.Height) / imageTokensPerPixel
+	tokens := int64(cfg.Width) * int64(cfg.Height) / pixelsPerToken
 	return min(max(tokens, int64(minImageTokens)), int64(maxImageTokens))
 }
 
