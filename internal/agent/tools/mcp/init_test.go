@@ -541,6 +541,7 @@ func TestReconcile(t *testing.T) {
 	}
 	changed := func() config.MCPConfig { m := base; m.URL = "https://other.com/mcp"; return m }()
 	disabled := func() config.MCPConfig { m := base; m.Disabled = true; return m }()
+	lazyConfig := func(m config.MCPConfig) config.MCPConfig { m.Lazy = true; return m }
 	ptr := func(m config.MCPConfig) *config.MCPConfig { return &m }
 
 	// server seeds the running state reconcile diffs against: a state, the
@@ -621,6 +622,37 @@ func TestReconcile(t *testing.T) {
 			name:    "starting server with changed config restarts",
 			servers: map[string]server{"a": {state: StateStarting, pending: ptr(base)}},
 			current: config.MCPs{"a": changed},
+			want:    map[string]reinitAction{"a": reinitStart},
+		},
+		{
+			// A lazy server that has never been activated must stay
+			// unstarted, including when its config changes.
+			name:    "new lazy server stays unstarted",
+			current: config.MCPs{"a": lazyConfig(base)},
+			want:    map[string]reinitAction{"a": reinitLazy},
+		},
+		{
+			name:    "changed lazy server stays unstarted",
+			servers: map[string]server{"a": {state: StateLazy, config: base}},
+			current: config.MCPs{"a": lazyConfig(changed)},
+			want:    map[string]reinitAction{"a": reinitLazy},
+		},
+		{
+			// Once activated, a lazy server follows the normal rules so a
+			// config change still restarts it.
+			name:    "activated lazy server restarts on config change",
+			servers: map[string]server{"a": {state: StateConnected, config: base}},
+			current: config.MCPs{"a": lazyConfig(changed)},
+			want:    map[string]reinitAction{"a": reinitStart},
+		},
+		{
+			// Flipping a connected server to lazy is a config change like any
+			// other, so it restarts and then stays connected until the process
+			// exits: tearing it down mid-session would break the tools the
+			// model is using, and the next launch leaves it unstarted.
+			name:    "connected server switched to lazy restarts",
+			servers: map[string]server{"a": {state: StateConnected, config: base}},
+			current: config.MCPs{"a": lazyConfig(base)},
 			want:    map[string]reinitAction{"a": reinitStart},
 		},
 		{

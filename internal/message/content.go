@@ -530,8 +530,8 @@ func PromptWithTextAttachments(prompt string, attachments []Attachment) string {
 			sb.WriteString("\n<system_info>The files below have been attached by the user, consider them in your response</system_info>\n")
 			addedAttachments = true
 		}
-		if content.FilePath != "" {
-			fmt.Fprintf(&sb, "<file path='%s'>\n", content.FilePath)
+		if ref := content.Ref(); ref != "" {
+			fmt.Fprintf(&sb, "<file path='%s'>\n", ref)
 		} else {
 			sb.WriteString("<file>\n")
 		}
@@ -547,7 +547,11 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 	switch m.Role {
 	case User:
 		var parts []fantasy.MessagePart
-		text := strings.TrimSpace(m.Content().Text)
+		// Never normalize the text on replay: the live request sends the raw
+		// prompt, so a trimmed replay would change the prefix bytes and
+		// invalidate the provider's prompt cache. Normalize at creation
+		// instead (see sessionAgent.createUserMessage).
+		text := m.Content().Text
 		var textAttachments []Attachment
 		for _, content := range m.BinaryContent() {
 			if !strings.HasPrefix(content.MIMEType, "text/") {
@@ -589,7 +593,10 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 		})
 	case Assistant:
 		var parts []fantasy.MessagePart
-		text := strings.TrimSpace(m.Content().Text)
+		// Replay the stored text verbatim: the live request keeps the model's
+		// output byte-for-byte, and trimming here would diverge from it
+		// (prompt cache) and from what the TUI shows.
+		text := m.Content().Text
 		if text != "" {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
@@ -634,9 +641,14 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 				}
 			} else if result.Data != "" {
 				if stringext.IsValidBase64(result.Data) {
+					// Carry the persisted caption through: the live request
+					// sent it as a text block next to the image, so dropping
+					// it on replay would change the prefix bytes (prompt
+					// cache) and lose the model's own caption.
 					content = fantasy.ToolResultOutputContentMedia{
 						Data:      result.Data,
 						MediaType: result.MIMEType,
+						Text:      result.Content,
 					}
 				} else {
 					content = fantasy.ToolResultOutputContentText{

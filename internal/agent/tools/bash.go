@@ -68,7 +68,6 @@ type bashDescriptionData struct {
 	BannedCommands  string
 	MaxOutputLength int
 	Attribution     config.Attribution
-	ModelID         string
 	RgAvailable     bool
 	GhAvailable     bool
 }
@@ -146,14 +145,20 @@ var bannedCommands = []string{
 	"ufw",
 }
 
-func bashDescription(attribution *config.Attribution, modelID string) string {
+// modelIDPlaceholder is the literal token the commit-attribution instructions
+// tell the model to write. The bash tool expands it to the live model ID when
+// the command runs, so commits record the model that produced them while the
+// tool description stays identical across model switches (a changing tool
+// description would invalidate the provider's prompt cache).
+const modelIDPlaceholder = "<MODEL>"
+
+func bashDescription(attribution *config.Attribution) string {
 	bannedCommandsStr := strings.Join(bannedCommands, ", ")
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
 		BannedCommands:  bannedCommandsStr,
 		MaxOutputLength: MaxOutputLength,
 		Attribution:     *attribution,
-		ModelID:         modelID,
 		RgAvailable:     getRg() != "",
 		GhAvailable:     ghAvailable,
 	}); err != nil {
@@ -198,10 +203,16 @@ func blockFuncs() []shell.BlockFunc {
 func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		BashToolName,
-		string(bashDescription(attribution, modelID)),
+		string(bashDescription(attribution)),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
+			}
+
+			// Expand the attribution token with the model that is running
+			// right now, before anything else inspects the command.
+			if strings.Contains(params.Command, modelIDPlaceholder) {
+				params.Command = strings.ReplaceAll(params.Command, modelIDPlaceholder, modelID)
 			}
 
 			// Determine working directory

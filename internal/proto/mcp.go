@@ -16,6 +16,10 @@ const (
 	MCPStateConnected
 	MCPStateError
 	MCPStateNeedsAuth
+	// MCPStateLazy marks a server configured with lazy loading: it stays
+	// unconnected until a turn activates it. The value must stay aligned
+	// with mcp.State, which the server casts directly.
+	MCPStateLazy
 )
 
 // MarshalText implements the [encoding.TextMarshaler] interface.
@@ -36,6 +40,8 @@ func (s *MCPState) UnmarshalText(data []byte) error {
 		*s = MCPStateError
 	case "needs auth":
 		*s = MCPStateNeedsAuth
+	case "lazy":
+		*s = MCPStateLazy
 	default:
 		return fmt.Errorf("unknown mcp state: %s", data)
 	}
@@ -55,6 +61,8 @@ func (s MCPState) String() string {
 		return "error"
 	case MCPStateNeedsAuth:
 		return "needs auth"
+	case MCPStateLazy:
+		return "lazy"
 	default:
 		return "unknown"
 	}

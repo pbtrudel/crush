@@ -467,6 +467,30 @@ mcp add streaming-service --type sse --url "https://example.com/mcp/sse" \
   --timeout 10 --header API-Key "$API_KEY"
 ```
 
+#### Lazy MCP servers
+
+A server marked `"lazy": true` is enabled but not started at launch. Crush
+leaves its tools and instructions out of every request until the server is
+activated, so a server you rarely use costs no tokens and cannot invalidate the
+prompt cache when it connects.
+
+```json
+{
+  "mcp": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "lazy": true
+    }
+  }
+}
+```
+
+Ask the agent for something the server provides and it calls the `mcp_servers`
+tool to start it on demand; you can also start it yourself from `/mcp`.
+`lazy` is ignored for servers enabled as channels (`channel_enabled` or
+`--channels`), which must connect at startup.
+
 #### MCP OAuth
 
 HTTP and SSE MCP servers that require OAuth can use Crush's built-in
@@ -751,21 +775,21 @@ and conventions it discovered during initialization.
 
 ### Attribution Settings
 
-By default, Crush adds attribution information to Git commits and pull requests
-it creates. You can customize this behavior with `option` commands:
+By default, Crush adds no attribution to the Git commits and pull requests it
+creates. Attribution can be switched on with `option` commands:
 
 ```bash
-option attribution-trailer-style co-authored-by
+option attribution-trailer-style assisted-by
 option attribution-generated-with true
 ```
 
 - `trailer_style`: Controls the attribution trailer added to commit messages
-  (default: `assisted-by`)
-  - `assisted-by`: Adds `Assisted-by: Crush:[ModelID]` as specified in [the convention](https://docs.kernel.org/process/coding-assistants.html#attribution)
-  - `co-authored-by`: Adds `Co-Authored-By: Crush <crush@charm.land>`
+  (default: `none`)
   - `none`: No attribution trailer
-- `generated_with`: When true (default), adds `💘 Generated with Crush` line to
-  commit messages and PR descriptions
+  - `co-authored-by`: Adds `Co-Authored-By: Crush <crush@charm.land>`
+  - `assisted-by`: Adds `Assisted-by: Crush:[ModelID]` as specified in [the convention](https://docs.kernel.org/process/coding-assistants.html#attribution)
+- `generated_with`: When true, adds `💘 Generated with Crush` line to
+  commit messages and PR descriptions (default: `false`)
 
 ### Custom Providers
 
