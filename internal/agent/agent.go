@@ -272,6 +272,10 @@ type sessionAgent struct {
 	// prompt sent, so a cache-busting change can be attributed to the message
 	// that caused it. See recordPromptFingerprint.
 	promptHashes *csync.Map[string, []string]
+	// toolsHashes records, per session, a hash of every tool definition in
+	// the last request, so a cache-busting change to the tools block can be
+	// attributed to the tool that caused it. See recordToolsFingerprint.
+	toolsHashes *csync.Map[string, []string]
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -348,6 +352,7 @@ func NewSessionAgent(
 		activeRequests:       csync.NewMap[string, *activeCancel](),
 		mcpInstructions:      csync.NewMap[string, string](),
 		promptHashes:         csync.NewMap[string, []string](),
+		toolsHashes:          csync.NewMap[string, []string](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:         csync.NewMap[string, int](),
 		cancelMark:           csync.NewMap[string, uint64](),
@@ -915,6 +920,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
+			a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1996,6 +2002,59 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 			)
 			return
 		}
+	}
+}
+
+// recordToolsFingerprint hashes the tools about to be sent and compares them
+// with the previous request of the same session, logging the first tool that
+// changed.
+//
+// The message fingerprint (recordPromptFingerprint) covers the conversation
+// but not the tools block, yet a tool whose serialized definition drifts
+// between requests (a dynamic description, an unsorted insertion, an MCP
+// server re-listing with different schema bytes) rewrites the tools prefix
+// and invalidates the cache for everything after it. The provider reports
+// that only as a low cache-read count; this names the tool. The cost is one
+// hash per tool and only while debug logging is on.
+func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	hashes := make([]string, len(tools))
+	for i, tool := range tools {
+		data, err := json.Marshal(tool.Info())
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		hashes[i] = hex.EncodeToString(sum[:8])
+	}
+	previous, hadPrevious := a.toolsHashes.Get(sessionID)
+	a.toolsHashes.Set(sessionID, hashes)
+	if !hadPrevious {
+		return
+	}
+	common := min(len(hashes), len(previous))
+	for i := range common {
+		if hashes[i] != previous[i] {
+			slog.Debug(
+				"Tools block diverged from the previous request",
+				"session_id", sessionID,
+				"tool_index", i,
+				"tool", tools[i].Info().Name,
+				"previous_tools", len(previous),
+				"current_tools", len(hashes),
+			)
+			return
+		}
+	}
+	if len(hashes) != len(previous) {
+		slog.Debug(
+			"Tools block size changed since the previous request",
+			"session_id", sessionID,
+			"previous_tools", len(previous),
+			"current_tools", len(hashes),
+		)
 	}
 }
 
