@@ -1,7 +1,6 @@
 package model
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -288,7 +287,9 @@ func (m *UI) openMCPTogglesDialog() tea.Cmd {
 // mcpToggleItems builds the dialog items from the configured servers, the
 // live connection states, and the repository's disabled overrides.
 func (m *UI) mcpToggleItems() ([]dialog.MCPToggleItem, error) {
-	disabledServers, err := m.com.Workspace.MCPServersDisabled(context.Background())
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	disabledServers, err := m.com.Workspace.MCPServersDisabled(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +299,7 @@ func (m *UI) mcpToggleItems() ([]dialog.MCPToggleItem, error) {
 	}
 	// A repository-scoped enabled override turns a config-disabled server
 	// back on for this repository; it is force-started at startup.
-	enabledServers, err := m.com.Workspace.MCPServersEnabled(context.Background())
+	enabledServers, err := m.com.Workspace.MCPServersEnabled(ctx)
 	if err != nil {
 		return nil, err
 	}
