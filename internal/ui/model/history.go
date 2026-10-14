@@ -1,13 +1,13 @@
 package model
 
 import (
-	"context"
 	"log/slog"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/ui/common"
 )
 
 // promptHistoryLoadedMsg is sent when prompt history is loaded.
@@ -19,7 +19,8 @@ type promptHistoryLoadedMsg struct {
 // stop at the 200 most recent entries; recall only steps back one at a time.
 func (m *UI) loadPromptHistory() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		var messages []message.Message
 		var err error
 

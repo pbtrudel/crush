@@ -1,7 +1,6 @@
 package dialog
 
 import (
-	"context"
 	"image"
 	"strings"
 	"time"
@@ -69,7 +68,9 @@ func NewSessions(com *common.Common, selectedSessionID string) (*Session, error)
 	s := new(Session)
 	s.sessionsMode = sessionsModeNormal
 	s.com = com
-	sessions, err := com.Workspace.ListSessions(context.TODO())
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	sessions, err := com.Workspace.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -412,7 +413,9 @@ func (s *Session) removeSession(id string) {
 
 func (s *Session) deleteSessionCmd(id string) tea.Cmd {
 	return func() tea.Msg {
-		err := s.com.Workspace.DeleteSession(context.TODO(), id)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		err := s.com.Workspace.DeleteSession(ctx, id)
 		if err != nil {
 			return util.NewErrorMsg(err)
 		}
@@ -448,7 +451,9 @@ func (s *Session) updateSession(session session.Session) {
 
 func (s *Session) updateSessionCmd(session session.Session) tea.Cmd {
 	return func() tea.Msg {
-		_, err := s.com.Workspace.SaveSession(context.TODO(), session)
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		_, err := s.com.Workspace.SaveSession(ctx, session)
 		if err != nil {
 			return util.NewErrorMsg(err)
 		}

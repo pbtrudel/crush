@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/dialog"
 )
 
@@ -66,13 +67,15 @@ func (m *UI) filterAuthPending(pending []mcp.PendingAuthServer) []mcp.PendingAut
 	if len(pending) == 0 {
 		return pending
 	}
-	disabled, err := m.com.Workspace.MCPServersDisabled(context.Background())
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	disabled, err := m.com.Workspace.MCPServersDisabled(ctx)
 	if err != nil {
 		return pending
 	}
 	// Enabled overrides turn config-disabled servers back on for this
 	// repository, so those still need authentication.
-	enabled, err := m.com.Workspace.MCPServersEnabled(context.Background())
+	enabled, err := m.com.Workspace.MCPServersEnabled(ctx)
 	if err != nil {
 		return pending
 	}

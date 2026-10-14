@@ -1,7 +1,6 @@
 package model
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -288,7 +287,9 @@ func (m *UI) openMCPTogglesDialog() tea.Cmd {
 // mcpToggleItems builds the dialog items from the configured servers, the
 // live connection states, and the repository's disabled overrides.
 func (m *UI) mcpToggleItems() ([]dialog.MCPToggleItem, error) {
-	disabledServers, err := m.com.Workspace.MCPServersDisabled(context.Background())
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	disabledServers, err := m.com.Workspace.MCPServersDisabled(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +299,7 @@ func (m *UI) mcpToggleItems() ([]dialog.MCPToggleItem, error) {
 	}
 	// A repository-scoped enabled override turns a config-disabled server
 	// back on for this repository; it is force-started at startup.
-	enabledServers, err := m.com.Workspace.MCPServersEnabled(context.Background())
+	enabledServers, err := m.com.Workspace.MCPServersEnabled(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -335,13 +336,15 @@ func (m *UI) applyMCPToggle(msg dialog.ActionToggleMCP) tea.Cmd {
 		status = "disabled"
 	}
 	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
 		if msg.Global {
-			if err := m.com.Workspace.MCPSetServerConfigDisabled(context.TODO(), name, disable); err != nil {
+			if err := m.com.Workspace.MCPSetServerConfigDisabled(ctx, name, disable); err != nil {
 				return util.NewErrorMsg(err)
 			}
 			return util.NewInfoMsg(fmt.Sprintf("MCP %q %s globally", name, status))
 		}
-		if err := m.com.Workspace.MCPSetServerDisabled(context.TODO(), name, disable); err != nil {
+		if err := m.com.Workspace.MCPSetServerDisabled(ctx, name, disable); err != nil {
 			return util.NewErrorMsg(err)
 		}
 		return util.NewInfoMsg(fmt.Sprintf("MCP %q %s for this repository", name, status))
