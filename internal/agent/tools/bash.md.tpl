@@ -27,32 +27,16 @@ Common shell builtins and core utils available on Windows.
 </usage_notes>
 
 <background_execution>
-- Set run_in_background=true to run commands in a separate background shell
-- Returns a shell ID for managing the background process
-- Use job_output tool to view current output from background shell
-- Use job_kill tool to terminate a background shell
-- IMPORTANT: NEVER use `&` at the end of commands to run in background - use run_in_background parameter instead
-- Commands that should run in background:
-  * Long-running servers (e.g., `npm start`, `python -m http.server`, `node server.js`)
-  * Watch/monitoring tasks (e.g., `npm run watch`, `tail -f logfile`)
-  * Continuous processes that don't exit on their own
-  * Any command expected to run indefinitely
-- Commands that should NOT run in background:
-  * Build commands (e.g., `npm run build`, `go build`)
-  * Test suites (e.g., `npm test`, `pytest`)
-  * Git operations
-  * File operations
-  * Short-lived scripts
+- Set run_in_background=true to run a command in a separate background shell; it returns a shell ID (read it with job_output, stop it with job_kill). NEVER use `&` for this - use the parameter instead.
+- Use it for long-running servers (`npm start`, `python -m http.server`), watch tasks (`npm run watch`, `tail -f logfile`), and anything that does not exit on its own.
+- Do not use it for build commands, test suites, git operations, file operations, or short-lived scripts.
 </background_execution>
 
 <git_message_quality>
 These rules apply whenever creating or updating commit messages, PR titles, or PR bodies:
 
-- Messages MUST be understandable to someone unfamiliar with the codebase.
-- Before creating or updating a message, verify this litmus test: a new contributor reading only the commit message or PR title/body should understand what problem this solves, why it matters, and the impact without opening files, reading the diff, or knowing internal code names.
-- Avoid code identifiers, filenames, function names, and implementation details unless they are necessary for understanding the user-facing impact.
-- Bad: "Add NameFromHex with sync.Once lazy init"
-- Good: "Improve color name lookup performance while keeping startup fast"
+- Messages MUST be understandable to someone unfamiliar with the codebase: a new contributor reading only the message should understand what problem this solves, why it matters, and the impact without opening files, reading the diff, or knowing internal code names.
+- Avoid code identifiers, filenames, function names, and implementation details unless necessary to understand the user-facing impact.
 </git_message_quality>
 
 <commit_messages>
@@ -62,12 +46,10 @@ Commit messages are for future readers scanning history. Before committing:
 - Draft a concise 1-2 sentence message focusing on why the change exists and what outcome it enables, not a list of files or implementation details.
 - Use clear, accurate verbs ("add"=new capability, "update"=enhancement, "fix"=bug fix) and avoid generic messages.
 - The first line MUST be under 72 characters.
-- Add a body only when it is needed to explain the reasoning, tradeoffs, or important context; wrap body lines at 72 characters.
-- If the change is internal-only, still describe the benefit or maintenance outcome rather than naming private code.
+- Add a body only when needed to explain the reasoning, tradeoffs, or important context; wrap body lines at 72 characters.
+- If the change is internal-only, describe the benefit or maintenance outcome rather than naming private code.
 - Bad: "fix: nil pointer in session.go"
 - Good: "fix: prevent session loading from crashing on missing metadata"
-- Bad: "refactor: move PromptBuilder into internal/agent"
-- Good: "refactor: make prompt assembly easier to maintain"
 </commit_messages>
 
 <git_commits>
@@ -85,9 +67,7 @@ When user asks to create git commit:
    - Brainstorm purpose/motivation, assess project impact, check for sensitive info
    - Don't use tools beyond the context of git
 
-4. Draft a commit message:
-   - Follow <commit_messages>
-   - Review draft against the litmus test before committing
+4. Draft a commit message following <commit_messages>; review it against the litmus test.
 
 5. Create commit{{ if or (eq .Attribution.TrailerStyle "assisted-by") (eq .Attribution.TrailerStyle "co-authored-by")}} with attribution{{ end }} using HEREDOC:
    git commit -m "$(cat <<'EOF'
@@ -106,7 +86,7 @@ Co-Authored-By: Crush <crush@charm.land>
 EOF
 )"
 
-6. If pre-commit hook fails, retry ONCE. If fails again, hook preventing commit. If succeeds but files modified, MUST amend.
+6. If pre-commit hook fails, retry ONCE. If it fails again, the hook is preventing the commit. If it succeeds but modifies files, amend the commit.
 
 7. Run git status to verify.
 
@@ -126,30 +106,13 @@ When user asks you to create or update a PR:
    - Check if branch tracks remote and is up to date
    - git log and 'git diff main...HEAD' (full commit history from main divergence)
 
-2. Create new branch if needed
+2. Create a new branch if needed, commit if needed, and push with -u if needed.
 
-3. Commit changes if needed
+3. Analyze changes in <pr_analysis> tags: list commits since diverging from main, summarize their nature, brainstorm purpose/motivation, assess project impact, and check for sensitive information. Don't use tools beyond the git context.
 
-4. Push to remote with -u flag if needed
+4. Draft the PR message following <git_message_quality>: 1-2 bullets focused on "why", reflecting ALL changes since main divergence; review it against the litmus test.
 
-5. Analyze changes in <pr_analysis> tags:
-   - List commits since diverging from main
-   - Summarize nature of changes
-   - Brainstorm purpose/motivation
-   - Assess project impact
-   - Don't use tools beyond git context
-   - Check for sensitive information
-
-6. Draft a PR message:
-   - Follow <git_message_quality>
-   - Draft concise (1-2 bullet points) PR summary focusing on "why"
-   - Ensure summary reflects ALL changes since main divergence
-   - Use clear, concise language
-   - Provide an accurate reflection of changes and purpose
-   - Avoid generic summaries; messages should be thoughtful
-   - Review draft against the litmus test before creating or updating the PR
-
-7. Create PR with gh pr create using HEREDOC:
+5. Create PR with gh pr create using HEREDOC:
    gh pr create --title "title" --body "$(cat <<'EOF'
 
 <summary>
@@ -161,10 +124,7 @@ When user asks you to create or update a PR:
 EOF
 )"
 
-Important:
-
-- Return empty response - user sees gh output
-- Never update git config
+Important: return empty response - the user sees gh output. Never update git config.
 </pull_requests>
 
 <examples>
