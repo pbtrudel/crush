@@ -17,7 +17,10 @@ type stubConfigWorkspace struct {
 	workspace.Workspace
 }
 
-func (stubConfigWorkspace) Config() *config.Config { return &config.Config{} }
+func (stubConfigWorkspace) Config() *config.Config {
+	return &config.Config{Options: &config.Options{}}
+}
+func (stubConfigWorkspace) WorkingDir() string { return "" }
 
 func TestResourceSectionsShowLoadingUntilFirstRefresh(t *testing.T) {
 	t.Parallel()
