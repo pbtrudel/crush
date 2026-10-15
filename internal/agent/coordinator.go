@@ -1445,7 +1445,10 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 
 	apiKey, err := c.cfg.Resolve(providerCfg.APIKey)
 	if err != nil {
-		return nil, fmt.Errorf("resolving API key for provider %q: %w", providerCfg.ID, err)
+		// The resolve error embeds the user template (and the inner
+		// message is not guaranteed key-free), and callers log these
+		// errors — return a safe error that names the provider.
+		return nil, fmt.Errorf("invalid API key configuration for provider %q", providerCfg.ID)
 	}
 	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
 	if err != nil {

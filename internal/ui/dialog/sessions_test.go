@@ -67,5 +67,5 @@ func TestSessionsDialogRefreshSession(t *testing.T) {
 	require.InDelta(t, 1.5, d.sessions[0].Cost, 1e-9)
 	item, ok := d.list.SelectedItem().(*SessionItem)
 	require.True(t, ok)
-	require.Equal(t, "after", item.Session.Title)
+	require.Equal(t, "after", item.Title)
 }

@@ -35,6 +35,9 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		}, false)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), providerID)
+		// The error is safe to log: it must not carry the API key
+		// template or the resolution failure's inner message.
+		require.NotContains(t, err.Error(), "CRUSH_TEST_UNSET_STRICT_KEY")
 	})
 
 	t.Run("base url", func(t *testing.T) {
