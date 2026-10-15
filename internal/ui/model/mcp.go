@@ -122,6 +122,7 @@ func (m *UI) applyMCPStates(msg mcpStateChangedMsg) []tea.Cmd {
 	}
 	m.mcpStates = msg.states
 	m.mcpLoaded = true
+	m.mcpVer++
 
 	var cmds []tea.Cmd
 	if newlyNeedsAuth {

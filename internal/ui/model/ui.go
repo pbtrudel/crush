@@ -362,6 +362,9 @@ type UI struct {
 	lspStates        map[string]workspace.LSPClientInfo
 	lspDiagnostics   map[string]lsp.DiagnosticCounts
 	lspFetchInFlight bool
+	// lspVer bumps when lspStates/lspDiagnostics are replaced, so the
+	// sidebar memo (render_memo.go) rebuilds.
+	lspVer uint64
 	// lspRefreshQueued records that an LSP event arrived while a fetch was
 	// already in flight; applyLSPStates re-dispatches so the freshest state
 	// still lands.
@@ -377,6 +380,9 @@ type UI struct {
 	// retry loop while servers are starting; see mcp.go.
 	mcpStates        map[string]mcp.ClientInfo
 	mcpFetchInFlight bool
+	// mcpVer bumps when mcpStates is replaced, so the sidebar memo
+	// (render_memo.go) rebuilds.
+	mcpVer uint64
 	// mcpRefreshQueued records that a refresh was requested while a fetch
 	// was already in flight; applyMCPStates re-dispatches so the freshest
 	// state still lands.
@@ -392,6 +398,9 @@ type UI struct {
 
 	// skills
 	skillStates []*skills.SkillState
+	// skillsVer bumps when skillStates is replaced, so the sidebar memo
+	// (render_memo.go) rebuilds.
+	skillsVer uint64
 
 	// sidebarLogo keeps a cached version of the sidebar sidebarLogo.
 	sidebarLogo string
@@ -404,9 +413,19 @@ type UI struct {
 	sidebarMaxOffsetVal     int    // max scroll offset, computed in updateSidebarScrollState
 	sidebarContent          string // cached rendered sidebar content
 	sidebarTotalLines       int    // total lines in sidebarContent
-	sidebarContentHeight    int    // available height for sidebar content
-	sidebarContentWidth     int    // available width for sidebar content
-	sidebarDrawLogo         string // logo to render (may differ from sidebarLogo for short heights)
+
+	// sidebarKey/pillsKey memoize the per-frame sidebar and pills
+	// rebuilds; sidebarBuilds/pillsBuilds count rebuilds so tests can
+	// observe the memoization. See render_memo.go.
+	sidebarKeyValid      bool
+	sidebarKey           sidebarCacheKey
+	sidebarBuilds        int
+	pillsKeyValid        bool
+	pillsKey             pillsCacheKey
+	pillsBuilds          int
+	sidebarContentHeight int    // available height for sidebar content
+	sidebarContentWidth  int    // available width for sidebar content
+	sidebarDrawLogo      string // logo to render (may differ from sidebarLogo for short heights)
 
 	// Notification state
 	notifyBackend       notification.Backend
@@ -1193,6 +1212,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case pubsub.Event[skills.Event]:
 		m.skillStates = msg.Payload.States
+		m.skillsVer++
 	case pubsub.Event[mcp.Event]:
 		switch msg.Payload.Type {
 		case mcp.EventStateChanged:

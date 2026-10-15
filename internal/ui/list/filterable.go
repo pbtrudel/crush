@@ -23,6 +23,16 @@ type FilterableList struct {
 	*List
 	items []FilterableItem
 	query string
+
+	// itemsVersion bumps whenever the item set changes.
+	itemsVersion int
+	// The filter cache memoizes FilteredItems, keyed by the query and
+	// the items version, so repeated renders and draws do not re-run
+	// the fuzzy pass.
+	filterValid bool
+	lastQuery   string
+	lastVersion int
+	filtered    []Item
 }
 
 // NewFilterableList creates a new filterable list.
@@ -39,6 +49,7 @@ func NewFilterableList(items ...FilterableItem) *FilterableList {
 // SetItems sets the list items and updates the filtered items.
 func (f *FilterableList) SetItems(items ...FilterableItem) {
 	f.items = items
+	f.itemsVersion++
 	fitems := make([]Item, len(items))
 	for i, item := range items {
 		fitems[i] = item
@@ -49,6 +60,7 @@ func (f *FilterableList) SetItems(items ...FilterableItem) {
 // AppendItems appends items to the list and updates the filtered items.
 func (f *FilterableList) AppendItems(items ...FilterableItem) {
 	f.items = append(f.items, items...)
+	f.itemsVersion++
 	itms := make([]Item, len(f.items))
 	for i, item := range f.items {
 		itms[i] = item
@@ -59,6 +71,7 @@ func (f *FilterableList) AppendItems(items ...FilterableItem) {
 // PrependItems prepends items to the list and updates the filtered items.
 func (f *FilterableList) PrependItems(items ...FilterableItem) {
 	f.items = append(items, f.items...)
+	f.itemsVersion++
 	itms := make([]Item, len(f.items))
 	for i, item := range f.items {
 		itms[i] = item
@@ -69,7 +82,7 @@ func (f *FilterableList) PrependItems(items ...FilterableItem) {
 // SetFilter sets the filter query and updates the list items.
 func (f *FilterableList) SetFilter(q string) {
 	f.query = q
-	f.List.SetItems(f.FilteredItems()...)
+	f.applyFiltered()
 	f.ScrollToTop()
 }
 
@@ -87,39 +100,70 @@ func (f FilterableItemsSource) String(i int) string {
 	return f[i].Filter()
 }
 
-// FilteredItems returns the visible items after filtering.
+// FilteredItems returns the visible items after filtering. The result
+// is memoized on the (query, items) pair: repeated calls while neither
+// changed return the cached slice without re-running the fuzzy pass.
 func (f *FilterableList) FilteredItems() []Item {
+	if f.filterValid && f.query == f.lastQuery && f.itemsVersion == f.lastVersion {
+		return f.filtered
+	}
+
+	var result []Item
 	if f.query == "" {
-		items := make([]Item, len(f.items))
+		result = make([]Item, len(f.items))
 		for i, item := range f.items {
 			if ms, ok := item.(MatchSettable); ok {
 				ms.SetMatch(fuzzy.Match{})
 				item = ms.(FilterableItem)
 			}
-			items[i] = item
+			result[i] = item
 		}
-		return items
+	} else {
+		items := FilterableItemsSource(f.items)
+		matches := fuzzy.FindFrom(f.query, items)
+		result = make([]Item, 0, len(matches))
+		for i := range matches {
+			match := matches[i]
+			item := items[match.Index]
+			if ms, ok := item.(MatchSettable); ok {
+				ms.SetMatch(match)
+				item = ms.(FilterableItem)
+			}
+			result = append(result, item)
+		}
 	}
 
-	items := FilterableItemsSource(f.items)
-	matches := fuzzy.FindFrom(f.query, items)
-	matchedItems := []Item{}
-	resultSize := len(matches)
-	for i := range resultSize {
-		match := matches[i]
-		item := items[match.Index]
-		if ms, ok := item.(MatchSettable); ok {
-			ms.SetMatch(match)
-			item = ms.(FilterableItem)
-		}
-		matchedItems = append(matchedItems, item)
-	}
+	f.filterValid = true
+	f.lastQuery = f.query
+	f.lastVersion = f.itemsVersion
+	f.filtered = result
+	return result
+}
 
-	return matchedItems
+// applyFiltered pushes the current filtered items into the inner list,
+// unless they are already applied. Skipping the SetItems call keeps the
+// scroll position stable across renders.
+func (f *FilterableList) applyFiltered() {
+	filtered := f.FilteredItems()
+	if !sameItemSlice(f.List.items, filtered) {
+		f.List.SetItems(filtered...)
+	}
+}
+
+// sameItemSlice reports whether two item slices share the same backing
+// array. Two empty slices count as equal.
+func sameItemSlice(a, b []Item) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	return &a[0] == &b[0]
 }
 
 // Render renders the filterable list.
 func (f *FilterableList) Render() string {
-	f.List.SetItems(f.FilteredItems()...)
+	f.applyFiltered()
 	return f.List.Render()
 }

@@ -83,6 +83,15 @@ func (m *UI) updateSidebarScrollState() {
 		return
 	}
 
+	// The sidebar content is memoized on its inputs and rebuilt only
+	// when they change; see render_memo.go.
+	key := m.sidebarCacheKey()
+	if m.sidebarKeyValid && key == m.sidebarKey {
+		return
+	}
+	m.sidebarKey, m.sidebarKeyValid = key, true
+	m.sidebarBuilds++
+
 	const logoHeightBreakpoint = 30
 
 	t := m.com.Styles

@@ -281,6 +281,18 @@ func (m *UI) pillsAreaHeight() int {
 
 // renderPills renders the pills panel and stores it in m.pillsView.
 func (m *UI) renderPills() {
+	// The todo spinner animates on a timer, so the panel rebuilds on
+	// every call while a todo is in progress; otherwise the content is
+	// memoized on its inputs and rebuilt only when they change. The
+	// memo check comes first so a hit keeps the previous content. See
+	// render_memo.go.
+	key := m.pillsCacheKey()
+	if !m.todoIsSpinning && m.pillsKeyValid && key == m.pillsKey {
+		return
+	}
+	m.pillsKey, m.pillsKeyValid = key, true
+	m.pillsBuilds++
+
 	m.pillsView = ""
 	if !m.hasSession() {
 		return

@@ -81,6 +81,7 @@ func (m *UI) applyLSPStates(msg lspStatesMsg) tea.Cmd {
 	m.lspLoaded = true
 	m.lspStates = msg.states
 	m.lspDiagnostics = msg.diagnostics
+	m.lspVer++
 	if m.lspRefreshQueued {
 		m.lspRefreshQueued = false
 		return m.dispatchLSPRefresh()
