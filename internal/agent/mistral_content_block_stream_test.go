@@ -329,7 +329,8 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 	client := &http.Client{Transport: newMistralContentBlockTransport(http.DefaultTransport)}
 
 	t.Run("reasoning_content is converted in flight", func(t *testing.T) {
-		t.Parallel()
+		// Not parallel: the subtests share the server and the captured
+		// request state.
 		body := `{"model":"m","messages":[{"role":"assistant","content":"Hi","reasoning_content":"why"}]}`
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(body))
@@ -346,7 +347,6 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 	})
 
 	t.Run("non-json and other endpoints pass through", func(t *testing.T) {
-		t.Parallel()
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/models",
 			strings.NewReader(`{"reasoning_content":"x"}`))
 		require.NoError(t, err)
