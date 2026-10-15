@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
@@ -304,5 +308,57 @@ func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, string(firstData), string(secondData),
 			"tool %q must serialize identically across builds", tool.Info().Name)
+	}
+}
+
+// TestSystemPromptByteStableWithMultipleContextFiles pins the system-prompt
+// cache invariant for workspaces with more than one context file: the file
+// blocks must render in the configured path order on every build. The order
+// used to come from iterating a Go map, so two processes serving the same
+// workspace produced different system prompts and could not share cached
+// prefixes on content-addressed provider caches.
+func TestSystemPromptByteStableWithMultipleContextFiles(t *testing.T) {
+	env := testEnv(t)
+
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	// Pin every input prompt building reads so the test is hermetic
+	// against the developer's user config (same reasoning as coderAgent).
+	fixedTime := func() time.Time {
+		ts, _ := time.Parse("1/2/2006", "1/1/2025")
+		return ts
+	}
+	cfg.Config().Options.Attribution = &config.Attribution{}
+	cfg.Config().Options.SkillsPaths = nil
+	cfg.Config().Options.DisabledSkills = nil
+	cfg.Config().LSP = nil
+	cfg.Config().MCP = nil
+	cfg.Config().Hooks = nil
+	cfg.Config().Options.GlobalContextPaths = nil
+
+	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "zz-alt.md"), []byte("ZZZ"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "aa.md"), []byte("AAA"), 0o644))
+	// Deliberately non-alphabetical: the render must follow the configured
+	// path order, not any incidental sort.
+	cfg.Config().Options.ContextPaths = []string{"zz-alt.md", "aa.md"}
+
+	p, err := coderPrompt(
+		prompt.WithTimeFunc(fixedTime),
+		prompt.WithPlatform("linux"),
+		prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
+	)
+	require.NoError(t, err)
+
+	first, err := p.Build(t.Context(), "test-provider", "test-model", cfg)
+	require.NoError(t, err)
+	require.Contains(t, first, "ZZZ")
+	require.Contains(t, first, "AAA")
+	require.Less(t, strings.Index(first, "ZZZ"), strings.Index(first, "AAA"),
+		"context files must render in configured path order")
+
+	for range 20 {
+		got, err := p.Build(t.Context(), "test-provider", "test-model", cfg)
+		require.NoError(t, err)
+		require.Equal(t, first, got, "system prompt must be byte-identical across builds")
 	}
 }

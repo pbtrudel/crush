@@ -413,7 +413,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			HiddenUserMessage: message.HiddenUserMessage(ctx),
 			Attachments:       attachments,
 			MaxOutputTokens:   maxTokens,
-			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg, sessionID),
+			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg),
 			Temperature:       temp,
 			TopP:              topP,
 			TopK:              callTopK(providerCfg, topK),
@@ -1099,20 +1099,23 @@ func (c *coordinator) hyperAPIKey() string {
 }
 
 // withPromptCacheKey adds the provider's prompt-cache routing hint to the
-// per-call provider options. The hint is derived from the session ID so every
-// request in a session routes to the same cache shard, which is what makes
-// provider-side prefix caching reliable. It has to be applied per call (not
-// per provider) because the value varies per session while the rest of the
-// provider options come from static config.
+// per-call provider options. The hint is derived from the workspace's
+// working directory so every request from this workspace - sessions,
+// sub-agents, and compaction - routes to the same cache shard, which is
+// what makes provider-side prefix caching reliable across sessions: they
+// all share the same tool and system-prompt prefixes. It has to be applied
+// per call (not per provider) because the value depends on the workspace
+// while the rest of the provider options come from static config.
 //
 // Only providers with documented support get the hint here. For other
 // OpenAI-compatible providers (Hyper, Command Code, custom endpoints) a static
 // key can be set through the provider's extra_body config instead.
-func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig, sessionID string) fantasy.ProviderOptions {
-	if sessionID == "" {
+func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
+	workingDir := c.cfg.WorkingDir()
+	if workingDir == "" {
 		return options
 	}
-	key := session.HashID(sessionID)
+	key := promptCacheKey(workingDir)
 
 	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
 
@@ -1141,6 +1144,15 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		options[openaicompat.Name] = opts
 	}
 	return options
+}
+
+// promptCacheKey derives the provider-side prompt-cache routing hint for a
+// workspace. Hashing the working directory instead of a session ID scopes
+// the hint to the project: separate sessions, sub-agents, and compaction
+// runs in one workspace all share the tool and system-prompt prefixes, so
+// routing them to a single cache shard maximizes prefix reuse.
+func promptCacheKey(workingDir string) string {
+	return session.HashID(workingDir)
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
@@ -1573,7 +1585,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 
 	// Auth failures during summarize flow through fantasy's OnAuthRefresh,
 	// the same path used by regular turns.
-	return agent.Summarize(ctx, sessionID, c.withPromptCacheKey(getProviderOptions(agent.Model(), providerCfg), providerCfg, sessionID), c.makeAuthRefreshCallback(providerCfg))
+	return agent.Summarize(ctx, sessionID, c.withPromptCacheKey(getProviderOptions(agent.Model(), providerCfg), providerCfg), c.makeAuthRefreshCallback(providerCfg))
 }
 
 // GenerateTitle generates a session title using the current agent.
@@ -1738,9 +1750,9 @@ func callTopK(providerCfg config.ProviderConfig, topK *int64) *int64 {
 	return topK
 }
 
-// runSubAgent runs a sub-agent and handles session management and cost accumulation.
-// It creates a sub-session, runs the agent with the given prompt, and propagates
-// the cost to the parent session.
+// runSubAgent runs a sub-agent and handles session management and usage
+// accumulation. It creates a sub-session, runs the agent with the given
+// prompt, and propagates cost and cache usage to the parent session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
 	// Create sub-session
 	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
@@ -1772,7 +1784,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  c.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, session.ID),
+			ProviderOptions:  c.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg),
 			Temperature:      model.ModelCfg.Temperature,
 			TopP:             model.ModelCfg.TopP,
 			TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
@@ -1795,11 +1807,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
 	}
 
-	// Update parent session cost on a best-effort basis. A failure here must
+	// Update parent session usage on a best-effort basis. A failure here must
 	// not discard the sub-agent output that was already produced.
-	if err := c.updateParentSessionCost(ctx, session.ID, params.SessionID); err != nil {
+	if err := c.updateParentSessionUsage(ctx, session.ID, params.SessionID); err != nil {
 		slog.Warn(
-			"Failed to update parent session cost",
+			"Failed to update parent session usage",
 			"child_session", session.ID,
 			"parent_session", params.SessionID,
 			"error", err,
@@ -1820,8 +1832,11 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 	return result.Response.Content.Text()
 }
 
-// updateParentSessionCost accumulates the cost from a child session to its parent session.
-func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string) error {
+// updateParentSessionUsage accumulates the cost and cache usage from a child
+// session to its parent session. Child sessions (task and fetch sub-agents)
+// are hidden from listings and stats, so the parent carries the only
+// user-visible totals - including the cached-share percentage.
+func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSessionID, parentSessionID string) error {
 	childSession, err := c.sessions.Get(ctx, childSessionID)
 	if err != nil {
 		return fmt.Errorf("get child session: %w", err)
@@ -1833,6 +1848,8 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 	}
 
 	parentSession.Cost += childSession.Cost
+	parentSession.TotalCacheReadTokens += childSession.TotalCacheReadTokens
+	parentSession.TotalContextTokens += childSession.TotalContextTokens
 
 	if _, err := c.sessions.Save(ctx, parentSession); err != nil {
 		return fmt.Errorf("save parent session: %w", err)

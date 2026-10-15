@@ -2151,6 +2151,12 @@ func (a *sessionAgent) getCacheControlOptions() fantasy.ProviderOptions {
 	if t, _ := strconv.ParseBool(os.Getenv("CRUSH_DISABLE_ANTHROPIC_CACHE")); t {
 		return fantasy.ProviderOptions{}
 	}
+	// fantasy v0.45.2 reads cache control options only from the
+	// "anthropic" provider-options key, regardless of which provider
+	// instance is calling: bedrock is built on the anthropic client, and
+	// vercel and openrouter pass message breakpoints through the same
+	// key. The bedrock and vercel entries are kept for forward
+	// compatibility in case those providers start reading their own keys.
 	return fantasy.ProviderOptions{
 		anthropic.Name: &anthropic.ProviderCacheControlOptions{
 			CacheControl: anthropic.CacheControl{Type: "ephemeral"},
