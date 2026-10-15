@@ -79,14 +79,87 @@ func TestCacheTokenTotalsRoundTrip(t *testing.T) {
 	require.Equal(t, int64(700), fetched.TotalCacheReadTokens)
 	require.Equal(t, int64(900), fetched.TotalContextTokens)
 
-	// Title/usage updates accumulate their request into the cache totals.
-	err = sessions.UpdateTitleAndUsage(t.Context(), created.ID, "renamed", 1200, 300, 100, 1100, 0.5)
+	// Usage updates accumulate into the cache totals.
+	err = sessions.AddSessionUsage(t.Context(), created.ID, 100, 1100, 0.5)
 	require.NoError(t, err)
 
 	fetched, err = sessions.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	require.Equal(t, int64(800), fetched.TotalCacheReadTokens)
 	require.Equal(t, int64(2000), fetched.TotalContextTokens)
+	require.InDelta(t, 0.5, fetched.Cost, 1e-9)
+}
+
+func TestUpdateTodosLeavesUsageUntouched(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
+		require.NoError(t, db.Release(dataDir))
+	})
+
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	sessions := NewService(db.New(conn), conn)
+
+	created, err := sessions.Create(t.Context(), "todos")
+	require.NoError(t, err)
+	created.TotalCacheReadTokens = 700
+	created.TotalContextTokens = 900
+	created.Cost = 0.25
+	_, err = sessions.Save(t.Context(), created)
+	require.NoError(t, err)
+
+	todos := []Todo{{Content: "write tests", Status: TodoStatusPending, ActiveForm: "Writing tests"}}
+	require.NoError(t, sessions.UpdateTodos(t.Context(), created.ID, todos))
+
+	fetched, err := sessions.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, todos, fetched.Todos)
+	// Usage columns are untouched.
+	require.Equal(t, int64(700), fetched.TotalCacheReadTokens)
+	require.Equal(t, int64(900), fetched.TotalContextTokens)
+	require.InDelta(t, 0.25, fetched.Cost, 1e-9)
+
+	// Clearing works too.
+	require.NoError(t, sessions.UpdateTodos(t.Context(), created.ID, nil))
+	fetched, err = sessions.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Empty(t, fetched.Todos)
+}
+
+func TestSetTitleIfUnchanged(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool here: these tests run in parallel against a shared
+		// global pool, and a global reset closes other tests' live
+		// connections ("sql: database is closed").
+		require.NoError(t, db.Release(dataDir))
+	})
+
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	sessions := NewService(db.New(conn), conn)
+
+	created, err := sessions.Create(t.Context(), "original")
+	require.NoError(t, err)
+
+	// Matching current title: applied.
+	require.NoError(t, sessions.SetTitleIfUnchanged(t.Context(), created.ID, "original", "generated"))
+	fetched, err := sessions.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "generated", fetched.Title)
+
+	// Stale expectation: not applied.
+	require.NoError(t, sessions.SetTitleIfUnchanged(t.Context(), created.ID, "original", "clobbered"))
+	fetched, err = sessions.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "generated", fetched.Title)
 }
 
 func TestSessionChannelPersists(t *testing.T) {

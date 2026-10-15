@@ -77,7 +77,9 @@ type Service interface {
 	List(ctx context.Context) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
-	UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens, cacheReadTokens, contextTokens int64, cost float64) error
+	AddSessionUsage(ctx context.Context, sessionID string, cacheReadTokens, contextTokens int64, cost float64) error
+	UpdateTodos(ctx context.Context, sessionID string, todos []Todo) error
+	SetTitleIfUnchanged(ctx context.Context, sessionID, expectedTitle, title string) error
 	Rename(ctx context.Context, id string, title string) error
 	Delete(ctx context.Context, id string) error
 	MCPDisabledServers(ctx context.Context) ([]string, error)
@@ -256,17 +258,47 @@ func (s *service) SetChannel(ctx context.Context, sessionID, channel string) (Se
 	return session, nil
 }
 
-// UpdateTitleAndUsage updates only the title and usage fields atomically.
-// This is safer than fetching, modifying, and saving the entire session.
-func (s *service) UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens, cacheReadTokens, contextTokens int64, cost float64) error {
-	if err := s.q.UpdateSessionTitleAndUsage(ctx, db.UpdateSessionTitleAndUsageParams{
+// AddSessionUsage atomically accumulates usage totals on a session.
+// Unlike Save, which writes absolute values read earlier, this cannot
+// lose a concurrent usage update (sub-agent rollup, title generation).
+func (s *service) AddSessionUsage(ctx context.Context, sessionID string, cacheReadTokens, contextTokens int64, cost float64) error {
+	if err := s.q.AddSessionUsage(ctx, db.AddSessionUsageParams{
 		ID:                   sessionID,
-		Title:                title,
-		PromptTokens:         promptTokens,
-		CompletionTokens:     completionTokens,
 		TotalCacheReadTokens: cacheReadTokens,
 		TotalContextTokens:   contextTokens,
 		Cost:                 cost,
+	}); err != nil {
+		return err
+	}
+	s.publishSessionUpdate(ctx, sessionID)
+	return nil
+}
+
+// UpdateTodos replaces the session's todo list without touching any
+// other column, so concurrent usage or title writes are not clobbered.
+func (s *service) UpdateTodos(ctx context.Context, sessionID string, todos []Todo) error {
+	todosJSON, err := marshalTodos(todos)
+	if err != nil {
+		return err
+	}
+	if err := s.q.UpdateSessionTodos(ctx, db.UpdateSessionTodosParams{
+		ID:    sessionID,
+		Todos: sql.NullString{String: todosJSON, Valid: todosJSON != ""},
+	}); err != nil {
+		return err
+	}
+	s.publishSessionUpdate(ctx, sessionID)
+	return nil
+}
+
+// SetTitleIfUnchanged sets the session title only when the current
+// title still equals expectedTitle, so a user rename made while title
+// generation was in flight is not clobbered.
+func (s *service) SetTitleIfUnchanged(ctx context.Context, sessionID, expectedTitle, title string) error {
+	if err := s.q.UpdateSessionTitleIfCurrent(ctx, db.UpdateSessionTitleIfCurrentParams{
+		ID:      sessionID,
+		Title:   title,
+		Title_2: expectedTitle,
 	}); err != nil {
 		return err
 	}

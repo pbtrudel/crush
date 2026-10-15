@@ -24,6 +24,9 @@ func New(db DBTX) *Queries {
 func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	q := Queries{db: db}
 	var err error
+	if q.addSessionUsageStmt, err = db.PrepareContext(ctx, addSessionUsage); err != nil {
+		return nil, fmt.Errorf("error preparing query AddSessionUsage: %w", err)
+	}
 	if q.createFileStmt, err = db.PrepareContext(ctx, createFile); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateFile: %w", err)
 	}
@@ -162,14 +165,22 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
 	}
-	if q.updateSessionTitleAndUsageStmt, err = db.PrepareContext(ctx, updateSessionTitleAndUsage); err != nil {
-		return nil, fmt.Errorf("error preparing query UpdateSessionTitleAndUsage: %w", err)
+	if q.updateSessionTitleIfCurrentStmt, err = db.PrepareContext(ctx, updateSessionTitleIfCurrent); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionTitleIfCurrent: %w", err)
+	}
+	if q.updateSessionTodosStmt, err = db.PrepareContext(ctx, updateSessionTodos); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionTodos: %w", err)
 	}
 	return &q, nil
 }
 
 func (q *Queries) Close() error {
 	var err error
+	if q.addSessionUsageStmt != nil {
+		if cerr := q.addSessionUsageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing addSessionUsageStmt: %w", cerr)
+		}
+	}
 	if q.createFileStmt != nil {
 		if cerr := q.createFileStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createFileStmt: %w", cerr)
@@ -400,9 +411,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
 		}
 	}
-	if q.updateSessionTitleAndUsageStmt != nil {
-		if cerr := q.updateSessionTitleAndUsageStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing updateSessionTitleAndUsageStmt: %w", cerr)
+	if q.updateSessionTitleIfCurrentStmt != nil {
+		if cerr := q.updateSessionTitleIfCurrentStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionTitleIfCurrentStmt: %w", cerr)
+		}
+	}
+	if q.updateSessionTodosStmt != nil {
+		if cerr := q.updateSessionTodosStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionTodosStmt: %w", cerr)
 		}
 	}
 	return err
@@ -444,6 +460,7 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 type Queries struct {
 	db                                   DBTX
 	tx                                   *sql.Tx
+	addSessionUsageStmt                  *sql.Stmt
 	createFileStmt                       *sql.Stmt
 	createMessageStmt                    *sql.Stmt
 	createSessionStmt                    *sql.Stmt
@@ -490,13 +507,15 @@ type Queries struct {
 	setSessionChannelStmt                *sql.Stmt
 	updateMessageStmt                    *sql.Stmt
 	updateSessionStmt                    *sql.Stmt
-	updateSessionTitleAndUsageStmt       *sql.Stmt
+	updateSessionTitleIfCurrentStmt      *sql.Stmt
+	updateSessionTodosStmt               *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
 		db:                                   tx,
 		tx:                                   tx,
+		addSessionUsageStmt:                  q.addSessionUsageStmt,
 		createFileStmt:                       q.createFileStmt,
 		createMessageStmt:                    q.createMessageStmt,
 		createSessionStmt:                    q.createSessionStmt,
@@ -543,6 +562,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		setSessionChannelStmt:                q.setSessionChannelStmt,
 		updateMessageStmt:                    q.updateMessageStmt,
 		updateSessionStmt:                    q.updateSessionStmt,
-		updateSessionTitleAndUsageStmt:       q.updateSessionTitleAndUsageStmt,
+		updateSessionTitleIfCurrentStmt:      q.updateSessionTitleIfCurrentStmt,
+		updateSessionTodosStmt:               q.updateSessionTodosStmt,
 	}
 }

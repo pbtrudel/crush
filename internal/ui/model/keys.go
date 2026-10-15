@@ -177,9 +177,11 @@ func DefaultKeyMap() KeyMap {
 	)
 	km.Editor.HistoryPrev = key.NewBinding(
 		key.WithKeys("up"),
+		key.WithHelp("↑", "prev prompt"),
 	)
 	km.Editor.HistoryNext = key.NewBinding(
 		key.WithKeys("down"),
+		key.WithHelp("↓", "next prompt"),
 	)
 	km.Editor.CopySelection = key.NewBinding(
 		key.WithKeys("ctrl+shift+c"),
@@ -260,7 +262,7 @@ func DefaultKeyMap() KeyMap {
 		key.WithHelp("d", "half page down"),
 	)
 	km.Chat.PageDown = key.NewBinding(
-		key.WithKeys("pgdown", " ", "f"),
+		key.WithKeys("pgdown", "f"),
 		key.WithHelp("f/pgdn", "page down"),
 	)
 	km.Chat.PageUp = key.NewBinding(
@@ -281,6 +283,7 @@ func DefaultKeyMap() KeyMap {
 	)
 	km.Chat.EndFollow = key.NewBinding(
 		key.WithKeys("ctrl+end"),
+		key.WithHelp("ctrl+end", "end & follow"),
 	)
 	km.Chat.Copy = key.NewBinding(
 		key.WithKeys("c", "y", "C", "Y"),

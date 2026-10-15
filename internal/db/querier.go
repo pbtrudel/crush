@@ -9,6 +9,7 @@ import (
 )
 
 type Querier interface {
+	AddSessionUsage(ctx context.Context, arg AddSessionUsageParams) error
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
@@ -65,7 +66,8 @@ type Querier interface {
 	SetSessionChannel(ctx context.Context, arg SetSessionChannelParams) (Session, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
-	UpdateSessionTitleAndUsage(ctx context.Context, arg UpdateSessionTitleAndUsageParams) error
+	UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error
+	UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error
 }
 
 var _ Querier = (*Queries)(nil)

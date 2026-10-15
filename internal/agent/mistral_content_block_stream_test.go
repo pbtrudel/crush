@@ -313,9 +313,12 @@ func TestRewriteMistralReasoningHistory(t *testing.T) {
 }
 
 // TestMistralTransportRewritesRequestBody covers the RoundTrip request path.
-func TestMistralTransportRewritesRequestBody(t *testing.T) {
-	t.Parallel()
-
+// captureRequest serves a single request on a fresh test server through
+// the Mistral content-block transport and returns the captured path and
+// body. Each call gets its own server so parallel subtests don't share
+// captured state.
+func captureRequest(t *testing.T, path, body string) (string, []byte) {
+	t.Helper()
 	var captured []byte
 	var capturedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -327,19 +330,25 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := &http.Client{Transport: newMistralContentBlockTransport(http.DefaultTransport)}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+path,
+		strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return capturedPath, captured
+}
+
+func TestMistralTransportRewritesRequestBody(t *testing.T) {
+	t.Parallel()
 
 	t.Run("reasoning_content is converted in flight", func(t *testing.T) {
 		t.Parallel()
-		body := `{"model":"m","messages":[{"role":"assistant","content":"Hi","reasoning_content":"why"}]}`
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions",
-			strings.NewReader(body))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		require.NoError(t, err)
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		require.Equal(t, "/v1/chat/completions", capturedPath)
+		path, captured := captureRequest(t, "/v1/chat/completions",
+			`{"model":"m","messages":[{"role":"assistant","content":"Hi","reasoning_content":"why"}]}`)
+		require.Equal(t, "/v1/chat/completions", path)
 		require.NotContains(t, string(captured), "reasoning_content")
 		require.Contains(t, string(captured), `"type":"thinking"`)
 		require.Contains(t, string(captured), `"text":"Hi"`)
@@ -347,14 +356,7 @@ func TestMistralTransportRewritesRequestBody(t *testing.T) {
 
 	t.Run("non-json and other endpoints pass through", func(t *testing.T) {
 		t.Parallel()
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/models",
-			strings.NewReader(`{"reasoning_content":"x"}`))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		require.NoError(t, err)
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, captured := captureRequest(t, "/v1/models", `{"reasoning_content":"x"}`)
 		require.Equal(t, `{"reasoning_content":"x"}`, string(captured))
 	})
 }

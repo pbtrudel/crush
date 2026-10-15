@@ -58,6 +58,10 @@ func (m *UI) modelInfo(width int) string {
 	var modelName string
 	if model != nil {
 		modelName = model.CatwalkCfg.Name
+	} else {
+		// The agent isn't ready yet; show a placeholder instead of a
+		// bare icon.
+		modelName = "…"
 	}
 	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits)
 }
@@ -78,6 +82,15 @@ func (m *UI) updateSidebarScrollState() {
 	if m.session == nil || m.isCompact {
 		return
 	}
+
+	// The sidebar content is memoized on its inputs and rebuilt only
+	// when they change; see render_memo.go.
+	key := m.sidebarCacheKey()
+	if m.sidebarKeyValid && key == m.sidebarKey {
+		return
+	}
+	m.sidebarKey, m.sidebarKeyValid = key, true
+	m.sidebarBuilds++
 
 	const logoHeightBreakpoint = 30
 

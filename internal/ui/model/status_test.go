@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
+	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,23 @@ import (
 // leadingSpaces counts the spaces at the start of a stripped line.
 func leadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+func TestStatusMsgGenerationGuard(t *testing.T) {
+	t.Parallel()
+
+	s := &Status{}
+
+	s.SetInfoMsg(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "first"})
+	s.SetInfoMsg(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "second"})
+
+	// A stale clear (the first message's timer firing late) must not
+	// erase the newer message.
+	s.ClearInfoMsgIfGen(1)
+	require.Equal(t, "second", s.msg.Msg)
+
+	s.ClearInfoMsgIfGen(2)
+	require.True(t, s.msg.IsEmpty())
 }
 
 // drawStatusLines draws the status bar into a screen buffer and returns the

@@ -39,14 +39,24 @@ func cacheAwareStreamUsage(chunk openaisdk.ChatCompletionChunk, ctx map[string]a
 // prompt_tokens including cached tokens, and the default extraction only
 // subtracts the standard field, so the adopted count must come out of the
 // uncached input as well.
+//
+// Counts outside [0, prompt tokens] are repaired rather than trusted: a
+// negative count would both inflate the input tokens and be billed as a
+// negative cache read, and a count larger than the prompt would inflate
+// the cached-share metric.
 func adoptFallbackCacheRead(usage fantasy.Usage, standardPresent bool, extraFields map[string]respjson.Field) fantasy.Usage {
 	if standardPresent {
+		if usage.CacheReadTokens < 0 {
+			usage.InputTokens = max(usage.InputTokens+usage.CacheReadTokens, 0)
+			usage.CacheReadTokens = 0
+		}
 		return usage
 	}
 	read, ok := fallbackCacheRead(extraFields)
 	if !ok {
 		return usage
 	}
+	read = min(max(read, 0), max(usage.InputTokens, 0))
 	usage.CacheReadTokens = read
 	usage.InputTokens = max(usage.InputTokens-read, 0)
 	return usage
@@ -68,4 +78,14 @@ func fallbackCacheRead(extraFields map[string]respjson.Field) (int64, bool) {
 		return read, true
 	}
 	return 0, false
+}
+
+// clampUsageCounters floors provider-reported counters at zero before
+// they are priced and accumulated. A negative cache read would
+// otherwise reduce session totals and produce a negative cost credit.
+func clampUsageCounters(u fantasy.Usage) fantasy.Usage {
+	u.InputTokens = max(u.InputTokens, 0)
+	u.CacheReadTokens = max(u.CacheReadTokens, 0)
+	u.CacheCreationTokens = max(u.CacheCreationTokens, 0)
+	return u
 }

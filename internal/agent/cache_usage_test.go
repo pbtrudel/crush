@@ -116,4 +116,48 @@ func TestCacheAwareUsageDialects(t *testing.T) {
 		assert.Equal(t, int64(0), usage.CacheReadTokens)
 		assert.Equal(t, int64(0), usage.InputTokens)
 	})
+
+	t.Run("negative standard cached tokens is repaired", func(t *testing.T) {
+		usage := usageFromCompletion(t, `{
+			"id":"c9","object":"chat.completion","created":1,"model":"m",
+			"choices":[],
+			"usage":{"prompt_tokens":1000,"completion_tokens":10,"total_tokens":1010,
+				"prompt_tokens_details":{"cached_tokens":-40}}
+		}`)
+		assert.Equal(t, int64(0), usage.CacheReadTokens)
+		assert.Equal(t, int64(1000), usage.InputTokens)
+	})
+
+	t.Run("negative fallback value is floored", func(t *testing.T) {
+		usage := usageFromCompletion(t, `{
+			"id":"c10","object":"chat.completion","created":1,"model":"deepseek-v4-flash",
+			"choices":[],
+			"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,
+				"prompt_cache_hit_tokens":-500}
+		}`)
+		assert.Equal(t, int64(0), usage.CacheReadTokens)
+		assert.Equal(t, int64(1000), usage.InputTokens)
+	})
+
+	t.Run("fallback larger than prompt is capped", func(t *testing.T) {
+		usage := usageFromCompletion(t, `{
+			"id":"c11","object":"chat.completion","created":1,"model":"kimi-k3",
+			"choices":[],
+			"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,
+				"cached_tokens":3000}
+		}`)
+		assert.Equal(t, int64(1000), usage.CacheReadTokens)
+		assert.Equal(t, int64(0), usage.InputTokens)
+	})
+
+	t.Run("malformed fallback value falls through", func(t *testing.T) {
+		usage := usageFromCompletion(t, `{
+			"id":"c12","object":"chat.completion","created":1,"model":"deepseek-v4-flash",
+			"choices":[],
+			"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,
+				"prompt_cache_hit_tokens":"oops"}
+		}`)
+		assert.Equal(t, int64(0), usage.CacheReadTokens)
+		assert.Equal(t, int64(1000), usage.InputTokens)
+	})
 }

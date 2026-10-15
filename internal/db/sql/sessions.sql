@@ -62,17 +62,28 @@ SET channel = ?
 WHERE id = ?
 RETURNING *;
 
--- name: UpdateSessionTitleAndUsage :exec
+-- name: AddSessionUsage :exec
 UPDATE sessions
 SET
-    title = ?,
-    prompt_tokens = prompt_tokens + ?,
-    completion_tokens = completion_tokens + ?,
     total_cache_read_tokens = total_cache_read_tokens + ?,
     total_context_tokens = total_context_tokens + ?,
     cost = cost + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
+
+-- name: UpdateSessionTodos :exec
+UPDATE sessions
+SET
+    todos = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: UpdateSessionTitleIfCurrent :exec
+UPDATE sessions
+SET
+    title = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ? AND title = ?;
 
 
 -- name: RenameSession :exec

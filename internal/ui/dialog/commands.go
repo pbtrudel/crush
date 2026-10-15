@@ -98,6 +98,7 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 	c.list = list.NewFilterableList()
 	c.list.Focus()
 	c.list.SetSelected(0)
+	c.list.SetEmptyMessage(com.Styles.Tool.ResultEmpty.Render("No results"))
 
 	c.input = textinput.New()
 	c.input.SetVirtualCursor(false)

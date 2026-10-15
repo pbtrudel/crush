@@ -17,6 +17,12 @@ import (
 // calls per lookup). The result for a given filename is stable, so we
 // memoize it. This dominated resize cost in large, code-heavy sessions
 // where every diff and code view re-matched on each frame.
+// lexerCacheMax bounds lexerCache: the filenames seen in a session are
+// stable, but long sessions over large or temp-file-heavy repos would
+// otherwise grow it forever. On overflow the cache is cleared; misses
+// re-match, which is the expensive path this cache exists to avoid.
+const lexerCacheMax = 512
+
 var (
 	lexerCacheMu sync.RWMutex
 	lexerCache   = map[string]chroma.Lexer{}
@@ -39,6 +45,9 @@ func MatchLexer(fileName string) chroma.Lexer {
 	}
 
 	lexerCacheMu.Lock()
+	if len(lexerCache) >= lexerCacheMax {
+		clear(lexerCache)
+	}
 	lexerCache[fileName] = l
 	lexerCacheMu.Unlock()
 	return l

@@ -1117,7 +1117,16 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 	}
 	key := promptCacheKey(workingDir)
 
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+	if err != nil {
+		// A failed resolve only skips the prompt-cache key hint; keep
+		// the request going with the remaining provider options.
+		slog.Warn(
+			"Failed to resolve provider base URL for prompt cache key",
+			"provider", providerCfg.ID,
+			"error", err,
+		)
+	}
 
 	switch {
 	case providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI):
@@ -1434,8 +1443,17 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 	}
 
-	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+	apiKey, err := c.cfg.Resolve(providerCfg.APIKey)
+	if err != nil {
+		// The resolve error embeds the user template (and the inner
+		// message is not guaranteed key-free), and callers log these
+		// errors — return a safe error that names the provider.
+		return nil, fmt.Errorf("invalid API key configuration for provider %q", providerCfg.ID)
+	}
+	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolving base URL for provider %q: %w", providerCfg.ID, err)
+	}
 
 	switch providerCfg.ID {
 	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
@@ -1846,23 +1864,21 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 // session to its parent session. Child sessions (task and fetch sub-agents)
 // are hidden from listings and stats, so the parent carries the only
 // user-visible totals - including the cached-share percentage.
+//
+// The accumulation is a SQL-side increment so sub-agents finishing
+// concurrently cannot lose each other's usage.
 func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSessionID, parentSessionID string) error {
 	childSession, err := c.sessions.Get(ctx, childSessionID)
 	if err != nil {
 		return fmt.Errorf("get child session: %w", err)
 	}
 
-	parentSession, err := c.sessions.Get(ctx, parentSessionID)
-	if err != nil {
+	if _, err := c.sessions.Get(ctx, parentSessionID); err != nil {
 		return fmt.Errorf("get parent session: %w", err)
 	}
 
-	parentSession.Cost += childSession.Cost
-	parentSession.TotalCacheReadTokens += childSession.TotalCacheReadTokens
-	parentSession.TotalContextTokens += childSession.TotalContextTokens
-
-	if _, err := c.sessions.Save(ctx, parentSession); err != nil {
-		return fmt.Errorf("save parent session: %w", err)
+	if err := c.sessions.AddSessionUsage(ctx, parentSessionID, childSession.TotalCacheReadTokens, childSession.TotalContextTokens, childSession.Cost); err != nil {
+		return fmt.Errorf("add child session usage to parent: %w", err)
 	}
 
 	return nil
