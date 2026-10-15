@@ -4116,6 +4116,8 @@ func (m *UI) FullHelp() [][]key.Binding {
 		case uiFocusEditor:
 			editorBinds := []key.Binding{
 				k.Editor.Newline,
+				k.Editor.HistoryPrev,
+				k.Editor.HistoryNext,
 				k.Editor.MentionFile,
 				k.Editor.OpenEditor,
 				k.Editor.PasteText,
@@ -4192,6 +4194,8 @@ func (m *UI) FullHelp() [][]key.Binding {
 			)
 			editorBinds := []key.Binding{
 				k.Editor.Newline,
+				k.Editor.HistoryPrev,
+				k.Editor.HistoryNext,
 				k.Editor.MentionFile,
 				k.Editor.OpenEditor,
 				k.Editor.PasteText,
