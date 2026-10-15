@@ -1117,7 +1117,16 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 	}
 	key := promptCacheKey(workingDir)
 
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+	if err != nil {
+		// A failed resolve only skips the prompt-cache key hint; keep
+		// the request going with the remaining provider options.
+		slog.Warn(
+			"Failed to resolve provider base URL for prompt cache key",
+			"provider", providerCfg.ID,
+			"error", err,
+		)
+	}
 
 	switch {
 	case providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI):
@@ -1434,8 +1443,14 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 	}
 
-	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
+	apiKey, err := c.cfg.Resolve(providerCfg.APIKey)
+	if err != nil {
+		return nil, fmt.Errorf("resolving API key for provider %q: %w", providerCfg.ID, err)
+	}
+	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolving base URL for provider %q: %w", providerCfg.ID, err)
+	}
 
 	switch providerCfg.ID {
 	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
