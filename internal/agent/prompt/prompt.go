@@ -149,16 +149,22 @@ func expandPath(path string, store *config.ConfigStore) string {
 	return path
 }
 
-// loadContextFiles loads and deduplicates context files from a list of paths.
-func loadContextFiles(paths []string, store *config.ConfigStore) map[string][]ContextFile {
-	files := map[string][]ContextFile{}
+// loadContextFiles loads and deduplicates context files from a list of
+// paths, preserving the order of the input paths. The order has to be
+// deterministic because the result is embedded in the system prompt: a
+// reordering between builds rewrites the prompt prefix and invalidates the
+// provider's prompt cache.
+func loadContextFiles(paths []string, store *config.ConfigStore) []ContextFile {
+	var files []ContextFile
+	seen := make(map[string]bool, len(paths))
 	for _, pth := range paths {
 		expanded := expandPath(pth, store)
 		pathKey := strings.ToLower(expanded)
-		if _, ok := files[pathKey]; ok {
+		if seen[pathKey] {
 			continue
 		}
-		files[pathKey] = processContextPath(expanded, store)
+		seen[pathKey] = true
+		files = append(files, processContextPath(expanded, store)...)
 	}
 	return files
 }
@@ -224,12 +230,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		}
 	}
 
-	for _, files := range contextFiles {
-		data.ContextFiles = append(data.ContextFiles, files...)
-	}
-	for _, files := range globalContextFiles {
-		data.GlobalContextFiles = append(data.GlobalContextFiles, files...)
-	}
+	data.ContextFiles = contextFiles
+	data.GlobalContextFiles = globalContextFiles
 	return data, nil
 }
 
