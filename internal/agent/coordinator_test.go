@@ -364,7 +364,7 @@ func TestRunSubAgent(t *testing.T) {
 		assert.NotEmpty(t, setupCalledWith, "SessionSetup should have been called")
 	})
 
-	t.Run("cost propagation to parent session", func(t *testing.T) {
+	t.Run("usage propagation to parent session", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
 
@@ -372,12 +372,14 @@ func TestRunSubAgent(t *testing.T) {
 		require.NoError(t, err)
 
 		agent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			// Simulate the agent incurring cost by updating the child session.
+			// Simulate the agent incurring usage by updating the child session.
 			childSession, err := env.sessions.Get(ctx, call.SessionID)
 			if err != nil {
 				return nil, err
 			}
 			childSession.Cost = 0.05
+			childSession.TotalCacheReadTokens = 700
+			childSession.TotalContextTokens = 900
 			_, err = env.sessions.Save(ctx, childSession)
 			if err != nil {
 				return nil, err
@@ -398,6 +400,8 @@ func TestRunSubAgent(t *testing.T) {
 		updated, err := env.sessions.Get(t.Context(), parentSession.ID)
 		require.NoError(t, err)
 		assert.InDelta(t, 0.05, updated.Cost, 1e-9)
+		assert.Equal(t, int64(700), updated.TotalCacheReadTokens)
+		assert.Equal(t, int64(900), updated.TotalContextTokens)
 	})
 }
 
@@ -445,8 +449,8 @@ func TestWithPromptCacheKeyWorkspaceScoped(t *testing.T) {
 	})
 }
 
-func TestUpdateParentSessionCost(t *testing.T) {
-	t.Run("accumulates cost correctly", func(t *testing.T) {
+func TestUpdateParentSessionUsage(t *testing.T) {
+	t.Run("accumulates cost and cache usage", func(t *testing.T) {
 		env := testEnv(t)
 		cfg, err := config.Init(env.workingDir, "", false)
 		require.NoError(t, err)
@@ -458,17 +462,20 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
 		require.NoError(t, err)
 
-		// Set child cost.
 		child.Cost = 0.10
+		child.TotalCacheReadTokens = 700
+		child.TotalContextTokens = 900
 		_, err = env.sessions.Save(t.Context(), child)
 		require.NoError(t, err)
 
-		err = coord.updateParentSessionCost(t.Context(), child.ID, parent.ID)
+		err = coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID)
 		require.NoError(t, err)
 
 		updated, err := env.sessions.Get(t.Context(), parent.ID)
 		require.NoError(t, err)
 		assert.InDelta(t, 0.10, updated.Cost, 1e-9)
+		assert.Equal(t, int64(700), updated.TotalCacheReadTokens)
+		assert.Equal(t, int64(900), updated.TotalContextTokens)
 	})
 
 	t.Run("accumulates multiple child costs", func(t *testing.T) {
@@ -483,23 +490,29 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		child1, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child1")
 		require.NoError(t, err)
 		child1.Cost = 0.05
+		child1.TotalCacheReadTokens = 700
+		child1.TotalContextTokens = 900
 		_, err = env.sessions.Save(t.Context(), child1)
 		require.NoError(t, err)
 
 		child2, err := env.sessions.CreateTaskSession(t.Context(), "tool-2", parent.ID, "Child2")
 		require.NoError(t, err)
 		child2.Cost = 0.03
+		child2.TotalCacheReadTokens = 300
+		child2.TotalContextTokens = 400
 		_, err = env.sessions.Save(t.Context(), child2)
 		require.NoError(t, err)
 
-		err = coord.updateParentSessionCost(t.Context(), child1.ID, parent.ID)
+		err = coord.updateParentSessionUsage(t.Context(), child1.ID, parent.ID)
 		require.NoError(t, err)
-		err = coord.updateParentSessionCost(t.Context(), child2.ID, parent.ID)
+		err = coord.updateParentSessionUsage(t.Context(), child2.ID, parent.ID)
 		require.NoError(t, err)
 
 		updated, err := env.sessions.Get(t.Context(), parent.ID)
 		require.NoError(t, err)
 		assert.InDelta(t, 0.08, updated.Cost, 1e-9)
+		assert.Equal(t, int64(1000), updated.TotalCacheReadTokens)
+		assert.Equal(t, int64(1300), updated.TotalContextTokens)
 	})
 
 	t.Run("child session not found", func(t *testing.T) {
@@ -511,7 +524,7 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		parent, err := env.sessions.Create(t.Context(), "Parent")
 		require.NoError(t, err)
 
-		err = coord.updateParentSessionCost(t.Context(), "non-existent", parent.ID)
+		err = coord.updateParentSessionUsage(t.Context(), "non-existent", parent.ID)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "get child session")
 	})
@@ -527,7 +540,7 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
 		require.NoError(t, err)
 
-		err = coord.updateParentSessionCost(t.Context(), child.ID, "non-existent")
+		err = coord.updateParentSessionUsage(t.Context(), child.ID, "non-existent")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "get parent session")
 	})
@@ -543,7 +556,7 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
 		require.NoError(t, err)
 
-		err = coord.updateParentSessionCost(t.Context(), child.ID, parent.ID)
+		err = coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID)
 		require.NoError(t, err)
 
 		updated, err := env.sessions.Get(t.Context(), parent.ID)

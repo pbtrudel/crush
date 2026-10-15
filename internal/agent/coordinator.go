@@ -1750,9 +1750,9 @@ func callTopK(providerCfg config.ProviderConfig, topK *int64) *int64 {
 	return topK
 }
 
-// runSubAgent runs a sub-agent and handles session management and cost accumulation.
-// It creates a sub-session, runs the agent with the given prompt, and propagates
-// the cost to the parent session.
+// runSubAgent runs a sub-agent and handles session management and usage
+// accumulation. It creates a sub-session, runs the agent with the given
+// prompt, and propagates cost and cache usage to the parent session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
 	// Create sub-session
 	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
@@ -1807,11 +1807,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
 	}
 
-	// Update parent session cost on a best-effort basis. A failure here must
+	// Update parent session usage on a best-effort basis. A failure here must
 	// not discard the sub-agent output that was already produced.
-	if err := c.updateParentSessionCost(ctx, session.ID, params.SessionID); err != nil {
+	if err := c.updateParentSessionUsage(ctx, session.ID, params.SessionID); err != nil {
 		slog.Warn(
-			"Failed to update parent session cost",
+			"Failed to update parent session usage",
 			"child_session", session.ID,
 			"parent_session", params.SessionID,
 			"error", err,
@@ -1832,8 +1832,11 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 	return result.Response.Content.Text()
 }
 
-// updateParentSessionCost accumulates the cost from a child session to its parent session.
-func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string) error {
+// updateParentSessionUsage accumulates the cost and cache usage from a child
+// session to its parent session. Child sessions (task and fetch sub-agents)
+// are hidden from listings and stats, so the parent carries the only
+// user-visible totals - including the cached-share percentage.
+func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSessionID, parentSessionID string) error {
 	childSession, err := c.sessions.Get(ctx, childSessionID)
 	if err != nil {
 		return fmt.Errorf("get child session: %w", err)
@@ -1845,6 +1848,8 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 	}
 
 	parentSession.Cost += childSession.Cost
+	parentSession.TotalCacheReadTokens += childSession.TotalCacheReadTokens
+	parentSession.TotalContextTokens += childSession.TotalContextTokens
 
 	if _, err := c.sessions.Save(ctx, parentSession); err != nil {
 		return fmt.Errorf("save parent session: %w", err)
