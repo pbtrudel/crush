@@ -23,11 +23,45 @@
 - **Works Everywhere:** first-class support in every terminal on macOS, Linux, Windows (PowerShell and WSL), Android, FreeBSD, OpenBSD, and NetBSD
 - **Industrial Grade:** built on the Charm ecosystem, powering 25k+ applications, from leading open source projects to business-critical infrastructure
 
+## What's different in this fork
+
+Local patches and improvements over [upstream Crush](https://github.com/charmbracelet/crush):
+
+- **Copilot Responses-API routing:** Copilot models that only accept the `/responses` endpoint can be added through a `copilot-responses-models` file in the config directory, without rebuilding Crush.
+- **Mistral streaming and Vibe signing:** Mistral's content-block SSE streams are rewritten into reasoning and text (so thinking renders instead of raw JSON), reasoning history replays as Mistral thinking blocks instead of failing with 422, and requests to `api.mistral.ai` are signed like the Mistral Vibe CLI so subscription keys draw on the Vibe allowance.
+- **Discord remote control (`/rc`):** a session can be mirrored into a Discord thread and driven from Discord: `/model`, `/plan`, `/yolo`, `/stop`, permission decisions via reactions, and custom commands all work remotely (see [docs/discord-remote-control.md](docs/discord-remote-control.md)).
+- **Fork-aware update check:** the `-fork.N` release suffix is ignored, so fork builds are not prompted to "update" to upstream releases.
+- **Sidebar cache hit percentage:** the sidebar shows the session-wide share of prompt tokens served from the provider's prompt cache.
+- **Better tool prompt-cache reuse:** tool prompts reuse the provider cache more reliably and tool descriptions are shorter, so prompts stay cheaper.
+- **Prompt-cache reuse across sessions:** replayed prompts stay byte-identical to the live request so cache hits survive across sessions, and sub-agent (task/fetch) cache reads count toward the session totals.
+- **Cache accounting for every OpenAI-compatible dialect:** cache reads are counted from OpenAI's `cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, and Kimi's top-level `cached_tokens`, not just the first.
+- **Lazy MCP servers:** a server marked `"lazy": true` is enabled but only started on first use, so unused servers cost no prompt tokens.
+- **Live-prompt context compaction:** compaction summarizes through the live prompt while keeping a recent tail, with configurable auto-compaction threshold and tail budget, on-demand `/compact`, and the post-compaction resume point persisted verbatim.
+- **Doubled compaction budget:** the compaction summary may use twice the output tokens.
+- **Compaction status line:** a compaction renders as a status line with measured token stats instead of dumping the summary into the chat.
+- **Context-overflow recovery:** when the provider reports the context is full, Crush compacts and retries the turn instead of failing.
+- **Concurrent usage accounting:** parallel sub-agents, title generation, and todo updates accumulate session cost and cache totals with SQL-side increments, so they can no longer lose each other's usage.
+- **Clamped cache counters:** negative or oversized provider-reported cache token counts are repaired, so cost accounting and the cache percentage cannot be corrupted.
+- **Fail-fast provider config:** a broken API key or base URL variable fails the provider build with the provider named, instead of surfacing as an opaque 401 mid-session.
+- **Empty and loading states:** list dialogs show "No results" / "No sessions yet" instead of a blank body, sidebar sections show a loading hint until the first LSP/MCP refresh, and an open sessions dialog stays in sync with title and usage changes.
+- **Status bar freshness:** an older status message's expiry timer can no longer clear a newer message early.
+- **Faster, smoother TUI:** per-frame sidebar, pills, and dialog filtering rebuilds are memoized and the markdown renderer and syntax-lexer caches are bounded, so the UI stays responsive in long sessions.
+- **Keybinding fixes:** the dead space binding on page-down is removed, and ctrl+end plus prompt-history navigation (↑/↓) now show help text.
+- **No auto-approved file writes:** shell commands that can write files are no longer auto-approved.
+- **Safer git allowlist:** side-effecting `git` flags are rejected in the read-only allowlist.
+- **No key material in logs:** API key template resolution errors are no longer logged.
+- **UI responsiveness:** workspace operations in the TUI run under a deadline, so a slow server cannot hang the UI.
+- **Better token estimates:** image tokens are estimated from pixel dimensions (with base64 tool-result media decoded first) instead of relying on metadata.
+- **Startup diagnostics:** early log lines are kept instead of being discarded before logging starts.
+- **Working gopls diagnostics:** generic methods were removed from the app package so gopls reports diagnostics again.
+
+The fork also ships Linux builds to npm as [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush) with `v<upstream>-fork.N` versioning (see [Installation](#installation)), runs ubuntu-only CI with a coverage ratchet, and drops upstream's CLA machinery and paid pipelines.
+
 ## Installation
 
 ### This fork (patched build)
 
-This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches (Copilot Responses-API routing, Mistral content-block streaming and Vibe request signing, and `/rc` Discord remote control). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary (Linux x86_64) from this fork's [releases](https://github.com/pbtrudel/crush/releases):
+This repository is a personal fork of [Charm's Crush](https://github.com/charmbracelet/crush) carrying local patches and improvements over upstream — see [What's different in this fork](#whats-different-in-this-fork). Every merge to the default branch builds a new version (`v<upstream-tag>-fork.<run-number>`) and stages the npm package [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush); a maintainer approves it with 2FA. The package's postinstall downloads the patched binary (Linux x86_64) from this fork's [releases](https://github.com/pbtrudel/crush/releases):
 
 ```bash
 npm install -g @conanmontreal/crush
