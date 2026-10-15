@@ -1690,17 +1690,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		return err
 	}
 
-	var openrouterCost *float64
-	for _, step := range resp.Steps {
-		stepCost := a.openrouterCost(step.ProviderMetadata)
-		if stepCost != nil {
-			newCost := *stepCost
-			if openrouterCost != nil {
-				newCost += *openrouterCost
-			}
-			openrouterCost = &newCost
-		}
-	}
+	openrouterCost := a.openRouterCostFromSteps(resp.Steps)
 
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost, false)
 
@@ -2595,23 +2585,8 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	}
 
 	// Calculate usage and cost.
-	var openrouterCost *float64
-	for _, step := range resp.Steps {
-		stepCost := a.openrouterCost(step.ProviderMetadata)
-		if stepCost != nil {
-			newCost := *stepCost
-			if openrouterCost != nil {
-				newCost += *openrouterCost
-			}
-			openrouterCost = &newCost
-		}
-	}
-
-	modelConfig := model.CatwalkCfg
-	cost := modelConfig.CostPer1MInCached/1e6*float64(resp.TotalUsage.CacheCreationTokens) +
-		modelConfig.CostPer1MOutCached/1e6*float64(resp.TotalUsage.CacheReadTokens) +
-		modelConfig.CostPer1MIn/1e6*float64(resp.TotalUsage.InputTokens) +
-		modelConfig.CostPer1MOut/1e6*float64(resp.TotalUsage.OutputTokens)
+	openrouterCost := a.openRouterCostFromSteps(resp.Steps)
+	cost := tokenUsageCost(model.CatwalkCfg, resp.TotalUsage)
 
 	// Use override cost if available (e.g., from OpenRouter).
 	if openrouterCost != nil {
@@ -2634,6 +2609,23 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		return
 	}
 	titleSaved = true
+}
+
+// openRouterCostFromSteps accumulates the OpenRouter-reported cost
+// across the steps of a run, or nil when no step reports one.
+func (a *sessionAgent) openRouterCostFromSteps(steps []fantasy.StepResult) *float64 {
+	var openrouterCost *float64
+	for _, step := range steps {
+		stepCost := a.openrouterCost(step.ProviderMetadata)
+		if stepCost != nil {
+			newCost := *stepCost
+			if openrouterCost != nil {
+				newCost += *openrouterCost
+			}
+			openrouterCost = &newCost
+		}
+	}
+	return openrouterCost
 }
 
 func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float64 {
@@ -2700,11 +2692,7 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 		session.EstimatedUsage = estimated
 	}
 
-	modelConfig := model.CatwalkCfg
-	cost := modelConfig.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
-		modelConfig.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
-		modelConfig.CostPer1MIn/1e6*float64(usage.InputTokens) +
-		modelConfig.CostPer1MOut/1e6*float64(usage.OutputTokens)
+	cost := tokenUsageCost(model.CatwalkCfg, usage)
 
 	if !estimated {
 		a.eventTokensUsed(session.ID, model, usage, cost)
@@ -2748,6 +2736,15 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 
 	session.Cost += cost
 	updateSessionTokenCounters(session, usage)
+}
+
+// tokenUsageCost prices one request's usage with the model's per-token
+// rates.
+func tokenUsageCost(modelCfg catwalk.Model, usage fantasy.Usage) float64 {
+	return modelCfg.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
+		modelCfg.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
+		modelCfg.CostPer1MIn/1e6*float64(usage.InputTokens) +
+		modelCfg.CostPer1MOut/1e6*float64(usage.OutputTokens)
 }
 
 // contextTokens returns the size of the prompt the provider processed for
