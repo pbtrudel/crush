@@ -1861,23 +1861,21 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 // session to its parent session. Child sessions (task and fetch sub-agents)
 // are hidden from listings and stats, so the parent carries the only
 // user-visible totals - including the cached-share percentage.
+//
+// The accumulation is a SQL-side increment so sub-agents finishing
+// concurrently cannot lose each other's usage.
 func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSessionID, parentSessionID string) error {
 	childSession, err := c.sessions.Get(ctx, childSessionID)
 	if err != nil {
 		return fmt.Errorf("get child session: %w", err)
 	}
 
-	parentSession, err := c.sessions.Get(ctx, parentSessionID)
-	if err != nil {
+	if _, err := c.sessions.Get(ctx, parentSessionID); err != nil {
 		return fmt.Errorf("get parent session: %w", err)
 	}
 
-	parentSession.Cost += childSession.Cost
-	parentSession.TotalCacheReadTokens += childSession.TotalCacheReadTokens
-	parentSession.TotalContextTokens += childSession.TotalContextTokens
-
-	if _, err := c.sessions.Save(ctx, parentSession); err != nil {
-		return fmt.Errorf("save parent session: %w", err)
+	if err := c.sessions.AddSessionUsage(ctx, parentSessionID, childSession.TotalCacheReadTokens, childSession.TotalContextTokens, childSession.Cost); err != nil {
+		return fmt.Errorf("add child session usage to parent: %w", err)
 	}
 
 	return nil

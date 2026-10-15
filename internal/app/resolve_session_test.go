@@ -64,7 +64,15 @@ func (m *mockSessionService) SetChannel(_ context.Context, sessionID, channel st
 	return session.Session{ID: sessionID, Channel: channel}, nil
 }
 
-func (m *mockSessionService) UpdateTitleAndUsage(context.Context, string, string, int64, int64, int64, int64, float64) error {
+func (m *mockSessionService) AddSessionUsage(context.Context, string, int64, int64, float64) error {
+	return nil
+}
+
+func (m *mockSessionService) UpdateTodos(context.Context, string, []session.Todo) error {
+	return nil
+}
+
+func (m *mockSessionService) SetTitleIfUnchanged(context.Context, string, string, string) error {
 	return nil
 }
 

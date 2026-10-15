@@ -10,6 +10,33 @@ import (
 	"database/sql"
 )
 
+const addSessionUsage = `-- name: AddSessionUsage :exec
+UPDATE sessions
+SET
+    total_cache_read_tokens = total_cache_read_tokens + ?,
+    total_context_tokens = total_context_tokens + ?,
+    cost = cost + ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type AddSessionUsageParams struct {
+	TotalCacheReadTokens int64   `json:"total_cache_read_tokens"`
+	TotalContextTokens   int64   `json:"total_context_tokens"`
+	Cost                 float64 `json:"cost"`
+	ID                   string  `json:"id"`
+}
+
+func (q *Queries) AddSessionUsage(ctx context.Context, arg AddSessionUsageParams) error {
+	_, err := q.exec(ctx, q.addSessionUsageStmt, addSessionUsage,
+		arg.TotalCacheReadTokens,
+		arg.TotalContextTokens,
+		arg.Cost,
+		arg.ID,
+	)
+	return err
+}
+
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
     id,
@@ -310,37 +337,45 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 	return i, err
 }
 
-const updateSessionTitleAndUsage = `-- name: UpdateSessionTitleAndUsage :exec
+const updateSessionTitleIfCurrent = `-- name: UpdateSessionTitleIfCurrent :exec
 UPDATE sessions
 SET
     title = ?,
-    prompt_tokens = prompt_tokens + ?,
-    completion_tokens = completion_tokens + ?,
-    total_cache_read_tokens = total_cache_read_tokens + ?,
-    total_context_tokens = total_context_tokens + ?,
-    cost = cost + ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ? AND title = ?
+`
+
+type UpdateSessionTitleIfCurrentParams struct {
+	Title   string `json:"title"`
+	ID      string `json:"id"`
+	Title_2 string `json:"title_2"`
+}
+
+func (q *Queries) UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error {
+	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent,
+		arg.Title,
+		arg.ID,
+		arg.Title_2,
+	)
+	return err
+}
+
+const updateSessionTodos = `-- name: UpdateSessionTodos :exec
+UPDATE sessions
+SET
+    todos = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
 `
 
-type UpdateSessionTitleAndUsageParams struct {
-	Title                string  `json:"title"`
-	PromptTokens         int64   `json:"prompt_tokens"`
-	CompletionTokens     int64   `json:"completion_tokens"`
-	TotalCacheReadTokens int64   `json:"total_cache_read_tokens"`
-	TotalContextTokens   int64   `json:"total_context_tokens"`
-	Cost                 float64 `json:"cost"`
-	ID                   string  `json:"id"`
+type UpdateSessionTodosParams struct {
+	Todos sql.NullString `json:"todos"`
+	ID    string         `json:"id"`
 }
 
-func (q *Queries) UpdateSessionTitleAndUsage(ctx context.Context, arg UpdateSessionTitleAndUsageParams) error {
-	_, err := q.exec(ctx, q.updateSessionTitleAndUsageStmt, updateSessionTitleAndUsage,
-		arg.Title,
-		arg.PromptTokens,
-		arg.CompletionTokens,
-		arg.TotalCacheReadTokens,
-		arg.TotalContextTokens,
-		arg.Cost,
+func (q *Queries) UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error {
+	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos,
+		arg.Todos,
 		arg.ID,
 	)
 	return err

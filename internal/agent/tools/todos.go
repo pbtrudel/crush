@@ -95,9 +95,9 @@ func NewTodosTool(sessions session.Service) fantasy.AgentTool {
 				}
 			}
 
-			currentSession.Todos = todos
-			_, err = sessions.Save(ctx, currentSession)
-			if err != nil {
+			// Write only the todos column so concurrent usage or title
+			// updates to the session are not clobbered.
+			if err := sessions.UpdateTodos(ctx, sessionID, todos); err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to save todos: %w", err)
 			}
 

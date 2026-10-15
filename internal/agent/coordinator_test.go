@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -563,6 +564,54 @@ func TestUpdateParentSessionUsage(t *testing.T) {
 		require.NoError(t, err)
 		assert.InDelta(t, 0.0, updated.Cost, 1e-9)
 	})
+}
+
+// TestUpdateParentSessionUsageConcurrent rolls up many child sessions
+// at the same time, as parallel task/fetch sub-agents do. Every child's
+// usage must land on the parent exactly once.
+func TestUpdateParentSessionUsageConcurrent(t *testing.T) {
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	coord := &coordinator{cfg: cfg, sessions: env.sessions}
+
+	parent, err := env.sessions.Create(t.Context(), "Parent")
+	require.NoError(t, err)
+
+	const children = 32
+	var wantCache, wantContext int64
+	var wantCost float64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range children {
+		child, err := env.sessions.CreateTaskSession(t.Context(), fmt.Sprintf("tool-%d", i), parent.ID, "Child")
+		require.NoError(t, err)
+		child.Cost = 0.01
+		child.TotalCacheReadTokens = 100
+		child.TotalContextTokens = 200
+		_, err = env.sessions.Save(t.Context(), child)
+		require.NoError(t, err)
+		wantCache += 100
+		wantContext += 200
+		wantCost += 0.01
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	updated, err := env.sessions.Get(t.Context(), parent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, wantCache, updated.TotalCacheReadTokens)
+	assert.Equal(t, wantContext, updated.TotalContextTokens)
+	assert.InDelta(t, wantCost, updated.Cost, 1e-9)
 }
 
 func TestGetProviderOptionsReasoningEffort(t *testing.T) {

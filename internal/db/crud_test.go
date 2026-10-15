@@ -105,24 +105,68 @@ func TestSessionCRUD(t *testing.T) {
 	assert.Equal(t, summary, updated.SummaryMessageID)
 	assert.Equal(t, summaryCut, updated.SummaryCutMessageID)
 
-	require.NoError(t, q.UpdateSessionTitleAndUsage(ctx, UpdateSessionTitleAndUsageParams{
-		ID:               "s1",
-		Title:            "auto-title",
-		PromptTokens:     1,
-		CompletionTokens: 2,
-		Cost:             0.125,
-	}))
-	titled, err := q.GetSessionByID(ctx, "s1")
-	require.NoError(t, err)
-	assert.Equal(t, "auto-title", titled.Title)
-	// The usage is added on top of what the session already had (this is
-	// how auto-titling records the titling call's own usage).
-	assert.Equal(t, int64(11), titled.PromptTokens)
-	assert.Equal(t, int64(22), titled.CompletionTokens)
-
 	require.NoError(t, q.DeleteSession(ctx, "s2"))
 	_, err = q.GetSessionByID(ctx, "s2")
 	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestSessionUsageAndTitleQueries(t *testing.T) {
+	t.Parallel()
+	q, _ := newTestQueries(t)
+	ctx := t.Context()
+
+	_, err := q.CreateSession(ctx, CreateSessionParams{ID: "s1", Title: "original"})
+	require.NoError(t, err)
+
+	// Usage accumulates on top of what the session already had.
+	require.NoError(t, q.AddSessionUsage(ctx, AddSessionUsageParams{
+		ID:                   "s1",
+		TotalCacheReadTokens: 100,
+		TotalContextTokens:   200,
+		Cost:                 0.25,
+	}))
+	require.NoError(t, q.AddSessionUsage(ctx, AddSessionUsageParams{
+		ID:                   "s1",
+		TotalCacheReadTokens: 50,
+		TotalContextTokens:   150,
+		Cost:                 0.125,
+	}))
+	got, err := q.GetSessionByID(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(150), got.TotalCacheReadTokens)
+	assert.Equal(t, int64(350), got.TotalContextTokens)
+	assert.Equal(t, 0.375, got.Cost)
+
+	// A missing session is a no-op, not an error.
+	require.NoError(t, q.AddSessionUsage(ctx, AddSessionUsageParams{ID: "missing"}))
+
+	// Todo updates touch only the todos column.
+	todos := sql.NullString{String: `[{"content":"x","status":"pending"}]`, Valid: true}
+	require.NoError(t, q.UpdateSessionTodos(ctx, UpdateSessionTodosParams{ID: "s1", Todos: todos}))
+	got, err = q.GetSessionByID(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, todos, got.Todos)
+	assert.Equal(t, int64(150), got.TotalCacheReadTokens)
+	assert.Equal(t, int64(350), got.TotalContextTokens)
+
+	// Title updates apply only when the title is still the expected one.
+	require.NoError(t, q.UpdateSessionTitleIfCurrent(ctx, UpdateSessionTitleIfCurrentParams{
+		ID:      "s1",
+		Title:   "generated",
+		Title_2: "original",
+	}))
+	got, err = q.GetSessionByID(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "generated", got.Title)
+
+	require.NoError(t, q.UpdateSessionTitleIfCurrent(ctx, UpdateSessionTitleIfCurrentParams{
+		ID:      "s1",
+		Title:   "clobbered",
+		Title_2: "original",
+	}))
+	got, err = q.GetSessionByID(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "generated", got.Title)
 }
 
 func TestMessageCRUD(t *testing.T) {

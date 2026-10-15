@@ -2486,6 +2486,16 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		return
 	}
 
+	// The generated title is only applied when the session still carries
+	// the title it had when generation started, so a user rename made
+	// while generation runs is not clobbered.
+	var initialTitle string
+	if sess, err := a.sessions.Get(ctx, sessionID); err == nil {
+		initialTitle = sess.Title
+	} else {
+		slog.Warn("Failed to read session for title generation", "session_id", sessionID, "error", err)
+	}
+
 	// Ensure the session always gets a title even if every path below
 	// fails or the context is cancelled before we finish.
 	var titleSaved bool
@@ -2493,7 +2503,7 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		if !titleSaved {
 			fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
-			if err := a.sessions.Rename(fallbackCtx, sessionID, DefaultSessionName); err != nil {
+			if err := a.sessions.SetTitleIfUnchanged(fallbackCtx, sessionID, initialTitle, DefaultSessionName); err != nil {
 				slog.Error("Failed to save fallback session title", "error", err)
 			}
 		}
@@ -2599,13 +2609,17 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	}
 
 	promptTokens := contextTokens(resp.TotalUsage)
-	completionTokens := resp.TotalUsage.OutputTokens
 
-	// Atomically update only title and usage fields to avoid overriding other
-	// concurrent session updates.
-	saveErr := a.sessions.UpdateTitleAndUsage(ctx, sessionID, title, promptTokens, completionTokens, resp.TotalUsage.CacheReadTokens, promptTokens, cost)
-	if saveErr != nil {
-		slog.Error("Failed to save session title and usage", "error", saveErr)
+	// Record the title request's usage with a SQL-side increment so it
+	// cannot be lost to a concurrent session save, and apply the
+	// generated title only if the session still has the title it started
+	// with (a user rename during generation wins).
+	if err := a.sessions.AddSessionUsage(ctx, sessionID, resp.TotalUsage.CacheReadTokens, promptTokens, cost); err != nil {
+		slog.Error("Failed to save session title usage", "error", err)
+		return
+	}
+	if err := a.sessions.SetTitleIfUnchanged(ctx, sessionID, initialTitle, title); err != nil {
+		slog.Error("Failed to save session title", "error", err)
 		return
 	}
 	titleSaved = true
