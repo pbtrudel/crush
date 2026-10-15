@@ -1254,6 +1254,16 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		openaicompat.WithAPIKey(apiKey),
 	}
 
+	// OpenAI-compatible providers report cache usage in distinct dialects
+	// (DeepSeek: prompt_cache_hit_tokens, Kimi/Moonshot: top-level
+	// cached_tokens). The default extraction understands only the OpenAI
+	// shape, which hides their cache reads from cost accounting and the
+	// cached-share metric. See cacheAwareUsage.
+	opts = append(opts, openaicompat.WithLanguageModelOptions(
+		openai.WithLanguageModelUsageFunc(cacheAwareUsage),
+		openai.WithLanguageModelStreamUsageFunc(cacheAwareStreamUsage),
+	))
+
 	// Set HTTP client based on provider and debug mode.
 	var httpClient *http.Client
 	switch providerID {
