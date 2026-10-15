@@ -38,6 +38,20 @@ func (t *trackedItem) Finished() bool {
 	return t.finished
 }
 
+func TestListEmptyMessage(t *testing.T) {
+	t.Parallel()
+
+	l := NewList()
+	require.Empty(t, l.Render(), "default renders empty as before")
+
+	l.SetEmptyMessage("No results")
+	require.Equal(t, "No results", l.Render())
+
+	l.SetItems(newTrackedItem("a", "alpha", false))
+	l.SetSize(40, 10)
+	require.Contains(t, l.Render(), "alpha")
+}
+
 // TestList_RenderMemo_PointerKey covers the F6 invariant that the
 // list-level cache is keyed by item pointer, not slice index, so
 // PrependItems and AppendItems do not shift cached entries to the

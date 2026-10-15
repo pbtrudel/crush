@@ -124,6 +124,7 @@ func NewTheme(com *common.Common) *Theme {
 
 	th.list = list.NewFilterableList()
 	th.list.Focus()
+	th.list.SetEmptyMessage(com.Styles.Tool.ResultEmpty.Render("No results"))
 
 	th.input = textinput.New()
 	th.input.SetVirtualCursor(false)

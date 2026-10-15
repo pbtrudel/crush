@@ -367,6 +367,9 @@ type UI struct {
 	// still lands.
 	lspRefreshQueued bool
 	lspCheckedAt     time.Time
+	// lspLoaded records that the first LSP refresh has applied, so the
+	// sidebar can show a loading hint instead of a misleading "None".
+	lspLoaded bool
 
 	// mcpStates memoizes the workspace MCP state (a synchronous probe in
 	// client/server mode) and its off-thread refresh bookkeeping. MCP
@@ -379,6 +382,9 @@ type UI struct {
 	// state still lands.
 	mcpRefreshQueued bool
 	mcpCheckedAt     time.Time
+	// mcpLoaded records that the first MCP refresh has applied, so the
+	// sidebar can show a loading hint instead of a misleading "None".
+	mcpLoaded bool
 	// mcpStartingRetries counts the consecutive starting-state re-probes
 	// driving the retry loop's exponential backoff. Event-driven refreshes
 	// renew the budget; settled states reset it.
@@ -1100,6 +1106,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
+		// Keep an open sessions dialog in sync with title/usage changes.
+		if sd, ok := m.dialog.Dialog(dialog.SessionsID).(*dialog.Session); ok {
+			sd.RefreshSession(msg.Payload)
+		}
 		if m.session != nil && msg.Payload.ID == m.session.ID {
 			prevHasInProgress := hasInProgressTodo(m.session.Todos)
 			prevPillsHeight := m.pillsAreaHeight()
@@ -1597,28 +1607,28 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == util.InfoTypeError {
 			slog.Error("Error reported", "error", msg.Msg)
 		}
-		m.status.SetInfoMsg(msg)
+		gen := m.status.SetInfoMsg(msg)
 		ttl := msg.TTL
 		if ttl <= 0 {
 			ttl = DefaultStatusTTL
 		}
-		cmds = append(cmds, clearInfoMsgCmd(ttl))
+		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
 	case app.UpdateAvailableMsg:
 		text := fmt.Sprintf("Crush update available: v%s → v%s.", msg.CurrentVersion, msg.LatestVersion)
 		if msg.IsDevelopment {
 			text = fmt.Sprintf("This is a development version of Crush. The latest version is v%s.", msg.LatestVersion)
 		}
 		ttl := 10 * time.Second
-		m.status.SetInfoMsg(util.InfoMsg{
+		gen := m.status.SetInfoMsg(util.InfoMsg{
 			Type: util.InfoTypeUpdate,
 			Msg:  text,
 			TTL:  ttl,
 		})
-		cmds = append(cmds, clearInfoMsgCmd(ttl))
+		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
 	case workspace.ConnectionEvent:
 		cmds = append(cmds, m.handleConnectionEvent(msg)...)
 	case util.ClearStatusMsg:
-		m.status.ClearInfoMsg()
+		m.status.ClearInfoMsgIfGen(msg.Gen)
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -1797,8 +1807,8 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 			TTL:  DefaultStatusTTL,
 		}
 	}
-	m.status.SetInfoMsg(info)
-	cmds := []tea.Cmd{clearInfoMsgCmd(info.TTL)}
+	gen := m.status.SetInfoMsg(info)
+	cmds := []tea.Cmd{clearInfoMsgCmd(info.TTL, gen)}
 	if msg.State == workspace.ConnectionRecovered {
 		// Events published while the stream was down are gone: re-sync the
 		// memoized MCP states alongside the session reload.

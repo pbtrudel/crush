@@ -72,6 +72,7 @@ func NewReasoning(com *common.Common) (*Reasoning, error) {
 
 	r.list = list.NewFilterableList()
 	r.list.Focus()
+	r.list.SetEmptyMessage(com.Styles.Tool.ResultEmpty.Render("No results"))
 
 	r.input = textinput.New()
 	r.input.SetVirtualCursor(false)

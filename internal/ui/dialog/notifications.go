@@ -84,6 +84,7 @@ func NewNotifications(com *common.Common) *Notifications {
 
 	n.list = list.NewFilterableList()
 	n.list.Focus()
+	n.list.SetEmptyMessage(com.Styles.Tool.ResultEmpty.Render("No results"))
 
 	n.input = textinput.New()
 	n.input.SetVirtualCursor(false)

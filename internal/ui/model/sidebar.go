@@ -58,6 +58,10 @@ func (m *UI) modelInfo(width int) string {
 	var modelName string
 	if model != nil {
 		modelName = model.CatwalkCfg.Name
+	} else {
+		// The agent isn't ready yet; show a placeholder instead of a
+		// bare icon.
+		modelName = "…"
 	}
 	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits)
 }

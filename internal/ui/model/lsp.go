@@ -78,6 +78,7 @@ func (m *UI) dispatchLSPRefresh() tea.Cmd {
 func (m *UI) applyLSPStates(msg lspStatesMsg) tea.Cmd {
 	m.lspFetchInFlight = false
 	m.lspCheckedAt = time.Now()
+	m.lspLoaded = true
 	m.lspStates = msg.states
 	m.lspDiagnostics = msg.diagnostics
 	if m.lspRefreshQueued {
@@ -125,6 +126,9 @@ func (m *UI) lspInfo(width, maxItems int, isSection bool) string {
 		title = common.Section(t, title, width)
 	}
 	list := t.Resource.AdditionalText.Render("None")
+	if !m.lspLoaded {
+		list = t.Resource.AdditionalText.Render("Loading…")
+	}
 	if len(lsps) > 0 {
 		list = lspList(t, lsps, width, maxItems)
 	}

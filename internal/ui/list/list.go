@@ -57,6 +57,10 @@ type List struct {
 	// per-line highlight overlays land on the latest content. Cleared
 	// on EndSelectionDrag.
 	freezeSuppressed map[Item]struct{}
+
+	// emptyMessage is rendered when the list has no items. Empty by
+	// default, which renders as an empty string.
+	emptyMessage string
 }
 
 // listCacheEntry is the per-item entry in the list-level render memo.
@@ -112,6 +116,12 @@ func (l *List) SetSize(width, height int) {
 // SetGap sets the gap between items.
 func (l *List) SetGap(gap int) {
 	l.gap = gap
+}
+
+// SetEmptyMessage sets the (pre-rendered) message shown when the list
+// has no items.
+func (l *List) SetEmptyMessage(msg string) {
+	l.emptyMessage = msg
 }
 
 // Gap returns the gap between items.
@@ -578,7 +588,7 @@ func (l *List) VisibleItemIndices() (startIdx, endIdx int) {
 // lines we now drop implicitly per item).
 func (l *List) Render() string {
 	if len(l.items) == 0 {
-		return ""
+		return l.emptyMessage
 	}
 
 	budget := max(l.height, 0)

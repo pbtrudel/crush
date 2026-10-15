@@ -121,6 +121,7 @@ func (m *UI) applyMCPStates(msg mcpStateChangedMsg) []tea.Cmd {
 		}
 	}
 	m.mcpStates = msg.states
+	m.mcpLoaded = true
 
 	var cmds []tea.Cmd
 	if newlyNeedsAuth {
@@ -178,6 +179,9 @@ func (m *UI) mcpInfo(width, maxItems int, isSection bool) string {
 		title = common.Section(t, title, width)
 	}
 	list := t.Resource.AdditionalText.Render("None")
+	if !m.mcpLoaded {
+		list = t.Resource.AdditionalText.Render("Loading…")
+	}
 	if len(mcps) > 0 {
 		list = mcpList(t, mcps, width, maxItems)
 	}

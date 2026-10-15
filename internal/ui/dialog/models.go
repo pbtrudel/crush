@@ -110,6 +110,7 @@ func NewModels(com *common.Common, isOnboarding bool) (*Models, error) {
 	m.list = NewModelsList(t)
 	m.list.Focus()
 	m.list.SetSelected(0)
+	m.list.SetEmptyMessage(t.Tool.ResultEmpty.Render("No results"))
 
 	m.input = textinput.New()
 	m.input.SetVirtualCursor(false)

@@ -90,6 +90,7 @@ func NewSessions(com *common.Common, selectedSessionID string) (*Session, error)
 	s.list = list.NewFilterableList(sessionItems(com.Styles, sessionsModeNormal, sessions...)...)
 	s.list.Focus()
 	s.list.SetSelected(s.selectedSessionInx)
+	s.list.SetEmptyMessage(com.Styles.Tool.ResultEmpty.Render("No results"))
 
 	s.input = textinput.New()
 	s.input.SetVirtualCursor(false)
@@ -145,6 +146,23 @@ func NewSessions(com *common.Common, selectedSessionID string) (*Session, error)
 // ID implements Dialog.
 func (s *Session) ID() string {
 	return SessionsID
+}
+
+// RefreshSession updates the list entry for a session that changed while
+// the dialog was open (e.g. a generated title or new usage). It is a
+// no-op while renaming or deleting so an in-progress edit is not
+// clobbered.
+func (s *Session) RefreshSession(sess session.Session) {
+	if s.sessionsMode != sessionsModeNormal {
+		return
+	}
+	for i := range s.sessions {
+		if s.sessions[i].ID == sess.ID {
+			s.sessions[i] = sess
+			s.list.SetItems(sessionItems(s.com.Styles, s.sessionsMode, s.sessions...)...)
+			return
+		}
+	}
 }
 
 // HandleMsg implements Dialog.
@@ -326,6 +344,9 @@ func (s *Session) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		inputView := t.Dialog.InputPrompt.Render(s.input.View())
 		cur = s.Cursor()
 		rc.AddPart(inputView)
+	}
+	if s.list.Len() == 0 && len(s.sessions) == 0 {
+		s.list.SetEmptyMessage(t.Tool.ResultEmpty.Render("No sessions yet"))
 	}
 	bodyView := t.Dialog.List.Height(s.list.Height()).Render(s.list.Render())
 	bodyView = joinScrollbar(t, bodyView, listHeight, listTotalHeight, listHeight, s.list.Offset())
