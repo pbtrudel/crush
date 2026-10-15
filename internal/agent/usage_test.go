@@ -38,3 +38,21 @@ func TestUpdateSessionTokenCountersAccumulatesCacheTotals(t *testing.T) {
 	require.Equal(t, int64(250), sess.TotalCacheReadTokens)
 	require.Equal(t, int64(365), sess.TotalContextTokens)
 }
+
+func TestUpdateSessionUsageClampsNegativeCacheCounters(t *testing.T) {
+	t.Parallel()
+
+	var a sessionAgent
+	sess := &session.Session{}
+	a.updateSessionUsage(Model{}, sess, fantasy.Usage{
+		InputTokens:         100,
+		CacheReadTokens:     -50,
+		CacheCreationTokens: -10,
+		OutputTokens:        5,
+	}, nil, true)
+
+	require.Equal(t, int64(0), sess.TotalCacheReadTokens)
+	require.Equal(t, int64(100), sess.TotalContextTokens)
+	require.Equal(t, int64(100), sess.PromptTokens)
+	require.Equal(t, int64(5), sess.CompletionTokens)
+}

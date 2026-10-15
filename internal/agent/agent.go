@@ -2695,6 +2695,7 @@ func extraFieldFloat(pm *openai.ProviderMetadata, key string) *float64 {
 }
 
 func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) {
+	usage = clampUsageCounters(usage)
 	if !usageIsZero(usage) {
 		session.EstimatedUsage = estimated
 	}
