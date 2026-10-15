@@ -11,9 +11,11 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/bedrock"
+	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/discover"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -396,6 +398,50 @@ func TestRunSubAgent(t *testing.T) {
 		updated, err := env.sessions.Get(t.Context(), parentSession.ID)
 		require.NoError(t, err)
 		assert.InDelta(t, 0.05, updated.Cost, 1e-9)
+	})
+}
+
+// TestWithPromptCacheKeyWorkspaceScoped pins the routing key scope: it must
+// be derived from the workspace, not the session, so that separate sessions,
+// sub-agents, and compaction calls in one workspace all route to the same
+// provider cache shard and reuse the shared tool and system-prompt prefixes.
+func TestWithPromptCacheKeyWorkspaceScoped(t *testing.T) {
+	env := testEnv(t)
+
+	t.Run("openai uses the workspace hash", func(t *testing.T) {
+		providerCfg := config.ProviderConfig{
+			ID:   string(catwalk.InferenceProviderOpenAI),
+			Type: openai.Name,
+		}
+		coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+
+		opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
+		o, ok := opts[openai.Name].(*openai.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, o.PromptCacheKey)
+		assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), *o.PromptCacheKey)
+
+		// Repeated calls - as any other session in this workspace would
+		// make - derive the same key.
+		again := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
+		againOpts, ok := again[openai.Name].(*openai.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, againOpts.PromptCacheKey)
+		assert.Equal(t, *o.PromptCacheKey, *againOpts.PromptCacheKey)
+	})
+
+	t.Run("mistral carries the key in the extra body", func(t *testing.T) {
+		providerCfg := config.ProviderConfig{
+			ID:      "mistral",
+			BaseURL: "https://api.mistral.ai",
+		}
+		coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+
+		opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
+		o, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
+		require.True(t, ok)
+		require.NotNil(t, o.ExtraBody)
+		assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), o.ExtraBody["prompt_cache_key"])
 	})
 }
 
