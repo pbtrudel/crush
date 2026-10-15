@@ -2,6 +2,7 @@ package xchroma
 
 import (
 	"bytes"
+	"fmt"
 	"image/color"
 	"strings"
 	"testing"
@@ -42,4 +43,16 @@ func TestFormatterPreservesIndentationAfterComments(t *testing.T) {
 			require.Equal(t, strings.Split(want, "\n"), strings.Split(got, "\n"))
 		})
 	}
+}
+
+func TestLexerCacheIsBounded(t *testing.T) {
+	t.Parallel()
+
+	for i := range lexerCacheMax + 10 {
+		MatchLexer(fmt.Sprintf("cache-bound-%d.go", i))
+	}
+
+	lexerCacheMu.RLock()
+	defer lexerCacheMu.RUnlock()
+	require.LessOrEqual(t, len(lexerCache), lexerCacheMax)
 }

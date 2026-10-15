@@ -19,18 +19,23 @@ func init() {
 	formatters.Register(formatterName, xchroma.Formatter(zero, nil))
 }
 
+// markdownRendererCacheMax bounds each per-width glamour renderer
+// cache. Only the current width is hot; a few extra entries absorb
+// resize oscillation without rebuilding a renderer per frame.
+const markdownRendererCacheMax = 4
+
 // mdCacheMu guards mdCache, quietMDCache, userMDCache, and planMDCache.
 //
 // Lock ordering: when both mdCacheMu and rendererLocksMu are
-// needed (only in InvalidateMarkdownRendererCache), acquire
-// mdCacheMu FIRST, then rendererLocksMu. No other call site may
-// hold rendererLocksMu while acquiring mdCacheMu.
+// needed (in InvalidateMarkdownRendererCache and when evicting
+// renderers), acquire mdCacheMu FIRST, then rendererLocksMu. No
+// other call site may hold rendererLocksMu while acquiring mdCacheMu.
 var (
 	mdCacheMu    sync.Mutex
-	mdCache      = map[int]*glamour.TermRenderer{}
-	quietMDCache = map[int]*glamour.TermRenderer{}
-	userMDCache  = map[int]*glamour.TermRenderer{}
-	planMDCache  = map[int]*glamour.TermRenderer{}
+	mdCache      = newLRUCache[int, *glamour.TermRenderer](markdownRendererCacheMax)
+	quietMDCache = newLRUCache[int, *glamour.TermRenderer](markdownRendererCacheMax)
+	userMDCache  = newLRUCache[int, *glamour.TermRenderer](markdownRendererCacheMax)
+	planMDCache  = newLRUCache[int, *glamour.TermRenderer](markdownRendererCacheMax)
 )
 
 // MarkdownRenderer returns a glamour [glamour.TermRenderer] configured with
@@ -47,7 +52,7 @@ var (
 func MarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 	mdCacheMu.Lock()
 	defer mdCacheMu.Unlock()
-	if r, ok := mdCache[width]; ok {
+	if r, ok := mdCache.get(width); ok {
 		return r
 	}
 	r, _ := glamour.NewTermRenderer(
@@ -55,7 +60,7 @@ func MarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 		glamour.WithWordWrap(width),
 		glamour.WithChromaFormatter(formatterName),
 	)
-	mdCache[width] = r
+	evictRendererLocks(mdCache.put(width, r))
 	return r
 }
 
@@ -78,7 +83,7 @@ func MarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 func UserMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 	mdCacheMu.Lock()
 	defer mdCacheMu.Unlock()
-	if r, ok := userMDCache[width]; ok {
+	if r, ok := userMDCache.get(width); ok {
 		return r
 	}
 	r, _ := glamour.NewTermRenderer(
@@ -87,7 +92,7 @@ func UserMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 		glamour.WithChromaFormatter(formatterName),
 		glamour.WithPreservedNewLines(),
 	)
-	userMDCache[width] = r
+	evictRendererLocks(userMDCache.put(width, r))
 	return r
 }
 
@@ -98,7 +103,7 @@ func UserMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 func QuietMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 	mdCacheMu.Lock()
 	defer mdCacheMu.Unlock()
-	if r, ok := quietMDCache[width]; ok {
+	if r, ok := quietMDCache.get(width); ok {
 		return r
 	}
 	r, _ := glamour.NewTermRenderer(
@@ -106,7 +111,7 @@ func QuietMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer 
 		glamour.WithWordWrap(width),
 		glamour.WithChromaFormatter(formatterName),
 	)
-	quietMDCache[width] = r
+	evictRendererLocks(quietMDCache.put(width, r))
 	return r
 }
 
@@ -118,7 +123,7 @@ func QuietMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer 
 func PlanMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 	mdCacheMu.Lock()
 	defer mdCacheMu.Unlock()
-	if r, ok := planMDCache[width]; ok {
+	if r, ok := planMDCache.get(width); ok {
 		return r
 	}
 	r, _ := glamour.NewTermRenderer(
@@ -126,7 +131,7 @@ func PlanMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
 		glamour.WithWordWrap(width),
 		glamour.WithChromaFormatter(formatterName),
 	)
-	planMDCache[width] = r
+	evictRendererLocks(planMDCache.put(width, r))
 	return r
 }
 
@@ -148,11 +153,25 @@ func InvalidateMarkdownRendererCache() {
 	rendererLocksMu.Lock()
 	defer rendererLocksMu.Unlock()
 
-	mdCache = map[int]*glamour.TermRenderer{}
-	quietMDCache = map[int]*glamour.TermRenderer{}
-	userMDCache = map[int]*glamour.TermRenderer{}
-	planMDCache = map[int]*glamour.TermRenderer{}
+	mdCache.reset()
+	quietMDCache.reset()
+	userMDCache.reset()
+	planMDCache.reset()
 	rendererLocks = map[*glamour.TermRenderer]*sync.Mutex{}
+}
+
+// evictRendererLocks drops the per-renderer mutexes of evicted
+// renderers so rendererLocks stays bounded with the caches. Callers
+// hold mdCacheMu (lock ordering: mdCacheMu before rendererLocksMu).
+func evictRendererLocks(renderers []*glamour.TermRenderer) {
+	if len(renderers) == 0 {
+		return
+	}
+	rendererLocksMu.Lock()
+	defer rendererLocksMu.Unlock()
+	for _, r := range renderers {
+		delete(rendererLocks, r)
+	}
 }
 
 // rendererLocksMu guards rendererLocks. We key per-renderer
