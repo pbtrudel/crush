@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.addSessionUsageStmt, err = db.PrepareContext(ctx, addSessionUsage); err != nil {
 		return nil, fmt.Errorf("error preparing query AddSessionUsage: %w", err)
 	}
+	if q.addStepUsageStmt, err = db.PrepareContext(ctx, addStepUsage); err != nil {
+		return nil, fmt.Errorf("error preparing query AddStepUsage: %w", err)
+	}
 	if q.createFileStmt, err = db.PrepareContext(ctx, createFile); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateFile: %w", err)
 	}
@@ -179,6 +182,11 @@ func (q *Queries) Close() error {
 	if q.addSessionUsageStmt != nil {
 		if cerr := q.addSessionUsageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing addSessionUsageStmt: %w", cerr)
+		}
+	}
+	if q.addStepUsageStmt != nil {
+		if cerr := q.addStepUsageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing addStepUsageStmt: %w", cerr)
 		}
 	}
 	if q.createFileStmt != nil {
@@ -461,6 +469,7 @@ type Queries struct {
 	db                                   DBTX
 	tx                                   *sql.Tx
 	addSessionUsageStmt                  *sql.Stmt
+	addStepUsageStmt                     *sql.Stmt
 	createFileStmt                       *sql.Stmt
 	createMessageStmt                    *sql.Stmt
 	createSessionStmt                    *sql.Stmt

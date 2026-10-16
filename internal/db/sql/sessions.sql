@@ -71,6 +71,18 @@ SET
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
 
+-- name: AddStepUsage :one
+UPDATE sessions
+SET
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    total_cache_read_tokens = total_cache_read_tokens + ?,
+    total_context_tokens = total_context_tokens + ?,
+    cost = cost + ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+RETURNING *;
+
 -- name: UpdateSessionTodos :exec
 UPDATE sessions
 SET

@@ -2,8 +2,10 @@ package session
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/db"
+	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 
@@ -265,4 +267,65 @@ func TestEstimatedUsageStateCanBeClearedByExplicitSave(t *testing.T) {
 	refetched, err := sessions.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	require.False(t, refetched.EstimatedUsage)
+}
+
+// AddStepUsage is the per-agent-step usage write: snapshot counters are
+// replaced, accumulating ones increment, all in one statement so parallel
+// sub-agents cannot lose each other's totals.
+func TestAddStepUsage(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	svc := NewService(db.New(conn), conn)
+	ctx := t.Context()
+
+	sess, err := svc.Create(ctx, "usage")
+	require.NoError(t, err)
+
+	sub := svc.Subscribe(ctx)
+	var seen []Session
+	done := make(chan struct{})
+	go func() {
+		for ev := range sub {
+			if ev.Type == pubsub.UpdatedEvent {
+				seen = append(seen, ev.Payload)
+			}
+			if len(seen) >= 2 {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	first, err := svc.AddStepUsage(ctx, sess.ID, StepUsage{
+		PromptTokens: 100, CompletionTokens: 40, CacheReadTokens: 1000, ContextTokens: 500, Cost: 1.5, Estimated: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(100), first.PromptTokens)
+	require.Equal(t, int64(40), first.CompletionTokens)
+	require.Equal(t, int64(1000), first.TotalCacheReadTokens)
+	require.Equal(t, int64(500), first.TotalContextTokens)
+	require.InDelta(t, 1.5, first.Cost, 1e-9)
+	require.True(t, first.EstimatedUsage, "the estimated flag reaches the returned session")
+
+	second, err := svc.AddStepUsage(ctx, sess.ID, StepUsage{
+		PromptTokens: 200, CompletionTokens: 60, CacheReadTokens: 100, ContextTokens: 300, Cost: 0.5,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(200), second.PromptTokens, "prompt tokens are a snapshot, not a sum")
+	require.Equal(t, int64(60), second.CompletionTokens)
+	require.Equal(t, int64(1100), second.TotalCacheReadTokens, "cache reads accumulate")
+	require.Equal(t, int64(800), second.TotalContextTokens, "context tokens accumulate")
+	require.InDelta(t, 2.0, second.Cost, 1e-9, "cost accumulates")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("usage updates were not published")
+	}
+	require.Len(t, seen, 2)
 }

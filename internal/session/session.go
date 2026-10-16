@@ -32,6 +32,19 @@ func HashID(id string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// StepUsage is one agent step's contribution to a session's totals.
+// PromptTokens and CompletionTokens are the step's snapshot of the current
+// context size; the other fields are increments applied on top of whatever
+// the row already holds, so parallel writers cannot lose each other's work.
+type StepUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheReadTokens  int64
+	ContextTokens    int64
+	Cost             float64
+	Estimated        bool
+}
+
 type Todo struct {
 	Content    string     `json:"content"`
 	Status     TodoStatus `json:"status"`
@@ -78,6 +91,12 @@ type Service interface {
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
 	AddSessionUsage(ctx context.Context, sessionID string, cacheReadTokens, contextTokens int64, cost float64) error
+	// AddStepUsage records one agent step's usage in a single statement:
+	// the prompt/completion snapshots are replaced with the step's values
+	// while the cache, context, and cost totals increment. Use it instead
+	// of a fetch-modify-save, which costs two round trips per step and can
+	// clobber a concurrent sub-agent's totals.
+	AddStepUsage(ctx context.Context, sessionID string, usage StepUsage) (Session, error)
 	UpdateTodos(ctx context.Context, sessionID string, todos []Todo) error
 	SetTitleIfUnchanged(ctx context.Context, sessionID, expectedTitle, title string) error
 	Rename(ctx context.Context, id string, title string) error
@@ -254,6 +273,26 @@ func (s *service) SetChannel(ctx context.Context, sessionID, channel string) (Se
 	}
 	session := s.fromDBItem(dbSession)
 	s.applyEstimatedUsageState(&session)
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
+// AddStepUsage implements [Service].
+func (s *service) AddStepUsage(ctx context.Context, sessionID string, usage StepUsage) (Session, error) {
+	dbSession, err := s.q.AddStepUsage(ctx, db.AddStepUsageParams{
+		ID:                   sessionID,
+		PromptTokens:         usage.PromptTokens,
+		CompletionTokens:     usage.CompletionTokens,
+		TotalCacheReadTokens: usage.CacheReadTokens,
+		TotalContextTokens:   usage.ContextTokens,
+		Cost:                 usage.Cost,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	s.setEstimatedUsageState(sessionID, usage.Estimated)
+	session := s.fromDBItem(dbSession)
+	session.EstimatedUsage = usage.Estimated
 	s.Publish(pubsub.UpdatedEvent, session)
 	return session, nil
 }

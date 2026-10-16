@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	AddSessionUsage(ctx context.Context, arg AddSessionUsageParams) error
+	AddStepUsage(ctx context.Context, arg AddStepUsageParams) (Session, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
