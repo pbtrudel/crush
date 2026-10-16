@@ -96,6 +96,11 @@ type Server struct {
 
 	backend *backend.Backend
 	logger  *slog.Logger
+
+	// sinks fans one encoded event stream out to every attached SSE
+	// connection of a workspace, so an event costs one encode no matter
+	// how many clients watch it.
+	sinks *sinkRegistry
 }
 
 // SetLogger sets the logger for the server.
@@ -148,6 +153,9 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 // [NewServer] so test harnesses can wire a Server around a
 // pre-constructed backend.
 func (s *Server) installHandler() {
+	if s.sinks == nil {
+		s.sinks = newSinkRegistry()
+	}
 	var p http.Protocols
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(true)
