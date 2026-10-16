@@ -100,6 +100,16 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		assignIfNil(&cfg.Options.TUI.Transparent, true)
 	}
 
+	// Catalogs that shadow Catwalk's (ChatGPT and Grok) are otherwise only
+	// fetched at login and would freeze there while Catwalk keeps moving.
+	// Register before the fetch so a background revalidation that finishes
+	// in the first seconds of startup still renews them. Best effort: a
+	// failed fetch keeps the catalog loaded from config.
+	RegisterCatalogRefreshedHook(func(ctx context.Context) {
+		store.refetchOpenAIModels(ctx, ScopeGlobal)
+		store.refetchGrokModels(ctx, ScopeGlobal)
+	})
+
 	// Load known providers, this loads the config from catwalk. A failed
 	// refresh still yields the cached or embedded catalog, so only an empty
 	// list is fatal: starting up without providers is worse than starting

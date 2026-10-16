@@ -87,3 +87,56 @@ func TestVersionedMap_ConcurrentAccess(t *testing.T) {
 	require.GreaterOrEqual(t, vm.Version(), expectedMinVersion)
 	require.Equal(t, 0, vm.Len())
 }
+
+func TestVersionedMap_ChangedWakesOnMutation(t *testing.T) {
+	t.Parallel()
+
+	vm := NewVersionedMap[string, int]()
+	ch, version := vm.Changed()
+	require.Equal(t, uint64(0), version)
+
+	select {
+	case <-ch:
+		t.Fatal("no mutation has happened yet")
+	default:
+	}
+
+	vm.Set("key1", 42)
+
+	select {
+	case <-ch:
+	default:
+		t.Fatal("Changed channel should close on Set")
+	}
+
+	// The next handout is a fresh, still-open channel.
+	next, version := vm.Changed()
+	require.Equal(t, uint64(1), version)
+	select {
+	case <-next:
+		t.Fatal("the fresh channel must not be closed")
+	default:
+	}
+
+	vm.Del("key1")
+	select {
+	case <-next:
+	default:
+		t.Fatal("Changed channel should close on Del")
+	}
+}
+
+func TestVersionedMap_ChangedPairIsRaceFree(t *testing.T) {
+	t.Parallel()
+
+	// A caller reads a version, then arms on Changed. If a mutation lands
+	// in between, the returned version must already differ so the caller
+	// can see it without blocking forever.
+	vm := NewVersionedMap[string, int]()
+	observed := vm.Version()
+	vm.Set("key1", 42)
+
+	ch, version := vm.Changed()
+	require.NotEqual(t, observed, version, "the handout must reveal a mutation that landed first")
+	require.NotNil(t, ch)
+}

@@ -87,6 +87,22 @@ func (s *hyperSync) fetch(ctx context.Context) {
 		cached = hyper.Embedded()
 	}
 
+	// Stale-while-revalidate, same contract as the Catwalk catalog: a
+	// cached provider inside the max-stale window is served now and
+	// revalidated in the background, so startup does not pay a round trip
+	// for an endpoint and model list the disk already has. The refresh
+	// updates the cache for the next launch; it deliberately does not
+	// swap this process's provider, whose endpoint a live session may be
+	// talking to.
+	if cached.ID != "" && cachedErr == nil && len(cached.Models) > 0 {
+		if age, ok := s.cache.Age(); ok && age < catalogMaxStale() {
+			slog.Info("Using cached Hyper provider", "age", age.Round(time.Second))
+			s.result = cached
+			go s.revalidate(etag)
+			return
+		}
+	}
+
 	slog.Info("Fetching Hyper provider")
 	result, err := s.client.Get(ctx, etag)
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -115,6 +131,28 @@ func (s *hyperSync) fetch(ctx context.Context) {
 	// result rather than in place of one.
 	s.result = result
 	s.err = s.cache.Store(result)
+}
+
+// revalidate refreshes the cached Hyper provider off the startup path.
+// Failure is not an error for the caller: this process has a usable
+// provider and the next launch tries again.
+func (s *hyperSync) revalidate(etag string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	result, err := s.client.Get(ctx, etag)
+	if err != nil {
+		if !errors.Is(err, catwalk.ErrNotModified) {
+			slog.Debug("Background Hyper refresh failed", "error", err)
+		}
+		return
+	}
+	if len(result.Models) == 0 {
+		return
+	}
+	if err := s.cache.Store(result); err != nil {
+		slog.Debug("Could not cache refreshed Hyper provider", "error", err)
+	}
 }
 
 var _ hyperClient = realHyperClient{}

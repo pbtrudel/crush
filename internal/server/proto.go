@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/charmbracelet/crush/internal/backend"
@@ -186,11 +185,17 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 	// detect a live subscriber; subscribing first guarantees that
 	// once a client appears attached, any published event is
 	// delivered rather than dropped on a not-yet-registered stream.
-	events, err := c.backend.SubscribeEvents(r.Context(), id)
+	//
+	// The subscription is shared per workspace: events are wrapped and
+	// marshaled once and each connection drains its own coalesced
+	// backlog, so N attached clients cost one encode per event instead
+	// of N.
+	sub, release, err := c.server.sinks.attach(r.Context(), c.backend, id)
 	if err != nil {
 		c.handleError(w, r, err)
 		return
 	}
+	defer release()
 	if err := c.backend.AttachClient(id, clientID); err != nil {
 		c.handleError(w, r, err)
 		return
@@ -212,21 +217,31 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 		case <-r.Context().Done():
 			c.server.logDebug(r, "Stopping event stream")
 			return
-		case ev, ok := <-events:
-			if !ok {
+		case <-sub.wait():
+			// Drain until empty, flushing once per batch: a client that
+			// falls behind sends fewer, larger frames instead of one
+			// syscall per event, and a frame that lands mid-drain is
+			// caught by the next pass instead of riding a consumed
+			// signal into the backlog.
+			var buf []byte
+			for {
+				frames := sub.drain()
+				if len(frames) == 0 {
+					break
+				}
+				for _, f := range frames {
+					buf = append(buf, "data: "...)
+					buf = append(buf, f.data...)
+					buf = append(buf, '\n', '\n')
+				}
+			}
+			if len(buf) == 0 {
+				continue
+			}
+			if _, writeErr := w.Write(buf); writeErr != nil {
+				c.server.logDebug(r, "Stopping event stream", "error", writeErr)
 				return
 			}
-			wrapped := wrapEvent(ev.Payload)
-			if wrapped == nil {
-				continue
-			}
-			data, err := json.Marshal(wrapped)
-			if err != nil {
-				c.server.logError(r, "Failed to marshal event", "error", err)
-				continue
-			}
-
-			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}
 	}

@@ -547,6 +547,46 @@ func (c *Client) OpenFileOnDemand(ctx context.Context, filepath string) error {
 	return c.OpenFile(ctx, filepath)
 }
 
+// OpenFileForRead opens filepath for a read-only inspection and reports
+// whether a didOpen actually went to the server. A file that was already
+// open produces no notification, so the server has nothing new to
+// publish, and the caller can skip waiting for diagnostics.
+func (c *Client) OpenFileForRead(ctx context.Context, filepath string) (bool, error) {
+	if c == nil || c.client == nil {
+		return false, nil
+	}
+	if c.IsFileOpen(filepath) {
+		return false, nil
+	}
+	if err := c.OpenFile(ctx, filepath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HasDiagnosticsFor reports whether the server has published diagnostics
+// for the file at any point. An empty list counts: it means the server
+// looked at the file and found nothing, which is as fresh as a result
+// without a new notification.
+func (c *Client) HasDiagnosticsFor(filepath string) bool {
+	if c == nil {
+		return false
+	}
+	if _, ok := c.diagnostics.Get(protocol.URIFromPath(filepath)); ok {
+		return true
+	}
+	// Servers may publish a URI whose normalization differs from the one
+	// generated from the local path while still referring to the same
+	// file, so compare on the resolved path like the diagnostics reader
+	// does.
+	for location := range c.diagnostics.Seq2() {
+		if path, err := location.Path(); err == nil && path == filepath {
+			return true
+		}
+	}
+	return false
+}
+
 // RegisterNotificationHandler registers a notification handler.
 func (c *Client) RegisterNotificationHandler(method string, handler transport.NotificationHandler) {
 	c.client.RegisterNotificationHandler(method, handler)
@@ -621,6 +661,11 @@ func (c *Client) RefreshOpenFiles(ctx context.Context) {
 // period, indicating the LSP server has finished processing. If no
 // diagnostics change within firstChangeDuration, it returns early since the
 // server likely isn't going to republish.
+//
+// Wake-ups are push-based: the diagnostics store hands out a channel that
+// closes on the next publish, so a change is noticed the instant the server
+// sends it instead of on the next poll tick. That removes a polling
+// interval of latency from every edit the agent makes.
 func (c *Client) WaitForDiagnostics(ctx context.Context, timeout time.Duration) {
 	if c == nil {
 		return
@@ -633,58 +678,57 @@ func (c *Client) WaitForDiagnostics(ctx context.Context, timeout time.Duration) 
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-	firstChangeTimer := time.NewTimer(min(timeout, firstChangeDuration))
-	defer firstChangeTimer.Stop()
-	previousVersion := c.diagnostics.Version()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 
+	// firstChange bounds how long we wait for the server to start
+	// republishing at all. When nothing arrives within it the server is not
+	// going to, and waiting longer only adds latency.
+	firstChange := time.NewTimer(min(timeout, firstChangeDuration))
+	defer firstChange.Stop()
+
+	var settle *time.Timer
+	defer func() {
+		if settle != nil {
+			settle.Stop()
+		}
+	}()
+
+	// settleCh is nil until the first change lands; selecting on a nil
+	// channel simply never fires, which is how the two phases share one
+	// loop. Likewise firstCh stops being armed once settling begins.
+	var settleCh <-chan time.Time
+
+	prev := c.diagnostics.Version()
 	for {
+		changed, version := c.diagnostics.Changed()
+		if version != prev {
+			// A publish landed before this handout, so arm the settle
+			// window and loop for the next wake-up.
+			prev = version
+			firstChange.Stop()
+			if settle != nil {
+				settle.Stop()
+			}
+			settle = time.NewTimer(settleDuration)
+			settleCh = settle.C
+			continue
+		}
+
+		var firstCh <-chan time.Time
+		if settleCh == nil {
+			firstCh = firstChange.C
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-deadline.C:
 			return
-		case <-firstChangeTimer.C:
-			// No change arrived quickly — server isn't republishing.
+		case <-changed:
+			continue
+		case <-firstCh:
 			return
-		case <-ticker.C:
-			currentVersion := c.diagnostics.Version()
-			if currentVersion != previousVersion {
-				// Diagnostics changed — now wait for them to settle.
-				c.waitForDiagnosticsToSettle(ctx, deadline.C, settleDuration)
-				return
-			}
-		}
-	}
-}
-
-// waitForDiagnosticsToSettle waits until diagnostics version stays the same
-// for settleDuration, indicating the LSP server has finished publishing.
-func (c *Client) waitForDiagnosticsToSettle(ctx context.Context, deadline <-chan time.Time, settleDuration time.Duration) {
-	lastVersion := c.diagnostics.Version()
-	settleTicker := time.NewTicker(50 * time.Millisecond)
-	defer settleTicker.Stop()
-
-	// Track how long the version has been stable.
-	stableStart := time.Now()
-
-	for {
-		select {
-		case <-ctx.Done():
+		case <-settleCh:
 			return
-		case <-deadline:
-			return
-		case <-settleTicker.C:
-			currentVersion := c.diagnostics.Version()
-			if currentVersion != lastVersion {
-				// New change detected — reset the stable timer.
-				lastVersion = currentVersion
-				stableStart = time.Now()
-			} else if time.Since(stableStart) >= settleDuration {
-				// Diagnostics have been stable for the settle duration.
-				return
-			}
 		}
 	}
 }

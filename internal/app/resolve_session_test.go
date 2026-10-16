@@ -68,6 +68,10 @@ func (m *mockSessionService) AddSessionUsage(context.Context, string, int64, int
 	return nil
 }
 
+func (m *mockSessionService) AddStepUsage(_ context.Context, _ string, usage session.StepUsage) (session.Session, error) {
+	return session.Session{ID: "mock"}, nil
+}
+
 func (m *mockSessionService) UpdateTodos(context.Context, string, []session.Todo) error {
 	return nil
 }

@@ -245,8 +245,7 @@ func NewViewTool(
 				return fantasy.NewTextErrorResponse("File content is not valid UTF-8"), nil
 			}
 
-			openInLSPs(ctx, lspManager, filePath)
-			waitForLSPDiagnostics(ctx, lspManager, filePath, 300*time.Millisecond)
+			waitForLSPDiagnostics(ctx, openInLSPs(ctx, lspManager, filePath), 300*time.Millisecond)
 			output := "<file>\n"
 			output += addLineNumbers(content, params.Offset+1)
 

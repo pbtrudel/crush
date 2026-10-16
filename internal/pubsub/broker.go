@@ -54,7 +54,17 @@ type Broker[T any] struct {
 	mustDeliverTimeout   time.Duration
 	dropCount            atomic.Uint64
 	mustDeliverDropCount atomic.Uint64
+
+	// logDrop reports saturation. It is called at most once per
+	// dropLogInterval per broker so a subscriber that stays full cannot
+	// write one warning per dropped event, and it is swapped out in tests.
+	logDrop func(EventType, uint64)
+	// lastDropLog is the unix-nanosecond stamp of the last warning.
+	lastDropLog atomic.Int64
 }
+
+// dropLogInterval bounds how often one broker warns about dropped events.
+const dropLogInterval = time.Second
 
 func NewBroker[T any]() *Broker[T] {
 	return NewBrokerWithOptions[T](bufferSize)
@@ -62,6 +72,9 @@ func NewBroker[T any]() *Broker[T] {
 
 func NewBrokerWithOptions[T any](channelBufferSize int) *Broker[T] {
 	return &Broker[T]{
+		logDrop: func(t EventType, dropped uint64) {
+			slog.Warn("Pubsub buffer full; dropping events", "type", t, "dropped", dropped)
+		},
 		subs:               make(map[chan Event[T]]struct{}),
 		done:               make(chan struct{}),
 		channelBufferSize:  channelBufferSize,
@@ -159,8 +172,9 @@ func (b *Broker[T]) MustDeliverDropCount() uint64 {
 // Publish delivers an event to every active subscriber.
 //
 // Delivery is non-blocking and lossy: if a subscriber's channel is full
-// the event is dropped for that subscriber, a warning is logged, and
-// [Broker.DropCount] is incremented. Use [Broker.PublishMustDeliver]
+// the event is dropped for that subscriber, [Broker.DropCount] is
+// incremented, and saturation is warned about at most once per
+// [dropLogInterval]. Use [Broker.PublishMustDeliver]
 // for events that must not be silently dropped.
 func (b *Broker[T]) Publish(t EventType, payload T) {
 	b.mu.RLock()
@@ -179,10 +193,10 @@ func (b *Broker[T]) Publish(t EventType, payload T) {
 		case sub <- event:
 		default:
 			// Channel is full, subscriber is slow — skip this event.
-			// Lossy by design; counted and logged so saturation is
-			// observable.
+			// Lossy by design; counted so saturation is observable, and
+			// logged at most once per interval per broker.
 			b.dropCount.Add(1)
-			slog.Warn("Pubsub buffer full; dropping event", "type", t)
+			b.maybeLogDrop(t)
 		}
 	}
 }
@@ -198,6 +212,21 @@ func (b *Broker[T]) Publish(t EventType, payload T) {
 // tool result, error, cancel). Callers must still tolerate rare drops
 // after timeout — recovery is the subscriber's responsibility (e.g. a
 // re-fetch on the next session-visible event).
+// maybeLogDrop warns about drops, throttled to one warning per interval.
+// The cumulative count travels with the warning so a single line still
+// says how much was lost.
+func (b *Broker[T]) maybeLogDrop(t EventType) {
+	now := time.Now().UnixNano()
+	last := b.lastDropLog.Load()
+	if now-last < dropLogInterval.Nanoseconds() {
+		return
+	}
+	if !b.lastDropLog.CompareAndSwap(last, now) {
+		return
+	}
+	b.logDrop(t, b.dropCount.Load())
+}
+
 func (b *Broker[T]) PublishMustDeliver(ctx context.Context, t EventType, payload T) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

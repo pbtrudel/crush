@@ -1120,13 +1120,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			sessionLock.Lock()
 			defer sessionLock.Unlock()
 
-			updatedSession, getSessionErr := a.sessions.Get(ctx, call.SessionID)
-			if getSessionErr != nil {
-				return getSessionErr
-			}
+			// One incrementing UPDATE replaces a read plus a full-row
+			// write per step, and it can no longer clobber a concurrent
+			// todo, title, or sub-agent rollup written between the read and
+			// the write.
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
-			a.updateSessionUsage(largeModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
-			_, sessionErr := a.sessions.Save(ctx, updatedSession)
+			updatedSession, sessionErr := a.sessions.AddStepUsage(
+				ctx,
+				call.SessionID,
+				a.stepUsageFor(largeModel, currentSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated),
+			)
 			if sessionErr != nil {
 				return sessionErr
 			}
@@ -2701,15 +2704,33 @@ func extraFieldFloat(pm *openai.ProviderMetadata, key string) *float64 {
 }
 
 func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) {
+	step := a.stepUsageFor(model, *session, usage, overrideCost, estimated)
+	session.EstimatedUsage = step.Estimated
+	session.PromptTokens = step.PromptTokens
+	session.CompletionTokens = step.CompletionTokens
+	session.TotalCacheReadTokens += step.CacheReadTokens
+	session.TotalContextTokens += step.ContextTokens
+	session.Cost += step.Cost
+}
+
+// stepUsageFor prices one request's usage and splits it into what a session
+// row needs: the context-size snapshot the step reported (falling back to
+// the session's current snapshot when the provider gave nothing) and the
+// increments for the accumulating columns. Returning values instead of
+// mutating lets the per-step write be a single incrementing UPDATE rather
+// than a fetch-modify-save, which both costs one less round trip and cannot
+// clobber a concurrent sub-agent's totals.
+func (a *sessionAgent) stepUsageFor(model Model, sess session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) session.StepUsage {
 	usage = clampUsageCounters(usage)
+	estimatedFlag := sess.EstimatedUsage
 	if !usageIsZero(usage) {
-		session.EstimatedUsage = estimated
+		estimatedFlag = estimated
 	}
 
 	cost := tokenUsageCost(model.CatwalkCfg, usage)
 
 	if !estimated {
-		a.eventTokensUsed(session.ID, model, usage, cost)
+		a.eventTokensUsed(sess.ID, model, usage, cost)
 	}
 
 	// Prompt-cache visibility. A low read share means the request prefix
@@ -2724,7 +2745,7 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 		}
 		slog.Debug(
 			"Prompt cache usage",
-			"session_id", session.ID,
+			"session_id", sess.ID,
 			"provider", model.ModelCfg.Provider,
 			"model", model.ModelCfg.Model,
 			"cache_read_tokens", usage.CacheReadTokens,
@@ -2748,8 +2769,23 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 		}
 	}
 
-	session.Cost += cost
-	updateSessionTokenCounters(session, usage)
+	promptTokens := contextTokens(usage)
+	if promptTokens == 0 {
+		promptTokens = sess.PromptTokens
+	}
+	completionTokens := usage.OutputTokens
+	if completionTokens == 0 {
+		completionTokens = sess.CompletionTokens
+	}
+
+	return session.StepUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		ContextTokens:    contextTokens(usage),
+		Cost:             cost,
+		Estimated:        estimatedFlag,
+	}
 }
 
 // tokenUsageCost prices one request's usage with the model's per-token

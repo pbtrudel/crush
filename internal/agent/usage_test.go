@@ -120,3 +120,58 @@ func TestOpenRouterCostFromSteps(t *testing.T) {
 	require.InDelta(t, 0.3, *cost, 1e-12)
 	require.Nil(t, a.openRouterCostFromSteps(nil))
 }
+
+// stepUsageFor must produce exactly the same outcome as the in-place
+// mutation it was extracted from: the incremental session write is only
+// safe if the split into snapshots and increments matches what the old
+// fetch-modify-save computed.
+func TestStepUsageForMatchesUpdateSessionUsage(t *testing.T) {
+	t.Parallel()
+
+	a := &sessionAgent{}
+	cachedModel := Model{
+		CatwalkCfg: catwalk.Model{ID: "m", CostPer1MIn: 3, CostPer1MOut: 15, CostPer1MInCached: 0.5, CostPer1MOutCached: 0.3},
+	}
+	flatModel := cachedModel
+	flatModel.FlatRate = true
+
+	cases := []struct {
+		name         string
+		model        Model
+		start        session.Session
+		usage        fantasy.Usage
+		overrideCost *float64
+		estimated    bool
+	}{
+		{"normal", cachedModel, session.Session{ID: "s", Cost: 1, TotalCacheReadTokens: 10, TotalContextTokens: 100, PromptTokens: 50, CompletionTokens: 5}, fantasy.Usage{InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 4000, CacheCreationTokens: 100}, nil, false},
+		{"zero usage keeps snapshots", cachedModel, session.Session{ID: "s", PromptTokens: 700, CompletionTokens: 90, TotalContextTokens: 12, EstimatedUsage: true}, fantasy.Usage{}, nil, false},
+		{"estimated costs nothing", cachedModel, session.Session{ID: "s"}, fantasy.Usage{InputTokens: 10, OutputTokens: 5}, nil, true},
+		{"override cost wins", cachedModel, session.Session{ID: "s"}, fantasy.Usage{InputTokens: 10}, func() *float64 { v := 0.42; return &v }(), false},
+		{"flat rate is free", flatModel, session.Session{ID: "s"}, fantasy.Usage{InputTokens: 10, OutputTokens: 5}, nil, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			legacy := tc.start
+			a.updateSessionUsage(tc.model, &legacy, tc.usage, tc.overrideCost, tc.estimated)
+
+			step := a.stepUsageFor(tc.model, tc.start, tc.usage, tc.overrideCost, tc.estimated)
+			incremented := tc.start
+			incremented.PromptTokens = step.PromptTokens
+			incremented.CompletionTokens = step.CompletionTokens
+			incremented.TotalCacheReadTokens += step.CacheReadTokens
+			incremented.TotalContextTokens += step.ContextTokens
+			incremented.Cost += step.Cost
+			incremented.EstimatedUsage = step.Estimated
+
+			require.Equal(t, legacy.PromptTokens, incremented.PromptTokens)
+			require.Equal(t, legacy.CompletionTokens, incremented.CompletionTokens)
+			require.Equal(t, legacy.TotalCacheReadTokens, incremented.TotalCacheReadTokens)
+			require.Equal(t, legacy.TotalContextTokens, incremented.TotalContextTokens)
+			require.InDelta(t, legacy.Cost, incremented.Cost, 1e-9)
+			require.Equal(t, legacy.EstimatedUsage, incremented.EstimatedUsage)
+		})
+	}
+}

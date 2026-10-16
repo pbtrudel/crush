@@ -37,6 +37,58 @@ func (q *Queries) AddSessionUsage(ctx context.Context, arg AddSessionUsageParams
 	return err
 }
 
+const addStepUsage = `-- name: AddStepUsage :one
+UPDATE sessions
+SET
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    total_cache_read_tokens = total_cache_read_tokens + ?,
+    total_context_tokens = total_context_tokens + ?,
+    cost = cost + ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+RETURNING *
+`
+
+type AddStepUsageParams struct {
+	PromptTokens         int64   `json:"prompt_tokens"`
+	CompletionTokens     int64   `json:"completion_tokens"`
+	TotalCacheReadTokens int64   `json:"total_cache_read_tokens"`
+	TotalContextTokens   int64   `json:"total_context_tokens"`
+	Cost                 float64 `json:"cost"`
+	ID                   string  `json:"id"`
+}
+
+func (q *Queries) AddStepUsage(ctx context.Context, arg AddStepUsageParams) (Session, error) {
+	row := q.queryRow(ctx, q.addStepUsageStmt, addStepUsage,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.TotalCacheReadTokens,
+		arg.TotalContextTokens,
+		arg.Cost,
+		arg.ID,
+	)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.Todos,
+		&i.Channel,
+		&i.TotalCacheReadTokens,
+		&i.TotalContextTokens,
+		&i.SummaryCutMessageID,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
     id,
