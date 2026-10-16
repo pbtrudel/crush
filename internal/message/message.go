@@ -106,6 +106,18 @@ type pendingState struct {
 	// baseline for [shouldFlushNow].
 	baseline flushBaseline
 
+	// flushCount is how many writes have landed for this message. The
+	// part seal only activates after the first write: a message written
+	// once has nothing to reuse, and seeding the cache would cost more
+	// than it saves. Guarded by flushing like seal.
+	flushCount int
+
+	// seal caches the JSON encoding of the last flushed parts so a
+	// streamed turn re-escapes only the bytes that arrived since. Only
+	// the in-flight flusher touches it (guarded by flushing), so it is
+	// read and written outside the service lock.
+	seal partsSeal
+
 	// hasFlushed is false until the first successful write for this
 	// ID; until then baseline is the zero value and must not be
 	// treated as a real prior state.
@@ -389,7 +401,9 @@ func (s *service) flushOne(ctx context.Context, id string, syncCaller bool) erro
 		p.dirty = false
 		s.mu.Unlock()
 
-		err := s.write(ctx, snap)
+		// The flushing flag excludes every other flusher for this ID, so
+		// the seal and flush counter are mutated without holding s.mu.
+		err := s.write(ctx, p, snap)
 
 		s.mu.Lock()
 		p.flushing = false
@@ -433,9 +447,19 @@ func (s *service) flushOne(ctx context.Context, id string, syncCaller bool) erro
 }
 
 // write performs the unguarded SQL write + UpdatedAt stamp. Caller
-// owns publishing.
-func (s *service) write(ctx context.Context, msg Message) error {
-	parts, err := marshalParts(msg.Parts)
+// owns publishing and must be the sole in-flight flusher for p, since
+// the encoder cache and flush counter live on it. Output is
+// byte-identical either way: the seal reuses cached escapes only when it
+// can prove they are still exact.
+func (s *service) write(ctx context.Context, p *pendingState, msg Message) error {
+	var parts []byte
+	var err error
+	if p.flushCount == 0 {
+		parts, err = marshalParts(msg.Parts)
+	} else {
+		parts, err = p.seal.encode(nil, msg.Parts)
+	}
+	p.flushCount++
 	if err != nil {
 		return err
 	}
