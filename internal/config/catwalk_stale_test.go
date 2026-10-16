@@ -65,11 +65,10 @@ func TestCatwalkSync_FreshCacheSkipsBlockingFetch(t *testing.T) {
 
 // The background revalidation writes the refreshed catalog to disk and
 // reports it via the refresh hook, so a changed catalog lands for the
-// next run without holding up this one.
-// These two tests share the package-level refresh hook registry, so they
-// run sequentially instead of in parallel.
+// next run without holding up this one. These two tests share the
+// package-level refresh hook registry, so they run sequentially instead of
+// in parallel.
 func TestCatwalkSync_BackgroundRefresh(t *testing.T) {
-
 	path := filepath.Join(t.TempDir(), "providers.json")
 	cached := []catwalk.Provider{{ID: "cached-provider"}}
 	writeCatwalkCache(t, path, cached)
@@ -126,7 +125,6 @@ func TestCatwalkSync_StaleCacheRefreshesSynchronously(t *testing.T) {
 // A background refresh that fails leaves everything exactly as it was:
 // the cached catalog, the memoized result, and no hook.
 func TestCatwalkSync_BackgroundRefreshFailureIsQuiet(t *testing.T) {
-
 	path := filepath.Join(t.TempDir(), "providers.json")
 	cached := []catwalk.Provider{{ID: "cached-provider"}}
 	writeCatwalkCache(t, path, cached)
