@@ -273,6 +273,17 @@ func (c cache[T]) Get() (T, string, error) {
 	return v, etag.Of(data), nil
 }
 
+// Age reports how old the cached payload is by file modification time. It
+// returns ok=false when the cache cannot be stat'ed, which callers treat
+// as "not fresh enough".
+func (c cache[T]) Age() (time.Duration, bool) {
+	info, err := os.Stat(c.path)
+	if err != nil {
+		return 0, false
+	}
+	return time.Since(info.ModTime()), true
+}
+
 func (c cache[T]) Store(v T) error {
 	slog.Info("Saving provider data to disk", "path", c.path)
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {

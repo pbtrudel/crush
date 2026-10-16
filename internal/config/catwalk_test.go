@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/stretchr/testify/require"
@@ -133,6 +134,8 @@ func TestCatwalkSync_GetNotModifiedUsesCached(t *testing.T) {
 	data, err := json.Marshal(cachedProviders)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
+	// Aged past the max-stale window so this test exercises the blocking fetch.
+	agedCache(t, path, 48*time.Hour)
 
 	syncer := &catwalkSync{}
 	client := &mockCatwalkClient{
@@ -161,6 +164,8 @@ func TestCatwalkSync_GetEmptyResultFallbackToCached(t *testing.T) {
 	data, err := json.Marshal(cachedProviders)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
+	// Aged past the max-stale window so this test exercises the blocking fetch.
+	agedCache(t, path, 48*time.Hour)
 
 	syncer := &catwalkSync{}
 	client := &mockCatwalkClient{
@@ -269,6 +274,8 @@ func TestCatwalkSync_Updated(t *testing.T) {
 
 		path := t.TempDir() + "/providers.json"
 		require.NoError(t, os.WriteFile(path, []byte(`[{"name":"Cached","id":"cached"}]`), 0o644))
+		// Aged past the max-stale window so this test exercises the blocking fetch.
+		agedCache(t, path, 48*time.Hour)
 
 		syncer := &catwalkSync{}
 		syncer.Init(&mockCatwalkClient{err: catwalk.ErrNotModified}, path, true)
