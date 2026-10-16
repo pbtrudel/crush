@@ -128,27 +128,24 @@ func (q *sinkSub) push(f sinkFrame) {
 }
 
 // drain returns the pending frames in arrival order and empties the
-// backlog. It never blocks, so the writer can pair one drain with one
-// flush.
+// backlog. It never blocks, and it deliberately leaves the wake-up signal
+// alone: the writer loop drains until it sees an empty batch, so a frame
+// that lands just after a drain can never be stranded by a consumed
+// signal.
 func (q *sinkSub) drain() []sinkFrame {
 	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.order) == 0 {
+		return nil
+	}
 	out := make([]sinkFrame, 0, len(q.order))
 	for _, key := range q.order {
 		out = append(out, q.byKey[key])
 		delete(q.byKey, key)
 	}
 	q.order = q.order[:0]
-	q.mu.Unlock()
-
-	// Consume any signals left over from frames that were coalesced away.
-	for {
-		select {
-		case <-q.notify:
-			continue
-		default:
-			return out
-		}
-	}
+	return out
 }
 
 func (q *sinkSub) wait() <-chan struct{} { return q.notify }

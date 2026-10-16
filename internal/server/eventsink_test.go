@@ -125,3 +125,32 @@ func TestEventKey_IdentifiesEntities(t *testing.T) {
 		eventKey(pubsub.Event[message.Message]{Payload: message.Message{ID: "m2"}}),
 	)
 }
+
+// A drained backlog must leave the wake-up signal alone: the writer loop
+// re-checks until it sees an empty drain, and a signal eaten by the
+// previous drain would strand a frame that arrived just after it.
+func TestEventSink_DrainDoesNotConsumeSignal(t *testing.T) {
+	t.Parallel()
+
+	sink := newEventSink()
+	sub := sink.attach(8)
+	sink.encode = func(payload any) ([]byte, string) {
+		return []byte(payload.(string)), "message:" + payload.(string)
+	}
+
+	sink.publish("m1")
+	require.Len(t, sub.drain(), 1)
+
+	select {
+	case <-sub.wait():
+	default:
+		t.Fatal("the wake-up signal must still be pending for the writer loop to re-check")
+	}
+
+	// A frame pushed after that drain has to be reachable by the same
+	// wake-up: the writer loops until a drain comes back empty.
+	sink.publish("m2")
+	frames := sub.drain()
+	require.Equal(t, [][]byte{[]byte("m2")}, frameDatas(frames))
+	require.Empty(t, sub.drain())
+}

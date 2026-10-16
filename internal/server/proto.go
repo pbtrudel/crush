@@ -218,18 +218,25 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 			c.server.logDebug(r, "Stopping event stream")
 			return
 		case <-sub.wait():
-			// One drain per wake-up, one flush per batch: a client that
+			// Drain until empty, flushing once per batch: a client that
 			// falls behind sends fewer, larger frames instead of one
-			// syscall per event.
-			frames := sub.drain()
-			if len(frames) == 0 {
-				continue
-			}
+			// syscall per event, and a frame that lands mid-drain is
+			// caught by the next pass instead of riding a consumed
+			// signal into the backlog.
 			var buf []byte
-			for _, f := range frames {
-				buf = append(buf, "data: "...)
-				buf = append(buf, f.data...)
-				buf = append(buf, '\n', '\n')
+			for {
+				frames := sub.drain()
+				if len(frames) == 0 {
+					break
+				}
+				for _, f := range frames {
+					buf = append(buf, "data: "...)
+					buf = append(buf, f.data...)
+					buf = append(buf, '\n', '\n')
+				}
+			}
+			if len(buf) == 0 {
+				continue
 			}
 			if _, writeErr := w.Write(buf); writeErr != nil {
 				c.server.logDebug(r, "Stopping event stream", "error", writeErr)
