@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,11 +79,11 @@ func TestBridgeMirrorsAssistantTurn(t *testing.T) {
 	b, _, api, _ := testBridge(t, testConfig())
 
 	b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m1")))
-	require.Eventually(t, func() bool { return api.hasPostContaining("Thinking") }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return api.hasContentContaining("Thinking") }, 2*time.Second, 10*time.Millisecond)
 
 	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m1", message.TextContent{Text: "Hello from the agent"})))
 	require.Eventually(t, func() bool {
-		return api.hasEditContaining("Hello from the agent") || api.hasPostContaining("Hello from the agent")
+		return api.hasContentContaining("Hello from the agent")
 	}, 2*time.Second, 10*time.Millisecond)
 
 	b.handleEvent(pubsub.Event[tea.Msg]{Payload: pubsub.Event[notify.RunComplete]{
@@ -90,13 +91,13 @@ func TestBridgeMirrorsAssistantTurn(t *testing.T) {
 		Payload: notify.RunComplete{SessionID: "sess-1", MessageID: "m1", Text: "Hello from the agent"},
 	}})
 	require.Eventually(t, func() bool {
-		return api.hasEditContaining("Done in") || api.hasPostContaining("Done in")
+		return api.hasContentContaining("Done in")
 	}, 2*time.Second, 10*time.Millisecond)
 
 	// Late updates for a completed message must not resurrect the turn.
 	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m1", message.TextContent{Text: "late"})))
 	time.Sleep(50 * time.Millisecond)
-	require.False(t, api.hasPostContaining("late"), "completed message ids are ignored")
+	require.False(t, api.hasContentContaining("late"), "completed message ids are ignored")
 }
 
 func TestBridgeCancelledAndErrorStates(t *testing.T) {
@@ -109,7 +110,7 @@ func TestBridgeCancelledAndErrorStates(t *testing.T) {
 		Payload: notify.RunComplete{SessionID: "sess-1", MessageID: "m1", Cancelled: true},
 	}})
 	require.Eventually(t, func() bool {
-		return api.hasEditContaining("Cancelled") || api.hasPostContaining("Cancelled")
+		return api.hasContentContaining("Cancelled")
 	}, 2*time.Second, 10*time.Millisecond)
 
 	b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m2")))
@@ -118,7 +119,7 @@ func TestBridgeCancelledAndErrorStates(t *testing.T) {
 		Payload: notify.RunComplete{SessionID: "sess-1", MessageID: "m2", Error: "provider exploded"},
 	}})
 	require.Eventually(t, func() bool {
-		return api.hasEditContaining("provider exploded") || api.hasPostContaining("provider exploded")
+		return api.hasContentContaining("provider exploded")
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
@@ -127,8 +128,8 @@ func TestBridgeEchoesTerminalPrompts(t *testing.T) {
 	b, _, api, _ := testBridge(t, testConfig())
 
 	b.handleEvent(evMessage(pubsub.CreatedEvent, userMessage("run the tests")))
-	require.True(t, api.hasPostContaining("(terminal)"))
-	require.True(t, api.hasPostContaining("run the tests"))
+	require.True(t, api.hasContentContaining("(terminal)"))
+	require.True(t, api.hasContentContaining("run the tests"))
 }
 
 func TestBridgeSkipsEchoForDiscordPrompts(t *testing.T) {
@@ -137,38 +138,90 @@ func TestBridgeSkipsEchoForDiscordPrompts(t *testing.T) {
 
 	b.noteSubmission("remote task")
 	b.handleEvent(evMessage(pubsub.CreatedEvent, userMessage("remote task")))
-	require.False(t, api.hasPostContaining("(terminal)"))
+	require.False(t, api.hasContentContaining("(terminal)"))
 }
 
 func TestBridgeSkipsChannelInjectionEcho(t *testing.T) {
 	t.Parallel()
 	b, _, api, _ := testBridge(t, testConfig())
 	b.handleEvent(evMessage(pubsub.CreatedEvent, userMessage(`<channel source="x">hi</channel>`)))
-	require.False(t, api.hasPostContaining("(terminal)"))
+	require.False(t, api.hasContentContaining("(terminal)"))
 }
 
-func TestBridgeMirrorsToolResult(t *testing.T) {
+func TestBridgeFreezesCompletedStepsAboveFooter(t *testing.T) {
 	t.Parallel()
 	b, _, api, _ := testBridge(t, testConfig())
 
-	b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m1",
-		message.ToolCall{ID: "tc1", Name: "bash", Input: `{"command":"npm test"}`},
+	// Wait for the idle footer so the freeze below recycles it.
+	require.Eventually(t, func() bool { return b.footerMessageID() != "" }, 2*time.Second, 10*time.Millisecond)
+
+	// Step 1: streamed text plus a tool call, then the Finish part.
+	b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m1")))
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m1",
+		message.TextContent{Text: "first response"},
+		message.ToolCall{ID: "tc1", Name: "bash", Input: `{"command":"go build"}`},
+		message.Finish{},
 	)))
-	toolMsg := message.Message{
-		ID: "t1", SessionID: "sess-1", Role: message.Tool,
-		Parts: []message.ContentPart{
-			message.ToolResult{ToolCallID: "tc1", Name: "bash", Content: "PASS 42 tests"},
+	require.Eventually(t, func() bool { return api.hasContentContaining("first response") }, 2*time.Second, 10*time.Millisecond)
+
+	// The footer was recycled below the frozen transcript and carries
+	// the tool summary, not a copy of the text.
+	require.Eventually(t, func() bool {
+		last := api.lastPostContent()
+		return strings.Contains(last, "bash ×1") && !strings.Contains(last, "first response")
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Step 2 freezes as its own message.
+	b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m2", message.TextContent{Text: "second response"})))
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m2", message.TextContent{Text: "second response"}, message.Finish{})))
+	require.Eventually(t, func() bool { return api.hasContentContaining("second response") }, 2*time.Second, 10*time.Millisecond)
+
+	b.handleEvent(pubsub.Event[tea.Msg]{Payload: pubsub.Event[notify.RunComplete]{
+		Type:    pubsub.UpdatedEvent,
+		Payload: notify.RunComplete{SessionID: "sess-1", MessageID: "m2"},
+	}})
+	require.Eventually(t, func() bool { return api.hasContentContaining("Done in") }, 2*time.Second, 10*time.Millisecond)
+	last := api.lastPostContent()
+	require.Contains(t, last, "bash ×1", "footer remains the last message")
+	require.NotContains(t, last, "second response")
+}
+
+func TestBridgeReanchorsFooterBelowUserMessage(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	require.Eventually(t, func() bool { return b.footerMessageID() != "" }, 2*time.Second, 10*time.Millisecond)
+	oldID := b.footerMessageID()
+
+	// A prompt posted by a user lands below the footer; the bridge
+	// must recycle the footer underneath it.
+	b.handleThreadMessage(threadMessage("make the tests pass"))
+
+	require.True(t, api.hasDelete(oldID), "the footer is deleted")
+	newID := b.footerMessageID()
+	require.NotEmpty(t, newID)
+	require.NotEqual(t, oldID, newID)
+	require.Equal(t, newID, api.lastPostID(), "footer is the last message")
+}
+
+func TestBridgeFooterMetrics(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	b.handleEvent(pubsub.Event[tea.Msg]{Payload: pubsub.Event[session.Session]{
+		Type: pubsub.UpdatedEvent,
+		Payload: session.Session{
+			ID:                   "sess-1",
+			PromptTokens:         12600,
+			CompletionTokens:     200,
+			TotalContextTokens:   400,
+			TotalCacheReadTokens: 100,
 		},
-	}
-	b.handleEvent(evMessage(pubsub.CreatedEvent, toolMsg))
+	}})
 
-	require.True(t, api.hasPostContaining("PASS 42 tests"))
-	require.True(t, api.hasPostContaining("npm test"))
-
-	// Duplicate updates for the same tool message must not double-post.
-	before := api.hasPostContaining("PASS 42 tests")
-	b.handleEvent(evMessage(pubsub.UpdatedEvent, toolMsg))
-	require.Equal(t, before, api.hasPostContaining("PASS 42 tests"))
+	// (12600+200)/128000 is 10%; 100/400 is 25%.
+	require.Eventually(t, func() bool { return api.hasContentContaining("context 10%") }, 2*time.Second, 10*time.Millisecond)
+	require.True(t, api.hasContentContaining("cache 25%"))
 }
 
 func TestBridgePermissionCardAndReaction(t *testing.T) {
@@ -183,11 +236,13 @@ func TestBridgePermissionCardAndReaction(t *testing.T) {
 		Type: pubsub.CreatedEvent, Payload: req,
 	}})
 
-	require.True(t, api.hasPostContaining("Permission needed"))
-	require.True(t, api.hasPostContaining("run npm test"))
+	require.True(t, api.hasContentContaining("Permission needed"))
+	require.True(t, api.hasContentContaining("run npm test"))
 	require.Equal(t, 3, api.reactionCount())
 
-	reaction := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: api.lastPostID()}
+	cardID := pendingCardID(b, "p1")
+	require.NotEmpty(t, cardID)
+	reaction := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: cardID}
 	reaction.Emoji.Name = reactionAllow
 	b.handleThreadReaction(reaction)
 	require.Equal(t, 1, env.grantCount())
@@ -201,7 +256,7 @@ func TestBridgePermissionCardAndReaction(t *testing.T) {
 
 func TestBridgePermissionDenyAndAllowSession(t *testing.T) {
 	t.Parallel()
-	b, env, api, _ := testBridge(t, testConfig())
+	b, env, _, _ := testBridge(t, testConfig())
 
 	for _, id := range []string{"p1", "p2"} {
 		b.handleEvent(pubsub.Event[tea.Msg]{Payload: pubsub.Event[permission.PermissionRequest]{
@@ -211,15 +266,16 @@ func TestBridgePermissionDenyAndAllowSession(t *testing.T) {
 		}})
 	}
 
-	msgs := api.postsSnapshot()
-	require.Len(t, msgs, 2)
+	msgs := map[string]string{"p1": pendingCardID(b, "p1"), "p2": pendingCardID(b, "p2")}
+	require.NotEmpty(t, msgs["p1"])
+	require.NotEmpty(t, msgs["p2"])
 
-	deny := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: msgs[0].messageID}
+	deny := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: msgs["p1"]}
 	deny.Emoji.Name = reactionDeny
 	b.handleThreadReaction(deny)
 	require.Len(t, env.denies, 1)
 
-	allowSession := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: msgs[1].messageID}
+	allowSession := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: msgs["p2"]}
 	allowSession.Emoji.Name = reactionAllowSession
 	b.handleThreadReaction(allowSession)
 	require.Len(t, env.grantSessions, 1)
@@ -227,7 +283,7 @@ func TestBridgePermissionDenyAndAllowSession(t *testing.T) {
 
 func TestBridgeReactionUserFilter(t *testing.T) {
 	t.Parallel()
-	b, env, api, _ := testBridge(t, testConfig())
+	b, env, _, _ := testBridge(t, testConfig())
 	restricted := Config{Token: "t", ChannelIDs: []string{"chan-1"}, AllowedUserIDs: []string{"u9"}}
 	_ = restricted // The bridge under test keeps its original config.
 
@@ -236,7 +292,7 @@ func TestBridgeReactionUserFilter(t *testing.T) {
 			ID: "p1", SessionID: "sess-1", ToolCallID: "tc1", ToolName: "bash",
 		},
 	}})
-	reaction := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: api.lastPostID()}
+	reaction := gatewayReaction{UserID: "u1", ChannelID: "thread-1", MessageID: pendingCardID(b, "p1")}
 	reaction.Emoji.Name = reactionAllow
 	b.handleThreadReaction(reaction)
 	require.Equal(t, 1, env.grantCount(), "default config allows any thread member")
@@ -252,7 +308,7 @@ func TestBridgeQuestionCardAndAnswer(t *testing.T) {
 			Questions: []question.Question{{ID: "qq", Type: question.TypeYesNo, Text: "Proceed?"}},
 		},
 	}})
-	require.True(t, api.hasPostContaining("Proceed?"))
+	require.True(t, api.hasContentContaining("Proceed?"))
 
 	b.handleThreadMessage(threadMessage("/answer yes"))
 	require.Len(t, env.answers, 1)
@@ -274,7 +330,7 @@ func TestBridgeDiscordPromptRunsAgent(t *testing.T) {
 
 	// The resulting user message must not be echoed back.
 	b.handleEvent(evMessage(pubsub.CreatedEvent, userMessage("build the thing")))
-	require.False(t, api.hasPostContaining("(terminal)"))
+	require.False(t, api.hasContentContaining("(terminal)"))
 }
 
 func TestBridgeEscapeSlashPrompt(t *testing.T) {
@@ -290,7 +346,7 @@ func TestBridgeSlashCommandRouting(t *testing.T) {
 
 	b.handleThreadMessage(threadMessage("/stop"))
 	require.Equal(t, 1, env.cancelCount())
-	require.True(t, api.hasPostContaining("Cancelling"))
+	require.True(t, api.hasContentContaining("Cancelling"))
 	require.Zero(t, env.runCount(), "commands must not reach the agent")
 }
 
@@ -303,7 +359,7 @@ func TestBridgeFreshThreadIgnored(t *testing.T) {
 	b.handleThreadMessage(foreign)
 	time.Sleep(20 * time.Millisecond)
 	require.Zero(t, env.runCount())
-	require.False(t, api.hasPostContaining("hello from elsewhere"))
+	require.False(t, api.hasContentContaining("hello from elsewhere"))
 }
 
 func TestBridgeAllowedUsers(t *testing.T) {
@@ -313,7 +369,7 @@ func TestBridgeAllowedUsers(t *testing.T) {
 	b, env, api, _ := testBridge(t, cfg)
 
 	b.handleThreadMessage(threadMessage("not allowed to run this"))
-	require.True(t, api.hasPostContaining("not allowed"))
+	require.True(t, api.hasContentContaining("not allowed"))
 	require.Zero(t, env.runCount())
 
 	allowed := threadMessage("allowed")
@@ -328,7 +384,11 @@ func TestBridgeQueuedPromptNote(t *testing.T) {
 	env.setBusy(true, "one")
 
 	b.handleThreadMessage(threadMessage("second"))
-	require.True(t, api.hasPostContaining("Queued (position 2)"))
+	require.True(t, api.hasContentContaining("Queued (position 2)"))
+
+	// The note lands above the footer, which stays the last message.
+	require.Equal(t, b.footerMessageID(), api.lastPostID())
+	require.NotContains(t, api.lastPostContent(), "Queued")
 }
 
 func TestBridgeThreadRenameFromTitle(t *testing.T) {
@@ -365,8 +425,16 @@ func TestBridgeTypingWhileBusy(t *testing.T) {
 func TestBridgeStopIdempotent(t *testing.T) {
 	t.Parallel()
 	b, _, api, _ := testBridge(t, testConfig())
+
+	// Wait for the footer so Stop has one to clean up.
+	require.Eventually(t, func() bool { return b.footerMessageID() != "" }, 2*time.Second, 10*time.Millisecond)
+	footerID := b.footerMessageID()
+
 	b.Stop()
 	b.Stop()
+
+	require.True(t, api.hasDelete(footerID), "the footer is removed on stop")
+	require.Empty(t, b.footerMessageID())
 
 	api.mu.Lock()
 	farewells := 0
@@ -388,8 +456,8 @@ func TestBridgeAgentReauthNote(t *testing.T) {
 			SessionID: "sess-1", Type: notify.TypeReAuthenticate, Message: "token expired",
 		},
 	}})
-	require.True(t, api.hasPostContaining("Re-authentication needed"))
-	require.True(t, api.hasPostContaining("token expired"))
+	require.True(t, api.hasContentContaining("Re-authentication needed"))
+	require.True(t, api.hasContentContaining("token expired"))
 }
 
 func TestBridgeIgnoresOtherSessions(t *testing.T) {
@@ -399,7 +467,7 @@ func TestBridgeIgnoresOtherSessions(t *testing.T) {
 	other := userMessage("from another session")
 	other.SessionID = "other-sess"
 	b.handleEvent(evMessage(pubsub.CreatedEvent, other))
-	require.False(t, api.hasPostContaining("(terminal)"))
+	require.False(t, api.hasContentContaining("(terminal)"))
 
 	b.handleEvent(pubsub.Event[tea.Msg]{Payload: pubsub.Event[notify.RunComplete]{
 		Type:    pubsub.UpdatedEvent,
@@ -432,10 +500,17 @@ func TestDeriveTurnState(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		state, tool := deriveTurnState(message.Message{Parts: tt.parts})
+		state, call := deriveTurnState(message.Message{Parts: tt.parts})
 		require.Equal(t, tt.want, state, tt.name)
-		require.Equal(t, tt.tool, tool, tt.name)
+		require.Equal(t, tt.tool, call.Name, tt.name)
 	}
+}
+
+// pendingCardID returns the posted card id for a permission request.
+func pendingCardID(b *Bridge, reqID string) string {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	return b.permMessage[reqID]
 }
 
 func TestBridgeHandleEventViaChannel(t *testing.T) {
@@ -443,6 +518,6 @@ func TestBridgeHandleEventViaChannel(t *testing.T) {
 	b, _, api, events := testBridge(t, testConfig())
 
 	events <- evMessage(pubsub.CreatedEvent, userMessage("over the wire"))
-	require.Eventually(t, func() bool { return api.hasPostContaining("over the wire") }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return api.hasContentContaining("over the wire") }, 2*time.Second, 10*time.Millisecond)
 	_ = b
 }

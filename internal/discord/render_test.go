@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,26 +23,6 @@ func TestFormatTokens(t *testing.T) {
 	require.Equal(t, "987", formatTokens(987))
 	require.Equal(t, "1.2k", formatTokens(1234))
 	require.Equal(t, "1.5m", formatTokens(1_500_000))
-}
-
-func TestFenceGrowsPastInnerFences(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, "```\nplain\n```", fence("plain"))
-
-	nested := fence("```\ninner\n```")
-	require.True(t, strings.HasPrefix(nested, "````\n"), "outer fence must grow: %q", nested)
-	require.True(t, strings.HasSuffix(nested, "\n````"))
-}
-
-func TestTrimLines(t *testing.T) {
-	t.Parallel()
-	body, hidden := trimLines("a\nb\nc", 5)
-	require.Equal(t, "a\nb\nc", body)
-	require.Zero(t, hidden)
-
-	body, hidden = trimLines("a\nb\nc\nd", 2)
-	require.Equal(t, "a\nb", body)
-	require.Equal(t, 2, hidden)
 }
 
 func TestTailText(t *testing.T) {
@@ -65,35 +46,55 @@ func TestToolMainParam(t *testing.T) {
 	require.Equal(t, "caps at", toolMainParam(`{"query":"caps at"}`))
 }
 
-func TestRenderToolCallLine(t *testing.T) {
+func TestToolVerb(t *testing.T) {
 	t.Parallel()
-	req := require.New(t)
-	line := renderToolCallLine(message.ToolCall{Name: "bash", Input: `{"command":"ls -la"}`})
-	require.Contains(t, line, "🔧")
-	require.Contains(t, line, "`bash`")
-	require.Contains(t, line, "ls -la")
-	req.NotEmpty(renderToolCallLine(message.ToolCall{Name: "weird"}))
-	req.Contains(renderToolCallLine(message.ToolCall{}), "tool")
+	require.Equal(t, "Editing main.go", toolVerb("edit", "main.go"))
+	require.Equal(t, "Editing", toolVerb("multiedit", ""))
+	require.Equal(t, "Reading src/a.go", toolVerb("view", "src/a.go"))
+	require.Equal(t, "Searching footer", toolVerb("grep", "footer"))
+	require.Equal(t, "Running go test ./...", toolVerb("bash", "go test ./..."))
+	require.Equal(t, "Running", toolVerb("bash", ""))
+	require.Equal(t, "Writing notes.md", toolVerb("write", "notes.md"))
+	require.Equal(t, "Delegating", toolVerb("agent", "do the thing"))
+	require.Equal(t, "Running weird", toolVerb("weird", ""))
+	require.Equal(t, "Running weird — x", toolVerb("weird", "x"))
+	require.Equal(t, "Running tool", toolVerb("", ""))
 }
 
-func TestRenderToolResultMessage(t *testing.T) {
+func TestRenderToolSummary(t *testing.T) {
 	t.Parallel()
-	call := message.ToolCall{Name: "bash", Input: `{"command":"npm test"}`}
+	require.Empty(t, renderToolSummary(nil, 0))
 
-	out := renderToolResultMessage(call, message.ToolResult{Name: "bash", Content: "ok"})
-	require.Contains(t, out, "npm test")
-	require.Contains(t, out, "```\nok\n```")
+	out := renderToolSummary(map[string]int{"bash": 3, "read": 1, "edit": 2}, 1)
+	require.Equal(t, "-# 🔧 bash ×3 · edit ×2 · read ×1 · (1 failed)", out)
 
-	errOut := renderToolResultMessage(call, message.ToolResult{Name: "bash", Content: "boom", IsError: true})
-	require.Contains(t, errOut, "failed")
+	only := renderToolSummary(map[string]int{"bash": 1}, 0)
+	require.Equal(t, "-# 🔧 bash ×1", only)
 
-	empty := renderToolResultMessage(message.ToolCall{Name: "view"}, message.ToolResult{Name: "view"})
-	require.Contains(t, empty, "`view`")
-	require.NotContains(t, empty, "```")
+	failuresOnly := renderToolSummary(nil, 2)
+	require.Equal(t, "-# 🔧 (2 failed)", failuresOnly)
+}
 
-	long := strings.Repeat("x\n", 40)
-	trimmed := renderToolResultMessage(call, message.ToolResult{Name: "bash", Content: long})
-	require.Contains(t, trimmed, "lines hidden")
+func TestRenderMetricsLine(t *testing.T) {
+	t.Parallel()
+	sess := session.Session{
+		PromptTokens:         12600,
+		CompletionTokens:     200,
+		TotalContextTokens:   400,
+		TotalCacheReadTokens: 100,
+	}
+	require.Equal(t, "-# 📊 context 10% · cache 25%", renderMetricsLine(sess, 128000))
+
+	sess.EstimatedUsage = true
+	require.Equal(t, "-# 📊 context ~10% · cache 25%", renderMetricsLine(sess, 128000))
+	sess.EstimatedUsage = false
+
+	// Without a resolvable context window only the cache share renders.
+	require.Equal(t, "-# 📊 cache 25%", renderMetricsLine(sess, 0))
+
+	// A fresh session shows a zero percentage while the window is known.
+	require.Equal(t, "-# 📊 context 0%", renderMetricsLine(session.Session{}, 128000))
+	require.Empty(t, renderMetricsLine(session.Session{}, 0))
 }
 
 func TestRenderReasoningLine(t *testing.T) {
@@ -116,7 +117,7 @@ func TestRenderAssistantTimeline(t *testing.T) {
 	require.Contains(t, out, "thought for 10s")
 	require.Contains(t, out, "**hello**")
 	require.NotContains(t, out, "hidden")
-	require.Contains(t, out, "go test ./...")
+	require.NotContains(t, out, "go test ./...", "tool calls are summarized in the footer, not the transcript")
 }
 
 func TestSplitMessage(t *testing.T) {

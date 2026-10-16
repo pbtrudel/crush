@@ -43,11 +43,11 @@ const (
 	// maxAttachmentBytes caps mirrored Discord attachments.
 	maxAttachmentBytes = 8 << 20
 
-	// callCacheLimit bounds remembered tool calls.
-	callCacheLimit = 256
+	// countedResultLimit bounds the failed tool-result dedupe set.
+	countedResultLimit = 256
 
-	// postedResultLimit bounds the tool-result dedupe set.
-	postedResultLimit = 256
+	// frozenLimit bounds remembered frozen assistant steps.
+	frozenLimit = 128
 
 	// completedLimit bounds remembered completed message ids.
 	completedLimit = 128
@@ -62,6 +62,7 @@ type discordAPI interface {
 	createThread(ctx context.Context, channelID, name string) (createdThread, error)
 	createMessage(ctx context.Context, channelID, content string) (string, error)
 	editMessage(ctx context.Context, channelID, messageID, content string) error
+	deleteMessage(ctx context.Context, channelID, messageID string) error
 	triggerTyping(ctx context.Context, channelID string) error
 	addReaction(ctx context.Context, channelID, messageID, emoji string) error
 	editChannelName(ctx context.Context, channelID, name string) error
@@ -111,11 +112,11 @@ type Bridge struct {
 	subMu       sync.Mutex
 	submissions []promptSubmission
 
-	callMu sync.Mutex
-	calls  map[string]message.ToolCall
+	countedMu      sync.Mutex
+	countedResults map[string]bool
 
-	postedMu   sync.Mutex
-	postedTool map[string]bool
+	frozenMu sync.Mutex
+	frozen   map[string]bool
 
 	completedMu sync.Mutex
 	completed   map[string]bool
@@ -123,8 +124,10 @@ type Bridge struct {
 	renameMu  sync.Mutex
 	renamedTo string
 
-	turnMu sync.Mutex
-	turn   *liveTurn
+	lastMu        sync.Mutex
+	lastAssistant message.Message
+
+	footer *footer
 }
 
 // promptSubmission records a prompt injected from Discord so the
@@ -170,9 +173,11 @@ func start(ctx context.Context, env commandEnv, application *app.App, sessionID 
 		api:  newRESTClient(cfg.Token),
 		http: &http.Client{Timeout: 30 * time.Second},
 	})
-	if _, err := env.GetSession(ctx, sessionID); err != nil {
+	sess, err := env.GetSession(ctx, sessionID)
+	if err != nil {
 		return nil, fmt.Errorf("read session: %w", err)
 	}
+	b.setSession(sess)
 	thread, err := b.api.createThread(ctx, cfg.ChannelIDs[0], b.threadName(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("create Discord thread: %w", err)
@@ -183,6 +188,7 @@ func start(ctx context.Context, env commandEnv, application *app.App, sessionID 
 		return nil, err
 	}
 	b.post(b.bannerText(ctx))
+	b.flushFooter()
 	return b, nil
 }
 
@@ -207,9 +213,15 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 		permMessage:     map[string]string{},
 		questions:       map[string]question.Request{},
 		questionMessage: map[string]string{},
-		calls:           map[string]message.ToolCall{},
-		postedTool:      map[string]bool{},
+		countedResults:  map[string]bool{},
+		frozen:          map[string]bool{},
 		completed:       map[string]bool{},
+		footer: &footer{
+			state:        turnIdle,
+			toolCounts:   map[string]int{},
+			countedCalls: map[string]bool{},
+			updates:      make(chan struct{}, 1),
+		},
 	}
 	if b.api == nil {
 		b.api = newRESTClient(cfg.Token)
@@ -252,6 +264,7 @@ func (b *Bridge) launch(ctx context.Context) error {
 	go b.eventLoop()
 	go b.inputLoop()
 	go b.typingLoop()
+	go b.footerLoop()
 	if b.gwLoop != nil {
 		go b.gwLoop(b.ctx)
 	} else {
@@ -267,7 +280,18 @@ func (b *Bridge) Stop() {
 	b.stopOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		f := b.footer
+		f.mu.Lock()
+		f.stopped = true
+		footerID := f.messageID
+		f.messageID = ""
+		f.mu.Unlock()
 		if b.threadID != "" {
+			if footerID != "" {
+				if err := b.api.deleteMessage(ctx, b.threadID, footerID); err != nil {
+					slog.Debug("Discord bridge: failed to delete status footer", "error", err.Error())
+				}
+			}
 			_, _ = b.api.createMessage(ctx, b.threadID, farewellText)
 		}
 		if b.cancel != nil {
@@ -346,15 +370,53 @@ func (b *Bridge) changeModel(ctx context.Context, sel config.SelectedModel) erro
 	return nil
 }
 
-// post sends one or more chunked messages to the thread. Failures are
-// logged only: the session must never break because Discord is down.
+// post sends one or more chunked messages to the thread, above the
+// status footer. Failures are logged only: the session must never break
+// because Discord is down.
 func (b *Bridge) post(content string) {
-	for _, chunk := range splitMessage(content) {
-		if _, err := b.api.createMessage(b.ctx, b.threadID, chunk); err != nil {
+	b.postAbove(content)
+}
+
+// postAbove posts content above the footer and returns the id of the
+// first chunk ("" when nothing was posted). When a footer message
+// exists it is edited into the first chunk and re-created after the
+// content, so the footer stays the thread's last message.
+func (b *Bridge) postAbove(content string) string {
+	chunks := splitMessage(content)
+	if len(chunks) == 0 {
+		return ""
+	}
+	f := b.footer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopped {
+		return ""
+	}
+
+	firstID := ""
+	rest := chunks
+	if f.messageID != "" {
+		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0]); err == nil {
+			firstID = f.messageID
+			rest = chunks[1:]
+		} else {
+			slog.Debug("Discord bridge: failed to reuse footer for message", "error", err.Error())
+		}
+		f.messageID = ""
+		f.lastBody = ""
+	}
+	for i, chunk := range rest {
+		id, err := b.api.createMessage(b.ctx, b.threadID, chunk)
+		if err != nil {
 			slog.Debug("Discord bridge: failed to post message", "error", err.Error())
-			return
+			return firstID
+		}
+		if firstID == "" && i == 0 {
+			firstID = id
 		}
 	}
+	b.attachFooterLocked()
+	return firstID
 }
 
 // note surfaces a bridge notice in the TUI (when hosted in-process) and
@@ -459,7 +521,7 @@ func (b *Bridge) handleMessageEvent(ev pubsub.Event[message.Message]) {
 		}
 	case message.Tool:
 		if ev.Type == pubsub.CreatedEvent || ev.Type == pubsub.UpdatedEvent {
-			b.handleToolResultMessage(msg)
+			b.handleToolResult(msg)
 		}
 	}
 }
@@ -478,7 +540,8 @@ func (b *Bridge) handleUserMessage(msg message.Message) {
 	b.post(iconLocal + " **(terminal)**\n" + text)
 }
 
-// handleAssistantMessage starts or advances the live turn message.
+// handleAssistantMessage advances the status footer from a message
+// snapshot and freezes a completed step's transcript above it.
 func (b *Bridge) handleAssistantMessage(msg message.Message) {
 	b.completedMu.Lock()
 	done := b.completed[msg.ID]
@@ -486,40 +549,51 @@ func (b *Bridge) handleAssistantMessage(msg message.Message) {
 	if done {
 		return
 	}
-	for _, tc := range toolCalls(msg) {
-		b.rememberCall(tc)
-	}
-
-	t := b.currentTurn()
-	if t == nil {
-		b.startTurn(msg)
+	if b.isFrozen(msg.ID) {
 		return
 	}
-	t.apply(msg, b.hasPendingPermission())
+	b.setLastAssistant(msg)
+
+	waiting := b.hasPendingPermission()
+	f := b.footer
+	f.mu.Lock()
+	b.applyTurnLocked(msg, waiting)
+	f.mu.Unlock()
+
+	if hasFinishPart(msg) {
+		b.freezeStep(msg)
+	}
+	b.pokeFooter()
 }
 
-// handleToolResultMessage mirrors one tool result as a compact message.
-func (b *Bridge) handleToolResultMessage(msg message.Message) {
+// handleToolResult tallies failed tool calls for the footer. Results
+// are never mirrored: the thread carries only model responses, and
+// tool activity appears as counts in the status footer.
+func (b *Bridge) handleToolResult(msg message.Message) {
 	tr, ok := firstToolResult(msg)
-	if !ok {
+	if !ok || !tr.IsError {
 		return
 	}
-	b.postedMu.Lock()
-	if b.postedTool[msg.ID] || strings.TrimSpace(tr.Content) == "" {
-		b.postedMu.Unlock()
+	b.countedMu.Lock()
+	if b.countedResults[msg.ID] {
+		b.countedMu.Unlock()
 		return
 	}
-	if len(b.postedTool) >= postedResultLimit {
-		clear(b.postedTool)
+	if len(b.countedResults) >= countedResultLimit {
+		clear(b.countedResults)
 	}
-	b.postedTool[msg.ID] = true
-	b.postedMu.Unlock()
+	b.countedResults[msg.ID] = true
+	b.countedMu.Unlock()
 
-	b.post(renderToolResultMessage(b.lookupCall(tr.ToolCallID), tr))
+	f := b.footer
+	f.mu.Lock()
+	f.toolFailures++
+	f.mu.Unlock()
+	b.pokeFooter()
 }
 
-// handleRunComplete finalizes the live turn with the authoritative run
-// outcome.
+// handleRunComplete freezes any unfrozen final-step transcript and
+// parks the footer in its terminal state.
 func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
 	if rc.SessionID != b.sessionID {
 		return
@@ -533,10 +607,6 @@ func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
 		b.completedMu.Unlock()
 	}
 
-	t := b.currentTurn()
-	if t == nil {
-		return
-	}
 	state := turnDone
 	switch {
 	case rc.Cancelled:
@@ -544,13 +614,27 @@ func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
 	case rc.Error != "":
 		state = turnError
 	}
-	t.finish(state, rc.Error, rc.Text)
-
-	b.turnMu.Lock()
-	if b.turn == t {
-		b.turn = nil
+	f := b.footer
+	f.mu.Lock()
+	if f.active {
+		f.state = state
+		f.errText = rc.Error
+		f.waiting = false
+		f.tail = ""
+		f.active = false
 	}
-	b.turnMu.Unlock()
+	f.mu.Unlock()
+
+	// A step's Finish event normally freezes its transcript; when it
+	// never arrived (lossy events), freeze the last snapshot or the
+	// authoritative run text here.
+	last := b.lastAssistantMessage()
+	content := strings.TrimSpace(renderAssistantTimeline(last))
+	if content == "" {
+		content = strings.TrimSpace(rc.Text)
+	}
+	b.freezeContent(last.ID, content)
+	b.pokeFooter()
 }
 
 // handleAgentNotification mirrors re-authentication requests; run
@@ -568,11 +652,14 @@ func (b *Bridge) handleAgentNotification(n notify.Notification) {
 	}
 }
 
-// handleSessionEvent tracks title generation by renaming the thread.
+// handleSessionEvent tracks title generation by renaming the thread and
+// keeps the footer's usage metrics current.
 func (b *Bridge) handleSessionEvent(ev pubsub.Event[session.Session]) {
 	if ev.Type != pubsub.UpdatedEvent || ev.Payload.ID != b.sessionID {
 		return
 	}
+	b.setSession(ev.Payload)
+
 	title := strings.TrimSpace(ev.Payload.Title)
 	if title == "" {
 		return
@@ -601,9 +688,9 @@ func (b *Bridge) handlePermissionRequest(req permission.PermissionRequest) {
 	b.permissionOrder = append(b.permissionOrder, req.ID)
 	b.pendingMu.Unlock()
 
-	id, err := b.api.createMessage(b.ctx, b.threadID, renderPermissionCard(req))
-	if err != nil {
-		slog.Debug("Discord bridge: failed to post permission card", "error", err.Error())
+	id := b.postAbove(renderPermissionCard(req))
+	if id == "" {
+		slog.Debug("Discord bridge: failed to post permission card")
 		return
 	}
 	b.pendingMu.Lock()
@@ -614,9 +701,7 @@ func (b *Bridge) handlePermissionRequest(req permission.PermissionRequest) {
 			slog.Debug("Discord bridge: failed to seed reaction", "error", err.Error())
 		}
 	}
-	if t := b.currentTurn(); t != nil {
-		t.markWaiting(true)
-	}
+	b.markWaiting(true)
 }
 
 // handlePermissionNotification updates the card once a permission is
@@ -650,9 +735,7 @@ func (b *Bridge) handlePermissionNotification(n permission.PermissionNotificatio
 			slog.Debug("Discord bridge: failed to update permission card", "error", err.Error())
 		}
 	}
-	if t := b.currentTurn(); t != nil {
-		t.markWaiting(false)
-	}
+	b.markWaiting(false)
 }
 
 // handleQuestionRequest mirrors an agent question as a thread card.
@@ -665,9 +748,9 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 	b.questionOrder = append(b.questionOrder, req.ID)
 	b.pendingMu.Unlock()
 
-	id, err := b.api.createMessage(b.ctx, b.threadID, renderQuestionCard(req))
-	if err != nil {
-		slog.Debug("Discord bridge: failed to post question card", "error", err.Error())
+	id := b.postAbove(renderQuestionCard(req))
+	if id == "" {
+		slog.Debug("Discord bridge: failed to post question card")
 		return
 	}
 	b.pendingMu.Lock()
@@ -805,11 +888,22 @@ func (b *Bridge) inputLoop() {
 }
 
 // handleThreadMessage routes one thread message: slash commands run
-// here, anything else becomes a prompt.
+// here, anything else becomes a prompt. When the message itself pushed
+// nothing under the footer (a plain prompt does not), the footer is
+// recycled so it stays the thread's last message.
 func (b *Bridge) handleThreadMessage(msg gatewayMessage) {
 	if msg.ChannelID != b.threadID {
 		return
 	}
+	before := b.footerMessageID()
+	b.routeThreadMessage(msg)
+	if b.footerMessageID() == before {
+		b.reanchorFooter()
+	}
+}
+
+// routeThreadMessage dispatches one message from the control thread.
+func (b *Bridge) routeThreadMessage(msg gatewayMessage) {
 	if !b.cfg.allowedUser(msg.Author.ID) {
 		b.post("⛔ `" + msg.Author.Username + "` is not allowed to control this session.")
 		return
@@ -1045,13 +1139,14 @@ func (b *Bridge) typingLoop() {
 	}
 }
 
-// ── Live turn state ──────────────────────────────────────────────────────
+// ── Status footer ────────────────────────────────────────────────────────
 
 // turnState is the live phase of an assistant turn.
 type turnState int
 
 const (
-	turnThinking turnState = iota
+	turnIdle turnState = iota
+	turnThinking
 	turnWriting
 	turnTool
 	turnWaitingPermission
@@ -1064,272 +1159,392 @@ func (s turnState) terminal() bool {
 	return s == turnDone || s == turnCancelled || s == turnError
 }
 
-// liveTurn is the Discord-side state of one assistant turn: a single
-// live-edited message carrying the status header and a tail window of
-// the timeline.
-type liveTurn struct {
+// footer is the bridge's status message: a single message that lives at
+// the bottom of the thread and carries the live turn state, per-turn
+// tool counts, session metrics, and a tail window of the text currently
+// streaming. It persists between turns so it is always the last message;
+// content that must appear above it recycles the footer message (see
+// postAbove and reanchorFooter).
+type footer struct {
 	mu sync.Mutex
 
+	// messageID is the footer's current message. "" means no message is
+	// in place (Discord trouble, or a fresh bridge) and the next flush
+	// re-creates it.
 	messageID string
+	stopped   bool
+
+	// Turn state.
+	active    bool
 	started   time.Time
 	state     turnState
 	toolName  string
-	timeline  string
+	toolParam string
 	model     string
 	errText   string
 	waiting   bool
-	frame     int
-	dirty     bool
-	lastEdit  time.Time
-	lastBody  string
+
+	// Per-turn aggregates.
+	toolCounts   map[string]int
+	toolFailures int
+	countedCalls map[string]bool
+
+	// tail is the newest slice of the current step's streamed content.
+	tail string
+
+	// Usage metrics from the latest session snapshot.
+	sess     session.Session
+	haveSess bool
+
+	frame    int
+	lastBody string
+	lastEdit time.Time
 
 	updates chan struct{}
-	done    chan struct{}
-	doneOne sync.Once
 }
 
-// startTurn begins a live turn for a freshly created assistant message.
-func (b *Bridge) startTurn(msg message.Message) {
-	t := &liveTurn{
-		started: b.now(),
-		state:   turnThinking,
-		updates: make(chan struct{}, 1),
-		done:    make(chan struct{}),
-	}
-	t.mu.Lock()
-	t.applyLocked(msg, false)
-	t.mu.Unlock()
-	b.turnMu.Lock()
-	b.turn = t
-	b.turnMu.Unlock()
-	go b.turnLoop(t)
+// setSession records the latest session snapshot for footer metrics.
+func (b *Bridge) setSession(sess session.Session) {
+	f := b.footer
+	f.mu.Lock()
+	f.sess = sess
+	f.haveSess = true
+	f.mu.Unlock()
+	b.pokeFooter()
 }
 
-// currentTurn returns the in-flight turn, if any.
-func (b *Bridge) currentTurn() *liveTurn {
-	b.turnMu.Lock()
-	defer b.turnMu.Unlock()
-	return b.turn
-}
-
-// apply advances the turn from a message snapshot.
-func (t *liveTurn) apply(msg message.Message, waiting bool) {
-	t.mu.Lock()
-	t.applyLocked(msg, waiting)
-	t.mu.Unlock()
-	t.notify()
-}
-
-// applyLocked must be called with t.mu held.
-func (t *liveTurn) applyLocked(msg message.Message, waiting bool) {
-	if msg.Model != "" {
-		t.model = msg.Model
-		if msg.Provider != "" {
-			t.model = msg.Provider + "/" + msg.Model
-		}
-	}
-	t.timeline = renderAssistantTimeline(msg)
-	t.state, t.toolName = deriveTurnState(msg)
-	t.waiting = waiting
-	if waiting && !t.state.terminal() {
-		t.state = turnWaitingPermission
-	}
-	t.dirty = true
-}
-
-// markWaiting flips the waiting-for-permission phase.
-func (t *liveTurn) markWaiting(waiting bool) {
-	t.mu.Lock()
-	t.waiting = waiting
-	if !t.state.terminal() {
-		if waiting {
-			t.state = turnWaitingPermission
-		} else if t.state == turnWaitingPermission {
-			t.state = turnThinking
-			if strings.TrimSpace(t.timeline) != "" {
-				t.state = turnWriting
-			}
-		}
-	}
-	t.dirty = true
-	t.mu.Unlock()
-	t.notify()
-}
-
-// finish marks the turn terminal and wakes its loop for the final
-// flush. fallbackText fills a timeline that never streamed (the bridge
-// missed the deltas).
-func (t *liveTurn) finish(state turnState, errText, fallbackText string) {
-	t.mu.Lock()
-	t.state = state
-	t.errText = errText
-	if strings.TrimSpace(t.timeline) == "" && strings.TrimSpace(fallbackText) != "" {
-		t.timeline = strings.TrimSpace(fallbackText)
-	}
-	t.dirty = true
-	t.mu.Unlock()
-	t.doneOne.Do(func() { close(t.done) })
-}
-
-// notify pokes the turn loop without blocking the event goroutine.
-func (t *liveTurn) notify() {
-	select {
-	case t.updates <- struct{}{}:
-	default:
-	}
-}
-
-// turnLoop owns the live message's edit cadence: event pokes are
-// throttled, the ticker animates and refreshes the elapsed timer, and
-// finish triggers the terminal flush.
-func (b *Bridge) turnLoop(t *liveTurn) {
+// footerLoop owns the footer's edit cadence: event pokes are throttled
+// and the ticker animates the spinner and refreshes the elapsed timer.
+func (b *Bridge) footerLoop() {
 	ticker := time.NewTicker(b.tick)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-b.ctx.Done():
 			return
-		case <-t.done:
-			b.finishTurn(t)
-			return
-		case <-t.updates:
-			t.mu.Lock()
-			due := b.now().Sub(t.lastEdit) >= b.editRate
-			t.mu.Unlock()
+		case <-b.footer.updates:
+			f := b.footer
+			f.mu.Lock()
+			due := b.now().Sub(f.lastEdit) >= b.editRate
+			f.mu.Unlock()
 			if due {
-				b.flushTurn(t)
+				b.flushFooter()
 			}
 		case <-ticker.C:
-			b.flushTurn(t)
+			b.flushFooter()
 		}
 	}
 }
 
-// flushTurn composes and edits the live message if it changed.
-func (b *Bridge) flushTurn(t *liveTurn) {
-	t.mu.Lock()
-	t.frame++
-	body := b.composeTurnLocked(t)
-	if body == t.lastBody {
-		t.mu.Unlock()
+// pokeFooter wakes the footer loop without blocking the caller.
+func (b *Bridge) pokeFooter() {
+	select {
+	case b.footer.updates <- struct{}{}:
+	default:
+	}
+}
+
+// flushFooter composes and posts or edits the footer when its body
+// changed.
+func (b *Bridge) flushFooter() {
+	f := b.footer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopped {
 		return
 	}
-	messageID := t.messageID
-	t.mu.Unlock()
-
-	if messageID == "" {
+	f.frame++
+	body := b.composeFooterLocked()
+	if body == f.lastBody {
+		return
+	}
+	if f.messageID == "" {
 		id, err := b.api.createMessage(b.ctx, b.threadID, body)
 		if err != nil {
-			slog.Debug("Discord bridge: failed to post turn message", "error", err.Error())
+			slog.Debug("Discord bridge: failed to post status footer", "error", err.Error())
 			return
 		}
-		t.mu.Lock()
-		t.messageID = id
-		t.lastBody = body
-		t.dirty = false
-		t.lastEdit = b.now()
-		t.mu.Unlock()
+		f.messageID = id
+	} else if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, body); err != nil {
+		slog.Debug("Discord bridge: failed to edit status footer", "error", err.Error())
+		// The message may be gone (deleted, or from a previous bot
+		// session): drop it so the next flush re-creates the footer.
+		f.messageID = ""
+		f.lastBody = ""
 		return
 	}
-	if err := b.api.editMessage(b.ctx, b.threadID, messageID, body); err != nil {
-		slog.Debug("Discord bridge: failed to edit turn message", "error", err.Error())
-		return
-	}
-	t.mu.Lock()
-	t.lastBody = body
-	t.dirty = false
-	t.lastEdit = b.now()
-	t.mu.Unlock()
+	f.lastBody = body
+	f.lastEdit = b.now()
 }
 
-// finishTurn freezes the full timeline: the live message becomes the
-// first chunk and the rest are appended, so nothing is lost to the tail
-// window.
-func (b *Bridge) finishTurn(t *liveTurn) {
-	t.mu.Lock()
-	head := b.renderTurnHeaderLocked(t)
-	full := head
-	if strings.TrimSpace(t.timeline) != "" {
-		full = head + "\n\n" + t.timeline
-	}
-	messageID, lastBody := t.messageID, t.lastBody
-	t.mu.Unlock()
+// footerMessageID returns the footer's current message id, if any.
+func (b *Bridge) footerMessageID() string {
+	f := b.footer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.messageID
+}
 
-	chunks := splitMessage(full)
-	if len(chunks) == 0 {
+// attachFooterLocked posts a fresh footer message when one is not
+// already in place, so the footer stays the thread's last message. Must
+// be called with f.mu held.
+func (b *Bridge) attachFooterLocked() {
+	f := b.footer
+	if f.stopped || f.messageID != "" {
 		return
 	}
-	if messageID != "" {
-		if chunks[0] != lastBody {
-			if err := b.api.editMessage(b.ctx, b.threadID, messageID, chunks[0]); err != nil {
-				slog.Debug("Discord bridge: failed to finalize turn message", "error", err.Error())
-			}
+	body := b.composeFooterLocked()
+	id, err := b.api.createMessage(b.ctx, b.threadID, body)
+	if err != nil {
+		slog.Debug("Discord bridge: failed to post status footer", "error", err.Error())
+		return
+	}
+	f.messageID = id
+	f.lastBody = body
+	f.lastEdit = b.now()
+}
+
+// reanchorFooter moves the footer back to the bottom after a message
+// the bridge did not post (a user prompt) landed below it, by deleting
+// and re-creating the footer message.
+func (b *Bridge) reanchorFooter() {
+	f := b.footer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopped || f.messageID == "" {
+		return
+	}
+	if err := b.api.deleteMessage(b.ctx, b.threadID, f.messageID); err != nil {
+		slog.Debug("Discord bridge: failed to delete status footer", "error", err.Error())
+	}
+	f.messageID = ""
+	f.lastBody = ""
+	b.attachFooterLocked()
+}
+
+// composeFooterLocked renders the footer body: status header, per-turn
+// tool summary, usage metrics, and the newest slice of streamed text.
+// Must be called with f.mu held.
+func (b *Bridge) composeFooterLocked() string {
+	f := b.footer
+	lines := []string{b.renderFooterHeaderLocked()}
+	if summary := renderToolSummary(f.toolCounts, f.toolFailures); summary != "" {
+		lines = append(lines, summary)
+	}
+	if f.haveSess {
+		if metrics := renderMetricsLine(f.sess, b.modelContextWindow()); metrics != "" {
+			lines = append(lines, metrics)
 		}
-		chunks = chunks[1:]
 	}
-	for _, chunk := range chunks {
-		if _, err := b.api.createMessage(b.ctx, b.threadID, chunk); err != nil {
-			slog.Debug("Discord bridge: failed to append turn chunk", "error", err.Error())
+	body := strings.Join(lines, "\n")
+	if tail := strings.TrimSpace(f.tail); tail != "" {
+		room := safeMessageLen - len(body) - 3
+		if room < 200 {
+			room = 200
 		}
+		body += "\n\n" + tailText(tail, room)
 	}
+	return body
 }
 
-// composeTurnLocked renders the live message: status header plus the
-// newest slice of the timeline. Must be called with t.mu held.
-func (b *Bridge) composeTurnLocked(t *liveTurn) string {
-	head := b.renderTurnHeaderLocked(t)
-	if strings.TrimSpace(t.timeline) == "" {
-		return head
+// renderFooterHeaderLocked renders the footer's status header. Must be
+// called with f.mu held.
+func (b *Bridge) renderFooterHeaderLocked() string {
+	f := b.footer
+	if f.state == turnIdle {
+		return iconBot + " **Ready** — watching the session"
 	}
-	room := safeMessageLen - len(head) - 3
-	if room < 200 {
-		room = 200
-	}
-	return head + "\n\n" + tailText(t.timeline, room)
-}
-
-// renderTurnHeaderLocked renders the animated status line. Must be
-// called with t.mu held.
-func (b *Bridge) renderTurnHeaderLocked(t *liveTurn) string {
-	elapsed := b.now().Sub(t.started)
-	switch t.state {
+	elapsed := b.now().Sub(f.started)
+	switch f.state {
 	case turnDone:
 		line := fmt.Sprintf("%s **Done in %s**", iconDone, humanDuration(elapsed))
-		if t.model != "" {
-			line += " · `" + t.model + "`"
+		if f.model != "" {
+			line += " · `" + f.model + "`"
 		}
 		return line
 	case turnCancelled:
 		return fmt.Sprintf("%s **Cancelled after %s**", iconCancelled, humanDuration(elapsed))
 	case turnError:
 		line := fmt.Sprintf("%s **Failed after %s**", iconError, humanDuration(elapsed))
-		if t.errText != "" {
-			line += " — " + compactLine(t.errText, 200)
+		if f.errText != "" {
+			line += " — " + compactLine(f.errText, 200)
 		}
 		return line
 	}
 
 	icon, label := iconThinking, "Thinking…"
-	switch t.state {
+	switch f.state {
 	case turnWriting:
 		icon, label = iconWriting, "Writing…"
 	case turnTool:
-		icon, label = iconTool, "Running "+cmpOr(t.toolName, "tool")+"…"
+		icon, label = iconTool, toolVerb(f.toolName, f.toolParam)+"…"
 	case turnWaitingPermission:
 		icon, label = iconPermission, "Waiting for permission…"
 	}
-	return fmt.Sprintf("%s %s **%s** %s", spinnerFrame(t.frame), icon, label, humanDuration(elapsed))
+	return fmt.Sprintf("%s %s **%s** %s", spinnerFrame(f.frame), icon, label, humanDuration(elapsed))
+}
+
+// modelContextWindow resolves the context window of the configured
+// large model from the catalog; 0 when it cannot be resolved.
+func (b *Bridge) modelContextWindow() int64 {
+	cfg := b.env.Config()
+	if cfg == nil {
+		return 0
+	}
+	sel, ok := cfg.Models[config.SelectedModelTypeLarge]
+	if !ok {
+		return 0
+	}
+	for _, p := range b.catalogProviders(cfg) {
+		if string(p.ID) != sel.Provider {
+			continue
+		}
+		for _, m := range p.Models {
+			if m.ID == sel.Model {
+				return m.ContextWindow
+			}
+		}
+	}
+	return 0
+}
+
+// applyTurnLocked advances the footer from a message snapshot. Must be
+// called with f.mu held.
+func (b *Bridge) applyTurnLocked(msg message.Message, waiting bool) {
+	f := b.footer
+	if !f.active {
+		f.active = true
+		f.started = b.now()
+		f.errText = ""
+		f.tail = ""
+		f.toolCounts = map[string]int{}
+		f.toolFailures = 0
+		f.countedCalls = map[string]bool{}
+		f.state = turnThinking
+	}
+	if msg.Model != "" {
+		f.model = msg.Model
+		if msg.Provider != "" {
+			f.model = msg.Provider + "/" + msg.Model
+		}
+	}
+	for _, tc := range toolCalls(msg) {
+		if tc.ID == "" || f.countedCalls[tc.ID] {
+			continue
+		}
+		f.countedCalls[tc.ID] = true
+		f.toolCounts[cmpOr(tc.Name, "tool")]++
+	}
+	f.tail = renderAssistantTimeline(msg)
+	state, call := deriveTurnState(msg)
+	f.state = state
+	f.toolName = call.Name
+	f.toolParam = toolMainParam(call.Input)
+	if waiting && !f.state.terminal() {
+		f.state = turnWaitingPermission
+	}
+}
+
+// markWaiting flips the waiting-for-permission phase.
+func (b *Bridge) markWaiting(waiting bool) {
+	f := b.footer
+	f.mu.Lock()
+	f.waiting = waiting
+	if f.active {
+		switch {
+		case waiting:
+			f.state = turnWaitingPermission
+		case f.state == turnWaitingPermission:
+			f.state = turnThinking
+			if strings.TrimSpace(f.tail) != "" {
+				f.state = turnWriting
+			}
+		}
+	}
+	f.mu.Unlock()
+	b.pokeFooter()
+}
+
+// freezeStep posts a completed step's transcript above the footer and
+// marks the step frozen so later snapshots cannot repost it.
+func (b *Bridge) freezeStep(msg message.Message) {
+	content := renderAssistantTimeline(msg)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	f := b.footer
+	f.mu.Lock()
+	f.tail = ""
+	f.mu.Unlock()
+	b.freezeContent(msg.ID, content)
+}
+
+// freezeContent posts a frozen transcript above the footer. The frozen
+// set keeps repeated snapshots of the same step from double-posting.
+func (b *Bridge) freezeContent(id, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	if id != "" {
+		b.frozenMu.Lock()
+		if b.frozen[id] {
+			b.frozenMu.Unlock()
+			return
+		}
+		if len(b.frozen) >= frozenLimit {
+			clear(b.frozen)
+		}
+		b.frozen[id] = true
+		b.frozenMu.Unlock()
+	}
+	b.post(content)
+}
+
+// isFrozen reports whether a step's transcript was already posted.
+func (b *Bridge) isFrozen(id string) bool {
+	if id == "" {
+		return false
+	}
+	b.frozenMu.Lock()
+	defer b.frozenMu.Unlock()
+	return b.frozen[id]
+}
+
+// setLastAssistant remembers the newest assistant snapshot for the
+// RunComplete fallback freeze.
+func (b *Bridge) setLastAssistant(msg message.Message) {
+	b.lastMu.Lock()
+	b.lastAssistant = msg
+	b.lastMu.Unlock()
+}
+
+// lastAssistantMessage returns the newest assistant snapshot.
+func (b *Bridge) lastAssistantMessage() message.Message {
+	b.lastMu.Lock()
+	defer b.lastMu.Unlock()
+	return b.lastAssistant
+}
+
+// hasFinishPart reports whether a message snapshot carries its Finish
+// part, i.e. the step stopped streaming.
+func hasFinishPart(msg message.Message) bool {
+	for _, part := range msg.Parts {
+		if _, ok := part.(message.Finish); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveTurnState infers the live phase from a message snapshot.
-func deriveTurnState(msg message.Message) (turnState, string) {
+func deriveTurnState(msg message.Message) (turnState, message.ToolCall) {
 	lastTool, lastText, lastReasoning := -1, -1, -1
-	toolName := ""
+	var lastCall message.ToolCall
 	for i, part := range msg.Parts {
 		switch p := part.(type) {
 		case message.ToolCall:
 			lastTool = i
-			toolName = p.Name
+			lastCall = p
 		case message.TextContent:
 			if !p.Hidden && strings.TrimSpace(p.Text) != "" {
 				lastText = i
@@ -1340,32 +1555,12 @@ func deriveTurnState(msg message.Message) (turnState, string) {
 	}
 	switch {
 	case lastText >= 0 && lastText > lastTool && lastText > lastReasoning:
-		return turnWriting, ""
+		return turnWriting, message.ToolCall{}
 	case lastTool >= 0 && lastTool > lastReasoning:
-		return turnTool, toolName
+		return turnTool, lastCall
 	default:
-		return turnThinking, ""
+		return turnThinking, message.ToolCall{}
 	}
-}
-
-// rememberCall caches a tool call so its result renders the call line.
-func (b *Bridge) rememberCall(tc message.ToolCall) {
-	if tc.ID == "" {
-		return
-	}
-	b.callMu.Lock()
-	defer b.callMu.Unlock()
-	if len(b.calls) >= callCacheLimit {
-		clear(b.calls)
-	}
-	b.calls[tc.ID] = tc
-}
-
-// lookupCall returns a remembered tool call, or the zero value.
-func (b *Bridge) lookupCall(id string) message.ToolCall {
-	b.callMu.Lock()
-	defer b.callMu.Unlock()
-	return b.calls[id]
 }
 
 // ── Message helpers ──────────────────────────────────────────────────────

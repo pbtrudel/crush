@@ -38,16 +38,21 @@ running in the terminal.
 
 ## What gets mirrored
 
-- Assistant text streams into a single live message that animates while
-  the agent thinks, writes, and runs tools (spinner, status icon, elapsed
-  timer), then freezes into the full transcript.
-- Thinking blocks appear as a one-line summary (`🧠 thought for 12s`).
-- Tool calls are one line each with their main parameter; tool results are
-  posted as compact, fenced messages (long output is trimmed with a hidden
-  line count).
+- A single **status footer** lives at the bottom of the thread. It
+  animates while the agent works (spinner, current state — thinking,
+  writing, editing, searching, running a command — and an elapsed
+  timer) and carries the per-turn tool summary, e.g.
+  `🔧 bash ×4 · read ×2 · edit ×1 · (1 failed)`, plus usage metrics,
+  e.g. `📊 context 43% · cache 89%` (same formulas as the TUI sidebar).
+- Assistant text freezes into the transcript as one message per step,
+  above the footer; thinking blocks appear as a one-line summary
+  (`🧠 thought for 12s`).
+- Tool calls and their results are never posted: tool activity appears
+  only as counts in the footer, and failures only as a `(N failed)`
+  tally — command output stays in the terminal session.
 - Prompts typed in the terminal are echoed with a `💻 (terminal)` marker.
 - The session title renames the thread once it is generated.
-- Token usage appears in `/status` and the completion line.
+- Token usage details remain available via `/status` and `/tokens`.
 
 ## Commands
 
@@ -91,6 +96,11 @@ first (and vice versa).
 
 ## Notes and limits
 
+- The footer is kept as the last message in the thread. When content
+  must appear above it (a response, a prompt, a permission card), the
+  footer message is recycled to the bottom; bots can delete and
+  re-create their own messages, so no extra Discord permission is
+  needed for this.
 - Remote control requires local mode: it does not work when
   `CRUSH_CLIENT_SERVER` is set.
 - The bridge lives inside the running Crush process. Quitting Crush (or

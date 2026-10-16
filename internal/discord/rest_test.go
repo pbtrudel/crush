@@ -91,6 +91,20 @@ func TestEditAndRename(t *testing.T) {
 	}, paths)
 }
 
+func TestDeleteMessage(t *testing.T) {
+	t.Parallel()
+	var gotMethod, gotPath string
+	c := newTestREST(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	require.NoError(t, c.deleteMessage(t.Context(), "c1", "m1"))
+	require.Equal(t, http.MethodDelete, gotMethod)
+	require.Equal(t, "/channels/c1/messages/m1", gotPath)
+}
+
 func TestRespondInteraction(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
