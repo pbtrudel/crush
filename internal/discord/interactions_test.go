@@ -41,7 +41,7 @@ func TestBridgeInteractionRunsCommandInThread(t *testing.T) {
 	require.Equal(t, "Running `/status`", callbacks[0].content)
 	require.True(t, callbacks[0].ephemeral)
 
-	require.True(t, api.hasPostContaining("Test Session"), "status output lands in the thread")
+	require.True(t, api.hasContentContaining("Test Session"), "status output lands in the thread")
 	require.Zero(t, env.runCount(), "commands must not reach the agent")
 }
 
@@ -52,7 +52,7 @@ func TestBridgeInteractionOptionBecomesArgs(t *testing.T) {
 	b.handleThreadInteraction(threadInteraction("yolo", "on"))
 
 	require.True(t, env.PermissionSkipRequests())
-	require.True(t, api.hasPostContaining("YOLO mode enabled"))
+	require.True(t, api.hasContentContaining("YOLO mode enabled"))
 	require.Equal(t, "Running `/yolo on`", api.callbacksSnapshot()[0].content)
 }
 
@@ -74,7 +74,7 @@ func TestBridgeInteractionUnknownCommandAnswered(t *testing.T) {
 	b.handleThreadInteraction(threadInteraction("effort"))
 
 	require.Equal(t, "Running `/effort`", api.callbacksSnapshot()[0].content)
-	require.True(t, api.hasPostContaining("Unknown command"))
+	require.True(t, api.hasContentContaining("Unknown command"))
 }
 
 func TestBridgeInteractionForeignChannelIgnored(t *testing.T) {
@@ -115,7 +115,7 @@ func TestBridgeInteractionViaInputQueue(t *testing.T) {
 	// The cancel confirmation is posted asynchronously after the counter
 	// increments; wait for it instead of racing it (the immediate
 	// assertion was flaky on Windows CI runners).
-	require.Eventually(t, func() bool { return api.hasPostContaining("Cancelling") }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return api.hasContentContaining("Cancelling") }, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestInteractionCommandMapping(t *testing.T) {

@@ -81,10 +81,11 @@ The fork reads the same configuration as upstream (`~/.config/crush/`, project `
 
 #### Discord remote control (`/rc`)
 
-Run `/rc` inside a session to open a Discord thread bound to it: all
-output is mirrored there, messages typed in the thread drive the session,
-and `/model`, `/plan`, `/yolo`, `/stop`, permissions via reactions, and
-custom commands all work from Discord. Configure it with
+Run `/rc` inside a session to open a Discord thread bound to it: the
+conversation and a live status footer (state, tool counts, context and
+cache usage) are mirrored there, messages typed in the thread drive the
+session, and `/model`, `/plan`, `/yolo`, `/stop`, permissions via
+reactions, and custom commands all work from Discord. Configure it with
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_IDS` (plus an optional
 `DISCORD_ALLOWED_USER_IDS` allow-list) and see
 [docs/discord-remote-control.md](docs/discord-remote-control.md) for the

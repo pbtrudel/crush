@@ -102,6 +102,13 @@ func (c *restClient) editMessage(ctx context.Context, channelID, messageID, cont
 	return err
 }
 
+// deleteMessage removes a message the bot owns (the status footer).
+// Bots may delete their own messages without MANAGE_MESSAGES.
+func (c *restClient) deleteMessage(ctx context.Context, channelID, messageID string) error {
+	_, err := c.do(ctx, http.MethodDelete, "/channels/"+channelID+"/messages/"+messageID, nil)
+	return err
+}
+
 // respondInteraction answers an application-command interaction with a
 // message. Ephemeral responses are visible only to the invoking user.
 func (c *restClient) respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error {

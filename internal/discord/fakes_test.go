@@ -26,6 +26,7 @@ type fakeAPI struct {
 	threadID    string
 	posts       []fakePost
 	edits       []fakePost
+	deletes     []string
 	typing      []string
 	reactions   []string
 	renames     []string
@@ -76,6 +77,13 @@ func (f *fakeAPI) editMessage(ctx context.Context, channelID, messageID, content
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, fakePost{channelID: channelID, messageID: messageID, content: content})
+	return nil
+}
+
+func (f *fakeAPI) deleteMessage(ctx context.Context, channelID, messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletes = append(f.deletes, messageID)
 	return nil
 }
 
@@ -143,6 +151,47 @@ func (f *fakeAPI) hasEditContaining(sub string) bool {
 	defer f.mu.Unlock()
 	for _, e := range f.edits {
 		if strings.Contains(e.content, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasContentContaining reports whether any post or edit contains sub.
+func (f *fakeAPI) hasContentContaining(sub string) bool {
+	return f.hasPostContaining(sub) || f.hasEditContaining(sub)
+}
+
+// latestEditContaining returns the content of the most recent edit
+// containing sub, or "".
+func (f *fakeAPI) latestEditContaining(sub string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	content := ""
+	for _, e := range f.edits {
+		if strings.Contains(e.content, sub) {
+			content = e.content
+		}
+	}
+	return content
+}
+
+// lastPostContent returns the content of the most recent post.
+func (f *fakeAPI) lastPostContent() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.posts) == 0 {
+		return ""
+	}
+	return f.posts[len(f.posts)-1].content
+}
+
+// hasDelete reports whether a delete was recorded for messageID.
+func (f *fakeAPI) hasDelete(messageID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range f.deletes {
+		if id == messageID {
 			return true
 		}
 	}
@@ -225,15 +274,15 @@ func newFakeEnv() *fakeEnv {
 				ID:   catwalk.InferenceProvider("openai"),
 				Name: "OpenAI",
 				Models: []catwalk.Model{
-					{ID: "gpt-4o", Name: "GPT-4o"},
-					{ID: "gpt-5", Name: "GPT-5"},
+					{ID: "gpt-4o", Name: "GPT-4o", ContextWindow: 128000},
+					{ID: "gpt-5", Name: "GPT-5", ContextWindow: 256000},
 				},
 			},
 			{
 				ID:   catwalk.InferenceProvider("anthropic"),
 				Name: "Anthropic",
 				Models: []catwalk.Model{
-					{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5"},
+					{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 200000},
 				},
 			},
 		},

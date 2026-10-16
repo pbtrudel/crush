@@ -3,10 +3,12 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/session"
 )
 
 // Status icons used across the live status line and one-off messages.
@@ -22,6 +24,7 @@ const (
 	iconLocal      = "💻"
 	iconBot        = "🤖"
 	iconBrain      = "🧠"
+	iconMetrics    = "📊"
 )
 
 // Reaction emojis used for permission approvals.
@@ -34,10 +37,6 @@ const (
 // spinnerFrames animates the live status line; one frame is consumed per
 // flush (the edit throttle paces it).
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// toolResultMaxLines caps how much tool output is mirrored to Discord;
-// the TUI collapses at ten lines and the rest is summarized as hidden.
-const toolResultMaxLines = 15
 
 // spinnerFrame returns the animation frame for a flush counter.
 func spinnerFrame(i int) string {
@@ -72,33 +71,6 @@ func formatTokens(n int64) string {
 	default:
 		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
 	}
-}
-
-// fence renders content as a Discord code block. The fence grows past
-// any backtick run inside the content so nested fences cannot break the
-// block (CommonMark fence rules, supported by Discord).
-func fence(content string) string {
-	longest, run := 0, 0
-	for _, r := range content {
-		if r == '`' {
-			run++
-			longest = max(longest, run)
-		} else {
-			run = 0
-		}
-	}
-	ticks := strings.Repeat("`", max(3, longest+1))
-	return ticks + "\n" + strings.TrimRight(content, "\n") + "\n" + ticks
-}
-
-// trimLines keeps at most max lines of content, returning the trimmed
-// body and the number of hidden lines.
-func trimLines(content string, maxLines int) (string, int) {
-	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
-	if len(lines) <= maxLines {
-		return strings.Join(lines, "\n"), 0
-	}
-	return strings.Join(lines[:maxLines], "\n"), len(lines) - maxLines
 }
 
 // tailText returns the last part of s that fits in max bytes, cut on a
@@ -148,52 +120,95 @@ func compactLine(s string, n int) string {
 	return truncateRunes(s, n)
 }
 
-// renderToolCallLine renders one tool call as a single timeline line,
-// mirroring the TUI's "● ToolName param" header.
-func renderToolCallLine(tc message.ToolCall) string {
-	if tc.Name == "" {
-		return iconTool + " tool"
+// toolVerb renders the friendly state label for a tool run, appending
+// the call's main parameter when one is known ("Editing main.go").
+func toolVerb(name, param string) string {
+	verb := ""
+	switch name {
+	case "edit", "multiedit":
+		verb = "Editing"
+	case "view", "read":
+		verb = "Reading"
+	case "grep", "glob", "ls", "sourcegraph", "web_search":
+		verb = "Searching"
+	case "write":
+		verb = "Writing"
+	case "bash":
+		verb = "Running"
+	case "fetch", "agentic_fetch", "web_fetch":
+		verb = "Fetching"
+	case "download":
+		verb = "Downloading"
+	case "agent", "task":
+		return "Delegating"
+	case "todos":
+		verb = "Updating todos"
+	case "question":
+		verb = "Asking"
+	case "":
+		return "Running tool"
+	default:
+		verb = "Running " + name
+		if param == "" {
+			return verb
+		}
+		return verb + " — " + param
 	}
-	line := fmt.Sprintf("%s `%s`", iconTool, tc.Name)
-	if param := toolMainParam(tc.Input); param != "" {
-		line += " — " + param
+	if param == "" {
+		return verb
 	}
-	return line
+	return verb + " " + param
 }
 
-// renderToolResultMessage renders the standalone thread message posted
-// when a tool completes: the call line plus a trimmed, fenced body.
-func renderToolResultMessage(call message.ToolCall, tr message.ToolResult) string {
-	name := tr.Name
-	if name == "" {
-		name = call.Name
+// renderToolSummary renders the per-turn tool call counts and failed
+// call total as a footer subtext line, ordered by descending count then
+// name so the line is stable across flushes.
+func renderToolSummary(counts map[string]int, failures int) string {
+	if len(counts) == 0 && failures == 0 {
+		return ""
 	}
-	if name == "" {
-		name = "tool"
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
 	}
-	head := fmt.Sprintf("%s `%s`", iconTool, name)
-	if param := toolMainParam(call.Input); param != "" {
-		head += " — " + param
-	}
-	if tr.IsError {
-		head = fmt.Sprintf("%s `%s` failed", iconError, name)
-		if param := toolMainParam(call.Input); param != "" {
-			head += " — " + param
+	slices.SortFunc(names, func(a, b string) int {
+		if counts[a] != counts[b] {
+			return counts[b] - counts[a]
 		}
+		return strings.Compare(a, b)
+	})
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s ×%d", name, counts[name]))
 	}
+	if failures > 0 {
+		parts = append(parts, fmt.Sprintf("(%d failed)", failures))
+	}
+	return "-# " + iconTool + " " + strings.Join(parts, " · ")
+}
 
-	body, hidden := trimLines(tr.Content, toolResultMaxLines)
-	if strings.TrimSpace(body) == "" {
-		if hidden > 0 {
-			return fmt.Sprintf("%s\n-# %d lines hidden", head, hidden)
+// renderMetricsLine renders context-window usage and the prompt-cache
+// hit rate as a footer subtext line, using the same formulas as the TUI
+// sidebar (internal/ui/model/sidebar.go, internal/ui/common/elements.go).
+func renderMetricsLine(sess session.Session, contextWindow int64) string {
+	var parts []string
+	if contextWindow > 0 {
+		used := sess.PromptTokens + sess.CompletionTokens
+		pct := int(float64(used) / float64(contextWindow) * 100)
+		label := fmt.Sprintf("context %d%%", pct)
+		if sess.EstimatedUsage {
+			label = fmt.Sprintf("context ~%d%%", pct)
 		}
-		return head
+		parts = append(parts, label)
 	}
-	out := head + "\n" + fence(body)
-	if hidden > 0 {
-		out += fmt.Sprintf("\n-# %d lines hidden", hidden)
+	if sess.TotalContextTokens > 0 {
+		pct := int(float64(sess.TotalCacheReadTokens) / float64(sess.TotalContextTokens) * 100)
+		parts = append(parts, fmt.Sprintf("cache %d%%", pct))
 	}
-	return out
+	if len(parts) == 0 {
+		return ""
+	}
+	return "-# " + iconMetrics + " " + strings.Join(parts, " · ")
 }
 
 // renderReasoningLine renders a finished thinking block as one line.
@@ -207,10 +222,10 @@ func renderReasoningLine(rc message.ReasoningContent) string {
 	return fmt.Sprintf("%s *thought for %s*", iconBrain, humanDuration(time.Duration(secs)*time.Second))
 }
 
-// renderAssistantTimeline renders the parts of an in-flight assistant
-// message as a Discord timeline: thinking markers, streamed markdown
-// text, and one line per tool call. Tool results are separate messages
-// and are not part of this rendering.
+// renderAssistantTimeline renders the parts of an assistant message as
+// a Discord timeline: thinking markers and streamed markdown text. It
+// feeds both the footer's live tail and the frozen per-step transcript;
+// tool calls are summarized in the footer instead of listed here.
 func renderAssistantTimeline(msg message.Message) string {
 	var lines []string
 	for _, part := range msg.Parts {
@@ -224,8 +239,6 @@ func renderAssistantTimeline(msg message.Message) string {
 				continue
 			}
 			lines = append(lines, strings.TrimSpace(p.Text))
-		case message.ToolCall:
-			lines = append(lines, renderToolCallLine(p))
 		case message.Finish:
 			// Rendered by the status header instead.
 		}
