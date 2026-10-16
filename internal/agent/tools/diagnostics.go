@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,23 +40,37 @@ func NewDiagnosticsTool(lspManager *lsp.Manager) fantasy.AgentTool {
 // openInLSPs ensures LSP servers are running and aware of the file, but does
 // not notify changes or wait for fresh diagnostics. Use this for read-only
 // operations like view where the file content hasn't changed.
+//
+// It returns the servers that could still publish for this file, which is
+// the only set worth waiting on: a server that already had the file open
+// receives no notification, and one that already published a result has
+// nothing left to send.
 func openInLSPs(
 	ctx context.Context,
 	manager *lsp.Manager,
 	filepath string,
-) {
+) []*lsp.Client {
 	if filepath == "" || manager == nil {
-		return
+		return nil
 	}
 
 	manager.Start(ctx, filepath)
 
+	var pending []*lsp.Client
 	for client := range manager.Clients().Seq() {
 		if !client.HandlesFile(filepath) {
 			continue
 		}
-		_ = client.OpenFileOnDemand(ctx, filepath)
+		notified, err := client.OpenFileForRead(ctx, filepath)
+		if err != nil {
+			slog.Warn("Failed to open file in LSP", "file", filepath, "error", err)
+		}
+		if !notified && client.HasDiagnosticsFor(filepath) {
+			continue
+		}
+		pending = append(pending, client)
 	}
+	return pending
 }
 
 // waitForLSPDiagnostics waits briefly for diagnostics publication after a file
@@ -63,19 +78,15 @@ func openInLSPs(
 // files matters but latency should remain low (i.e. when using the view tool).
 func waitForLSPDiagnostics(
 	ctx context.Context,
-	manager *lsp.Manager,
-	filepath string,
+	clients []*lsp.Client,
 	timeout time.Duration,
 ) {
-	if filepath == "" || manager == nil || timeout <= 0 {
+	if len(clients) == 0 || timeout <= 0 {
 		return
 	}
 
 	var wg sync.WaitGroup
-	for client := range manager.Clients().Seq() {
-		if !client.HandlesFile(filepath) {
-			continue
-		}
+	for client := range slices.Values(clients) {
 		wg.Go(func() {
 			client.WaitForDiagnostics(ctx, timeout)
 		})

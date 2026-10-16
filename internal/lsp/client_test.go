@@ -210,3 +210,58 @@ func TestWaitForDiagnostics_NilClient(t *testing.T) {
 	// Should not panic.
 	c.WaitForDiagnostics(context.Background(), time.Second)
 }
+
+// TestWaitForDiagnostics_WakesPromptlyOnPublish pins push-based waiting:
+// a publish must be noticed immediately rather than on the next poll
+// tick, so the total wait is the settle window plus the publish delay.
+func TestWaitForDiagnostics_WakesPromptlyOnPublish(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestClient()
+
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			c.diagnostics.Set(protocol.DocumentURI("file:///test.go"), []protocol.Diagnostic{
+				{Message: "diag"},
+			})
+		}()
+
+		start := time.Now()
+		c.WaitForDiagnostics(t.Context(), 5*time.Second)
+		elapsed := time.Since(start)
+
+		// 10ms until the publish plus the 300ms settle window. Polling at
+		// 100ms granularity overshot this by more than a tick.
+		require.LessOrEqual(t, elapsed, 320*time.Millisecond, "should wake on publish, not on a poll tick")
+	})
+}
+
+func TestOpenFileForRead_ReportsNoNotificationWhenAlreadyOpen(t *testing.T) {
+	t.Parallel()
+
+	c := newTestClient()
+	const path = "/tmp/already-open.go"
+	c.openFiles.Set(string(protocol.URIFromPath(path)), &OpenFileInfo{Version: 1})
+
+	// An already-open file gets no didOpen, so nothing new can be
+	// published: the caller must be told not to wait.
+	sent, err := c.OpenFileForRead(context.Background(), path)
+	require.NoError(t, err)
+	require.False(t, sent)
+}
+
+func TestHasDiagnosticsFor(t *testing.T) {
+	t.Parallel()
+
+	c := newTestClient()
+	const path = "/tmp/diag.go"
+	require.False(t, c.HasDiagnosticsFor(path))
+
+	// Servers can publish a URI that differs in normalization from the
+	// one the client generated from the path; matching must still work
+	// because both resolve to the same file.
+	c.diagnostics.Set(protocol.DocumentURI("file:///tmp/diag.go"), nil)
+	require.True(t, c.HasDiagnosticsFor(path))
+	require.False(t, c.HasDiagnosticsFor("/tmp/other.go"))
+}
