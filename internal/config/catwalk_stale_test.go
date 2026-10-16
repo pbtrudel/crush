@@ -22,10 +22,17 @@ type fakeCatwalkClient struct {
 	calls    atomic.Int64
 	response []catwalk.Provider
 	err      error
+	// gate, when non-nil, blocks the fetch until it is closed: the only
+	// way to prove a fetch happened off the startup path is to make it
+	// hang and show the caller returned anyway.
+	gate chan struct{}
 }
 
 func (f *fakeCatwalkClient) GetProviders(context.Context, string) ([]catwalk.Provider, error) {
 	f.calls.Add(1)
+	if f.gate != nil {
+		<-f.gate
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -53,14 +60,29 @@ func TestCatwalkSync_FreshCacheSkipsBlockingFetch(t *testing.T) {
 	cached := []catwalk.Provider{{ID: "cached-provider"}}
 	writeCatwalkCache(t, path, cached)
 
-	client := &fakeCatwalkClient{response: []catwalk.Provider{{ID: "fresh-provider"}}}
+	client := &fakeCatwalkClient{
+		response: []catwalk.Provider{{ID: "fresh-provider"}},
+		gate:     make(chan struct{}),
+	}
 	s := &catwalkSync{}
 	s.Init(client, path, true)
 
+	// The fetch is hanging, so a Get that returns here proves startup did
+	// not wait on the network for a catalog it already has.
 	got, err := s.Get(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, cached, got)
-	require.Zero(t, client.calls.Load(), "the fast path must not touch the network")
+	require.Eventually(t, func() bool { return client.calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond, "the revalidation runs, but in the background")
+
+	close(client.gate)
+	require.Eventually(t, func() bool {
+		var stored []catwalk.Provider
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		return json.Unmarshal(raw, &stored) == nil && len(stored) == 1 && stored[0].ID == "fresh-provider"
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 // The background revalidation writes the refreshed catalog to disk and
@@ -150,15 +172,21 @@ func TestCatwalkSync_BackgroundRefreshFailureIsQuiet(t *testing.T) {
 }
 
 // countedHyperClient is race-safe because the background revalidation calls
-// it from another goroutine.
+// it from another goroutine. gate, when non-nil, blocks the fetch until it
+// is closed: the only way to prove a fetch happened off the startup path is
+// to make it hang and show the caller returned anyway.
 type countedHyperClient struct {
 	calls atomic.Int64
 	resp  catwalk.Provider
 	err   error
+	gate  chan struct{}
 }
 
 func (c *countedHyperClient) Get(context.Context, string) (catwalk.Provider, error) {
 	c.calls.Add(1)
+	if c.gate != nil {
+		<-c.gate
+	}
 	return c.resp, c.err
 }
 
@@ -169,14 +197,18 @@ func TestHyperSync_FreshCacheSkipsBlockingFetch(t *testing.T) {
 	cached := catwalk.Provider{ID: "hyper", Name: "Hyper", Models: []catwalk.Model{{ID: "cached-model"}}}
 	require.NoError(t, newCache[catwalk.Provider](path).Store(cached))
 
-	client := &countedHyperClient{resp: catwalk.Provider{ID: "hyper", Name: "Hyper", Models: []catwalk.Model{{ID: "new-model"}}}}
+	client := &countedHyperClient{
+		resp: catwalk.Provider{ID: "hyper", Name: "Hyper", Models: []catwalk.Model{{ID: "new-model"}}},
+		gate: make(chan struct{}),
+	}
 	s := &hyperSync{}
 	s.Init(client, path, true)
 
 	got, err := s.Get(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, cached, got, "a fresh-enough cache is served without the network")
-	require.Zero(t, client.calls.Load())
+	require.Eventually(t, func() bool { return client.calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond, "the revalidation runs, but in the background")
+	close(client.gate)
 }
 
 func TestHyperSync_BackgroundRefreshLandsOnDisk(t *testing.T) {
