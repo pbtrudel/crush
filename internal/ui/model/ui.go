@@ -5610,6 +5610,10 @@ func (m *UI) cancelAgent() tea.Cmd {
 			m.bangCancel = nil
 		}
 
+		// Read the queued prompts before the cancel discards them and
+		// hand them back to the editor, so cancelling never costs the
+		// user text they already wrote.
+		m.restoreQueuedPromptsToInput()
 		m.com.Workspace.AgentCancel(m.session.ID)
 		// Stop the spinning todo indicator and drop the memoized busy
 		// state the cancel just changed; the pill re-renders now from
@@ -5624,13 +5628,8 @@ func (m *UI) cancelAgent() tea.Cmd {
 	// Queued prompts pending: esc clears the queue. Decide from the cached
 	// count (event-driven) instead of a synchronous workspace probe.
 	if m.promptQueue > 0 {
+		m.restoreQueuedPromptsToInput()
 		m.com.Workspace.AgentClearQueue(m.session.ID)
-		m.promptQueue = 0
-		m.promptQueueItems = nil
-		m.promptQueueCheckedAt = time.Now()
-		// Bump the queue generation so a fetch started before this clear
-		// cannot land and repopulate the pill we just emptied.
-		m.invalidatePromptQueue()
 		m.updateLayoutAndSize()
 		return nil
 	}
@@ -5638,6 +5637,34 @@ func (m *UI) cancelAgent() tea.Cmd {
 	// First escape press - set canceling state and start timer.
 	m.isCanceling = true
 	return cancelTimerCmd()
+}
+
+// restoreQueuedPromptsToInput moves the session's queued prompts from the
+// memoized queue mirror back into the editor, in send order, ahead of any
+// draft the user has typed. The queued calls themselves are discarded by the
+// cancel or clear that follows; without this, both escape actions are
+// destructive to text the user already wrote. The mirror is used instead of
+// a workspace probe because escape runs on the Update goroutine, which never
+// makes synchronous workspace calls.
+func (m *UI) restoreQueuedPromptsToInput() {
+	if len(m.promptQueueItems) == 0 {
+		return
+	}
+	text := strings.Join(m.promptQueueItems, "\n\n")
+	if draft := m.textarea.Value(); draft != "" {
+		text = text + "\n\n" + draft
+	}
+	m.textarea.Reset()
+	m.textarea.InsertString(text)
+	m.textarea.MoveToEnd()
+	m.syncBangModeFromTextarea()
+	m.historyReset()
+	// The queue is about to be discarded; drop the mirror now so the pill
+	// does not keep claiming prompts that are back in the editor.
+	m.promptQueue = 0
+	m.promptQueueItems = nil
+	m.promptQueueCheckedAt = time.Now()
+	m.invalidatePromptQueue()
 }
 
 // openDialog opens a dialog by its ID.
