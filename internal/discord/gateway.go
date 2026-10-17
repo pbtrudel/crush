@@ -88,9 +88,12 @@ type gatewayReaction struct {
 	} `json:"emoji"`
 }
 
-// gwInteractionApplicationCommand is the interaction type of a native
-// slash command; only these are answered.
-const gwInteractionApplicationCommand = 2
+// Interaction types the bridge answers: native slash commands and
+// message-component presses (buttons on question cards).
+const (
+	gwInteractionApplicationCommand = 2
+	gwInteractionMessageComponent   = 3
+)
 
 // gatewayInteraction is the INTERACTION_CREATE payload subset for
 // application commands. Guild invocations carry the user under
@@ -105,10 +108,13 @@ type gatewayInteraction struct {
 	User      gatewayInteractionUser   `json:"user"`
 }
 
-// gatewayInteractionData is the command payload of an interaction.
+// gatewayInteractionData is the command or component payload of an
+// interaction.
 type gatewayInteractionData struct {
-	Name    string                     `json:"name"`
-	Options []gatewayInteractionOption `json:"options"`
+	Name          string                     `json:"name"`
+	Options       []gatewayInteractionOption `json:"options"`
+	CustomID      string                     `json:"custom_id"`
+	ComponentType int                        `json:"component_type"`
 }
 
 // gatewayInteractionOption is one command argument. The bridge only
@@ -387,7 +393,7 @@ func (g *gateway) dispatch(p gatewayPayload) {
 		if err := json.Unmarshal(p.D, &d); err != nil {
 			return
 		}
-		if d.Type != gwInteractionApplicationCommand {
+		if d.Type != gwInteractionApplicationCommand && d.Type != gwInteractionMessageComponent {
 			return
 		}
 		g.onInteraction(d)

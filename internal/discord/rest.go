@@ -78,11 +78,14 @@ func (c *restClient) createThread(ctx context.Context, channelID, name string) (
 }
 
 // createMessage posts a message and returns its id.
-func (c *restClient) createMessage(ctx context.Context, channelID, content string) (string, error) {
+func (c *restClient) createMessage(ctx context.Context, channelID, content string, components ...discordComponent) (string, error) {
 	body := map[string]any{
 		"content": content,
 		// Never let model output or mirrored prompts ping anyone.
 		"allowed_mentions": map[string]any{"parse": []string{}},
+	}
+	if len(components) > 0 {
+		body["components"] = components
 	}
 	data, err := c.do(ctx, http.MethodPost, "/channels/"+channelID+"/messages", body)
 	if err != nil {
@@ -95,9 +98,16 @@ func (c *restClient) createMessage(ctx context.Context, channelID, content strin
 	return out.ID, nil
 }
 
-// editMessage replaces a message's content.
-func (c *restClient) editMessage(ctx context.Context, channelID, messageID, content string) error {
-	body := map[string]any{"content": content}
+// editMessage replaces a message's content. Components are always included,
+// empty when none are passed, so editing a card also removes its buttons.
+func (c *restClient) editMessage(ctx context.Context, channelID, messageID, content string, components ...discordComponent) error {
+	if components == nil {
+		components = []discordComponent{}
+	}
+	body := map[string]any{
+		"content":    content,
+		"components": components,
+	}
 	_, err := c.do(ctx, http.MethodPatch, "/channels/"+channelID+"/messages/"+messageID, body)
 	return err
 }
@@ -121,6 +131,24 @@ func (c *restClient) respondInteraction(ctx context.Context, interactionID, toke
 		// 4: CHANNEL_MESSAGE_WITH_SOURCE.
 		"type": 4,
 		"data": data,
+	}
+	_, err := c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+token+"/callback", body)
+	return err
+}
+
+// updateInteraction edits the message an interaction originated from.
+// Callback type 7 (UPDATE_MESSAGE) replaces that message's content and
+// components, which lets a button press redraw its own card.
+func (c *restClient) updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error {
+	if components == nil {
+		components = []discordComponent{}
+	}
+	body := map[string]any{
+		"type": 7, // UPDATE_MESSAGE.
+		"data": map[string]any{
+			"content":    content,
+			"components": components,
+		},
 	}
 	_, err := c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+token+"/callback", body)
 	return err

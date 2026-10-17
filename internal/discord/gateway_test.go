@@ -168,10 +168,12 @@ func TestGatewayDispatchesApplicationCommands(t *testing.T) {
 		}
 
 		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i1","token":"itok","type":2,"channel_id":"c1","data":{"name":"status"},"member":{"user":{"id":"u1"}}}`)})
-		// A component interaction is not an application command.
-		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i2","token":"itok","type":3,"channel_id":"c1","data":{"custom_id":"b1"}}`)})
+		// Message-component presses arrive as interaction type 3.
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i2","token":"itok","type":3,"channel_id":"c1","data":{"custom_id":"b1","component_type":2},"member":{"user":{"id":"u1"}}}`)})
+		// Any other interaction type is ignored.
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i3","token":"itok","type":5,"channel_id":"c1","data":{}}`)})
 
-		// Give the client time to read both frames before the handler
+		// Give the client time to read the frames before the handler
 		// returns and the connection closes.
 		time.Sleep(250 * time.Millisecond)
 	}))
@@ -197,7 +199,16 @@ func TestGatewayDispatchesApplicationCommands(t *testing.T) {
 	}
 	select {
 	case in := <-interactions:
-		t.Fatalf("component interaction was not filtered: %+v", in)
+		require.Equal(t, "i2", in.ID)
+		require.Equal(t, gwInteractionMessageComponent, in.Type)
+		require.Equal(t, "b1", in.Data.CustomID)
+		require.Equal(t, "u1", in.userID())
+	case <-time.After(5 * time.Second):
+		t.Fatal("component interaction was not dispatched")
+	}
+	select {
+	case in := <-interactions:
+		t.Fatalf("non-answerable interaction was not filtered: %+v", in)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
