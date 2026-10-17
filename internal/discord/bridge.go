@@ -60,14 +60,15 @@ const farewellText = "👋 **Remote control ended** — the session continues in
 // implements it; tests inject a fake.
 type discordAPI interface {
 	createThread(ctx context.Context, channelID, name string) (createdThread, error)
-	createMessage(ctx context.Context, channelID, content string) (string, error)
-	editMessage(ctx context.Context, channelID, messageID, content string) error
+	createMessage(ctx context.Context, channelID, content string, components ...discordComponent) (string, error)
+	editMessage(ctx context.Context, channelID, messageID, content string, components ...discordComponent) error
 	deleteMessage(ctx context.Context, channelID, messageID string) error
 	triggerTyping(ctx context.Context, channelID string) error
 	addReaction(ctx context.Context, channelID, messageID, emoji string) error
 	editChannelName(ctx context.Context, channelID, name string) error
 	gatewayURL(ctx context.Context) (string, error)
 	respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error
+	updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error
 }
 
 // Bridge mirrors a live Crush session into a Discord thread and injects
@@ -108,6 +109,9 @@ type Bridge struct {
 	questions       map[string]question.Request
 	questionOrder   []string
 	questionMessage map[string]string
+	// questionSelections tracks in-progress button answers per batch:
+	// question id -> selected choice ids. Cleared when the batch resolves.
+	questionSelections map[string]map[string]map[string]bool
 
 	subMu       sync.Mutex
 	submissions []promptSubmission
@@ -195,27 +199,28 @@ func start(ctx context.Context, env commandEnv, application *app.App, sessionID 
 // newBridge builds an unlaunched bridge from injected dependencies.
 func newBridge(env commandEnv, application *app.App, sessionID string, cfg Config, mode string, deps bridgeDeps) *Bridge {
 	b := &Bridge{
-		env:             env,
-		app:             application,
-		sessionID:       sessionID,
-		cfg:             cfg,
-		api:             deps.api,
-		http:            deps.http,
-		events:          deps.events,
-		gwLoop:          deps.gatewayStart,
-		now:             deps.now,
-		tick:            deps.tick,
-		editRate:        deps.editThrottle,
-		typing:          deps.typing,
-		catalog:         deps.catalog,
-		mode:            mode,
-		permissions:     map[string]permission.PermissionRequest{},
-		permMessage:     map[string]string{},
-		questions:       map[string]question.Request{},
-		questionMessage: map[string]string{},
-		countedResults:  map[string]bool{},
-		frozen:          map[string]bool{},
-		completed:       map[string]bool{},
+		env:                env,
+		app:                application,
+		sessionID:          sessionID,
+		cfg:                cfg,
+		api:                deps.api,
+		http:               deps.http,
+		events:             deps.events,
+		gwLoop:             deps.gatewayStart,
+		now:                deps.now,
+		tick:               deps.tick,
+		editRate:           deps.editThrottle,
+		typing:             deps.typing,
+		catalog:            deps.catalog,
+		mode:               mode,
+		permissions:        map[string]permission.PermissionRequest{},
+		permMessage:        map[string]string{},
+		questions:          map[string]question.Request{},
+		questionMessage:    map[string]string{},
+		questionSelections: map[string]map[string]map[string]bool{},
+		countedResults:     map[string]bool{},
+		frozen:             map[string]bool{},
+		completed:          map[string]bool{},
 		footer: &footer{
 			state:        turnIdle,
 			toolCounts:   map[string]int{},
@@ -275,9 +280,12 @@ func (b *Bridge) launch(ctx context.Context) error {
 
 // Stop shuts the bridge down, posting a farewell first so the thread is
 // not left dangling. Safe to call multiple times and from any goroutine;
-// the farewell is bounded so quitting never hangs.
-func (b *Bridge) Stop() {
+// the farewell is bounded so quitting never hangs. reason names what ended
+// the bridge and is logged, so an unexpected stop in the field can be
+// attributed without guessing.
+func (b *Bridge) Stop(reason string) {
 	b.stopOnce.Do(func() {
+		slog.Info("Discord bridge stopped", "reason", reason, "thread", b.threadURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		f := b.footer
@@ -382,6 +390,12 @@ func (b *Bridge) post(content string) {
 // exists it is edited into the first chunk and re-created after the
 // content, so the footer stays the thread's last message.
 func (b *Bridge) postAbove(content string) string {
+	return b.postAboveWithComponents(content, nil)
+}
+
+// postAboveWithComponents posts content with interactive components above
+// the footer, mirroring postAbove's footer recycling.
+func (b *Bridge) postAboveWithComponents(content string, components []discordComponent) string {
 	chunks := splitMessage(content)
 	if len(chunks) == 0 {
 		return ""
@@ -396,7 +410,7 @@ func (b *Bridge) postAbove(content string) string {
 	firstID := ""
 	rest := chunks
 	if f.messageID != "" {
-		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0]); err == nil {
+		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0], components...); err == nil {
 			firstID = f.messageID
 			rest = chunks[1:]
 		} else {
@@ -406,7 +420,13 @@ func (b *Bridge) postAbove(content string) string {
 		f.lastBody = ""
 	}
 	for i, chunk := range rest {
-		id, err := b.api.createMessage(b.ctx, b.threadID, chunk)
+		var id string
+		var err error
+		if i == 0 && firstID == "" {
+			id, err = b.api.createMessage(b.ctx, b.threadID, chunk, components...)
+		} else {
+			id, err = b.api.createMessage(b.ctx, b.threadID, chunk)
+		}
 		if err != nil {
 			slog.Debug("Discord bridge: failed to post message", "error", err.Error())
 			return firstID
@@ -748,9 +768,23 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 	b.questionOrder = append(b.questionOrder, req.ID)
 	b.pendingMu.Unlock()
 
-	id := b.postAbove(renderQuestionCard(req))
+	selections := newQuestionSelections(req)
+	b.pendingMu.Lock()
+	b.questionSelections[req.ID] = selections
+	b.pendingMu.Unlock()
+
+	rows := questionRows(req, selections)
+	hint := questionHintAnswer
+	if len(rows) > 0 {
+		hint = questionHintButtons
+	}
+	id := b.postAboveWithComponents(renderQuestionCard(req, hint), rows)
 	if id == "" {
 		slog.Debug("Discord bridge: failed to post question card")
+		b.pendingMu.Lock()
+		delete(b.questions, req.ID)
+		delete(b.questionSelections, req.ID)
+		b.pendingMu.Unlock()
 		return
 	}
 	b.pendingMu.Lock()
@@ -767,13 +801,13 @@ func (b *Bridge) handleQuestionNotification(n question.Notification) {
 		return
 	}
 	delete(b.questions, n.BatchID)
+	delete(b.questionSelections, n.BatchID)
 	msgID := b.questionMessage[n.BatchID]
 	delete(b.questionMessage, n.BatchID)
 	b.pendingMu.Unlock()
 
 	if msgID != "" {
-		card := renderQuestionCard(req) + "\n-# ✅ answered"
-		if err := b.api.editMessage(b.ctx, b.threadID, msgID, card); err != nil {
+		if err := b.api.editMessage(b.ctx, b.threadID, msgID, answeredQuestionCard(req)); err != nil {
 			slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
 		}
 	}
@@ -826,8 +860,24 @@ func renderPermissionCard(req permission.PermissionRequest) string {
 	return sb.String()
 }
 
-// renderQuestionCard renders an agent question for the thread.
-func renderQuestionCard(req question.Request) string {
+// questionHint selects the closing instruction on a question card.
+type questionHint int
+
+const (
+	// questionHintNone is used once a batch is resolved: no instruction at
+	// all, since there is nothing left to press or type.
+	questionHintNone questionHint = iota
+	// questionHintButtons tells the user the choices are buttons.
+	questionHintButtons
+	// questionHintAnswer points at /answer, or at the terminal when the
+	// batch is too large for the command to accept.
+	questionHintAnswer
+)
+
+// renderQuestionCard renders a question batch for the thread. Each choice
+// carries its description on an indented sub-line, matching what the TUI
+// shows.
+func renderQuestionCard(req question.Request, hint questionHint) string {
 	var sb strings.Builder
 	for i, q := range req.Questions {
 		if len(req.Questions) > 1 {
@@ -843,12 +893,31 @@ func renderQuestionCard(req question.Request) string {
 		if q.Description != "" {
 			sb.WriteString("-# " + compactLine(q.Description, 300) + "\n")
 		}
-		for j, choice := range q.Choices {
+		for j, choice := range questionChoices(q) {
 			fmt.Fprintf(&sb, "**%d.** %s\n", j+1, compactLine(choice.Label, 120))
+			if choice.Description != "" {
+				sb.WriteString("-# " + compactLine(choice.Description, 200) + "\n")
+			}
 		}
 	}
-	sb.WriteString("-# answer with `/answer <text>` or `/answer #1` for a choice")
+	switch hint {
+	case questionHintButtons:
+		sb.WriteString("-# press a button to answer")
+	case questionHintAnswer:
+		if len(req.Questions) > 1 {
+			// /answer only takes single-question batches; pointing at it
+			// here would guarantee a "multiple parts" refusal.
+			sb.WriteString("-# answer in the terminal")
+		} else {
+			sb.WriteString("-# answer with `/answer <text>` or `/answer #1` for a choice")
+		}
+	}
 	return sb.String()
+}
+
+// answeredQuestionCard renders the resolved form of a batch card.
+func answeredQuestionCard(req question.Request) string {
+	return renderQuestionCard(req, questionHintNone) + "\n-# ✅ answered"
 }
 
 // ── Discord input ────────────────────────────────────────────────────────
@@ -881,6 +950,10 @@ func (b *Bridge) inputLoop() {
 			case ev.reaction != nil:
 				b.handleThreadReaction(*ev.reaction)
 			case ev.interaction != nil:
+				if ev.interaction.Type == gwInteractionMessageComponent {
+					b.handleQuestionComponent(*ev.interaction)
+					continue
+				}
 				b.handleThreadInteraction(*ev.interaction)
 			}
 		}
@@ -949,6 +1022,121 @@ func (b *Bridge) handleThreadInteraction(in gatewayInteraction) {
 	b.answerInteraction(in, "Running `"+usage+"`")
 	if reply := b.handleCommand(b.ctx, name, args); reply != "" {
 		b.post(reply)
+	}
+}
+
+// handleQuestionComponent answers a question-card button press: a choice
+// selects (or toggles) for its question, and a submit press sends the
+// batch's answers. The pressed card is redrawn through the interaction
+// callback, so a press never needs a separate message edit.
+func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
+	if in.ChannelID != b.threadID {
+		return
+	}
+	if !b.cfg.allowedUser(in.userID()) {
+		b.answerInteraction(in, "⛔ Not authorized for this session.")
+		return
+	}
+	ref, ok := parseQuestionCustomID(in.Data.CustomID)
+	if !ok {
+		return
+	}
+
+	b.pendingMu.Lock()
+	req, pending := b.questions[ref.requestID]
+	selections := b.questionSelections[ref.requestID]
+	b.pendingMu.Unlock()
+	if !pending {
+		b.answerInteraction(in, iconError+" That question was already resolved.")
+		return
+	}
+
+	if ref.submit {
+		if !selectionsComplete(req, selections) {
+			b.answerInteraction(in, iconError+" Select an answer for every question first.")
+			return
+		}
+		b.submitQuestionAnswers(in, req, selections)
+		return
+	}
+
+	if ref.questionIndex < 0 || ref.questionIndex >= len(req.Questions) {
+		return
+	}
+	q := req.Questions[ref.questionIndex]
+	choices := questionChoices(q)
+	if ref.choiceIndex < 0 || ref.choiceIndex >= len(choices) {
+		return
+	}
+	choiceID := choices[ref.choiceIndex].ID
+
+	b.pendingMu.Lock()
+	if selections[q.ID] == nil {
+		selections[q.ID] = map[string]bool{}
+	}
+	if q.Type == question.TypeMultiChoice {
+		if selections[q.ID][choiceID] {
+			delete(selections[q.ID], choiceID)
+		} else {
+			selections[q.ID][choiceID] = true
+		}
+	} else {
+		selections[q.ID] = map[string]bool{choiceID: true}
+	}
+	msgID := b.questionMessage[req.ID]
+	stillPending := b.questions[req.ID].ID != ""
+	b.pendingMu.Unlock()
+
+	// A lone yes/no or single-choice question is answered by the press
+	// itself; everything else redraws the card and waits for Submit.
+	if !questionNeedsSubmit(req) {
+		b.submitQuestionAnswers(in, req, selections)
+		return
+	}
+	// The batch may have been resolved from the TUI between the pending
+	// check above and this redraw; a redraw would resurrect its buttons.
+	if !stillPending {
+		b.answerInteraction(in, iconError+" That question was already resolved.")
+		return
+	}
+	card := renderQuestionCard(req, questionHintButtons)
+	rows := questionRows(req, selections)
+	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, rows); err != nil {
+		slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
+		if msgID != "" {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card, rows...); editErr != nil {
+				slog.Debug("Discord bridge: failed to redraw question card", "error", editErr.Error())
+			}
+		}
+	}
+}
+
+// submitQuestionAnswers sends a batch's selected answers and marks its card
+// resolved. The question notification that follows is a no-op because the
+// batch is already removed here.
+func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool) {
+	if !b.env.QuestionAnswer(answersFromSelections(req, selections)) {
+		b.answerInteraction(in, iconError+" That question was already resolved.")
+		return
+	}
+	b.pendingMu.Lock()
+	msgID := b.questionMessage[req.ID]
+	delete(b.questions, req.ID)
+	delete(b.questionSelections, req.ID)
+	delete(b.questionMessage, req.ID)
+	b.pendingMu.Unlock()
+	card := answeredQuestionCard(req)
+	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, nil); err != nil {
+		// The callback failed (expired interaction, Discord error). The
+		// notification path is a no-op because the batch is already gone
+		// here, so resolve the card over REST or the thread keeps live
+		// buttons for a question that can no longer be answered.
+		slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
+		if msgID != "" {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card); editErr != nil {
+				slog.Debug("Discord bridge: failed to resolve question card", "error", editErr.Error())
+			}
+		}
 	}
 }
 

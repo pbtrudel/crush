@@ -133,7 +133,7 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 		return b.commandAnswer(args)
 	case "rc":
 		if args == "off" || args == "stop" {
-			b.Stop()
+			b.Stop("/rc off from Discord")
 			return ""
 		}
 		return "Usage: `/rc off` stops remote control."

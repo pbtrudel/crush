@@ -209,6 +209,28 @@ func TestHyperSync_FreshCacheSkipsBlockingFetch(t *testing.T) {
 	require.Equal(t, cached, got, "a fresh-enough cache is served without the network")
 	require.Eventually(t, func() bool { return client.calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond, "the revalidation runs, but in the background")
 	close(client.gate)
+
+	// Join the background revalidation before the test returns: it stores
+	// the refreshed provider to path, and a write racing t.TempDir's
+	// cleanup fails the test with a non-empty directory.
+	waitForCachedModel(t, path, "new-model")
+}
+
+// waitForCachedModel blocks until the provider cached at path contains the
+// given model, i.e. until a background refresh has landed on disk.
+func waitForCachedModel(t *testing.T, path, modelID string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		var stored catwalk.Provider
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			return false
+		}
+		return len(stored.Models) == 1 && stored.Models[0].ID == modelID
+	}, 2*time.Second, 10*time.Millisecond, "the background refresh must land in the disk cache")
 }
 
 func TestHyperSync_BackgroundRefreshLandsOnDisk(t *testing.T) {
@@ -227,17 +249,7 @@ func TestHyperSync_BackgroundRefreshLandsOnDisk(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool { return client.calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
-	require.Eventually(t, func() bool {
-		var stored catwalk.Provider
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return false
-		}
-		if err := json.Unmarshal(raw, &stored); err != nil {
-			return false
-		}
-		return len(stored.Models) == 1 && stored.Models[0].ID == "new-model"
-	}, 2*time.Second, 10*time.Millisecond, "the refreshed provider lands in the disk cache")
+	waitForCachedModel(t, path, "new-model")
 
 	// The running process keeps serving what it started with: swapping a
 	// provider's endpoint mid-session is not what the fast path is for.

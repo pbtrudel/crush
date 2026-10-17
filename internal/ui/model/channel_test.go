@@ -60,7 +60,7 @@ func (w *channelWorkspace) Config() *config.Config { return nil }
 
 // newChannelUI builds a UI initialized enough that ensureSession's setState /
 // layout path is safe to exercise.
-func newChannelUI(ws *channelWorkspace) *UI {
+func newChannelUI(ws workspace.Workspace) *UI {
 	com := common.DefaultCommon(ws)
 	return &UI{
 		com:      com,

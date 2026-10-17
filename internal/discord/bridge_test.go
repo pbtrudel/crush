@@ -43,7 +43,7 @@ func testBridge(t *testing.T, cfg Config) (*Bridge, *fakeEnv, *fakeAPI, chan pub
 	require.NoError(t, b.launch(ctx))
 	t.Cleanup(func() {
 		cancel()
-		b.Stop()
+		b.Stop("test cleanup")
 	})
 	return b, env, api, events
 }
@@ -430,8 +430,8 @@ func TestBridgeStopIdempotent(t *testing.T) {
 	require.Eventually(t, func() bool { return b.footerMessageID() != "" }, 2*time.Second, 10*time.Millisecond)
 	footerID := b.footerMessageID()
 
-	b.Stop()
-	b.Stop()
+	b.Stop("test")
+	b.Stop("test")
 
 	require.True(t, api.hasDelete(footerID), "the footer is removed on stop")
 	require.Empty(t, b.footerMessageID())

@@ -225,3 +225,62 @@ func TestTruncateRunes(t *testing.T) {
 	require.Equal(t, "héllo", truncateRunes("héllo", 10))
 	require.Equal(t, "hé", truncateRunes("héllo", 2), "must not split UTF-8")
 }
+
+// TestEditMessageAlwaysSendsComponents pins the contract that resolving a
+// card clears its buttons: an edit without explicit components must send an
+// empty array, not omit the field (omitting leaves stale buttons in place).
+func TestEditMessageAlwaysSendsComponents(t *testing.T) {
+	t.Parallel()
+	var gotBody []byte
+	c := newTestREST(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	require.NoError(t, c.editMessage(t.Context(), "c1", "m1", "done"))
+
+	var body struct {
+		Content    string             `json:"content"`
+		Components []discordComponent `json:"components"`
+	}
+	require.NoError(t, json.Unmarshal(gotBody, &body))
+	require.Equal(t, "done", body.Content)
+	require.NotNil(t, body.Components, "components must be sent even when empty")
+	require.Empty(t, body.Components)
+}
+
+// TestUpdateInteractionSendsTypeSeven pins that a button press is answered
+// by editing the originating message (callback type 7) and carries the
+// replacement components.
+func TestUpdateInteractionSendsTypeSeven(t *testing.T) {
+	t.Parallel()
+	var gotBody []byte
+	c := newTestREST(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := c.updateInteraction(t.Context(), "i1", "itok", "card", []discordComponent{{
+		Type: componentTypeActionRow,
+		Components: []discordButton{{
+			Type:     componentTypeButton,
+			Style:    buttonStyleSuccess,
+			Label:    "Yes",
+			CustomID: "cq:r:0:0",
+		}},
+	}})
+	require.NoError(t, err)
+
+	var body struct {
+		Type int `json:"type"`
+		Data struct {
+			Content    string             `json:"content"`
+			Components []discordComponent `json:"components"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(gotBody, &body))
+	require.Equal(t, 7, body.Type)
+	require.Equal(t, "card", body.Data.Content)
+	require.Len(t, body.Data.Components, 1)
+	require.Equal(t, "cq:r:0:0", body.Data.Components[0].Components[0].CustomID)
+}

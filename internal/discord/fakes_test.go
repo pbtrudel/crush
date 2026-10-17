@@ -31,15 +31,18 @@ type fakeAPI struct {
 	reactions   []string
 	renames     []string
 	callbacks   []fakeCallback
+	updates     []fakeUpdate
 	gwURL       string
 	gwErr       error
 	createErr   error
+	updateErr   error
 }
 
 type fakePost struct {
-	channelID string
-	messageID string
-	content   string
+	channelID  string
+	messageID  string
+	content    string
+	components []discordComponent
 }
 
 // fakeCallback records one interaction callback.
@@ -48,6 +51,14 @@ type fakeCallback struct {
 	token         string
 	content       string
 	ephemeral     bool
+}
+
+// fakeUpdate records one type-7 (update message) interaction callback.
+type fakeUpdate struct {
+	interactionID string
+	token         string
+	content       string
+	components    []discordComponent
 }
 
 func newFakeAPI() *fakeAPI {
@@ -61,7 +72,7 @@ func (f *fakeAPI) createThread(ctx context.Context, channelID, name string) (cre
 	return createdThread{ID: f.threadID, GuildID: "guild-1"}, nil
 }
 
-func (f *fakeAPI) createMessage(ctx context.Context, channelID, content string) (string, error) {
+func (f *fakeAPI) createMessage(ctx context.Context, channelID, content string, components ...discordComponent) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {
@@ -69,14 +80,14 @@ func (f *fakeAPI) createMessage(ctx context.Context, channelID, content string) 
 	}
 	f.nextID++
 	id := "msg-" + string(rune('a'+f.nextID%26)) + time.Now().Format("150405.000000")
-	f.posts = append(f.posts, fakePost{channelID: channelID, messageID: id, content: content})
+	f.posts = append(f.posts, fakePost{channelID: channelID, messageID: id, content: content, components: components})
 	return id, nil
 }
 
-func (f *fakeAPI) editMessage(ctx context.Context, channelID, messageID, content string) error {
+func (f *fakeAPI) editMessage(ctx context.Context, channelID, messageID, content string, components ...discordComponent) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.edits = append(f.edits, fakePost{channelID: channelID, messageID: messageID, content: content})
+	f.edits = append(f.edits, fakePost{channelID: channelID, messageID: messageID, content: content, components: components})
 	return nil
 }
 
@@ -126,11 +137,33 @@ func (f *fakeAPI) respondInteraction(ctx context.Context, interactionID, token, 
 	return nil
 }
 
+func (f *fakeAPI) updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	f.updates = append(f.updates, fakeUpdate{
+		interactionID: interactionID,
+		token:         token,
+		content:       content,
+		components:    components,
+	})
+	return nil
+}
+
 // callbacksSnapshot returns a copy of the recorded interaction callbacks.
 func (f *fakeAPI) callbacksSnapshot() []fakeCallback {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakeCallback(nil), f.callbacks...)
+}
+
+// updatesSnapshot returns a copy of the recorded update-message callbacks.
+func (f *fakeAPI) updatesSnapshot() []fakeUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeUpdate(nil), f.updates...)
 }
 
 // hasPostContaining reports whether any posted message contains sub.
@@ -407,6 +440,13 @@ func (e *fakeEnv) QuestionAnswer(responses []question.Answer) bool {
 	defer e.mu.Unlock()
 	e.answers = append(e.answers, responses...)
 	return e.answerOK
+}
+
+// answersSnapshot returns a copy of the recorded question answers.
+func (e *fakeEnv) answersSnapshot() []question.Answer {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]question.Answer(nil), e.answers...)
 }
 
 func (e *fakeEnv) Config() *config.Config {
