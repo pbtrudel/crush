@@ -37,7 +37,6 @@ type PromptDat struct {
 	IsGitRepo          bool
 	Platform           string
 	Date               string
-	GitStatus          string
 	ContextFiles       []ContextFile
 	GlobalContextFiles []ContextFile
 	AvailSkillXML      string
@@ -222,13 +221,6 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		Date:          p.now().Format("1/2/2006"),
 		AvailSkillXML: availSkillXML,
 	}
-	if isGit {
-		var err error
-		data.GitStatus, err = getGitStatus(ctx, store.WorkingDir())
-		if err != nil {
-			return PromptDat{}, err
-		}
-	}
 
 	data.ContextFiles = contextFiles
 	data.GlobalContextFiles = globalContextFiles
@@ -257,8 +249,7 @@ func getGitStatus(ctx context.Context, dir string) (string, error) {
 }
 
 // getGitBranch reads the checked-out branch straight from the repository.
-// This runs on every prompt build, so it stays off the shell: spawning git
-// each turn is wasted work, and a detail of prompt assembly has no business
+// It stays off the shell: a detail of prompt assembly has no business
 // passing through command blocking and permission policy.
 func getGitBranch(dir string) string {
 	branch := gitutil.CurrentBranch(dir)

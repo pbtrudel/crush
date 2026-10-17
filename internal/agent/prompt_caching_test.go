@@ -136,33 +136,68 @@ func TestApplyToolCacheBreakpoint(t *testing.T) {
 	require.NotEmpty(t, last.opts, "the last tool must carry the breakpoint")
 }
 
-// TestToolsForStep_AdoptsAdditionsAndIgnoresRemovals pins the mid-turn tool
-// list policy: tools registered after the turn started (a lazy MCP server the
-// model just activated) join the palette, while tools that vanish from the
-// registry do not, because a shrinking palette rewrites the tools block and
-// invalidates the prompt cache for no benefit.
-func TestToolsForStep_AdoptsAdditionsAndIgnoresRemovals(t *testing.T) {
+// TestToolsForStep_AppendsAdditionsAndIgnoresRemovals pins the mid-turn tool
+// list policy: tools registered after the turn started (a lazy MCP server
+// the model just activated) join the palette at the end of the list, while
+// tools that vanish from the registry do not. A shrinking palette rewrites
+// the tools block and invalidates the prompt cache for no benefit, and an
+// alphabetically re-sorted insertion would move every tool after the new
+// one's sorted position, rewriting the whole tools-block tail instead of
+// just the addition.
+func TestToolsForStep_AppendsAdditionsAndIgnoresRemovals(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 
+	// The registry holds a tool that sorts before the turn's palette, so
+	// any re-sorting would betray itself by moving it to the front.
 	agent.SetTools([]fantasy.AgentTool{
 		&recordingTool{name: "a"},
 		&recordingTool{name: "b"},
 		&recordingTool{name: "c"},
 	})
-	turnTools := []fantasy.AgentTool{&recordingTool{name: "a"}, &recordingTool{name: "b"}}
+	turnTools := []fantasy.AgentTool{&recordingTool{name: "b"}, &recordingTool{name: "c"}}
 
-	adopted, changed := agent.toolsForStep(t.Context(), "", turnTools)
+	adopted, changed := agent.toolsForStep(t.Context(), "sess", "", turnTools)
 	require.True(t, changed)
-	require.Equal(t, []string{"a", "b", "c"}, toolNames(adopted),
-		"a tool registered after the turn began must be adopted in sorted order")
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(adopted),
+		"a tool registered after the turn began must be appended, not inserted at its sorted position")
 
-	// The registry loses "c": the turn's palette must keep it.
-	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "a"}})
-	kept, changed := agent.toolsForStep(t.Context(), "", adopted)
+	// The registry loses "a": the turn's palette must keep it.
+	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "b"}})
+	kept, changed := agent.toolsForStep(t.Context(), "sess", "", adopted)
 	require.False(t, changed)
-	require.Equal(t, []string{"a", "b", "c"}, toolNames(kept),
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(kept),
 		"a tool that disappears from the registry must not be dropped mid-turn")
+
+	// Next turn's assembly sees the full sorted registry again, but the
+	// session's adopted tool must stay at the end so the tools block
+	// remains the previous turn's exact prefix plus nothing moved.
+	nextTurn := stableToolOrder([]fantasy.AgentTool{
+		&recordingTool{name: "a"},
+		&recordingTool{name: "b"},
+		&recordingTool{name: "c"},
+	}, agent.adoptedToolOrder("sess"))
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(nextTurn),
+		"an adopted tool must keep its adopted position on later turns, not snap back to its sorted slot")
+}
+
+// TestStableToolOrder pins the session-scoped reordering that keeps an
+// adopted tool at the end of the tools block across turns.
+func TestStableToolOrder(t *testing.T) {
+	tools := []fantasy.AgentTool{
+		&recordingTool{name: "a"},
+		&recordingTool{name: "b"},
+		&recordingTool{name: "c"},
+	}
+
+	require.Equal(t, []string{"a", "b", "c"}, toolNames(stableToolOrder(tools, nil)),
+		"with no adoptions the server order is kept")
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(stableToolOrder(tools, []string{"a"})),
+		"an adopted tool moves to the end")
+	require.Equal(t, []string{"a", "c", "b"}, toolNames(stableToolOrder(tools, []string{"b"})),
+		"the base tools keep their relative order")
+	require.Equal(t, []string{"a", "b"}, toolNames(stableToolOrder(tools[:2], []string{"c"})),
+		"an adopted name missing from the list (filtered out by connection state) is dropped")
 }
 
 // TestNormalizePromptMessages checks that in-flight messages are rewritten
@@ -361,4 +396,42 @@ func TestSystemPromptByteStableWithMultipleContextFiles(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, first, got, "system prompt must be byte-identical across builds")
 	}
+}
+
+// TestSystemPromptStableAcrossClocks pins the resume invariant: the system
+// prompt is rebuilt once per process, so any clock-derived content makes a
+// resumed session's first request diverge from the prefix the provider
+// cached for the previous process and re-reads the whole conversation. The
+// date and git snapshot travel in the session's first message instead (see
+// prompt.SessionEnvSnapshot).
+func TestSystemPromptStableAcrossClocks(t *testing.T) {
+	env := testEnv(t)
+
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Options.Attribution = &config.Attribution{}
+	cfg.Config().Options.SkillsPaths = nil
+	cfg.Config().Options.DisabledSkills = nil
+	cfg.Config().LSP = nil
+	cfg.Config().MCP = nil
+	cfg.Config().Hooks = nil
+	cfg.Config().Options.GlobalContextPaths = nil
+
+	newYears, _ := time.Parse("1/2/2006", "1/1/2025")
+	nextYear, _ := time.Parse("1/2/2006", "1/1/2026")
+	build := func(clock func() time.Time) string {
+		p, err := coderPrompt(
+			prompt.WithTimeFunc(clock),
+			prompt.WithPlatform("linux"),
+			prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
+		)
+		require.NoError(t, err)
+		s, err := p.Build(t.Context(), "test-provider", "test-model", cfg)
+		require.NoError(t, err)
+		return s
+	}
+
+	require.Equal(t, build(func() time.Time { return newYears }),
+		build(func() time.Time { return nextYear }),
+		"the coder system prompt must not depend on the clock")
 }

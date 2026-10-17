@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"os"
@@ -47,11 +48,33 @@ type modelPair struct {
 	smallModel builderFunc
 }
 
-func hyperBuilder(model string) builderFunc {
+// recordedEndpoint is the endpoint the VCR cassettes under
+// testdata/TestCoderAgent were recorded against. Replay never reaches the
+// network, so this only has to match the URL stored in the cassettes;
+// re-recording overrides it with CRUSH_VCR_BASE_URL to target any
+// OpenAI-compatible endpoint (see vcrModelBuilder).
+const recordedEndpoint = "https://api.commandcode.ai/provider/v1"
+
+// vcrModelBuilder builds a model serviced by the VCR recorder. Replaying the
+// committed cassettes needs no credentials at all; recording (delete
+// testdata/TestCoderAgent and run the tests) sends real requests to
+// CRUSH_VCR_BASE_URL, authenticated with CRUSH_VCR_API_KEY, defaulting to
+// the endpoint the cassettes were recorded against.
+//
+// The commandcode extras: x-cmd-zdr enforces the recording endpoint's
+// zero-data-retention policy. Its CLI user agent cannot be pinned here
+// because the fantasy agent layer sets its own User-Agent over any
+// provider-level one; recordings confirmed the endpoint accepts chat
+// completions with the agent's user agent.
+func vcrModelBuilder(model string) builderFunc {
 	return func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, error) {
+		baseURL := cmp.Or(os.Getenv("CRUSH_VCR_BASE_URL"), recordedEndpoint)
 		provider, err := openaicompat.New(
-			openaicompat.WithBaseURL("https://hyper.charm.land/v1"),
-			openaicompat.WithAPIKey(os.Getenv("CRUSH_HYPER_API_KEY")),
+			openaicompat.WithBaseURL(baseURL),
+			openaicompat.WithAPIKey(os.Getenv("CRUSH_VCR_API_KEY")),
+			openaicompat.WithHeaders(map[string]string{
+				"x-cmd-zdr": "1",
+			}),
 			openaicompat.WithHTTPClient(&http.Client{Transport: r}),
 		)
 		if err != nil {
@@ -129,7 +152,6 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 		return t
 	}
 	prompt, err := coderPrompt(
-		prompt.WithTimeFunc(fixedTime),
 		prompt.WithPlatform("linux"),
 		prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
 	)
@@ -180,7 +202,13 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 		tools.NewWriteTool(nil, env.permissions, env.history, *env.filetracker, env.workingDir),
 	}
 
-	return testSessionAgent(env, large, small, systemPrompt, allTools...), nil
+	sa := testSessionAgent(env, large, small, systemPrompt, allTools...).(*sessionAgent)
+	// Match production: a config store makes Run persist the environment
+	// snapshot as the session's first message, and the pinned clock keeps
+	// the recorded date reproducible.
+	sa.cfg = cfg
+	sa.now = fixedTime
+	return sa, nil
 }
 
 // createSimpleGoProject creates a simple Go project structure in the given directory.

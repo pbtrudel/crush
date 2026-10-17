@@ -39,6 +39,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
@@ -276,6 +277,12 @@ type sessionAgent struct {
 	// the last request, so a cache-busting change to the tools block can be
 	// attributed to the tool that caused it. See recordToolsFingerprint.
 	toolsHashes *csync.Map[string, []string]
+	// adoptedTools records, per session, the tools adopted mid-turn in
+	// adoption order. Turn and compaction assembly replay that order so the
+	// adopted tools stay at the end of the tools block instead of snapping
+	// back to their sorted positions, which would rewrite the block and
+	// re-read the conversation from the first adopted tool.
+	adoptedTools *csync.Map[string, []string]
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -313,6 +320,10 @@ type sessionAgent struct {
 	// across the agent. Cancel uses its current value as the per-session
 	// high-water mark.
 	acceptSeqGen uint64
+
+	// now supplies the timestamp for the per-session environment snapshot.
+	// Injectable so VCR recordings stay reproducible.
+	now func() time.Time
 }
 
 type SessionAgentOptions struct {
@@ -329,12 +340,16 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// Now is the clock used for per-session data (the environment
+	// snapshot). Tests pin it so recorded requests stay reproducible;
+	// production leaves it nil for time.Now.
+	Now func() time.Time
 }
 
 func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
-	return &sessionAgent{
+	a := &sessionAgent{
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
@@ -353,10 +368,16 @@ func NewSessionAgent(
 		mcpInstructions:      csync.NewMap[string, string](),
 		promptHashes:         csync.NewMap[string, []string](),
 		toolsHashes:          csync.NewMap[string, []string](),
+		adoptedTools:         csync.NewMap[string, []string](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:         csync.NewMap[string, int](),
 		cancelMark:           csync.NewMap[string, uint64](),
+		now:                  opts.Now,
 	}
+	if a.now == nil {
+		a.now = time.Now
+	}
+	return a
 }
 
 // AcceptedRun owns exactly one accept reservation taken by
@@ -769,8 +790,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// mid-session rewrite them, would move the tools/system prefix and
 	// invalidate the provider's prompt cache for the whole conversation. The
 	// MCP registry keeps a server's tools after a disconnect, so a flaky
-	// server cannot drop them from the palette either.
+	// server cannot drop them from the palette either. Tools the session
+	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
+	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	systemPrompt += a.mcpInstructionsForSession(call.SessionID)
 
 	a.applyToolCacheBreakpoint(agentTools)
@@ -800,6 +823,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if !hasUserTextMessage(msgs) {
 		titleCtx := context.WithoutCancel(ctx)
 		go a.GenerateTitle(titleCtx, call.SessionID, call.Prompt)
+		if a.shouldCreateEnvSnapshot(msgs) {
+			snapshotMsg, err := a.createEnvSnapshotMessage(ctx, call.SessionID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to persist environment snapshot: %w", err)
+			}
+			// Append the snapshot to this turn's history: it is created
+			// after everything already in msgs, so that is exactly where
+			// the next turn's replay finds it. Prepending would diverge
+			// from the stored order whenever the session already had
+			// text-less messages (a bang-mode shell command), re-reading
+			// the whole opening turn.
+			msgs = append(msgs, snapshotMsg)
+		}
 	}
 
 	// Add the user message to the session.
@@ -915,7 +951,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// server that finished connecting). Rebuilding the list from
 			// scratch per step, or letting a flaky server shrink it, would
 			// move the tools block and its cache breakpoint.
-			stepTools, adopted := a.toolsForStep(callContext, call.Channel, agentTools)
+			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools)
 			if adopted {
 				a.applyToolCacheBreakpoint(stepTools)
 			}
@@ -1542,6 +1578,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	// path once did — discards the cache for the entire context.
 	systemPrompt := a.systemPrompt.Get() + a.mcpInstructionsForSession(sessionID)
 	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	for i, tool := range compactionTools {
 		compactionTools[i] = compactionGuardTool{inner: tool}
 	}
@@ -2071,13 +2108,18 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
 
 // toolsForStep returns the tool list for one step of a turn: the list the
 // turn started with, plus anything registered since (an MCP server the model
-// activated, a server that finished connecting). Additions are adopted —
-// costing one prompt-cache rewrite, which is the point of activating a server
-// — while removals are ignored, so a flaky server cannot shrink the palette
-// and invalidate the cache for no reason. The second return value reports
-// whether anything was adopted, so the caller knows the tool cache breakpoint
-// has to move.
-func (a *sessionAgent) toolsForStep(ctx context.Context, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
+// activated, a server that finished connecting). Additions are adopted at
+// the end of the list — costing one prompt-cache rewrite of just the new
+// tools, which is the point of activating a server — while removals are
+// ignored, so a flaky server cannot shrink the palette and invalidate the
+// cache for no reason. Appending instead of re-sorting alphabetically keeps
+// the previously sent tools block an exact prefix of the next step's
+// request, and the adoption is recorded per session so later turns and
+// compaction replay the same order (see stableToolOrder) instead of
+// re-serializing the block from the first adopted tool. The second return
+// value reports whether anything was adopted, so the caller knows the tool
+// cache breakpoint has to move.
+func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
@@ -2092,16 +2134,58 @@ func (a *sessionAgent) toolsForStep(ctx context.Context, channel string, turnToo
 	if len(added) == 0 {
 		return turnTools, false
 	}
+	adopted := a.adoptedToolOrder(sessionID)
+	for _, tool := range added {
+		adopted = append(adopted, tool.Info().Name)
+	}
+	a.adoptedTools.Set(sessionID, adopted)
 	merged := append(slices.Clone(turnTools), added...)
-	slices.SortFunc(merged, func(a, b fantasy.AgentTool) int {
-		return strings.Compare(a.Info().Name, b.Info().Name)
-	})
 	slog.Debug(
 		"Adopted newly registered tools mid-turn; the prompt cache will be rewritten once",
 		"channel", channel,
 		"added", len(added),
 	)
 	return merged, true
+}
+
+// adoptedToolOrder returns the tool names the session adopted mid-turn, in
+// adoption order.
+func (a *sessionAgent) adoptedToolOrder(sessionID string) []string {
+	names, _ := a.adoptedTools.Get(sessionID)
+	return names
+}
+
+// stableToolOrder reorders a session's tool list so tools it adopted
+// mid-turn stay at the end, in adoption order; everything else keeps the
+// registry's order. Without this, the next turn would put an adopted tool
+// back in its sorted slot, rewriting the tools block from that slot and
+// re-reading the conversation behind it. Adopted names that are filtered
+// out (connection state, disabled servers) are dropped.
+func stableToolOrder(toolList []fantasy.AgentTool, adopted []string) []fantasy.AgentTool {
+	if len(adopted) == 0 {
+		return toolList
+	}
+	adoptionIndex := make(map[string]int, len(adopted))
+	for i, name := range adopted {
+		adoptionIndex[name] = i
+	}
+	late := make([]fantasy.AgentTool, len(adopted))
+	present := make([]bool, len(adopted))
+	ordered := make([]fantasy.AgentTool, 0, len(toolList))
+	for _, tool := range toolList {
+		if i, ok := adoptionIndex[tool.Info().Name]; ok {
+			late[i] = tool
+			present[i] = true
+			continue
+		}
+		ordered = append(ordered, tool)
+	}
+	for i, tool := range late {
+		if present[i] {
+			ordered = append(ordered, tool)
+		}
+	}
+	return ordered
 }
 
 // applyCacheBreakpoints marks the prompt-cache boundaries for providers with
@@ -2174,6 +2258,38 @@ func sessionHeaders(sessionID string) map[string]string {
 		"x-session-id":       hash,
 		"x-session-affinity": hash,
 	}
+}
+
+// shouldCreateEnvSnapshot reports whether the session still needs its one-time
+// environment snapshot message (see prompt.SessionEnvSnapshot). Sub-agents
+// and agents without a config store (tests, the fetch agent) never get one.
+// The hasEnvSnapshot check keeps creation idempotent when a first run is
+// retried after persisting the snapshot but failing before the user message.
+func (a *sessionAgent) shouldCreateEnvSnapshot(msgs []message.Message) bool {
+	return !a.isSubAgent && a.cfg != nil &&
+		!hasUserTextMessage(msgs) && !hasEnvSnapshot(msgs)
+}
+
+// hasEnvSnapshot reports whether msgs already contains the environment
+// snapshot message.
+func hasEnvSnapshot(msgs []message.Message) bool {
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Content().Text, prompt.EnvSnapshotPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// createEnvSnapshotMessage persists the environment snapshot as a hidden
+// first user message. Hidden keeps it out of the transcript while ToAIMessage
+// keeps replaying it to the model verbatim.
+func (a *sessionAgent) createEnvSnapshotMessage(ctx context.Context, sessionID string) (message.Message, error) {
+	snapshot := prompt.SessionEnvSnapshot(ctx, a.cfg.WorkingDir(), a.now())
+	return a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: snapshot, Hidden: true}},
+	})
 }
 
 func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentCall) (message.Message, error) {
