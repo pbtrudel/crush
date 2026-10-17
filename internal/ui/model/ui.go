@@ -274,6 +274,11 @@ type UI struct {
 	// rc is the active Discord remote-control bridge, or nil when remote
 	// control is off. It is only ever touched from the Update goroutine.
 	rc *discord.Bridge
+	// rcStarting is true while a remote-control start command is in
+	// flight: discord.Start is asynchronous, and a second start before the
+	// first completes would run two bridges whose arrival stops whichever
+	// came first, posting a farewell on a live thread.
+	rcStarting bool
 
 	// cycleYolo is true while YOLO was enabled by the Shift+Tab input-mode
 	// cycle, which is the only case where the cycle may disable it again.
@@ -936,6 +941,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case remoteControlStartedMsg:
+		m.rcStarting = false
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
 			break
@@ -943,7 +949,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.rc != nil {
 			// Defensive: replace a bridge that was somehow started twice.
 			old := m.rc
-			cmds = append(cmds, func() tea.Msg { old.Stop(); return nil })
+			cmds = append(cmds, func() tea.Msg { old.Stop("replaced by a newer bridge"); return nil })
 		}
 		m.rc = msg.bridge
 		cmds = append(cmds, util.ReportInfo("Remote control connected: "+msg.bridge.ThreadURL()))
@@ -2615,7 +2621,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			b := m.rc
 			m.rc = nil
 			cmds = append(cmds, func() tea.Msg {
-				b.Stop()
+				b.Stop("application quit")
 				return tea.Quit()
 			})
 			break
@@ -5331,10 +5337,15 @@ func (m *UI) toggleRemoteControl() []tea.Cmd {
 		b := m.rc
 		m.rc = nil
 		cmds = append(cmds, func() tea.Msg {
-			b.Stop()
+			b.Stop("toggled off in the TUI")
 			return nil
 		})
 		return append(cmds, util.ReportInfo("Remote control disconnected"))
+	}
+	if m.rcStarting {
+		// The first start has not completed yet; starting a second bridge
+		// would leave two bridges racing for the same session.
+		return append(cmds, util.ReportInfo("Remote control is already starting"))
 	}
 
 	if !m.hasSession() {
@@ -5356,6 +5367,7 @@ func (m *UI) toggleRemoteControl() []tea.Cmd {
 		mode = "plan"
 	}
 	ws := m.com.Workspace
+	m.rcStarting = true
 	return append(cmds, func() tea.Msg {
 		bridge, err := discord.Start(context.Background(), ws, sessionID, mode)
 		return remoteControlStartedMsg{bridge: bridge, err: err}

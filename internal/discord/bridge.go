@@ -275,9 +275,12 @@ func (b *Bridge) launch(ctx context.Context) error {
 
 // Stop shuts the bridge down, posting a farewell first so the thread is
 // not left dangling. Safe to call multiple times and from any goroutine;
-// the farewell is bounded so quitting never hangs.
-func (b *Bridge) Stop() {
+// the farewell is bounded so quitting never hangs. reason names what ended
+// the bridge and is logged, so an unexpected stop in the field can be
+// attributed without guessing.
+func (b *Bridge) Stop(reason string) {
 	b.stopOnce.Do(func() {
+		slog.Info("Discord bridge stopped", "reason", reason, "thread", b.threadURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		f := b.footer
