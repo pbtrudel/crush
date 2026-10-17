@@ -35,6 +35,7 @@ type fakeAPI struct {
 	gwURL       string
 	gwErr       error
 	createErr   error
+	updateErr   error
 }
 
 type fakePost struct {
@@ -139,6 +140,9 @@ func (f *fakeAPI) respondInteraction(ctx context.Context, interactionID, token, 
 func (f *fakeAPI) updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.updateErr != nil {
+		return f.updateErr
+	}
 	f.updates = append(f.updates, fakeUpdate{
 		interactionID: interactionID,
 		token:         token,
@@ -436,6 +440,13 @@ func (e *fakeEnv) QuestionAnswer(responses []question.Answer) bool {
 	defer e.mu.Unlock()
 	e.answers = append(e.answers, responses...)
 	return e.answerOK
+}
+
+// answersSnapshot returns a copy of the recorded question answers.
+func (e *fakeEnv) answersSnapshot() []question.Answer {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]question.Answer(nil), e.answers...)
 }
 
 func (e *fakeEnv) Config() *config.Config {

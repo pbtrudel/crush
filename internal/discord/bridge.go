@@ -774,7 +774,11 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 	b.pendingMu.Unlock()
 
 	rows := questionRows(req, selections)
-	id := b.postAboveWithComponents(renderQuestionCard(req, len(rows) > 0), rows)
+	hint := questionHintAnswer
+	if len(rows) > 0 {
+		hint = questionHintButtons
+	}
+	id := b.postAboveWithComponents(renderQuestionCard(req, hint), rows)
 	if id == "" {
 		slog.Debug("Discord bridge: failed to post question card")
 		b.pendingMu.Lock()
@@ -803,8 +807,7 @@ func (b *Bridge) handleQuestionNotification(n question.Notification) {
 	b.pendingMu.Unlock()
 
 	if msgID != "" {
-		card := renderQuestionCard(req, questionRows(req, nil) != nil) + "\n-# ✅ answered"
-		if err := b.api.editMessage(b.ctx, b.threadID, msgID, card); err != nil {
+		if err := b.api.editMessage(b.ctx, b.threadID, msgID, answeredQuestionCard(req)); err != nil {
 			slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
 		}
 	}
@@ -857,12 +860,24 @@ func renderPermissionCard(req permission.PermissionRequest) string {
 	return sb.String()
 }
 
-// renderQuestionCard renders an agent question for the thread.
+// questionHint selects the closing instruction on a question card.
+type questionHint int
+
+const (
+	// questionHintNone is used once a batch is resolved: no instruction at
+	// all, since there is nothing left to press or type.
+	questionHintNone questionHint = iota
+	// questionHintButtons tells the user the choices are buttons.
+	questionHintButtons
+	// questionHintAnswer points at /answer, or at the terminal when the
+	// batch is too large for the command to accept.
+	questionHintAnswer
+)
+
 // renderQuestionCard renders a question batch for the thread. Each choice
 // carries its description on an indented sub-line, matching what the TUI
-// shows; buttoned batches are answered by pressing a button, everything else
-// with /answer.
-func renderQuestionCard(req question.Request, buttoned bool) string {
+// shows.
+func renderQuestionCard(req question.Request, hint questionHint) string {
 	var sb strings.Builder
 	for i, q := range req.Questions {
 		if len(req.Questions) > 1 {
@@ -885,12 +900,24 @@ func renderQuestionCard(req question.Request, buttoned bool) string {
 			}
 		}
 	}
-	if buttoned {
+	switch hint {
+	case questionHintButtons:
 		sb.WriteString("-# press a button to answer")
-	} else {
-		sb.WriteString("-# answer with `/answer <text>` or `/answer #1` for a choice")
+	case questionHintAnswer:
+		if len(req.Questions) > 1 {
+			// /answer only takes single-question batches; pointing at it
+			// here would guarantee a "multiple parts" refusal.
+			sb.WriteString("-# answer in the terminal")
+		} else {
+			sb.WriteString("-# answer with `/answer <text>` or `/answer #1` for a choice")
+		}
 	}
 	return sb.String()
+}
+
+// answeredQuestionCard renders the resolved form of a batch card.
+func answeredQuestionCard(req question.Request) string {
+	return renderQuestionCard(req, questionHintNone) + "\n-# ✅ answered"
 }
 
 // ── Discord input ────────────────────────────────────────────────────────
@@ -1044,6 +1071,9 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	choiceID := choices[ref.choiceIndex].ID
 
 	b.pendingMu.Lock()
+	if selections[q.ID] == nil {
+		selections[q.ID] = map[string]bool{}
+	}
 	if q.Type == question.TypeMultiChoice {
 		if selections[q.ID][choiceID] {
 			delete(selections[q.ID], choiceID)
@@ -1053,17 +1083,31 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	} else {
 		selections[q.ID] = map[string]bool{choiceID: true}
 	}
-	snapshot := selections
+	msgID := b.questionMessage[req.ID]
+	stillPending := b.questions[req.ID].ID != ""
 	b.pendingMu.Unlock()
 
 	// A lone yes/no or single-choice question is answered by the press
 	// itself; everything else redraws the card and waits for Submit.
 	if !questionNeedsSubmit(req) {
-		b.submitQuestionAnswers(in, req, snapshot)
+		b.submitQuestionAnswers(in, req, selections)
 		return
 	}
-	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, renderQuestionCard(req, true), questionRows(req, snapshot)); err != nil {
+	// The batch may have been resolved from the TUI between the pending
+	// check above and this redraw; a redraw would resurrect its buttons.
+	if !stillPending {
+		b.answerInteraction(in, iconError+" That question was already resolved.")
+		return
+	}
+	card := renderQuestionCard(req, questionHintButtons)
+	rows := questionRows(req, selections)
+	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, rows); err != nil {
 		slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
+		if msgID != "" {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card, rows...); editErr != nil {
+				slog.Debug("Discord bridge: failed to redraw question card", "error", editErr.Error())
+			}
+		}
 	}
 }
 
@@ -1076,12 +1120,23 @@ func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Reque
 		return
 	}
 	b.pendingMu.Lock()
+	msgID := b.questionMessage[req.ID]
 	delete(b.questions, req.ID)
 	delete(b.questionSelections, req.ID)
 	delete(b.questionMessage, req.ID)
 	b.pendingMu.Unlock()
-	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, renderQuestionCard(req, true)+"\n-# ✅ answered", nil); err != nil {
+	card := answeredQuestionCard(req)
+	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, nil); err != nil {
+		// The callback failed (expired interaction, Discord error). The
+		// notification path is a no-op because the batch is already gone
+		// here, so resolve the card over REST or the thread keeps live
+		// buttons for a question that can no longer be answered.
 		slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
+		if msgID != "" {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card); editErr != nil {
+				slog.Debug("Discord bridge: failed to resolve question card", "error", editErr.Error())
+			}
+		}
 	}
 }
 

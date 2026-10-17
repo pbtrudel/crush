@@ -1,7 +1,9 @@
 package discord
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/stretchr/testify/require"
@@ -42,7 +44,7 @@ func singleChoiceRequest() question.Request {
 func TestRenderQuestionCardShowsChoiceDescriptions(t *testing.T) {
 	t.Parallel()
 
-	card := renderQuestionCard(singleChoiceRequest(), true)
+	card := renderQuestionCard(singleChoiceRequest(), questionHintButtons)
 	require.Contains(t, card, "**1.** PostgreSQL")
 	require.Contains(t, card, "Relational, sturdy")
 	require.Contains(t, card, "**2.** MongoDB")
@@ -50,7 +52,7 @@ func TestRenderQuestionCardShowsChoiceDescriptions(t *testing.T) {
 	require.Contains(t, card, "press a button to answer")
 	require.NotContains(t, card, "/answer", "a buttoned card does not need the text hint")
 
-	textOnly := renderQuestionCard(singleChoiceRequest(), false)
+	textOnly := renderQuestionCard(singleChoiceRequest(), questionHintAnswer)
 	require.Contains(t, textOnly, "/answer", "a non-buttoned card keeps the text hint")
 }
 
@@ -243,7 +245,8 @@ func TestQuestionRowsFallBackWhenOverBudget(t *testing.T) {
 	}
 
 	require.Nil(t, questionRows(req, nil), "an over-budget batch stays text-only")
-	require.Contains(t, renderQuestionCard(req, false), "/answer")
+	require.Contains(t, renderQuestionCard(req, questionHintAnswer), "answer in the terminal",
+		"the fallback must not promise a command that refuses multi-question batches")
 }
 
 func TestQuestionRowsFallBackForFreeText(t *testing.T) {
@@ -277,4 +280,77 @@ func TestParseQuestionCustomID(t *testing.T) {
 		_, ok := parseQuestionCustomID(bad)
 		require.False(t, ok, "malformed custom id %q must be ignored", bad)
 	}
+}
+
+// TestQuestionFallbackHintIsAnswerable pins that the text fallback only
+// promises /answer when /answer can actually deliver: multi-question
+// batches cannot be answered with the command, so their card must point at
+// the terminal instead of a guaranteed failure.
+func TestQuestionFallbackHintIsAnswerable(t *testing.T) {
+	t.Parallel()
+
+	single := question.Request{
+		ID: "req-text", SessionID: "sess-1",
+		Questions: []question.Question{{ID: "q1", Type: question.TypeFreeText, Text: "Name?"}},
+	}
+	require.Contains(t, renderQuestionCard(single, questionHintAnswer), "/answer",
+		"a single free-text question is answerable with /answer")
+
+	multi := question.Request{
+		ID: "req-multi-text", SessionID: "sess-1",
+		Questions: []question.Question{
+			{ID: "q1", Type: question.TypeFreeText, Text: "Name?"},
+			{ID: "q2", Type: question.TypeFreeText, Text: "Color?"},
+		},
+	}
+	card := renderQuestionCard(multi, questionHintAnswer)
+	require.Contains(t, card, "answer in the terminal",
+		"a multi-question fallback must not promise /answer")
+	require.NotContains(t, card, "/answer")
+}
+
+// TestQuestionResolvedCardDropsTheAnswerHint pins that a resolved card does
+// not keep telling the user to press a button that no longer exists.
+func TestQuestionResolvedCardDropsTheAnswerHint(t *testing.T) {
+	t.Parallel()
+
+	card := renderQuestionCard(singleChoiceRequest(), questionHintNone)
+	require.NotContains(t, card, "press a button")
+	require.NotContains(t, card, "/answer")
+}
+
+// TestQuestionSubmitFallsBackToEditWhenCallbackFails pins that a failed
+// interaction callback still marks the card answered over REST, instead of
+// leaving live-looking buttons on a resolved question.
+func TestQuestionSubmitFallsBackToEditWhenCallbackFails(t *testing.T) {
+	t.Parallel()
+	b, env, api, _ := testBridge(t, testConfig())
+	env.answerOK = true
+	api.updateErr = errors.New("interaction expired")
+
+	req := singleChoiceRequest()
+	b.handleQuestionRequest(req)
+	b.handleQuestionComponent(componentInteraction(selectCustomID(req.ID, 0, 0)))
+
+	require.Len(t, env.answers, 1, "the answer still lands")
+	require.True(t, api.hasEditContaining("✅ answered"),
+		"the card is resolved over REST when the callback fails")
+	require.Empty(t, b.questions[req.ID])
+}
+
+// TestQuestionComponentArrivesThroughInputLoop pins the gateway-to-handler
+// routing: a component interaction enqueued by the gateway is dispatched to
+// the question handler, not the slash-command handler.
+func TestQuestionComponentArrivesThroughInputLoop(t *testing.T) {
+	t.Parallel()
+	b, env, _, _ := testBridge(t, testConfig())
+	env.answerOK = true
+
+	req := singleChoiceRequest()
+	b.handleQuestionRequest(req)
+	in := componentInteraction(selectCustomID(req.ID, 0, 0))
+	b.enqueueInput(inputEvent{interaction: &in})
+
+	require.Eventually(t, func() bool { return len(env.answersSnapshot()) == 1 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, []question.Answer{{QuestionID: "q1", SelectedIDs: []string{"pg"}}}, env.answersSnapshot())
 }
