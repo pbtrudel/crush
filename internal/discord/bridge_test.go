@@ -224,6 +224,63 @@ func TestBridgeFooterMetrics(t *testing.T) {
 	require.True(t, api.hasContentContaining("cache 25%"))
 }
 
+// stepClock is a manually advanced clock for footer timing tests.
+type stepClock struct {
+	t time.Time
+}
+
+func (c *stepClock) now() time.Time { return c.t }
+
+func (c *stepClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// TestFooterTerminalElapsedFreezesAtCompletion pins that the footer's
+// terminal durations ("Done in …") stop at the run's completion instead
+// of growing every tick while the thread sits idle.
+func TestFooterTerminalElapsedFreezesAtCompletion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		rc   notify.RunComplete
+		want string
+	}{
+		{"done", notify.RunComplete{}, "**Done in 10s**"},
+		{"cancelled", notify.RunComplete{Cancelled: true}, "**Cancelled after 10s**"},
+		{"failed", notify.RunComplete{Error: "boom"}, "**Failed after 10s**"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock := &stepClock{t: time.Unix(1_700_000_000, 0)}
+			env := newFakeEnv()
+			env.cfg.Options = &config.Options{DataDirectory: t.TempDir()}
+			b := newBridge(env, nil, "sess-1", testConfig(), "code", bridgeDeps{
+				api:          newFakeAPI(),
+				catalog:      env.catalogFn,
+				now:          clock.now,
+				tick:         time.Second,
+				editThrottle: time.Millisecond,
+			})
+			b.threadID = "thread-1"
+			b.ctx = context.Background()
+			b.cancel = func() {}
+
+			// A turn starts, runs for ten seconds, and completes.
+			b.handleEvent(evMessage(pubsub.CreatedEvent, assistantMessage("m-"+tc.name)))
+			clock.advance(10 * time.Second)
+			rc := tc.rc
+			rc.SessionID = "sess-1"
+			b.handleRunComplete(rc)
+
+			// Idle time passes; the displayed duration must not grow.
+			clock.advance(5 * time.Minute)
+			b.footer.mu.Lock()
+			body := b.composeFooterLocked()
+			b.footer.mu.Unlock()
+			require.Contains(t, body, tc.want, "the terminal duration must freeze at completion")
+		})
+	}
+}
+
 func TestBridgePermissionCardAndReaction(t *testing.T) {
 	t.Parallel()
 	b, env, api, _ := testBridge(t, testConfig())
