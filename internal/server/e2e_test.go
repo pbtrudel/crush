@@ -468,9 +468,10 @@ func TestE2E_PermissionFlowCrossClient(t *testing.T) {
 
 	// Wait for the PermissionRequest to arrive on client A's SSE
 	// stream. We need its ID to drive the grant.
-	// 10s instead of the 3s used elsewhere because this context
-	// bounds three sequential waits, not one.
-	pickCtx, pickCancel := context.WithTimeout(ctx, 10*time.Second)
+	// 30s because this context bounds three sequential waits: it gives
+	// each wait the same 10s budget used per wait elsewhere. A single
+	// shared 10s made this test flaky under full-suite CPU load.
+	pickCtx, pickCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer pickCancel()
 	reqEv, ok := drainUntil(pickCtx, evcA, func(e pubsub.Event[proto.PermissionRequest]) bool {
 		return e.Payload.ToolCallID == toolCallID
