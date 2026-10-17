@@ -75,9 +75,13 @@ type discordAPI interface {
 // thread messages back into the session. It owns one control thread and
 // one gateway connection, and is safe to Stop more than once.
 type Bridge struct {
-	env       commandEnv
-	app       *app.App
+	env commandEnv
+	app *app.App
+	// sessionID is the session the bridge mirrors. Guarded by sessMu so a
+	// /clear rebind cannot race the event loop; read it through
+	// currentSessionID.
 	sessionID string
+	sessMu    sync.RWMutex
 	cfg       Config
 
 	api      discordAPI
@@ -317,6 +321,14 @@ func (b *Bridge) Stop(reason string) {
 // ThreadURL returns the Discord link of the control thread.
 func (b *Bridge) ThreadURL() string { return b.threadURL }
 
+// currentSessionID returns the session the bridge mirrors. Rebinds happen
+// under the same lock, so callers always observe one consistent session.
+func (b *Bridge) currentSessionID() string {
+	b.sessMu.RLock()
+	defer b.sessMu.RUnlock()
+	return b.sessionID
+}
+
 // Mode reports the bridge's view of the input mode.
 func (b *Bridge) modeName() string {
 	b.modeMu.Lock()
@@ -455,7 +467,7 @@ func (b *Bridge) note(text string, isErr bool) {
 // threadName names the control thread after the session or the working
 // directory.
 func (b *Bridge) threadName(ctx context.Context) string {
-	if sess, err := b.env.GetSession(ctx, b.sessionID); err == nil {
+	if sess, err := b.env.GetSession(ctx, b.currentSessionID()); err == nil {
 		if title := strings.TrimSpace(sess.Title); title != "" {
 			return truncateRunes(title, 100)
 		}
@@ -527,7 +539,7 @@ func (b *Bridge) handleEvent(ev pubsub.Event[tea.Msg]) {
 
 func (b *Bridge) handleMessageEvent(ev pubsub.Event[message.Message]) {
 	msg := ev.Payload
-	if msg.SessionID != b.sessionID || msg.IsSummaryMessage {
+	if msg.SessionID != b.currentSessionID() || msg.IsSummaryMessage {
 		return
 	}
 	switch msg.Role {
@@ -615,7 +627,7 @@ func (b *Bridge) handleToolResult(msg message.Message) {
 // handleRunComplete freezes any unfrozen final-step transcript and
 // parks the footer in its terminal state.
 func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
-	if rc.SessionID != b.sessionID {
+	if rc.SessionID != b.currentSessionID() {
 		return
 	}
 	if rc.MessageID != "" {
@@ -660,7 +672,7 @@ func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
 // handleAgentNotification mirrors re-authentication requests; run
 // terminals are covered by RunComplete.
 func (b *Bridge) handleAgentNotification(n notify.Notification) {
-	if n.SessionID != b.sessionID {
+	if n.SessionID != b.currentSessionID() {
 		return
 	}
 	if n.Type == notify.TypeReAuthenticate {
@@ -675,7 +687,7 @@ func (b *Bridge) handleAgentNotification(n notify.Notification) {
 // handleSessionEvent tracks title generation by renaming the thread and
 // keeps the footer's usage metrics current.
 func (b *Bridge) handleSessionEvent(ev pubsub.Event[session.Session]) {
-	if ev.Type != pubsub.UpdatedEvent || ev.Payload.ID != b.sessionID {
+	if ev.Type != pubsub.UpdatedEvent || ev.Payload.ID != b.currentSessionID() {
 		return
 	}
 	b.setSession(ev.Payload)
@@ -700,7 +712,7 @@ func (b *Bridge) handleSessionEvent(ev pubsub.Event[session.Session]) {
 // handlePermissionRequest mirrors a tool permission request as a
 // reaction-approvable card.
 func (b *Bridge) handlePermissionRequest(req permission.PermissionRequest) {
-	if req.SessionID != b.sessionID {
+	if req.SessionID != b.currentSessionID() {
 		return
 	}
 	b.pendingMu.Lock()
@@ -760,7 +772,7 @@ func (b *Bridge) handlePermissionNotification(n permission.PermissionNotificatio
 
 // handleQuestionRequest mirrors an agent question as a thread card.
 func (b *Bridge) handleQuestionRequest(req question.Request) {
-	if req.SessionID != b.sessionID {
+	if req.SessionID != b.currentSessionID() {
 		return
 	}
 	b.pendingMu.Lock()
@@ -1210,12 +1222,13 @@ func (b *Bridge) launchRun(prompt string, attachments ...message.Attachment) {
 		return
 	}
 	b.noteSubmission(prompt)
-	if b.env.AgentIsSessionBusy(b.sessionID) {
-		position := b.env.AgentQueuedPrompts(b.sessionID) + 1
+	sessionID := b.currentSessionID()
+	if b.env.AgentIsSessionBusy(sessionID) {
+		position := b.env.AgentQueuedPrompts(sessionID) + 1
 		b.post(fmt.Sprintf("📥 Queued (position %d) — the current turn is still running.", position))
 	}
 	go func() {
-		if err := b.env.AgentRun(context.Background(), b.sessionID, prompt, attachments...); err != nil && b.ctx.Err() == nil {
+		if err := b.env.AgentRun(context.Background(), sessionID, prompt, attachments...); err != nil && b.ctx.Err() == nil {
 			b.post(iconError + " Failed to send prompt: " + err.Error())
 		}
 	}()
@@ -1317,7 +1330,7 @@ func (b *Bridge) typingLoop() {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
-			if !b.env.AgentIsSessionBusy(b.sessionID) {
+			if !b.env.AgentIsSessionBusy(b.currentSessionID()) {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
@@ -1399,6 +1412,84 @@ func (b *Bridge) setSession(sess session.Session) {
 	f.haveSess = true
 	f.mu.Unlock()
 	b.pokeFooter()
+}
+
+// rebindSession points the bridge at a new session without touching the
+// thread: /clear starts a fresh context and the same thread follows it.
+// Every per-session tally is dropped so no card, dedup entry, or footer
+// reading from the cleared session leaks into the new one. The session
+// lock is held across the whole reset so events for the new session
+// cannot slip in between the ID swap and the state wipe; handlers that
+// see the old ID either run before the swap or not at all.
+func (b *Bridge) rebindSession(ctx context.Context, to session.Session) {
+	b.sessMu.Lock()
+	from := b.sessionID
+	b.sessionID = to.ID
+
+	b.pendingMu.Lock()
+	b.permissions = map[string]permission.PermissionRequest{}
+	b.permissionOrder = nil
+	b.permMessage = map[string]string{}
+	b.questions = map[string]question.Request{}
+	b.questionOrder = nil
+	b.questionMessage = map[string]string{}
+	b.questionSelections = map[string]map[string]map[string]bool{}
+	b.pendingMu.Unlock()
+
+	b.subMu.Lock()
+	b.submissions = nil
+	b.subMu.Unlock()
+
+	b.countedMu.Lock()
+	clear(b.countedResults)
+	b.countedMu.Unlock()
+
+	b.frozenMu.Lock()
+	clear(b.frozen)
+	b.frozenMu.Unlock()
+
+	b.completedMu.Lock()
+	clear(b.completed)
+	b.completedMu.Unlock()
+
+	b.renameMu.Lock()
+	b.renamedTo = ""
+	b.renameMu.Unlock()
+	b.sessMu.Unlock()
+
+	b.lastMu.Lock()
+	b.lastAssistant = message.Message{}
+	b.lastMu.Unlock()
+
+	// Reset the footer to its idle fresh-session shape so the previous
+	// turn's tool counts and streaming tail do not linger.
+	f := b.footer
+	f.mu.Lock()
+	f.active = false
+	f.started = time.Time{}
+	f.state = turnIdle
+	f.toolName = ""
+	f.toolParam = ""
+	f.model = ""
+	f.errText = ""
+	f.waiting = false
+	f.toolCounts = map[string]int{}
+	f.toolFailures = 0
+	f.countedCalls = map[string]bool{}
+	f.tail = ""
+	f.mu.Unlock()
+
+	b.setSession(to)
+
+	// The old title would mislabel the thread; the next generated title
+	// renames it again (renamedTo was reset above).
+	if err := b.api.editChannelName(ctx, b.threadID, b.threadName(ctx)); err != nil {
+		slog.Debug("Discord bridge: failed to rename thread", "error", err.Error())
+	}
+
+	if b.app != nil {
+		b.app.SendEvent(SessionClearedMsg{Bridge: b, From: from, To: to.ID})
+	}
 }
 
 // footerLoop owns the footer's edit cadence: event pokes are throttled

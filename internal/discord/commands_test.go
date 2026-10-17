@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,9 +10,11 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,6 +67,7 @@ func TestCommandHelp(t *testing.T) {
 	help := b.handleCommand(b.ctx, "help", "")
 	require.Contains(t, help, "/model")
 	require.Contains(t, help, "/yolo")
+	require.Contains(t, help, "/clear")
 	require.Contains(t, help, "sent to the agent as a prompt")
 }
 
@@ -361,4 +365,89 @@ func TestResolveModelQuery(t *testing.T) {
 	sel, _, err = resolveModelQuery(providers, "anchor-name", func(string) bool { return true })
 	require.Error(t, err, "unknown substrings must not resolve")
 	require.Equal(t, config.SelectedModel{}, sel)
+}
+
+// TestCommandClearStartsFreshSession pins the /clear contract: a new
+// session is created with an empty title, the bridge moves to it without
+// touching the thread, and no per-session state from the cleared session
+// leaks into the new one.
+func TestCommandClearStartsFreshSession(t *testing.T) {
+	t.Parallel()
+	b, env, api := newCommandBridge(t)
+	env.newSession = session.Session{ID: "sess-2"}
+
+	// Stale state from the cleared session must not survive the rebind.
+	b.pendingMu.Lock()
+	b.permissions["perm-1"] = permission.PermissionRequest{ID: "perm-1", SessionID: "sess-1", ToolName: "bash"}
+	b.questionOrder = append(b.questionOrder, "q-1")
+	b.pendingMu.Unlock()
+	b.subMu.Lock()
+	b.submissions = append(b.submissions, promptSubmission{hash: "h-1", when: time.Now()})
+	b.subMu.Unlock()
+	b.footer.mu.Lock()
+	b.footer.state = turnThinking
+	b.footer.mu.Unlock()
+
+	reply := b.handleCommand(b.ctx, "clear", "")
+	require.Contains(t, reply, "Context cleared")
+	require.Equal(t, []string{""}, env.createTitles)
+	require.Equal(t, "sess-2", b.currentSessionID())
+
+	b.pendingMu.Lock()
+	require.Empty(t, b.permissions)
+	require.Empty(t, b.questionOrder)
+	b.pendingMu.Unlock()
+	b.subMu.Lock()
+	require.Empty(t, b.submissions)
+	b.subMu.Unlock()
+	b.footer.mu.Lock()
+	require.Equal(t, turnIdle, b.footer.state)
+	b.footer.mu.Unlock()
+
+	// The thread is reused: no new thread and no farewell.
+	require.Empty(t, api.threadNames)
+	require.False(t, api.hasContentContaining("Remote control ended"))
+
+	// Events follow the rebind: the cleared session stops mirroring and
+	// the new one starts.
+	before := len(api.postsSnapshot())
+	b.handleEvent(evMessage(pubsub.CreatedEvent, userMessage("stale prompt")))
+	require.Equal(t, before, len(api.postsSnapshot()), "the cleared session must not mirror anymore")
+
+	fresh := message.Message{
+		ID: "u-fresh", SessionID: "sess-2", Role: message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "fresh prompt"}},
+	}
+	b.handleEvent(evMessage(pubsub.CreatedEvent, fresh))
+	require.True(t, api.hasPostContaining("fresh prompt"), "the new session must mirror")
+}
+
+func TestCommandClearRefusedWhileBusy(t *testing.T) {
+	t.Parallel()
+	b, env, _ := newCommandBridge(t)
+	env.setBusy(true)
+
+	reply := b.handleCommand(b.ctx, "clear", "")
+	require.Contains(t, reply, "busy")
+	require.Zero(t, env.createCalls, "a busy session must not be cleared")
+	require.Equal(t, "sess-1", b.currentSessionID())
+}
+
+func TestCommandClearNewAlias(t *testing.T) {
+	t.Parallel()
+	b, env, _ := newCommandBridge(t)
+	env.newSession = session.Session{ID: "sess-2"}
+
+	require.Contains(t, b.handleCommand(b.ctx, "new", ""), "Context cleared")
+	require.Equal(t, "sess-2", b.currentSessionID())
+}
+
+func TestCommandClearCreateFailure(t *testing.T) {
+	t.Parallel()
+	b, env, _ := newCommandBridge(t)
+	env.createErr = errors.New("boom")
+
+	reply := b.handleCommand(b.ctx, "clear", "")
+	require.Contains(t, reply, "boom")
+	require.Equal(t, "sess-1", b.currentSessionID(), "a failed create must keep the current session")
 }

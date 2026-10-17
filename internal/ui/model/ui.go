@@ -997,6 +997,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rc = nil
 			cmds = append(cmds, util.ReportInfo("Remote control disconnected"))
 		}
+	case discord.SessionClearedMsg:
+		// Remote control cleared the context by starting a new session in
+		// the same thread; follow it when the TUI is still showing the
+		// cleared session for the bridge it tracks.
+		cmds = append(cmds, m.followRemoteClear(msg)...)
 	case loadSessionMsg:
 		if m.forceCompactMode {
 			m.isCompact = true
@@ -5372,6 +5377,20 @@ func (m *UI) toggleRemoteControl() []tea.Cmd {
 		bridge, err := discord.Start(context.Background(), ws, sessionID, mode)
 		return remoteControlStartedMsg{bridge: bridge, err: err}
 	})
+}
+
+// followRemoteClear moves the TUI to the session a Discord /clear just
+// created, when the TUI is still showing the cleared session for the
+// bridge it tracks. It returns no commands otherwise, so a clear of a
+// session the user has already moved away from never hijacks the view.
+func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
+	if m.rc != msg.Bridge || m.session == nil || m.session.ID != msg.From {
+		return nil
+	}
+	return []tea.Cmd{
+		m.loadSession(msg.To),
+		util.ReportInfo("Context cleared (from Discord) — switched to the new session"),
+	}
 }
 
 // sendMessage sends a message with the given content and attachments.
