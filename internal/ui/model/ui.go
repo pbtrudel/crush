@@ -158,6 +158,10 @@ type (
 	userCommandsLoadedMsg struct {
 		Commands []commands.CustomCommand
 	}
+	// skillsReloadedMsg is sent when a skills reload attempt completes.
+	skillsReloadedMsg struct {
+		err error
+	}
 	// mcpPromptsLoadedMsg is sent when mcp prompts are loaded.
 	mcpPromptsLoadedMsg struct {
 		Prompts []commands.MCPPrompt
@@ -1224,6 +1228,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pubsub.Event[skills.Event]:
 		m.skillStates = msg.Payload.States
 		m.skillsVer++
+		// The skills event can come from a reload, so the command palette
+		// must be rebuilt to pick up added or removed skill commands.
+		cmds = append(cmds, m.loadCustomCommands())
 	case pubsub.Event[mcp.Event]:
 		switch msg.Payload.Type {
 		case mcp.EventStateChanged:
@@ -2351,6 +2358,20 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, util.ReportInfo("Secrets masked"))
 		}
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionReloadSkills:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			return skillsReloadedMsg{err: m.com.Workspace.ReloadSkills(ctx)}
+		})
+	case skillsReloadedMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+		} else {
+			cmds = append(cmds, util.ReportInfo("Skills reloaded"))
+		}
+		cmds = append(cmds, m.loadCustomCommands())
 	case dialog.ActionTogglePills:
 		if cmd := m.togglePillsExpanded(); cmd != nil {
 			cmds = append(cmds, cmd)

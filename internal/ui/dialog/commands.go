@@ -461,6 +461,8 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize"))
 	}
 
+	commands = append(commands, NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills"))
+
 	// Add reasoning toggle for models that support it
 	cfg := c.com.Config()
 	if agentCfg, ok := cfg.Agents[config.AgentCoder]; ok {

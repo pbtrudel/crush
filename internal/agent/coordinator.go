@@ -162,6 +162,7 @@ type Coordinator interface {
 	Summarize(context.Context, string) error
 	Model() Model
 	UpdateModels(ctx context.Context) error
+	RefreshSkills(ctx context.Context) error
 	GenerateTitle(ctx context.Context, sessionID, prompt string)
 }
 
@@ -186,7 +187,9 @@ type coordinator struct {
 	mainAgentName string
 	agents        map[string]SessionAgent
 
-	// Skills discovery results (session-start snapshot).
+	// Skills discovery results. The manager is the live source of
+	// truth; the slices below are its last-read snapshot.
+	skillsMgr    *skills.Manager
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
 	activeSkills []*skills.Skill // Post-filter: active skills only.
 	skillTracker *skills.Tracker
@@ -238,6 +241,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		notify:       opts.Notify,
 		runComplete:  opts.RunComplete,
 		agents:       make(map[string]SessionAgent),
+		skillsMgr:    opts.Skills,
 		allSkills:    allSkills,
 		activeSkills: activeSkills,
 		skillTracker: skillTracker,
@@ -1592,6 +1596,38 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	return nil
 }
 
+// RefreshSkills re-reads the workspace's skill snapshot after a reload
+// and rebuilds every agent's tools so skill-dependent tools (crush_info,
+// view) serve the new set. Bookkeeping for skills that survive the
+// reload is preserved.
+func (c *coordinator) RefreshSkills(ctx context.Context) error {
+	if c.skillsMgr == nil {
+		return nil
+	}
+
+	c.allSkills = c.skillsMgr.AllSkills()
+	c.activeSkills = c.skillsMgr.ActiveSkills()
+
+	fresh := skills.NewTracker(c.activeSkills)
+	for _, name := range c.skillTracker.LoadedNames() {
+		fresh.MarkLoaded(name)
+	}
+	c.skillTracker = fresh
+
+	for name, agent := range c.agents {
+		agentCfg, ok := c.cfg.Config().Agents[name]
+		if !ok {
+			continue
+		}
+		agentTools, err := c.buildTools(ctx, agentCfg, false)
+		if err != nil {
+			return fmt.Errorf("rebuild tools for agent %s: %w", name, err)
+		}
+		agent.SetTools(agentTools)
+	}
+	return nil
+}
+
 func (c *coordinator) QueuedPrompts(sessionID string) int {
 	return c.currentAgent().QueuedPrompts(sessionID)
 }
@@ -1893,22 +1929,9 @@ func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSession
 // that case, so doing so would be misleading without delivering the
 // snapshot anywhere useful.
 func discoverSkills(cfg *config.ConfigStore) (allSkills, activeSkills []*skills.Skill) {
-	opts := cfg.Config().Options
-	var paths, disabled []string
-	if opts != nil {
-		paths = opts.SkillsPaths
-		disabled = opts.DisabledSkills
-	}
-	var resolver func(string) (string, error)
-	if r := cfg.Resolver(); r != nil {
-		resolver = r.ResolveValue
-	}
-	allSkills, activeSkills, states := skills.DiscoverFromConfig(skills.DiscoveryConfig{
-		SkillsPaths:    paths,
-		DisabledSkills: disabled,
-		Resolver:       resolver,
-	})
-	logDiscoveryStats(states, paths, allSkills, activeSkills, disabled)
+	dc := config.SkillsDiscoveryConfig(cfg)
+	allSkills, activeSkills, states := skills.DiscoverFromConfig(dc)
+	logDiscoveryStats(states, dc.SkillsPaths, allSkills, activeSkills, dc.DisabledSkills)
 	return allSkills, activeSkills
 }
 

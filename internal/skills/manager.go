@@ -102,14 +102,18 @@ func (m *Manager) ActiveSkills() []*Skill {
 }
 
 // ResolvedPaths returns the expanded skills directory paths stored at
-// construction time.
+// construction or last reload.
 func (m *Manager) ResolvedPaths() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.resolvedPaths
 }
 
 // WorkingDir returns the workspace working directory stored at
-// construction time.
+// construction or last reload.
 func (m *Manager) WorkingDir() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.workingDir
 }
 
@@ -147,6 +151,20 @@ func (m *Manager) PublishStates(states []*SkillState) {
 	if m.globalMirror {
 		PublishStates(states)
 	}
+}
+
+// Replace swaps the manager's discovery results in one step and
+// publishes the new state snapshot. Reloads use it after re-running
+// discovery. The slices are stored as-is; callers must not mutate them
+// afterwards.
+func (m *Manager) Replace(allSkills, activeSkills []*Skill, states []*SkillState, resolvedPaths []string, workingDir string) {
+	m.mu.Lock()
+	m.allSkills = allSkills
+	m.activeSkills = activeSkills
+	m.resolvedPaths = resolvedPaths
+	m.workingDir = workingDir
+	m.mu.Unlock()
+	m.PublishStates(states)
 }
 
 // SubscribeEvents returns a channel of discovery events for the
@@ -192,6 +210,13 @@ func DiscoverFromConfig(cfg DiscoveryConfig) (allSkills, activeSkills []*Skill, 
 		return strings.Compare(strings.ToLower(a.Path), strings.ToLower(b.Path))
 	})
 	return allSkills, activeSkills, allStates
+}
+
+// Reload re-runs discovery with the given config and applies the
+// result to the manager, publishing the new states to subscribers.
+func Reload(m *Manager, cfg DiscoveryConfig) {
+	allSkills, activeSkills, states := DiscoverFromConfig(cfg)
+	m.Replace(allSkills, activeSkills, states, cfg.ResolvePaths(), cfg.WorkingDir)
 }
 
 // DiscoveryConfig contains the inputs DiscoverFromConfig needs. Using a

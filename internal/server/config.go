@@ -176,6 +176,17 @@ func (c *controllerV1) handleGetWorkspaceSkills(w http.ResponseWriter, r *http.R
 	jsonEncode(w, skills)
 }
 
+// handlePostWorkspaceSkillsReload re-discovers the workspace's skills
+// and refreshes its agents and subscribers.
+func (c *controllerV1) handlePostWorkspaceSkillsReload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := c.backend.ReloadSkills(r.Context(), id); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceSkillRead reads a skill's content by ID.
 func (c *controllerV1) handlePostWorkspaceSkillRead(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

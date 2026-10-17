@@ -228,6 +228,17 @@ func (b *Backend) ListSkills(workspaceID string) ([]proto.SkillInfo, error) {
 	return result, nil
 }
 
+// ReloadSkills re-discovers skills for a workspace and refreshes the
+// workspace's agents and subscribers. The skills event published by the
+// manager reaches connected clients through the regular event stream.
+func (b *Backend) ReloadSkills(ctx context.Context, workspaceID string) error {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return err
+	}
+	return ws.ReloadSkills(ctx)
+}
+
 // EnableDockerMCP validates Docker MCP availability, stages the
 // configuration, starts the MCP client, and persists the config.
 func (b *Backend) EnableDockerMCP(ctx context.Context, workspaceID string) error {

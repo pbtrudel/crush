@@ -653,6 +653,10 @@ func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry
 	return result, nil
 }
 
+func (w *ClientWorkspace) ReloadSkills(ctx context.Context) error {
+	return w.client.ReloadSkills(ctx, w.workspaceID())
+}
+
 func (w *ClientWorkspace) ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
 	resp, err := w.client.ReadSkill(ctx, w.workspaceID(), skillID)
 	if err != nil {
