@@ -372,12 +372,6 @@ Adapt verbosity to match the work completed:
 Working directory: {{.WorkingDir}}
 Is directory a git repo: {{if .IsGitRepo}}yes{{else}}no{{end}}
 Platform: {{.Platform}}
-Today's date: {{.Date}}
-{{if .GitStatus}}
-
-Git status (snapshot at conversation start - may be outdated):
-{{.GitStatus}}
-{{end}}
 </env>
 
 {{if gt (len .Config.LSP) 0}}

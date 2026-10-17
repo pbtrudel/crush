@@ -367,3 +367,41 @@ func TestSystemPromptByteStableWithMultipleContextFiles(t *testing.T) {
 		require.Equal(t, first, got, "system prompt must be byte-identical across builds")
 	}
 }
+
+// TestSystemPromptStableAcrossClocks pins the resume invariant: the system
+// prompt is rebuilt once per process, so any clock-derived content makes a
+// resumed session's first request diverge from the prefix the provider
+// cached for the previous process and re-reads the whole conversation. The
+// date and git snapshot travel in the session's first message instead (see
+// prompt.SessionEnvSnapshot).
+func TestSystemPromptStableAcrossClocks(t *testing.T) {
+	env := testEnv(t)
+
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Options.Attribution = &config.Attribution{}
+	cfg.Config().Options.SkillsPaths = nil
+	cfg.Config().Options.DisabledSkills = nil
+	cfg.Config().LSP = nil
+	cfg.Config().MCP = nil
+	cfg.Config().Hooks = nil
+	cfg.Config().Options.GlobalContextPaths = nil
+
+	newYears, _ := time.Parse("1/2/2006", "1/1/2025")
+	nextYear, _ := time.Parse("1/2/2006", "1/1/2026")
+	build := func(clock func() time.Time) string {
+		p, err := coderPrompt(
+			prompt.WithTimeFunc(clock),
+			prompt.WithPlatform("linux"),
+			prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
+		)
+		require.NoError(t, err)
+		s, err := p.Build(t.Context(), "test-provider", "test-model", cfg)
+		require.NoError(t, err)
+		return s
+	}
+
+	require.Equal(t, build(func() time.Time { return newYears }),
+		build(func() time.Time { return nextYear }),
+		"the coder system prompt must not depend on the clock")
+}

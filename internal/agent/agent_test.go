@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 }
 
 var modelPairs = []modelPair{
-	{"deepseek-v4", hyperBuilder("deepseek-v4-pro-0813"), hyperBuilder("deepseek-v4-flash-0731")},
+	{"deepseek-v4", vcrModelBuilder("deepseek/deepseek-v4-pro"), vcrModelBuilder("deepseek/deepseek-v4.1-flash")},
 }
 
 func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageModel, fantasy.LanguageModel) {
@@ -75,8 +75,8 @@ func TestCoderAgent(t *testing.T) {
 
 				msgs, err := env.messages.List(t.Context(), session.ID)
 				require.NoError(t, err)
-				// Should have the agent and user message
-				assert.Equal(t, len(msgs), 2)
+				// Snapshot (hidden) + user message + assistant reply.
+				assert.Equal(t, len(msgs), 3)
 			})
 			t.Run("read a file", func(t *testing.T) {
 				agent, env := setupAgent(t, pair)

@@ -37,7 +37,6 @@ type PromptDat struct {
 	IsGitRepo          bool
 	Platform           string
 	Date               string
-	GitStatus          string
 	ContextFiles       []ContextFile
 	GlobalContextFiles []ContextFile
 	AvailSkillXML      string
@@ -221,13 +220,6 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		Platform:      platform,
 		Date:          p.now().Format("1/2/2006"),
 		AvailSkillXML: availSkillXML,
-	}
-	if isGit {
-		var err error
-		data.GitStatus, err = getGitStatus(ctx, store.WorkingDir())
-		if err != nil {
-			return PromptDat{}, err
-		}
 	}
 
 	data.ContextFiles = contextFiles
