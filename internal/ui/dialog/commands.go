@@ -53,11 +53,12 @@ type Commands struct {
 		Close key.Binding
 	}
 
-	sessionID  string
-	hasSession bool
-	hasTodos   bool
-	hasQueue   bool
-	selected   CommandType
+	sessionID     string
+	hasSession    bool
+	hasTodos      bool
+	hasQueue      bool
+	revealSecrets bool
+	selected      CommandType
 
 	spinner spinner.Model
 	loading bool
@@ -78,7 +79,7 @@ type Commands struct {
 var _ Dialog = (*Commands)(nil)
 
 // NewCommands creates a new commands dialog.
-func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
+func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue, revealSecrets bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
 	c := &Commands{
 		com:            com,
 		selected:       SystemCommands,
@@ -86,6 +87,7 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 		hasSession:     hasSession,
 		hasTodos:       hasTodos,
 		hasQueue:       hasQueue,
+		revealSecrets:  revealSecrets,
 		customCommands: customCommands,
 		mcpPrompts:     mcpPrompts,
 	}
@@ -487,6 +489,13 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// Only show toggle compact mode command if window width is larger than compact breakpoint (120)
 	if c.windowWidth >= sidebarCompactModeBreakpoint && c.hasSession {
 		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_sidebar", "Toggle Sidebar", "ctrl+b", ActionToggleCompactMode{}))
+	}
+	if c.hasSession {
+		revealLabel := "Reveal Secrets"
+		if c.revealSecrets {
+			revealLabel = "Hide Secrets"
+		}
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_secret_reveal", revealLabel, "", ActionToggleSecretReveal{}).WithAliases("secrets"))
 	}
 	if c.hasSession {
 		cfgPrime := c.com.Config()

@@ -2343,6 +2343,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionToggleCompactMode:
 		cmds = append(cmds, m.toggleCompactMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionToggleSecretReveal:
+		m.chat.SetRevealSecrets(!m.chat.RevealSecrets())
+		if m.chat.RevealSecrets() {
+			cmds = append(cmds, util.ReportInfo("Secrets revealed"))
+		} else {
+			cmds = append(cmds, util.ReportInfo("Secrets masked"))
+		}
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionTogglePills:
 		if cmd := m.togglePillsExpanded(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -5783,7 +5791,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts)
+	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.chat.RevealSecrets(), m.customCommands, m.mcpPrompts)
 	if err != nil {
 		return util.ReportError(err)
 	}
