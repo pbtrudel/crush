@@ -262,7 +262,6 @@ type fakeEnv struct {
 	session    session.Session
 	sessionErr error
 	cfg        *config.Config
-	catalog    []catwalk.Provider
 
 	busy   bool
 	queued []string
@@ -308,35 +307,35 @@ func newFakeEnv() *fakeEnv {
 				DataDirectory: filepath.Join(os.TempDir(), "crush-discord-tests"),
 			},
 		},
-		catalog: []catwalk.Provider{
-			{
-				ID:   catwalk.InferenceProvider("openai"),
-				Name: "OpenAI",
-				Models: []catwalk.Model{
-					{ID: "gpt-4o", Name: "GPT-4o", ContextWindow: 128000},
-					{ID: "gpt-5", Name: "GPT-5", ContextWindow: 256000},
-				},
-			},
-			{
-				ID:   catwalk.InferenceProvider("anthropic"),
-				Name: "Anthropic",
-				Models: []catwalk.Model{
-					{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 200000},
-				},
-			},
-		},
 		dir:      "/home/user/project",
 		agent:    config.AgentCoder,
 		answerOK: true,
 	}
-	env.cfg.Providers.Set("openai", config.ProviderConfig{ID: "openai"})
+	env.cfg.Providers.Set("openai", config.ProviderConfig{
+		ID:   "openai",
+		Name: "OpenAI",
+		Models: []catwalk.Model{
+			{ID: "gpt-4o", Name: "GPT-4o", ContextWindow: 128000},
+			{ID: "gpt-5", Name: "GPT-5", ContextWindow: 256000},
+			{ID: "gpt-5-canary", Name: "GPT-5 Canary", ContextWindow: 400000},
+		},
+	})
+	env.cfg.Providers.Set("neuralwatt", config.ProviderConfig{
+		ID:   "neuralwatt",
+		Name: "Neuralwatt",
+		Models: []catwalk.Model{
+			{ID: "nw-flash", Name: "Neuralwatt Flash", ContextWindow: 1000000},
+			{ID: "deepseek-v4.1-flash-canary", Name: "DeepSeek V4.1 Flash 1017 (canary)", ContextWindow: 1000000},
+		},
+	})
+	env.cfg.Providers.Set("acme", config.ProviderConfig{
+		ID:   "acme",
+		Name: "Acme",
+		Models: []catwalk.Model{
+			{ID: "acme-1", Name: "Acme One", ContextWindow: 8000},
+		},
+	})
 	return env
-}
-
-func (e *fakeEnv) catalogFn(cfg *config.Config) ([]catwalk.Provider, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.catalog, nil
 }
 
 func (e *fakeEnv) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {

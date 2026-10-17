@@ -1,9 +1,11 @@
 package discord
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -204,23 +206,19 @@ func (b *Bridge) commandStatus(ctx context.Context) string {
 	return sb.String()
 }
 
-// commandModels lists catalog models, optionally filtered by query.
+// commandModels lists configured models, optionally filtered by query.
 func (b *Bridge) commandModels(query string) string {
 	cfg := b.env.Config()
 	if cfg == nil {
 		return iconError + " No configuration loaded."
 	}
-	providers := b.catalogProviders(cfg)
 	q := strings.ToLower(strings.TrimSpace(query))
 
 	var lines []string
 	seen := 0
-	for _, p := range providers {
-		if !b.providerConfigured(cfg, string(p.ID)) {
-			continue
-		}
+	for _, p := range configuredProviders(cfg) {
 		for _, m := range p.Models {
-			if q != "" && !strings.Contains(strings.ToLower(m.ID), q) && !strings.Contains(strings.ToLower(m.Name), q) {
+			if q != "" && !modelMatchesQuery(p, m, q) {
 				continue
 			}
 			lines = append(lines, fmt.Sprintf("`%s/%s` — %s", p.ID, m.ID, m.Name))
@@ -246,9 +244,7 @@ func (b *Bridge) commandModel(ctx context.Context, query string) string {
 	if cfg == nil {
 		return iconError + " No configuration loaded."
 	}
-	sel, candidates, err := resolveModelQuery(b.catalogProviders(cfg), query, func(id string) bool {
-		return b.providerConfigured(cfg, id)
-	})
+	sel, candidates, err := resolveModelQuery(configuredProviders(cfg), query)
 	if err != nil {
 		return iconError + " " + err.Error()
 	}
@@ -625,33 +621,55 @@ func customCommandHasArg(cmd commands.CustomCommand, name string) bool {
 	return false
 }
 
-// providerConfigured reports whether a provider has credentials in the
-// config, so /model and /models only offer usable models.
-func (b *Bridge) providerConfigured(cfg *config.Config, providerID string) bool {
-	_, ok := cfg.Providers.Get(providerID)
-	return ok
-}
-
-// catalogProviders returns the model catalog used by /model and
-// /models, from the injectable catalog seam.
-func (b *Bridge) catalogProviders(cfg *config.Config) []catwalk.Provider {
-	providers, _ := b.catalog(cfg)
+// configuredProviders returns the providers declared in the config,
+// sorted by id, with the model lists merged at load time: the models
+// the user declared plus the catalog's, including providers the
+// catalog does not know. Providers that were disabled, or that failed
+// to configure, are absent, so only usable models are offered.
+func configuredProviders(cfg *config.Config) []catwalk.Provider {
+	var providers []catwalk.Provider
+	for id, pc := range cfg.Providers.Seq2() {
+		if pc.Disable {
+			continue
+		}
+		p := pc.ToProvider()
+		if p.ID == "" {
+			p.ID = catwalk.InferenceProvider(id)
+		}
+		if p.Name == "" {
+			p.Name = id
+		}
+		providers = append(providers, p)
+	}
+	slices.SortFunc(providers, func(a, b catwalk.Provider) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	return providers
 }
 
-// resolveModelQuery fuzzy-matches a query against the model catalog of
-// configured providers. Exact "provider/model" and exact model ids win;
+// modelMatchesQuery reports whether the query matches the provider or
+// model, by id or display name, so `/models neural` lists every model
+// of the Neuralwatt provider even when a model's own name lacks the
+// term.
+func modelMatchesQuery(p catwalk.Provider, m catwalk.Model, q string) bool {
+	for _, s := range []string{string(p.ID), p.Name, m.ID, m.Name} {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveModelQuery fuzzy-matches a query against the models of the
+// given providers. Exact "provider/model" and exact model ids win;
 // otherwise case-insensitive substrings are collected, and multiple
 // matches are returned as candidates for the caller to disambiguate.
-func resolveModelQuery(providers []catwalk.Provider, query string, configured func(string) bool) (config.SelectedModel, []string, error) {
+func resolveModelQuery(providers []catwalk.Provider, query string) (config.SelectedModel, []string, error) {
 	q := strings.ToLower(strings.TrimSpace(query))
 
 	var candidates []string
 	for _, p := range providers {
 		providerID := string(p.ID)
-		if !configured(providerID) {
-			continue
-		}
 		for _, m := range p.Models {
 			full := providerID + "/" + m.ID
 			switch {
