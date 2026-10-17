@@ -39,6 +39,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
@@ -313,6 +314,10 @@ type sessionAgent struct {
 	// across the agent. Cancel uses its current value as the per-session
 	// high-water mark.
 	acceptSeqGen uint64
+
+	// now supplies the timestamp for the per-session environment snapshot.
+	// Injectable so VCR recordings stay reproducible.
+	now func() time.Time
 }
 
 type SessionAgentOptions struct {
@@ -329,12 +334,16 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// Now is the clock used for per-session data (the environment
+	// snapshot). Tests pin it so recorded requests stay reproducible;
+	// production leaves it nil for time.Now.
+	Now func() time.Time
 }
 
 func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
-	return &sessionAgent{
+	a := &sessionAgent{
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
@@ -356,7 +365,12 @@ func NewSessionAgent(
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:         csync.NewMap[string, int](),
 		cancelMark:           csync.NewMap[string, uint64](),
+		now:                  opts.Now,
 	}
+	if a.now == nil {
+		a.now = time.Now
+	}
+	return a
 }
 
 // AcceptedRun owns exactly one accept reservation taken by
@@ -800,6 +814,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if !hasUserTextMessage(msgs) {
 		titleCtx := context.WithoutCancel(ctx)
 		go a.GenerateTitle(titleCtx, call.SessionID, call.Prompt)
+		if a.shouldCreateEnvSnapshot(msgs) {
+			snapshotMsg, err := a.createEnvSnapshotMessage(ctx, call.SessionID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to persist environment snapshot: %w", err)
+			}
+			// Splice the snapshot into this turn's history at its replayed
+			// position (first). Leaving it to the next turn's replay would
+			// insert a message before the first user message and force a
+			// one-time re-read of the whole opening turn.
+			msgs = append([]message.Message{snapshotMsg}, msgs...)
+		}
 	}
 
 	// Add the user message to the session.
@@ -2174,6 +2199,38 @@ func sessionHeaders(sessionID string) map[string]string {
 		"x-session-id":       hash,
 		"x-session-affinity": hash,
 	}
+}
+
+// shouldCreateEnvSnapshot reports whether the session still needs its one-time
+// environment snapshot message (see prompt.SessionEnvSnapshot). Sub-agents
+// and agents without a config store (tests, the fetch agent) never get one.
+// The hasEnvSnapshot check keeps creation idempotent when a first run is
+// retried after persisting the snapshot but failing before the user message.
+func (a *sessionAgent) shouldCreateEnvSnapshot(msgs []message.Message) bool {
+	return !a.isSubAgent && a.cfg != nil &&
+		!hasUserTextMessage(msgs) && !hasEnvSnapshot(msgs)
+}
+
+// hasEnvSnapshot reports whether msgs already contains the environment
+// snapshot message.
+func hasEnvSnapshot(msgs []message.Message) bool {
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Content().Text, prompt.EnvSnapshotPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// createEnvSnapshotMessage persists the environment snapshot as a hidden
+// first user message. Hidden keeps it out of the transcript while ToAIMessage
+// keeps replaying it to the model verbatim.
+func (a *sessionAgent) createEnvSnapshotMessage(ctx context.Context, sessionID string) (message.Message, error) {
+	snapshot := prompt.SessionEnvSnapshot(ctx, a.cfg.WorkingDir(), a.now())
+	return a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: snapshot, Hidden: true}},
+	})
 }
 
 func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentCall) (message.Message, error) {
