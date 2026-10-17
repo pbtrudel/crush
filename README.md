@@ -55,6 +55,8 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 - **Better token estimates:** image tokens are estimated from pixel dimensions (with base64 tool-result media decoded first) instead of relying on metadata.
 - **Startup diagnostics:** early log lines are kept instead of being discarded before logging starts.
 - **Working gopls diagnostics:** generic methods were removed from the app package so gopls reports diagnostics again.
+- **Secret masking in prompts:** credentials pasted into a message (API keys, tokens, JWTs, private-key blocks) render masked in the transcript, with a "Reveal Secrets" / "Hide Secrets" command to toggle full display; stored messages and provider payloads keep the original text.
+- **Skills reload without restart:** a "Reload Skills" command re-discovers skill files and config on demand and refreshes the sidebar, the command palette, and skill-dependent agent tools in place, both locally and over the server API.
 
 The fork also ships Linux builds to npm as [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush) with `v<upstream>-fork.N` versioning (see [Installation](#installation)), runs ubuntu-only CI with a coverage ratchet, and drops upstream's CLA machinery and paid pipelines.
 

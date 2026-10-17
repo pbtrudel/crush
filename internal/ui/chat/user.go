@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/secretmask"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
@@ -28,9 +29,10 @@ type UserMessageItem struct {
 	*cachedMessageItem
 	*focusableMessageItem
 
-	attachments *attachments.Renderer
-	message     *message.Message
-	sty         *styles.Styles
+	attachments   *attachments.Renderer
+	message       *message.Message
+	sty           *styles.Styles
+	revealSecrets bool
 }
 
 // NewUserMessageItem creates a new UserMessageItem.
@@ -53,6 +55,24 @@ func (m *UserMessageItem) Finished() bool {
 	return true
 }
 
+// SecretRevealable is implemented by items whose rendered text may
+// contain credentials that are masked by default.
+type SecretRevealable interface {
+	SetRevealSecrets(bool)
+}
+
+// SetRevealSecrets controls whether detected secrets in the message are
+// shown in full (true) or masked (false). It implements
+// [SecretRevealable].
+func (m *UserMessageItem) SetRevealSecrets(reveal bool) {
+	if m.revealSecrets == reveal {
+		return
+	}
+	m.revealSecrets = reveal
+	m.clearCache()
+	m.Bump()
+}
+
 // RawRender implements [MessageItem].
 func (m *UserMessageItem) RawRender(width int) string {
 	cappedWidth := cappedMessageWidth(width)
@@ -71,6 +91,14 @@ func (m *UserMessageItem) RawRender(width int) string {
 		height = lipgloss.Height(content)
 		m.setCachedRender(content, cappedWidth, height)
 		return m.renderHighlighted(content, cappedWidth, height)
+	}
+
+	// Credentials pasted into a message are masked in the transcript
+	// unless the user explicitly reveals them. The stored message and
+	// the payload sent to the provider keep the original text; masking
+	// is display-only.
+	if !m.revealSecrets {
+		msgContent = secretmask.Mask(msgContent)
 	}
 
 	renderer := common.UserMarkdownRenderer(m.sty, cappedWidth)

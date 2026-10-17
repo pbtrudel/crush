@@ -158,6 +158,10 @@ type (
 	userCommandsLoadedMsg struct {
 		Commands []commands.CustomCommand
 	}
+	// skillsReloadedMsg is sent when a skills reload attempt completes.
+	skillsReloadedMsg struct {
+		err error
+	}
 	// mcpPromptsLoadedMsg is sent when mcp prompts are loaded.
 	mcpPromptsLoadedMsg struct {
 		Prompts []commands.MCPPrompt
@@ -1224,6 +1228,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pubsub.Event[skills.Event]:
 		m.skillStates = msg.Payload.States
 		m.skillsVer++
+		// The skills event can come from a reload, so the command palette
+		// must be rebuilt to pick up added or removed skill commands.
+		cmds = append(cmds, m.loadCustomCommands())
 	case pubsub.Event[mcp.Event]:
 		switch msg.Payload.Type {
 		case mcp.EventStateChanged:
@@ -2343,6 +2350,28 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionToggleCompactMode:
 		cmds = append(cmds, m.toggleCompactMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionToggleSecretReveal:
+		m.chat.SetRevealSecrets(!m.chat.RevealSecrets())
+		if m.chat.RevealSecrets() {
+			cmds = append(cmds, util.ReportInfo("Secrets revealed"))
+		} else {
+			cmds = append(cmds, util.ReportInfo("Secrets masked"))
+		}
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionReloadSkills:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			return skillsReloadedMsg{err: m.com.Workspace.ReloadSkills(ctx)}
+		})
+	case skillsReloadedMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+		} else {
+			cmds = append(cmds, util.ReportInfo("Skills reloaded"))
+		}
+		cmds = append(cmds, m.loadCustomCommands())
 	case dialog.ActionTogglePills:
 		if cmd := m.togglePillsExpanded(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -5783,7 +5812,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts)
+	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.chat.RevealSecrets(), m.customCommands, m.mcpPrompts)
 	if err != nil {
 		return util.ReportError(err)
 	}

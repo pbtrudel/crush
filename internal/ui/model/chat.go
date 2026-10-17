@@ -91,6 +91,10 @@ type Chat struct {
 	list     *list.List
 	idInxMap map[string]int // Map of message IDs to their indices in the list
 
+	// revealSecrets mirrors the user's reveal toggle and is applied to
+	// user message items as they load or append.
+	revealSecrets bool
+
 	// animRunning is true while the shared animation clock has a tick
 	// outstanding. The clock stops itself when no visible item is spinning
 	// and is re-armed by EnsureAnimating once one is. animGen identifies
@@ -192,6 +196,26 @@ func NewChat(com *common.Common, scrollbarMode string) *Chat {
 	c.mouseDownItem = -1
 	c.mouseDragItem = -1
 	return c
+}
+
+// SetRevealSecrets controls whether credentials in user messages are
+// rendered masked (the default) or in full. The state is applied to every
+// loaded item and to items loaded or appended later.
+func (m *Chat) SetRevealSecrets(reveal bool) {
+	if m.revealSecrets == reveal {
+		return
+	}
+	m.revealSecrets = reveal
+	for i := 0; i < m.list.Len(); i++ {
+		if item, ok := m.list.ItemAt(i).(chat.SecretRevealable); ok {
+			item.SetRevealSecrets(reveal)
+		}
+	}
+}
+
+// RevealSecrets reports whether secrets are currently shown in full.
+func (m *Chat) RevealSecrets() bool {
+	return m.revealSecrets
 }
 
 // Height returns the height of the chat view port.
@@ -442,6 +466,9 @@ func (m *Chat) SetMessages(msgs ...chat.MessageItem) tea.Cmd {
 				m.idInxMap[nested.ID()] = i
 			}
 		}
+		if sr, ok := msg.(chat.SecretRevealable); ok {
+			sr.SetRevealSecrets(m.revealSecrets)
+		}
 		items[i] = msg
 	}
 	m.list.SetItems(items...)
@@ -460,6 +487,9 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 			for _, nested := range container.NestedTools() {
 				m.idInxMap[nested.ID()] = indexOffset + i
 			}
+		}
+		if sr, ok := msg.(chat.SecretRevealable); ok {
+			sr.SetRevealSecrets(m.revealSecrets)
 		}
 		items[i] = msg
 	}

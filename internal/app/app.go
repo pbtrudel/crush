@@ -489,6 +489,21 @@ func (app *App) UpdateAgentModel(ctx context.Context) error {
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
+// ReloadSkills re-discovers the workspace's skills from the current
+// configuration and refreshes agents and subscribers. It backs the
+// "Reload Skills" command; client palettes refresh from the published
+// skills event.
+func (app *App) ReloadSkills(ctx context.Context) error {
+	if app.Skills == nil {
+		return nil
+	}
+	skills.Reload(app.Skills, config.SkillsDiscoveryConfig(app.config))
+	if app.AgentCoordinator == nil {
+		return nil
+	}
+	return app.AgentCoordinator.RefreshSkills(ctx)
+}
+
 // restoreModelFromSession reads the last assistant message in the
 // session and, if it used a different provider/model than the current
 // config, overrides the preferred model in-memory (non-persistent)
