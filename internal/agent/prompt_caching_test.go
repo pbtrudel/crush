@@ -136,32 +136,37 @@ func TestApplyToolCacheBreakpoint(t *testing.T) {
 	require.NotEmpty(t, last.opts, "the last tool must carry the breakpoint")
 }
 
-// TestToolsForStep_AdoptsAdditionsAndIgnoresRemovals pins the mid-turn tool
-// list policy: tools registered after the turn started (a lazy MCP server the
-// model just activated) join the palette, while tools that vanish from the
-// registry do not, because a shrinking palette rewrites the tools block and
-// invalidates the prompt cache for no benefit.
-func TestToolsForStep_AdoptsAdditionsAndIgnoresRemovals(t *testing.T) {
+// TestToolsForStep_AppendsAdditionsAndIgnoresRemovals pins the mid-turn tool
+// list policy: tools registered after the turn started (a lazy MCP server
+// the model just activated) join the palette at the end of the list, while
+// tools that vanish from the registry do not. A shrinking palette rewrites
+// the tools block and invalidates the prompt cache for no benefit, and an
+// alphabetically re-sorted insertion would move every tool after the new
+// one's sorted position, rewriting the whole tools-block tail instead of
+// just the addition.
+func TestToolsForStep_AppendsAdditionsAndIgnoresRemovals(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 
+	// The registry holds a tool that sorts before the turn's palette, so
+	// any re-sorting would betray itself by moving it to the front.
 	agent.SetTools([]fantasy.AgentTool{
 		&recordingTool{name: "a"},
 		&recordingTool{name: "b"},
 		&recordingTool{name: "c"},
 	})
-	turnTools := []fantasy.AgentTool{&recordingTool{name: "a"}, &recordingTool{name: "b"}}
+	turnTools := []fantasy.AgentTool{&recordingTool{name: "b"}, &recordingTool{name: "c"}}
 
 	adopted, changed := agent.toolsForStep(t.Context(), "", turnTools)
 	require.True(t, changed)
-	require.Equal(t, []string{"a", "b", "c"}, toolNames(adopted),
-		"a tool registered after the turn began must be adopted in sorted order")
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(adopted),
+		"a tool registered after the turn began must be appended, not inserted at its sorted position")
 
-	// The registry loses "c": the turn's palette must keep it.
-	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "a"}})
+	// The registry loses "a": the turn's palette must keep it.
+	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "b"}})
 	kept, changed := agent.toolsForStep(t.Context(), "", adopted)
 	require.False(t, changed)
-	require.Equal(t, []string{"a", "b", "c"}, toolNames(kept),
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(kept),
 		"a tool that disappears from the registry must not be dropped mid-turn")
 }
 

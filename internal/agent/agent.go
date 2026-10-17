@@ -2096,12 +2096,15 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
 
 // toolsForStep returns the tool list for one step of a turn: the list the
 // turn started with, plus anything registered since (an MCP server the model
-// activated, a server that finished connecting). Additions are adopted —
-// costing one prompt-cache rewrite, which is the point of activating a server
-// — while removals are ignored, so a flaky server cannot shrink the palette
-// and invalidate the cache for no reason. The second return value reports
-// whether anything was adopted, so the caller knows the tool cache breakpoint
-// has to move.
+// activated, a server that finished connecting). Additions are adopted at
+// the end of the list — costing one prompt-cache rewrite of just the new
+// tools, which is the point of activating a server — while removals are
+// ignored, so a flaky server cannot shrink the palette and invalidate the
+// cache for no reason. Appending instead of re-sorting alphabetically keeps
+// the previously sent tools block an exact prefix of the next request:
+// inserting a new tool at its sorted position would re-serialize every
+// tool after it. The second return value reports whether anything was
+// adopted, so the caller knows the tool cache breakpoint has to move.
 func (a *sessionAgent) toolsForStep(ctx context.Context, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
 	known := make(map[string]struct{}, len(turnTools))
@@ -2118,9 +2121,6 @@ func (a *sessionAgent) toolsForStep(ctx context.Context, channel string, turnToo
 		return turnTools, false
 	}
 	merged := append(slices.Clone(turnTools), added...)
-	slices.SortFunc(merged, func(a, b fantasy.AgentTool) int {
-		return strings.Compare(a.Info().Name, b.Info().Name)
-	})
 	slog.Debug(
 		"Adopted newly registered tools mid-turn; the prompt cache will be rewritten once",
 		"channel", channel,
