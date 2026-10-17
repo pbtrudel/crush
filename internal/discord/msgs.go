@@ -37,6 +37,17 @@ type StatusNoteMsg struct {
 	IsErr bool
 }
 
+// SessionClearedMsg reports that remote control cleared the context by
+// starting a new session and moving the thread to it (same thread).
+// Published with app.SendEvent so the TUI follows when it is still
+// showing the cleared session. The bridge pointer identifies which
+// bridge cleared it when several were started over a session's lifetime.
+type SessionClearedMsg struct {
+	Bridge *Bridge
+	From   string
+	To     string
+}
+
 // StoppedMsg reports that a bridge shut itself down (for example via
 // "/rc off" in Discord). Published with app.SendEvent so the TUI clears
 // its reference; the bridge pointer identifies which bridge stopped when

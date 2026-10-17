@@ -68,6 +68,7 @@ Type these in the thread:
 | `/yolo [on\|off]` | Toggle permission prompts |
 | `/stop` | Cancel the running turn |
 | `/summarize` | Compact the session |
+| `/clear` (alias `/new`) | Start a fresh session with an empty context; the thread stays, the previous session stays on disk |
 | `/queue` | List queued prompts |
 | `/tokens`, `/title` | Usage and session title |
 | `/allow`, `/allow-session`, `/deny [tool]` | Resolve a pending permission |
@@ -78,10 +79,11 @@ Type these in the thread:
 If the bot's application has native slash commands registered (for
 example by the commandcode bridge), invoking one in the thread works
 too: it is acknowledged immediately and its output is posted in the
-thread. `/compact` is treated as `/summarize`; registered commands with
-no remote-control equivalent (such as `/clear` or `/effort`) reply with
-a hint pointing at `/help`. Native commands invoked outside the control
-thread are ignored.
+thread. `/compact` is treated as `/summarize`, and `/clear` (or `/new`)
+clears the context exactly like the typed command. Registered commands
+with no remote-control equivalent (such as `/effort`) reply with a hint
+pointing at `/help`. Native commands invoked outside the control thread
+are ignored.
 
 Anything else is sent to the agent as a prompt. A prompt that starts with
 a literal `/` can be escaped with a backslash: `\/hello`.

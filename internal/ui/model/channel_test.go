@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -27,6 +28,10 @@ type channelWorkspace struct {
 	createCalls  int
 	runCalls     []channelRun
 	runErr       error
+
+	// loadSession path recording.
+	loadedSessionID string
+	declaredCurrent string
 }
 
 type channelRun struct {
@@ -57,6 +62,30 @@ func (w *channelWorkspace) AgentRunChannel(_ context.Context, channel, sessionID
 }
 
 func (w *channelWorkspace) Config() *config.Config { return nil }
+
+// GetSession records the loaded session so tests can observe a session
+// switch driven by loadSession.
+func (w *channelWorkspace) GetSession(_ context.Context, sessionID string) (session.Session, error) {
+	w.loadedSessionID = sessionID
+	return session.Session{ID: sessionID}, nil
+}
+
+func (w *channelWorkspace) ListMessages(context.Context, string) ([]message.Message, error) {
+	return nil, nil
+}
+
+func (w *channelWorkspace) ListSessionHistory(context.Context, string) ([]history.File, error) {
+	return nil, nil
+}
+
+func (w *channelWorkspace) FileTrackerListReadFiles(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (w *channelWorkspace) SetCurrentSession(_ context.Context, sessionID string) error {
+	w.declaredCurrent = sessionID
+	return nil
+}
 
 // newChannelUI builds a UI initialized enough that ensureSession's setState /
 // layout path is safe to exercise.

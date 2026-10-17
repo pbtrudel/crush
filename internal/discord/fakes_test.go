@@ -283,6 +283,12 @@ type fakeEnv struct {
 
 	answers  []question.Answer
 	answerOK bool
+
+	// CreateSession scripting for /clear.
+	newSession   session.Session
+	createErr    error
+	createCalls  int
+	createTitles []string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -400,6 +406,17 @@ func (e *fakeEnv) GetSession(ctx context.Context, sessionID string) (session.Ses
 		return session.Session{}, e.sessionErr
 	}
 	return e.session, nil
+}
+
+func (e *fakeEnv) CreateSession(ctx context.Context, title string) (session.Session, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.createCalls++
+	e.createTitles = append(e.createTitles, title)
+	if e.createErr != nil {
+		return session.Session{}, e.createErr
+	}
+	return e.newSession, nil
 }
 
 func (e *fakeEnv) PermissionGrant(perm permission.PermissionRequest) bool {

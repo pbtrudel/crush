@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/discord"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/util"
@@ -61,6 +62,47 @@ func TestRemoteControlSecondToggleWhileStartingIsIgnored(t *testing.T) {
 	}
 	require.Len(t, texts, 1, "the second toggle must only report that a start is in flight")
 	require.Contains(t, texts[0], "already starting")
+}
+
+// TestRemoteControlClearFollowsNewSession pins that a /clear from Discord
+// moves the TUI to the freshly created session while remote control keeps
+// the same thread, so the terminal and the thread stay on one session.
+func TestRemoteControlClearFollowsNewSession(t *testing.T) {
+	t.Parallel()
+	ws := &channelWorkspace{ready: true}
+	m := newChannelUI(ws)
+	bridge := &discord.Bridge{}
+	m.rc = bridge
+	m.session = &session.Session{ID: "sess-1"}
+
+	cmds := m.followRemoteClear(discord.SessionClearedMsg{Bridge: bridge, From: "sess-1", To: "sess-2"})
+	require.NotEmpty(t, cmds)
+	runCmds(m, tea.Batch(cmds...))
+
+	require.Equal(t, "sess-2", ws.loadedSessionID, "the new session must be loaded into the view")
+	require.Equal(t, "sess-2", ws.declaredCurrent, "the workspace must hear about the switch")
+}
+
+// TestRemoteControlClearIgnoredForOtherSessions pins that a /clear only
+// moves the view when the TUI is showing the cleared session for the
+// bridge it tracks.
+func TestRemoteControlClearIgnoredForOtherSessions(t *testing.T) {
+	t.Parallel()
+	ws := &channelWorkspace{ready: true}
+	m := newChannelUI(ws)
+	bridge := &discord.Bridge{}
+	m.rc = bridge
+	m.session = &session.Session{ID: "other"}
+
+	cmds := m.followRemoteClear(discord.SessionClearedMsg{Bridge: bridge, From: "sess-1", To: "sess-2"})
+	require.Empty(t, cmds, "a clear of another session must not switch the view")
+
+	// A bridge the TUI no longer tracks is ignored even when the IDs match.
+	m.session = &session.Session{ID: "sess-1"}
+	m.rc = nil
+	cmds = m.followRemoteClear(discord.SessionClearedMsg{Bridge: bridge, From: "sess-1", To: "sess-2"})
+	require.Empty(t, cmds, "an untracked bridge must not switch the view")
+	require.Empty(t, ws.loadedSessionID)
 }
 
 // TestRemoteControlStartedClearsStartingFlag pins that both outcomes of an

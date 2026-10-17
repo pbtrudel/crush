@@ -29,6 +29,7 @@ type commandEnv interface {
 	UpdateAgentModel(ctx context.Context) error
 	UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
+	CreateSession(ctx context.Context, title string) (session.Session, error)
 	PermissionGrant(perm permission.PermissionRequest) bool
 	PermissionGrantPersistent(perm permission.PermissionRequest) bool
 	PermissionDeny(perm permission.PermissionRequest) bool
@@ -57,6 +58,7 @@ var builtinCommands = []commandDoc{
 	{"yolo", "[on|off]", "toggle permission prompts"},
 	{"stop", "", "cancel the running turn"},
 	{"summarize", "", "compact the session"},
+	{"clear", "", "start a fresh session (alias: /new)"},
 	{"queue", "", "list queued prompts"},
 	{"tokens", "", "token usage for this session"},
 	{"title", "", "show the session title"},
@@ -106,17 +108,19 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 	case "yolo":
 		return b.commandYolo(args)
 	case "stop":
-		b.env.AgentCancel(b.sessionID)
+		b.env.AgentCancel(b.currentSessionID())
 		return iconCancelled + " Cancelling the running turn…"
 	case "summarize":
 		go func() {
 			// Background context: a bridge stop must not cancel the
 			// compaction the local session is still running.
-			if err := b.env.AgentSummarize(context.Background(), b.sessionID); err != nil && b.ctx.Err() == nil {
+			if err := b.env.AgentSummarize(context.Background(), b.currentSessionID()); err != nil && b.ctx.Err() == nil {
 				b.post(iconError + " Summarize failed: " + err.Error())
 			}
 		}()
 		return ""
+	case "clear", "new":
+		return b.commandClear(ctx)
 	case "queue":
 		return b.commandQueue()
 	case "tokens":
@@ -175,7 +179,7 @@ func (b *Bridge) commandStatus(ctx context.Context) string {
 	var sb strings.Builder
 
 	title := "(untitled)"
-	if sess, err := b.env.GetSession(ctx, b.sessionID); err == nil {
+	if sess, err := b.env.GetSession(ctx, b.currentSessionID()); err == nil {
 		if sess.Title != "" {
 			title = sess.Title
 		}
@@ -192,8 +196,8 @@ func (b *Bridge) commandStatus(ctx context.Context) string {
 	}
 	fmt.Fprintf(&sb, "-# model `%s` · mode `%s` · yolo `%s`\n", model, b.modeName(), onOff(b.env.PermissionSkipRequests()))
 	busy := "no"
-	if b.env.AgentIsSessionBusy(b.sessionID) {
-		busy = fmt.Sprintf("yes (queue %d)", b.env.AgentQueuedPrompts(b.sessionID))
+	if b.env.AgentIsSessionBusy(b.currentSessionID()) {
+		busy = fmt.Sprintf("yes (queue %d)", b.env.AgentQueuedPrompts(b.currentSessionID()))
 	}
 	fmt.Fprintf(&sb, "-# busy `%s` · dir `%s`", busy, truncateRunes(b.env.WorkingDir(), 80))
 	fmt.Fprintf(&sb, "\n-# %s", b.usageLine(ctx))
@@ -294,9 +298,24 @@ func (b *Bridge) commandYolo(args string) string {
 	return "🔒 YOLO mode disabled."
 }
 
+// commandClear starts a fresh session with an empty context and moves
+// the thread to it, keeping the same Discord thread. The previous
+// session stays on disk and remains resumable from the TUI.
+func (b *Bridge) commandClear(ctx context.Context) string {
+	if b.env.AgentIsSessionBusy(b.currentSessionID()) {
+		return "⚠️ The agent is busy — wait for the current turn to finish (or `/stop`), then try again."
+	}
+	sess, err := b.env.CreateSession(ctx, "")
+	if err != nil {
+		return iconError + " Failed to start a new session: " + err.Error()
+	}
+	b.rebindSession(ctx, sess)
+	return iconDone + " Context cleared — started a new session. The previous one stays on disk."
+}
+
 // commandQueue lists queued prompts.
 func (b *Bridge) commandQueue() string {
-	queue := b.env.AgentQueuedPromptsList(b.sessionID)
+	queue := b.env.AgentQueuedPromptsList(b.currentSessionID())
 	if len(queue) == 0 {
 		return "The queue is empty."
 	}
@@ -318,7 +337,7 @@ func (b *Bridge) commandTokens(ctx context.Context) string {
 
 // usageLine formats the session's accumulated usage.
 func (b *Bridge) usageLine(ctx context.Context) string {
-	sess, err := b.env.GetSession(ctx, b.sessionID)
+	sess, err := b.env.GetSession(ctx, b.currentSessionID())
 	if err != nil {
 		return "tokens: unavailable"
 	}
@@ -335,7 +354,7 @@ func (b *Bridge) usageLine(ctx context.Context) string {
 
 // commandTitle shows the session title.
 func (b *Bridge) commandTitle(ctx context.Context) string {
-	sess, err := b.env.GetSession(ctx, b.sessionID)
+	sess, err := b.env.GetSession(ctx, b.currentSessionID())
 	if err != nil {
 		return iconError + " Failed to read the session: " + err.Error()
 	}
