@@ -650,6 +650,7 @@ func (b *Bridge) handleRunComplete(rc notify.RunComplete) {
 	f.mu.Lock()
 	if f.active {
 		f.state = state
+		f.finished = b.now()
 		f.errText = rc.Error
 		f.waiting = false
 		f.tail = ""
@@ -1376,8 +1377,12 @@ type footer struct {
 	stopped   bool
 
 	// Turn state.
-	active    bool
-	started   time.Time
+	active  bool
+	started time.Time
+	// finished records when the run reached a terminal state so the
+	// "Done in …" duration can freeze at completion; the idle ticker
+	// must not keep growing it.
+	finished  time.Time
 	state     turnState
 	toolName  string
 	toolParam string
@@ -1634,6 +1639,11 @@ func (b *Bridge) renderFooterHeaderLocked() string {
 		return iconBot + " **Ready** — watching the session"
 	}
 	elapsed := b.now().Sub(f.started)
+	if f.state.terminal() && !f.finished.IsZero() {
+		// The run is over: freeze the duration at completion instead of
+		// letting the idle ticker keep growing "Done in …".
+		elapsed = f.finished.Sub(f.started)
+	}
 	switch f.state {
 	case turnDone:
 		line := fmt.Sprintf("%s **Done in %s**", iconDone, humanDuration(elapsed))
@@ -1694,6 +1704,7 @@ func (b *Bridge) applyTurnLocked(msg message.Message, waiting bool) {
 	if !f.active {
 		f.active = true
 		f.started = b.now()
+		f.finished = time.Time{}
 		f.errText = ""
 		f.tail = ""
 		f.toolCounts = map[string]int{}
