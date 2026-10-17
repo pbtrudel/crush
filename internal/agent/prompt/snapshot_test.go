@@ -50,8 +50,10 @@ func TestSessionEnvSnapshotDeterministic(t *testing.T) {
 }
 
 // A .git directory that is not a real repository satisfies isGitRepo but
-// makes every git command fail. The snapshot must degrade to date-only
-// instead of failing the turn.
+// makes every git command fail. The snapshot must degrade instead of
+// failing the turn: the branch line is omitted and the status section is
+// best-effort (the status command pipes through head, so a failing git is
+// not reported as an error).
 func TestSessionEnvSnapshotBrokenGit(t *testing.T) {
 	t.Parallel()
 

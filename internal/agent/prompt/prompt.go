@@ -249,8 +249,7 @@ func getGitStatus(ctx context.Context, dir string) (string, error) {
 }
 
 // getGitBranch reads the checked-out branch straight from the repository.
-// This runs on every prompt build, so it stays off the shell: spawning git
-// each turn is wasted work, and a detail of prompt assembly has no business
+// It stays off the shell: a detail of prompt assembly has no business
 // passing through command blocking and permission policy.
 func getGitBranch(dir string) string {
 	branch := gitutil.CurrentBranch(dir)

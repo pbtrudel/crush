@@ -34,17 +34,29 @@ func (m *UI) loadPromptHistory() tea.Cmd {
 			return promptHistoryLoadedMsg{messages: nil}
 		}
 
-		texts := make([]string, 0, len(messages))
-		for _, msg := range messages {
-			if text := msg.Content().Text; text != "" {
-				texts = append(texts, text)
-			}
-			for _, sc := range msg.ShellCommands() {
-				texts = append(texts, "!"+sc.Command)
-			}
-		}
-		return promptHistoryLoadedMsg{messages: texts}
+		return promptHistoryLoadedMsg{messages: historyEntries(messages)}
 	}
+}
+
+// historyEntries extracts the recallable prompt history from user messages.
+// Hidden messages (the per-session environment snapshot, generated
+// continuations) are skipped: they exist for the model, not for the user,
+// and recalling one would paste a raw metadata blob into the composer.
+func historyEntries(messages []message.Message) []string {
+	entries := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		content := msg.Content()
+		if content.Hidden {
+			continue
+		}
+		if content.Text != "" {
+			entries = append(entries, content.Text)
+		}
+		for _, sc := range msg.ShellCommands() {
+			entries = append(entries, "!"+sc.Command)
+		}
+	}
+	return entries
 }
 
 // handleHistoryUp handles up arrow for history navigation.

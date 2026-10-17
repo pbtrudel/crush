@@ -157,17 +157,47 @@ func TestToolsForStep_AppendsAdditionsAndIgnoresRemovals(t *testing.T) {
 	})
 	turnTools := []fantasy.AgentTool{&recordingTool{name: "b"}, &recordingTool{name: "c"}}
 
-	adopted, changed := agent.toolsForStep(t.Context(), "", turnTools)
+	adopted, changed := agent.toolsForStep(t.Context(), "sess", "", turnTools)
 	require.True(t, changed)
 	require.Equal(t, []string{"b", "c", "a"}, toolNames(adopted),
 		"a tool registered after the turn began must be appended, not inserted at its sorted position")
 
 	// The registry loses "a": the turn's palette must keep it.
 	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "b"}})
-	kept, changed := agent.toolsForStep(t.Context(), "", adopted)
+	kept, changed := agent.toolsForStep(t.Context(), "sess", "", adopted)
 	require.False(t, changed)
 	require.Equal(t, []string{"b", "c", "a"}, toolNames(kept),
 		"a tool that disappears from the registry must not be dropped mid-turn")
+
+	// Next turn's assembly sees the full sorted registry again, but the
+	// session's adopted tool must stay at the end so the tools block
+	// remains the previous turn's exact prefix plus nothing moved.
+	nextTurn := stableToolOrder([]fantasy.AgentTool{
+		&recordingTool{name: "a"},
+		&recordingTool{name: "b"},
+		&recordingTool{name: "c"},
+	}, agent.adoptedToolOrder("sess"))
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(nextTurn),
+		"an adopted tool must keep its adopted position on later turns, not snap back to its sorted slot")
+}
+
+// TestStableToolOrder pins the session-scoped reordering that keeps an
+// adopted tool at the end of the tools block across turns.
+func TestStableToolOrder(t *testing.T) {
+	tools := []fantasy.AgentTool{
+		&recordingTool{name: "a"},
+		&recordingTool{name: "b"},
+		&recordingTool{name: "c"},
+	}
+
+	require.Equal(t, []string{"a", "b", "c"}, toolNames(stableToolOrder(tools, nil)),
+		"with no adoptions the server order is kept")
+	require.Equal(t, []string{"b", "c", "a"}, toolNames(stableToolOrder(tools, []string{"a"})),
+		"an adopted tool moves to the end")
+	require.Equal(t, []string{"a", "c", "b"}, toolNames(stableToolOrder(tools, []string{"b"})),
+		"the base tools keep their relative order")
+	require.Equal(t, []string{"a", "b"}, toolNames(stableToolOrder(tools[:2], []string{"c"})),
+		"an adopted name missing from the list (filtered out by connection state) is dropped")
 }
 
 // TestNormalizePromptMessages checks that in-flight messages are rewritten
