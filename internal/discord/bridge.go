@@ -15,7 +15,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
@@ -94,7 +93,6 @@ type Bridge struct {
 	editRate time.Duration
 	tick     time.Duration
 	typing   time.Duration
-	catalog  func(cfg *config.Config) ([]catwalk.Provider, error)
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -156,7 +154,6 @@ type bridgeDeps struct {
 	tick         time.Duration
 	editThrottle time.Duration
 	http         *http.Client
-	catalog      func(cfg *config.Config) ([]catwalk.Provider, error)
 	typing       time.Duration
 }
 
@@ -215,7 +212,6 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 		tick:               deps.tick,
 		editRate:           deps.editThrottle,
 		typing:             deps.typing,
-		catalog:            deps.catalog,
 		mode:               mode,
 		permissions:        map[string]permission.PermissionRequest{},
 		permMessage:        map[string]string{},
@@ -234,11 +230,6 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 	}
 	if b.api == nil {
 		b.api = newRESTClient(cfg.Token)
-	}
-	if b.catalog == nil {
-		b.catalog = func(cfg *config.Config) ([]catwalk.Provider, error) {
-			return config.Providers(cfg)
-		}
 	}
 	if b.http == nil {
 		b.http = &http.Client{Timeout: 30 * time.Second}
@@ -1674,7 +1665,8 @@ func (b *Bridge) renderFooterHeaderLocked() string {
 }
 
 // modelContextWindow resolves the context window of the configured
-// large model from the catalog; 0 when it cannot be resolved.
+// large model from the configured providers; 0 when it cannot be
+// resolved.
 func (b *Bridge) modelContextWindow() int64 {
 	cfg := b.env.Config()
 	if cfg == nil {
@@ -1684,7 +1676,7 @@ func (b *Bridge) modelContextWindow() int64 {
 	if !ok {
 		return 0
 	}
-	for _, p := range b.catalogProviders(cfg) {
+	for _, p := range configuredProviders(cfg) {
 		if string(p.ID) != sel.Provider {
 			continue
 		}

@@ -29,7 +29,6 @@ func testBridge(t *testing.T, cfg Config) (*Bridge, *fakeEnv, *fakeAPI, chan pub
 	b := newBridge(env, nil, "sess-1", cfg, "code", bridgeDeps{
 		api:          api,
 		events:       events,
-		catalog:      env.catalogFn,
 		now:          time.Now,
 		tick:         10 * time.Millisecond,
 		editThrottle: time.Millisecond,
@@ -255,7 +254,6 @@ func TestFooterTerminalElapsedFreezesAtCompletion(t *testing.T) {
 			env.cfg.Options = &config.Options{DataDirectory: t.TempDir()}
 			b := newBridge(env, nil, "sess-1", testConfig(), "code", bridgeDeps{
 				api:          newFakeAPI(),
-				catalog:      env.catalogFn,
 				now:          clock.now,
 				tick:         time.Second,
 				editThrottle: time.Millisecond,

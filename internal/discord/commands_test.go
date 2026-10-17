@@ -26,7 +26,6 @@ func newCommandBridge(t *testing.T) (*Bridge, *fakeEnv, *fakeAPI) {
 	api := newFakeAPI()
 	b := newBridge(env, nil, "sess-1", Config{Token: "t", ChannelIDs: []string{"chan-1"}}, "code", bridgeDeps{
 		api:          api,
-		catalog:      env.catalogFn,
 		now:          time.Now,
 		tick:         10 * time.Millisecond,
 		editThrottle: time.Millisecond,
@@ -112,6 +111,12 @@ func TestCommandModelToggles(t *testing.T) {
 	// Unknown query.
 	reply = b.handleCommand(b.ctx, "model", "zzz")
 	require.Contains(t, reply, "no configured model matches")
+
+	// A model declared in the config resolves even though the catalog
+	// does not carry it.
+	reply = b.handleCommand(b.ctx, "model", "gpt-5-canary")
+	require.Contains(t, reply, "Model changed")
+	require.Equal(t, "gpt-5-canary", env.preferred[len(env.preferred)-1].Model)
 }
 
 func TestCommandModelsList(t *testing.T) {
@@ -120,11 +125,29 @@ func TestCommandModelsList(t *testing.T) {
 	reply := b.handleCommand(b.ctx, "models", "")
 	require.Contains(t, reply, "openai/gpt-4o")
 	require.Contains(t, reply, "GPT-5")
+	require.Contains(t, reply, "neuralwatt/nw-flash", "providers outside the catalog are listed")
+	require.Contains(t, reply, "acme/acme-1", "providers outside the catalog are listed")
 	require.NotContains(t, reply, "claude", "unconfigured providers are hidden")
 
 	reply = b.handleCommand(b.ctx, "models", "gpt-5")
 	require.Contains(t, reply, "openai/gpt-5")
 	require.NotContains(t, reply, "gpt-4o")
+
+	// A provider query lists every model of that provider, including the
+	// ones whose own name does not contain the query.
+	reply = b.handleCommand(b.ctx, "models", "neural")
+	require.Contains(t, reply, "neuralwatt/nw-flash")
+	require.Contains(t, reply, "neuralwatt/deepseek-v4.1-flash-canary")
+	require.NotContains(t, reply, "openai/")
+
+	// Models declared in the config but absent from the Catwalk catalog
+	// are listed.
+	reply = b.handleCommand(b.ctx, "models", "canary")
+	require.Contains(t, reply, "openai/gpt-5-canary")
+	require.Contains(t, reply, "neuralwatt/deepseek-v4.1-flash-canary")
+
+	reply = b.handleCommand(b.ctx, "models", "acme")
+	require.Contains(t, reply, "acme/acme-1")
 }
 
 func TestCommandModeSwitch(t *testing.T) {
@@ -344,27 +367,27 @@ func TestResolveModelQuery(t *testing.T) {
 			},
 		},
 	}
-	configured := func(id string) bool { return id == "openai" }
-
-	sel, candidates, err := resolveModelQuery(providers, "gpt-5", configured)
+	sel, candidates, err := resolveModelQuery(providers, "gpt-5")
 	require.NoError(t, err)
 	require.Empty(t, candidates)
 	require.Equal(t, config.SelectedModel{Provider: "openai", Model: "gpt-5"}, sel)
 
-	sel, _, err = resolveModelQuery(providers, "GPT-5", configured)
+	sel, _, err = resolveModelQuery(providers, "GPT-5")
 	require.NoError(t, err)
 	require.Equal(t, "gpt-5", sel.Model)
 
-	_, candidates, err = resolveModelQuery(providers, "gpt", configured)
+	_, candidates, err = resolveModelQuery(providers, "gpt")
 	require.NoError(t, err)
 	require.Len(t, candidates, 2)
 
-	_, _, err = resolveModelQuery(providers, "claude", configured)
-	require.Error(t, err)
+	// The caller passes configured providers only, so anything in the
+	// list resolves.
+	sel, _, err = resolveModelQuery(providers, "claude")
+	require.NoError(t, err)
+	require.Equal(t, config.SelectedModel{Provider: "anthropic", Model: "claude-4"}, sel)
 
-	sel, _, err = resolveModelQuery(providers, "anchor-name", func(string) bool { return true })
+	_, _, err = resolveModelQuery(providers, "anchor-name")
 	require.Error(t, err, "unknown substrings must not resolve")
-	require.Equal(t, config.SelectedModel{}, sel)
 }
 
 // TestCommandClearStartsFreshSession pins the /clear contract: a new
