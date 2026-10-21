@@ -154,3 +154,38 @@ func TestListMCPPromptsMalformedBody(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "failed to decode MCP prompts")
 }
+
+// TestReloadConfigPostsReload is the endpoint-shape regression test for the
+// "Reload Configuration" command: a POST to the workspace's config reload
+// route.
+func TestReloadConfigPostsReload(t *testing.T) {
+	t.Parallel()
+
+	var method, path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	require.NoError(t, c.ReloadConfig(context.Background(), "ws1"))
+
+	require.Equal(t, http.MethodPost, method)
+	require.Equal(t, "/v1/workspaces/ws1/config/reload", path)
+}
+
+// TestReloadConfigPropagatesErrorStatus verifies a failed reload (e.g. invalid
+// JSON in a freshly edited file) surfaces as an error instead of looking like
+// a successful reload.
+func TestReloadConfigPropagatesErrorStatus(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	require.Error(t, c.ReloadConfig(context.Background(), "ws1"))
+}

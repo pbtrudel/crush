@@ -2,10 +2,14 @@ package backend
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -204,4 +208,84 @@ func TestPublishConfigChanged_NilWorkspaceSafe(t *testing.T) {
 	t.Parallel()
 	require.NotPanics(t, func() { publishConfigChanged(nil) })
 	require.NotPanics(t, func() { publishConfigChanged(&Workspace{}) })
+}
+
+// writeReloadTestConfig writes a project-local crush.json declaring one
+// custom provider with a single model id, so a reload can be observed by the
+// model that ends up in the provider catalog.
+func writeReloadTestConfig(t *testing.T, path, modelID string) {
+	t.Helper()
+	content := fmt.Sprintf(`{
+  "$schema": "https://charm.land/crush.json",
+  "providers": {
+    "reloadtest": {
+      "type": "openai-compat",
+      "base_url": "https://reload.invalid/v1",
+      "api_key": "test-key",
+      "discover_models": false,
+      "models": [{"id": %q, "name": "Reload Test"}]
+    }
+  }
+}`, modelID)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+// TestReloadConfigAppliesEdits proves the point of the reload command: a
+// config edit made after startup is applied to the running workspace, and
+// subscribers are told to re-fetch their snapshot.
+func TestReloadConfigAppliesEdits(t *testing.T) {
+	b, ws, evc := newPublishingWorkspace(t)
+
+	configPath := filepath.Join(ws.Path, "crush.json")
+	writeReloadTestConfig(t, configPath, "before-model")
+
+	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	awaitConfigChanged(t, evc, ws.ID)
+
+	provider, ok := ws.Cfg.Config().Providers.Get("reloadtest")
+	require.True(t, ok, "provider from the first edit must be loaded")
+	require.Len(t, provider.Models, 1)
+	require.Equal(t, "before-model", provider.Models[0].ID)
+
+	// Edit the file again: the old model must be gone after the next reload,
+	// not merged in.
+	writeReloadTestConfig(t, configPath, "after-model")
+	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	awaitConfigChanged(t, evc, ws.ID)
+
+	provider, ok = ws.Cfg.Config().Providers.Get("reloadtest")
+	require.True(t, ok)
+	require.Len(t, provider.Models, 1)
+	require.Equal(t, "after-model", provider.Models[0].ID)
+}
+
+// TestReloadConfigRejectsInvalidEdit verifies a broken edit fails loudly and
+// leaves the running config untouched, instead of half-applying.
+func TestReloadConfigRejectsInvalidEdit(t *testing.T) {
+	b, ws, _ := newPublishingWorkspace(t)
+
+	configPath := filepath.Join(ws.Path, "crush.json")
+	writeReloadTestConfig(t, configPath, "before-model")
+	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+
+	require.NoError(t, os.WriteFile(configPath, []byte("{not json"), 0o600))
+	require.Error(t, b.ReloadConfig(t.Context(), ws.ID))
+
+	provider, ok := ws.Cfg.Config().Providers.Get("reloadtest")
+	require.True(t, ok, "the previously loaded config must survive a bad edit")
+	require.Equal(t, "before-model", provider.Models[0].ID)
+}
+
+// TestReloadConfigRefusesWhileBusy verifies the reload is gated while a turn
+// is streaming: swapping models and tools under a live request is worse than
+// asking the user to retry.
+func TestReloadConfigRefusesWhileBusy(t *testing.T) {
+	b, ws, _ := newPublishingWorkspace(t)
+
+	coord := newBlockingCoordinator()
+	coord.busy = true
+	ws.AgentCoordinator = coord
+
+	err := b.ReloadConfig(t.Context(), ws.ID)
+	require.ErrorIs(t, err, app.ErrConfigReloadBusy)
 }

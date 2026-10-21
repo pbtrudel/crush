@@ -657,6 +657,10 @@ func (w *ClientWorkspace) ReloadSkills(ctx context.Context) error {
 	return w.client.ReloadSkills(ctx, w.workspaceID())
 }
 
+func (w *ClientWorkspace) ReloadConfig(ctx context.Context) error {
+	return w.client.ReloadConfig(ctx, w.workspaceID())
+}
+
 func (w *ClientWorkspace) ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
 	resp, err := w.client.ReadSkill(ctx, w.workspaceID(), skillID)
 	if err != nil {
@@ -1265,6 +1269,11 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 		return pubsub.Event[skills.Event]{
 			Type:    e.Type,
 			Payload: skills.Event{States: states},
+		}
+	case pubsub.Event[proto.ConfigStale]:
+		return app.ConfigStaleMsg{
+			Changed: e.Payload.Changed,
+			Missing: e.Payload.Missing,
 		}
 	case pubsub.Event[proto.UpdateAvailable]:
 		return app.UpdateAvailableMsg{

@@ -28,6 +28,7 @@ const (
 	PayloadTypeSkillsEvent            PayloadType = "skills_event"
 	PayloadTypeRunComplete            PayloadType = "run_complete"
 	PayloadTypeUpdateAvailable        PayloadType = "update_available"
+	PayloadTypeConfigStale            PayloadType = "config_stale"
 	PayloadTypeQuestionRequest        PayloadType = "question_batch_request"
 	PayloadTypeQuestionNotification   PayloadType = "question_batch_notification"
 )

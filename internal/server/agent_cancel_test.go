@@ -85,6 +85,7 @@ func (s *runCoordinator) Summarize(context.Context, string) error {
 }
 func (s *runCoordinator) Model() agent.Model                            { return agent.Model{} }
 func (s *runCoordinator) UpdateModels(context.Context) error            { return nil }
+func (s *runCoordinator) RefreshModels(context.Context) error           { return nil }
 func (s *runCoordinator) GenerateTitle(context.Context, string, string) {}
 func (s *runCoordinator) RefreshSkills(context.Context) error           { return nil }
 func (s *runCoordinator) SetMainAgent(agentName string) error {

@@ -313,3 +313,25 @@ func TestMessageToProtoPrismModel(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+// TestConfigStaleMsgToProto_RoundTrip verifies that an app.ConfigStaleMsg —
+// published directly by the config watcher — survives the SSE envelope, so
+// client/server mode shows the same "run /reload" prompt as local mode.
+func TestConfigStaleMsgToProto_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := app.ConfigStaleMsg{
+		Changed: []string{"/home/u/.config/crush/crushrc"},
+		Missing: []string{"/home/u/.config/crush/crush.json"},
+	}
+
+	env := wrapEvent(src)
+	require.NotNil(t, env)
+	require.Equal(t, pubsub.PayloadTypeConfigStale, env.Type)
+
+	var decoded pubsub.Event[proto.ConfigStale]
+	require.NoError(t, json.Unmarshal(env.Payload, &decoded))
+	require.Equal(t, pubsub.UpdatedEvent, decoded.Type)
+	require.Equal(t, src.Changed, decoded.Payload.Changed)
+	require.Equal(t, src.Missing, decoded.Payload.Missing)
+}

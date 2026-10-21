@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
@@ -182,4 +183,86 @@ func testNConsumers(t *testing.T, n int) {
 		})
 	}
 	wg.Wait()
+}
+
+func staleSnapshot(changed ...string) config.StalenessResult {
+	return config.StalenessResult{Dirty: len(changed) > 0, Changed: changed}
+}
+
+// TestStaleWatcherRequiresTwoPolls guards the debounce: a config write Crush
+// is performing itself shows up dirty for one poll at most, and must not
+// produce a reload prompt.
+func TestStaleWatcherRequiresTwoPolls(t *testing.T) {
+	t.Parallel()
+
+	var w staleWatcher
+	_, ok := w.observe(staleSnapshot("/home/u/.config/crush/crush.json"))
+	require.False(t, ok, "first dirty poll must only arm the watcher")
+
+	_, ok = w.observe(staleSnapshot())
+	require.False(t, ok, "a clean poll must disarm the watcher")
+
+	_, ok = w.observe(staleSnapshot("/home/u/.config/crush/crush.json"))
+	require.False(t, ok, "the change has to be seen twice in a row")
+}
+
+// TestStaleWatcherAnnouncesOnce verifies a persistent change is announced
+// exactly once, and that a different change set is announced again.
+func TestStaleWatcherAnnouncesOnce(t *testing.T) {
+	t.Parallel()
+
+	var w staleWatcher
+	changed := staleSnapshot("/home/u/.config/crush/crushrc", "/home/u/.config/crush/crush.json")
+
+	_, ok := w.observe(changed)
+	require.False(t, ok)
+	notice, ok := w.observe(changed)
+	require.True(t, ok)
+	require.Equal(t, changed.Changed, notice.Changed)
+
+	_, ok = w.observe(changed)
+	require.False(t, ok, "an unchanged change set must not be announced twice")
+
+	// A different change set is a new notice, but it still has to be seen
+	// twice (the debounce is about the change, not just its first sighting).
+	other := staleSnapshot("/home/u/.config/crush/crushrc")
+	_, ok = w.observe(other)
+	require.False(t, ok)
+	notice, ok = w.observe(other)
+	require.True(t, ok, "a different change set is a new notice")
+	require.Equal(t, other.Changed, notice.Changed)
+}
+
+// TestStaleWatcherRearmsAfterCleanPoll verifies a reload (clean files) lets
+// the same edit be noticed again, e.g. when a user reverts and re-applies it.
+func TestStaleWatcherRearmsAfterCleanPoll(t *testing.T) {
+	t.Parallel()
+
+	var w staleWatcher
+	changed := staleSnapshot("/home/u/.config/crush/crush.json")
+
+	_, _ = w.observe(changed)
+	_, ok := w.observe(changed)
+	require.True(t, ok)
+
+	_, ok = w.observe(staleSnapshot())
+	require.False(t, ok)
+
+	_, _ = w.observe(changed)
+	_, ok = w.observe(changed)
+	require.True(t, ok, "the same path must be announced again after a clean poll")
+}
+
+// TestStaleWatcherReportsMissingFiles verifies deletions are reported, since a
+// removed config file also needs a reload to take effect.
+func TestStaleWatcherReportsMissingFiles(t *testing.T) {
+	t.Parallel()
+
+	var w staleWatcher
+	missing := config.StalenessResult{Dirty: true, Missing: []string{"/home/u/.config/crush/crush.json"}}
+
+	_, _ = w.observe(missing)
+	notice, ok := w.observe(missing)
+	require.True(t, ok)
+	require.Equal(t, missing.Missing, notice.Missing)
 }

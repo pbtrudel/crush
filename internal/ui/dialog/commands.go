@@ -461,7 +461,10 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize"))
 	}
 
-	commands = append(commands, NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills"))
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "reload_config", "Reload Configuration", "", ActionReloadConfig{}).WithAliases("reload", "reload-config"),
+		NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills"),
+	)
 
 	// Add reasoning toggle for models that support it
 	cfg := c.com.Config()

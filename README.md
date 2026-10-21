@@ -29,7 +29,7 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 
 - **Copilot Responses-API routing:** Copilot models that only accept the `/responses` endpoint can be added through a `copilot-responses-models` file in the config directory, without rebuilding Crush.
 - **Mistral streaming and Vibe signing:** Mistral's content-block SSE streams are rewritten into reasoning and text (so thinking renders instead of raw JSON), reasoning history replays as Mistral thinking blocks instead of failing with 422, and requests to `api.mistral.ai` are signed like the Mistral Vibe CLI so subscription keys draw on the Vibe allowance.
-- **Discord remote control (`/rc`):** a session can be mirrored into a Discord thread and driven from Discord: `/model`, `/plan`, `/yolo`, `/stop`, permission decisions via reactions, and custom commands all work remotely (see [docs/discord-remote-control.md](docs/discord-remote-control.md)).
+- **Discord remote control (`/rc`):** a session can be mirrored into a Discord thread and driven from Discord: `/model`, `/plan`, `/yolo`, `/stop`, permission decisions via reactions, `/compact`, and custom commands all work remotely (see [docs/discord-remote-control.md](docs/discord-remote-control.md)).
 - **Fork-aware update check:** the `-fork.N` release suffix is ignored, so fork builds are not prompted to "update" to upstream releases.
 - **Sidebar cache hit percentage:** the sidebar shows the session-wide share of prompt tokens served from the provider's prompt cache.
 - **Better tool prompt-cache reuse:** tool prompts reuse the provider cache more reliably and tool descriptions are shorter, so prompts stay cheaper.
@@ -57,6 +57,7 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 - **Working gopls diagnostics:** generic methods were removed from the app package so gopls reports diagnostics again.
 - **Secret masking in prompts:** credentials pasted into a message (API keys, tokens, JWTs, private-key blocks) render masked in the transcript, with a "Reveal Secrets" / "Hide Secrets" command to toggle full display; stored messages and provider payloads keep the original text.
 - **Skills reload without restart:** a "Reload Skills" command re-discovers skill files and config on demand and refreshes the sidebar, the command palette, and skill-dependent agent tools in place, both locally and over the server API.
+- **Config reload without restart:** the config files are watched, and an edit made outside Crush (or a provider catalog refreshed in the background) raises a notice instead of silently leaving the session on the startup snapshot. The "Reload Configuration" command (`/reload`) re-reads every config file, rebuilds agent models and tools, re-discovers skills, starts newly added LSP servers, and refreshes subscribers, locally and over the server API; it refuses to run mid-turn.
 
 The fork also ships Linux builds to npm as [`@conanmontreal/crush`](https://www.npmjs.com/package/@conanmontreal/crush) with `v<upstream>-fork.N` versioning (see [Installation](#installation)), runs ubuntu-only CI with a coverage ratchet, and drops upstream's CLA machinery and paid pipelines.
 

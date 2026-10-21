@@ -162,6 +162,10 @@ type (
 	skillsReloadedMsg struct {
 		err error
 	}
+	// configReloadedMsg is sent when a config reload attempt completes.
+	configReloadedMsg struct {
+		err error
+	}
 	// mcpPromptsLoadedMsg is sent when mcp prompts are loaded.
 	mcpPromptsLoadedMsg struct {
 		Prompts []commands.MCPPrompt
@@ -832,6 +836,34 @@ func (m *UI) setState(state uiState, focus uiFocusState) {
 	m.focus = focus
 	// Changing the state may change layout, so update it.
 	m.updateLayoutAndSize()
+}
+
+// describeConfigChanges names the config files that changed on disk, for the
+// stale-config notice. Paths are reduced to their base names (crushrc,
+// crush.json, …) because the directories are long and rarely interesting.
+func describeConfigChanges(msg app.ConfigStaleMsg) string {
+	names := make([]string, 0, len(msg.Changed)+len(msg.Missing))
+	seen := make(map[string]bool, cap(names))
+	add := func(paths []string) {
+		for _, path := range paths {
+			base := filepath.Base(path)
+			if seen[base] {
+				continue
+			}
+			seen[base] = true
+			names = append(names, base)
+		}
+	}
+	add(msg.Changed)
+	add(msg.Missing)
+	switch len(names) {
+	case 0:
+		return "configuration files"
+	case 1, 2, 3:
+		return strings.Join(names, ", ")
+	default:
+		return fmt.Sprintf("%s and %d more", strings.Join(names[:3], ", "), len(names)-3)
+	}
 }
 
 // loadCustomCommands loads the custom commands asynchronously.
@@ -1651,6 +1683,18 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ttl = DefaultStatusTTL
 		}
 		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
+	case app.ConfigStaleMsg:
+		// The config files changed under us. Crush keeps the snapshot it
+		// loaded at startup, so point at the reload command instead of
+		// silently running stale settings.
+		text := fmt.Sprintf("Configuration changed (%s). Run /reload to apply.", describeConfigChanges(msg))
+		ttl := 20 * time.Second
+		gen := m.status.SetInfoMsg(util.InfoMsg{
+			Type: util.InfoTypeUpdate,
+			Msg:  text,
+			TTL:  ttl,
+		})
+		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
 	case app.UpdateAvailableMsg:
 		text := fmt.Sprintf("Crush update available: v%s → v%s.", msg.CurrentVersion, msg.LatestVersion)
 		if msg.IsDevelopment {
@@ -2365,6 +2409,21 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			defer cancel()
 			return skillsReloadedMsg{err: m.com.Workspace.ReloadSkills(ctx)}
 		})
+	case dialog.ActionReloadConfig:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := common.WorkspaceOpContext()
+			defer cancel()
+			return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+		})
+	case configReloadedMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+		} else {
+			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
+		}
+		// crushrc may have changed skill paths and custom commands.
+		cmds = append(cmds, m.loadCustomCommands())
 	case skillsReloadedMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))

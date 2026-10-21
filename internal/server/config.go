@@ -187,6 +187,18 @@ func (c *controllerV1) handlePostWorkspaceSkillsReload(w http.ResponseWriter, r 
 	w.WriteHeader(http.StatusOK)
 }
 
+// handlePostWorkspaceConfigReload re-reads the workspace's config files and
+// applies them to the live app (models, tools, skills). It backs the
+// "Reload Configuration" command.
+func (c *controllerV1) handlePostWorkspaceConfigReload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := c.backend.ReloadConfig(r.Context(), id); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceSkillRead reads a skill's content by ID.
 func (c *controllerV1) handlePostWorkspaceSkillRead(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

@@ -138,6 +138,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	// Check for updates in the background.
 	go app.checkForUpdates(ctx)
 
+	// Watch the config files for edits made outside Crush, so the user is
+	// told to reload instead of silently running a stale configuration.
+	go app.watchConfigChanges(ctx)
+
 	// Arm initialization synchronously before launching it so WaitForInit
 	// blocks for the in-flight init instead of racing the goroutine and
 	// returning before any MCP tools register.
@@ -502,6 +506,115 @@ func (app *App) ReloadSkills(ctx context.Context) error {
 		return nil
 	}
 	return app.AgentCoordinator.RefreshSkills(ctx)
+}
+
+// ErrConfigReloadBusy is returned when a reload is requested while an agent
+// is running. Models and tools are swapped per agent, so reloading mid-turn
+// would change them under the request that is already streaming.
+var ErrConfigReloadBusy = errors.New("cannot reload the configuration while an agent is running")
+
+// ReloadConfig re-reads every config file (crushrc included) and applies the
+// result to the live app: agent models, their tools, and skills. It backs the
+// "Reload Configuration" command.
+//
+// Without it, config edits only take effect on the next start: the store
+// keeps the snapshot it loaded at startup, and every per-turn refresh rebuilds
+// from that snapshot rather than from disk.
+func (app *App) ReloadConfig(ctx context.Context) error {
+	if app.config == nil {
+		return errors.New("configuration is not loaded")
+	}
+	if app.AgentCoordinator != nil && app.AgentCoordinator.IsBusy() {
+		return ErrConfigReloadBusy
+	}
+	if err := app.config.ReloadFromDisk(ctx); err != nil {
+		return err
+	}
+	// Skills first: the edit may have added skill paths, and the reloaded
+	// manager feeds the tool list the model refresh rebuilds below.
+	if err := app.ReloadSkills(ctx); err != nil {
+		return err
+	}
+	if app.AgentCoordinator != nil {
+		if err := app.AgentCoordinator.RefreshModels(ctx); err != nil {
+			return err
+		}
+	}
+	// LSP servers added by the edit start now. Already-running ones are left
+	// alone by TrackConfigured, and the app context outlives this call.
+	if app.LSPManager != nil {
+		lspCtx := app.globalCtx
+		if lspCtx == nil {
+			lspCtx = context.Background()
+		}
+		go app.LSPManager.TrackConfigured(lspCtx)
+	}
+	return nil
+}
+
+// configStalePollInterval is how often the app checks the tracked config
+// files for edits made outside Crush.
+const configStalePollInterval = 2 * time.Second
+
+// ConfigStaleMsg is sent when config files changed on disk since the last
+// load. Crush keeps the config it loaded at startup, so an external edit
+// (including a provider catalog refreshed in the background) needs an explicit
+// reload before it applies.
+type ConfigStaleMsg struct {
+	// Changed and Missing hold the paths that differ from the loaded state.
+	Changed []string
+	Missing []string
+}
+
+// staleWatcher turns successive staleness snapshots into at most one notice
+// per distinct change set. A change has to survive two consecutive polls so a
+// write Crush is performing itself (and its follow-up staleness snapshot)
+// never raises a false alarm, and a reload (which leaves the files clean)
+// re-arms the watcher.
+type staleWatcher struct {
+	announced string
+	pending   string
+}
+
+// observe records one poll and reports the notice to publish, if any.
+func (w *staleWatcher) observe(staleness config.StalenessResult) (ConfigStaleMsg, bool) {
+	if !staleness.Dirty {
+		w.announced, w.pending = "", ""
+		return ConfigStaleMsg{}, false
+	}
+	key := strings.Join(staleness.Changed, "\x00") + "\x01" + strings.Join(staleness.Missing, "\x00")
+	if key == w.announced {
+		return ConfigStaleMsg{}, false
+	}
+	if key != w.pending {
+		w.pending = key
+		return ConfigStaleMsg{}, false
+	}
+	w.announced = key
+	return ConfigStaleMsg{Changed: staleness.Changed, Missing: staleness.Missing}, true
+}
+
+// watchConfigChanges polls the tracked config files and announces edits made
+// outside Crush. It only notifies; applying them is the reload command's job.
+func (app *App) watchConfigChanges(ctx context.Context) {
+	if app.config == nil {
+		return
+	}
+	ticker := time.NewTicker(configStalePollInterval)
+	defer ticker.Stop()
+
+	var watcher staleWatcher
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if notice, ok := watcher.observe(app.config.ConfigStaleness()); ok {
+			app.events.Publish(pubsub.UpdatedEvent, notice)
+		}
+	}
 }
 
 // restoreModelFromSession reads the last assistant message in the

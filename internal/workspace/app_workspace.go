@@ -431,6 +431,10 @@ func (w *AppWorkspace) ReloadSkills(ctx context.Context) error {
 	return w.app.ReloadSkills(ctx)
 }
 
+func (w *AppWorkspace) ReloadConfig(ctx context.Context) error {
+	return w.app.ReloadConfig(ctx)
+}
+
 // -- MCP operations --
 
 func (w *AppWorkspace) MCPGetStates() map[string]mcptools.ClientInfo {
