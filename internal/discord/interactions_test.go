@@ -56,13 +56,15 @@ func TestBridgeInteractionOptionBecomesArgs(t *testing.T) {
 	require.Equal(t, "Running `/yolo on`", api.callbacksSnapshot()[0].content)
 }
 
-func TestBridgeInteractionCompactAliasesSummarize(t *testing.T) {
+func TestBridgeInteractionCompactRunsCompaction(t *testing.T) {
 	t.Parallel()
-	b, env, _, _ := testBridge(t, testConfig())
+	b, env, api, _ := testBridge(t, testConfig())
 
 	b.handleThreadInteraction(threadInteraction("compact"))
 
 	require.Eventually(t, func() bool { return env.summarizeCount() == 1 }, 2*time.Second, 10*time.Millisecond)
+	// The callback must echo the command the author ran.
+	require.Equal(t, "Running `/compact`", api.callbacksSnapshot()[0].content)
 }
 
 func TestBridgeInteractionUnknownCommandAnswered(t *testing.T) {
@@ -125,7 +127,9 @@ func TestInteractionCommandMapping(t *testing.T) {
 	require.Equal(t, "model", name)
 	require.Equal(t, "gpt-5 extra", args)
 
+	// /compact is its own command now: the callback must echo what the
+	// author ran instead of silently renaming it to /summarize.
 	name, args = interactionCommand(threadInteraction("compact"))
-	require.Equal(t, "summarize", name)
+	require.Equal(t, "compact", name)
 	require.Empty(t, args)
 }

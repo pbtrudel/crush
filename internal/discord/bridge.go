@@ -127,6 +127,11 @@ type Bridge struct {
 	completedMu sync.Mutex
 	completed   map[string]bool
 
+	// compacted tracks summary messages already announced in the thread so
+	// streaming updates cannot post the card twice.
+	compactedMu sync.Mutex
+	compacted   map[string]bool
+
 	renameMu  sync.Mutex
 	renamedTo string
 
@@ -530,7 +535,11 @@ func (b *Bridge) handleEvent(ev pubsub.Event[tea.Msg]) {
 
 func (b *Bridge) handleMessageEvent(ev pubsub.Event[message.Message]) {
 	msg := ev.Payload
-	if msg.SessionID != b.currentSessionID() || msg.IsSummaryMessage {
+	if msg.SessionID != b.currentSessionID() {
+		return
+	}
+	if msg.IsSummaryMessage {
+		b.handleCompactionMessage(msg)
 		return
 	}
 	switch msg.Role {
@@ -547,6 +556,43 @@ func (b *Bridge) handleMessageEvent(ev pubsub.Event[message.Message]) {
 			b.handleToolResult(msg)
 		}
 	}
+}
+
+// handleCompactionMessage announces a session compaction in the thread.
+// The summary text is model working state, not conversation, so only the
+// measured outcome is posted, once per compaction: the summary message
+// streams through several updates before its stats are attached. Without
+// this the thread stayed silent while the context was rewritten, which read
+// as "it only summarized".
+func (b *Bridge) handleCompactionMessage(msg message.Message) {
+	if !msg.IsFinished() {
+		return
+	}
+	stats, ok := msg.CompactionStatsPart()
+	if !ok {
+		return
+	}
+
+	b.compactedMu.Lock()
+	if b.compacted == nil {
+		b.compacted = map[string]bool{}
+	}
+	announced := b.compacted[msg.ID]
+	b.compacted[msg.ID] = true
+	b.compactedMu.Unlock()
+	if announced {
+		return
+	}
+
+	after := stats.SummaryTokens + stats.TailTokens
+	b.post(fmt.Sprintf(
+		"%s **Context compacted**: %s → %s tokens · %s saved · %d messages kept",
+		iconBrain,
+		formatTokens(stats.TokensBefore),
+		formatTokens(after),
+		formatTokens(stats.SavedTokens),
+		stats.KeptMessages,
+	))
 }
 
 // handleUserMessage echoes prompts typed in the terminal so remote
@@ -1145,13 +1191,11 @@ func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Reque
 }
 
 // interactionCommand maps an application command onto the bridge's
-// command name and argument text. The picker's compact command is the
-// commandcode bridge's name for compaction.
+// command name and argument text. /compact and /summarize are the same
+// command; the name is kept as Discord sent it so the interaction
+// callback echoes what the author actually ran.
 func interactionCommand(in gatewayInteraction) (name, args string) {
 	name = strings.ToLower(strings.TrimSpace(in.Data.Name))
-	if name == "compact" {
-		name = "summarize"
-	}
 	var values []string
 	for _, opt := range in.Data.Options {
 		if v := strings.TrimSpace(opt.Value); v != "" {

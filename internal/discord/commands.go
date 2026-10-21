@@ -59,7 +59,7 @@ var builtinCommands = []commandDoc{
 	{"code", "", "code mode"},
 	{"yolo", "[on|off]", "toggle permission prompts"},
 	{"stop", "", "cancel the running turn"},
-	{"summarize", "", "compact the session"},
+	{"compact", "", "compact the session (alias: /summarize)"},
 	{"clear", "", "start a fresh session (alias: /new)"},
 	{"queue", "", "list queued prompts"},
 	{"tokens", "", "token usage for this session"},
@@ -112,12 +112,12 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 	case "stop":
 		b.env.AgentCancel(b.currentSessionID())
 		return iconCancelled + " Cancelling the running turn…"
-	case "summarize":
+	case "compact", "summarize":
 		go func() {
 			// Background context: a bridge stop must not cancel the
 			// compaction the local session is still running.
 			if err := b.env.AgentSummarize(context.Background(), b.currentSessionID()); err != nil && b.ctx.Err() == nil {
-				b.post(iconError + " Summarize failed: " + err.Error())
+				b.post(iconError + " Compaction failed: " + err.Error())
 			}
 		}()
 		return ""
