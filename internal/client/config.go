@@ -246,6 +246,20 @@ func (c *Client) ReloadSkills(ctx context.Context, id string) error {
 	return nil
 }
 
+// ReloadConfig asks the server to re-read its config files and apply them to
+// the running workspace.
+func (c *Client) ReloadConfig(ctx context.Context, id string) error {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/reload", id), nil, nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to reload config: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to reload config: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
 // ReadSkill reads a skill's content by ID from the server.
 func (c *Client) ReadSkill(ctx context.Context, id, skillID string) (*proto.ReadSkillResponse, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/skills/read", id), nil, jsonBody(proto.ReadSkillRequest{

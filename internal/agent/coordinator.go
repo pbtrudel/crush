@@ -162,6 +162,7 @@ type Coordinator interface {
 	Summarize(context.Context, string) error
 	Model() Model
 	UpdateModels(ctx context.Context) error
+	RefreshModels(ctx context.Context) error
 	RefreshSkills(ctx context.Context) error
 	GenerateTitle(ctx context.Context, sessionID, prompt string)
 }
@@ -1624,6 +1625,23 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 			return fmt.Errorf("rebuild tools for agent %s: %w", name, err)
 		}
 		agent.SetTools(agentTools)
+	}
+	return nil
+}
+
+// RefreshModels rebuilds every live agent's model and tool configuration from
+// the current config. It backs the mid-session config reload: the store has
+// already re-read the files, but the agents still hold the models and tools
+// they were built with. Agents the new config no longer defines are skipped
+// rather than failed.
+func (c *coordinator) RefreshModels(ctx context.Context) error {
+	for name, agent := range c.agents {
+		if _, ok := c.cfg.Config().Agents[name]; !ok {
+			continue
+		}
+		if err := c.updateAgentModels(ctx, agent, name); err != nil {
+			return fmt.Errorf("refresh models for agent %s: %w", name, err)
+		}
 	}
 	return nil
 }

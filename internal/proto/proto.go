@@ -43,6 +43,17 @@ type ConfigChanged struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
+// ConfigStale is published when the tracked config files changed on disk
+// since the workspace loaded them. Crush keeps the startup snapshot until it
+// is told to reload, so clients surface this as a prompt to run the reload
+// command.
+type ConfigStale struct {
+	// Changed holds config paths whose contents or metadata differ from the
+	// loaded state; Missing holds paths that disappeared.
+	Changed []string `json:"changed,omitempty"`
+	Missing []string `json:"missing,omitempty"`
+}
+
 // UpdateAvailable is published when a newer Crush release is detected
 // on the server side. It mirrors app.UpdateAvailableMsg across the SSE
 // boundary so client/server mode TUI clients see the same notification

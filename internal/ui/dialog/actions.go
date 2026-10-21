@@ -54,6 +54,7 @@ type (
 	ActionTogglePills             struct{}
 	ActionToggleSecretReveal      struct{}
 	ActionReloadSkills            struct{}
+	ActionReloadConfig            struct{}
 	ActionExternalEditor          struct{}
 	ActionToggleYoloMode          struct{}
 	ActionToggleNotifications     struct{}

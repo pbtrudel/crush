@@ -1080,3 +1080,24 @@ func TestClientWorkspace_GitBranchServerError(t *testing.T) {
 	_, err = ws.GitBranch(t.Context())
 	require.Error(t, err)
 }
+
+// TestTranslateEvent_ConfigStale verifies that a config-changed-on-disk event
+// reaches the TUI as app.ConfigStaleMsg in client/server mode too.
+func TestTranslateEvent_ConfigStale(t *testing.T) {
+	t.Parallel()
+
+	w := NewClientWorkspace(nil, proto.Workspace{})
+	ev := pubsub.Event[proto.ConfigStale]{
+		Type: pubsub.UpdatedEvent,
+		Payload: proto.ConfigStale{
+			Changed: []string{"/home/u/.config/crush/crushrc"},
+			Missing: []string{"/home/u/.config/crush/crush.json"},
+		},
+	}
+
+	out := w.translateEvent(ev)
+	got, ok := out.(app.ConfigStaleMsg)
+	require.True(t, ok, "expected app.ConfigStaleMsg, got %T", out)
+	require.Equal(t, ev.Payload.Changed, got.Changed)
+	require.Equal(t, ev.Payload.Missing, got.Missing)
+}

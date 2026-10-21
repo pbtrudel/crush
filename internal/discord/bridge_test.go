@@ -576,3 +576,85 @@ func TestBridgeHandleEventViaChannel(t *testing.T) {
 	require.Eventually(t, func() bool { return api.hasContentContaining("over the wire") }, 2*time.Second, 10*time.Millisecond)
 	_ = b
 }
+
+// TestBridgeCompactionAnnouncesStats verifies that a finished compaction posts
+// its measured outcome in the thread: the summary text itself stays out of the
+// transcript, but the user gets the same signal the TUI shows.
+func TestBridgeCompactionAnnouncesStats(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	summary := message.Message{
+		ID:               "sum-1",
+		SessionID:        "sess-1",
+		Role:             message.Assistant,
+		IsSummaryMessage: true,
+		Parts: []message.ContentPart{
+			message.CompactionStats{
+				TokensBefore:  100_000,
+				SummaryTokens: 2_000,
+				TailTokens:    8_000,
+				SavedTokens:   90_000,
+				KeptMessages:  4,
+			},
+			message.Finish{Reason: message.FinishReasonEndTurn},
+		},
+	}
+
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, summary))
+
+	require.True(t, api.hasContentContaining("Context compacted"))
+	require.True(t, api.hasContentContaining("100.0k"), "tokens before must be reported")
+	require.True(t, api.hasContentContaining("10.0k"), "tokens after must be reported")
+	require.True(t, api.hasContentContaining("4 messages kept"))
+
+	// Streaming updates of the same message must not post the card twice.
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, summary))
+	posts := 0
+	for _, p := range api.postsSnapshot() {
+		if strings.Contains(p.content, "Context compacted") {
+			posts++
+		}
+	}
+	require.Equal(t, 1, posts)
+}
+
+// TestBridgeCompactionSkipsUnfinishedSummary verifies a summary still being
+// written (no stats, no finish part) posts nothing.
+func TestBridgeCompactionSkipsUnfinishedSummary(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	summary := message.Message{
+		ID:               "sum-2",
+		SessionID:        "sess-1",
+		Role:             message.Assistant,
+		IsSummaryMessage: true,
+	}
+
+	b.handleEvent(evMessage(pubsub.CreatedEvent, summary))
+
+	require.False(t, api.hasContentContaining("Context compacted"))
+}
+
+// TestBridgeCompactionIgnoresOtherSessions verifies another session's
+// compaction never shows up in this thread.
+func TestBridgeCompactionIgnoresOtherSessions(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	summary := message.Message{
+		ID:               "sum-3",
+		SessionID:        "other-session",
+		Role:             message.Assistant,
+		IsSummaryMessage: true,
+		Parts: []message.ContentPart{
+			message.CompactionStats{TokensBefore: 1000, KeptMessages: 1},
+			message.Finish{Reason: message.FinishReasonEndTurn},
+		},
+	}
+
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, summary))
+
+	require.False(t, api.hasContentContaining("Context compacted"))
+}

@@ -430,6 +430,13 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceConfigModel),
 
+		apigen.Post("/v1/workspaces/{id}/config/reload").
+			Summary("Reload configuration").
+			Tags("config").
+			PathParam("id", "Workspace ID").
+			Fails(409, 404, 500).
+			Handle(c.handlePostWorkspaceConfigReload),
+
 		apigen.Post("/v1/workspaces/{id}/config/compact").
 			Summary("Set compact mode").
 			Tags("config").

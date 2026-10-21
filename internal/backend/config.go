@@ -239,6 +239,20 @@ func (b *Backend) ReloadSkills(ctx context.Context, workspaceID string) error {
 	return ws.ReloadSkills(ctx)
 }
 
+// ReloadConfig re-reads a workspace's config files and applies them to the
+// running app, then tells subscribers to re-fetch the workspace snapshot.
+func (b *Backend) ReloadConfig(ctx context.Context, workspaceID string) error {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return err
+	}
+	if err := ws.ReloadConfig(ctx); err != nil {
+		return err
+	}
+	publishConfigChanged(ws)
+	return nil
+}
+
 // EnableDockerMCP validates Docker MCP availability, stages the
 // configuration, starts the MCP client, and persists the config.
 func (b *Backend) EnableDockerMCP(ctx context.Context, workspaceID string) error {
