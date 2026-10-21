@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/discord"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/stretchr/testify/require"
 )
@@ -127,4 +128,21 @@ func TestRemoteControlStartedClearsStartingFlag(t *testing.T) {
 	if m.rc == nil {
 		t.Fatal("a completed start must install the bridge")
 	}
+}
+
+// TestRemoteControlSurvivesConfigReload pins that /reload does not disturb an
+// active Discord bridge. The reload runs in place (config snapshot, agent
+// models, tools and skills), so long-lived subscribers such as the bridge must
+// keep their connection instead of being restarted with the workspace.
+func TestRemoteControlSurvivesConfigReload(t *testing.T) {
+	t.Parallel()
+	ws := &channelWorkspace{ready: true}
+	m := newChannelUI(ws)
+	m.dialog = dialog.NewOverlay()
+	bridge := &discord.Bridge{}
+	m.rc = bridge
+
+	_, _ = m.Update(configReloadedMsg{})
+
+	require.Same(t, bridge, m.rc, "a config reload must not drop remote control")
 }

@@ -289,3 +289,19 @@ func TestReloadConfigRefusesWhileBusy(t *testing.T) {
 	err := b.ReloadConfig(t.Context(), ws.ID)
 	require.ErrorIs(t, err, app.ErrConfigReloadBusy)
 }
+
+// TestReloadConfigKeepsEventSubscribers verifies the reload is in place: a
+// subscription taken before it keeps delivering events after it. Discord
+// remote control rides on this broker, so a reload that replaced the app (or
+// its broker) would silently drop the thread.
+func TestReloadConfigKeepsEventSubscribers(t *testing.T) {
+	b, ws, evc := newPublishingWorkspace(t)
+
+	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	// The reload publishes its own ConfigChanged; drain it, then prove the
+	// original subscription still delivers.
+	awaitConfigChanged(t, evc, ws.ID)
+
+	require.NoError(t, b.SetConfigField(ws.ID, config.ScopeGlobal, "options.debug", true))
+	awaitConfigChanged(t, evc, ws.ID)
+}

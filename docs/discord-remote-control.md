@@ -85,6 +85,10 @@ with no remote-control equivalent (such as `/effort`) reply with a hint
 pointing at `/help`. Native commands invoked outside the control thread
 are ignored.
 
+Reloading configuration in the terminal (`/reload`) applies the change in
+place: the control thread stays connected to the same session, and the next
+turn runs with the reloaded model and tools.
+
 Anything else is sent to the agent as a prompt. A prompt that starts with
 a literal `/` can be escaped with a backslash: `\/hello`.
 

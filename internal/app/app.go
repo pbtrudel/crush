@@ -520,6 +520,11 @@ var ErrConfigReloadBusy = errors.New("cannot reload the configuration while an a
 // Without it, config edits only take effect on the next start: the store
 // keeps the snapshot it loaded at startup, and every per-turn refresh rebuilds
 // from that snapshot rather than from disk.
+//
+// The reload is in place on purpose: it must not touch app-level services (the
+// event broker, MCP clients, the app context). Long-lived subscribers such as
+// the Discord remote-control bridge hold those, and a reload has to leave them
+// connected.
 func (app *App) ReloadConfig(ctx context.Context) error {
 	if app.config == nil {
 		return errors.New("configuration is not loaded")
