@@ -61,9 +61,11 @@ Type these in the thread:
 | Command | Action |
 | --- | --- |
 | `/help` | Command list, including custom commands |
-| `/status` | Session title, model, mode, YOLO, queue, tokens |
+| `/status` | Session title, model, effort, mode, YOLO, queue, tokens |
 | `/model <query>` | Switch the main model (fuzzy match, exact `provider/model` wins) |
 | `/models [query]` | List available models for configured providers |
+| `/effort [level\|auto]` | Show or set the reasoning effort for the current model; `auto` restores the model default |
+| `/btw <question>` | Ask a side question about the session without adding it to the conversation; bare `/btw` repeats the last answer |
 | `/plan`, `/code` | Switch input mode |
 | `/yolo [on\|off]` | Toggle permission prompts |
 | `/stop` | Cancel the running turn |
@@ -76,14 +78,15 @@ Type these in the thread:
 | `/rc off` | End remote control |
 | `/<custom-command> [args]` | Run a custom command from `~/.config/crush/commands` |
 
-If the bot's application has native slash commands registered (for
-example by the commandcode bridge), invoking one in the thread works
-too: it is acknowledged immediately and its output is posted in the
-thread. `/compact` and `/summarize` run the same compaction, and `/clear`
-(or `/new`) clears the context exactly like the typed command. Registered commands
-with no remote-control equivalent (such as `/effort`) reply with a hint
-pointing at `/help`. Native commands invoked outside the control thread
-are ignored.
+If the bot's application has native slash commands registered, invoking
+one in the thread works too: it is acknowledged immediately and its output
+is posted in the thread. Remote control registers the commands above
+(including custom commands) on the bot's application at startup, merging
+with anything already registered there, so typing `/` in Discord lists
+them. `/compact` and `/summarize` run the same compaction, and `/clear`
+(or `/new`) clears the context exactly like the typed command. Registered
+commands with no remote-control equivalent reply with a hint pointing at
+`/help`. Native commands invoked outside the control thread are ignored.
 
 Reloading configuration in the terminal (`/reload`) applies the change in
 place: the control thread stays connected to the same session, and the next

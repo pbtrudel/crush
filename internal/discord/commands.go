@@ -22,6 +22,7 @@ import (
 // workspace.Workspace satisfies it in production; tests provide a fake.
 type commandEnv interface {
 	AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error
+	AgentAsk(ctx context.Context, sessionID, question string) (string, error)
 	AgentCancel(sessionID string)
 	AgentIsSessionBusy(sessionID string) bool
 	AgentQueuedPrompts(sessionID string) int
@@ -52,9 +53,11 @@ type commandDoc struct {
 // builtinCommands is the /help surface, in display order.
 var builtinCommands = []commandDoc{
 	{"help", "", "show this list"},
-	{"status", "", "session, model, mode, queue, tokens"},
+	{"status", "", "session, model, effort, mode, queue, tokens"},
 	{"models", "[query]", "list available models"},
 	{"model", "<query>", "switch the main model (fuzzy match)"},
+	{"effort", "[level|auto]", "show or set reasoning effort"},
+	{"btw", "<question>", "ask a side question without adding it to the conversation"},
 	{"plan", "", "plan mode"},
 	{"code", "", "code mode"},
 	{"yolo", "[on|off]", "toggle permission prompts"},
@@ -103,6 +106,10 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 		return b.commandModels(args)
 	case "model":
 		return b.commandModel(ctx, args)
+	case "effort":
+		return b.commandEffort(ctx, args)
+	case "btw":
+		return b.commandBTW(ctx, args)
 	case "plan":
 		return b.commandMode(ctx, true)
 	case "code":
@@ -152,6 +159,105 @@ func (b *Bridge) handleCommand(ctx context.Context, name, args string) string {
 	return fmt.Sprintf("Unknown command `/%s` — try `/help`. To send a literal slash, escape it with `\\`.", name)
 }
 
+// applicationCommands builds the Discord application command definitions
+// from the same list that backs /help (built-ins, then custom commands
+// found in the config directories), so typing "/" in Discord lists every
+// command the bridge understands.
+func applicationCommands(cfg *config.Config) []applicationCommand {
+	cmds := make([]applicationCommand, 0, len(builtinCommands))
+	seen := make(map[string]bool, len(builtinCommands))
+	add := func(cmd applicationCommand) {
+		key := strings.ToLower(cmd.Name)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		cmds = append(cmds, cmd)
+	}
+
+	for _, doc := range builtinCommands {
+		cmd := applicationCommand{
+			Name:        doc.name,
+			Description: truncateRunes(doc.desc, 100),
+			Type:        1, // CHAT_INPUT.
+		}
+		if doc.args != "" {
+			cmd.Options = []applicationCommandOption{{
+				Name:        "args",
+				Description: truncateRunes("Arguments for /"+doc.name, 100),
+				Type:        3, // STRING.
+			}}
+		}
+		add(cmd)
+	}
+
+	if cfg == nil {
+		return cmds
+	}
+	custom, err := commands.LoadCustomCommands(cfg)
+	if err != nil {
+		return cmds
+	}
+	for _, cmd := range custom {
+		name, ok := discordCommandName(cmd.Name)
+		if !ok {
+			continue
+		}
+		description := "Custom command"
+		if cmd.Skill != nil && cmd.Skill.Description != "" {
+			description = cmd.Skill.Description
+		} else if line := firstMeaningfulLine(cmd.Content); line != "" {
+			description = line
+		}
+		add(applicationCommand{
+			Name:        name,
+			Description: truncateRunes(description, 100),
+			Type:        1, // CHAT_INPUT.
+			Options: []applicationCommandOption{{
+				Name:        "args",
+				Description: "Arguments for the command",
+				Type:        3, // STRING.
+			}},
+		})
+	}
+	return cmds
+}
+
+// discordCommandName reduces a typed command name ("user:deploy") to the
+// bare name Discord accepts ("deploy"). Names with nested segments or
+// characters Discord rejects are skipped rather than mangled, since the
+// typed form would no longer match.
+func discordCommandName(name string) (string, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if _, suffix, ok := strings.Cut(name, ":"); ok {
+		name = suffix
+	}
+	if name == "" || len([]rune(name)) > 32 {
+		return "", false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return "", false
+		}
+	}
+	return name, true
+}
+
+// firstMeaningfulLine returns the first non-empty content line, skipping
+// markdown frontmatter delimiters.
+func firstMeaningfulLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "---" {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
 // helpText builds the /help card, including custom commands.
 func (b *Bridge) helpText() string {
 	var sb strings.Builder
@@ -191,12 +297,18 @@ func (b *Bridge) commandStatus(ctx context.Context) string {
 
 	sb.WriteString(iconBot + " **" + title + "**\n")
 	model := "unknown"
+	var selected config.SelectedModel
 	if cfg := b.env.Config(); cfg != nil {
 		if sel, ok := cfg.Models[config.SelectedModelTypeLarge]; ok {
+			selected = sel
 			model = sel.Provider + "/" + sel.Model
 		}
 	}
-	fmt.Fprintf(&sb, "-# model `%s` · mode `%s` · yolo `%s`\n", model, b.modeName(), onOff(b.env.PermissionSkipRequests()))
+	effort := currentEffort(b.env.Config(), selected)
+	if effort == "" {
+		effort = "none"
+	}
+	fmt.Fprintf(&sb, "-# model `%s` · effort `%s` · mode `%s` · yolo `%s`\n", model, effort, b.modeName(), onOff(b.env.PermissionSkipRequests()))
 	busy := "no"
 	if b.env.AgentIsSessionBusy(b.currentSessionID()) {
 		busy = fmt.Sprintf("yes (queue %d)", b.env.AgentQueuedPrompts(b.currentSessionID()))
@@ -261,6 +373,126 @@ func (b *Bridge) commandModel(ctx context.Context, query string) string {
 		return iconError + " Model switch failed: " + err.Error()
 	}
 	return fmt.Sprintf("%s Model changed to `%s/%s`.", iconDone, sel.Provider, sel.Model)
+}
+
+// currentModelType returns the model slot the coder agent uses.
+func currentModelType(cfg *config.Config) config.SelectedModelType {
+	if cfg != nil {
+		if agentCfg, ok := cfg.Agents[config.AgentCoder]; ok && agentCfg.Model != "" {
+			return agentCfg.Model
+		}
+	}
+	return config.SelectedModelTypeLarge
+}
+
+// currentEffort returns the effort that applies to the selected model.
+func currentEffort(cfg *config.Config, sel config.SelectedModel) string {
+	if sel.ReasoningEffort != "" {
+		return sel.ReasoningEffort
+	}
+	if cfg == nil {
+		return ""
+	}
+	if model := cfg.GetModel(sel.Provider, sel.Model); model != nil {
+		return model.DefaultReasoningEffort
+	}
+	return ""
+}
+
+// commandEffort shows or sets the reasoning effort for the current model.
+func (b *Bridge) commandEffort(ctx context.Context, args string) string {
+	cfg := b.env.Config()
+	if cfg == nil {
+		return iconError + " No configuration loaded."
+	}
+	modelType := currentModelType(cfg)
+	sel, ok := cfg.Models[modelType]
+	if !ok {
+		return iconError + " No model is selected."
+	}
+	model := cfg.GetModel(sel.Provider, sel.Model)
+	if model == nil {
+		return iconError + " The selected model is not in the catalog."
+	}
+	if len(model.ReasoningLevels) == 0 {
+		return fmt.Sprintf("`%s/%s` does not support reasoning effort.", sel.Provider, sel.Model)
+	}
+
+	levels := strings.Join(model.ReasoningLevels, ", ")
+	arg := strings.ToLower(strings.TrimSpace(args))
+	switch arg {
+	case "", "status":
+		current := currentEffort(cfg, sel)
+		if current == "" {
+			current = "(none)"
+		}
+		return fmt.Sprintf(
+			"Effort for `%s/%s`: `%s`\nLevels: %s\nUse `/effort <level>` to change it, or `/effort auto` for the model default.",
+			sel.Provider, sel.Model, current, levels,
+		)
+	case "auto", "default":
+		sel.ReasoningEffort = ""
+		if err := b.env.UpdatePreferredModel(config.ScopeGlobal, modelType, sel); err != nil {
+			return iconError + " Effort update failed: " + err.Error()
+		}
+		if err := b.env.UpdateAgentModel(ctx); err != nil {
+			return iconError + " Effort update failed: " + err.Error()
+		}
+		def := model.DefaultReasoningEffort
+		if def == "" {
+			def = "(none)"
+		}
+		return fmt.Sprintf("%s Effort reset to the model default: `%s`.", iconDone, def)
+	}
+
+	if err := cfg.ValidateReasoningEffort(sel.Provider, sel.Model, arg); err != nil {
+		return iconError + " " + err.Error()
+	}
+	sel.ReasoningEffort = arg
+	if err := b.env.UpdatePreferredModel(config.ScopeGlobal, modelType, sel); err != nil {
+		return iconError + " Effort update failed: " + err.Error()
+	}
+	if err := b.env.UpdateAgentModel(ctx); err != nil {
+		return iconError + " Effort update failed: " + err.Error()
+	}
+	return fmt.Sprintf("%s Effort set to `%s` for `%s/%s`.", iconDone, arg, sel.Provider, sel.Model)
+}
+
+// commandBTW answers a side question about the session without adding it
+// to the conversation. The answer runs in the background so the thread
+// stays responsive, and bare /btw repeats the last answer.
+func (b *Bridge) commandBTW(ctx context.Context, question string) string {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		b.btwMu.Lock()
+		last := b.lastBTW
+		b.btwMu.Unlock()
+		if last == "" {
+			return "Usage: `/btw <question>` asks a side question without adding it to the conversation."
+		}
+		return last
+	}
+
+	go func() {
+		answer, err := b.env.AgentAsk(ctx, b.currentSessionID(), question)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			b.post(iconError + " Side question failed: " + err.Error())
+			return
+		}
+		if strings.TrimSpace(answer) == "" {
+			answer = "(the model returned no answer)"
+		}
+		card := "💬 **Side question**\n> " + question + "\n\n" + answer +
+			"\n\n-# Not added to the conversation."
+		b.btwMu.Lock()
+		b.lastBTW = card
+		b.btwMu.Unlock()
+		b.post(card)
+	}()
+	return ""
 }
 
 // commandMode switches between plan and code mode.

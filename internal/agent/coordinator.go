@@ -319,6 +319,54 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	return c.run(ctx, nil, sessionID, prompt, attachments...)
 }
 
+// SideQuestioner answers a question about the current session without
+// adding either the question or the answer to the conversation.
+type SideQuestioner interface {
+	Ask(ctx context.Context, sessionID, question string) (string, error)
+}
+
+// Ask implements SideQuestioner.
+func (c *coordinator) Ask(ctx context.Context, sessionID, question string) (string, error) {
+	if err := c.readyWg.Wait(); err != nil {
+		return "", err
+	}
+
+	agent, agentName := c.activeAgent()
+	if err := c.updateAgentModels(ctx, agent, agentName); err != nil {
+		return "", fmt.Errorf("failed to update models: %w", err)
+	}
+
+	model := agent.Model()
+	maxTokens := model.CatwalkCfg.DefaultMaxTokens
+	if model.ModelCfg.MaxTokens != 0 {
+		maxTokens = model.ModelCfg.MaxTokens
+	}
+
+	providerCfg, ok := c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
+	if !ok {
+		return "", errModelProviderNotConfigured
+	}
+
+	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
+	result, err := agent.Run(ctx, SessionAgentCall{
+		SessionID:        sessionID,
+		Prompt:           question,
+		Ephemeral:        true,
+		MaxOutputTokens:  maxTokens,
+		ProviderOptions:  c.withPromptCacheKey(mergedOptions, providerCfg),
+		Temperature:      temp,
+		TopP:             topP,
+		TopK:             callTopK(providerCfg, topK),
+		FrequencyPenalty: freqPenalty,
+		PresencePenalty:  presPenalty,
+		OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+	})
+	if err != nil {
+		return "", err
+	}
+	return subAgentOutput(result), nil
+}
+
 // RunAccepted implements Coordinator.
 func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	return c.run(ctx, accept, sessionID, prompt, attachments...)

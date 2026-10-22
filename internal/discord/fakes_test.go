@@ -32,6 +32,8 @@ type fakeAPI struct {
 	renames     []string
 	callbacks   []fakeCallback
 	updates     []fakeUpdate
+	commands    []applicationCommand
+	commandsErr error
 	gwURL       string
 	gwErr       error
 	createErr   error
@@ -150,6 +152,13 @@ func (f *fakeAPI) updateInteraction(ctx context.Context, interactionID, token, c
 		components:    components,
 	})
 	return nil
+}
+
+func (f *fakeAPI) ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands = append([]applicationCommand(nil), cmds...)
+	return f.commandsErr
 }
 
 // callbacksSnapshot returns a copy of the recorded interaction callbacks.
@@ -271,6 +280,9 @@ type fakeEnv struct {
 
 	runs        []string
 	runAttached int
+	asks        []string
+	askAnswer   string
+	askErr      error
 	cancels     int
 	summarizes  int
 	modelUpdate int
@@ -346,6 +358,20 @@ func (e *fakeEnv) AgentRun(ctx context.Context, sessionID, prompt string, attach
 	return nil
 }
 
+func (e *fakeEnv) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.asks = append(e.asks, question)
+	return e.askAnswer, e.askErr
+}
+
+// asksSnapshot returns a copy of the recorded side questions.
+func (e *fakeEnv) asksSnapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.asks...)
+}
+
 func (e *fakeEnv) AgentCancel(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -395,6 +421,10 @@ func (e *fakeEnv) UpdatePreferredModel(scope config.Scope, modelType config.Sele
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.preferred = append(e.preferred, model)
+	if e.cfg.Models == nil {
+		e.cfg.Models = map[config.SelectedModelType]config.SelectedModel{}
+	}
+	e.cfg.Models[modelType] = model
 	return nil
 }
 

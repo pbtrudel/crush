@@ -59,6 +59,74 @@ type discordMessage struct {
 	ID string `json:"id"`
 }
 
+// applicationCommand is one CHAT_INPUT command definition registered on
+// the Discord application.
+type applicationCommand struct {
+	Name        string                     `json:"name"`
+	Description string                     `json:"description"`
+	Type        int                        `json:"type"`
+	Options     []applicationCommandOption `json:"options,omitempty"`
+}
+
+// applicationCommandOption describes one command argument. Type 3 is
+// STRING.
+type applicationCommandOption struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        int    `json:"type"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// ensureApplicationCommands reconciles the desired command definitions
+// with the ones already registered on the application. Existing commands
+// are edited in place and new ones are created, so commands registered by
+// another integration are never deleted.
+func (c *restClient) ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error {
+	data, err := c.do(ctx, http.MethodGet, "/applications/@me", nil)
+	if err != nil {
+		return err
+	}
+	var app struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &app); err != nil {
+		return fmt.Errorf("decode application response: %w", err)
+	}
+	if app.ID == "" {
+		return errors.New("application response contained no id")
+	}
+
+	data, err = c.do(ctx, http.MethodGet, "/applications/"+app.ID+"/commands", nil)
+	if err != nil {
+		return err
+	}
+	var existing []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return fmt.Errorf("decode command list: %w", err)
+	}
+	byName := make(map[string]string, len(existing))
+	for _, cmd := range existing {
+		byName[strings.ToLower(cmd.Name)] = cmd.ID
+	}
+
+	base := "/applications/" + app.ID + "/commands"
+	for _, cmd := range cmds {
+		if id, ok := byName[strings.ToLower(cmd.Name)]; ok {
+			if _, err := c.do(ctx, http.MethodPatch, base+"/"+id, cmd); err != nil {
+				return fmt.Errorf("update command %q: %w", cmd.Name, err)
+			}
+			continue
+		}
+		if _, err := c.do(ctx, http.MethodPost, base, cmd); err != nil {
+			return fmt.Errorf("create command %q: %w", cmd.Name, err)
+		}
+	}
+	return nil
+}
+
 // createThread starts a public thread in a channel.
 func (c *restClient) createThread(ctx context.Context, channelID, name string) (createdThread, error) {
 	body := map[string]any{

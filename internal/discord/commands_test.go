@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +118,120 @@ func TestCommandModelToggles(t *testing.T) {
 	reply = b.handleCommand(b.ctx, "model", "gpt-5-canary")
 	require.Contains(t, reply, "Model changed")
 	require.Equal(t, "gpt-5-canary", env.preferred[len(env.preferred)-1].Model)
+}
+
+func TestCommandEffort(t *testing.T) {
+	t.Parallel()
+	b, env, _ := newCommandBridge(t)
+
+	provider, ok := env.cfg.Providers.Get("openai")
+	require.True(t, ok)
+	for i := range provider.Models {
+		if provider.Models[i].ID == "gpt-5" {
+			provider.Models[i].ReasoningLevels = []string{"low", "medium", "high"}
+			provider.Models[i].DefaultReasoningEffort = "medium"
+		}
+	}
+	env.cfg.Providers.Set("openai", provider)
+
+	// gpt-4o carries no reasoning levels.
+	require.Contains(t, b.handleCommand(b.ctx, "effort", ""), "does not support reasoning effort")
+
+	require.Contains(t, b.handleCommand(b.ctx, "model", "gpt-5"), "Model changed")
+
+	// Bare /effort reports the current level and the accepted values.
+	reply := b.handleCommand(b.ctx, "effort", "")
+	require.Contains(t, reply, "medium")
+	require.Contains(t, reply, "low, medium, high")
+
+	reply = b.handleCommand(b.ctx, "effort", "high")
+	require.Contains(t, reply, "Effort set to `high`")
+	require.Equal(t, "high", env.preferred[len(env.preferred)-1].ReasoningEffort)
+	require.Equal(t, 2, env.modelUpdate)
+
+	reply = b.handleCommand(b.ctx, "effort", "ultra")
+	require.Contains(t, reply, "accepted values: low, medium, high")
+
+	reply = b.handleCommand(b.ctx, "effort", "auto")
+	require.Contains(t, reply, "model default")
+	require.Empty(t, env.preferred[len(env.preferred)-1].ReasoningEffort)
+}
+
+func TestCommandBTW(t *testing.T) {
+	t.Parallel()
+	b, env, api := newCommandBridge(t)
+	env.askAnswer = "It is called `pool_size`."
+
+	require.Empty(t, b.handleCommand(b.ctx, "btw", "what was the pooling option?"))
+	require.Eventually(t, func() bool {
+		return api.hasContentContaining("Side question")
+	}, time.Second, 10*time.Millisecond)
+
+	var posted string
+	for _, p := range api.postsSnapshot() {
+		if strings.Contains(p.content, "Side question") {
+			posted = p.content
+		}
+	}
+	require.Contains(t, posted, "what was the pooling option?")
+	require.Contains(t, posted, "It is called `pool_size`.")
+	require.Contains(t, posted, "Not added to the conversation")
+	require.Empty(t, env.runs, "a side question must not run as a normal prompt")
+	require.Equal(t, []string{"what was the pooling option?"}, env.asksSnapshot())
+
+	// Bare /btw repeats the last answer.
+	reply := b.handleCommand(b.ctx, "btw", "")
+	require.Contains(t, reply, "Side question")
+	require.Contains(t, reply, "pool_size")
+}
+
+func TestCommandBTWUsage(t *testing.T) {
+	t.Parallel()
+	b, _, _ := newCommandBridge(t)
+	require.Contains(t, b.handleCommand(b.ctx, "btw", ""), "Usage")
+}
+
+func TestApplicationCommandsMatchHelp(t *testing.T) {
+	t.Parallel()
+	_, env, _ := newCommandBridge(t)
+	cmds := applicationCommands(env.cfg)
+	require.GreaterOrEqual(t, len(cmds), len(builtinCommands))
+	for i, doc := range builtinCommands {
+		cmd := cmds[i]
+		require.Equal(t, doc.name, cmd.Name)
+		require.LessOrEqual(t, len([]rune(cmd.Description)), 100)
+		require.Equal(t, 1, cmd.Type)
+		if doc.args == "" {
+			require.Empty(t, cmd.Options)
+			continue
+		}
+		require.Len(t, cmd.Options, 1)
+		require.Equal(t, "args", cmd.Options[0].Name)
+		require.Equal(t, 3, cmd.Options[0].Type)
+	}
+}
+
+func TestDiscordCommandName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"user:deploy", "deploy", true},
+		{"project:fix-bug", "fix-bug", true},
+		{"deploy", "deploy", true},
+		{"user:sub:thing", "sub:thing", false},
+		{"user:has space", "has space", false},
+		{strings.Repeat("x", 33), strings.Repeat("x", 33), false},
+	}
+	for _, tt := range tests {
+		got, ok := discordCommandName(tt.in)
+		require.Equal(t, tt.ok, ok, "input %q", tt.in)
+		if tt.ok {
+			require.Equal(t, tt.want, got, "input %q", tt.in)
+		}
+	}
 }
 
 func TestCommandModelsList(t *testing.T) {

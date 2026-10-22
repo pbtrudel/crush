@@ -71,11 +71,11 @@ func TestBridgeInteractionUnknownCommandAnswered(t *testing.T) {
 	t.Parallel()
 	b, _, api, _ := testBridge(t, testConfig())
 
-	// /effort is registered on the bot but has no remote-control
+	// /theme is registered on the bot but has no remote-control
 	// equivalent; it must still get an answer instead of timing out.
-	b.handleThreadInteraction(threadInteraction("effort"))
+	b.handleThreadInteraction(threadInteraction("theme"))
 
-	require.Equal(t, "Running `/effort`", api.callbacksSnapshot()[0].content)
+	require.Equal(t, "Running `/theme`", api.callbacksSnapshot()[0].content)
 	require.True(t, api.hasContentContaining("Unknown command"))
 }
 
