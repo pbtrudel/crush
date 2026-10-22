@@ -124,6 +124,19 @@ func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, 
 	return err
 }
 
+// AgentAsk answers a side question about the session without persisting
+// the exchange or touching the workspace.
+func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
+	if w.app.AgentCoordinator == nil {
+		return "", errors.New("agent coordinator not initialized")
+	}
+	asker, ok := w.app.AgentCoordinator.(agent.SideQuestioner)
+	if !ok {
+		return "", errors.New("side questions are not supported by this coordinator")
+	}
+	return asker.Ask(ctx, sessionID, question)
+}
+
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
 	var persist shell.PersistFunc
 	if sessionID != "" {

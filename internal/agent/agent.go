@@ -126,15 +126,21 @@ type SessionAgentCall struct {
 	Channel           string
 	HiddenUserMessage bool
 	Prompt            string
-	ProviderOptions   fantasy.ProviderOptions
-	Attachments       []message.Attachment
-	MaxOutputTokens   int64
-	Temperature       *float64
-	TopP              *float64
-	TopK              *int64
-	FrequencyPenalty  *float64
-	PresencePenalty   *float64
-	NonInteractive    bool
+	// Ephemeral answers the prompt against the session's existing
+	// history as a one-off exchange: no user or assistant message is
+	// persisted and no tools are offered. It backs side questions such
+	// as /btw, whose answers must not enter the conversation or touch
+	// the workspace.
+	Ephemeral        bool
+	ProviderOptions  fantasy.ProviderOptions
+	Attachments      []message.Attachment
+	MaxOutputTokens  int64
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int64
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	NonInteractive   bool
 	// OnComplete, when non-nil, replaces the default RunComplete
 	// publish path: the inner Run hands the terminal payload to this
 	// callback instead of emitting it on the RunComplete broker. The
@@ -682,9 +688,71 @@ func ValidateCall(call SessionAgentCall) error {
 	return nil
 }
 
+// runEphemeral answers a side question against the session's existing
+// history without persisting anything or exposing tools to the model.
+func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	largeModel := a.largeModel.Get()
+	systemPrompt := a.systemPrompt.Get()
+	promptPrefix := a.systemPromptPrefix.Get()
+
+	currentSession, err := a.sessions.Get(ctx, call.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+	msgs, err := a.getSessionMessages(ctx, currentSession)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session messages: %w", err)
+	}
+
+	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages, call.Attachments...)
+
+	agent := fantasy.NewAgent(
+		largeModel.Model,
+		fantasy.WithSystemPrompt(systemPrompt),
+		fantasy.WithUserAgent(userAgent),
+	)
+
+	var maxOutputTokens *int64
+	if call.MaxOutputTokens > 0 {
+		maxOutputTokens = &call.MaxOutputTokens
+	}
+
+	return agent.Stream(ctx, fantasy.AgentStreamCall{
+		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
+		Files:            files,
+		Messages:         history,
+		Headers:          sessionHeaders(call.SessionID),
+		ProviderOptions:  call.ProviderOptions,
+		MaxOutputTokens:  maxOutputTokens,
+		TopP:             call.TopP,
+		Temperature:      call.Temperature,
+		PresencePenalty:  call.PresencePenalty,
+		TopK:             call.TopK,
+		FrequencyPenalty: call.FrequencyPenalty,
+		OnAuthRefresh:    call.OnAuthRefresh,
+		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+			prepared := fantasy.PrepareStepResult{Messages: options.Messages}
+			for i := range prepared.Messages {
+				prepared.Messages[i].ProviderOptions = nil
+			}
+			a.normalizePromptMessages(prepared.Messages)
+			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			a.applyCacheBreakpoints(prepared.Messages)
+			if promptPrefix != "" {
+				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
+			}
+			return callContext, prepared, nil
+		},
+	})
+}
+
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
 	if err := ValidateCall(call); err != nil {
 		return nil, err
+	}
+
+	if call.Ephemeral {
+		return a.runEphemeral(ctx, call)
 	}
 
 	if call.Channel != "" && call.channelMeta == nil {

@@ -68,6 +68,7 @@ type discordAPI interface {
 	gatewayURL(ctx context.Context) (string, error)
 	respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error
 	updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error
+	ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error
 }
 
 // Bridge mirrors a live Crush session into a Discord thread and injects
@@ -135,6 +136,10 @@ type Bridge struct {
 	renameMu  sync.Mutex
 	renamedTo string
 
+	// btwMu guards the last side-question card so bare /btw can repeat it.
+	btwMu   sync.Mutex
+	lastBTW string
+
 	lastMu        sync.Mutex
 	lastAssistant message.Message
 
@@ -174,7 +179,7 @@ func Start(ctx context.Context, ws workspace.Workspace, sessionID, mode string) 
 	if !ok {
 		return nil, errors.New("remote control requires local mode (unset CRUSH_CLIENT_SERVER)")
 	}
-	return start(ctx, ws, appWS.App(), sessionID, cfg, mode)
+	return start(ctx, appWS, appWS.App(), sessionID, cfg, mode)
 }
 
 // start wires and launches a bridge, creating its control thread.
@@ -199,6 +204,11 @@ func start(ctx context.Context, env commandEnv, application *app.App, sessionID 
 	}
 	b.post(b.bannerText(ctx))
 	b.flushFooter()
+	go func() {
+		if err := b.api.ensureApplicationCommands(context.Background(), applicationCommands(b.env.Config())); err != nil {
+			slog.Warn("Discord bridge: slash command registration failed", "error", err.Error())
+		}
+	}()
 	return b, nil
 }
 

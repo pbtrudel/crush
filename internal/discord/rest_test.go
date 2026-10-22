@@ -284,3 +284,37 @@ func TestUpdateInteractionSendsTypeSeven(t *testing.T) {
 	require.Len(t, body.Data.Components, 1)
 	require.Equal(t, "cq:r:0:0", body.Data.Components[0].Components[0].CustomID)
 }
+
+func TestEnsureApplicationCommandsMerges(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var calls []string
+	c := newTestREST(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/applications/@me":
+			_, _ = w.Write([]byte(`{"id":"app1"}`))
+		case r.URL.Path == "/applications/app1/commands" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`[{"id":"c1","name":"help"}]`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"c2"}`))
+		}
+	})
+
+	cmds := []applicationCommand{
+		{Name: "help", Description: "show help", Type: 1},
+		{Name: "model", Description: "switch model", Type: 1},
+	}
+	require.NoError(t, c.ensureApplicationCommands(t.Context(), cmds))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"GET /applications/@me",
+		"GET /applications/app1/commands",
+		"PATCH /applications/app1/commands/c1",
+		"POST /applications/app1/commands",
+	}, calls)
+}
