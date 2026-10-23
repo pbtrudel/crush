@@ -120,3 +120,20 @@ func TestTextareaMouseClickDoesNotCopy(t *testing.T) {
 	require.Nil(t, cmd)
 	require.False(t, u.textarea.HasSelection())
 }
+
+func TestTextareaStashAltS(t *testing.T) {
+	t.Parallel()
+
+	u := newSelectionTestUI()
+	u.keyMap = DefaultKeyMap()
+
+	u.textarea.SetValue("draft prompt")
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModAlt})
+	require.Equal(t, "", u.textarea.Value())
+	require.Len(t, u.inputStash, 1)
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModAlt})
+	require.Equal(t, "draft prompt", u.textarea.Value())
+	require.Empty(t, u.inputStash)
+}

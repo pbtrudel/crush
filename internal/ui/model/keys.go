@@ -200,9 +200,12 @@ func DefaultKeyMap() KeyMap {
 		key.WithKeys("ctrl+shift+a"),
 		key.WithHelp("ctrl+shift+a", "select all"),
 	)
+	// Most terminals report ctrl+shift+s as plain ctrl+s (the sessions
+	// dialog), so alt+s is bound as an escape hatch that every terminal can
+	// deliver.
 	km.Editor.StashInput = key.NewBinding(
-		key.WithKeys("ctrl+shift+s"),
-		key.WithHelp("ctrl+shift+s", "stash/unstash input"),
+		key.WithKeys("ctrl+shift+s", "alt+s"),
+		key.WithHelp("alt+s", "stash/unstash input"),
 	)
 
 	km.Chat.NewSession = key.NewBinding(
