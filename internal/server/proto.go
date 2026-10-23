@@ -633,6 +633,27 @@ func (c *controllerV1) handlePostWorkspaceAgentSessionSummarize(w http.ResponseW
 	w.WriteHeader(http.StatusOK)
 }
 
+// handlePostWorkspaceAgentSessionAsk answers a side question about a
+// session without persisting the exchange.
+func (c *controllerV1) handlePostWorkspaceAgentSessionAsk(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+
+	var req proto.AgentAskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	answer, err := c.backend.AskSession(r.Context(), id, sid, req.Question)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, proto.AgentAskResponse{Answer: answer})
+}
+
 // handlePostWorkspaceAgentSessionShell runs a shell command in the workspace.
 func (c *controllerV1) handlePostWorkspaceAgentSessionShell(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

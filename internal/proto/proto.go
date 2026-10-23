@@ -161,6 +161,16 @@ type AgentMessage struct {
 	Attachments       []Attachment `json:"attachments,omitempty"`
 }
 
+// AgentAskRequest represents a side question about a session.
+type AgentAskRequest struct {
+	Question string `json:"question"`
+}
+
+// AgentAskResponse carries the answer to a side question.
+type AgentAskResponse struct {
+	Answer string `json:"answer"`
+}
+
 // ShellCommandRequest represents a request to run a shell command directly.
 type ShellCommandRequest struct {
 	SessionID string `json:"session_id"`

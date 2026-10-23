@@ -27,6 +27,20 @@ func TestReloadSkillsCommandAlwaysVisible(t *testing.T) {
 	require.NotEmpty(t, commandTitle(c, "reload_skills"))
 }
 
+// TestSideQuestionCommandVisibleWithSession pins the palette entry that
+// opens the side-question prompt. It needs a session to ask about.
+func TestSideQuestionCommandVisibleWithSession(t *testing.T) {
+	t.Parallel()
+
+	com := &common.Common{Workspace: &rcCommandsWorkspace{}}
+	c := &Commands{com: com, hasSession: true, windowWidth: 200}
+
+	require.Equal(t, "Ask Side Question", commandTitle(c, "ask_side_question"))
+
+	c.hasSession = false
+	require.Empty(t, commandTitle(c, "ask_side_question"))
+}
+
 // TestSecretRevealCommandLabelReflectsState verifies the reveal toggle
 // advertises the action it will perform.
 func TestSecretRevealCommandLabelReflectsState(t *testing.T) {

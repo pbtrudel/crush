@@ -68,7 +68,7 @@ type discordAPI interface {
 	gatewayURL(ctx context.Context) (string, error)
 	respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error
 	updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error
-	ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error
+	ensureApplicationCommands(ctx context.Context, guildID string, cmds []applicationCommand) error
 }
 
 // Bridge mirrors a live Crush session into a Discord thread and injects
@@ -205,7 +205,7 @@ func start(ctx context.Context, env commandEnv, application *app.App, sessionID 
 	b.post(b.bannerText(ctx))
 	b.flushFooter()
 	go func() {
-		if err := b.api.ensureApplicationCommands(context.Background(), applicationCommands(b.env.Config())); err != nil {
+		if err := b.api.ensureApplicationCommands(context.Background(), thread.GuildID, applicationCommands(b.env.Config())); err != nil {
 			slog.Warn("Discord bridge: slash command registration failed", "error", err.Error())
 		}
 	}()

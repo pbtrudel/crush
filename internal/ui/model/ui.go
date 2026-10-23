@@ -166,6 +166,12 @@ type (
 	configReloadedMsg struct {
 		err error
 	}
+	// sideAnswerMsg carries the answer to a side question.
+	sideAnswerMsg struct {
+		question string
+		answer   string
+		err      error
+	}
 	// mcpPromptsLoadedMsg is sent when mcp prompts are loaded.
 	mcpPromptsLoadedMsg struct {
 		Prompts []commands.MCPPrompt
@@ -980,6 +986,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.dispatchPromptQueueRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case sideAnswerMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		m.dialog.OpenDialog(dialog.NewSideAnswer(m.com, msg.question, msg.answer))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -2383,6 +2395,24 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			return nil
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionAskSideQuestion:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		if msg.Question == "" {
+			m.dialog.OpenDialog(dialog.NewArguments(
+				m.com,
+				"Side Question",
+				"Ask about this session without adding the exchange to the conversation.",
+				[]commands.Argument{{ID: "question", Title: "Question", Required: true}},
+				msg,
+			))
+			break
+		}
+		m.dialog.CloseFrontDialog()
+		sessionID, question := msg.SessionID, msg.Question
+		cmds = append(cmds, func() tea.Msg {
+			answer, err := m.com.Workspace.AgentAsk(context.Background(), sessionID, question)
+			return sideAnswerMsg{question: question, answer: answer, err: err}
+		})
 	case dialog.ActionToggleHelp:
 		m.status.ToggleHelp()
 		m.dialog.CloseDialog(dialog.CommandsID)
