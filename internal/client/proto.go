@@ -595,6 +595,25 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 	return nil
 }
 
+// AgentAskSession asks a side question about a session without adding
+// it to the conversation.
+func (c *Client) AgentAskSession(ctx context.Context, id string, sessionID string, question string) (string, error) {
+	body := jsonBody(proto.AgentAskRequest{Question: question})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/sessions/%s/ask", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return "", fmt.Errorf("failed to ask side question: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to ask side question: status code %d", rsp.StatusCode)
+	}
+	var resp proto.AgentAskResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {
+		return "", fmt.Errorf("failed to decode side question response: %w", err)
+	}
+	return resp.Answer, nil
+}
+
 // InitiateAgentProcessing triggers agent initialization on the server.
 func (c *Client) InitiateAgentProcessing(ctx context.Context, id string, interactive bool) error {
 	body := jsonBody(proto.AgentInitRequest{Interactive: interactive})

@@ -386,6 +386,17 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handlePostWorkspaceAgentSessionSummarize),
 
+		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/ask").
+			Summary("Ask a side question").
+			Description("Answers a question about the session without adding it to the conversation.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Accepts(proto.AgentAskRequest{}).
+			Responds(proto.AgentAskResponse{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceAgentSessionAsk),
+
 		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/shell").
 			Summary("Run shell command").
 			Description("Runs a shell command in the workspace on behalf of the session.").

@@ -101,6 +101,13 @@ type (
 	ActionSummarize         struct {
 		SessionID string
 	}
+	// ActionAskSideQuestion asks about the session without adding the
+	// exchange to the conversation. Question is empty until the user
+	// fills the prompt.
+	ActionAskSideQuestion struct {
+		SessionID string
+		Question  string
+	}
 	// ActionSelectReasoningEffort is a message indicating a reasoning effort
 	// has been selected.
 	ActionSelectReasoningEffort struct {

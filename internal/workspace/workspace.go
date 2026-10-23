@@ -165,6 +165,9 @@ type Workspace interface {
 	AgentClearQueue(sessionID string)
 	AgentSetMain(agentID string) error
 	AgentSummarize(ctx context.Context, sessionID string) error
+	// AgentAsk answers a side question about the session without
+	// persisting the exchange or touching the workspace.
+	AgentAsk(ctx context.Context, sessionID, question string) (string, error)
 	UpdateAgentModel(ctx context.Context) error
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error
