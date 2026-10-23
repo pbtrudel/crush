@@ -35,6 +35,11 @@ type KeyMap struct {
 		// PasteText pastes clipboard text into the textarea, as an
 		// alternative to bracketed paste.
 		PasteText key.Binding
+
+		// StashInput stashes the prompt text and clears the input, or
+		// restores the most recently stashed text when the input is
+		// empty.
+		StashInput key.Binding
 	}
 
 	Chat struct {
@@ -194,6 +199,10 @@ func DefaultKeyMap() KeyMap {
 	km.Editor.SelectAll = key.NewBinding(
 		key.WithKeys("ctrl+shift+a"),
 		key.WithHelp("ctrl+shift+a", "select all"),
+	)
+	km.Editor.StashInput = key.NewBinding(
+		key.WithKeys("ctrl+shift+s"),
+		key.WithHelp("ctrl+shift+s", "stash/unstash input"),
 	)
 
 	km.Chat.NewSession = key.NewBinding(

@@ -346,6 +346,10 @@ type UI struct {
 	// click inside the textarea region).
 	textareaMouseSelecting bool
 
+	// inputStash holds prompt text set aside with the stash shortcut,
+	// oldest first. Each stash is popped when the input is empty again.
+	inputStash []string
+
 	// Active inline editor replaces the textarea when non-nil.
 	activeInline dialog.InlineEditor
 	// inlineCursor stores the cursor from the last inline editor
@@ -1492,9 +1496,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// End any in-progress textarea mouse selection.
+		// End any in-progress textarea mouse selection. This also runs when
+		// the pointer is released outside the textarea, so a drag that
+		// started in the input still copies what was selected.
 		if m.activeInline == nil && m.textareaMouseSelecting {
-			m.textareaMouseSelecting = false
+			cmds = append(cmds, m.finishTextareaMouseSelection())
 			if handled, cmd := m.forwardMouseToTextarea(msg); handled {
 				cmds = append(cmds, cmd)
 			}
@@ -3601,6 +3607,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					))
 					m.textarea.DeleteSelection()
 				}
+			case key.Matches(msg, m.keyMap.Editor.StashInput):
+				if cmd := m.toggleInputStash(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Editor.HistoryPrev):
 				cmd := m.handleHistoryUp(msg)
 				if cmd != nil {
@@ -4283,6 +4293,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 				k.Editor.SelectAll,
 				k.Editor.CopySelection,
 				k.Editor.CutSelection,
+				k.Editor.StashInput,
 			}
 			if m.currentModelSupportsImages() {
 				editorBinds = append(editorBinds, k.Editor.AddImage, k.Editor.PasteImage)
@@ -4361,6 +4372,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 				k.Editor.SelectAll,
 				k.Editor.CopySelection,
 				k.Editor.CutSelection,
+				k.Editor.StashInput,
 			}
 			if m.currentModelSupportsImages() {
 				editorBinds = append(editorBinds, k.Editor.AddImage, k.Editor.PasteImage)
@@ -4545,12 +4557,28 @@ func (m *UI) forwardMouseToTextarea(msg tea.MouseMsg) (bool, tea.Cmd) {
 		m.textarea.ExtendSelection(rel.X, rel.Y)
 		return true, nil
 	case tea.MouseReleaseMsg:
-		m.textarea.EndSelection()
-		m.textareaMouseSelecting = false
+		// The selection is finalized and copied by the caller so it also
+		// happens when the pointer is released outside the textarea.
 		return true, nil
 	default:
 		return false, nil
 	}
+}
+
+// finishTextareaMouseSelection ends an in-progress drag selection in the
+// prompt input and copies the selected text to the clipboard, mirroring how
+// selecting chat output copies it.
+func (m *UI) finishTextareaMouseSelection() tea.Cmd {
+	m.textareaMouseSelecting = false
+	m.textarea.EndSelection()
+	if !m.textarea.HasSelection() {
+		return nil
+	}
+	return common.CopyToClipboardWithCallback(
+		m.textarea.SelectedText(),
+		"Selection copied to clipboard",
+		nil,
+	)
 }
 
 // updateTextareaWithPrevHeight is for cases when the height of the layout may
