@@ -77,11 +77,14 @@ type applicationCommandOption struct {
 	Required    bool   `json:"required,omitempty"`
 }
 
-// ensureApplicationCommands reconciles the desired command definitions
-// with the ones already registered on the application. Existing commands
-// are edited in place and new ones are created, so commands registered by
-// another integration are never deleted.
-func (c *restClient) ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error {
+// ensureApplicationCommands registers the desired commands in the guild
+// that holds the control channel, creating only the ones that are not
+// already there. Guild scope keeps the bridge's commands alongside the
+// ones another integration installs in the same guild: a global and a
+// guild command with the same name would be listed twice in Discord.
+// Existing definitions are left untouched so the other integration's
+// option names keep working.
+func (c *restClient) ensureApplicationCommands(ctx context.Context, guildID string, cmds []applicationCommand) error {
 	data, err := c.do(ctx, http.MethodGet, "/applications/@me", nil)
 	if err != nil {
 		return err
@@ -96,28 +99,28 @@ func (c *restClient) ensureApplicationCommands(ctx context.Context, cmds []appli
 		return errors.New("application response contained no id")
 	}
 
-	data, err = c.do(ctx, http.MethodGet, "/applications/"+app.ID+"/commands", nil)
+	base := "/applications/" + app.ID + "/commands"
+	if guildID != "" {
+		base = "/applications/" + app.ID + "/guilds/" + guildID + "/commands"
+	}
+
+	data, err = c.do(ctx, http.MethodGet, base, nil)
 	if err != nil {
 		return err
 	}
 	var existing []struct {
-		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(data, &existing); err != nil {
 		return fmt.Errorf("decode command list: %w", err)
 	}
-	byName := make(map[string]string, len(existing))
+	byName := make(map[string]bool, len(existing))
 	for _, cmd := range existing {
-		byName[strings.ToLower(cmd.Name)] = cmd.ID
+		byName[strings.ToLower(cmd.Name)] = true
 	}
 
-	base := "/applications/" + app.ID + "/commands"
 	for _, cmd := range cmds {
-		if id, ok := byName[strings.ToLower(cmd.Name)]; ok {
-			if _, err := c.do(ctx, http.MethodPatch, base+"/"+id, cmd); err != nil {
-				return fmt.Errorf("update command %q: %w", cmd.Name, err)
-			}
+		if byName[strings.ToLower(cmd.Name)] {
 			continue
 		}
 		if _, err := c.do(ctx, http.MethodPost, base, cmd); err != nil {

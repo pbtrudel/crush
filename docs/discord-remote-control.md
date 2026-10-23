@@ -81,12 +81,13 @@ Type these in the thread:
 If the bot's application has native slash commands registered, invoking
 one in the thread works too: it is acknowledged immediately and its output
 is posted in the thread. Remote control registers the commands above
-(including custom commands) on the bot's application at startup, merging
-with anything already registered there, so typing `/` in Discord lists
-them. `/compact` and `/summarize` run the same compaction, and `/clear`
-(or `/new`) clears the context exactly like the typed command. Registered
-commands with no remote-control equivalent reply with a hint pointing at
-`/help`. Native commands invoked outside the control thread are ignored.
+(including custom commands) in the control thread's guild at startup,
+creating only the ones that are not already registered there, so typing
+`/` in Discord lists them once. `/compact` and `/summarize` run the same
+compaction, and `/clear` (or `/new`) clears the context exactly like the
+typed command. Registered commands with no remote-control equivalent
+reply with a hint pointing at `/help`. Native commands invoked outside
+the control thread are ignored.
 
 Reloading configuration in the terminal (`/reload`) applies the change in
 place: the control thread stays connected to the same session, and the next

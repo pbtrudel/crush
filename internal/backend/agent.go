@@ -220,6 +220,25 @@ func (b *Backend) SummarizeSession(ctx context.Context, workspaceID, sessionID s
 	return ws.AgentCoordinator.Summarize(ctx, sessionID)
 }
 
+// AskSession answers a side question about the session without adding
+// either the question or the answer to the conversation.
+func (b *Backend) AskSession(ctx context.Context, workspaceID, sessionID, question string) (string, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return "", err
+	}
+
+	if ws.AgentCoordinator == nil {
+		return "", ErrAgentNotInitialized
+	}
+
+	asker, ok := ws.AgentCoordinator.(agent.SideQuestioner)
+	if !ok {
+		return "", errors.New("side questions are not supported by this coordinator")
+	}
+	return asker.Ask(ctx, sessionID, question)
+}
+
 // QueuedPrompts returns the number of queued prompts for the session.
 func (b *Backend) QueuedPrompts(workspaceID, sessionID string) (int, error) {
 	ws, err := b.GetWorkspace(workspaceID)

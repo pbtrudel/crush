@@ -154,7 +154,7 @@ func (f *fakeAPI) updateInteraction(ctx context.Context, interactionID, token, c
 	return nil
 }
 
-func (f *fakeAPI) ensureApplicationCommands(ctx context.Context, cmds []applicationCommand) error {
+func (f *fakeAPI) ensureApplicationCommands(ctx context.Context, guildID string, cmds []applicationCommand) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append([]applicationCommand(nil), cmds...)

@@ -459,6 +459,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// Only show compact command if there's an active session
 	if c.hasSession {
 		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "ask_side_question", "Ask Side Question", "", ActionAskSideQuestion{SessionID: c.sessionID}).WithAliases("btw", "side"))
 	}
 
 	commands = append(commands,

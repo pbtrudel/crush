@@ -296,7 +296,7 @@ func TestEnsureApplicationCommandsMerges(t *testing.T) {
 		switch {
 		case r.URL.Path == "/applications/@me":
 			_, _ = w.Write([]byte(`{"id":"app1"}`))
-		case r.URL.Path == "/applications/app1/commands" && r.Method == http.MethodGet:
+		case r.URL.Path == "/applications/app1/guilds/g1/commands" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`[{"id":"c1","name":"help"}]`))
 		default:
 			_, _ = w.Write([]byte(`{"id":"c2"}`))
@@ -307,14 +307,13 @@ func TestEnsureApplicationCommandsMerges(t *testing.T) {
 		{Name: "help", Description: "show help", Type: 1},
 		{Name: "model", Description: "switch model", Type: 1},
 	}
-	require.NoError(t, c.ensureApplicationCommands(t.Context(), cmds))
+	require.NoError(t, c.ensureApplicationCommands(t.Context(), "g1", cmds))
 
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{
 		"GET /applications/@me",
-		"GET /applications/app1/commands",
-		"PATCH /applications/app1/commands/c1",
-		"POST /applications/app1/commands",
+		"GET /applications/app1/guilds/g1/commands",
+		"POST /applications/app1/guilds/g1/commands",
 	}, calls)
 }
