@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/completions"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
@@ -71,10 +72,15 @@ func newTestUI() *UI {
 		status:   NewStatus(com, nil),
 		chat:     NewChat(com, config.ScrollbarDefault),
 		textarea: ta,
-		state:    uiChat,
-		focus:    uiFocusEditor,
-		width:    140,
-		height:   45,
+		completions: completions.New(
+			com.Styles.Completions.Normal,
+			com.Styles.Completions.Focused,
+			com.Styles.Completions.Match,
+		),
+		state:  uiChat,
+		focus:  uiFocusEditor,
+		width:  140,
+		height: 45,
 	}
 
 	return u
