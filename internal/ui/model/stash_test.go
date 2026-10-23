@@ -16,12 +16,12 @@ func TestTextareaStashAndUnstash(t *testing.T) {
 
 	u.textarea.SetValue("draft prompt")
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "", u.textarea.Value())
 	require.Len(t, u.inputStash, 1)
 	require.Equal(t, "draft prompt", u.inputStash[0])
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "draft prompt", u.textarea.Value())
 	require.Empty(t, u.inputStash)
 }
@@ -32,7 +32,7 @@ func TestTextareaUnstashEmptyStash(t *testing.T) {
 	u := newSelectionTestUI()
 	u.keyMap = DefaultKeyMap()
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "", u.textarea.Value())
 	require.Empty(t, u.inputStash)
 }
@@ -44,20 +44,20 @@ func TestTextareaStashIsAStack(t *testing.T) {
 	u.keyMap = DefaultKeyMap()
 
 	u.textarea.SetValue("first")
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 
 	u.textarea.SetValue("second")
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 
 	require.Len(t, u.inputStash, 2)
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "second", u.textarea.Value())
 	require.Len(t, u.inputStash, 1)
 
 	// The input must be empty for the shortcut to pop the next stash.
 	u.textarea.SetValue("")
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "first", u.textarea.Value())
 
 	require.Empty(t, u.inputStash)
@@ -72,11 +72,11 @@ func TestTextareaStashPreservesBangMode(t *testing.T) {
 	u.textarea.SetValue("ls -la")
 	u.bangMode = true
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "", u.textarea.Value())
 	require.False(t, u.bangMode)
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "ls -la", u.textarea.Value())
 	require.True(t, u.bangMode)
 }
@@ -121,7 +121,7 @@ func TestTextareaMouseClickDoesNotCopy(t *testing.T) {
 	require.False(t, u.textarea.HasSelection())
 }
 
-func TestTextareaStashAltS(t *testing.T) {
+func TestTextareaStashCtrlD(t *testing.T) {
 	t.Parallel()
 
 	u := newSelectionTestUI()
@@ -129,11 +129,11 @@ func TestTextareaStashAltS(t *testing.T) {
 
 	u.textarea.SetValue("draft prompt")
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModAlt})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "", u.textarea.Value())
 	require.Len(t, u.inputStash, 1)
 
-	_, _ = u.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModAlt})
+	_, _ = u.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	require.Equal(t, "draft prompt", u.textarea.Value())
 	require.Empty(t, u.inputStash)
 }

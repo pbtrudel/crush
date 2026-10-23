@@ -163,7 +163,7 @@ func renderHeaderDetails(
 		parts = append(parts, hc)
 	}
 
-	const keystroke = "ctrl+d"
+	const keystroke = "f2"
 	if detailsOpen {
 		parts = append(parts, t.Header.Keystroke.Render(keystroke)+t.Header.KeystrokeTip.Render(" close"))
 	} else {

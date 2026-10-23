@@ -4159,6 +4159,7 @@ func (m *UI) ShortHelp() []key.Binding {
 			binds = append(
 				binds,
 				k.Editor.Newline,
+				k.Editor.StashInput,
 			)
 		case uiFocusSidebar:
 			binds = append(
