@@ -658,3 +658,23 @@ func TestBridgeCompactionIgnoresOtherSessions(t *testing.T) {
 
 	require.False(t, api.hasContentContaining("Context compacted"))
 }
+
+// TestLaunchRunDoesNotReportRunErrorsAsSendFailures pins that a turn error
+// (AgentRun blocks for the turn in local mode) is not mislabeled as a
+// failed prompt. The footer and agent notifications report the run error.
+func TestLaunchRunDoesNotReportRunErrorsAsSendFailures(t *testing.T) {
+	t.Parallel()
+	b, env, api, _ := testBridge(t, testConfig())
+	env.runErr = context.DeadlineExceeded
+
+	b.submitPrompt("hello", nil)
+	require.Eventually(t, func() bool {
+		env.mu.Lock()
+		defer env.mu.Unlock()
+		return len(env.runs) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	require.Never(t, func() bool {
+		return api.hasPostContaining("Failed to send prompt")
+	}, 200*time.Millisecond, 20*time.Millisecond)
+}

@@ -570,9 +570,9 @@
         "auto_compact_threshold": {
           "type": "number",
           "description": "Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.",
-          "default": 0.85,
+          "default": 0.5,
           "examples": [
-            0.5
+            0.85
           ]
         },
         "compact_tail_tokens": {

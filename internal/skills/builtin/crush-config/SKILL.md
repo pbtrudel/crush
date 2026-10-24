@@ -185,7 +185,7 @@ option reset <list-key>    # clear a list option back to empty
 - **String keys**: `data-directory`, `initialize-as`, `notifications`.
 - **Compaction tuning**: `auto-compact-threshold FLOAT` (fraction of the
   context window at which a finished turn compacts automatically; `0`
-  disables; default `0.85`) and `compact-tail-tokens INT` (tokens of recent
+  disables; default `0.5`) and `compact-tail-tokens INT` (tokens of recent
   conversation kept verbatim next to the summary; `0` keeps only the summary;
   default `24576`).
 - **Attribution keys**: `attribution-trailer-style` (`none`, `co-authored-by`,

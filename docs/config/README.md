@@ -499,7 +499,7 @@ Integer Keys:
 Number Keys:
   auto-compact-threshold float     fraction of the context window at which a
                                    finished turn compacts automatically;
-                                   0 disables it (default 0.85)
+                                   0 disables it (default 0.5)
 
 List Keys:
   context-path string             append a project context path

@@ -2,6 +2,7 @@ package discord
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,16 +45,13 @@ func singleChoiceRequest() question.Request {
 func TestRenderQuestionCardShowsChoiceDescriptions(t *testing.T) {
 	t.Parallel()
 
-	card := renderQuestionCard(singleChoiceRequest(), questionHintButtons)
+	card := renderQuestionContent(singleChoiceRequest(), 0, questionHintButtons)
 	require.Contains(t, card, "**1.** PostgreSQL")
 	require.Contains(t, card, "Relational, sturdy")
 	require.Contains(t, card, "**2.** MongoDB")
 	require.Contains(t, card, "Documents, flexible")
 	require.Contains(t, card, "press a button to answer")
-	require.NotContains(t, card, "/answer", "a buttoned card does not need the text hint")
-
-	textOnly := renderQuestionCard(singleChoiceRequest(), questionHintAnswer)
-	require.Contains(t, textOnly, "/answer", "a non-buttoned card keeps the text hint")
+	require.Contains(t, card, "Something else")
 }
 
 func TestQuestionRowsSingleChoicePressAnswersImmediately(t *testing.T) {
@@ -63,8 +61,8 @@ func TestQuestionRowsSingleChoicePressAnswersImmediately(t *testing.T) {
 
 	req := singleChoiceRequest()
 	b.handleQuestionRequest(req)
-	require.NotEmpty(t, b.questionMessage[req.ID], "the card is posted")
-	require.NotNil(t, questionRows(req, b.questionSelections[req.ID]), "the card carries buttons")
+	require.Len(t, b.questionMessages[req.ID], 1, "one message per question is posted")
+	require.NotNil(t, questionRows(req, 0, b.questionSelections[req.ID], b.questionFillIns[req.ID], true), "the card carries buttons")
 
 	b.handleQuestionComponent(componentInteraction(selectCustomID(req.ID, 0, 1)))
 
@@ -171,9 +169,9 @@ func TestQuestionRowsMultiQuestionBatchNeedsSubmit(t *testing.T) {
 	}
 	b.handleQuestionRequest(req)
 
-	rows := questionRows(req, b.questionSelections[req.ID])
-	require.Len(t, rows, 3, "one row per question plus the submit row")
-	submit := rows[2].Components[0]
+	require.Len(t, b.questionMessages[req.ID], 2, "each question is its own message")
+	rows := questionRows(req, 1, b.questionSelections[req.ID], b.questionFillIns[req.ID], true)
+	submit := rows[len(rows)-1].Components[0]
 	require.True(t, submit.Disabled, "submit starts disabled while the batch is incomplete")
 
 	// Selecting in the first question only redraws the card.
@@ -244,9 +242,11 @@ func TestQuestionRowsFallBackWhenOverBudget(t *testing.T) {
 		req.Questions = append(req.Questions, q)
 	}
 
-	require.Nil(t, questionRows(req, nil), "an over-budget batch stays text-only")
-	require.Contains(t, renderQuestionCard(req, questionHintAnswer), "answer in the terminal",
-		"the fallback must not promise a command that refuses multi-question batches")
+	for i := range req.Questions {
+		rows := questionRows(req, i, nil, nil, i == len(req.Questions)-1)
+		require.NotNil(t, rows, "each question message fits Discord's action-row cap")
+		require.LessOrEqual(t, len(rows), maxActionRows)
+	}
 }
 
 func TestQuestionRowsFallBackForFreeText(t *testing.T) {
@@ -261,7 +261,9 @@ func TestQuestionRowsFallBackForFreeText(t *testing.T) {
 			Text: "What should it be called?",
 		}},
 	}
-	require.Nil(t, questionRows(req, nil), "free-text batches stay text-only")
+	rows := questionRows(req, 0, nil, nil, false)
+	require.NotNil(t, rows, "a free-text question gets a Something else button")
+	require.Equal(t, customCustomID(req.ID, 0), rows[0].Components[0].CustomID)
 }
 
 func TestParseQuestionCustomID(t *testing.T) {
@@ -276,37 +278,15 @@ func TestParseQuestionCustomID(t *testing.T) {
 	require.True(t, ref.submit)
 	require.Equal(t, "req-1", ref.requestID)
 
+	ref, ok = parseQuestionCustomID(customCustomID("req-1", 3))
+	require.True(t, ok)
+	require.True(t, ref.custom)
+	require.Equal(t, 3, ref.questionIndex)
+
 	for _, bad := range []string{"", "x:y", "cq:", "cq:req", "cq:req:x:1", "cq:req:1:x"} {
 		_, ok := parseQuestionCustomID(bad)
 		require.False(t, ok, "malformed custom id %q must be ignored", bad)
 	}
-}
-
-// TestQuestionFallbackHintIsAnswerable pins that the text fallback only
-// promises /answer when /answer can actually deliver: multi-question
-// batches cannot be answered with the command, so their card must point at
-// the terminal instead of a guaranteed failure.
-func TestQuestionFallbackHintIsAnswerable(t *testing.T) {
-	t.Parallel()
-
-	single := question.Request{
-		ID: "req-text", SessionID: "sess-1",
-		Questions: []question.Question{{ID: "q1", Type: question.TypeFreeText, Text: "Name?"}},
-	}
-	require.Contains(t, renderQuestionCard(single, questionHintAnswer), "/answer",
-		"a single free-text question is answerable with /answer")
-
-	multi := question.Request{
-		ID: "req-multi-text", SessionID: "sess-1",
-		Questions: []question.Question{
-			{ID: "q1", Type: question.TypeFreeText, Text: "Name?"},
-			{ID: "q2", Type: question.TypeFreeText, Text: "Color?"},
-		},
-	}
-	card := renderQuestionCard(multi, questionHintAnswer)
-	require.Contains(t, card, "answer in the terminal",
-		"a multi-question fallback must not promise /answer")
-	require.NotContains(t, card, "/answer")
 }
 
 // TestQuestionResolvedCardDropsTheAnswerHint pins that a resolved card does
@@ -314,7 +294,7 @@ func TestQuestionFallbackHintIsAnswerable(t *testing.T) {
 func TestQuestionResolvedCardDropsTheAnswerHint(t *testing.T) {
 	t.Parallel()
 
-	card := renderQuestionCard(singleChoiceRequest(), questionHintNone)
+	card := renderQuestionContent(singleChoiceRequest(), 0, questionHintNone)
 	require.NotContains(t, card, "press a button")
 	require.NotContains(t, card, "/answer")
 }
@@ -353,4 +333,172 @@ func TestQuestionComponentArrivesThroughInputLoop(t *testing.T) {
 
 	require.Eventually(t, func() bool { return len(env.answersSnapshot()) == 1 }, 2*time.Second, 10*time.Millisecond)
 	require.Equal(t, []question.Answer{{QuestionID: "q1", SelectedIDs: []string{"pg"}}}, env.answersSnapshot())
+}
+
+// modalInteraction builds a MODAL_SUBMIT interaction for a question's
+// custom-answer modal.
+func modalInteraction(customID, value string) gatewayInteraction {
+	in := gatewayInteraction{
+		ID:        "i3",
+		Token:     "ctok",
+		Type:      gwInteractionModalSubmit,
+		ChannelID: "thread-1",
+	}
+	in.Data.CustomID = customID
+	in.Data.Components = []gatewayInteractionComponent{{
+		Type: componentTypeActionRow,
+		Components: []gatewayInteractionComponent{{
+			Type:     componentTypeTextInput,
+			CustomID: modalInputCustomID,
+			Value:    value,
+		}},
+	}}
+	in.Member.User.ID = "u1"
+	return in
+}
+
+// TestQuestionPostsOneMessagePerQuestion pins the layout fix: a batch is
+// posted as one message per question, with that question's buttons directly
+// under it and the submit row on the last question.
+func TestQuestionPostsOneMessagePerQuestion(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	req := question.Request{
+		ID:        "req-batch",
+		SessionID: "sess-1",
+		Questions: []question.Question{
+			{
+				ID: "q1", Type: question.TypeSingleChoice, Text: "First?",
+				Choices: []question.Choice{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+			},
+			{
+				ID: "q2", Type: question.TypeSingleChoice, Text: "Second?",
+				Choices: []question.Choice{{ID: "c", Label: "C"}, {ID: "d", Label: "D"}},
+			},
+		},
+	}
+	b.handleQuestionRequest(req)
+
+	require.Len(t, b.questionMessages[req.ID], 2, "one message per question")
+
+	ids := b.questionMessages[req.ID]
+	require.Len(t, ids, 2, "one message per question")
+	require.Contains(t, api.messageContent(ids[0]), "Question 1/2")
+	require.Contains(t, api.messageContent(ids[0]), "First?")
+	require.NotContains(t, api.messageContent(ids[0]), "Second?")
+	firstRows := api.messageComponents(ids[0])
+	require.NotEmpty(t, firstRows)
+	require.Equal(t, customCustomID(req.ID, 0), firstRows[0].Components[len(firstRows[0].Components)-1].CustomID,
+		"the first question's Something else button sits under it")
+	require.Contains(t, api.messageContent(ids[1]), "Question 2/2")
+	lastRows := api.messageComponents(ids[1])
+	require.NotEmpty(t, lastRows)
+	require.Equal(t, submitCustomID(req.ID), lastRows[len(lastRows)-1].Components[0].CustomID,
+		"submit rides on the last question's message")
+}
+
+// TestQuestionSomethingElseOpensModalAndAnswers pins the custom-answer
+// path: the button opens a modal, and submitting it produces FillInText.
+func TestQuestionSomethingElseOpensModalAndAnswers(t *testing.T) {
+	t.Parallel()
+	b, env, api, _ := testBridge(t, testConfig())
+
+	req := question.Request{
+		ID: "req-text", SessionID: "sess-1",
+		Questions: []question.Question{{ID: "q1", Type: question.TypeFreeText, Text: "Name?"}},
+	}
+	b.handleQuestionRequest(req)
+
+	b.handleQuestionComponent(componentInteraction(customCustomID(req.ID, 0)))
+	modals := api.modalsSnapshot()
+	require.Len(t, modals, 1, "the button opens a modal")
+	require.Equal(t, modalCustomID(req.ID, 0), modals[0].modal.CustomID)
+	require.Equal(t, "Name?", modals[0].modal.Title)
+
+	b.handleQuestionModalSubmit(modalInteraction(modals[0].modal.CustomID, "a custom name"))
+
+	require.Equal(t, []question.Answer{{QuestionID: "q1", FillInText: "a custom name"}}, env.answers)
+	updates := api.updatesSnapshot()
+	require.NotEmpty(t, updates)
+	require.Contains(t, updates[len(updates)-1].content, "✅ answered")
+	require.Empty(t, b.questions[req.ID])
+}
+
+// TestQuestionCustomAnswerInBatchWaitsForSubmit pins that a typed answer
+// counts as an answer for completeness but still waits for Submit in a
+// multi-question batch.
+func TestQuestionCustomAnswerInBatchWaitsForSubmit(t *testing.T) {
+	t.Parallel()
+	b, env, api, _ := testBridge(t, testConfig())
+	env.answerOK = true
+
+	req := question.Request{
+		ID:        "req-batch",
+		SessionID: "sess-1",
+		Questions: []question.Question{
+			{ID: "q1", Type: question.TypeSingleChoice, Text: "First?", Choices: []question.Choice{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}},
+			{ID: "q2", Type: question.TypeSingleChoice, Text: "Second?", Choices: []question.Choice{{ID: "c", Label: "C"}, {ID: "d", Label: "D"}}},
+		},
+	}
+	b.handleQuestionRequest(req)
+
+	b.handleQuestionComponent(componentInteraction(customCustomID(req.ID, 0)))
+	modals := api.modalsSnapshot()
+	require.Len(t, modals, 1)
+	b.handleQuestionModalSubmit(modalInteraction(modals[0].modal.CustomID, "neither"))
+	require.Empty(t, env.answers, "a batch waits for Submit")
+
+	rows := questionRows(req, 1, b.questionSelections[req.ID], b.questionFillIns[req.ID], true)
+	submit := rows[len(rows)-1].Components[0]
+	require.True(t, submit.Disabled, "the second question is still unanswered")
+
+	b.handleQuestionComponent(componentInteraction(selectCustomID(req.ID, 1, 0)))
+	b.handleQuestionComponent(componentInteraction(submitCustomID(req.ID)))
+
+	require.Equal(t, []question.Answer{
+		{QuestionID: "q1", FillInText: "neither"},
+		{QuestionID: "q2", SelectedIDs: []string{"c"}},
+	}, env.answers)
+}
+
+// TestQuestionComponentsRideOnLastChunk pins that a long question whose
+// content is split into several Discord messages keeps its buttons on the
+// final chunk instead of stranding them mid-text.
+func TestQuestionComponentsRideOnLastChunk(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+
+	content := strings.Repeat("long question text\n", 300)
+	rows := []discordComponent{{Type: componentTypeActionRow, Components: []discordButton{{
+		Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Pick", CustomID: "cq:x:0:0",
+	}}}}
+	id := b.postAboveWithComponents(content, rows)
+	require.NotEmpty(t, id)
+
+	var chunks []fakePost
+	for _, p := range api.postsSnapshot() {
+		if strings.HasPrefix(p.content, "long question text") {
+			chunks = append(chunks, p)
+		}
+	}
+	require.Greater(t, len(chunks), 1, "the content must split")
+	require.Empty(t, chunks[0].components, "the first chunk must not carry the controls")
+	require.NotEmpty(t, chunks[len(chunks)-1].components, "the controls ride on the last chunk")
+	require.Equal(t, chunks[len(chunks)-1].messageID, id, "the component message id is returned")
+}
+
+// TestQuestionComponentArrivesThroughInteractionQueue pins the gateway
+// routing through the dedicated interaction queue.
+func TestQuestionComponentArrivesThroughInteractionQueue(t *testing.T) {
+	t.Parallel()
+	b, env, _, _ := testBridge(t, testConfig())
+	env.answerOK = true
+
+	req := singleChoiceRequest()
+	b.handleQuestionRequest(req)
+	b.enqueueInteraction(componentInteraction(selectCustomID(req.ID, 0, 1)))
+
+	require.Eventually(t, func() bool { return len(env.answersSnapshot()) == 1 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, []question.Answer{{QuestionID: "q1", SelectedIDs: []string{"mongo"}}}, env.answersSnapshot())
 }

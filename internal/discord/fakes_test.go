@@ -32,6 +32,7 @@ type fakeAPI struct {
 	renames     []string
 	callbacks   []fakeCallback
 	updates     []fakeUpdate
+	modals      []fakeModal
 	commands    []applicationCommand
 	commandsErr error
 	gwURL       string
@@ -61,6 +62,13 @@ type fakeUpdate struct {
 	token         string
 	content       string
 	components    []discordComponent
+}
+
+// fakeModal records one type-9 (modal) interaction callback.
+type fakeModal struct {
+	interactionID string
+	token         string
+	modal         discordModal
 }
 
 func newFakeAPI() *fakeAPI {
@@ -154,6 +162,24 @@ func (f *fakeAPI) updateInteraction(ctx context.Context, interactionID, token, c
 	return nil
 }
 
+func (f *fakeAPI) respondModal(ctx context.Context, interactionID, token string, modal discordModal) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modals = append(f.modals, fakeModal{
+		interactionID: interactionID,
+		token:         token,
+		modal:         modal,
+	})
+	return nil
+}
+
+// modalsSnapshot returns a copy of the recorded modal callbacks.
+func (f *fakeAPI) modalsSnapshot() []fakeModal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeModal(nil), f.modals...)
+}
+
 func (f *fakeAPI) ensureApplicationCommands(ctx context.Context, guildID string, cmds []applicationCommand) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -173,6 +199,42 @@ func (f *fakeAPI) updatesSnapshot() []fakeUpdate {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakeUpdate(nil), f.updates...)
+}
+
+// messageContent returns the latest recorded content for a message id,
+// looking at edits first and posts second.
+func (f *fakeAPI) messageContent(messageID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.edits) - 1; i >= 0; i-- {
+		if f.edits[i].messageID == messageID {
+			return f.edits[i].content
+		}
+	}
+	for i := len(f.posts) - 1; i >= 0; i-- {
+		if f.posts[i].messageID == messageID {
+			return f.posts[i].content
+		}
+	}
+	return ""
+}
+
+// messageComponents returns the latest recorded components for a message
+// id, looking at edits first and posts second.
+func (f *fakeAPI) messageComponents(messageID string) []discordComponent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.edits) - 1; i >= 0; i-- {
+		if f.edits[i].messageID == messageID {
+			return f.edits[i].components
+		}
+	}
+	for i := len(f.posts) - 1; i >= 0; i-- {
+		if f.posts[i].messageID == messageID {
+			return f.posts[i].components
+		}
+	}
+	return nil
 }
 
 // hasPostContaining reports whether any posted message contains sub.
@@ -280,6 +342,7 @@ type fakeEnv struct {
 
 	runs        []string
 	runAttached int
+	runErr      error
 	asks        []string
 	askAnswer   string
 	askErr      error
@@ -355,7 +418,7 @@ func (e *fakeEnv) AgentRun(ctx context.Context, sessionID, prompt string, attach
 	defer e.mu.Unlock()
 	e.runs = append(e.runs, prompt)
 	e.runAttached += len(attachments)
-	return nil
+	return e.runErr
 }
 
 func (e *fakeEnv) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {

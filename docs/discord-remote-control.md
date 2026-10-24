@@ -78,6 +78,13 @@ Type these in the thread:
 | `/rc off` | End remote control |
 | `/<custom-command> [args]` | Run a custom command from `~/.config/crush/commands` |
 
+Agent questions are posted as one card per question, with that question's
+choice buttons and a **Something else** button directly beneath it. Pressing
+**Something else** opens a modal for a typed answer; multi-question batches
+finish with a **Submit** row on the last question's card. Buttons are
+answered through a dedicated interaction path so they stay responsive while a
+prompt is running.
+
 If the bot's application has native slash commands registered, invoking
 one in the thread works too: it is acknowledged immediately and its output
 is posted in the thread. Remote control registers the commands above
