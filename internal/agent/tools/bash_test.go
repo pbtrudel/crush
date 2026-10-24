@@ -147,6 +147,36 @@ func TestBlockFuncs_SudoAllowedOnlyInYoloMode(t *testing.T) {
 	require.False(t, blocked(blockFuncs(true), "sudo -n true"), "sudo must be allowed in YOLO mode")
 }
 
+func TestBlockFuncs_PackageInstallsAllowed(t *testing.T) {
+	t.Parallel()
+
+	commands := []string{
+		"apk add curl",
+		"apt install curl",
+		"apt-get install -y curl",
+		"brew install curl",
+		"cargo install ripgrep",
+		"dnf install curl",
+		"gem install rake",
+		"go install example.com/tool@latest",
+		"npm install --global typescript",
+		"npm install -g typescript",
+		"pacman -S curl",
+		"pip install --user requests",
+		"pip3 install --user requests",
+		"pnpm add --global typescript",
+		"pnpm add -g typescript",
+		"yarn global add typescript",
+	}
+
+	for _, command := range commands {
+		args := strings.Fields(command)
+		for _, fn := range blockFuncs(false) {
+			require.False(t, fn(args), "%q must not be blocked", command)
+		}
+	}
+}
+
 func TestBashTool_SudoNotBlockedInYoloMode(t *testing.T) {
 	workingDir := t.TempDir()
 	permissions := &mockBashPermissionService{
