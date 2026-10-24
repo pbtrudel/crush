@@ -11,17 +11,26 @@ import (
 const (
 	componentTypeActionRow = 1
 	componentTypeButton    = 2
+	componentTypeTextInput = 4
 
 	buttonStylePrimary   = 1
 	buttonStyleSecondary = 2
 	buttonStyleSuccess   = 3
 
+	textInputStyleParagraph = 2
+
 	maxActionRows  = 5
 	maxRowButtons  = 5
 	maxButtonLabel = 80
+	maxModalTitle  = 45
+	// maxCustomAnswerLength matches the TUI's "Something else?" textarea.
+	maxCustomAnswerLength = 500
 
 	questionCustomIDPrefix = "cq"
+	modalCustomIDPrefix    = "cqm"
 	submitCustomIDSuffix   = "submit"
+	customCustomIDSuffix   = "custom"
+	modalInputCustomID     = "answer"
 )
 
 // Synthetic choice IDs for yes/no questions so selections, button styling,
@@ -31,25 +40,40 @@ const (
 	noChoiceID  = "n"
 )
 
-// discordComponent is one message component: an action row of buttons.
+// discordComponent is one message component: an action row of buttons or a
+// single text input inside a modal's action row.
 type discordComponent struct {
 	Type       int             `json:"type"`
 	Components []discordButton `json:"components,omitempty"`
 }
 
-// discordButton is one interactive button inside an action row.
+// discordButton is one interactive component. It is used for both buttons
+// and modal text inputs; only the fields relevant to the type are encoded.
 type discordButton struct {
-	Type     int    `json:"type"`
-	Style    int    `json:"style"`
-	Label    string `json:"label"`
-	CustomID string `json:"custom_id"`
-	Disabled bool   `json:"disabled,omitempty"`
+	Type        int    `json:"type"`
+	Style       int    `json:"style,omitempty"`
+	Label       string `json:"label,omitempty"`
+	CustomID    string `json:"custom_id"`
+	Disabled    bool   `json:"disabled,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+	MinLength   int    `json:"min_length,omitempty"`
+	MaxLength   int    `json:"max_length,omitempty"`
+}
+
+// discordModal is the response payload for a modal (callback type 9).
+type discordModal struct {
+	CustomID   string             `json:"custom_id"`
+	Title      string             `json:"title"`
+	Components []discordComponent `json:"components"`
 }
 
 // questionButtonRef identifies what a question button press selects.
 type questionButtonRef struct {
 	requestID     string
 	submit        bool
+	custom        bool
 	questionIndex int
 	choiceIndex   int
 }
@@ -63,6 +87,19 @@ func selectCustomID(requestID string, questionIndex, choiceIndex int) string {
 // submitCustomID builds the custom id for a batch's submit button.
 func submitCustomID(requestID string) string {
 	return questionCustomIDPrefix + ":" + requestID + ":" + submitCustomIDSuffix
+}
+
+// customCustomID builds the custom id for a question's "Something else"
+// button, which opens a modal for a typed answer.
+func customCustomID(requestID string, questionIndex int) string {
+	return questionCustomIDPrefix + ":" + requestID + ":" +
+		strconv.Itoa(questionIndex) + ":" + customCustomIDSuffix
+}
+
+// modalCustomID builds the custom id for the modal opened by a question's
+// "Something else" button.
+func modalCustomID(requestID string, questionIndex int) string {
+	return modalCustomIDPrefix + ":" + requestID + ":" + strconv.Itoa(questionIndex)
 }
 
 // parseQuestionCustomID decodes a button press, reporting whether the id
@@ -84,12 +121,31 @@ func parseQuestionCustomID(customID string) (questionButtonRef, bool) {
 	if err != nil {
 		return questionButtonRef{}, false
 	}
+	ref.questionIndex = qi
+	if parts[3] == customCustomIDSuffix {
+		ref.custom = true
+		return ref, true
+	}
 	ci, err := strconv.Atoi(parts[3])
 	if err != nil {
 		return questionButtonRef{}, false
 	}
-	ref.questionIndex, ref.choiceIndex = qi, ci
+	ref.choiceIndex = ci
 	return ref, true
+}
+
+// parseModalCustomID decodes a submitted custom-answer modal into the
+// question it answers.
+func parseModalCustomID(customID string) (requestID string, questionIndex int, ok bool) {
+	parts := strings.Split(customID, ":")
+	if len(parts) != 3 || parts[0] != modalCustomIDPrefix {
+		return "", 0, false
+	}
+	qi, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return "", 0, false
+	}
+	return parts[1], qi, true
 }
 
 // questionChoices returns a question's button-addressable choices, with
@@ -117,11 +173,26 @@ func newQuestionSelections(req question.Request) map[string]map[string]bool {
 	return selections
 }
 
-// selectionsComplete reports whether every question holds at least one
-// selected choice.
-func selectionsComplete(req question.Request, selections map[string]map[string]bool) bool {
+// newQuestionFillIns builds an empty per-question custom-answer set.
+func newQuestionFillIns(req question.Request) map[string]string {
+	fillIns := make(map[string]string, len(req.Questions))
 	for _, q := range req.Questions {
-		if len(selections[q.ID]) == 0 {
+		fillIns[q.ID] = ""
+	}
+	return fillIns
+}
+
+// questionAnswered reports whether a question has a choice selected or a
+// typed custom answer.
+func questionAnswered(q question.Question, selections map[string]bool, fillIn string) bool {
+	return len(selections) > 0 || strings.TrimSpace(fillIn) != ""
+}
+
+// selectionsComplete reports whether every question is answered, whether by
+// a button choice or by the custom-answer modal.
+func selectionsComplete(req question.Request, selections map[string]map[string]bool, fillIns map[string]string) bool {
+	for _, q := range req.Questions {
+		if !questionAnswered(q, selections[q.ID], fillIns[q.ID]) {
 			return false
 		}
 	}
@@ -130,8 +201,8 @@ func selectionsComplete(req question.Request, selections map[string]map[string]b
 
 // questionNeedsSubmit reports whether a batch requires an explicit submit
 // press: anything multi-turn (a batch with several questions or a
-// multi-choice question). A lone yes/no or single-choice question answers
-// on the button press itself.
+// multi-choice question). A lone yes/no, single-choice, or free-text
+// question answers on the button or modal press itself.
 func questionNeedsSubmit(req question.Request) bool {
 	if len(req.Questions) > 1 {
 		return true
@@ -139,35 +210,48 @@ func questionNeedsSubmit(req question.Request) bool {
 	return len(req.Questions) == 1 && req.Questions[0].Type == question.TypeMultiChoice
 }
 
-// questionRows builds the action rows for a question batch, or nil when the
-// batch cannot be presented as buttons: a free-text question is present, or
-// the buttons would need more than Discord's five action rows. A nil result
-// means the card stays text-only and is answered with /answer.
-func questionRows(req question.Request, selections map[string]map[string]bool) []discordComponent {
-	var rows []discordComponent
-	for qi, q := range req.Questions {
-		choices := questionChoices(q)
-		if len(choices) == 0 {
-			return nil
-		}
-		for start := 0; start < len(choices); start += maxRowButtons {
-			row := discordComponent{Type: componentTypeActionRow}
-			for ci := start; ci < start+maxRowButtons && ci < len(choices); ci++ {
-				style := buttonStyleSecondary
-				if selections[q.ID][choices[ci].ID] {
-					style = buttonStyleSuccess
-				}
-				row.Components = append(row.Components, discordButton{
-					Type:     componentTypeButton,
-					Style:    style,
-					Label:    compactLine(choices[ci].Label, maxButtonLabel),
-					CustomID: selectCustomID(req.ID, qi, ci),
-				})
-			}
-			rows = append(rows, row)
-		}
+// questionRows builds the action rows for one question. A batch's submit
+// row rides on the last question's message so the form's controls stay
+// under the question they belong to.
+func questionRows(req question.Request, questionIndex int, selections map[string]map[string]bool, fillIns map[string]string, includeSubmit bool) []discordComponent {
+	if questionIndex < 0 || questionIndex >= len(req.Questions) {
+		return nil
 	}
-	if questionNeedsSubmit(req) {
+	q := req.Questions[questionIndex]
+
+	var rows []discordComponent
+	row := discordComponent{Type: componentTypeActionRow}
+	for ci, choice := range questionChoices(q) {
+		if len(row.Components) == maxRowButtons {
+			rows = append(rows, row)
+			row = discordComponent{Type: componentTypeActionRow}
+		}
+		style := buttonStyleSecondary
+		if selections[q.ID][choice.ID] {
+			style = buttonStyleSuccess
+		}
+		row.Components = append(row.Components, discordButton{
+			Type:     componentTypeButton,
+			Style:    style,
+			Label:    compactLine(choice.Label, maxButtonLabel),
+			CustomID: selectCustomID(req.ID, questionIndex, ci),
+		})
+	}
+	// Every question offers a typed answer, matching the TUI's
+	// "Something else?" row.
+	if len(row.Components) == maxRowButtons {
+		rows = append(rows, row)
+		row = discordComponent{Type: componentTypeActionRow}
+	}
+	row.Components = append(row.Components, discordButton{
+		Type:     componentTypeButton,
+		Style:    buttonStyleSecondary,
+		Label:    "Something else",
+		CustomID: customCustomID(req.ID, questionIndex),
+	})
+	rows = append(rows, row)
+
+	if includeSubmit && questionNeedsSubmit(req) {
 		rows = append(rows, discordComponent{
 			Type: componentTypeActionRow,
 			Components: []discordButton{{
@@ -175,7 +259,7 @@ func questionRows(req question.Request, selections map[string]map[string]bool) [
 				Style:    buttonStylePrimary,
 				Label:    "Submit",
 				CustomID: submitCustomID(req.ID),
-				Disabled: !selectionsComplete(req, selections),
+				Disabled: !selectionsComplete(req, selections, fillIns),
 			}},
 		})
 	}
@@ -185,15 +269,49 @@ func questionRows(req question.Request, selections map[string]map[string]bool) [
 	return rows
 }
 
+// customAnswerModal builds the modal opened by a question's "Something
+// else" button.
+func customAnswerModal(req question.Request, questionIndex int) discordModal {
+	title := "Answer"
+	if questionIndex >= 0 && questionIndex < len(req.Questions) {
+		q := req.Questions[questionIndex]
+		title = q.Text
+		if q.Label != "" {
+			title = q.Label
+		}
+	}
+	label := "Your answer"
+	return discordModal{
+		CustomID: modalCustomID(req.ID, questionIndex),
+		Title:    truncateRunes(title, maxModalTitle),
+		Components: []discordComponent{{
+			Type: componentTypeActionRow,
+			Components: []discordButton{{
+				Type:        componentTypeTextInput,
+				Style:       textInputStyleParagraph,
+				Label:       label,
+				CustomID:    modalInputCustomID,
+				Placeholder: "Type your answer",
+				Required:    true,
+				MaxLength:   maxCustomAnswerLength,
+			}},
+		}},
+	}
+}
+
 // answersFromSelections renders the current selections as the batch's
 // answers, preserving choice order so the payload is deterministic.
-func answersFromSelections(req question.Request, selections map[string]map[string]bool) []question.Answer {
+func answersFromSelections(req question.Request, selections map[string]map[string]bool, fillIns map[string]string) []question.Answer {
 	answers := make([]question.Answer, 0, len(req.Questions))
 	for _, q := range req.Questions {
 		selected := selections[q.ID]
 		if q.Type == question.TypeYesNo {
 			yes := selected[yesChoiceID]
-			answers = append(answers, question.Answer{QuestionID: q.ID, Yes: &yes})
+			answers = append(answers, question.Answer{
+				QuestionID: q.ID,
+				Yes:        &yes,
+				FillInText: strings.TrimSpace(fillIns[q.ID]),
+			})
 			continue
 		}
 		var ids []string
@@ -202,7 +320,11 @@ func answersFromSelections(req question.Request, selections map[string]map[strin
 				ids = append(ids, choice.ID)
 			}
 		}
-		answers = append(answers, question.Answer{QuestionID: q.ID, SelectedIDs: ids})
+		answers = append(answers, question.Answer{
+			QuestionID:  q.ID,
+			SelectedIDs: ids,
+			FillInText:  strings.TrimSpace(fillIns[q.ID]),
+		})
 	}
 	return answers
 }

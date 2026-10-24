@@ -225,6 +225,17 @@ func (c *restClient) updateInteraction(ctx context.Context, interactionID, token
 	return err
 }
 
+// respondModal answers a component interaction with a modal form.
+func (c *restClient) respondModal(ctx context.Context, interactionID, token string, modal discordModal) error {
+	body := map[string]any{
+		// 9: MODAL.
+		"type": 9,
+		"data": modal,
+	}
+	_, err := c.do(ctx, http.MethodPost, "/interactions/"+interactionID+"/"+token+"/callback", body)
+	return err
+}
+
 // triggerTyping shows the typing indicator in a channel.
 func (c *restClient) triggerTyping(ctx context.Context, channelID string) error {
 	_, err := c.do(ctx, http.MethodPost, "/channels/"+channelID+"/typing", nil)

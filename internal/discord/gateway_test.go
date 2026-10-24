@@ -170,8 +170,11 @@ func TestGatewayDispatchesApplicationCommands(t *testing.T) {
 		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i1","token":"itok","type":2,"channel_id":"c1","data":{"name":"status"},"member":{"user":{"id":"u1"}}}`)})
 		// Message-component presses arrive as interaction type 3.
 		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i2","token":"itok","type":3,"channel_id":"c1","data":{"custom_id":"b1","component_type":2},"member":{"user":{"id":"u1"}}}`)})
+		// Modal submissions arrive as interaction type 5 and carry the
+		// submitted form values.
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i3","token":"itok","type":5,"channel_id":"c1","data":{"custom_id":"cqm:req-1:0","components":[{"type":1,"components":[{"type":4,"custom_id":"answer","value":"typed"}]}]},"member":{"user":{"id":"u1"}}}`)})
 		// Any other interaction type is ignored.
-		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i3","token":"itok","type":5,"channel_id":"c1","data":{}}`)})
+		writeGatewayFrame(t, ctx, conn, gatewayPayload{Op: gwOpDispatch, T: "INTERACTION_CREATE", D: json.RawMessage(`{"id":"i4","token":"itok","type":4,"channel_id":"c1","data":{}}`)})
 
 		// Give the client time to read the frames before the handler
 		// returns and the connection closes.
@@ -205,6 +208,15 @@ func TestGatewayDispatchesApplicationCommands(t *testing.T) {
 		require.Equal(t, "u1", in.userID())
 	case <-time.After(5 * time.Second):
 		t.Fatal("component interaction was not dispatched")
+	}
+	select {
+	case in := <-interactions:
+		require.Equal(t, "i3", in.ID)
+		require.Equal(t, gwInteractionModalSubmit, in.Type)
+		require.Equal(t, "cqm:req-1:0", in.Data.CustomID)
+		require.Equal(t, "typed", modalInputValue(in.Data.Components))
+	case <-time.After(5 * time.Second):
+		t.Fatal("modal submit interaction was not dispatched")
 	}
 	select {
 	case in := <-interactions:

@@ -93,6 +93,7 @@ type gatewayReaction struct {
 const (
 	gwInteractionApplicationCommand = 2
 	gwInteractionMessageComponent   = 3
+	gwInteractionModalSubmit        = 5
 )
 
 // gatewayInteraction is the INTERACTION_CREATE payload subset for
@@ -111,10 +112,20 @@ type gatewayInteraction struct {
 // gatewayInteractionData is the command or component payload of an
 // interaction.
 type gatewayInteractionData struct {
-	Name          string                     `json:"name"`
-	Options       []gatewayInteractionOption `json:"options"`
-	CustomID      string                     `json:"custom_id"`
-	ComponentType int                        `json:"component_type"`
+	Name          string                        `json:"name"`
+	Options       []gatewayInteractionOption    `json:"options"`
+	CustomID      string                        `json:"custom_id"`
+	ComponentType int                           `json:"component_type"`
+	Components    []gatewayInteractionComponent `json:"components"`
+}
+
+// gatewayInteractionComponent is one modal-submit form component. Modals
+// send an array of action rows, each holding the text inputs' values.
+type gatewayInteractionComponent struct {
+	Type       int                           `json:"type"`
+	CustomID   string                        `json:"custom_id"`
+	Value      string                        `json:"value"`
+	Components []gatewayInteractionComponent `json:"components"`
 }
 
 // gatewayInteractionOption is one command argument. The bridge only
@@ -393,7 +404,9 @@ func (g *gateway) dispatch(p gatewayPayload) {
 		if err := json.Unmarshal(p.D, &d); err != nil {
 			return
 		}
-		if d.Type != gwInteractionApplicationCommand && d.Type != gwInteractionMessageComponent {
+		if d.Type != gwInteractionApplicationCommand &&
+			d.Type != gwInteractionMessageComponent &&
+			d.Type != gwInteractionModalSubmit {
 			return
 		}
 		g.onInteraction(d)

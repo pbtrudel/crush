@@ -68,6 +68,7 @@ type discordAPI interface {
 	gatewayURL(ctx context.Context) (string, error)
 	respondInteraction(ctx context.Context, interactionID, token, content string, ephemeral bool) error
 	updateInteraction(ctx context.Context, interactionID, token, content string, components []discordComponent) error
+	respondModal(ctx context.Context, interactionID, token string, modal discordModal) error
 	ensureApplicationCommands(ctx context.Context, guildID string, cmds []applicationCommand) error
 }
 
@@ -84,16 +85,18 @@ type Bridge struct {
 	sessMu    sync.RWMutex
 	cfg       Config
 
-	api      discordAPI
-	gateway  *gateway
-	http     *http.Client
-	gwLoop   func(ctx context.Context)
-	events   <-chan pubsub.Event[tea.Msg]
-	input    chan inputEvent
-	now      func() time.Time
-	editRate time.Duration
-	tick     time.Duration
-	typing   time.Duration
+	api            discordAPI
+	interactionAPI discordAPI
+	gateway        *gateway
+	http           *http.Client
+	gwLoop         func(ctx context.Context)
+	events         <-chan pubsub.Event[tea.Msg]
+	input          chan inputEvent
+	interactions   chan gatewayInteraction
+	now            func() time.Time
+	editRate       time.Duration
+	tick           time.Duration
+	typing         time.Duration
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -111,10 +114,17 @@ type Bridge struct {
 	permMessage     map[string]string
 	questions       map[string]question.Request
 	questionOrder   []string
-	questionMessage map[string]string
+	// questionMessages holds one message per question (in order), so a
+	// question's buttons render directly under it instead of in a single
+	// card whose controls can land mid-form. The submit row rides on the
+	// last question's message.
+	questionMessages map[string][]string
 	// questionSelections tracks in-progress button answers per batch:
 	// question id -> selected choice ids. Cleared when the batch resolves.
 	questionSelections map[string]map[string]map[string]bool
+	// questionFillIns holds typed "Something else" answers per batch:
+	// question id -> text. Cleared when the batch resolves.
+	questionFillIns map[string]map[string]string
 
 	subMu       sync.Mutex
 	submissions []promptSubmission
@@ -157,14 +167,15 @@ type promptSubmission struct {
 // bridgeDeps are the injected collaborators of a bridge; production
 // Start fills them with real implementations, tests with fakes.
 type bridgeDeps struct {
-	api          discordAPI
-	events       <-chan pubsub.Event[tea.Msg]
-	gatewayStart func(ctx context.Context)
-	now          func() time.Time
-	tick         time.Duration
-	editThrottle time.Duration
-	http         *http.Client
-	typing       time.Duration
+	api            discordAPI
+	interactionAPI discordAPI
+	events         <-chan pubsub.Event[tea.Msg]
+	gatewayStart   func(ctx context.Context)
+	now            func() time.Time
+	tick           time.Duration
+	editThrottle   time.Duration
+	http           *http.Client
+	typing         time.Duration
 }
 
 // Start creates the Discord control thread for a live session and
@@ -185,8 +196,9 @@ func Start(ctx context.Context, ws workspace.Workspace, sessionID, mode string) 
 // start wires and launches a bridge, creating its control thread.
 func start(ctx context.Context, env commandEnv, application *app.App, sessionID string, cfg Config, mode string) (*Bridge, error) {
 	b := newBridge(env, application, sessionID, cfg, mode, bridgeDeps{
-		api:  newRESTClient(cfg.Token),
-		http: &http.Client{Timeout: 30 * time.Second},
+		api:            newRESTClient(cfg.Token),
+		interactionAPI: newRESTClient(cfg.Token),
+		http:           &http.Client{Timeout: 30 * time.Second},
 	})
 	sess, err := env.GetSession(ctx, sessionID)
 	if err != nil {
@@ -231,8 +243,9 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 		permissions:        map[string]permission.PermissionRequest{},
 		permMessage:        map[string]string{},
 		questions:          map[string]question.Request{},
-		questionMessage:    map[string]string{},
+		questionMessages:   map[string][]string{},
 		questionSelections: map[string]map[string]map[string]bool{},
+		questionFillIns:    map[string]map[string]string{},
 		countedResults:     map[string]bool{},
 		frozen:             map[string]bool{},
 		completed:          map[string]bool{},
@@ -245,6 +258,11 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 	}
 	if b.api == nil {
 		b.api = newRESTClient(cfg.Token)
+	}
+	if deps.interactionAPI != nil {
+		b.interactionAPI = deps.interactionAPI
+	} else {
+		b.interactionAPI = b.api
 	}
 	if b.http == nil {
 		b.http = &http.Client{Timeout: 30 * time.Second}
@@ -276,8 +294,10 @@ func (b *Bridge) launch(ctx context.Context) error {
 		b.events = make(chan pubsub.Event[tea.Msg])
 	}
 	b.input = make(chan inputEvent, 32)
+	b.interactions = make(chan gatewayInteraction, 32)
 	go b.eventLoop()
 	go b.inputLoop()
+	go b.interactionLoop()
 	go b.typingLoop()
 	go b.footerLoop()
 	if b.gwLoop != nil {
@@ -425,35 +445,53 @@ func (b *Bridge) postAboveWithComponents(content string, components []discordCom
 		return ""
 	}
 
+	// Discord renders components after the message content, so when a long
+	// card is split into several messages the controls must ride on the
+	// LAST chunk. Attaching them to the first chunk strands the buttons in
+	// the middle of the form, above the rest of its text.
+	lastChunk := len(chunks) - 1
+	componentID := ""
 	firstID := ""
-	rest := chunks
+	restStart := 0
 	if f.messageID != "" {
-		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0], components...); err == nil {
+		var comps []discordComponent
+		if lastChunk == 0 {
+			comps = components
+		}
+		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0], comps...); err == nil {
 			firstID = f.messageID
-			rest = chunks[1:]
+			if len(comps) > 0 {
+				componentID = firstID
+			}
+			restStart = 1
 		} else {
 			slog.Debug("Discord bridge: failed to reuse footer for message", "error", err.Error())
 		}
 		f.messageID = ""
 		f.lastBody = ""
 	}
-	for i, chunk := range rest {
-		var id string
-		var err error
-		if i == 0 && firstID == "" {
-			id, err = b.api.createMessage(b.ctx, b.threadID, chunk, components...)
-		} else {
-			id, err = b.api.createMessage(b.ctx, b.threadID, chunk)
+	for i := restStart; i < len(chunks); i++ {
+		chunk := chunks[i]
+		var comps []discordComponent
+		if i == lastChunk {
+			comps = components
 		}
+		id, err := b.api.createMessage(b.ctx, b.threadID, chunk, comps...)
 		if err != nil {
 			slog.Debug("Discord bridge: failed to post message", "error", err.Error())
-			return firstID
+			break
 		}
-		if firstID == "" && i == 0 {
+		if firstID == "" && i == restStart {
 			firstID = id
+		}
+		if len(comps) > 0 {
+			componentID = id
 		}
 	}
 	b.attachFooterLocked()
+	if len(components) > 0 && componentID != "" {
+		return componentID
+	}
 	return firstID
 }
 
@@ -823,32 +861,35 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 	if req.SessionID != b.currentSessionID() {
 		return
 	}
+	selections := newQuestionSelections(req)
+	fillIns := newQuestionFillIns(req)
 	b.pendingMu.Lock()
 	b.questions[req.ID] = req
 	b.questionOrder = append(b.questionOrder, req.ID)
-	b.pendingMu.Unlock()
-
-	selections := newQuestionSelections(req)
-	b.pendingMu.Lock()
 	b.questionSelections[req.ID] = selections
+	b.questionFillIns[req.ID] = fillIns
 	b.pendingMu.Unlock()
 
-	rows := questionRows(req, selections)
-	hint := questionHintAnswer
-	if len(rows) > 0 {
-		hint = questionHintButtons
-	}
-	id := b.postAboveWithComponents(renderQuestionCard(req, hint), rows)
-	if id == "" {
-		slog.Debug("Discord bridge: failed to post question card")
-		b.pendingMu.Lock()
-		delete(b.questions, req.ID)
-		delete(b.questionSelections, req.ID)
-		b.pendingMu.Unlock()
-		return
+	ids := make([]string, 0, len(req.Questions))
+	for i := range req.Questions {
+		// One message per question keeps that question's controls directly
+		// under it. The submit row rides on the final question's message.
+		includeSubmit := i == len(req.Questions)-1
+		rows := questionRows(req, i, selections, fillIns, includeSubmit)
+		id := b.postAboveWithComponents(renderQuestionContent(req, i, questionHintButtons), rows)
+		if id == "" {
+			slog.Debug("Discord bridge: failed to post question card")
+			b.pendingMu.Lock()
+			delete(b.questions, req.ID)
+			delete(b.questionSelections, req.ID)
+			delete(b.questionFillIns, req.ID)
+			b.pendingMu.Unlock()
+			return
+		}
+		ids = append(ids, id)
 	}
 	b.pendingMu.Lock()
-	b.questionMessage[req.ID] = id
+	b.questionMessages[req.ID] = ids
 	b.pendingMu.Unlock()
 }
 
@@ -862,12 +903,13 @@ func (b *Bridge) handleQuestionNotification(n question.Notification) {
 	}
 	delete(b.questions, n.BatchID)
 	delete(b.questionSelections, n.BatchID)
-	msgID := b.questionMessage[n.BatchID]
-	delete(b.questionMessage, n.BatchID)
+	delete(b.questionFillIns, n.BatchID)
+	msgIDs := b.questionMessages[n.BatchID]
+	delete(b.questionMessages, n.BatchID)
 	b.pendingMu.Unlock()
 
-	if msgID != "" {
-		if err := b.api.editMessage(b.ctx, b.threadID, msgID, answeredQuestionCard(req)); err != nil {
+	for i, msgID := range msgIDs {
+		if err := b.api.editMessage(b.ctx, b.threadID, msgID, answeredQuestionCard(req, i)); err != nil {
 			slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
 		}
 	}
@@ -929,55 +971,51 @@ const (
 	questionHintNone questionHint = iota
 	// questionHintButtons tells the user the choices are buttons.
 	questionHintButtons
-	// questionHintAnswer points at /answer, or at the terminal when the
-	// batch is too large for the command to accept.
-	questionHintAnswer
 )
 
-// renderQuestionCard renders a question batch for the thread. Each choice
-// carries its description on an indented sub-line, matching what the TUI
-// shows.
-func renderQuestionCard(req question.Request, hint questionHint) string {
+// renderQuestionContent renders one question of a batch. Each question is
+// posted as its own message so its controls sit directly under it; the
+// choices carry their descriptions on indented sub-lines, matching the TUI.
+func renderQuestionContent(req question.Request, questionIndex int, hint questionHint) string {
+	if questionIndex < 0 || questionIndex >= len(req.Questions) {
+		return ""
+	}
+	q := req.Questions[questionIndex]
+
 	var sb strings.Builder
-	for i, q := range req.Questions {
-		if len(req.Questions) > 1 {
-			fmt.Fprintf(&sb, "%s **Question %d/%d", iconQuestion, i+1, len(req.Questions))
-		} else {
-			sb.WriteString(iconQuestion + " **Question")
-		}
-		if q.Label != "" {
-			sb.WriteString(" · " + compactLine(q.Label, 80))
-		}
-		sb.WriteString("**\n")
-		sb.WriteString(q.Text + "\n")
-		if q.Description != "" {
-			sb.WriteString("-# " + compactLine(q.Description, 300) + "\n")
-		}
-		for j, choice := range questionChoices(q) {
-			fmt.Fprintf(&sb, "**%d.** %s\n", j+1, compactLine(choice.Label, 120))
-			if choice.Description != "" {
-				sb.WriteString("-# " + compactLine(choice.Description, 200) + "\n")
-			}
+	if len(req.Questions) > 1 {
+		fmt.Fprintf(&sb, "%s **Question %d/%d", iconQuestion, questionIndex+1, len(req.Questions))
+	} else {
+		sb.WriteString(iconQuestion + " **Question")
+	}
+	if q.Label != "" {
+		sb.WriteString(" · " + compactLine(q.Label, 80))
+	}
+	sb.WriteString("**\n")
+	sb.WriteString(q.Text + "\n")
+	if q.Description != "" {
+		sb.WriteString("-# " + compactLine(q.Description, 300) + "\n")
+	}
+	for j, choice := range questionChoices(q) {
+		fmt.Fprintf(&sb, "**%d.** %s\n", j+1, compactLine(choice.Label, 120))
+		if choice.Description != "" {
+			// Keep a question's rendered card under Discord's 2000-char
+			// message limit: a question is one message so its controls
+			// stay directly beneath it, and a redraw replaces that message
+			// whole.
+			sb.WriteString("-# " + compactLine(choice.Description, 100) + "\n")
 		}
 	}
 	switch hint {
 	case questionHintButtons:
-		sb.WriteString("-# press a button to answer")
-	case questionHintAnswer:
-		if len(req.Questions) > 1 {
-			// /answer only takes single-question batches; pointing at it
-			// here would guarantee a "multiple parts" refusal.
-			sb.WriteString("-# answer in the terminal")
-		} else {
-			sb.WriteString("-# answer with `/answer <text>` or `/answer #1` for a choice")
-		}
+		sb.WriteString("-# press a button to answer, or **Something else** to type your own")
 	}
 	return sb.String()
 }
 
-// answeredQuestionCard renders the resolved form of a batch card.
-func answeredQuestionCard(req question.Request) string {
-	return renderQuestionCard(req, questionHintNone) + "\n-# ✅ answered"
+// answeredQuestionCard renders the resolved form of one question's message.
+func answeredQuestionCard(req question.Request, questionIndex int) string {
+	return renderQuestionContent(req, questionIndex, questionHintNone) + "\n-# ✅ answered"
 }
 
 // ── Discord input ────────────────────────────────────────────────────────
@@ -993,6 +1031,38 @@ func (b *Bridge) enqueueInput(ev inputEvent) {
 	select {
 	case b.input <- ev:
 	case <-b.ctx.Done():
+	}
+}
+
+// enqueueInteraction queues a Discord interaction on its own channel.
+// Interactions must be acknowledged within three seconds, so they cannot
+// share the serial prompt queue: a slow prompt submission (queue lookups,
+// footer edits) would otherwise make button presses look like "application
+// did not respond".
+func (b *Bridge) enqueueInteraction(in gatewayInteraction) {
+	select {
+	case b.interactions <- in:
+	case <-b.ctx.Done():
+	default:
+		slog.Debug("Discord bridge: dropping interaction, queue full", "type", in.Type)
+	}
+}
+
+// interactionLoop answers button presses and modal submissions
+// independently of prompt traffic.
+func (b *Bridge) interactionLoop() {
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case in := <-b.interactions:
+			switch in.Type {
+			case gwInteractionMessageComponent:
+				b.handleQuestionComponent(in)
+			case gwInteractionModalSubmit:
+				b.handleQuestionModalSubmit(in)
+			}
+		}
 	}
 }
 
@@ -1105,6 +1175,8 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	b.pendingMu.Lock()
 	req, pending := b.questions[ref.requestID]
 	selections := b.questionSelections[ref.requestID]
+	fillIns := b.questionFillIns[ref.requestID]
+	msgIDs := append([]string(nil), b.questionMessages[ref.requestID]...)
 	b.pendingMu.Unlock()
 	if !pending {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
@@ -1112,15 +1184,19 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	}
 
 	if ref.submit {
-		if !selectionsComplete(req, selections) {
-			b.answerInteraction(in, iconError+" Select an answer for every question first.")
+		if !selectionsComplete(req, selections, fillIns) {
+			b.answerInteraction(in, iconError+" Answer every question first, or use Something else.")
 			return
 		}
-		b.submitQuestionAnswers(in, req, selections)
+		b.submitQuestionAnswers(in, req, selections, fillIns, msgIDs, len(req.Questions)-1)
 		return
 	}
 
 	if ref.questionIndex < 0 || ref.questionIndex >= len(req.Questions) {
+		return
+	}
+	if ref.custom {
+		b.openQuestionModal(in, req, ref.questionIndex)
 		return
 	}
 	q := req.Questions[ref.questionIndex]
@@ -1143,14 +1219,13 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	} else {
 		selections[q.ID] = map[string]bool{choiceID: true}
 	}
-	msgID := b.questionMessage[req.ID]
 	stillPending := b.questions[req.ID].ID != ""
 	b.pendingMu.Unlock()
 
 	// A lone yes/no or single-choice question is answered by the press
-	// itself; everything else redraws the card and waits for Submit.
+	// itself; everything else redraws the question and waits for Submit.
 	if !questionNeedsSubmit(req) {
-		b.submitQuestionAnswers(in, req, selections)
+		b.submitQuestionAnswers(in, req, selections, fillIns, msgIDs, ref.questionIndex)
 		return
 	}
 	// The batch may have been resolved from the TUI between the pending
@@ -1159,45 +1234,151 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
 		return
 	}
-	card := renderQuestionCard(req, questionHintButtons)
-	rows := questionRows(req, selections)
-	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, rows); err != nil {
-		slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
-		if msgID != "" {
-			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card, rows...); editErr != nil {
-				slog.Debug("Discord bridge: failed to redraw question card", "error", editErr.Error())
+	b.redrawQuestion(in, req, ref.questionIndex, selections, fillIns, msgIDs)
+}
+
+// openQuestionModal answers a "Something else" press with a modal text
+// input. The modal response is the interaction acknowledgement, so it is
+// sent immediately.
+func (b *Bridge) openQuestionModal(in gatewayInteraction, req question.Request, questionIndex int) {
+	modal := customAnswerModal(req, questionIndex)
+	if err := b.interactionAPI.respondModal(b.ctx, in.ID, in.Token, modal); err != nil {
+		slog.Debug("Discord bridge: failed to open question modal", "error", err.Error())
+	}
+}
+
+// handleQuestionModalSubmit records a custom answer typed into a question
+// modal and either submits the batch or redraws the question with the new
+// answer highlighted.
+func (b *Bridge) handleQuestionModalSubmit(in gatewayInteraction) {
+	if in.ChannelID != b.threadID {
+		return
+	}
+	if !b.cfg.allowedUser(in.userID()) {
+		b.answerInteraction(in, "⛔ Not authorized for this session.")
+		return
+	}
+	requestID, questionIndex, ok := parseModalCustomID(in.Data.CustomID)
+	if !ok {
+		return
+	}
+
+	b.pendingMu.Lock()
+	req, pending := b.questions[requestID]
+	selections := b.questionSelections[requestID]
+	fillIns := b.questionFillIns[requestID]
+	msgIDs := append([]string(nil), b.questionMessages[requestID]...)
+	b.pendingMu.Unlock()
+	if !pending {
+		b.answerInteraction(in, iconError+" That question was already resolved.")
+		return
+	}
+	if questionIndex < 0 || questionIndex >= len(req.Questions) {
+		return
+	}
+	value := strings.TrimSpace(modalInputValue(in.Data.Components))
+	if value == "" {
+		b.answerInteraction(in, iconError+" Type an answer first.")
+		return
+	}
+
+	q := req.Questions[questionIndex]
+	b.pendingMu.Lock()
+	if fillIns == nil {
+		fillIns = map[string]string{}
+	}
+	fillIns[q.ID] = value
+	b.questionFillIns[requestID] = fillIns
+	b.pendingMu.Unlock()
+
+	if !questionNeedsSubmit(req) {
+		b.submitQuestionAnswers(in, req, selections, fillIns, msgIDs, questionIndex)
+		return
+	}
+	b.redrawQuestion(in, req, questionIndex, selections, fillIns, msgIDs)
+}
+
+// redrawQuestion updates one question's message in place. When the last
+// question's submit row also needs to reflect the new state (a press on an
+// earlier question), that message is edited over REST.
+func (b *Bridge) redrawQuestion(in gatewayInteraction, req question.Request, questionIndex int, selections map[string]map[string]bool, fillIns map[string]string, msgIDs []string) {
+	includeSubmit := questionIndex == len(req.Questions)-1
+	card := renderQuestionContent(req, questionIndex, questionHintButtons)
+	rows := questionRows(req, questionIndex, selections, fillIns, includeSubmit)
+	if err := b.interactionAPI.updateInteraction(b.ctx, in.ID, in.Token, card, rows); err != nil {
+		slog.Debug("Discord bridge: failed to update question message", "error", err.Error())
+		if questionIndex < len(msgIDs) {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, msgIDs[questionIndex], card, rows...); editErr != nil {
+				slog.Debug("Discord bridge: failed to redraw question message", "error", editErr.Error())
 			}
+		}
+	}
+	if includeSubmit {
+		return
+	}
+	last := len(req.Questions) - 1
+	if last < len(msgIDs) {
+		lastCard := renderQuestionContent(req, last, questionHintButtons)
+		lastRows := questionRows(req, last, selections, fillIns, true)
+		if err := b.api.editMessage(b.ctx, b.threadID, msgIDs[last], lastCard, lastRows...); err != nil {
+			slog.Debug("Discord bridge: failed to refresh submit row", "error", err.Error())
 		}
 	}
 }
 
-// submitQuestionAnswers sends a batch's selected answers and marks its card
-// resolved. The question notification that follows is a no-op because the
-// batch is already removed here.
-func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool) {
-	if !b.env.QuestionAnswer(answersFromSelections(req, selections)) {
+// submitQuestionAnswers sends a batch's answers and marks every question
+// message resolved. The question notification that follows is a no-op
+// because the batch is already removed here.
+func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool, fillIns map[string]string, msgIDs []string, originIndex int) {
+	if !b.env.QuestionAnswer(answersFromSelections(req, selections, fillIns)) {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
 		return
 	}
 	b.pendingMu.Lock()
-	msgID := b.questionMessage[req.ID]
 	delete(b.questions, req.ID)
 	delete(b.questionSelections, req.ID)
-	delete(b.questionMessage, req.ID)
+	delete(b.questionFillIns, req.ID)
+	delete(b.questionMessages, req.ID)
 	b.pendingMu.Unlock()
-	card := answeredQuestionCard(req)
-	if err := b.api.updateInteraction(b.ctx, in.ID, in.Token, card, nil); err != nil {
-		// The callback failed (expired interaction, Discord error). The
-		// notification path is a no-op because the batch is already gone
-		// here, so resolve the card over REST or the thread keeps live
-		// buttons for a question that can no longer be answered.
-		slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
-		if msgID != "" {
+
+	// The interaction callback acknowledges the press and can rewrite the
+	// originating message; the other question messages are resolved over
+	// REST.
+	acked := false
+	for i, msgID := range msgIDs {
+		card := answeredQuestionCard(req, i)
+		if acked || i != originIndex {
+			if err := b.api.editMessage(b.ctx, b.threadID, msgID, card); err != nil {
+				slog.Debug("Discord bridge: failed to resolve question message", "error", err.Error())
+			}
+			continue
+		}
+		if err := b.interactionAPI.updateInteraction(b.ctx, in.ID, in.Token, card, nil); err != nil {
+			slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
 			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card); editErr != nil {
 				slog.Debug("Discord bridge: failed to resolve question card", "error", editErr.Error())
 			}
 		}
+		acked = true
 	}
+	if !acked && len(msgIDs) > 0 {
+		// No message matched the origin index (should not happen); still
+		// acknowledge so Discord does not show "application did not respond".
+		b.answerInteraction(in, "✅ Answered.")
+	}
+}
+
+// modalInputValue extracts the first non-empty text input from a modal
+// submit payload.
+func modalInputValue(rows []gatewayInteractionComponent) string {
+	for _, row := range rows {
+		for _, component := range row.Components {
+			if v := strings.TrimSpace(component.Value); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // interactionCommand maps an application command onto the bridge's
@@ -1219,7 +1400,7 @@ func interactionCommand(in gatewayInteraction) (name, args string) {
 // are logged only: Discord shows "The application did not respond" when
 // no callback arrives, and there is nothing else the bridge can do.
 func (b *Bridge) answerInteraction(in gatewayInteraction, content string) {
-	if err := b.api.respondInteraction(b.ctx, in.ID, in.Token, content, true); err != nil {
+	if err := b.interactionAPI.respondInteraction(b.ctx, in.ID, in.Token, content, true); err != nil {
 		slog.Debug("Discord bridge: interaction response failed", "error", err.Error())
 	}
 }
@@ -1275,7 +1456,11 @@ func (b *Bridge) launchRun(prompt string, attachments ...message.Attachment) {
 	}
 	go func() {
 		if err := b.env.AgentRun(context.Background(), sessionID, prompt, attachments...); err != nil && b.ctx.Err() == nil {
-			b.post(iconError + " Failed to send prompt: " + err.Error())
+			// AgentRun blocks for the whole turn in local mode, so a turn
+			// failure (provider timeout, tool error) arrives here. The
+			// footer and agent notifications already report it; calling it
+			// a failed prompt is wrong and duplicates the error.
+			slog.Debug("Discord bridge: agent run ended with error", "error", err.Error())
 		}
 	}()
 }
@@ -1361,7 +1546,7 @@ func (b *Bridge) runGateway(ctx context.Context) {
 	b.gateway.url = url
 	b.gateway.onMessage = func(m gatewayMessage) { b.enqueueInput(inputEvent{message: &m}) }
 	b.gateway.onReaction = func(r gatewayReaction) { b.enqueueInput(inputEvent{reaction: &r}) }
-	b.gateway.onInteraction = func(in gatewayInteraction) { b.enqueueInput(inputEvent{interaction: &in}) }
+	b.gateway.onInteraction = func(in gatewayInteraction) { b.enqueueInteraction(in) }
 	_ = b.gateway.run(ctx, func(err error) {
 		b.note("Discord gateway error: "+err.Error()+" (check the bot token, MESSAGE CONTENT intent, and channel permissions)", true)
 	})
@@ -1482,8 +1667,9 @@ func (b *Bridge) rebindSession(ctx context.Context, to session.Session) {
 	b.permMessage = map[string]string{}
 	b.questions = map[string]question.Request{}
 	b.questionOrder = nil
-	b.questionMessage = map[string]string{}
+	b.questionMessages = map[string][]string{}
 	b.questionSelections = map[string]map[string]map[string]bool{}
+	b.questionFillIns = map[string]map[string]string{}
 	b.pendingMu.Unlock()
 
 	b.subMu.Lock()
