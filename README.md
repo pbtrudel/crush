@@ -606,8 +606,8 @@ message.
 
 - `/compact` compacts the current session on demand.
 - Auto-compaction runs after a finished turn once the context reaches
-  `option auto-compact-threshold` (default `0.85`). Set `0.5` to compact at
-  half the window, or `0` to disable.
+  `option auto-compact-threshold` (default `0.5`). Set `0.85` to keep more
+  verbatim history, or `0` to disable.
 - `option compact-tail-tokens` tunes how many tokens of recent conversation
   are kept verbatim (default `24576`; `0` keeps only the summary).
 - `option auto-summarize false` disables automatic compaction entirely;

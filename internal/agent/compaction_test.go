@@ -21,6 +21,9 @@ import (
 type stubSummaryModel struct {
 	summaryText string
 	calls       []fantasy.Call
+	// usage overrides the fixed test usage when non-zero, so a test can
+	// report a prompt large enough to cross the auto-compaction threshold.
+	usage fantasy.Usage
 }
 
 func (m *stubSummaryModel) Provider() string { return "stub" }
@@ -36,10 +39,14 @@ func (m *stubSummaryModel) Stream(_ context.Context, call fantasy.Call) (fantasy
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.summaryText})
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
+		usage := fantasy.Usage{InputTokens: 1_000, OutputTokens: 100, TotalTokens: 1_100}
+		if m.usage != (fantasy.Usage{}) {
+			usage = m.usage
+		}
 		yield(fantasy.StreamPart{
 			Type:         fantasy.StreamPartTypeFinish,
 			FinishReason: fantasy.FinishReasonStop,
-			Usage:        fantasy.Usage{InputTokens: 1_000, OutputTokens: 100, TotalTokens: 1_100},
+			Usage:        usage,
 		})
 	}, nil
 }
@@ -229,12 +236,12 @@ func TestBuildCompactionPrompt(t *testing.T) {
 func TestShouldAutoCompact(t *testing.T) {
 	env := testEnv(t)
 
-	t.Run("default threshold fires at 85 percent", func(t *testing.T) {
+	t.Run("default threshold fires at 50 percent", func(t *testing.T) {
 		agent := newCompactionAgent(env, nil, nil, false)
 		model := agent.largeModel.Get()
-		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 169_999}))
-		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 170_000}))
-		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 100_000, CompletionTokens: 100_000}))
+		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 99_999}))
+		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 100_000}))
+		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 50_000, CompletionTokens: 50_000}))
 	})
 
 	t.Run("configured threshold is honored", func(t *testing.T) {
@@ -269,6 +276,30 @@ func TestShouldAutoCompact(t *testing.T) {
 		model := Model{CatwalkCfg: catwalk.Model{}}
 		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 1_000_000}))
 	})
+}
+
+// TestAutoCompact_DefaultThresholdAfterTurn is the end-to-end counterpart of
+// TestShouldAutoCompact: with no threshold configured, a finished turn that
+// leaves the session above half the window must compact, so the default
+// really does run at 50% and not only when the unit-level predicate is
+// called.
+func TestAutoCompact_DefaultThresholdAfterTurn(t *testing.T) {
+	env := testEnv(t)
+	stub := &stubSummaryModel{
+		summaryText: "# Conversation Summary\n\nAll good.",
+		usage:       fantasy.Usage{InputTokens: 150_000, OutputTokens: 100, TotalTokens: 150_100},
+	}
+	agent := newCompactionAgent(env, stub, nil, false)
+
+	sess, err := env.sessions.Create(t.Context(), "Auto compact")
+	require.NoError(t, err)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "hello"})
+	require.NoError(t, err)
+
+	updated, err := env.sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, updated.SummaryMessageID, "a turn at 75%% of the window should auto-compact")
 }
 
 func TestCompactionTailBudget(t *testing.T) {

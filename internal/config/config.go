@@ -466,7 +466,7 @@ type Options struct {
 	DisableAutoSummarize bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
-	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.85,example=0.5"`
+	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
@@ -512,8 +512,9 @@ func (o *Options) GetRequestTimeout() time.Duration {
 
 // DefaultAutoCompactThreshold is the fraction of the context window at
 // which a finished turn triggers automatic compaction when the user has
-// not configured one.
-const DefaultAutoCompactThreshold = 0.85
+// not configured one. Half the window is the default so compaction keeps a
+// full half-window of headroom for the work that follows.
+const DefaultAutoCompactThreshold = 0.5
 
 // DefaultCompactTailTokens is the verbatim tail budget used when the user
 // has not configured one.
