@@ -17,6 +17,7 @@ import (
 
 type mockBashPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
+	skip bool
 }
 
 func (m *mockBashPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
@@ -36,7 +37,7 @@ func (m *mockBashPermissionService) AutoApproveSession(sessionID string) {}
 func (m *mockBashPermissionService) SetSkipRequests(skip bool) {}
 
 func (m *mockBashPermissionService) SkipRequests() bool {
-	return false
+	return m.skip
 }
 
 func (m *mockBashPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
@@ -127,6 +128,41 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
 	return NewBashTool(perms, workingDir, workingDir, attribution, "test-model"), perms
+}
+
+func TestBlockFuncs_SudoAllowedOnlyInYoloMode(t *testing.T) {
+	t.Parallel()
+
+	blocked := func(funcs []shell.BlockFunc, command string) bool {
+		args := strings.Fields(command)
+		for _, fn := range funcs {
+			if fn(args) {
+				return true
+			}
+		}
+		return false
+	}
+
+	require.True(t, blocked(blockFuncs(false), "sudo -n true"), "sudo must be blocked outside YOLO mode")
+	require.False(t, blocked(blockFuncs(true), "sudo -n true"), "sudo must be allowed in YOLO mode")
+}
+
+func TestBashTool_SudoNotBlockedInYoloMode(t *testing.T) {
+	workingDir := t.TempDir()
+	permissions := &mockBashPermissionService{
+		Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		skip:   true,
+	}
+	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
+	tool := NewBashTool(permissions, workingDir, workingDir, attribution, "test-model")
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runBashTool(t, tool, ctx, BashParams{
+		Description: "yolo sudo",
+		Command:     "sudo -n true",
+	})
+
+	require.NotContains(t, resp.Content, "not allowed for security reasons")
 }
 
 func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {
