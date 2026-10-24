@@ -217,6 +217,31 @@ func TestBackgroundShellManager_List(t *testing.T) {
 	manager.Kill(bgShell2.ID)
 }
 
+func TestBackgroundShellManager_StartReapsCompletedJobsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	workingDir := t.TempDir()
+	manager := newBackgroundShellManager()
+
+	shells := make([]*BackgroundShell, 0, MaxBackgroundJobs)
+	for range MaxBackgroundJobs {
+		bgShell, err := manager.Start(ctx, workingDir, nil, "echo done", "")
+		require.NoError(t, err)
+		shells = append(shells, bgShell)
+	}
+	for _, bgShell := range shells {
+		bgShell.Wait()
+	}
+	require.Len(t, manager.List(), MaxBackgroundJobs)
+
+	// Completed jobs count toward the limit until reaped, so starting another
+	// shell must reclaim them instead of failing.
+	bgShell, err := manager.Start(ctx, workingDir, nil, "echo done", "")
+	require.NoError(t, err)
+	bgShell.Wait()
+}
+
 func TestBackgroundShellManager_KillAll(t *testing.T) {
 	t.Parallel()
 
