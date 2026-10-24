@@ -87,7 +87,12 @@ func GetBackgroundShellManager() *BackgroundShellManager {
 
 // Start creates and starts a new background shell with the given command.
 func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
-	// Check job limit
+	// Check job limit, first reclaiming completed jobs. Finished jobs are kept
+	// around so their output stays readable, but they must not keep new shells
+	// from starting.
+	if m.shells.Len() >= MaxBackgroundJobs {
+		m.reapCompletedBefore(time.Now().Unix())
+	}
 	if m.shells.Len() >= MaxBackgroundJobs {
 		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Please terminate or wait for some jobs to complete", MaxBackgroundJobs)
 	}
@@ -173,13 +178,15 @@ func (m *BackgroundShellManager) List() []string {
 
 // Cleanup removes completed jobs that have been finished for more than the retention period
 func (m *BackgroundShellManager) Cleanup() int {
-	now := time.Now().Unix()
-	retentionSeconds := int64(CompletedJobRetentionMinutes * 60)
+	return m.reapCompletedBefore(time.Now().Unix() - int64(CompletedJobRetentionMinutes*60))
+}
 
+// reapCompletedBefore removes completed jobs that finished at or before cutoff.
+func (m *BackgroundShellManager) reapCompletedBefore(cutoff int64) int {
 	var toRemove []string
 	for shell := range m.shells.Seq() {
 		completedAt := shell.completedAt.Load()
-		if completedAt > 0 && now-completedAt > retentionSeconds {
+		if completedAt > 0 && completedAt <= cutoff {
 			toRemove = append(toRemove, shell.ID)
 		}
 	}
