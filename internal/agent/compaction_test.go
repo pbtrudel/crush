@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -20,6 +21,7 @@ import (
 // on the exact request shape a compaction sends.
 type stubSummaryModel struct {
 	summaryText string
+	mu          sync.Mutex
 	calls       []fantasy.Call
 	// usage overrides the fixed test usage when non-zero, so a test can
 	// report a prompt large enough to cross the auto-compaction threshold.
@@ -34,7 +36,9 @@ func (m *stubSummaryModel) Generate(context.Context, fantasy.Call) (*fantasy.Res
 }
 
 func (m *stubSummaryModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	m.mu.Lock()
 	m.calls = append(m.calls, call)
+	m.mu.Unlock()
 	return func(yield func(fantasy.StreamPart) bool) {
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.summaryText})
