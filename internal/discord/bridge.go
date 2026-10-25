@@ -1022,9 +1022,8 @@ func answeredQuestionCard(req question.Request, questionIndex int) string {
 
 // inputEvent is one unit of Discord input, consumed in arrival order.
 type inputEvent struct {
-	message     *gatewayMessage
-	reaction    *gatewayReaction
-	interaction *gatewayInteraction
+	message  *gatewayMessage
+	reaction *gatewayReaction
 }
 
 func (b *Bridge) enqueueInput(ev inputEvent) {
@@ -1048,8 +1047,8 @@ func (b *Bridge) enqueueInteraction(in gatewayInteraction) {
 	}
 }
 
-// interactionLoop answers button presses and modal submissions
-// independently of prompt traffic.
+// interactionLoop answers slash commands, button presses, and modal
+// submissions independently of prompt traffic.
 func (b *Bridge) interactionLoop() {
 	for {
 		select {
@@ -1057,6 +1056,11 @@ func (b *Bridge) interactionLoop() {
 			return
 		case in := <-b.interactions:
 			switch in.Type {
+			case gwInteractionApplicationCommand:
+				// Slash commands are acknowledged at the top of the
+				// handler; run the rest off the loop so a slow command
+				// cannot delay the next interaction's acknowledgement.
+				go b.handleThreadInteraction(in)
 			case gwInteractionMessageComponent:
 				b.handleQuestionComponent(in)
 			case gwInteractionModalSubmit:
@@ -1079,12 +1083,6 @@ func (b *Bridge) inputLoop() {
 				b.handleThreadMessage(*ev.message)
 			case ev.reaction != nil:
 				b.handleThreadReaction(*ev.reaction)
-			case ev.interaction != nil:
-				if ev.interaction.Type == gwInteractionMessageComponent {
-					b.handleQuestionComponent(*ev.interaction)
-					continue
-				}
-				b.handleThreadInteraction(*ev.interaction)
 			}
 		}
 	}
