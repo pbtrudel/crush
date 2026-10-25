@@ -2447,11 +2447,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		})
 	case dialog.ActionReloadConfig:
 		m.dialog.CloseDialog(dialog.CommandsID)
-		cmds = append(cmds, func() tea.Msg {
-			ctx, cancel := common.WorkspaceOpContext()
-			defer cancel()
-			return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
-		})
+		cmds = append(cmds, m.reloadConfig())
 	case configReloadedMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
@@ -2718,6 +2714,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		cmds = append(cmds, util.ReportInfo("Deleted theme "+msg.Name))
 		m.dialog.CloseDialog(dialog.ThemeID)
 		m.openThemeDialog()
+	case dialog.ActionToggleShowAllProviders:
+		showAll := msg.ShowAll
+		cmds = append(cmds, func() tea.Msg {
+			if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.models.show_all_providers", showAll); err != nil {
+				return util.ReportError(err)()
+			}
+			return nil
+		})
 	case dialog.ActionToggleMouseSupport:
 		cfg := m.com.Config()
 		if cfg == nil {
@@ -3531,6 +3535,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				value = strings.TrimSpace(value)
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
+				}
+
+				if cmd, ok := m.slashCommand(value); ok {
+					return cmd
 				}
 
 				if m.bangMode && value != "" {
@@ -5537,6 +5545,27 @@ func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
 	return []tea.Cmd{
 		m.loadSession(msg.To),
 		util.ReportInfo("Context cleared (from Discord) — switched to the new session"),
+	}
+}
+
+// slashCommand dispatches the system commands the editor accepts as plain
+// text. Only an exact match is handled; anything else, including
+// "/reload now", is a normal prompt.
+func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
+	switch value {
+	case "/reload":
+		return m.reloadConfig(), true
+	}
+	return nil, false
+}
+
+// reloadConfig re-reads the config files and applies them to the running
+// agents. The command palette and the /reload slash command share it.
+func (m *UI) reloadConfig() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
 	}
 }
 

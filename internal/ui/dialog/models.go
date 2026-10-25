@@ -72,10 +72,18 @@ const ModelsID = "models"
 
 const defaultModelsDialogMaxWidth = 73
 
+// ActionToggleShowAllProviders reports that the user changed the model
+// picker's provider filter. The caller persists the new value.
+type ActionToggleShowAllProviders struct {
+	ShowAll bool
+}
+
 // Models represents a model selection dialog.
 type Models struct {
 	com          *common.Common
 	isOnboarding bool
+
+	showAllProviders bool
 
 	modelType ModelType
 	providers []catwalk.Provider
@@ -87,6 +95,7 @@ type Models struct {
 		Edit     key.Binding
 		Next     key.Binding
 		Previous key.Binding
+		Toggle   key.Binding
 		Close    key.Binding
 	}
 	list  *ModelsList
@@ -96,28 +105,8 @@ type Models struct {
 
 var _ Dialog = (*Models)(nil)
 
-// NewModels creates a new Models dialog.
-func NewModels(com *common.Common, isOnboarding bool) (*Models, error) {
-	t := com.Styles
-	m := &Models{}
-	m.com = com
-	m.isOnboarding = isOnboarding
-
-	help := help.New()
-	help.Styles = t.DialogHelpStyles()
-
-	m.help = help
-	m.list = NewModelsList(t)
-	m.list.Focus()
-	m.list.SetSelected(0)
-	m.list.SetEmptyMessage(t.Tool.ResultEmpty.Render("No results"))
-
-	m.input = textinput.New()
-	m.input.SetVirtualCursor(false)
-	m.input.Placeholder = onboardingModelInputPlaceholder
-	m.input.SetStyles(com.Styles.TextInput)
-	m.input.Focus()
-
+// initKeyMap binds the dialog's keys.
+func (m *Models) initKeyMap() {
 	m.keyMap.Tab = key.NewBinding(
 		key.WithKeys("tab", "shift+tab"),
 		key.WithHelp("tab", "toggle type"),
@@ -142,7 +131,39 @@ func NewModels(com *common.Common, isOnboarding bool) (*Models, error) {
 		key.WithKeys("up", "ctrl+p"),
 		key.WithHelp("↑", "previous item"),
 	)
+	m.keyMap.Toggle = key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("ctrl+t", "show all"),
+	)
 	m.keyMap.Close = CloseKey
+}
+
+// NewModels creates a new Models dialog.
+func NewModels(com *common.Common, isOnboarding bool) (*Models, error) {
+	t := com.Styles
+	m := &Models{}
+	m.com = com
+	m.isOnboarding = isOnboarding
+	if cfg := com.Config(); cfg != nil {
+		m.showAllProviders = isOnboarding || cfg.Options.GetShowAllProviders()
+	}
+
+	help := help.New()
+	help.Styles = t.DialogHelpStyles()
+
+	m.help = help
+	m.list = NewModelsList(t)
+	m.list.Focus()
+	m.list.SetSelected(0)
+	m.list.SetEmptyMessage(t.Tool.ResultEmpty.Render("No results"))
+
+	m.input = textinput.New()
+	m.input.SetVirtualCursor(false)
+	m.input.Placeholder = onboardingModelInputPlaceholder
+	m.input.SetStyles(com.Styles.TextInput)
+	m.input.Focus()
+
+	m.initKeyMap()
 
 	// A stale catalog must not keep this dialog from opening: it is the
 	// only way for the user to choose a model.
@@ -221,6 +242,17 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			if err := m.setProviderItems(); err != nil {
 				return util.ReportError(err)
 			}
+		case key.Matches(msg, m.keyMap.Toggle):
+			if m.isOnboarding {
+				break
+			}
+			m.showAllProviders = !m.showAllProviders
+			if err := m.setProviderItems(); err != nil {
+				return util.ReportError(err)
+			}
+			m.list.SetFilter(m.input.Value())
+			m.list.SelectFirst()
+			return ActionToggleShowAllProviders{ShowAll: m.showAllProviders}
 		default:
 			prevValue := m.input.Value()
 			var cmd tea.Cmd
@@ -323,8 +355,21 @@ func (m *Models) ShortHelp() []key.Binding {
 	if m.isSelectedConfigured() {
 		h = append(h, m.keyMap.Edit)
 	}
-	h = append(h, m.keyMap.Close)
+	h = append(h, m.toggleProviderBinding(), m.keyMap.Close)
 	return h
+}
+
+// toggleProviderBinding labels the provider filter key with the action it
+// performs next.
+func (m *Models) toggleProviderBinding() key.Binding {
+	desc := "show all"
+	if m.showAllProviders {
+		desc = "configured only"
+	}
+	return key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("ctrl+t", desc),
+	)
 }
 
 // FullHelp returns the full help view.
@@ -414,6 +459,9 @@ func (m *Models) setProviderItems() error {
 
 		providerConfig, providerConfigured := cfg.Providers.Get(providerID)
 		if providerConfigured && providerConfig.Disable {
+			continue
+		}
+		if !providerConfigured && !m.showAllProviders {
 			continue
 		}
 
