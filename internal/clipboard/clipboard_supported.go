@@ -66,7 +66,29 @@ func attemptWriteText(text string) error {
 	return nil
 }
 
+// readNative reads from the platform clipboard. Tests replace it to
+// simulate a backend that cannot serve the requested format.
+var readNative = nativeRead
+
+// read returns the clipboard contents for the given format. The native
+// backend is tried first; WSL falls back to the Windows clipboard because
+// WSLg publishes Windows images as image/bmp while the native backend asks
+// for image/png.
 func read(f Format) ([]byte, error) {
+	data, err := readNative(f)
+	if err == nil && len(data) > 0 {
+		return data, nil
+	}
+	if data, wslErr := readWSL(f); wslErr == nil && len(data) > 0 {
+		return data, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, ErrEmpty
+}
+
+func nativeRead(f Format) ([]byte, error) {
 	if !ready() {
 		return nil, ErrUnsupported
 	}
