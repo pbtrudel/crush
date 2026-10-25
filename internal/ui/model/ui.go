@@ -2718,6 +2718,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		cmds = append(cmds, util.ReportInfo("Deleted theme "+msg.Name))
 		m.dialog.CloseDialog(dialog.ThemeID)
 		m.openThemeDialog()
+	case dialog.ActionToggleShowAllProviders:
+		showAll := msg.ShowAll
+		cmds = append(cmds, func() tea.Msg {
+			if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.models.show_all_providers", showAll); err != nil {
+				return util.ReportError(err)()
+			}
+			return nil
+		})
 	case dialog.ActionToggleMouseSupport:
 		cfg := m.com.Config()
 		if cfg == nil {
