@@ -153,7 +153,9 @@ func DefaultKeyMap() KeyMap {
 		key.WithHelp("ctrl+f", "add image"),
 	)
 	km.Editor.PasteImage = key.NewBinding(
-		key.WithKeys("ctrl+v"),
+		// alt+v exists because Windows Terminal consumes ctrl+v itself, so
+		// the keystroke never reaches the TUI on Windows or WSL.
+		key.WithKeys("ctrl+v", "alt+v"),
 		key.WithHelp("ctrl+v", "paste image from clipboard"),
 	)
 	km.Editor.PasteText = key.NewBinding(

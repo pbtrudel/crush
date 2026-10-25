@@ -3,6 +3,8 @@ package model
 import (
 	"testing"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,4 +25,15 @@ func TestKeyMapHelpCompleteness(t *testing.T) {
 	require.NotEmpty(t, km.Editor.HistoryPrev.Help().Desc)
 	require.NotEmpty(t, km.Editor.HistoryNext.Help().Key)
 	require.NotEmpty(t, km.Editor.HistoryNext.Help().Desc)
+}
+
+// TestPasteImageBindingAcceptsAltV covers Windows Terminal, which consumes
+// ctrl+v itself; alt+v is the keystroke that still reaches the TUI there.
+func TestPasteImageBindingAcceptsAltV(t *testing.T) {
+	t.Parallel()
+
+	km := DefaultKeyMap()
+
+	require.True(t, key.Matches(tea.KeyPressMsg{Code: 'v', Mod: tea.ModAlt}, km.Editor.PasteImage))
+	require.True(t, key.Matches(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl}, km.Editor.PasteImage))
 }
