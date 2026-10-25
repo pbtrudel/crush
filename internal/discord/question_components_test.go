@@ -318,18 +318,18 @@ func TestQuestionSubmitFallsBackToEditWhenCallbackFails(t *testing.T) {
 	require.Empty(t, b.questions[req.ID])
 }
 
-// TestQuestionComponentArrivesThroughInputLoop pins the gateway-to-handler
-// routing: a component interaction enqueued by the gateway is dispatched to
-// the question handler, not the slash-command handler.
-func TestQuestionComponentArrivesThroughInputLoop(t *testing.T) {
+// TestQuestionComponentArrivesThroughInteractionLoop pins the
+// gateway-to-handler routing: a component interaction enqueued by the
+// gateway is dispatched to the question handler, not the slash-command
+// handler.
+func TestQuestionComponentArrivesThroughInteractionLoop(t *testing.T) {
 	t.Parallel()
 	b, env, _, _ := testBridge(t, testConfig())
 	env.answerOK = true
 
 	req := singleChoiceRequest()
 	b.handleQuestionRequest(req)
-	in := componentInteraction(selectCustomID(req.ID, 0, 0))
-	b.enqueueInput(inputEvent{interaction: &in})
+	b.enqueueInteraction(componentInteraction(selectCustomID(req.ID, 0, 0)))
 
 	require.Eventually(t, func() bool { return len(env.answersSnapshot()) == 1 }, 2*time.Second, 10*time.Millisecond)
 	require.Equal(t, []question.Answer{{QuestionID: "q1", SelectedIDs: []string{"pg"}}}, env.answersSnapshot())

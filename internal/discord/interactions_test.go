@@ -106,13 +106,18 @@ func TestBridgeInteractionUnauthorized(t *testing.T) {
 	require.Zero(t, env.cancelCount(), "unauthorized commands must not run")
 }
 
-func TestBridgeInteractionViaInputQueue(t *testing.T) {
+// TestBridgeInteractionViaGatewayQueue drives an interaction through the
+// same queue the gateway feeds, so a command type that the interaction
+// loop forgets to handle (and never acknowledges) fails here instead of
+// timing out in Discord as "The application did not respond".
+func TestBridgeInteractionViaGatewayQueue(t *testing.T) {
 	t.Parallel()
 	b, env, api, _ := testBridge(t, testConfig())
 
-	in := threadInteraction("stop")
-	b.enqueueInput(inputEvent{interaction: &in})
+	b.enqueueInteraction(threadInteraction("stop"))
 
+	require.Eventually(t, func() bool { return len(api.callbacksSnapshot()) == 1 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, "Running `/stop`", api.callbacksSnapshot()[0].content)
 	require.Eventually(t, func() bool { return env.cancelCount() == 1 }, 2*time.Second, 10*time.Millisecond)
 	// The cancel confirmation is posted asynchronously after the counter
 	// increments; wait for it instead of racing it (the immediate
