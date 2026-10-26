@@ -73,19 +73,6 @@ func formatTokens(n int64) string {
 	}
 }
 
-// tailText returns the last part of s that fits in max bytes, cut on a
-// line boundary and prefixed with an ellipsis marker when truncated.
-func tailText(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	cut := len(s) - maxBytes
-	if idx := strings.IndexByte(s[cut:], '\n'); idx >= 0 {
-		cut += idx + 1
-	}
-	return "…\n" + s[cut:]
-}
-
 // toolMainParam extracts a short, human-readable summary of a tool
 // call's input: the first populated value from a preference list of
 // common parameter names.
@@ -116,8 +103,13 @@ func toolMainParam(input string) string {
 
 // compactLine flattens whitespace and caps a string at n runes.
 func compactLine(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	return truncateRunes(s, n)
+	return truncateRunes(plainLine(s), n)
+}
+
+// plainLine flattens whitespace without dropping any words, so a
+// multi-line description still fits on one Discord line.
+func plainLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // toolVerb renders the friendly state label for a tool run, appending

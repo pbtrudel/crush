@@ -25,15 +25,12 @@ func TestFormatTokens(t *testing.T) {
 	require.Equal(t, "1.5m", formatTokens(1_500_000))
 }
 
-func TestTailText(t *testing.T) {
+func TestPlainLineKeepsEveryWord(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, "short", tailText("short", 100))
-
-	long := "line1\nline2\nline3\nline4"
-	tail := tailText(long, 12)
-	require.True(t, strings.HasPrefix(tail, "…\n"), "tail must be marked: %q", tail)
-	require.True(t, strings.HasSuffix(tail, "line4"))
-	require.NotContains(t, tail, "line1\n")
+	require.Equal(t, "short", plainLine("short"))
+	require.Equal(t, "one two three", plainLine("one\n  two\tthree "))
+	long := strings.Repeat("word ", 100)
+	require.Equal(t, strings.TrimSpace(long), plainLine(long), "no words are dropped")
 }
 
 func TestToolMainParam(t *testing.T) {
