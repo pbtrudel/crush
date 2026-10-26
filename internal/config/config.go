@@ -457,13 +457,14 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 }
 
 type Options struct {
-	ContextPaths         []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
-	GlobalContextPaths   []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
-	SkillsPaths          []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
-	TUI                  *TUIOptions `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
-	Debug                bool        `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
-	DebugLSP             bool        `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
-	DisableAutoSummarize bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
+	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
+	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
+	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
+	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
+	Debug                bool           `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
+	DebugLSP             bool           `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
+	DisableAutoSummarize bool           `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
 	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`
@@ -486,6 +487,20 @@ type Options struct {
 	Notifications             string       `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
 	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
 	RequestTimeout            *int         `json:"request_timeout,omitempty" jsonschema:"description=Timeout in seconds for each LLM API request. Streaming responses are aborted only after this much inactivity\\, so slow but active streams are never killed. 0 disables it\\, negative values are invalid.,default=60,example=120,example=300,example=0"`
+}
+
+// ModelsOptions configures the model picker.
+type ModelsOptions struct {
+	// ShowAllProviders lists providers without credentials in the model
+	// picker. By default the picker lists only configured providers.
+	ShowAllProviders bool `json:"show_all_providers,omitempty" jsonschema:"description=List providers without credentials in the model picker. When false\\, only configured providers are listed.,default=false"`
+}
+
+// GetShowAllProviders reports whether the model picker should list
+// providers without credentials. The nil receiver and the unset field both
+// mean false: only configured providers are listed.
+func (o *Options) GetShowAllProviders() bool {
+	return o != nil && o.Models != nil && o.Models.ShowAllProviders
 }
 
 // DefaultRequestTimeout bounds each LLM API request when the user has not
