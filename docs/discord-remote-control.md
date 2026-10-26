@@ -44,9 +44,10 @@ running in the terminal.
   timer) and carries the per-turn tool summary, e.g.
   `🔧 bash ×4 · read ×2 · edit ×1 · (1 failed)`, plus usage metrics,
   e.g. `📊 context 43% · cache 89%` (same formulas as the TUI sidebar).
-- Assistant text freezes into the transcript as one message per step,
-  above the footer; thinking blocks appear as a one-line summary
-  (`🧠 thought for 12s`).
+- Assistant text streams into the transcript as it is written, above the
+  footer. A long answer is split across several messages so none of it is
+  cut short; it stays in place when the step finishes. Thinking blocks
+  appear as a one-line summary (`🧠 thought for 12s`).
 - Tool calls and their results are never posted: tool activity appears
   only as counts in the footer, and failures only as a `(N failed)`
   tally — command output stays in the terminal session.
@@ -79,11 +80,13 @@ Type these in the thread:
 | `/<custom-command> [args]` | Run a custom command from `~/.config/crush/commands` |
 
 Agent questions are posted as one card per question, with that question's
-choice buttons and a **Something else** button directly beneath it. Pressing
-**Something else** opens a modal for a typed answer; multi-question batches
-finish with a **Submit** row on the last question's card. Buttons are
-answered through a dedicated interaction path so they stay responsive while a
-prompt is running.
+choice buttons and a **Something else** button directly beneath it. The
+card carries the full question and choice descriptions; a card too long
+for one Discord message is split, with the buttons on the last part.
+Pressing **Something else** opens a modal for a typed answer;
+multi-question batches finish with a **Submit** row on the last
+question's card. Buttons are answered through a dedicated interaction
+path so they stay responsive while a prompt is running.
 
 If the bot's application has native slash commands registered, invoking
 one in the thread works too: it is acknowledged immediately and its output

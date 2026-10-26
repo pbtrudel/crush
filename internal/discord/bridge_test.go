@@ -99,6 +99,45 @@ func TestBridgeMirrorsAssistantTurn(t *testing.T) {
 	require.False(t, api.hasContentContaining("late"), "completed message ids are ignored")
 }
 
+// TestBridgeStreamsFullAssistantText pins that a long answer is mirrored
+// into transcript messages in full: the footer must not reduce it to a
+// tail window that hides earlier points.
+func TestBridgeStreamsFullAssistantText(t *testing.T) {
+	t.Parallel()
+	b, _, api, _ := testBridge(t, testConfig())
+	require.Eventually(t, func() bool { return b.footerMessageID() != "" }, 2*time.Second, 10*time.Millisecond)
+
+	content := "1. First point\n2. Second point\n" +
+		strings.Repeat("more detail about the design\n", 80) +
+		"4. Final point"
+
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m1", message.TextContent{Text: content})))
+
+	require.Eventually(t, func() bool { return api.hasPostContaining("1. First point") }, 2*time.Second, 10*time.Millisecond)
+	require.True(t, api.hasPostContaining("4. Final point"), "the whole answer is mirrored")
+	require.Equal(t, 1, countPostsContaining(api, "1. First point"))
+	require.False(t, api.hasContentContaining("…\n"), "no truncated tail marker")
+	require.NotContains(t, api.lastPostContent(), "1. First point", "the footer stays the last message")
+
+	// Finishing the step must not repost the text already mirrored.
+	b.handleEvent(evMessage(pubsub.UpdatedEvent, assistantMessage("m1", message.TextContent{Text: content}, message.Finish{})))
+	require.Equal(t, 1, countPostsContaining(api, "1. First point"))
+	require.Equal(t, 1, countPostsContaining(api, "4. Final point"))
+}
+
+// countPostsContaining counts posted messages containing sub.
+func countPostsContaining(api *fakeAPI, sub string) int {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	n := 0
+	for _, p := range api.posts {
+		if strings.Contains(p.content, sub) {
+			n++
+		}
+	}
+	return n
+}
+
 func TestBridgeCancelledAndErrorStates(t *testing.T) {
 	t.Parallel()
 	b, _, api, _ := testBridge(t, testConfig())

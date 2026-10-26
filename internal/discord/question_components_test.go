@@ -54,6 +54,38 @@ func TestRenderQuestionCardShowsChoiceDescriptions(t *testing.T) {
 	require.Contains(t, card, "Something else")
 }
 
+// TestRenderQuestionCardKeepsFullText pins that the question text,
+// description, and choice descriptions are never truncated: Discord gets
+// the whole card, split across messages when it is long.
+func TestRenderQuestionCardKeepsFullText(t *testing.T) {
+	t.Parallel()
+
+	longQuestion := strings.Repeat("How should the mesh span regions? ", 4)
+	longDescription := strings.Repeat("The architecture has residency zones; this must stay readable. ", 8)
+	longChoice := strings.Repeat("One mesh per region with independent trust and explicit gateways. ", 6)
+
+	req := question.Request{
+		ID:        "req-long",
+		SessionID: "sess-1",
+		Questions: []question.Question{{
+			ID:          "q1",
+			Type:        question.TypeSingleChoice,
+			Label:       "Mesh design",
+			Text:        longQuestion,
+			Description: longDescription,
+			Choices: []question.Choice{
+				{ID: "a", Label: "Mesh per region", Description: longChoice},
+				{ID: "b", Label: "Multi-cluster mesh", Description: longChoice},
+			},
+		}},
+	}
+	card := renderQuestionContent(req, 0, questionHintButtons)
+	require.Contains(t, card, strings.TrimSpace(longQuestion))
+	require.Contains(t, card, plainLine(longDescription))
+	require.Contains(t, card, plainLine(longChoice))
+	require.NotContains(t, card, "…", "nothing is cut short")
+}
+
 func TestQuestionRowsSingleChoicePressAnswersImmediately(t *testing.T) {
 	t.Parallel()
 	b, env, api, _ := testBridge(t, testConfig())
@@ -384,15 +416,17 @@ func TestQuestionPostsOneMessagePerQuestion(t *testing.T) {
 
 	ids := b.questionMessages[req.ID]
 	require.Len(t, ids, 2, "one message per question")
-	require.Contains(t, api.messageContent(ids[0]), "Question 1/2")
-	require.Contains(t, api.messageContent(ids[0]), "First?")
-	require.NotContains(t, api.messageContent(ids[0]), "Second?")
-	firstRows := api.messageComponents(ids[0])
+	firstID := ids[0][0]
+	secondID := ids[1][0]
+	require.Contains(t, api.messageContent(firstID), "Question 1/2")
+	require.Contains(t, api.messageContent(firstID), "First?")
+	require.NotContains(t, api.messageContent(firstID), "Second?")
+	firstRows := api.messageComponents(firstID)
 	require.NotEmpty(t, firstRows)
 	require.Equal(t, customCustomID(req.ID, 0), firstRows[0].Components[len(firstRows[0].Components)-1].CustomID,
 		"the first question's Something else button sits under it")
-	require.Contains(t, api.messageContent(ids[1]), "Question 2/2")
-	lastRows := api.messageComponents(ids[1])
+	require.Contains(t, api.messageContent(secondID), "Question 2/2")
+	lastRows := api.messageComponents(secondID)
 	require.NotEmpty(t, lastRows)
 	require.Equal(t, submitCustomID(req.ID), lastRows[len(lastRows)-1].Components[0].CustomID,
 		"submit rides on the last question's message")
@@ -473,8 +507,9 @@ func TestQuestionComponentsRideOnLastChunk(t *testing.T) {
 	rows := []discordComponent{{Type: componentTypeActionRow, Components: []discordButton{{
 		Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Pick", CustomID: "cq:x:0:0",
 	}}}}
-	id := b.postAboveWithComponents(content, rows)
-	require.NotEmpty(t, id)
+	posted := b.postAboveWithComponents(content, rows)
+	require.NotEmpty(t, posted.ids)
+	require.NotEmpty(t, posted.componentID)
 
 	var chunks []fakePost
 	for _, p := range api.postsSnapshot() {
@@ -483,9 +518,50 @@ func TestQuestionComponentsRideOnLastChunk(t *testing.T) {
 		}
 	}
 	require.Greater(t, len(chunks), 1, "the content must split")
+	require.Equal(t, len(chunks), len(posted.ids), "every chunk's message id is returned")
 	require.Empty(t, chunks[0].components, "the first chunk must not carry the controls")
 	require.NotEmpty(t, chunks[len(chunks)-1].components, "the controls ride on the last chunk")
-	require.Equal(t, chunks[len(chunks)-1].messageID, id, "the component message id is returned")
+	require.Equal(t, chunks[len(chunks)-1].messageID, posted.componentID, "the component message id is returned")
+}
+
+// TestLongQuestionCardSplitsAndResolves pins that a card too long for one
+// Discord message keeps all its text across chunks, with the controls on
+// the final chunk, and that answering resolves the card.
+func TestLongQuestionCardSplitsAndResolves(t *testing.T) {
+	t.Parallel()
+	b, env, api, _ := testBridge(t, testConfig())
+	env.answerOK = true
+
+	desc := strings.Repeat("Residency zones, explicit gateways, independent trust. ", 40)
+	req := question.Request{
+		ID: "req-split", SessionID: "sess-1",
+		Questions: []question.Question{{
+			ID:          "q1",
+			Type:        question.TypeSingleChoice,
+			Text:        "How many clusters should the first mesh design cover?",
+			Description: desc,
+			Choices: []question.Choice{
+				{ID: "a", Label: "Mesh per region", Description: desc},
+				{ID: "b", Label: "Multi-cluster mesh", Description: desc},
+			},
+		}},
+	}
+	b.handleQuestionRequest(req)
+
+	cards := b.questionMessages[req.ID]
+	require.Len(t, cards, 1, "one card per question")
+	require.Greater(t, len(cards[0]), 1, "a long card splits across messages")
+	require.Contains(t, api.messageContent(cards[0][0]), "How many clusters should the first mesh design cover?")
+	last := cards[0][len(cards[0])-1]
+	require.NotEmpty(t, api.messageComponents(last), "the controls ride on the last chunk")
+
+	b.handleQuestionComponent(componentInteraction(selectCustomID(req.ID, 0, 0)))
+	require.Equal(t, []question.Answer{{QuestionID: "q1", SelectedIDs: []string{"a"}}}, env.answers)
+
+	updates := api.updatesSnapshot()
+	require.Len(t, updates, 1)
+	require.Contains(t, updates[0].content, "✅ answered")
+	require.NotContains(t, updates[0].content, "press a button", "the hint is replaced")
 }
 
 // TestQuestionComponentArrivesThroughInteractionQueue pins the gateway

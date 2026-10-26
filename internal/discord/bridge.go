@@ -114,11 +114,11 @@ type Bridge struct {
 	permMessage     map[string]string
 	questions       map[string]question.Request
 	questionOrder   []string
-	// questionMessages holds one message per question (in order), so a
-	// question's buttons render directly under it instead of in a single
-	// card whose controls can land mid-form. The submit row rides on the
-	// last question's message.
-	questionMessages map[string][]string
+	// questionMessages holds, per question (in order), the message ids of
+	// that question's card. A long card spans several messages so nothing
+	// is truncated; the buttons ride on the last one, directly under the
+	// question. The submit row rides on the last question's card.
+	questionMessages map[string][][]string
 	// questionSelections tracks in-progress button answers per batch:
 	// question id -> selected choice ids. Cleared when the batch resolves.
 	questionSelections map[string]map[string]map[string]bool
@@ -152,6 +152,14 @@ type Bridge struct {
 
 	lastMu        sync.Mutex
 	lastAssistant message.Message
+
+	// liveMu guards the messages mirroring the current step's streamed
+	// text. The text lives in the transcript, not in the footer, so a
+	// long answer is never cut to a tail window.
+	liveMu       sync.Mutex
+	liveIDs      []string
+	liveContents []string
+	liveUpdated  time.Time
 
 	footer *footer
 }
@@ -243,7 +251,7 @@ func newBridge(env commandEnv, application *app.App, sessionID string, cfg Confi
 		permissions:        map[string]permission.PermissionRequest{},
 		permMessage:        map[string]string{},
 		questions:          map[string]question.Request{},
-		questionMessages:   map[string][]string{},
+		questionMessages:   map[string][][]string{},
 		questionSelections: map[string]map[string]map[string]bool{},
 		questionFillIns:    map[string]map[string]string{},
 		countedResults:     map[string]bool{},
@@ -423,26 +431,43 @@ func (b *Bridge) post(content string) {
 	b.postAbove(content)
 }
 
+// postedMessages is the result of posting chunked content: every chunk's
+// message id in order, plus the id of the chunk carrying the components
+// (the last chunk, since Discord renders controls after the content).
+type postedMessages struct {
+	ids         []string
+	componentID string
+}
+
+// firstID returns the first chunk's id, or "" when nothing was posted.
+func (p postedMessages) firstID() string {
+	if len(p.ids) == 0 {
+		return ""
+	}
+	return p.ids[0]
+}
+
 // postAbove posts content above the footer and returns the id of the
 // first chunk ("" when nothing was posted). When a footer message
 // exists it is edited into the first chunk and re-created after the
 // content, so the footer stays the thread's last message.
 func (b *Bridge) postAbove(content string) string {
-	return b.postAboveWithComponents(content, nil)
+	return b.postAboveWithComponents(content, nil).firstID()
 }
 
 // postAboveWithComponents posts content with interactive components above
 // the footer, mirroring postAbove's footer recycling.
-func (b *Bridge) postAboveWithComponents(content string, components []discordComponent) string {
+func (b *Bridge) postAboveWithComponents(content string, components []discordComponent) postedMessages {
+	var posted postedMessages
 	chunks := splitMessage(content)
 	if len(chunks) == 0 {
-		return ""
+		return posted
 	}
 	f := b.footer
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.stopped {
-		return ""
+		return posted
 	}
 
 	// Discord renders components after the message content, so when a long
@@ -450,8 +475,6 @@ func (b *Bridge) postAboveWithComponents(content string, components []discordCom
 	// LAST chunk. Attaching them to the first chunk strands the buttons in
 	// the middle of the form, above the rest of its text.
 	lastChunk := len(chunks) - 1
-	componentID := ""
-	firstID := ""
 	restStart := 0
 	if f.messageID != "" {
 		var comps []discordComponent
@@ -459,9 +482,9 @@ func (b *Bridge) postAboveWithComponents(content string, components []discordCom
 			comps = components
 		}
 		if err := b.api.editMessage(b.ctx, b.threadID, f.messageID, chunks[0], comps...); err == nil {
-			firstID = f.messageID
+			posted.ids = append(posted.ids, f.messageID)
 			if len(comps) > 0 {
-				componentID = firstID
+				posted.componentID = f.messageID
 			}
 			restStart = 1
 		} else {
@@ -481,18 +504,13 @@ func (b *Bridge) postAboveWithComponents(content string, components []discordCom
 			slog.Debug("Discord bridge: failed to post message", "error", err.Error())
 			break
 		}
-		if firstID == "" && i == restStart {
-			firstID = id
-		}
+		posted.ids = append(posted.ids, id)
 		if len(comps) > 0 {
-			componentID = id
+			posted.componentID = id
 		}
 	}
 	b.attachFooterLocked()
-	if len(components) > 0 && componentID != "" {
-		return componentID
-	}
-	return firstID
+	return posted
 }
 
 // note surfaces a bridge notice in the TUI (when hosted in-process) and
@@ -679,8 +697,94 @@ func (b *Bridge) handleAssistantMessage(msg message.Message) {
 
 	if hasFinishPart(msg) {
 		b.freezeStep(msg)
+	} else {
+		b.syncLiveTranscriptThrottled(msg)
 	}
 	b.pokeFooter()
+}
+
+// syncLiveTranscriptThrottled mirrors a streaming step's text into the
+// thread at the same cadence as footer edits. Both run on the event
+// loop, so a freeze can never race a sync.
+func (b *Bridge) syncLiveTranscriptThrottled(msg message.Message) {
+	b.liveMu.Lock()
+	due := b.now().Sub(b.liveUpdated) >= b.editRate
+	b.liveMu.Unlock()
+	if !due {
+		return
+	}
+	content := renderAssistantTimeline(msg)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	b.syncLiveTranscript(content)
+	b.liveMu.Lock()
+	b.liveUpdated = b.now()
+	b.liveMu.Unlock()
+}
+
+// syncLiveTranscript mirrors a step's text into transcript messages above
+// the footer. Existing messages are edited in place and new ones are
+// appended when the text grows past Discord's per-message limit, so the
+// whole answer is visible instead of a truncated tail.
+func (b *Bridge) syncLiveTranscript(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	chunks := splitMessage(content)
+	if len(chunks) == 0 {
+		return
+	}
+
+	b.liveMu.Lock()
+	defer b.liveMu.Unlock()
+
+	grew := false
+	for i, chunk := range chunks {
+		if i >= len(b.liveIDs) {
+			id, err := b.api.createMessage(b.ctx, b.threadID, chunk)
+			if err != nil {
+				slog.Debug("Discord bridge: failed to post streamed text", "error", err.Error())
+				break
+			}
+			b.liveIDs = append(b.liveIDs, id)
+			b.liveContents = append(b.liveContents, chunk)
+			grew = true
+			continue
+		}
+		if b.liveContents[i] == chunk {
+			continue
+		}
+		if err := b.api.editMessage(b.ctx, b.threadID, b.liveIDs[i], chunk); err != nil {
+			slog.Debug("Discord bridge: failed to edit streamed text", "error", err.Error())
+			continue
+		}
+		b.liveContents[i] = chunk
+	}
+	if len(b.liveIDs) > len(chunks) {
+		for i := len(chunks); i < len(b.liveIDs); i++ {
+			if err := b.api.deleteMessage(b.ctx, b.threadID, b.liveIDs[i]); err != nil {
+				slog.Debug("Discord bridge: failed to drop stale streamed text", "error", err.Error())
+			}
+		}
+		b.liveIDs = b.liveIDs[:len(chunks)]
+		b.liveContents = b.liveContents[:len(chunks)]
+	}
+	if grew {
+		// New chunks landed below the footer; move it back down.
+		b.reanchorFooter()
+	}
+}
+
+// resetLiveTranscript forgets the current step's mirrored messages. A
+// later step starts a fresh set of messages.
+func (b *Bridge) resetLiveTranscript() {
+	b.liveMu.Lock()
+	b.liveIDs = nil
+	b.liveContents = nil
+	b.liveUpdated = time.Time{}
+	b.liveMu.Unlock()
 }
 
 // handleToolResult tallies failed tool calls for the footer. Results
@@ -870,14 +974,14 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 	b.questionFillIns[req.ID] = fillIns
 	b.pendingMu.Unlock()
 
-	ids := make([]string, 0, len(req.Questions))
+	ids := make([][]string, 0, len(req.Questions))
 	for i := range req.Questions {
-		// One message per question keeps that question's controls directly
-		// under it. The submit row rides on the final question's message.
+		// One card per question keeps that question's controls directly
+		// under it. The submit row rides on the final question's card.
 		includeSubmit := i == len(req.Questions)-1
 		rows := questionRows(req, i, selections, fillIns, includeSubmit)
-		id := b.postAboveWithComponents(renderQuestionContent(req, i, questionHintButtons), rows)
-		if id == "" {
+		posted := b.postAboveWithComponents(renderQuestionContent(req, i, questionHintButtons), rows)
+		if len(posted.ids) == 0 {
 			slog.Debug("Discord bridge: failed to post question card")
 			b.pendingMu.Lock()
 			delete(b.questions, req.ID)
@@ -886,7 +990,7 @@ func (b *Bridge) handleQuestionRequest(req question.Request) {
 			b.pendingMu.Unlock()
 			return
 		}
-		ids = append(ids, id)
+		ids = append(ids, posted.ids)
 	}
 	b.pendingMu.Lock()
 	b.questionMessages[req.ID] = ids
@@ -908,10 +1012,8 @@ func (b *Bridge) handleQuestionNotification(n question.Notification) {
 	delete(b.questionMessages, n.BatchID)
 	b.pendingMu.Unlock()
 
-	for i, msgID := range msgIDs {
-		if err := b.api.editMessage(b.ctx, b.threadID, msgID, answeredQuestionCard(req, i)); err != nil {
-			slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
-		}
+	for i, ids := range msgIDs {
+		b.editAnsweredCard(ids, req, i)
 	}
 }
 
@@ -966,8 +1068,8 @@ func renderPermissionCard(req permission.PermissionRequest) string {
 type questionHint int
 
 const (
-	// questionHintNone is used once a batch is resolved: no instruction at
-	// all, since there is nothing left to press or type.
+	// questionHintNone renders a card without its closing instruction,
+	// for a card that is no longer open for input.
 	questionHintNone questionHint = iota
 	// questionHintButtons tells the user the choices are buttons.
 	questionHintButtons
@@ -989,33 +1091,72 @@ func renderQuestionContent(req question.Request, questionIndex int, hint questio
 		sb.WriteString(iconQuestion + " **Question")
 	}
 	if q.Label != "" {
-		sb.WriteString(" · " + compactLine(q.Label, 80))
+		sb.WriteString(" · " + plainLine(q.Label))
 	}
 	sb.WriteString("**\n")
-	sb.WriteString(q.Text + "\n")
+	sb.WriteString(strings.TrimSpace(q.Text) + "\n")
 	if q.Description != "" {
-		sb.WriteString("-# " + compactLine(q.Description, 300) + "\n")
+		sb.WriteString("-# " + plainLine(q.Description) + "\n")
 	}
 	for j, choice := range questionChoices(q) {
-		fmt.Fprintf(&sb, "**%d.** %s\n", j+1, compactLine(choice.Label, 120))
+		// The body carries the full label; the button label alone is
+		// capped at Discord's hard limit.
+		fmt.Fprintf(&sb, "**%d.** %s\n", j+1, plainLine(choice.Label))
 		if choice.Description != "" {
-			// Keep a question's rendered card under Discord's 2000-char
-			// message limit: a question is one message so its controls
-			// stay directly beneath it, and a redraw replaces that message
-			// whole.
-			sb.WriteString("-# " + compactLine(choice.Description, 100) + "\n")
+			sb.WriteString("-# " + plainLine(choice.Description) + "\n")
 		}
 	}
 	switch hint {
 	case questionHintButtons:
-		sb.WriteString("-# press a button to answer, or **Something else** to type your own")
+		sb.WriteString(questionButtonsHint)
 	}
 	return sb.String()
 }
 
-// answeredQuestionCard renders the resolved form of one question's message.
-func answeredQuestionCard(req question.Request, questionIndex int) string {
-	return renderQuestionContent(req, questionIndex, questionHintNone) + "\n-# ✅ answered"
+// questionButtonsHint closes an open question card.
+const questionButtonsHint = "-# press a button to answer, or **Something else** to type your own"
+
+// cardChunk returns the chunk of a card that carries its controls. A card
+// short enough for one message returns its whole content.
+func cardChunk(content string) string {
+	chunks := splitMessage(content)
+	if len(chunks) == 0 {
+		return content
+	}
+	return chunks[len(chunks)-1]
+}
+
+// cardChunks returns the posted chunks of a card, falling back to the
+// last chunk when the message count differs from the current content.
+func cardChunks(content string, n int) []string {
+	chunks := splitMessage(content)
+	if len(chunks) == 0 {
+		return nil
+	}
+	out := make([]string, n)
+	for i := range n {
+		out[i] = chunks[min(i, len(chunks)-1)]
+	}
+	return out
+}
+
+// editAnsweredCard rewrites every message of a resolved question card,
+// dropping its controls and replacing the closing hint with the answered
+// marker on the final chunk.
+func (b *Bridge) editAnsweredCard(ids []string, req question.Request, questionIndex int) {
+	if len(ids) == 0 {
+		return
+	}
+	chunks := cardChunks(renderQuestionContent(req, questionIndex, questionHintButtons), len(ids))
+	for i, id := range ids {
+		chunk := chunks[i]
+		if i == len(ids)-1 {
+			chunk = strings.TrimSuffix(chunk, questionButtonsHint) + "-# ✅ answered"
+		}
+		if err := b.api.editMessage(b.ctx, b.threadID, id, chunk); err != nil {
+			slog.Debug("Discord bridge: failed to update question card", "error", err.Error())
+		}
+	}
 }
 
 // ── Discord input ────────────────────────────────────────────────────────
@@ -1174,7 +1315,7 @@ func (b *Bridge) handleQuestionComponent(in gatewayInteraction) {
 	req, pending := b.questions[ref.requestID]
 	selections := b.questionSelections[ref.requestID]
 	fillIns := b.questionFillIns[ref.requestID]
-	msgIDs := append([]string(nil), b.questionMessages[ref.requestID]...)
+	msgIDs := append([][]string(nil), b.questionMessages[ref.requestID]...)
 	b.pendingMu.Unlock()
 	if !pending {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
@@ -1265,7 +1406,7 @@ func (b *Bridge) handleQuestionModalSubmit(in gatewayInteraction) {
 	req, pending := b.questions[requestID]
 	selections := b.questionSelections[requestID]
 	fillIns := b.questionFillIns[requestID]
-	msgIDs := append([]string(nil), b.questionMessages[requestID]...)
+	msgIDs := append([][]string(nil), b.questionMessages[requestID]...)
 	b.pendingMu.Unlock()
 	if !pending {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
@@ -1296,17 +1437,19 @@ func (b *Bridge) handleQuestionModalSubmit(in gatewayInteraction) {
 	b.redrawQuestion(in, req, questionIndex, selections, fillIns, msgIDs)
 }
 
-// redrawQuestion updates one question's message in place. When the last
-// question's submit row also needs to reflect the new state (a press on an
-// earlier question), that message is edited over REST.
-func (b *Bridge) redrawQuestion(in gatewayInteraction, req question.Request, questionIndex int, selections map[string]map[string]bool, fillIns map[string]string, msgIDs []string) {
+// redrawQuestion updates one question's card in place. Buttons ride on
+// the card's last chunk, so only that message is rewritten; when an
+// earlier question was pressed, the last question's submit row is
+// refreshed over REST.
+func (b *Bridge) redrawQuestion(in gatewayInteraction, req question.Request, questionIndex int, selections map[string]map[string]bool, fillIns map[string]string, cards [][]string) {
 	includeSubmit := questionIndex == len(req.Questions)-1
-	card := renderQuestionContent(req, questionIndex, questionHintButtons)
+	card := cardChunk(renderQuestionContent(req, questionIndex, questionHintButtons))
 	rows := questionRows(req, questionIndex, selections, fillIns, includeSubmit)
+	cardID := lastCardID(cards, questionIndex)
 	if err := b.interactionAPI.updateInteraction(b.ctx, in.ID, in.Token, card, rows); err != nil {
 		slog.Debug("Discord bridge: failed to update question message", "error", err.Error())
-		if questionIndex < len(msgIDs) {
-			if editErr := b.api.editMessage(b.ctx, b.threadID, msgIDs[questionIndex], card, rows...); editErr != nil {
+		if cardID != "" {
+			if editErr := b.api.editMessage(b.ctx, b.threadID, cardID, card, rows...); editErr != nil {
 				slog.Debug("Discord bridge: failed to redraw question message", "error", editErr.Error())
 			}
 		}
@@ -1315,19 +1458,32 @@ func (b *Bridge) redrawQuestion(in gatewayInteraction, req question.Request, que
 		return
 	}
 	last := len(req.Questions) - 1
-	if last < len(msgIDs) {
-		lastCard := renderQuestionContent(req, last, questionHintButtons)
+	if lastID := lastCardID(cards, last); lastID != "" {
+		lastCard := cardChunk(renderQuestionContent(req, last, questionHintButtons))
 		lastRows := questionRows(req, last, selections, fillIns, true)
-		if err := b.api.editMessage(b.ctx, b.threadID, msgIDs[last], lastCard, lastRows...); err != nil {
+		if err := b.api.editMessage(b.ctx, b.threadID, lastID, lastCard, lastRows...); err != nil {
 			slog.Debug("Discord bridge: failed to refresh submit row", "error", err.Error())
 		}
 	}
 }
 
+// lastCardID returns the id of the message that carries a question card's
+// controls (its final chunk), or "" when the card was never posted.
+func lastCardID(cards [][]string, questionIndex int) string {
+	if questionIndex < 0 || questionIndex >= len(cards) {
+		return ""
+	}
+	ids := cards[questionIndex]
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[len(ids)-1]
+}
+
 // submitQuestionAnswers sends a batch's answers and marks every question
-// message resolved. The question notification that follows is a no-op
+// card resolved. The question notification that follows is a no-op
 // because the batch is already removed here.
-func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool, fillIns map[string]string, msgIDs []string, originIndex int) {
+func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool, fillIns map[string]string, cards [][]string, originIndex int) {
 	if !b.env.QuestionAnswer(answersFromSelections(req, selections, fillIns)) {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
 		return
@@ -1340,26 +1496,34 @@ func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Reque
 	b.pendingMu.Unlock()
 
 	// The interaction callback acknowledges the press and can rewrite the
-	// originating message; the other question messages are resolved over
-	// REST.
+	// originating message; every other chunk is resolved over REST.
 	acked := false
-	for i, msgID := range msgIDs {
-		card := answeredQuestionCard(req, i)
-		if acked || i != originIndex {
-			if err := b.api.editMessage(b.ctx, b.threadID, msgID, card); err != nil {
-				slog.Debug("Discord bridge: failed to resolve question message", "error", err.Error())
-			}
+	for i, ids := range cards {
+		if len(ids) == 0 {
 			continue
 		}
-		if err := b.interactionAPI.updateInteraction(b.ctx, in.ID, in.Token, card, nil); err != nil {
-			slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
-			if editErr := b.api.editMessage(b.ctx, b.threadID, msgID, card); editErr != nil {
-				slog.Debug("Discord bridge: failed to resolve question card", "error", editErr.Error())
+		chunks := cardChunks(renderQuestionContent(req, i, questionHintButtons), len(ids))
+		for j, id := range ids {
+			chunk := chunks[j]
+			if j == len(ids)-1 {
+				chunk = strings.TrimSuffix(chunk, questionButtonsHint) + "-# ✅ answered"
 			}
+			if acked || i != originIndex || j != len(ids)-1 {
+				if err := b.api.editMessage(b.ctx, b.threadID, id, chunk); err != nil {
+					slog.Debug("Discord bridge: failed to resolve question message", "error", err.Error())
+				}
+				continue
+			}
+			if err := b.interactionAPI.updateInteraction(b.ctx, in.ID, in.Token, chunk, nil); err != nil {
+				slog.Debug("Discord bridge: failed to mark question card answered", "error", err.Error())
+				if editErr := b.api.editMessage(b.ctx, b.threadID, id, chunk); editErr != nil {
+					slog.Debug("Discord bridge: failed to resolve question card", "error", editErr.Error())
+				}
+			}
+			acked = true
 		}
-		acked = true
 	}
-	if !acked && len(msgIDs) > 0 {
+	if !acked && len(cards) > 0 {
 		// No message matched the origin index (should not happen); still
 		// acknowledge so Discord does not show "application did not respond".
 		b.answerInteraction(in, "✅ Answered.")
@@ -1591,8 +1755,9 @@ func (s turnState) terminal() bool {
 
 // footer is the bridge's status message: a single message that lives at
 // the bottom of the thread and carries the live turn state, per-turn
-// tool counts, session metrics, and a tail window of the text currently
-// streaming. It persists between turns so it is always the last message;
+// tool counts, and session metrics. Assistant text mirrors into its own
+// transcript messages above the footer, so nothing is cut to a preview.
+// The footer persists between turns so it is always the last message;
 // content that must appear above it recycles the footer message (see
 // postAbove and reanchorFooter).
 type footer struct {
@@ -1623,7 +1788,9 @@ type footer struct {
 	toolFailures int
 	countedCalls map[string]bool
 
-	// tail is the newest slice of the current step's streamed content.
+	// tail is the current step's streamed content. It drives the live
+	// transcript messages and the writing state; the footer itself no
+	// longer renders it.
 	tail string
 
 	// Usage metrics from the latest session snapshot.
@@ -1665,7 +1832,7 @@ func (b *Bridge) rebindSession(ctx context.Context, to session.Session) {
 	b.permMessage = map[string]string{}
 	b.questions = map[string]question.Request{}
 	b.questionOrder = nil
-	b.questionMessages = map[string][]string{}
+	b.questionMessages = map[string][][]string{}
 	b.questionSelections = map[string]map[string]map[string]bool{}
 	b.questionFillIns = map[string]map[string]string{}
 	b.pendingMu.Unlock()
@@ -1712,6 +1879,7 @@ func (b *Bridge) rebindSession(ctx context.Context, to session.Session) {
 	f.countedCalls = map[string]bool{}
 	f.tail = ""
 	f.mu.Unlock()
+	b.resetLiveTranscript()
 
 	b.setSession(to)
 
@@ -1836,7 +2004,9 @@ func (b *Bridge) reanchorFooter() {
 }
 
 // composeFooterLocked renders the footer body: status header, per-turn
-// tool summary, usage metrics, and the newest slice of streamed text.
+// tool summary, and usage metrics. Assistant text no longer lives here:
+// it streams into transcript messages above the footer so nothing is
+// truncated to a tail window.
 // Must be called with f.mu held.
 func (b *Bridge) composeFooterLocked() string {
 	f := b.footer
@@ -1849,15 +2019,7 @@ func (b *Bridge) composeFooterLocked() string {
 			lines = append(lines, metrics)
 		}
 	}
-	body := strings.Join(lines, "\n")
-	if tail := strings.TrimSpace(f.tail); tail != "" {
-		room := safeMessageLen - len(body) - 3
-		if room < 200 {
-			room = 200
-		}
-		body += "\n\n" + tailText(tail, room)
-	}
-	return body
+	return strings.Join(lines, "\n")
 }
 
 // renderFooterHeaderLocked renders the footer's status header. Must be
@@ -1985,8 +2147,8 @@ func (b *Bridge) markWaiting(waiting bool) {
 	b.pokeFooter()
 }
 
-// freezeStep posts a completed step's transcript above the footer and
-// marks the step frozen so later snapshots cannot repost it.
+// freezeStep finalizes a completed step's transcript above the footer
+// and marks the step frozen so later snapshots cannot repost it.
 func (b *Bridge) freezeStep(msg message.Message) {
 	content := renderAssistantTimeline(msg)
 	if strings.TrimSpace(content) == "" {
@@ -1999,8 +2161,9 @@ func (b *Bridge) freezeStep(msg message.Message) {
 	b.freezeContent(msg.ID, content)
 }
 
-// freezeContent posts a frozen transcript above the footer. The frozen
-// set keeps repeated snapshots of the same step from double-posting.
+// freezeContent writes a step's final text into its transcript messages
+// and forgets the live set so the next step starts fresh. The frozen set
+// keeps repeated snapshots of the same step from double-posting.
 func (b *Bridge) freezeContent(id, content string) {
 	if strings.TrimSpace(content) == "" {
 		return
@@ -2017,7 +2180,8 @@ func (b *Bridge) freezeContent(id, content string) {
 		b.frozen[id] = true
 		b.frozenMu.Unlock()
 	}
-	b.post(content)
+	b.syncLiveTranscript(content)
+	b.resetLiveTranscript()
 }
 
 // isFrozen reports whether a step's transcript was already posted.
