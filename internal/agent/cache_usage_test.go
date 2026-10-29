@@ -161,3 +161,28 @@ func TestCacheAwareUsageDialects(t *testing.T) {
 		assert.Equal(t, int64(1000), usage.InputTokens)
 	})
 }
+
+func TestCacheAwareStreamUsageWithoutTotalTokens(t *testing.T) {
+	t.Parallel()
+	usage := usageFromChunk(t, `{
+		"id":"m1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-1-flash-1017",
+		"choices":[],
+		"usage":{"prompt_tokens":1000,"completion_tokens":10,
+			"prompt_tokens_details":{"cached_tokens":896}}
+	}`)
+	assert.Equal(t, int64(896), usage.CacheReadTokens)
+	assert.Equal(t, int64(104), usage.InputTokens)
+	assert.Equal(t, int64(1010), usage.TotalTokens)
+}
+
+func TestCacheAwareStreamUsageMistralShape(t *testing.T) {
+	t.Parallel()
+	usage := usageFromChunk(t, `{
+		"id":"m2","object":"chat.completion.chunk","created":1,"model":"mistral-large-latest",
+		"choices":[],
+		"usage":{"prompt_tokens":1013,"completion_tokens":30,"total_tokens":1043,
+			"prompt_tokens_details":{"cached_tokens":1008}}
+	}`)
+	assert.Equal(t, int64(1008), usage.CacheReadTokens)
+	assert.Equal(t, int64(5), usage.InputTokens)
+}

@@ -63,3 +63,19 @@ func TestFormatTokensAndCostOmitsEstimatedPrefix(t *testing.T) {
 	require.Contains(t, actual, "12%")
 	require.NotContains(t, actual, "~12%")
 }
+
+func TestModelInfoRendersTPSStat(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	context := &ModelContextInfo{
+		ContextUsed:  500,
+		ModelContext: 1000,
+		TPSLive:      12.3,
+		TPSAverage:   8.1,
+	}
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+
+	require.Contains(t, actual, "LIVE_TPS 12.3")
+	require.Contains(t, actual, "TOTAL_AVG_FOR_SESSION 8.1")
+}

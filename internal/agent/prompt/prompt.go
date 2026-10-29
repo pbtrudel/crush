@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
@@ -30,21 +32,48 @@ type Prompt struct {
 }
 
 type PromptDat struct {
-	Provider           string
-	Model              string
-	Config             config.Config
-	WorkingDir         string
-	IsGitRepo          bool
-	Platform           string
-	Date               string
-	ContextFiles       []ContextFile
-	GlobalContextFiles []ContextFile
-	AvailSkillXML      string
+	Provider            string
+	Model               string
+	Config              config.Config
+	WorkingDir          string
+	IsGitRepo           bool
+	Platform            string
+	Date                string
+	ContextFiles        []ContextFile
+	GlobalContextFiles  []ContextFile
+	ContextBudget       *ContextBudget
+	GlobalContextBudget *ContextBudget
+	AvailSkillXML       string
 }
 
 type ContextFile struct {
 	Path    string
 	Content string
+}
+
+// ContextBudget describes what a context-chain byte budget dropped or
+// truncated. It is rendered into the prompt so the model knows the
+// instructions it sees are incomplete.
+type ContextBudget struct {
+	LimitBytes int
+	Omitted    []string
+	Truncated  []string
+}
+
+// Notice renders the budget summary embedded in the prompt. It returns an
+// empty string when nothing was changed.
+func (b ContextBudget) Notice() string {
+	if b.LimitBytes <= 0 || len(b.Omitted) == 0 && len(b.Truncated) == 0 {
+		return ""
+	}
+	var parts []string
+	if len(b.Omitted) > 0 {
+		parts = append(parts, "omitted "+strings.Join(b.Omitted, ", "))
+	}
+	if len(b.Truncated) > 0 {
+		parts = append(parts, "truncated "+strings.Join(b.Truncated, ", "))
+	}
+	return fmt.Sprintf("Context budget %d bytes: %s.", b.LimitBytes, strings.Join(parts, "; "))
 }
 
 type Option func(*Prompt)
@@ -153,7 +182,11 @@ func expandPath(path string, store *config.ConfigStore) string {
 // deterministic because the result is embedded in the system prompt: a
 // reordering between builds rewrites the prompt prefix and invalidates the
 // provider's prompt cache.
-func loadContextFiles(paths []string, store *config.ConfigStore) []ContextFile {
+//
+// When maxBytes is positive, the chain is bounded: broader files are omitted
+// before the most specific file is truncated, so a large project chain
+// cannot evict the user's global instructions.
+func loadContextFiles(paths []string, store *config.ConfigStore, maxBytes int) ([]ContextFile, *ContextBudget) {
 	var files []ContextFile
 	seen := make(map[string]bool, len(paths))
 	for _, pth := range paths {
@@ -165,7 +198,154 @@ func loadContextFiles(paths []string, store *config.ConfigStore) []ContextFile {
 		seen[pathKey] = true
 		files = append(files, processContextPath(expanded, store)...)
 	}
-	return files
+	return budgetContextFiles(files, maxBytes)
+}
+
+// budgetContextFiles applies a byte budget to one context chain. Files are
+// ranked by specificity: deeper paths and the canonical instruction names
+// survive longest. The returned slice keeps the original file order.
+func budgetContextFiles(files []ContextFile, maxBytes int) ([]ContextFile, *ContextBudget) {
+	if maxBytes <= 0 || len(files) == 0 {
+		return files, nil
+	}
+	var total int
+	for _, f := range files {
+		total += len(f.Content)
+	}
+	if total <= maxBytes {
+		return files, nil
+	}
+
+	order := make([]int, len(files))
+	for i := range files {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return contextFilePriority(files[order[i]]) < contextFilePriority(files[order[j]])
+	})
+
+	dropped := make([]bool, len(files))
+	var omitted []string
+	for _, idx := range order {
+		if total <= maxBytes || len(files)-len(omitted) <= 1 {
+			break
+		}
+		total -= len(files[idx].Content)
+		dropped[idx] = true
+		omitted = append(omitted, files[idx].Path)
+	}
+
+	kept := make([]ContextFile, 0, len(files)-len(omitted))
+	for i, f := range files {
+		if !dropped[i] {
+			kept = append(kept, f)
+		}
+	}
+
+	var truncated []string
+	if total > maxBytes && len(kept) > 0 {
+		truncIdx := 0
+		for i := range kept {
+			if contextFilePriority(kept[i]) > contextFilePriority(kept[truncIdx]) {
+				truncIdx = i
+			}
+		}
+		available := maxBytes - (total - len(kept[truncIdx].Content))
+		kept[truncIdx].Content = truncateContextContent(kept[truncIdx].Content, available)
+		truncated = append(truncated, kept[truncIdx].Path)
+	}
+
+	return kept, &ContextBudget{
+		LimitBytes: maxBytes,
+		Omitted:    omitted,
+		Truncated:  truncated,
+	}
+}
+
+// contextFilePriority ranks a context file for budget retention. Higher
+// values survive longer. The canonical instruction file names outrank
+// incidental project files at the same depth.
+func contextFilePriority(f ContextFile) int {
+	slashPath := filepath.ToSlash(f.Path)
+	depth := strings.Count(slashPath, "/")
+	name := strings.ToLower(filepath.Base(slashPath))
+	var nameScore int
+	switch name {
+	case "agents.md":
+		nameScore = 100
+	case "crush.md":
+		nameScore = 90
+	case "claude.md":
+		nameScore = 80
+	case "gemini.md":
+		nameScore = 70
+	case "agents.local.md":
+		nameScore = 60
+	case "crush.local.md":
+		nameScore = 50
+	case "claude.local.md":
+		nameScore = 40
+	}
+	return depth*1000 + nameScore + len(slashPath)
+}
+
+// truncateContextContent keeps the head and tail of a context file within
+// maxBytes, inserting a marker in the middle. It never splits a UTF-8 rune.
+func truncateContextContent(content string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(content) <= maxBytes {
+		return content
+	}
+	const marker = "\n\n[... context truncated to fit the context budget ...]\n\n"
+	if maxBytes <= len(marker) {
+		return runePrefix(marker, maxBytes)
+	}
+	keep := maxBytes - len(marker)
+	headBudget := keep * 2 / 3
+	tailBudget := keep - headBudget
+	head := runePrefix(content, headBudget)
+	tail := runeSuffix(content, tailBudget)
+	return head + marker + tail
+}
+
+// runePrefix returns the longest prefix of s whose UTF-8 byte length does
+// not exceed maxBytes.
+func runePrefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := 0
+	for idx := range s {
+		if idx > maxBytes {
+			break
+		}
+		cut = idx
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut]
+}
+
+// runeSuffix returns the longest suffix of s whose UTF-8 byte length does
+// not exceed maxBytes, starting on a rune boundary.
+func runeSuffix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	start := len(s) - maxBytes
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 func (p *Prompt) promptData(ctx context.Context, provider, model string, store *config.ConfigStore) (PromptDat, error) {
@@ -173,8 +353,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
 	cfg := store.Config()
-	contextFiles := loadContextFiles(cfg.Options.ContextPaths, store)
-	globalContextFiles := loadContextFiles(cfg.Options.GlobalContextPaths, store)
+	contextFiles, contextBudget := loadContextFiles(cfg.Options.ContextPaths, store, cfg.Options.GetContextMaxBytes())
+	globalContextFiles, globalContextBudget := loadContextFiles(cfg.Options.GlobalContextPaths, store, cfg.Options.GetContextMaxBytes())
 
 	// Discover and load skills metadata.
 	var availSkillXML string
@@ -224,6 +404,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 
 	data.ContextFiles = contextFiles
 	data.GlobalContextFiles = globalContextFiles
+	data.ContextBudget = contextBudget
+	data.GlobalContextBudget = globalContextBudget
 	return data, nil
 }
 

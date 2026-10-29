@@ -42,6 +42,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
 	"golang.org/x/sync/errgroup"
 
@@ -195,6 +196,12 @@ type coordinator struct {
 	activeSkills []*skills.Skill // Post-filter: active skills only.
 	skillTracker *skills.Tracker
 
+	// wakeMu guards wakeCounts, the per-session consecutive-wake budget
+	// used by background completion notifications.
+	wakeMu     sync.Mutex
+	wakeCounts map[string]int
+	subagents  *subagentManager
+
 	readyWg errgroup.Group
 }
 
@@ -247,6 +254,8 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		activeSkills: activeSkills,
 		skillTracker: skillTracker,
 		interactive:  opts.Interactive,
+		wakeCounts:   make(map[string]int),
+		subagents:    newSubagentManager(),
 	}
 
 	agentCfg, ok := opts.Config.Config().Agents[config.AgentCoder]
@@ -283,6 +292,8 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 
 	c.mainAgent = agent
 	c.mainAgentName = config.AgentCoder
+	go c.watchBackgroundJobs(ctx)
+	go c.watchSubagents(ctx)
 	return c, nil
 }
 
@@ -378,6 +389,17 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
 func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.runWithOptions(ctx, accept, sessionID, prompt, runOptions{}, attachments...)
+}
+
+// runOptions distinguishes user-initiated turns from background-completion
+// wakeups and hidden notices.
+type runOptions struct {
+	hidden bool
+	wakeup bool
+}
+
+func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, opts runOptions, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -457,13 +479,17 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	runID := RunIDFromContext(ctx)
 	channel := ChannelFromContext(ctx)
 	c.syncSessionChannel(ctx, sessionID, channel)
+	if !opts.wakeup {
+		c.resetWakeCount(sessionID)
+	}
 	run := func() (*fantasy.AgentResult, error) {
 		return agent.Run(ctx, SessionAgentCall{
 			SessionID:         sessionID,
 			RunID:             runID,
 			Channel:           channel,
 			Prompt:            prompt,
-			HiddenUserMessage: message.HiddenUserMessage(ctx),
+			HiddenUserMessage: opts.hidden || message.HiddenUserMessage(ctx),
+			Wakeup:            opts.wakeup,
 			Attachments:       attachments,
 			MaxOutputTokens:   maxTokens,
 			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg),
@@ -501,6 +527,136 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		MarkRunCompletePublished(ctx)
 	}
 	return result, originalErr
+}
+
+// watchBackgroundJobs delivers background shell completions to the owning
+// session. A busy session receives the notice on its next step; an idle
+// session is woken with a hidden turn, capped by max_consecutive_wakes.
+func (c *coordinator) watchBackgroundJobs(ctx context.Context) {
+	events := shell.SubscribeBackgroundJobs(ctx)
+	for event := range events {
+		if event.Type != pubsub.CreatedEvent {
+			continue
+		}
+		c.handleBackgroundJob(ctx, event.Payload)
+	}
+}
+
+func (c *coordinator) handleBackgroundJob(ctx context.Context, event shell.BackgroundJobEvent) {
+	if event.SessionID == "" || event.Awaited || event.Killed {
+		return
+	}
+	if c.cfg == nil || c.cfg.Config() == nil || !c.cfg.Config().Options.GetBackgroundJobNotifications() {
+		return
+	}
+	c.deliverNotice(ctx, event.SessionID, backgroundJobNotice(event))
+}
+
+// deliverNotice sends a background completion notice to its owning session.
+// A busy session gets it on the next step; an idle session is woken with a
+// hidden turn, subject to the consecutive-wake budget.
+func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice string) {
+	agent := c.currentAgent()
+	if agent == nil {
+		return
+	}
+	// The broker is process-wide. Only wake a session this workspace
+	// actually owns; a background job from another workspace (or a test)
+	// must not start a turn here.
+	if c.sessions == nil {
+		return
+	}
+	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
+		return
+	}
+	if agent.IsSessionBusy(sessionID) || !c.takeWakeSlot(sessionID) {
+		agent.EnqueueNotice(sessionID, notice)
+		return
+	}
+	go func() {
+		if _, err := c.runWithOptions(ctx, nil, sessionID, notice, runOptions{hidden: true, wakeup: true}); err != nil {
+			slog.Warn("Failed to wake session for background completion", "session_id", sessionID, "error", err)
+			agent.EnqueueNotice(sessionID, notice)
+		}
+	}()
+}
+
+func (c *coordinator) watchSubagents(ctx context.Context) {
+	go func() {
+		<-ctx.Done()
+		if c.subagents != nil {
+			c.subagents.cancelAll()
+		}
+	}()
+	events := SubscribeSubagents(ctx)
+	for event := range events {
+		if event.Type != pubsub.CreatedEvent {
+			continue
+		}
+		c.handleSubagentEvent(ctx, event.Payload)
+	}
+}
+
+func (c *coordinator) handleSubagentEvent(ctx context.Context, event SubagentEvent) {
+	if event.ParentSessionID == "" {
+		return
+	}
+	if c.cfg == nil || c.cfg.Config() == nil || !c.cfg.Config().Options.GetBackgroundSubagents() {
+		return
+	}
+	c.deliverNotice(ctx, event.ParentSessionID, backgroundSubagentNotice(event))
+}
+
+func (c *coordinator) resetWakeCount(sessionID string) {
+	c.wakeMu.Lock()
+	delete(c.wakeCounts, sessionID)
+	c.wakeMu.Unlock()
+}
+
+func (c *coordinator) takeWakeSlot(sessionID string) bool {
+	limit := config.DefaultMaxConsecutiveWakes
+	if c.cfg != nil && c.cfg.Config() != nil {
+		limit = c.cfg.Config().Options.GetMaxConsecutiveWakes()
+	}
+	if limit <= 0 {
+		return true
+	}
+	c.wakeMu.Lock()
+	defer c.wakeMu.Unlock()
+	if c.wakeCounts == nil {
+		c.wakeCounts = make(map[string]int)
+	}
+	if c.wakeCounts[sessionID] >= limit {
+		return false
+	}
+	c.wakeCounts[sessionID]++
+	return true
+}
+
+func backgroundJobNotice(event shell.BackgroundJobEvent) string {
+	status := "finished"
+	if event.ExitCode != 0 {
+		status = fmt.Sprintf("finished with exit code %d", event.ExitCode)
+	}
+	label := event.Description
+	if label == "" {
+		label = event.Command
+	}
+	if len([]rune(label)) > 120 {
+		label = string([]rune(label)[:120]) + "..."
+	}
+	output := strings.TrimSpace(event.Output)
+	if output == "" {
+		output = "No new output."
+	}
+	return fmt.Sprintf(
+		"<background_job_notice>Background job %s (%s) %s.\n%s\nUse job_output with shell_id=%s to read the complete output.</background_job_notice>",
+		event.ShellID,
+		label,
+		status,
+		output,
+		event.ShellID,
+	)
 }
 
 // syncSessionChannel reconciles the session's persisted channel binding with
@@ -922,7 +1078,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		if err != nil {
 			return nil, err
 		}
-		allTools = append(allTools, agentTool)
+		allTools = append(allTools, agentTool, c.subagentOutputTool())
 	}
 
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
@@ -1880,24 +2036,74 @@ func callTopK(providerCfg config.ProviderConfig, topK *int64) *int64 {
 	return topK
 }
 
-// runSubAgent runs a sub-agent and handles session management and usage
-// accumulation. It creates a sub-session, runs the agent with the given
-// prompt, and propagates cost and cache usage to the parent session.
+// runSubAgent runs a sub-agent synchronously and returns its final text.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
-	// Create sub-session
-	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
-	session, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
+	sess, err := c.createSubAgentSession(ctx, params)
 	if err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
+		return fantasy.ToolResponse{}, err
 	}
+	output, err := c.executeSubAgent(ctx, params.Agent, sess, params)
+	if err != nil {
+		if errors.Is(err, errModelProviderNotConfigured) {
+			return fantasy.ToolResponse{}, err
+		}
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
+	}
+	if output == "" {
+		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
+	}
+	return fantasy.NewTextResponse(output), nil
+}
 
-	// Call session setup function if provided
+// startBackgroundSubAgent creates the child session and returns its id
+// immediately; the child runs independently and its result arrives through
+// a completion notice.
+func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
+	sess, err := c.createSubAgentSession(ctx, params)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	if c.subagents == nil {
+		c.subagents = newSubagentManager()
+	}
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
+	run := c.subagents.start(sess.ID, params.SessionID, cancel)
+	go func() {
+		defer cancel()
+		output, runErr := c.executeSubAgent(runCtx, params.Agent, sess, params)
+		c.subagents.finish(run, output, runErr)
+		event := SubagentEvent{
+			ID:              run.id,
+			SessionID:       sess.ID,
+			ParentSessionID: params.SessionID,
+			Output:          output,
+		}
+		if runErr != nil {
+			event.Err = runErr.Error()
+		}
+		subagentBroker.Publish(pubsub.CreatedEvent, event)
+	}()
+	return fantasy.NewTextResponse(fmt.Sprintf(
+		"started subagent %s. You will be notified when it finishes; use subagent_output with subagent_id=%s and wait=true only if you are blocked.",
+		run.id,
+		run.id,
+	)), nil
+}
+
+func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgentParams) (session.Session, error) {
+	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
+	sess, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
+	if err != nil {
+		return session.Session{}, fmt.Errorf("create session: %w", err)
+	}
 	if params.SessionSetup != nil {
-		params.SessionSetup(session.ID)
+		params.SessionSetup(sess.ID)
 	}
+	return sess, nil
+}
 
-	// Get model configuration
-	model := params.Agent.Model()
+func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, sess session.Session, params subAgentParams) (string, error) {
+	model := agent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -1905,26 +2111,22 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 
 	providerCfg, ok := c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
 	if !ok {
-		return fantasy.ToolResponse{}, errModelProviderNotConfigured
+		return "", errModelProviderNotConfigured
 	}
 
-	// Run the agent
-	run := func() (*fantasy.AgentResult, error) {
-		return params.Agent.Run(ctx, SessionAgentCall{
-			SessionID:        session.ID,
-			Prompt:           params.Prompt,
-			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  c.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg),
-			Temperature:      model.ModelCfg.Temperature,
-			TopP:             model.ModelCfg.TopP,
-			TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
-			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
-			PresencePenalty:  model.ModelCfg.PresencePenalty,
-			NonInteractive:   true,
-			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
-		})
-	}
-	result, err := run()
+	result, err := agent.Run(ctx, SessionAgentCall{
+		SessionID:        sess.ID,
+		Prompt:           params.Prompt,
+		MaxOutputTokens:  maxTokens,
+		ProviderOptions:  c.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg),
+		Temperature:      model.ModelCfg.Temperature,
+		TopP:             model.ModelCfg.TopP,
+		TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
+		FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
+		PresencePenalty:  model.ModelCfg.PresencePenalty,
+		NonInteractive:   true,
+		OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+	})
 	// Notify only if still unauthorized after retry. AWS SSO is handled
 	// transparently inside OnAuthRefresh, so it needs no post-run notice.
 	if err != nil && isUnauthorized(err) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
@@ -1934,25 +2136,21 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		})
 	}
 	if err != nil {
-		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
+		return "", err
 	}
 
 	// Update parent session usage on a best-effort basis. A failure here must
 	// not discard the sub-agent output that was already produced.
-	if err := c.updateParentSessionUsage(ctx, session.ID, params.SessionID); err != nil {
+	if err := c.updateParentSessionUsage(ctx, sess.ID, params.SessionID); err != nil {
 		slog.Warn(
 			"Failed to update parent session usage",
-			"child_session", session.ID,
+			"child_session", sess.ID,
 			"parent_session", params.SessionID,
 			"error", err,
 		)
 	}
 
-	output := subAgentOutput(result)
-	if output == "" {
-		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
-	}
-	return fantasy.NewTextResponse(output), nil
+	return subAgentOutput(result), nil
 }
 
 func subAgentOutput(result *fantasy.AgentResult) string {

@@ -17,6 +17,9 @@ var agentToolDescription string
 
 type AgentParams struct {
 	Prompt string `json:"prompt" description:"The task for the agent to perform"`
+	// RunInBackground defaults to the background_subagents option. Set
+	// false to wait for the result in this turn.
+	RunInBackground *bool `json:"run_in_background,omitempty" description:"Set false to wait for the result in this turn. Defaults to the background_subagents option."`
 }
 
 const (
@@ -55,14 +58,25 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
 			}
 
-			return c.runSubAgent(ctx, subAgentParams{
+			sp := subAgentParams{
 				Agent:          agent,
 				SessionID:      sessionID,
 				AgentMessageID: agentMessageID,
 				ToolCallID:     call.ID,
 				Prompt:         params.Prompt,
 				SessionTitle:   "New Agent Session",
-			})
+			}
+			background := true
+			if c.cfg != nil && c.cfg.Config() != nil {
+				background = c.cfg.Config().Options.GetBackgroundSubagents()
+			}
+			if params.RunInBackground != nil {
+				background = *params.RunInBackground
+			}
+			if background {
+				return c.startBackgroundSubAgent(ctx, sp)
+			}
+			return c.runSubAgent(ctx, sp)
 		},
 	), nil
 }

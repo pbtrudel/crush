@@ -45,6 +45,8 @@ type sidebarCacheKey struct {
 	hyper         bool
 	hasCredits    bool
 	credits       int
+	tpsLive       int
+	tpsAverage    int
 }
 
 // pillsCacheKey captures every input renderPills reads.
@@ -78,6 +80,9 @@ func (m *UI) sidebarCacheKey() sidebarCacheKey {
 		logo:       m.sidebarLogo,
 		hyper:      m.com.IsHyper(),
 	}
+	liveTPS, averageTPS := m.tpsStats()
+	k.tpsLive = int(liveTPS)
+	k.tpsAverage = int(averageTPS)
 	if k.filesLen > 0 {
 		k.filesPtr = &m.sessionFiles[0]
 	}

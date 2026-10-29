@@ -29,6 +29,13 @@ func cacheAwareUsage(response openaisdk.ChatCompletion) (fantasy.Usage, fantasy.
 
 // cacheAwareStreamUsage is the streaming counterpart of cacheAwareUsage.
 func cacheAwareStreamUsage(chunk openaisdk.ChatCompletionChunk, ctx map[string]any, metadata fantasy.ProviderMetadata) (fantasy.Usage, fantasy.ProviderMetadata) {
+	// Some OpenAI-compatible providers omit total_tokens from the final
+	// streaming usage chunk even though they report prompt and completion
+	// counts. The default extractor treats total_tokens == 0 as "no usage"
+	// and discards the whole payload, which also hides cache reads.
+	if chunk.Usage.TotalTokens == 0 && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+		chunk.Usage.TotalTokens = chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens
+	}
 	usage, metadata := openai.DefaultStreamUsageFunc(chunk, ctx, metadata)
 	usage = adoptFallbackCacheRead(usage, chunk.Usage.PromptTokensDetails.JSON.CachedTokens.Valid(), chunk.Usage.JSON.ExtraFields)
 	return usage, metadata

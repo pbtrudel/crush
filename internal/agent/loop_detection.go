@@ -3,15 +3,64 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 
 	"charm.land/fantasy"
 )
 
 const (
-	loopDetectionWindowSize = 10
-	loopDetectionMaxRepeats = 5
+	loopDetectionWindowSize = 20
+	loopDetectionMaxRepeats = 10
 )
+
+// repeatToolReminderThresholds are the consecutive-repeat counts that earn
+// an advisory reminder. The hard stop sits above the last one so the model
+// gets a chance to change course first.
+var repeatToolReminderThresholds = []int{3, 5, 8}
+
+// consecutiveToolCallRepeats returns the number of identical tool-call
+// signatures at the end of steps and the name of the repeated tool.
+func consecutiveToolCallRepeats(steps []fantasy.StepResult) (count int, toolName string) {
+	if len(steps) == 0 {
+		return 0, ""
+	}
+	last := getToolInteractionSignature(steps[len(steps)-1].Content)
+	if last == "" {
+		return 0, ""
+	}
+	toolName = lastToolCallName(steps[len(steps)-1])
+	for i := len(steps) - 1; i >= 0; i-- {
+		if getToolInteractionSignature(steps[i].Content) != last {
+			break
+		}
+		count++
+	}
+	return count, toolName
+}
+
+func lastToolCallName(step fantasy.StepResult) string {
+	calls := step.Content.ToolCalls()
+	if len(calls) == 0 {
+		return ""
+	}
+	return calls[len(calls)-1].ToolName
+}
+
+// repeatToolReminder renders the advisory message injected after a repeated
+// tool call. It is a user-role system reminder so every provider accepts it
+// and it replays like ordinary conversation history.
+func repeatToolReminder(toolName string, count int) string {
+	name := toolName
+	if name == "" {
+		name = "the same tool"
+	}
+	return fmt.Sprintf(
+		"<system_reminder>You are repeating the exact same tool call with identical arguments (tool: %s, %d times). Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.</system_reminder>",
+		name,
+		count,
+	)
+}
 
 // hasRepeatedToolCalls checks whether the agent is stuck in a loop by looking
 // at recent steps. It examines the last windowSize steps and returns true if

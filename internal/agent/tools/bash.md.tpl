@@ -30,6 +30,7 @@ Common shell builtins and core utils available on Windows.
 - Set run_in_background=true to run a command in a separate background shell; it returns a shell ID (read it with job_output, stop it with job_kill). NEVER use `&` for this - use the parameter instead.
 - Use it for long-running servers (`npm start`, `python -m http.server`), watch tasks (`npm run watch`, `tail -f logfile`), and anything that does not exit on its own.
 - Do not use it for build commands, test suites, git operations, file operations, or short-lived scripts.
+- Track every background job id you start. You are notified in-session when a job finishes; do not busy-poll or sleep on one. Keep working on independent steps. Before a final answer, collect every still-relevant job with job_output (use wait=true only when genuinely blocked).
 </background_execution>
 
 <git_message_quality>

@@ -125,7 +125,11 @@ type SessionAgentCall struct {
 	RunID             string
 	Channel           string
 	HiddenUserMessage bool
-	Prompt            string
+	// Wakeup marks a turn opened by a background completion notice rather
+	// than a user prompt. It feeds the consecutive-wake budget so a chain
+	// of self-triggered completions cannot run forever.
+	Wakeup bool
+	Prompt string
 	// Ephemeral answers the prompt against the session's existing
 	// history as a one-off exchange: no user or assistant message is
 	// persisted and no tools are offered. It backs side questions such
@@ -228,6 +232,7 @@ type SessionAgent interface {
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)
+	EnqueueNotice(sessionID, text string)
 	Summarize(context.Context, string, fantasy.ProviderOptions, func(context.Context, *fantasy.ProviderError) error) error
 	Model() Model
 	GenerateTitle(ctx context.Context, sessionID, userPrompt string)
@@ -256,6 +261,15 @@ type sessionAgent struct {
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
 
+	// modelSwitchMu guards the last model pair retired by SetModels. The
+	// next run uses it to compact with the previous model before adopting a
+	// smaller context window, rather than letting the new model overflow on
+	// history it cannot fit.
+	modelSwitchMu      sync.Mutex
+	previousLarge      Model
+	previousSmall      Model
+	modelSwitchPending bool
+
 	isSubAgent bool
 	sessions   session.Service
 	messages   message.Service
@@ -270,6 +284,11 @@ type sessionAgent struct {
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
+	// notices holds background completion notices waiting for the next step
+	// of a busy session. They are drained into the request and persisted as
+	// hidden user messages so the model sees them exactly once.
+	noticesMu sync.Mutex
+	notices   map[string][]string
 	// mcpInstructions freezes the MCP server instruction suffix per session
 	// so a server that connects mid-session cannot rewrite the system prompt
 	// (and with it the whole prompt-cache prefix). See
@@ -371,6 +390,7 @@ func NewSessionAgent(
 		runComplete:          opts.RunComplete,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, *activeCancel](),
+		notices:              make(map[string][]string),
 		mcpInstructions:      csync.NewMap[string, string](),
 		promptHashes:         csync.NewMap[string, []string](),
 		toolsHashes:          csync.NewMap[string, []string](),
@@ -884,6 +904,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
+	// A model switch can land on a smaller context window. Compact with
+	// the previous model before adopting it, so the first request on the
+	// new model is not rejected for history it can no longer hold.
+	if compacted, compactErr := a.maybeCompactForModelSwitch(ctx, call.SessionID, currentSession, msgs, call.ProviderOptions, call.OnAuthRefresh); compactErr != nil {
+		return nil, compactErr
+	} else if compacted {
+		currentSession, err = a.sessions.Get(ctx, call.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload session after model-switch compaction: %w", err)
+		}
+		msgs, err = a.getSessionMessages(ctx, currentSession)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload messages after model-switch compaction: %w", err)
+		}
+	}
+
 	// Generate title from the first real (non-shell) user prompt.
 	// can take tens of seconds. Blocking Run on it delays the
 	// response to the caller. Use a detached context so the title
@@ -995,6 +1031,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
+	var repetition *repetitionDetector
+	if a.repetitionDetectionEnabled() {
+		repetition = newRepetitionDetector()
+	}
+	repetitionDetected := false
+	repetitionSafeRunes := 0
+	var stepResults []fantasy.StepResult
+	repeatRemindersSent := make(map[int]bool)
+	lastRepeatSignature := ""
+	pendingRepeatReminder := ""
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
@@ -1045,6 +1091,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					return callContext, prepared, createErr
 				}
 				prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
+			}
+			if pendingRepeatReminder != "" {
+				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingRepeatReminder))
+				pendingRepeatReminder = ""
+			}
+			for _, notice := range a.drainNotices(call.SessionID) {
+				if _, createErr := a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
+					Role:  message.User,
+					Parts: []message.ContentPart{message.TextContent{Text: notice, Hidden: true}},
+				}); createErr != nil {
+					slog.Warn("Failed to persist background notice", "error", createErr)
+				}
+				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(notice))
 			}
 
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
@@ -1107,6 +1166,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnTextDelta: func(id string, text string) error {
+			if repetitionDetected {
+				return nil
+			}
+			if repetition != nil {
+				if safe, detected := repetition.Observe(text); detected {
+					repetitionDetected = true
+					repetitionSafeRunes = safe
+					cancel()
+					return nil
+				}
+			}
 			// Persist the model's text verbatim. Trimming it here (for
 			// example a leading newline) would make the stored message
 			// differ from the bytes sent in this same turn, so the next
@@ -1238,6 +1308,31 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				return sessionErr
 			}
 			currentSession = updatedSession
+
+			stepResults = append(stepResults, stepResult)
+			if a.repeatToolRemindersEnabled() {
+				signature := getToolInteractionSignature(stepResult.Content)
+				if signature != lastRepeatSignature {
+					lastRepeatSignature = signature
+					repeatRemindersSent = make(map[int]bool)
+				}
+				count, toolName := consecutiveToolCallRepeats(stepResults)
+				for _, threshold := range repeatToolReminderThresholds {
+					if count < threshold || repeatRemindersSent[threshold] {
+						continue
+					}
+					repeatRemindersSent[threshold] = true
+					pendingRepeatReminder = repeatToolReminder(toolName, count)
+					if _, createErr := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
+						Role:  message.User,
+						Parts: []message.ContentPart{message.TextContent{Text: pendingRepeatReminder, Hidden: true}},
+					}); createErr != nil {
+						slog.Warn("Failed to persist repeat-tool reminder", "error", createErr)
+					}
+					break
+				}
+			}
+
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		StopWhen: []fantasy.StopCondition{
@@ -1269,6 +1364,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	})
 
 	a.eventPromptResponded(call.SessionID, time.Since(startTime).Truncate(time.Second))
+
+	if repetitionDetected {
+		// The run context was cancelled to stop the stream. Trim the
+		// repeated tail before the error path persists the final state,
+		// so the session does not keep thousands of duplicate runes.
+		if currentAssistant != nil {
+			currentAssistant.TruncateContent(repetitionSafeRunes)
+			if updateErr := a.messages.Update(context.WithoutCancel(ctx), *currentAssistant); updateErr != nil {
+				slog.Error("Failed to trim repeated stream content", "error", updateErr)
+			}
+		}
+		err = errRepetitionDetected
+	}
 
 	// overflowRecovery tracks a failed turn that will be recovered by
 	// compacting the session and requeueing the same call once (see the
@@ -1384,7 +1492,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			var requestTimedOutErr *requestTimeoutError
 			const defaultTitle = "Provider Error"
 			linkStyle := lipgloss.NewStyle().Foreground(charmtone.Guac).Underline(true)
-			if isCancelErr {
+			if errors.Is(err, errRepetitionDetected) {
+				currentAssistant.AddFinish(
+					message.FinishReasonError,
+					"Repetition detected",
+					"The model started repeating the same text, so the response was stopped. Retry to get a fresh answer.",
+				)
+			} else if isCancelErr {
 				currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 			} else if errors.As(err, &requestTimedOutErr) {
 				// Checked before the provider branches so a deadline our own
@@ -1619,9 +1733,14 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	if a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false)
+}
 
+// summarize runs one compaction request. active reports that the caller
+// already owns the session's active-run registration (the model-switch path
+// runs inside Run), so this call must not replace or clear it.
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool) error {
 	// Copy mutable fields under lock to avoid races with SetModels.
-	largeModel := a.largeModel.Get()
 	systemPromptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
@@ -1670,12 +1789,27 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		tailTokens += messageTokens(msg)
 	}
 
+	// The summarizer sees the head that is about to be replaced, so
+	// oversized tool results can be trimmed in memory without touching
+	// the durable log. This keeps a single huge command output from
+	// overflowing the summary request itself.
+	if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
+		slog.Debug(
+			"Pruned tool results before compaction",
+			"session_id", sessionID,
+			"results", pruned,
+			"saved_chars", saved,
+		)
+	}
+
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages)
 
 	genCtx, cancel := context.WithCancel(ctx)
-	ac := &activeCancel{cancel: cancel}
-	a.activeRequests.Set(sessionID, ac)
-	defer a.activeRequests.CompareAndDelete(sessionID, ac)
+	if !active {
+		ac := &activeCancel{cancel: cancel}
+		a.activeRequests.Set(sessionID, ac)
+		defer a.activeRequests.CompareAndDelete(sessionID, ac)
+	}
 	defer cancel()
 	defer func() {
 		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
@@ -1710,7 +1844,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		ProviderOptions: opts,
 		OnAuthRefresh:   onAuthRefresh,
 		ModelProvider: func() fantasy.LanguageModel {
-			return a.largeModel.Get().Model
+			return largeModel.Model
 		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = options.Messages
@@ -1855,6 +1989,78 @@ func (a *sessionAgent) compactionConfig() (threshold float64, tailTokens int64) 
 	threshold = cfg.Options.GetAutoCompactThreshold()
 	tailTokens = cfg.Options.GetCompactTailTokens()
 	return threshold, tailTokens
+}
+
+// compactionPruneChars returns the per-tool-result character budget applied
+// before a compaction request, or zero when pruning is disabled.
+func (a *sessionAgent) compactionPruneChars() int {
+	if a.cfg == nil {
+		return config.DefaultCompactionPruneChars
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultCompactionPruneChars
+	}
+	return cfg.Options.GetCompactionPruneChars()
+}
+
+// maybeCompactForModelSwitch consumes a pending model switch. When the new
+// model has a smaller context window and the session is already above its
+// compaction threshold, it compacts with the previous model first. A failed
+// compaction reverts the switch so the session keeps a model that can hold
+// its history.
+func (a *sessionAgent) maybeCompactForModelSwitch(
+	ctx context.Context,
+	sessionID string,
+	sess session.Session,
+	msgs []message.Message,
+	opts fantasy.ProviderOptions,
+	onAuthRefresh func(context.Context, *fantasy.ProviderError) error,
+) (bool, error) {
+	a.modelSwitchMu.Lock()
+	if !a.modelSwitchPending {
+		a.modelSwitchMu.Unlock()
+		return false, nil
+	}
+	previousLarge := a.previousLarge
+	previousSmall := a.previousSmall
+	a.modelSwitchPending = false
+	a.modelSwitchMu.Unlock()
+
+	current := a.largeModel.Get()
+	if previousLarge.Model == nil || current.Model == nil {
+		return false, nil
+	}
+	threshold, _ := a.compactionConfig()
+	tokens := sess.PromptTokens + sess.CompletionTokens
+	if tokens == 0 {
+		for _, msg := range msgs {
+			tokens += messageTokens(msg)
+		}
+	}
+	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
+		return false, nil
+	}
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true); err != nil {
+		a.largeModel.Set(previousLarge)
+		a.smallModel.Set(previousSmall)
+		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
+	}
+	return true, nil
+}
+
+// needsModelSwitchCompaction reports whether switching from previous to
+// next requires compacting the existing history first.
+func needsModelSwitchCompaction(previous, next Model, tokens int64, threshold float64) bool {
+	if threshold <= 0 || tokens <= 0 {
+		return false
+	}
+	previousWindow := int64(previous.CatwalkCfg.ContextWindow)
+	nextWindow := int64(next.CatwalkCfg.ContextWindow)
+	if previousWindow <= 0 || nextWindow <= 0 || nextWindow >= previousWindow {
+		return false
+	}
+	return float64(tokens) >= threshold*float64(nextWindow)
 }
 
 // shouldAutoCompact reports whether a finished turn left the session at or
@@ -3132,7 +3338,32 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	return prompts
 }
 
+// EnqueueNotice queues a background completion notice for the next step of
+// sessionID. The next request drains it into a hidden user message, so a
+// busy turn sees the completion without opening a second turn.
+func (a *sessionAgent) EnqueueNotice(sessionID, text string) {
+	if sessionID == "" || text == "" {
+		return
+	}
+	a.noticesMu.Lock()
+	defer a.noticesMu.Unlock()
+	a.notices[sessionID] = append(a.notices[sessionID], text)
+}
+
+func (a *sessionAgent) drainNotices(sessionID string) []string {
+	a.noticesMu.Lock()
+	defer a.noticesMu.Unlock()
+	notices := a.notices[sessionID]
+	delete(a.notices, sessionID)
+	return notices
+}
+
 func (a *sessionAgent) SetModels(large Model, small Model) {
+	a.modelSwitchMu.Lock()
+	a.previousLarge = a.largeModel.Get()
+	a.previousSmall = a.smallModel.Get()
+	a.modelSwitchPending = true
+	a.modelSwitchMu.Unlock()
 	a.largeModel.Set(large)
 	a.smallModel.Set(small)
 }
@@ -3160,11 +3391,11 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 	switch result.Result.GetType() {
 	case fantasy.ToolResultContentTypeText:
 		if r, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentText](result.Result); ok {
-			baseResult.Content = r.Text
+			baseResult.Content = a.truncateToolOutput(r.Text)
 		}
 	case fantasy.ToolResultContentTypeError:
 		if r, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentError](result.Result); ok {
-			baseResult.Content = r.Error.Error()
+			baseResult.Content = a.truncateToolOutput(r.Error.Error())
 			baseResult.IsError = true
 		}
 	case fantasy.ToolResultContentTypeMedia:
@@ -3190,6 +3421,52 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 	}
 
 	return baseResult
+}
+
+// truncateToolOutput bounds a tool result before it is stored and replayed.
+// Oversized text keeps its head and tail and is written in full to a spill
+// file under the project data directory, which the view tool can read
+// without leaving the workspace. A previous truncation marker is preserved
+// so layered bounds do not nest notices.
+func (a *sessionAgent) truncateToolOutput(content string) string {
+	if content == "" || tools.HasSpillNotice(content) {
+		return content
+	}
+	maxTokens := config.DefaultToolOutputMaxTokens
+	spillDir := ""
+	if a.cfg != nil {
+		if cfg := a.cfg.Config(); cfg != nil {
+			maxTokens = cfg.Options.GetToolOutputMaxTokens()
+			spillDir = cfg.Options.DataDirectory
+		}
+	}
+	return tools.TruncateForTokens(content, maxTokens, spillDir)
+}
+
+// repetitionDetectionEnabled reports whether degenerate streamed output
+// should be detected and stopped.
+func (a *sessionAgent) repetitionDetectionEnabled() bool {
+	if a.cfg == nil {
+		return true
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return true
+	}
+	return cfg.Options.GetRepetitionDetection()
+}
+
+// repeatToolRemindersEnabled reports whether advisory repeat-tool reminders
+// should be injected before the hard loop stop.
+func (a *sessionAgent) repeatToolRemindersEnabled() bool {
+	if a.cfg == nil {
+		return true
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return true
+	}
+	return cfg.Options.GetRepeatToolReminders()
 }
 
 // workaroundProviderMediaLimitations converts media content in tool results to

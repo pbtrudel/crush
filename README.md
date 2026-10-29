@@ -35,6 +35,13 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 - **Better tool prompt-cache reuse:** tool prompts reuse the provider cache more reliably and tool descriptions are shorter, so prompts stay cheaper.
 - **Prompt-cache reuse across sessions:** replayed prompts stay byte-identical to the live request so cache hits survive across sessions, and sub-agent (task/fetch) cache reads count toward the session totals.
 - **Cache accounting for every OpenAI-compatible dialect:** cache reads are counted from OpenAI's `cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, and Kimi's top-level `cached_tokens`, not just the first.
+- **Background job completion notices:** when a background shell finishes, the owning session receives an in-session notice with a small output preview (busy turns get it on their next step; idle sessions are woken). `job_output` continues to serve full output, and `option background-job-notifications false` disables the notices.
+- **Background subagents:** the `agent` tool returns a subagent id immediately and delivers the result through a completion notice, so independent delegations run in parallel. Use `subagent_output` with `wait=true` only when genuinely blocked. `option background-subagents false` restores foreground delegation.
+- **Loop and repetition guards:** advisory reminders fire when the model repeats the same tool call (3/5/8 consecutive repeats) before the hard stop, and a streaming detector stops a response that degenerates into the same character or a short repeated pattern. Both are configurable with `option repeat-tool-reminders` and `option repetition-detection`.
+- **Bounded context and tool output:** project and global context chains are budgeted separately (`option context-max-bytes`, default 64 KiB), every tool result has an estimated token budget with head/tail retention and a spill file (`option tool-output-max-tokens`, default 12,500), and oversized tool results are pruned in memory before compaction (`option compaction-prune-chars`, default 8,192).
+- **Model-switch compaction:** switching to a model with a smaller context window compacts the session with the previous model first, and aborts the switch if that compaction fails, instead of letting the new model overflow on history it cannot hold.
+- **Sidebar TPS stats:** the sidebar reports `LIVE_TPS` for the currently streaming step and `TOTAL_AVG_FOR_SESSION` from the session's finished steps.
+- **Mistral usage robustness:** streaming usage is accepted even when a provider omits `total_tokens`, so Mistral and other OpenAI-compatible endpoints still report prompt-cache reads and completion tokens. Note that Mistral currently reports zero cached tokens for its hosted `deepseek-v4-1-flash-1017` model; that is a provider-side limitation, not a Crush parsing issue.
 - **Lazy MCP servers:** a server marked `"lazy": true` is enabled but only started on first use, so unused servers cost no prompt tokens.
 - **Live-prompt context compaction:** compaction summarizes through the live prompt while keeping a recent tail, with configurable auto-compaction threshold and tail budget, on-demand `/compact`, and the post-compaction resume point persisted verbatim.
 - **Doubled compaction budget:** the compaction summary may use twice the output tokens.
@@ -624,6 +631,31 @@ prefix of the live session, so providers with automatic prefix caching
 (OpenAI, Mistral, and OpenAI-compatible endpoints) serve it almost entirely
 from cache. The post-compaction context opens a fresh prefix that later turns
 extend instead of rewriting.
+
+### Background work and safety budgets
+
+```bash
+# Deliver a notice when a background shell or subagent finishes.
+option background-job-notifications true
+option background-subagents true
+# Cap consecutive background wakeups per session (0 = no cap).
+option max-consecutive-wakes 10
+
+# Advisory repeat-tool reminders and streaming repetition detection.
+option repeat-tool-reminders true
+option repetition-detection true
+
+# Context and tool-output budgets.
+option context-max-bytes 65536
+option tool-output-max-tokens 12500
+option compaction-prune-chars 8192
+```
+
+Background jobs are started with the bash tool's `run_in_background` parameter
+and read with `job_output`. Background subagents are started with the `agent`
+tool (the default; pass `run_in_background: false` to wait in the same turn)
+and read with `subagent_output`. An idle session is woken by a completion; a
+busy session receives the notice on its next step.
 
 ### Sharing a workspace across clients
 

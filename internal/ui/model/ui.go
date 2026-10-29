@@ -242,6 +242,16 @@ type UI struct {
 
 	lastUserMessageTime int64
 
+	// TPS tracking. liveTPS covers the assistant step currently streaming;
+	// sessionTPS* accumulates every finished step for the session average.
+	liveTPS            float64
+	liveTPSMsgID       string
+	liveTPSStart       time.Time
+	liveTPSBytes       int
+	liveTPSTokens      int64
+	sessionTPSOutput   int64
+	sessionTPSDuration time.Duration
+
 	// The width and height of the terminal in cells.
 	width  int
 	height int
@@ -1088,6 +1098,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
 		msgs := msg.messages
+		m.resetSessionTPS(msgs)
 		if cmd := m.setSessionMessages(msgs); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -2027,6 +2038,7 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		m.chat.AppendMessages(items...)
 		m.chat.ScrollToBottom()
 	case message.Assistant:
+		m.beginLiveTPS(msg)
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
 		m.setMessagePlanFlags(items)
 		m.chat.AppendMessages(items...)
@@ -2122,6 +2134,7 @@ func (m *UI) focusActiveInline(focus uiFocusState) {
 // calls as well that is why we need to handle creating/updating each tool call
 // message too.
 func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
+	m.updateLiveTPS(msg)
 	// A message update means work is active; the animation clock may have
 	// been frozen by a non-busy session reload (ghost-spinner guard).
 	m.chat.SetAnimationsAllowed(true)

@@ -333,6 +333,31 @@ func (m *Message) AppendContent(delta string) {
 	}
 }
 
+// TruncateContent keeps the first keepRunes runes of text content across
+// all text parts. It is used when a stream is stopped after degenerate
+// repetition so the stored message does not keep the repeated tail.
+func (m *Message) TruncateContent(keepRunes int) {
+	remaining := max(keepRunes, 0)
+	for i, part := range m.Parts {
+		c, ok := part.(TextContent)
+		if !ok {
+			continue
+		}
+		runes := []rune(c.Text)
+		switch {
+		case remaining >= len(runes):
+			remaining -= len(runes)
+		case remaining > 0:
+			c.Text = string(runes[:remaining])
+			m.Parts[i] = c
+			remaining = 0
+		default:
+			c.Text = ""
+			m.Parts[i] = c
+		}
+	}
+}
+
 func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
