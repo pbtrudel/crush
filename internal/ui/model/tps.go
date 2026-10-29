@@ -63,7 +63,7 @@ func (m *UI) resetSessionTPS(msgs []message.Message) {
 	m.sessionTPSOutput = 0
 	m.sessionTPSDuration = 0
 	for _, msg := range msgs {
-		if msg.Role != message.Assistant || msg.IsSummaryMessage || msg.IsFinished() == false {
+		if msg.Role != message.Assistant || msg.IsSummaryMessage || !msg.IsFinished() {
 			continue
 		}
 		bytes := assistantOutputBytes(msg)
