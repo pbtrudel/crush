@@ -1031,12 +1031,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
-	var repetition *repetitionDetector
+	var textRepetition *repetitionDetector
+	var reasoningRepetition *repetitionDetector
 	if a.repetitionDetectionEnabled() {
-		repetition = newRepetitionDetector()
+		textRepetition = newRepetitionDetector()
+		reasoningRepetition = newRepetitionDetector()
 	}
 	repetitionDetected := false
 	repetitionSafeRunes := 0
+	repetitionFromReasoning := false
 	var stepResults []fantasy.StepResult
 	repeatRemindersSent := make(map[int]bool)
 	lastRepeatSignature := ""
@@ -1138,10 +1141,34 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return callContext, prepared, err
 		},
 		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
+			if repetitionDetected {
+				return nil
+			}
+			if reasoningRepetition != nil {
+				if safe, detected := reasoningRepetition.Observe(reasoning.Text); detected {
+					repetitionDetected = true
+					repetitionSafeRunes = safe
+					repetitionFromReasoning = true
+					cancel()
+					return nil
+				}
+			}
 			currentAssistant.AppendReasoningContent(reasoning.Text)
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnReasoningDelta: func(id string, text string) error {
+			if repetitionDetected {
+				return nil
+			}
+			if reasoningRepetition != nil {
+				if safe, detected := reasoningRepetition.Observe(text); detected {
+					repetitionDetected = true
+					repetitionSafeRunes = safe
+					repetitionFromReasoning = true
+					cancel()
+					return nil
+				}
+			}
 			currentAssistant.AppendReasoningContent(text)
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
@@ -1169,8 +1196,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if repetitionDetected {
 				return nil
 			}
-			if repetition != nil {
-				if safe, detected := repetition.Observe(text); detected {
+			if textRepetition != nil {
+				if safe, detected := textRepetition.Observe(text); detected {
 					repetitionDetected = true
 					repetitionSafeRunes = safe
 					cancel()
@@ -1370,7 +1397,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// repeated tail before the error path persists the final state,
 		// so the session does not keep thousands of duplicate runes.
 		if currentAssistant != nil {
-			currentAssistant.TruncateContent(repetitionSafeRunes)
+			if repetitionFromReasoning {
+				currentAssistant.TruncateReasoning(repetitionSafeRunes)
+			} else {
+				currentAssistant.TruncateContent(repetitionSafeRunes)
+			}
 			if updateErr := a.messages.Update(context.WithoutCancel(ctx), *currentAssistant); updateErr != nil {
 				slog.Error("Failed to trim repeated stream content", "error", updateErr)
 			}

@@ -165,6 +165,19 @@ func TestResetStreamedContent(t *testing.T) {
 	require.Len(t, msg.ToolResults(), 1, "tool results should survive")
 }
 
+func TestTruncateReasoning(t *testing.T) {
+	t.Parallel()
+
+	msg := &Message{}
+	msg.AppendReasoningContent("thinking about the problem")
+	msg.AppendContent("answer text")
+
+	msg.TruncateReasoning(len([]rune("thinking")))
+
+	require.Equal(t, "thinking", msg.ReasoningContent().Thinking)
+	require.Equal(t, "answer text", msg.Content().Text)
+}
+
 func TestResetStreamedContentEmpty(t *testing.T) {
 	t.Parallel()
 

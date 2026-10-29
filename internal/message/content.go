@@ -358,6 +358,31 @@ func (m *Message) TruncateContent(keepRunes int) {
 	}
 }
 
+// TruncateReasoning keeps the first keepRunes runes of reasoning content
+// across all reasoning parts. It mirrors TruncateContent for streams that
+// are stopped after degenerate repetition in the reasoning channel.
+func (m *Message) TruncateReasoning(keepRunes int) {
+	remaining := max(keepRunes, 0)
+	for i, part := range m.Parts {
+		c, ok := part.(ReasoningContent)
+		if !ok {
+			continue
+		}
+		runes := []rune(c.Thinking)
+		switch {
+		case remaining >= len(runes):
+			remaining -= len(runes)
+		case remaining > 0:
+			c.Thinking = string(runes[:remaining])
+			m.Parts[i] = c
+			remaining = 0
+		default:
+			c.Thinking = ""
+			m.Parts[i] = c
+		}
+	}
+}
+
 func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
