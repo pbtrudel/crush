@@ -76,6 +76,19 @@ func TestModelInfoRendersTPSStat(t *testing.T) {
 	}
 	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
 
-	require.Contains(t, actual, "LIVE_TPS 12.3")
-	require.Contains(t, actual, "TOTAL_AVG_FOR_SESSION 8.1")
+	require.Contains(t, actual, "TPS: 12.3")
+	require.Contains(t, actual, "TPS_AVG 8.1")
+}
+
+func TestModelInfoAlwaysRendersTPSStat(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	context := &ModelContextInfo{
+		ContextUsed:  500,
+		ModelContext: 1000,
+	}
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+
+	require.Contains(t, actual, "TPS: 0.0")
 }

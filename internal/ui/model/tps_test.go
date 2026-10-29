@@ -22,9 +22,27 @@ func TestUpdateLiveTPS(t *testing.T) {
 
 	msg.Parts = append(msg.Parts, message.Finish{Reason: message.FinishReasonEndTurn})
 	m.updateLiveTPS(msg)
-	require.Zero(t, m.liveTPS)
+	require.Positive(t, m.liveTPS, "the last turn's rate stays visible when idle")
 	require.Positive(t, m.sessionTPSOutput)
 	require.Positive(t, m.sessionTPSDuration)
+}
+
+func TestBeginLiveTPSKeepsPreviousRate(t *testing.T) {
+	t.Parallel()
+	m := &UI{}
+	finished := message.Message{ID: "a1", Role: message.Assistant}
+	m.beginLiveTPS(finished)
+	m.liveTPSStart = time.Now().Add(-1 * time.Second)
+	finished.Parts = []message.ContentPart{message.TextContent{Text: string(make([]byte, 400))}}
+	m.updateLiveTPS(finished)
+	finished.Parts = append(finished.Parts, message.Finish{Reason: message.FinishReasonEndTurn})
+	m.updateLiveTPS(finished)
+	last := m.liveTPS
+	require.Positive(t, last)
+
+	next := message.Message{ID: "a2", Role: message.Assistant}
+	m.beginLiveTPS(next)
+	require.Equal(t, last, m.liveTPS, "a new step keeps the previous rate until it has its own estimate")
 }
 
 func TestResetSessionTPS(t *testing.T) {

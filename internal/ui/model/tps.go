@@ -19,7 +19,8 @@ func (m *UI) beginLiveTPS(msg message.Message) {
 	m.liveTPSStart = time.Now()
 	m.liveTPSBytes = 0
 	m.liveTPSTokens = 0
-	m.liveTPS = 0
+	// Keep the previous step's rate visible until this one has streamed
+	// enough output to compute a fresh estimate.
 }
 
 // updateLiveTPS advances the live tokens-per-second estimate and folds the
@@ -50,7 +51,8 @@ func (m *UI) updateLiveTPS(msg message.Message) {
 			m.sessionTPSOutput += m.liveTPSTokens
 			m.sessionTPSDuration += time.Since(m.liveTPSStart)
 		}
-		m.liveTPS = 0
+		// Keep the last turn's rate in the sidebar while idle. The next
+		// step overwrites it once it has a live estimate.
 		m.liveTPSMsgID = ""
 	}
 }
