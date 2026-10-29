@@ -2,6 +2,9 @@ package shell
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,9 +48,13 @@ func TestBackgroundJobAwaitedSuppressesNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	bgShell, err := manager.StartWithSession(ctx, t.TempDir(), nil, "echo awaited", "", "session-awaited")
+	dir := t.TempDir()
+	release := filepath.Join(dir, "release")
+	command := fmt.Sprintf("while [ ! -f %q ]; do sleep 0.01; done; echo awaited", release)
+	bgShell, err := manager.StartWithSession(ctx, dir, nil, command, "", "session-awaited")
 	require.NoError(t, err)
 	bgShell.MarkAwaited()
+	require.NoError(t, os.WriteFile(release, nil, 0o644))
 	bgShell.Wait()
 
 	deadline := time.After(200 * time.Millisecond)
