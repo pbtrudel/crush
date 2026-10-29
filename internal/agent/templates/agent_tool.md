@@ -1,1 +1,3 @@
 Launch a new agent that has access to the following tools: glob, grep, ls, view. When you are searching for a keyword or file and are not confident that you will find the right match on the first try, use the agent tool to perform the search for you.
+
+By default the agent runs in the background: the tool returns a subagent id immediately and a completion notice arrives when it finishes. Start independent delegations together and continue useful work while they run. When only waiting for their results remains, end your turn instead of sleeping or polling; use subagent_output with wait=true only when you are genuinely blocked.

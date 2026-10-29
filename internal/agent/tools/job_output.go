@@ -46,6 +46,7 @@ func NewJobOutputTool(spillDir string) fantasy.AgentTool {
 			}
 
 			if params.Wait {
+				bgShell.MarkAwaited()
 				bgShell.WaitContext(ctx)
 			}
 

@@ -459,6 +459,7 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 type Options struct {
 	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
+	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
 	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
@@ -471,22 +472,36 @@ type Options struct {
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
+	// CompactionPruneChars is the per-tool-result character budget used
+	// before a compaction request is built. Oversized results keep their
+	// head and tail, which shrinks the summarizer input without changing
+	// the retained conversation. Zero disables pruning.
+	CompactionPruneChars *int `json:"compaction_prune_chars,omitempty" jsonschema:"description=Per-tool-result character budget applied before compaction. Oversized results keep their head and tail. 0 disables pruning.,default=8192,example=4096"`
+	// ToolOutputMaxTokens bounds a single tool result before it is stored
+	// and replayed. Oversized text keeps its head and tail and is written
+	// in full to a spill file. Zero disables the bound.
+	ToolOutputMaxTokens *int `json:"tool_output_max_tokens,omitempty" jsonschema:"description=Estimated token budget for one tool result. Oversized text keeps its head and tail and is spilled to a file. 0 disables the bound.,default=12500,example=25000"`
 	// DataDirectory is where Crush keeps per-project state such as
 	// the SQLite database and workspace overrides. Relative paths are
 	// resolved against the working directory; absolute paths are used
 	// verbatim. After defaulting the stored value is always absolute.
-	DataDirectory             string       `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crush,example=.crush"`
-	DisabledTools             []string     `json:"disabled_tools,omitempty" jsonschema:"description=List of built-in tools to disable and hide from the agent,example=bash,example=sourcegraph"`
-	DisableProviderAutoUpdate bool         `json:"disable_provider_auto_update,omitempty" jsonschema:"description=Disable providers auto-update,default=false"`
-	DisableDefaultProviders   bool         `json:"disable_default_providers,omitempty" jsonschema:"description=Ignore all default/embedded providers. When enabled\\, providers must be fully specified in the config file with base_url\\, models\\, and api_key - no merging with defaults occurs,default=false"`
-	Attribution               *Attribution `json:"attribution,omitempty" jsonschema:"description=Attribution settings for generated content"`
-	DisableMetrics            bool         `json:"disable_metrics,omitempty" jsonschema:"description=Disable sending metrics,default=false"`
-	InitializeAs              string       `json:"initialize_as,omitempty" jsonschema:"description=Name of the context file to create/update during project initialization,default=AGENTS.md,example=AGENTS.md,example=CRUSH.md,example=CLAUDE.md,example=docs/LLMs.md"`
-	AutoLSP                   *bool        `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
-	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
-	Notifications             string       `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
-	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
-	RequestTimeout            *int         `json:"request_timeout,omitempty" jsonschema:"description=Timeout in seconds for each LLM API request. Streaming responses are aborted only after this much inactivity\\, so slow but active streams are never killed. 0 disables it\\, negative values are invalid.,default=60,example=120,example=300,example=0"`
+	DataDirectory              string       `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crush,example=.crush"`
+	DisabledTools              []string     `json:"disabled_tools,omitempty" jsonschema:"description=List of built-in tools to disable and hide from the agent,example=bash,example=sourcegraph"`
+	DisableProviderAutoUpdate  bool         `json:"disable_provider_auto_update,omitempty" jsonschema:"description=Disable providers auto-update,default=false"`
+	DisableDefaultProviders    bool         `json:"disable_default_providers,omitempty" jsonschema:"description=Ignore all default/embedded providers. When enabled\\, providers must be fully specified in the config file with base_url\\, models\\, and api_key - no merging with defaults occurs,default=false"`
+	Attribution                *Attribution `json:"attribution,omitempty" jsonschema:"description=Attribution settings for generated content"`
+	DisableMetrics             bool         `json:"disable_metrics,omitempty" jsonschema:"description=Disable sending metrics,default=false"`
+	InitializeAs               string       `json:"initialize_as,omitempty" jsonschema:"description=Name of the context file to create/update during project initialization,default=AGENTS.md,example=AGENTS.md,example=CRUSH.md,example=CLAUDE.md,example=docs/LLMs.md"`
+	AutoLSP                    *bool        `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
+	Progress                   *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
+	Notifications              string       `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
+	DisabledSkills             []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	RequestTimeout             *int         `json:"request_timeout,omitempty" jsonschema:"description=Timeout in seconds for each LLM API request. Streaming responses are aborted only after this much inactivity\\, so slow but active streams are never killed. 0 disables it\\, negative values are invalid.,default=60,example=120,example=300,example=0"`
+	BackgroundJobNotifications *bool        `json:"background_job_notifications,omitempty" jsonschema:"description=Notify the agent in-session when a background shell finishes, instead of requiring job_output polling.,default=true"`
+	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
+	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
+	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
+	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 }
 
 // ModelsOptions configures the model picker.
@@ -535,6 +550,22 @@ const DefaultAutoCompactThreshold = 0.5
 // has not configured one.
 const DefaultCompactTailTokens = 24576
 
+// DefaultContextMaxBytes bounds each context chain (project and global
+// separately) when the user has not configured a budget.
+const DefaultContextMaxBytes = 64 * 1024
+
+// DefaultCompactionPruneChars is the per-tool-result character budget used
+// before a compaction request when the user has not configured one.
+const DefaultCompactionPruneChars = 8192
+
+// DefaultToolOutputMaxTokens bounds one tool result when the user has not
+// configured a budget.
+const DefaultToolOutputMaxTokens = 12500
+
+// DefaultMaxConsecutiveWakes caps background-completion wakeups per session
+// when the user has not configured a cap.
+const DefaultMaxConsecutiveWakes = 10
+
 // GetAutoCompactThreshold returns the auto-compaction threshold as a
 // fraction of the context window. The nil receiver and the unset field
 // both mean DefaultAutoCompactThreshold; 0 or a negative value disables
@@ -561,6 +592,82 @@ func (o *Options) GetCompactTailTokens() int64 {
 		return DefaultCompactTailTokens
 	}
 	return max(0, int64(*o.CompactTailTokens))
+}
+
+// GetContextMaxBytes returns the per-chain context budget in bytes. The nil
+// receiver and the unset field both mean DefaultContextMaxBytes; an explicit
+// 0 or negative value disables the budget.
+func (o *Options) GetContextMaxBytes() int {
+	if o == nil || o.ContextMaxBytes == nil {
+		return DefaultContextMaxBytes
+	}
+	return max(0, *o.ContextMaxBytes)
+}
+
+// GetCompactionPruneChars returns the per-tool-result character budget used
+// before compaction. The nil receiver and the unset field both mean
+// DefaultCompactionPruneChars; 0 or a negative value disables pruning.
+func (o *Options) GetCompactionPruneChars() int {
+	if o == nil || o.CompactionPruneChars == nil {
+		return DefaultCompactionPruneChars
+	}
+	return max(0, *o.CompactionPruneChars)
+}
+
+// GetToolOutputMaxTokens returns the estimated token budget for one tool
+// result. The nil receiver and the unset field both mean
+// DefaultToolOutputMaxTokens; 0 or a negative value disables the bound.
+func (o *Options) GetToolOutputMaxTokens() int {
+	if o == nil || o.ToolOutputMaxTokens == nil {
+		return DefaultToolOutputMaxTokens
+	}
+	return max(0, *o.ToolOutputMaxTokens)
+}
+
+// GetBackgroundJobNotifications reports whether background shell completions
+// should be delivered to the agent in-session.
+func (o *Options) GetBackgroundJobNotifications() bool {
+	if o == nil || o.BackgroundJobNotifications == nil {
+		return true
+	}
+	return *o.BackgroundJobNotifications
+}
+
+// GetMaxConsecutiveWakes returns the per-session cap on background-completion
+// wakeups. The nil receiver and the unset field both mean
+// DefaultMaxConsecutiveWakes; 0 or a negative value means no cap.
+func (o *Options) GetMaxConsecutiveWakes() int {
+	if o == nil || o.MaxConsecutiveWakes == nil {
+		return DefaultMaxConsecutiveWakes
+	}
+	return max(0, *o.MaxConsecutiveWakes)
+}
+
+// GetBackgroundSubagents reports whether delegated subagents run in the
+// background by default.
+func (o *Options) GetBackgroundSubagents() bool {
+	if o == nil || o.BackgroundSubagents == nil {
+		return true
+	}
+	return *o.BackgroundSubagents
+}
+
+// GetRepeatToolReminders reports whether advisory repeat-tool reminders are
+// injected before the hard loop stop.
+func (o *Options) GetRepeatToolReminders() bool {
+	if o == nil || o.RepeatToolReminders == nil {
+		return true
+	}
+	return *o.RepeatToolReminders
+}
+
+// GetRepetitionDetection reports whether streaming output repetition is
+// detected and stopped.
+func (o *Options) GetRepetitionDetection() bool {
+	if o == nil || o.RepetitionDetection == nil {
+		return true
+	}
+	return *o.RepetitionDetection
 }
 
 type MCPs map[string]MCPConfig

@@ -47,6 +47,7 @@ func NewJobKillTool() fantasy.AgentTool {
 				Command:     bgShell.Command,
 				Description: bgShell.Description,
 			}
+			bgShell.MarkKilledByModel()
 
 			err := bgManager.Kill(params.ShellID)
 			if err != nil {

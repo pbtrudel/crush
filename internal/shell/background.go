@@ -8,8 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/pubsub"
 )
 
 const (
@@ -18,6 +20,28 @@ const (
 	// CompletedJobRetentionMinutes is how long to keep completed jobs before auto-cleanup (8 hours)
 	CompletedJobRetentionMinutes = 8 * 60
 )
+
+// BackgroundJobEvent reports a background shell completion to the agent
+// layer. Output is bounded to the inline notice budget; callers can read the
+// full output through job_output.
+type BackgroundJobEvent struct {
+	ShellID     string
+	SessionID   string
+	Command     string
+	Description string
+	Output      string
+	ExitCode    int
+	Awaited     bool
+	Killed      bool
+}
+
+var backgroundJobBroker = pubsub.NewBroker[BackgroundJobEvent]()
+
+// SubscribeBackgroundJobs returns a channel of background shell completion
+// events. The subscription ends when ctx is cancelled.
+func SubscribeBackgroundJobs(ctx context.Context) <-chan pubsub.Event[BackgroundJobEvent] {
+	return backgroundJobBroker.Subscribe(ctx)
+}
 
 // syncBuffer is a thread-safe wrapper around bytes.Buffer.
 type syncBuffer struct {
@@ -46,6 +70,7 @@ func (sb *syncBuffer) String() string {
 // BackgroundShell represents a shell running in the background.
 type BackgroundShell struct {
 	ID          string
+	SessionID   string
 	Command     string
 	Description string
 	Shell       *Shell
@@ -57,7 +82,17 @@ type BackgroundShell struct {
 	done        chan struct{}
 	exitErr     error
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
+	awaited     atomic.Bool
+	killed      atomic.Bool
 }
+
+// MarkAwaited records that the model is waiting for this job's result, so
+// its completion does not also earn an in-session notice.
+func (bs *BackgroundShell) MarkAwaited() { bs.awaited.Store(true) }
+
+// MarkKilledByModel records that the model stopped this job itself, so its
+// settlement does not also earn a completion notice.
+func (bs *BackgroundShell) MarkKilledByModel() { bs.killed.Store(true) }
 
 // BackgroundShellManager manages background shell instances.
 type BackgroundShellManager struct {
@@ -87,6 +122,12 @@ func GetBackgroundShellManager() *BackgroundShellManager {
 
 // Start creates and starts a new background shell with the given command.
 func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.StartWithSession(ctx, workingDir, blockFuncs, command, description, "")
+}
+
+// StartWithSession is Start with the owning session recorded, so the agent
+// that started the job can receive an in-session completion notice.
+func (m *BackgroundShellManager) StartWithSession(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string, sessionID string) (*BackgroundShell, error) {
 	// Check job limit, first reclaiming completed jobs. Finished jobs are kept
 	// around so their output stays readable, but they must not keep new shells
 	// from starting.
@@ -108,6 +149,7 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 
 	bgShell := &BackgroundShell{
 		ID:          id,
+		SessionID:   sessionID,
 		Command:     command,
 		Description: description,
 		WorkingDir:  workingDir,
@@ -128,9 +170,66 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())
+		if bgShell.awaited.Load() || bgShell.killed.Load() {
+			return
+		}
+		output := bgShell.stdout.String()
+		if stderr := bgShell.stderr.String(); stderr != "" {
+			if output != "" {
+				output += "\n"
+			}
+			output += "[stderr]\n" + stderr
+		}
+		backgroundJobBroker.Publish(pubsub.CreatedEvent, BackgroundJobEvent{
+			ShellID:     bgShell.ID,
+			SessionID:   bgShell.SessionID,
+			Command:     bgShell.Command,
+			Description: bgShell.Description,
+			Output:      inlineBackgroundOutput(output, 2048),
+			ExitCode:    ExitCode(err),
+		})
 	}()
 
 	return bgShell, nil
+}
+
+// inlineBackgroundOutput keeps a completion notice small; the full output
+// stays available through job_output.
+func inlineBackgroundOutput(output string, maxBytes int) string {
+	if len(output) <= maxBytes {
+		return output
+	}
+	head := utf8Prefix(output, maxBytes*3/4)
+	tail := utf8Suffix(output, maxBytes/4)
+	return head + "\n[... output truncated; use job_output for the rest ...]\n" + tail
+}
+
+func utf8Prefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+func utf8Suffix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	start := len(s) - maxBytes
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 // Get retrieves a background shell by ID.

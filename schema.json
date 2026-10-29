@@ -492,6 +492,17 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "ModelsOptions": {
+      "properties": {
+        "show_all_providers": {
+          "type": "boolean",
+          "description": "List providers without credentials in the model picker. When false, only configured providers are listed.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "OAuthClient": {
       "properties": {
         "client_id": {
@@ -537,6 +548,14 @@
             "~/.config/AGENTS.md"
           ]
         },
+        "context_max_bytes": {
+          "type": "integer",
+          "description": "Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.",
+          "default": 65536,
+          "examples": [
+            32768
+          ]
+        },
         "skills_paths": {
           "items": {
             "type": "string",
@@ -551,6 +570,10 @@
         "tui": {
           "$ref": "#/$defs/TUIOptions",
           "description": "Terminal user interface options"
+        },
+        "models": {
+          "$ref": "#/$defs/ModelsOptions",
+          "description": "Model picker options"
         },
         "debug": {
           "type": "boolean",
@@ -581,6 +604,22 @@
           "default": 24576,
           "examples": [
             16384
+          ]
+        },
+        "compaction_prune_chars": {
+          "type": "integer",
+          "description": "Per-tool-result character budget applied before compaction. Oversized results keep their head and tail. 0 disables pruning.",
+          "default": 8192,
+          "examples": [
+            4096
+          ]
+        },
+        "tool_output_max_tokens": {
+          "type": "integer",
+          "description": "Estimated token budget for one tool result. Oversized text keeps its head and tail and is spilled to a file. 0 disables the bound.",
+          "default": 12500,
+          "examples": [
+            25000
           ]
         },
         "data_directory": {
@@ -673,6 +712,34 @@
             300,
             0
           ]
+        },
+        "background_job_notifications": {
+          "type": "boolean",
+          "description": "Notify the agent in-session when a background shell finishes",
+          "default": true
+        },
+        "max_consecutive_wakes": {
+          "type": "integer",
+          "description": "Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.",
+          "default": 10,
+          "examples": [
+            5
+          ]
+        },
+        "background_subagents": {
+          "type": "boolean",
+          "description": "Run delegated subagents in the background and deliver their result through a completion notice.",
+          "default": true
+        },
+        "repeat_tool_reminders": {
+          "type": "boolean",
+          "description": "Inject advisory reminders when the model repeats the same tool call",
+          "default": true
+        },
+        "repetition_detection": {
+          "type": "boolean",
+          "description": "Stop a stream that degenerates into a long run of the same character or a short repeated pattern.",
+          "default": true
         }
       },
       "additionalProperties": false,

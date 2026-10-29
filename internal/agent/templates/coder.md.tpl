@@ -407,6 +407,8 @@ If a skill mentions scripts, references, or assets, they live in the same folder
 # Project-Specific Context
 Make sure to follow the instructions in the context below.
 <project_context>
+{{if .ContextBudget}}{{.ContextBudget.Notice}}
+{{end}}
 {{range .ContextFiles}}
 <file path="{{.Path}}">
 {{.Content}}
@@ -419,6 +421,8 @@ Make sure to follow the instructions in the context below.
 # User context
 The following is personal content added by the user that they'd like you to follow no matter what project you're working in.
 <user_preferences>
+{{if .GlobalContextBudget}}{{.GlobalContextBudget.Notice}}
+{{end}}
 {{range .GlobalContextFiles}}
 <file path="{{.Path}}">
 {{.Content}}

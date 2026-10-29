@@ -63,6 +63,10 @@ type ModelContextInfo struct {
 	// CachePercent is the share of prompt tokens served from the
 	// provider's prompt cache over the whole session.
 	CachePercent int
+	// TPSLive is the current streaming step's tokens per second.
+	TPSLive float64
+	// TPSAverage is the session-wide generation tokens per second.
+	TPSAverage float64
 }
 
 // ModelInfo renders model information including name, provider, reasoning
@@ -107,6 +111,14 @@ func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, 
 		if context.CachePercent > 0 {
 			cachedInfo := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("%d%% cached", context.CachePercent))
 			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(cachedInfo))
+		}
+		if context.TPSLive > 0 {
+			live := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("LIVE_TPS %.1f", context.TPSLive))
+			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(live))
+		}
+		if context.TPSAverage > 0 {
+			average := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("TOTAL_AVG_FOR_SESSION %.1f", context.TPSAverage))
+			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(average))
 		}
 	}
 

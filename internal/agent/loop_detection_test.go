@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -202,4 +203,32 @@ func TestGetToolInteractionSignature(t *testing.T) {
 			t.Error("expected different signatures for different inputs")
 		}
 	})
+}
+
+func TestConsecutiveToolCallRepeats(t *testing.T) {
+	steps := []fantasy.StepResult{
+		makeToolStep("read", `{"file":"a.go"}`, "content"),
+		makeToolStep("read", `{"file":"a.go"}`, "content"),
+		makeToolStep("read", `{"file":"a.go"}`, "content"),
+	}
+	count, name := consecutiveToolCallRepeats(steps)
+	if count != 3 || name != "read" {
+		t.Fatalf("expected 3 repeats of read, got %d of %q", count, name)
+	}
+
+	steps = append(steps, makeToolStep("write", `{"file":"b.go"}`, "ok"))
+	count, name = consecutiveToolCallRepeats(steps)
+	if count != 1 || name != "write" {
+		t.Fatalf("expected the chain to reset, got %d of %q", count, name)
+	}
+}
+
+func TestRepeatToolReminder(t *testing.T) {
+	got := repeatToolReminder("grep", 5)
+	if !strings.Contains(got, "grep") || !strings.Contains(got, "5 times") {
+		t.Fatalf("reminder missing tool or count: %s", got)
+	}
+	if !strings.HasPrefix(got, "<system_reminder>") || !strings.HasSuffix(got, "</system_reminder>") {
+		t.Fatalf("reminder must be a system reminder: %s", got)
+	}
 }

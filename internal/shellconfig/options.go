@@ -209,6 +209,11 @@ var optionSpecs = map[string]optionSpec{
 	"auto-lsp":  {jsonKey: "auto_lsp", kind: optBool},
 	"progress":  {jsonKey: "progress", kind: optBool},
 
+	"background-job-notifications": {jsonKey: "background_job_notifications", kind: optBool},
+	"background-subagents":         {jsonKey: "background_subagents", kind: optBool},
+	"repeat-tool-reminders":        {jsonKey: "repeat_tool_reminders", kind: optBool},
+	"repetition-detection":         {jsonKey: "repetition_detection", kind: optBool},
+
 	// Boolean fields exposed positively but stored as their negation.
 	"metrics":              {jsonKey: "disable_metrics", kind: optBool, inverted: true},
 	"auto-summarize":       {jsonKey: "disable_auto_summarize", kind: optBool, inverted: true},
@@ -226,6 +231,10 @@ var optionSpecs = map[string]optionSpec{
 	// Compaction tuning.
 	"auto-compact-threshold": {jsonKey: "auto_compact_threshold", kind: optFloat},
 	"compact-tail-tokens":    {jsonKey: "compact_tail_tokens", kind: optInt},
+	"compaction-prune-chars": {jsonKey: "compaction_prune_chars", kind: optInt},
+	"context-max-bytes":      {jsonKey: "context_max_bytes", kind: optInt},
+	"tool-output-max-tokens": {jsonKey: "tool_output_max_tokens", kind: optInt},
+	"max-consecutive-wakes":  {jsonKey: "max_consecutive_wakes", kind: optInt},
 
 	// List fields. Keys are singular because each call appends one value.
 	"context-path":        {jsonKey: "context_paths", kind: optList},

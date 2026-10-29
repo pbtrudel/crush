@@ -47,12 +47,15 @@ func (m *UI) modelInfo(width int) string {
 
 	var modelContext *common.ModelContextInfo
 	if model != nil && m.session != nil {
+		liveTPS, averageTPS := m.tpsStats()
 		modelContext = &common.ModelContextInfo{
 			ContextUsed:    m.session.CompletionTokens + m.session.PromptTokens,
 			Cost:           m.session.Cost,
 			ModelContext:   model.CatwalkCfg.ContextWindow,
 			EstimatedUsage: m.session.EstimatedUsage,
 			CachePercent:   cacheReadPercent(m.session),
+			TPSLive:        liveTPS,
+			TPSAverage:     averageTPS,
 		}
 	}
 	var modelName string
