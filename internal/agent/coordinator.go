@@ -566,6 +566,12 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	if c.sessions == nil {
 		return
 	}
+	// Child sessions belong to a different agent instance. Notices for
+	// them are folded into the parent's completion instead of waking the
+	// main agent against a session it did not build.
+	if c.sessions.IsAgentToolSession(sessionID) {
+		return
+	}
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		return
 	}
