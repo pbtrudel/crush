@@ -40,7 +40,7 @@ func (c *coordinator) subagentOutputTool() fantasy.AgentTool {
 					return fantasy.NewTextErrorResponse("timed out waiting for subagent"), nil
 				}
 			}
-			output, err, done, found := c.subagents.result(params.SubagentID)
+			output, done, found, err := c.subagents.result(params.SubagentID)
 			if !found {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("subagent not found: %s", params.SubagentID)), nil
 			}

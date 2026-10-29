@@ -75,18 +75,18 @@ func (m *subagentManager) get(id string) (*subagentRun, bool) {
 
 // result returns a completed run's output and error, or done=false while it
 // is still running. found reports whether the id is known.
-func (m *subagentManager) result(id string) (output string, err error, done, found bool) {
+func (m *subagentManager) result(id string) (output string, done, found bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	run, ok := m.runs[id]
 	if !ok {
-		return "", nil, false, false
+		return "", false, false, nil
 	}
 	select {
 	case <-run.done:
-		return run.output, run.err, true, true
+		return run.output, true, true, run.err
 	default:
-		return "", nil, false, true
+		return "", false, true, nil
 	}
 }
 

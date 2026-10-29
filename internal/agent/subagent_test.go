@@ -14,14 +14,14 @@ func TestSubagentManager(t *testing.T) {
 	run := m.start("child-session", "parent-session", func() {})
 	require.Equal(t, "parent-session", run.parentSessionID)
 
-	output, err, done, found := m.result(run.id)
+	output, done, found, err := m.result(run.id)
 	require.True(t, found)
 	require.False(t, done)
 	require.Empty(t, output)
 	require.NoError(t, err)
 
 	m.finish(run, "the result", nil)
-	output, err, done, found = m.result(run.id)
+	output, done, found, err = m.result(run.id)
 	require.True(t, found)
 	require.True(t, done)
 	require.Equal(t, "the result", output)
