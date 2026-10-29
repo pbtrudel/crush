@@ -22,6 +22,9 @@ type repetitionDetector struct {
 	lastPatternCheck int
 	detected         bool
 	safeRunes        int
+	letterRun        rune
+	letterRunCount   int
+	letterRunStart   int
 }
 
 func newRepetitionDetector() *repetitionDetector {
@@ -37,7 +40,15 @@ func (d *repetitionDetector) Observe(delta string) (safeRunes int, detected bool
 		return d.safeRunes, true
 	}
 	runes := []rune(delta)
-	d.total += len(runes)
+	for _, r := range runes {
+		d.total++
+		d.observeRune(r)
+		if d.letterRunCount >= repetitionMaxRun {
+			d.detected = true
+			d.safeRunes = d.letterRunStart
+			return d.safeRunes, true
+		}
+	}
 	d.window = append(d.window, runes...)
 	if len(d.window) > repetitionWindowRunes {
 		d.window = d.window[len(d.window)-repetitionWindowRunes:]
@@ -61,6 +72,24 @@ func (d *repetitionDetector) Observe(delta string) (safeRunes int, detected bool
 		}
 	}
 	return 0, false
+}
+
+// observeRune tracks a run of the same letter, ignoring whitespace between
+// occurrences. Models sometimes separate a degenerate run with spaces,
+// which the contiguous check alone would miss.
+func (d *repetitionDetector) observeRune(r rune) {
+	switch {
+	case unicode.IsSpace(r):
+		// Whitespace does not break a run of the same letter.
+	case unicode.IsLetter(r) && d.letterRunCount > 0 && r == d.letterRun:
+		d.letterRunCount++
+	case unicode.IsLetter(r):
+		d.letterRun = r
+		d.letterRunCount = 1
+		d.letterRunStart = d.total - 1
+	default:
+		d.letterRunCount = 0
+	}
 }
 
 // trailingSameRune returns the length of the run of identical runes at the

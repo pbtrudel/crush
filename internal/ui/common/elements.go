@@ -112,12 +112,10 @@ func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, 
 			cachedInfo := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("%d%% cached", context.CachePercent))
 			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(cachedInfo))
 		}
-		if context.TPSLive > 0 {
-			live := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("LIVE_TPS %.1f", context.TPSLive))
-			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(live))
-		}
+		live := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("TPS: %.1f", context.TPSLive))
+		parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(live))
 		if context.TPSAverage > 0 {
-			average := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("TOTAL_AVG_FOR_SESSION %.1f", context.TPSAverage))
+			average := t.ModelInfo.TokenPercentage.Render(fmt.Sprintf("TPS_AVG %.1f", context.TPSAverage))
 			parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(average))
 		}
 	}

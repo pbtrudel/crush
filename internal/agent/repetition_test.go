@@ -18,6 +18,13 @@ func TestRepetitionDetector(t *testing.T) {
 		require.Equal(t, len([]rune("answer: ")), safe)
 	})
 
+	t.Run("same character separated by spaces is detected", func(t *testing.T) {
+		t.Parallel()
+		d := newRepetitionDetector()
+		_, detected := d.Observe(strings.Repeat(strings.Repeat("姩", 57)+" ", 12))
+		require.True(t, detected)
+	})
+
 	t.Run("long run of dashes is allowed", func(t *testing.T) {
 		t.Parallel()
 		d := newRepetitionDetector()

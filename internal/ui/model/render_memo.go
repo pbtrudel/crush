@@ -2,6 +2,7 @@ package model
 
 import (
 	"cmp"
+	"math"
 
 	"github.com/charmbracelet/crush/internal/session"
 )
@@ -81,8 +82,10 @@ func (m *UI) sidebarCacheKey() sidebarCacheKey {
 		hyper:      m.com.IsHyper(),
 	}
 	liveTPS, averageTPS := m.tpsStats()
-	k.tpsLive = int(liveTPS)
-	k.tpsAverage = int(averageTPS)
+	// Key on tenths to match the sidebar's one-decimal display without
+	// rebuilding on every fractional change while streaming.
+	k.tpsLive = int(math.Round(liveTPS * 10))
+	k.tpsAverage = int(math.Round(averageTPS * 10))
 	if k.filesLen > 0 {
 		k.filesPtr = &m.sessionFiles[0]
 	}
