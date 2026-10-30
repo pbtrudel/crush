@@ -1000,6 +1000,15 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	if app.config.Config().Permissions.GetAutoReview() {
+		if setter, ok := app.Permissions.(permission.ReviewerSetter); ok {
+			if reviewer, ok := app.AgentCoordinator.(interface {
+				ReviewToolCall(context.Context, permission.PermissionRequest) (permission.ReviewDecision, error)
+			}); ok {
+				setter.SetReviewer(reviewer.ReviewToolCall)
+			}
+		}
+	}
 	return nil
 }
 

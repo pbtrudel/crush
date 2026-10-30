@@ -13,10 +13,13 @@ import (
 //
 //	permissions allow <tool> [<tool> ...]
 //	permissions deny <tool> [<tool> ...]
+//	permissions auto-review on|off
 //
 // "allow" adds tools to the allow-list (tools that skip permission prompts).
 // "deny" hides tools from the agent entirely (options.disabled_tools) — the
 // inverse of allow. Adding the same tool twice is a no-op.
+//
+// "auto-review" asks a model to review tool calls before prompting the user.
 //
 // Precedence: deny wins. If a tool appears in both allow and deny, it is
 // still removed from the agent's effective tool set via disabled_tools.
@@ -26,7 +29,7 @@ func handlePermissions(ctx context.Context, args []string, stdin io.Reader, stdo
 		return nil
 	}
 	if len(args) < 2 {
-		return usage(stderr, "usage: permissions allow|deny <tool> [<tool> ...]")
+		return usage(stderr, "usage: permissions allow|deny <tool> [<tool> ...] | auto-review on|off")
 	}
 
 	switch args[1] {
@@ -34,8 +37,10 @@ func handlePermissions(ctx context.Context, args []string, stdin io.Reader, stdo
 		return permissionsAllow(b, args, stderr)
 	case "deny":
 		return permissionsDeny(b, args, stderr)
+	case "auto-review":
+		return permissionsAutoReview(b, args, stderr)
 	default:
-		return usage(stderr, fmt.Sprintf("permissions: unknown subcommand %q (expected allow or deny)", args[1]))
+		return usage(stderr, fmt.Sprintf("permissions: unknown subcommand %q (expected allow, deny, or auto-review)", args[1]))
 	}
 }
 
@@ -74,6 +79,26 @@ func permissionsDeny(b *ConfigBuilder, args []string, stderr io.Writer) error {
 	opts["disabled_tools"] = disabled
 
 	slog.Info("Permissions denied in shell config", "tools", args[2:])
+	return nil
+}
+
+// permissionsAutoReview enables or disables model review of tool calls
+// before the user is prompted.
+func permissionsAutoReview(b *ConfigBuilder, args []string, stderr io.Writer) error {
+	if len(args) < 3 {
+		return usage(stderr, "usage: permissions auto-review on|off")
+	}
+	var enabled bool
+	switch args[2] {
+	case "on", "true", "yes":
+		enabled = true
+	case "off", "false", "no":
+		enabled = false
+	default:
+		return usage(stderr, "usage: permissions auto-review on|off")
+	}
+	b.section("permissions")["auto_review"] = enabled
+	slog.Info("Permissions auto-review set in shell config", "enabled", enabled)
 	return nil
 }
 
