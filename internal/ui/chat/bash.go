@@ -46,7 +46,7 @@ type BashToolRenderContext struct {
 func (b *BashToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
 	if opts.IsPending() {
-		return pendingTool(sty, "Bash", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Bash", opts.Anim, opts.Compact, pendingParam(partialStringField(opts.ToolCall.Input, "command")))
 	}
 
 	var params tools.BashParams

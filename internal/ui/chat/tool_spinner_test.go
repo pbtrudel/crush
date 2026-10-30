@@ -57,3 +57,33 @@ func TestToolItemStopsSpinningOnceItHasAResult(t *testing.T) {
 		})
 	}
 }
+
+func TestPendingToolsShowPartialArguments(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+
+	t.Run("bash command", func(t *testing.T) {
+		t.Parallel()
+		item := NewBashToolMessageItem(&sty, message.ToolCall{
+			ID: "tc1", Name: "bash", Input: `{"command":"echo hel`, Finished: false,
+		}, nil, false, "")
+		require.Contains(t, item.Render(80), "echo hel")
+	})
+
+	t.Run("view path", func(t *testing.T) {
+		t.Parallel()
+		item := NewViewToolMessageItem(&sty, message.ToolCall{
+			ID: "tc2", Name: "view", Input: `{"file_path":"/tmp/par`, Finished: false,
+		}, nil, false)
+		require.Contains(t, item.Render(80), "/tmp/par")
+	})
+
+	t.Run("edit path", func(t *testing.T) {
+		t.Parallel()
+		item := NewEditToolMessageItem(&sty, message.ToolCall{
+			ID: "tc3", Name: "edit", Input: `{"file_path":"/tmp/edi`, Finished: false,
+		}, nil, false)
+		require.Contains(t, item.Render(80), "/tmp/edi")
+	})
+}

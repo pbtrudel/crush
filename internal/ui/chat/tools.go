@@ -524,7 +524,9 @@ func (t *baseToolMessageItem) HandleKeyEvent(key tea.KeyMsg) (bool, tea.Cmd) {
 }
 
 // pendingTool renders a tool that is still in progress with an animation.
-func pendingTool(sty *styles.Styles, name string, anim *anim.Anim, nested bool) string {
+// Optional params are shown after the tool name, letting a pending tool
+// reveal arguments that already finished streaming.
+func pendingTool(sty *styles.Styles, name string, anim *anim.Anim, nested bool, params ...string) string {
 	icon := sty.Tool.IconPending.Render()
 	nameStyle := sty.Tool.NameNormal
 	if nested {
@@ -532,12 +534,40 @@ func pendingTool(sty *styles.Styles, name string, anim *anim.Anim, nested bool) 
 	}
 	toolName := nameStyle.Render(name)
 
-	var animView string
-	if anim != nil {
-		animView = anim.Render()
+	var b strings.Builder
+	b.WriteString(icon)
+	b.WriteString(" ")
+	b.WriteString(toolName)
+	for _, p := range params {
+		if p == "" {
+			continue
+		}
+		b.WriteString(" ")
+		b.WriteString(p)
 	}
+	if anim != nil {
+		if animView := anim.Render(); animView != "" {
+			b.WriteString(" ")
+			b.WriteString(animView)
+		}
+	}
+	return b.String()
+}
 
-	return fmt.Sprintf("%s %s %s", icon, toolName, animView)
+// pendingParam returns a partial tool argument formatted for a pending
+// tool line: whitespace is collapsed and long values are truncated so
+// the spinner stays on one line.
+func pendingParam(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	return ansi.Truncate(s, 60, "…")
+}
+
+// partialStringField returns a string field from a tool call input that
+// may still be streaming. It returns an empty string when the field has
+// not started or is not a string.
+func partialStringField(input, key string) string {
+	v, _ := partialJSONFields(input)[key].(string)
+	return v
 }
 
 // partialJSONStringValue matches the raw remainder of a partial JSON
