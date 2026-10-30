@@ -61,6 +61,7 @@ func init() {
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
 	rootCmd.PersistentFlags().StringSlice("channels", nil, "MCP servers to enable as channels (repeatable), e.g. --channels server:webhook")
 	_ = rootCmd.PersistentFlags().MarkHidden("channels")
+	rootCmd.PersistentFlags().String("worktree", "", "Run in a new Git worktree with the given name")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
@@ -101,6 +102,9 @@ crush --yolo
 
 # Run with custom data directory
 crush --data-dir /path/to/custom/.crush
+
+# Run in a new Git worktree
+crush --worktree my-feature
 
 # Continue a previous session
 crush --session {session-id}
@@ -298,6 +302,11 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		return nil, nil, err
 	}
 
+	cwd, err = applyWorktreeFlag(cmd, cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	store, err := config.Init(ctx, cwd, dataDir, debug)
 	if err != nil {
 		return nil, nil, err
@@ -383,6 +392,9 @@ func localSkillsDiscoveryConfig(store *config.ConfigStore) skills.DiscoveryConfi
 // setupClientServerWorkspace connects to a server process and wraps the
 // result in a ClientWorkspace.
 func setupClientServerWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
+	if name, _ := cmd.Flags().GetString("worktree"); name != "" {
+		return nil, nil, errors.New("--worktree is not supported in client-server mode")
+	}
 	c, protoWs, _, err := connectToServer(cmd)
 	if err != nil {
 		return nil, nil, err
