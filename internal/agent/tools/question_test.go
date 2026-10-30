@@ -72,5 +72,8 @@ func TestFormatAnswer_Skipped(t *testing.T) {
 	answer := question.Answer{}
 	resp, err := formatAnswer(&answer, question.TypeFreeText)
 	require.NoError(t, err)
-	require.Equal(t, "User skipped this question", resp.Content)
+	require.Contains(t, resp.Content, "User skipped this question")
+	require.Contains(t, resp.Content, "Continue with the task")
+	require.Contains(t, resp.Content, "do not ask the same question again")
+	require.Contains(t, resp.Content, "not authorization")
 }
