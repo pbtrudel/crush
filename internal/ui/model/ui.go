@@ -46,6 +46,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/sessionexport"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
@@ -2447,6 +2448,25 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 				return util.ReportError(err)()
 			}
 			return nil
+		})
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionExportSession:
+		cmds = append(cmds, func() tea.Msg {
+			ctx := context.Background()
+			sess, err := m.com.Workspace.GetSession(ctx, msg.SessionID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			msgs, err := m.com.Workspace.ListMessages(ctx, msg.SessionID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			name := fmt.Sprintf("crush-session-%s.md", filepath.Base(msg.SessionID))
+			path := filepath.Join(m.com.Workspace.WorkingDir(), name)
+			if err := os.WriteFile(path, []byte(sessionexport.Markdown(sess, msgs)), 0o644); err != nil {
+				return util.ReportError(err)()
+			}
+			return util.ReportInfo("Session exported to " + path)()
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionAskSideQuestion:
