@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -20,6 +21,9 @@ const (
 	// CompletedJobRetentionMinutes is how long to keep completed jobs before auto-cleanup (8 hours)
 	CompletedJobRetentionMinutes = 8 * 60
 )
+
+// ErrBackgroundShellNotFound reports an unknown or already-reaped shell ID.
+var ErrBackgroundShellNotFound = errors.New("background shell not found")
 
 // BackgroundJobEvent reports a background shell completion to the agent
 // layer. Output is bounded to the inline notice budget; callers can read the
@@ -242,7 +246,7 @@ func (m *BackgroundShellManager) Get(id string) (*BackgroundShell, bool) {
 func (m *BackgroundShellManager) Remove(id string) error {
 	_, ok := m.shells.Take(id)
 	if !ok {
-		return fmt.Errorf("background shell not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrBackgroundShellNotFound, id)
 	}
 	return nil
 }
@@ -251,7 +255,7 @@ func (m *BackgroundShellManager) Remove(id string) error {
 func (m *BackgroundShellManager) Kill(id string) error {
 	shell, ok := m.shells.Take(id)
 	if !ok {
-		return fmt.Errorf("background shell not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrBackgroundShellNotFound, id)
 	}
 
 	shell.cancel()

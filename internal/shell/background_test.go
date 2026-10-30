@@ -111,9 +111,7 @@ func TestBackgroundShellManager_KillNonExistent(t *testing.T) {
 	manager := newBackgroundShellManager()
 
 	err := manager.Kill("non-existent-id")
-	if err == nil {
-		t.Error("expected error when killing non-existent shell")
-	}
+	require.ErrorIs(t, err, ErrBackgroundShellNotFound)
 }
 
 func TestBackgroundShell_IsDone(t *testing.T) {

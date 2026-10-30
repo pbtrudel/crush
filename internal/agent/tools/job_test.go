@@ -2,13 +2,32 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
+
+func TestJobKillUnknownShellIsNoop(t *testing.T) {
+	t.Parallel()
+
+	tool := NewJobKillTool()
+	input, err := json.Marshal(JobKillParams{ShellID: "missing"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  JobKillToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "not running")
+}
 
 func TestBackgroundShell_Integration(t *testing.T) {
 	t.Parallel()
