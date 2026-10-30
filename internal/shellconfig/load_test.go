@@ -185,6 +185,25 @@ func TestLoadShellConfig_Permissions(t *testing.T) {
 	require.Equal(t, "view", tools[1])
 }
 
+// TestLoadShellConfig_PermissionsAutoReview verifies the auto-review
+// subcommand writes permissions.auto_review.
+func TestLoadShellConfig_PermissionsAutoReview(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `permissions auto-review on`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	perms := result["permissions"].(map[string]any)
+	require.Equal(t, true, perms["auto_review"])
+}
+
 // TestLoadShellConfig_PermissionsDeny verifies that `permissions deny` writes
 // to options.disabled_tools (not permissions.disabled_tools). This
 // cross-section write is load-bearing: deny wins over allow because

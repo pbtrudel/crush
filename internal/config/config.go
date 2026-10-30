@@ -411,6 +411,15 @@ const (
 
 type Permissions struct {
 	AllowedTools []string `json:"allowed_tools,omitempty" jsonschema:"description=List of tools that don't require permission prompts,example=bash,example=view"`
+	// AutoReview asks a model to approve or deny tool calls that would
+	// otherwise prompt the user. The reviewer falls back to the prompt
+	// when it is unsure.
+	AutoReview *bool `json:"auto_review,omitempty" jsonschema:"description=Use a model to review tool calls before prompting the user,default=false"`
+}
+
+// GetAutoReview reports whether automatic tool-call review is enabled.
+func (p *Permissions) GetAutoReview() bool {
+	return p != nil && p.AutoReview != nil && *p.AutoReview
 }
 
 type TrailerStyle string

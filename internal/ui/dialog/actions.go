@@ -101,6 +101,11 @@ type (
 	ActionSummarize         struct {
 		SessionID string
 	}
+	// ActionExportSession writes the session conversation to a Markdown
+	// file in the workspace directory.
+	ActionExportSession struct {
+		SessionID string
+	}
 	// ActionAskSideQuestion asks about the session without adding the
 	// exchange to the conversation. Question is empty until the user
 	// fills the prompt.

@@ -2,6 +2,7 @@ package permission
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -803,4 +804,75 @@ func TestPromptObserverHearsShownThenResolved(t *testing.T) {
 
 	require.Equal(t, "shown c1", <-obs.events)
 	require.Equal(t, "resolved c1 granted", <-obs.events)
+}
+
+func TestPermissionService_AutoReview(t *testing.T) {
+	t.Parallel()
+
+	newService := func(t *testing.T, reviewer Reviewer) *permissionService {
+		t.Helper()
+		svc := NewPermissionService(t.TempDir(), false, nil, nil).(*permissionService)
+		svc.SetReviewer(reviewer)
+		return svc
+	}
+
+	req := CreatePermissionRequest{
+		SessionID: "s", ToolCallID: "c1", ToolName: "bash", Action: "execute", Path: "cmd",
+	}
+
+	t.Run("approve", func(t *testing.T) {
+		t.Parallel()
+		svc := newService(t, func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			return ReviewApprove, nil
+		})
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("deny", func(t *testing.T) {
+		t.Parallel()
+		svc := newService(t, func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			return ReviewDeny, nil
+		})
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.False(t, granted)
+	})
+
+	t.Run("ask falls back to the prompt", func(t *testing.T) {
+		t.Parallel()
+		svc := newService(t, func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			return ReviewAsk, nil
+		})
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		_, err := svc.Request(ctx, req)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("reviewer error falls back to the prompt", func(t *testing.T) {
+		t.Parallel()
+		svc := newService(t, func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			return ReviewAsk, errors.New("reviewer unavailable")
+		})
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		_, err := svc.Request(ctx, req)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("allowlisted tools skip the reviewer", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		svc := NewPermissionService(t.TempDir(), false, []string{"bash"}, nil).(*permissionService)
+		svc.SetReviewer(func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			called = true
+			return ReviewDeny, nil
+		})
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+		require.False(t, called)
+	})
 }

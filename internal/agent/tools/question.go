@@ -184,7 +184,7 @@ func formatAnswer(answer *question.Answer, _ question.Type) (fantasy.ToolRespons
 		}
 		b.WriteString(strings.Join(parts, "\n"))
 	default:
-		b.WriteString("User skipped this question")
+		b.WriteString("User skipped this question. Continue with the task using the information you already have; do not ask the same question again. A skipped question is not authorization to take destructive or irreversible actions.")
 	}
 
 	if len(answer.Notes) > 0 {

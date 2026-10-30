@@ -1,6 +1,9 @@
 package dialog
 
 import (
+	"slices"
+	"strings"
+
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/config"
@@ -72,6 +75,7 @@ type ModelItem struct {
 	prov      catwalk.Provider
 	model     catwalk.Model
 	modelType ModelType
+	effort    string
 
 	cache        map[int]string
 	t            *styles.Styles
@@ -91,9 +95,32 @@ func (m *ModelItem) SelectedModel() config.SelectedModel {
 	return config.SelectedModel{
 		Model:           m.model.ID,
 		Provider:        string(m.prov.ID),
-		ReasoningEffort: m.model.Reasoning.DefaultEffortLevel,
+		ReasoningEffort: m.effort,
 		MaxTokens:       m.model.DefaultMaxTokens,
 	}
+}
+
+// ReasoningEfforts returns the selectable reasoning effort levels of the
+// model, or nil when the model does not support effort levels.
+func (m *ModelItem) ReasoningEfforts() []string {
+	return m.model.ReasoningEffortLevels()
+}
+
+// CycleReasoningEffort advances the model's selected reasoning effort to
+// the next level, wrapping around. It reports false when the model has no
+// effort levels.
+func (m *ModelItem) CycleReasoningEffort() bool {
+	levels := m.ReasoningEfforts()
+	if len(levels) == 0 {
+		return false
+	}
+	idx := slices.Index(levels, m.effort)
+	m.effort = levels[(idx+1)%len(levels)]
+	m.cache = nil
+	if m.Versioned != nil {
+		m.Bump()
+	}
+	return true
 }
 
 // SelectedModelType returns the type of model represented by this item.
@@ -110,6 +137,7 @@ func NewModelItem(t *styles.Styles, prov catwalk.Provider, model catwalk.Model, 
 		prov:         prov,
 		model:        model,
 		modelType:    typ,
+		effort:       model.Reasoning.DefaultEffortLevel,
 		t:            t,
 		cache:        make(map[int]string),
 		showProvider: showProvider,
@@ -128,9 +156,12 @@ func (m *ModelItem) ID() string {
 
 // Render implements ListItem.
 func (m *ModelItem) Render(width int) string {
-	var providerInfo string
+	var info []string
 	if m.showProvider {
-		providerInfo = string(m.prov.Name)
+		info = append(info, string(m.prov.Name))
+	}
+	if m.effort != "" {
+		info = append(info, common.FormatReasoningEffort(m.effort))
 	}
 	styles := ListItemStyles{
 		ItemBlurred:     m.t.Dialog.NormalItem,
@@ -138,7 +169,7 @@ func (m *ModelItem) Render(width int) string {
 		InfoTextBlurred: m.t.Dialog.ListItem.InfoBlurred,
 		InfoTextFocused: m.t.Dialog.ListItem.InfoFocused,
 	}
-	return renderItem(styles, m.model.Name, providerInfo, m.focused, width, m.cache, &m.m)
+	return renderItem(styles, m.model.Name, strings.Join(info, " · "), m.focused, width, m.cache, &m.m)
 }
 
 // SetFocused implements ListItem.

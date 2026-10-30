@@ -117,3 +117,39 @@ func TestModelsToggleIgnoredDuringOnboarding(t *testing.T) {
 	require.Nil(t, m.HandleMsg(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}))
 	require.Equal(t, []string{"OpenAI", "Anthropic"}, modelGroupTitles(m))
 }
+
+func TestModelItemCyclesReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	prov := catwalk.Provider{ID: "test", Name: "Test"}
+	model := catwalk.Model{
+		ID:   "reasoner",
+		Name: "Reasoner",
+		Reasoning: catwalk.Reasoning{
+			EffortLevels:       catwalk.NewEffortLevels("low", "medium", "high"),
+			DefaultEffortLevel: "medium",
+		},
+	}
+
+	item := NewModelItem(&sty, prov, model, ModelTypeLarge, false)
+	require.Equal(t, "medium", item.SelectedModel().ReasoningEffort)
+
+	require.True(t, item.CycleReasoningEffort())
+	require.Equal(t, "high", item.SelectedModel().ReasoningEffort)
+
+	require.True(t, item.CycleReasoningEffort())
+	require.Equal(t, "low", item.SelectedModel().ReasoningEffort)
+}
+
+func TestModelItemWithoutReasoningLevelsDoesNotCycle(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	prov := catwalk.Provider{ID: "test", Name: "Test"}
+	model := catwalk.Model{ID: "plain", Name: "Plain"}
+
+	item := NewModelItem(&sty, prov, model, ModelTypeLarge, false)
+	require.False(t, item.CycleReasoningEffort())
+	require.Empty(t, item.SelectedModel().ReasoningEffort)
+}

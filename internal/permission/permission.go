@@ -2,6 +2,7 @@ package permission
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,6 +45,28 @@ type CreatePermissionRequest struct {
 	Params      any    `json:"params"`
 	Path        string `json:"path"`
 }
+
+// ReviewDecision is the outcome of an automatic tool-call review.
+type ReviewDecision int
+
+const (
+	// ReviewAsk falls back to prompting the user.
+	ReviewAsk ReviewDecision = iota
+	// ReviewApprove executes the tool call without prompting.
+	ReviewApprove
+	// ReviewDeny rejects the tool call without prompting.
+	ReviewDeny
+)
+
+// ReviewerSetter is implemented by permission services that support
+// automatic review of tool calls before the user is prompted.
+type ReviewerSetter interface {
+	SetReviewer(reviewer Reviewer)
+}
+
+// Reviewer reviews a permission request before the user is prompted.
+// Returning ReviewAsk or an error falls back to the user prompt.
+type Reviewer func(ctx context.Context, req PermissionRequest) (ReviewDecision, error)
 
 type PermissionNotification struct {
 	SessionID  string `json:"session_id"`
@@ -131,6 +154,7 @@ type permissionService struct {
 	skip                  atomic.Bool
 	allowedTools          []string
 	observer              PromptObserver
+	reviewer              atomic.Pointer[Reviewer]
 
 	// used to make sure we only process one request at a time
 	requestMu       sync.Mutex
@@ -231,9 +255,6 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		return true, nil
 	}
 
-	s.requestMu.Lock()
-	defer s.requestMu.Unlock()
-
 	// tell the UI that a permission was requested
 	s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 		SessionID:  opts.SessionID,
@@ -290,6 +311,32 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		})
 		return true, nil
 	}
+
+	if reviewer := s.reviewer.Load(); reviewer != nil {
+		decision, err := (*reviewer)(ctx, permission)
+		if err != nil {
+			slog.Warn("Automatic tool review failed; asking the user", "error", err)
+		}
+		switch decision {
+		case ReviewApprove:
+			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+				SessionID:  opts.SessionID,
+				ToolCallID: opts.ToolCallID,
+				Granted:    true,
+			})
+			return true, nil
+		case ReviewDeny:
+			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+				SessionID:  opts.SessionID,
+				ToolCallID: opts.ToolCallID,
+				Granted:    false,
+			})
+			return false, nil
+		}
+	}
+
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
 
 	s.activeRequestMu.Lock()
 	s.activeRequest = &permission
@@ -379,6 +426,16 @@ func (s *permissionService) SubscribeNotifications(ctx context.Context) <-chan p
 
 func (s *permissionService) SetSkipRequests(skip bool) {
 	s.skip.Store(skip)
+}
+
+// SetReviewer installs an automatic reviewer that runs before the user
+// is prompted. A nil reviewer disables automatic review.
+func (s *permissionService) SetReviewer(reviewer Reviewer) {
+	if reviewer == nil {
+		s.reviewer.Store(nil)
+		return
+	}
+	s.reviewer.Store(&reviewer)
 }
 
 func (s *permissionService) SkipRequests() bool {

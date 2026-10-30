@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/charmbracelet/crush/internal/home"
 )
 
 const GlobToolName = "glob"
@@ -59,7 +60,7 @@ func NewGlobTool(workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("pattern is required"), nil
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath := home.Long(cmp.Or(params.Path, workingDir))
 
 			// Bound the search so a huge or symlink-heavy root (e.g. $HOME
 			// or a module cache) fails cleanly instead of pinning the CPU

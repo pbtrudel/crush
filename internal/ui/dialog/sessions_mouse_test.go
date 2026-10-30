@@ -18,11 +18,16 @@ import (
 
 type sessionMouseWorkspace struct {
 	workspace.Workspace
-	sessions []session.Session
+	sessions   []session.Session
+	workingDir string
 }
 
 func (w *sessionMouseWorkspace) ListSessions(context.Context) ([]session.Session, error) {
 	return w.sessions, nil
+}
+
+func (w *sessionMouseWorkspace) WorkingDir() string {
+	return w.workingDir
 }
 
 func (w *sessionMouseWorkspace) AgentIsReady() bool {

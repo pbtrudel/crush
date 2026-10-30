@@ -1,11 +1,16 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"testing"
 
+	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/stretchr/testify/require"
 )
 
@@ -455,4 +460,23 @@ func TestColumnMatch(t *testing.T) {
 			require.Equal(t, "testdata/grep.txt", filepath.ToSlash(filepath.Clean(match.path)))
 		})
 	}
+}
+
+func TestGrepToolExpandsHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, os.WriteFile(filepath.Join(home.Dir(), "tilde-grep.txt"), []byte("needle"), 0o644))
+
+	tool := NewGrepTool(t.TempDir(), config.ToolGrep{})
+	input, err := json.Marshal(GrepParams{Pattern: "needle", Path: "~"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  GrepToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "needle")
 }

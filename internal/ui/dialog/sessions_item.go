@@ -47,6 +47,7 @@ type SessionItem struct {
 	session.Session
 	t                *styles.Styles
 	sessionsMode     sessionsMode
+	workingDir       string
 	m                fuzzy.Match
 	cache            map[int]string
 	updateTitleInput textinput.Model
@@ -63,9 +64,18 @@ func (s *SessionItem) Finished() bool {
 
 var _ ListItem = &SessionItem{}
 
-// Filter returns the filterable value of the session.
+// Filter returns the filterable value of the session. It includes the
+// title, ID, and working directory so a query can find a session by any
+// of them. Lowercase copies make ID and path matching case-insensitive
+// without changing the shared fuzzy matcher.
 func (s *SessionItem) Filter() string {
-	return s.Title
+	return strings.Join([]string{
+		s.Title,
+		s.Session.ID,
+		s.workingDir,
+		strings.ToLower(s.Session.ID),
+		strings.ToLower(s.workingDir),
+	}, "\n")
 }
 
 // ID returns the unique identifier of the session.
@@ -73,8 +83,14 @@ func (s *SessionItem) ID() string {
 	return s.Session.ID
 }
 
-// SetMatch sets the fuzzy match for the session item.
+// SetMatch sets the fuzzy match for the session item. Matches that fall
+// outside the title (for example, a query that matched the session ID or
+// working directory) are dropped so the renderer never underlines the
+// wrong part of the title.
 func (s *SessionItem) SetMatch(m fuzzy.Match) {
+	if len(m.MatchedIndexes) > 0 && m.MatchedIndexes[len(m.MatchedIndexes)-1] >= len(s.Title) {
+		m = fuzzy.Match{}
+	}
 	if sameFuzzyMatch(s.m, m) {
 		return
 	}
@@ -253,10 +269,10 @@ func (s *SessionItem) SetFocused(focused bool) {
 
 // sessionItems takes a slice of [session.Session]s and convert them to a slice
 // of [ListItem]s.
-func sessionItems(t *styles.Styles, mode sessionsMode, sessions ...session.Session) []list.FilterableItem {
+func sessionItems(t *styles.Styles, mode sessionsMode, workingDir string, sessions ...session.Session) []list.FilterableItem {
 	items := make([]list.FilterableItem, len(sessions))
 	for i, s := range sessions {
-		item := &SessionItem{Versioned: list.NewVersioned(), Session: s, t: t, sessionsMode: mode}
+		item := &SessionItem{Versioned: list.NewVersioned(), Session: s, t: t, sessionsMode: mode, workingDir: workingDir}
 		if mode == sessionsModeUpdating {
 			item.updateTitleInput = textinput.New()
 			item.updateTitleInput.SetVirtualCursor(false)

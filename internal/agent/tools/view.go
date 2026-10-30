@@ -19,6 +19,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/filetracker"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/skills"
@@ -110,7 +111,7 @@ func NewViewTool(
 			}
 
 			// Handle relative paths
-			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+			filePath := filepathext.SmartJoin(workingDir, home.Long(params.FilePath))
 
 			// Check if file is outside working directory and request permission if needed
 			absWorkingDir, err := filepath.Abs(workingDir)

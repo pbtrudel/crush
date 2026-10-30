@@ -39,7 +39,7 @@ type ViewToolRenderContext struct{}
 func (v *ViewToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
 	if opts.IsPending() {
-		return pendingTool(sty, "View", opts.Anim, opts.Compact)
+		return pendingTool(sty, "View", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
 	var params tools.ViewParams
@@ -125,7 +125,7 @@ type WriteToolRenderContext struct{}
 func (w *WriteToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
 	if opts.IsPending() {
-		return pendingTool(sty, "Write", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Write", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
 	var params tools.WriteParams
@@ -194,7 +194,7 @@ type EditToolRenderContext struct{}
 func (e *EditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	// Edit tool uses full width for diffs.
 	if opts.IsPending() {
-		return pendingTool(sty, "Edit", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Edit", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
 	var params tools.EditParams
@@ -269,7 +269,7 @@ type MultiEditToolRenderContext struct{}
 func (m *MultiEditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	// MultiEdit tool uses full width for diffs.
 	if opts.IsPending() {
-		return pendingTool(sty, "Multi-Edit", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Multi-Edit", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
 	var params tools.MultiEditParams
@@ -350,7 +350,7 @@ type DownloadToolRenderContext struct{}
 func (d *DownloadToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
 	if opts.IsPending() {
-		return pendingTool(sty, "Download", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Download", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
 	var params tools.DownloadParams

@@ -89,14 +89,15 @@ type Models struct {
 	providers []catwalk.Provider
 
 	keyMap struct {
-		Tab      key.Binding
-		UpDown   key.Binding
-		Select   key.Binding
-		Edit     key.Binding
-		Next     key.Binding
-		Previous key.Binding
-		Toggle   key.Binding
-		Close    key.Binding
+		Tab       key.Binding
+		UpDown    key.Binding
+		Select    key.Binding
+		Edit      key.Binding
+		Next      key.Binding
+		Previous  key.Binding
+		Toggle    key.Binding
+		Reasoning key.Binding
+		Close     key.Binding
 	}
 	list  *ModelsList
 	input textinput.Model
@@ -134,6 +135,10 @@ func (m *Models) initKeyMap() {
 	m.keyMap.Toggle = key.NewBinding(
 		key.WithKeys("ctrl+t"),
 		key.WithHelp("ctrl+t", "show all"),
+	)
+	m.keyMap.Reasoning = key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "reasoning"),
 	)
 	m.keyMap.Close = CloseKey
 }
@@ -253,6 +258,14 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			m.list.SetFilter(m.input.Value())
 			m.list.SelectFirst()
 			return ActionToggleShowAllProviders{ShowAll: m.showAllProviders}
+		case key.Matches(msg, m.keyMap.Reasoning):
+			selectedItem := m.list.SelectedItem()
+			if selectedItem == nil {
+				break
+			}
+			if modelItem, ok := selectedItem.(*ModelItem); ok {
+				modelItem.CycleReasoningEffort()
+			}
 		default:
 			prevValue := m.input.Value()
 			var cmd tea.Cmd
@@ -351,6 +364,9 @@ func (m *Models) ShortHelp() []key.Binding {
 		m.keyMap.UpDown,
 		m.keyMap.Tab,
 		m.keyMap.Select,
+	}
+	if item, ok := m.list.SelectedItem().(*ModelItem); ok && len(item.ReasoningEfforts()) > 0 {
+		h = append(h, m.keyMap.Reasoning)
 	}
 	if m.isSelectedConfigured() {
 		h = append(h, m.keyMap.Edit)

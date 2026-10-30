@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -135,7 +136,7 @@ func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
 				searchPattern = escapeRegexPattern(params.Pattern)
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath := home.Long(cmp.Or(params.Path, workingDir))
 
 			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 			defer cancel()

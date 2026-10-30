@@ -69,3 +69,26 @@ func TestSessionsDialogRefreshSession(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "after", item.Title)
 }
+
+func TestSessionsDialogFilterMatchesIDAndWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	d, err := NewSessions(&common.Common{
+		Workspace: &sessionMouseWorkspace{
+			sessions: []session.Session{
+				{ID: "ABC-123", Title: "alpha"},
+				{ID: "def-456", Title: "beta"},
+			},
+			workingDir: "/tmp/project",
+		},
+		Styles: &sty,
+	}, "")
+	require.NoError(t, err)
+
+	d.list.SetFilter("abc-123")
+	require.Len(t, d.list.FilteredItems(), 1)
+
+	d.list.SetFilter("/tmp/project")
+	require.Len(t, d.list.FilteredItems(), 2)
+}
