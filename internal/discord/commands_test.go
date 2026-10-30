@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
@@ -128,8 +128,8 @@ func TestCommandEffort(t *testing.T) {
 	require.True(t, ok)
 	for i := range provider.Models {
 		if provider.Models[i].ID == "gpt-5" {
-			provider.Models[i].ReasoningLevels = []string{"low", "medium", "high"}
-			provider.Models[i].DefaultReasoningEffort = "medium"
+			provider.Models[i].Reasoning.EffortLevels = catwalk.NewEffortLevels("low", "medium", "high")
+			provider.Models[i].Reasoning.DefaultEffortLevel = "medium"
 		}
 	}
 	env.cfg.Providers.Set("openai", provider)

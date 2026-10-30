@@ -100,6 +100,12 @@ func (f FilterableItemsSource) String(i int) string {
 	return f[i].Filter()
 }
 
+// Items returns every item of the list, including the ones the current
+// query filters out.
+func (f *FilterableList) Items() []FilterableItem {
+	return f.items
+}
+
 // FilteredItems returns the visible items after filtering. The result
 // is memoized on the (query, items) pair: repeated calls while neither
 // changed return the cached slice without re-running the fuzzy pass.

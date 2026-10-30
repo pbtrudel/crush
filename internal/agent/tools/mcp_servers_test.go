@@ -8,7 +8,7 @@ import (
 )
 
 func TestHasLazyMCPServers(t *testing.T) {
-	store, err := config.Init(t.TempDir(), "", false)
+	store, err := config.Init(t.Context(), t.TempDir(), "", false)
 	require.NoError(t, err)
 
 	store.Config().MCP = config.MCPs{
@@ -24,7 +24,7 @@ func TestHasLazyMCPServers(t *testing.T) {
 }
 
 func TestListInactiveMCPServers(t *testing.T) {
-	store, err := config.Init(t.TempDir(), "", false)
+	store, err := config.Init(t.Context(), t.TempDir(), "", false)
 	require.NoError(t, err)
 	store.Config().MCP = config.MCPs{
 		"lazy-one": {Type: config.MCPStdio, Command: "true", Lazy: true},

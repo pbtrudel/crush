@@ -186,9 +186,12 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 }
 
 // SetCurrentSession reports the session this client is currently
-// viewing to the server. Empty sessionID clears the entry. Errors
-// are propagated to the caller; the TUI logs and ignores them since
-// the presence record is a hint, not correctness-critical state.
+// viewing to the server. Empty sessionID clears the entry. The report
+// scopes the client's event stream: permission and question prompts
+// are only delivered to clients viewing the session that raised them.
+// Errors are propagated to the caller; the TUI logs and ignores them
+// since the presence record is best-effort, not correctness-critical
+// state.
 func (w *ClientWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
 	w.herdrClient.SetSessionID(sessionID)
 	w.mu.Lock()
@@ -233,9 +236,8 @@ func (w *ClientWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Me
 // -- Agent --
 
 func (w *ClientWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
-	// The interactive TUI does not consume notify.RunComplete for
-	// completion detection (it observes message events directly),
-	// so passing an empty RunID is correct here: it skips the
+	// The interactive TUI matches notify.RunComplete by session, not
+	// RunID, so passing an empty RunID is correct here: it skips the
 	// correlator stamping path without functional consequences.
 	return w.client.SendMessage(ctx, w.workspaceID(), sessionID, "", "", prompt, attachments...)
 }
@@ -418,6 +420,12 @@ func (w *ClientWorkspace) PermissionSkipRequests() bool {
 
 func (w *ClientWorkspace) PermissionSetSkipRequests(skip bool) {
 	_ = w.client.SetPermissionsSkipRequests(context.Background(), w.workspaceID(), skip)
+}
+
+// -- Host context --
+
+func (w *ClientWorkspace) HostContext(ctx context.Context) (proto.HostContext, error) {
+	return w.client.GetHostContext(ctx, w.workspaceID())
 }
 
 // -- Questions --
@@ -1038,9 +1046,10 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 // afterReconnect runs once a degraded subscription is re-established. It
 // re-asserts the client's current-session selection, since the server's
 // presence entry (or the whole workspace) may have been re-created while we
-// were away, and tells the UI to resync state published while detached. The
-// SSE handler attaches the client before writing its 200, so the presence
-// call cannot be rejected as not-attached here.
+// were away, re-reads the host theme, and tells the UI to resync state
+// published while detached. The SSE handler attaches the client before
+// writing its 200, so the presence call cannot be rejected as not-attached
+// here.
 func (w *ClientWorkspace) afterReconnect(send func(tea.Msg)) {
 	w.mu.RLock()
 	sid := w.lastSession
@@ -1050,7 +1059,30 @@ func (w *ClientWorkspace) afterReconnect(send func(tea.Msg)) {
 			slog.Warn("Failed to re-assert current session after reconnect", "error", err)
 		}
 	}
+	w.resyncHostTheme(send)
 	send(ConnectionEvent{State: ConnectionRecovered})
+}
+
+// hostThemeResyncTimeout bounds the host theme read after a reconnect, so a
+// wedged server cannot pin the subscription goroutine.
+const hostThemeResyncTimeout = 5 * time.Second
+
+// resyncHostTheme hands the UI the host theme the server holds after a
+// reconnect. The attach replay only covers a theme that is set, so a clear
+// published while the client was away, or a workspace re-created without
+// one, would otherwise leave the TUI on the host's colors. The read runs
+// after the new stream attached, so any later change still arrives as an
+// event, and the UI ignores a theme equal to the last one it received.
+func (w *ClientWorkspace) resyncHostTheme(send func(tea.Msg)) {
+	ctx, cancel := context.WithTimeout(w.subCtx, hostThemeResyncTimeout)
+	defer cancel()
+	st, err := w.client.GetHostTheme(ctx, w.workspaceID())
+	if err != nil {
+		// Servers that predate host themes have no such endpoint.
+		slog.Debug("Failed to read host theme after reconnect", "error", err)
+		return
+	}
+	send(HostThemeEvent{Theme: st.Theme})
 }
 
 // sleepOrDone waits for d or until the subscription context is
@@ -1192,9 +1224,11 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 		return pubsub.Event[permission.PermissionNotification]{
 			Type: e.Type,
 			Payload: permission.PermissionNotification{
+				SessionID:  e.Payload.SessionID,
 				ToolCallID: e.Payload.ToolCallID,
 				Granted:    e.Payload.Granted,
 				Denied:     e.Payload.Denied,
+				Cancelled:  e.Payload.Cancelled,
 			},
 		}
 	case pubsub.Event[proto.QuestionRequest]:
@@ -1285,6 +1319,12 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 			LatestVersion:  e.Payload.LatestVersion,
 			IsDevelopment:  e.Payload.IsDevelopment,
 		}
+	case pubsub.Event[proto.HostThemeState]:
+		theme := e.Payload.Theme
+		if e.Type == pubsub.DeletedEvent {
+			theme = nil
+		}
+		return HostThemeEvent{Theme: theme}
 	default:
 		slog.Warn("Unknown event type in translateEvent", "type", fmt.Sprintf("%T", ev))
 		return nil

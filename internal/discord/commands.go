@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
@@ -394,7 +394,7 @@ func currentEffort(cfg *config.Config, sel config.SelectedModel) string {
 		return ""
 	}
 	if model := cfg.GetModel(sel.Provider, sel.Model); model != nil {
-		return model.DefaultReasoningEffort
+		return model.Reasoning.DefaultEffortLevel
 	}
 	return ""
 }
@@ -414,11 +414,11 @@ func (b *Bridge) commandEffort(ctx context.Context, args string) string {
 	if model == nil {
 		return iconError + " The selected model is not in the catalog."
 	}
-	if len(model.ReasoningLevels) == 0 {
+	if len(model.ReasoningEffortLevels()) == 0 {
 		return fmt.Sprintf("`%s/%s` does not support reasoning effort.", sel.Provider, sel.Model)
 	}
 
-	levels := strings.Join(model.ReasoningLevels, ", ")
+	levels := strings.Join(model.ReasoningEffortLevels(), ", ")
 	arg := strings.ToLower(strings.TrimSpace(args))
 	switch arg {
 	case "", "status":
@@ -438,7 +438,7 @@ func (b *Bridge) commandEffort(ctx context.Context, args string) string {
 		if err := b.env.UpdateAgentModel(ctx); err != nil {
 			return iconError + " Effort update failed: " + err.Error()
 		}
-		def := model.DefaultReasoningEffort
+		def := model.Reasoning.DefaultEffortLevel
 		if def == "" {
 			def = "(none)"
 		}

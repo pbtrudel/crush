@@ -27,9 +27,8 @@ type Status struct {
 	help     help.Model
 	helpKm   help.KeyMap
 	msg      util.InfoMsg
-	// msgGen counts SetInfoMsg calls so a stale clear timer cannot
-	// erase a newer message.
-	msgGen uint64
+	// msgSeq identifies the message on screen; expiry timers carry it.
+	msgSeq uint64
 
 	// inputMode and yolo drive the mode badge shown before the help hints.
 	inputMode uiInputMode
@@ -46,19 +45,24 @@ func NewStatus(com *common.Common, km help.KeyMap) *Status {
 	return s
 }
 
-// SetInfoMsg sets the status info message and returns its generation,
-// which callers hand to clearInfoMsgCmd so a stale timer cannot clear
-// a newer message.
-func (s *Status) SetInfoMsg(msg util.InfoMsg) uint64 {
+// Show puts msg on screen and returns the command that retires it once its
+// TTL, or [DefaultStatusTTL] if unset, has passed.
+func (s *Status) Show(msg util.InfoMsg) tea.Cmd {
+	ttl := msg.TTL
+	if ttl <= 0 {
+		ttl = DefaultStatusTTL
+	}
 	s.msg = msg
-	s.msgGen++
-	return s.msgGen
+	s.msgSeq++
+	seq := s.msgSeq
+	return tea.Tick(ttl, func(time.Time) tea.Msg {
+		return util.ClearStatusMsg{Seq: seq}
+	})
 }
 
-// ClearInfoMsgIfGen clears the status info message only when gen is
-// still the current message's generation.
-func (s *Status) ClearInfoMsgIfGen(gen uint64) {
-	if gen == s.msgGen {
+// ClearInfoMsg clears the message on screen if seq still identifies it.
+func (s *Status) ClearInfoMsg(seq uint64) {
+	if seq == s.msgSeq {
 		s.msg = util.InfoMsg{}
 	}
 }
@@ -179,12 +183,4 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 
 	// Draw the info message over the help view
 	uv.NewStyledString(strings.Repeat(" ", indInset)+ind+info).Draw(scr, area)
-}
-
-// clearInfoMsgCmd returns a command that clears the info message with
-// the given generation after the TTL.
-func clearInfoMsgCmd(ttl time.Duration, gen uint64) tea.Cmd {
-	return tea.Tick(ttl, func(time.Time) tea.Msg {
-		return util.ClearStatusMsg{Gen: gen}
-	})
 }

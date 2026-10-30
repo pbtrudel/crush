@@ -76,11 +76,11 @@ func TestPreparePrompt_ReplayMatchesLiveUserMessage(t *testing.T) {
 
 	// Live form: the prompt string and the files passed to the provider.
 	livePrompt := message.PromptWithTextAttachments(call.Prompt, call.Attachments)
-	_, liveFiles := agent.preparePrompt(msgs, true, call.Attachments...)
+	_, liveFiles := agent.preparePrompt(msgs, true, false, call.Attachments...)
 	require.Len(t, liveFiles, 1, "only the image is sent as a file part")
 
 	// Replay form: what the next turn rebuilds from the session store.
-	history, replayFiles := agent.preparePrompt(msgs, true)
+	history, replayFiles := agent.preparePrompt(msgs, true, false)
 	require.Empty(t, replayFiles)
 	require.Len(t, history, 2)
 	text, ok := fantasy.AsMessagePart[fantasy.TextPart](history[1].Content[0])
@@ -285,7 +285,7 @@ func TestMCPInstructionsSortedDeterministic(t *testing.T) {
 func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
 	env := testEnv(t)
 
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	// Pin every input buildTools reads so the test is hermetic against the
 	// developer's user config (same reasoning as coderAgent in common_test).
@@ -355,7 +355,7 @@ func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
 func TestSystemPromptByteStableWithMultipleContextFiles(t *testing.T) {
 	env := testEnv(t)
 
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	// Pin every input prompt building reads so the test is hermetic
 	// against the developer's user config (same reasoning as coderAgent).
@@ -407,7 +407,7 @@ func TestSystemPromptByteStableWithMultipleContextFiles(t *testing.T) {
 func TestSystemPromptStableAcrossClocks(t *testing.T) {
 	env := testEnv(t)
 
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	cfg.Config().Options.Attribution = &config.Attribution{}
 	cfg.Config().Options.SkillsPaths = nil

@@ -192,7 +192,7 @@ func (c *controllerV1) handlePostWorkspaceSkillsReload(w http.ResponseWriter, r 
 // "Reload Configuration" command.
 func (c *controllerV1) handlePostWorkspaceConfigReload(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := c.backend.ReloadConfig(r.Context(), id); err != nil {
+	if err := c.backend.ReloadWorkspaceConfig(r.Context(), id); err != nil {
 		c.handleError(w, r, err)
 		return
 	}

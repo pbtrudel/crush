@@ -23,10 +23,12 @@ import (
 // but expressed in coalesced frames rather than raw events.
 const sinkBacklog = 256
 
-// sinkFrame is one encoded SSE payload plus the entity it describes.
+// sinkFrame is one encoded SSE payload plus the entity it describes and
+// the raw event, which per-client routing still needs after encoding.
 type sinkFrame struct {
-	data []byte
-	key  string
+	data    []byte
+	key     string
+	payload any
 }
 
 // eventSink fans one workspace's event stream out to every attached SSE
@@ -95,7 +97,7 @@ func (s *eventSink) publish(payload any) {
 	if data == nil {
 		return
 	}
-	frame := sinkFrame{data: data, key: key}
+	frame := sinkFrame{data: data, key: key, payload: payload}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

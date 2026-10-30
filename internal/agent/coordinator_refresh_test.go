@@ -18,7 +18,7 @@ func TestCoordinatorRefreshSkills(t *testing.T) {
 
 	env := testEnv(t)
 
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	cfg.SetupAgents()
 	coderCfg := cfg.Config().Agents[config.AgentCoder]

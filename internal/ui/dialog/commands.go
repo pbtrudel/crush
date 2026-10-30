@@ -58,7 +58,10 @@ type Commands struct {
 	hasTodos      bool
 	hasQueue      bool
 	revealSecrets bool
-	selected      CommandType
+	// transparent is whether the background color is off on screen,
+	// which a host theme can make differ from the config.
+	transparent bool
+	selected    CommandType
 
 	spinner spinner.Model
 	loading bool
@@ -78,8 +81,9 @@ type Commands struct {
 
 var _ Dialog = (*Commands)(nil)
 
-// NewCommands creates a new commands dialog.
-func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue, revealSecrets bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
+// NewCommands creates a new commands dialog. transparent is whether the
+// background color is currently off on screen.
+func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue, revealSecrets, transparent bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
 	c := &Commands{
 		com:            com,
 		selected:       SystemCommands,
@@ -88,6 +92,7 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 		hasTodos:       hasTodos,
 		hasQueue:       hasQueue,
 		revealSecrets:  revealSecrets,
+		transparent:    transparent,
 		customCommands: customCommands,
 		mcpPrompts:     mcpPrompts,
 	}
@@ -472,11 +477,12 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	if agentCfg, ok := cfg.Agents[config.AgentCoder]; ok {
 		providerCfg := cfg.GetProviderForModel(agentCfg.Model)
 		model := cfg.GetModelByType(agentCfg.Model)
-		if providerCfg != nil && model != nil && model.CanReason {
+		if providerCfg != nil && model != nil && model.CanReason() {
 			selectedModel := cfg.Models[agentCfg.Model]
+			effortLevels := model.ReasoningEffortLevels()
 
 			// Anthropic models: thinking toggle
-			if model.CanReason && len(model.ReasoningLevels) == 0 {
+			if len(effortLevels) == 0 {
 				status := "Enable"
 				if selectedModel.Think {
 					status = "Disable"
@@ -485,7 +491,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 			}
 
 			// OpenAI models: reasoning effort dialog
-			if len(model.ReasoningLevels) > 0 {
+			if len(effortLevels) > 0 {
 				commands = append(commands, NewCommandItem(c.com.Styles, "select_reasoning_effort", "Select Reasoning Effort", "", ActionOpenDialog{
 					DialogID: ReasoningID,
 				}))
@@ -507,7 +513,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		cfgPrime := c.com.Config()
 		agentCfg := cfgPrime.Agents[config.AgentCoder]
 		model := cfgPrime.GetModelByType(agentCfg.Model)
-		if model != nil && model.SupportsImages {
+		if model != nil && model.Capabilities.Vision {
 			commands = append(commands, NewCommandItem(c.com.Styles, "file_picker", "Open File Picker", "ctrl+f", ActionOpenDialog{
 				DialogID: FilePickerID,
 			}))
@@ -568,9 +574,10 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
 	)
 
-	// Add transparent background toggle.
+	// Add transparent background toggle. The label follows what is on
+	// screen, which the toggle flips.
 	transparentLabel := "Disable Background Color"
-	if cfg != nil && cfg.Options != nil && cfg.Options.TUI.IsTransparent() {
+	if c.transparent {
 		transparentLabel = "Enable Background Color"
 	}
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_transparent", transparentLabel, "", ActionToggleTransparentBackground{}))

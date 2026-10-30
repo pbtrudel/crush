@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/message"
 )
 
@@ -440,24 +440,6 @@ func (m *Message) FinishToolCall(toolCallID string) {
 	}
 }
 
-// AppendToolCallInput appends input to a tool call.
-func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ToolCall); ok {
-			if c.ID == toolCallID {
-				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input + inputDelta,
-					Type:     c.Type,
-					Finished: c.Finished,
-				}
-				return
-			}
-		}
-	}
-}
-
 // AddToolCall adds or updates a tool call.
 func (m *Message) AddToolCall(tc ToolCall) {
 	for i, part := range m.Parts {
@@ -469,6 +451,24 @@ func (m *Message) AddToolCall(tc ToolCall) {
 		}
 	}
 	m.Parts = append(m.Parts, tc)
+}
+
+// AppendToolCallInput appends a streaming input delta to an existing tool
+// call part.
+func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
+	for i, part := range m.Parts {
+		if c, ok := part.(ToolCall); ok {
+			if c.ID == toolCallID {
+				m.Parts[i] = ToolCall{
+					ID:       c.ID,
+					Name:     c.Name,
+					Input:    c.Input + inputDelta,
+					Finished: c.Finished,
+				}
+				return
+			}
+		}
+	}
 }
 
 // SetToolCalls replaces all tool call parts.

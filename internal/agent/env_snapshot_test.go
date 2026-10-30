@@ -27,7 +27,7 @@ func fixedSnapshotClock() func() time.Time {
 // deterministic.
 func snapshotAgent(t *testing.T, env fakeEnv) *sessionAgent {
 	t.Helper()
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	return NewSessionAgent(SessionAgentOptions{
 		Sessions: env.sessions,
@@ -151,7 +151,7 @@ func TestRunSnapshotOrderMatchesReplay(t *testing.T) {
 	env := testEnv(t)
 	large, small := &captureStreamModel{}, &captureStreamModel{}
 	sa := testSessionAgent(env, large, small, "system").(*sessionAgent)
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	sa.cfg = cfg
 	sa.now = fixedSnapshotClock()

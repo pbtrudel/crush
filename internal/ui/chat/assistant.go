@@ -244,18 +244,7 @@ func NewAssistantMessageItem(sty *styles.Styles, message *message.Message) Messa
 		sty:                      sty,
 	}
 
-	a.anim = anim.New(anim.Settings{
-		ID:          a.ID(),
-		Size:        15,
-		GradColorA:  sty.WorkingGradFromColor,
-		GradColorB:  sty.WorkingGradToColor,
-		LabelColor:  sty.WorkingLabelColor,
-		CycleColors: true,
-		Suffix: func() string {
-			return common.Elapsed()
-		},
-		SuffixColor: sty.WorkingTimerColor,
-	})
+	a.anim = newTurnAnim(sty, a.ID(), message.SessionID)
 	return a
 }
 
@@ -267,7 +256,7 @@ func (a *AssistantMessageItem) Spinning() bool {
 // restyleAnim implements [animRestyler].
 func (a *AssistantMessageItem) restyleAnim() {
 	a.anim.SetColors(
-		a.sty.WorkingLabelColor,
+		a.sty.ThinkingLabelColor,
 		a.sty.WorkingGradFromColor,
 		a.sty.WorkingGradToColor,
 		a.sty.WorkingTimerColor,

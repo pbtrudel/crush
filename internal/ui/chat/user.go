@@ -35,6 +35,12 @@ type UserMessageItem struct {
 	revealSecrets bool
 }
 
+// newAttachmentRenderer builds the renderer user messages use to draw their
+// attachments.
+func newAttachmentRenderer(sty *styles.Styles) *attachments.Renderer {
+	return attachments.NewRenderer(sty.Attachments)
+}
+
 // NewUserMessageItem creates a new UserMessageItem.
 func NewUserMessageItem(sty *styles.Styles, message *message.Message, attachments *attachments.Renderer) MessageItem {
 	v := list.NewVersioned()
@@ -47,6 +53,11 @@ func NewUserMessageItem(sty *styles.Styles, message *message.Message, attachment
 		message:                  message,
 		sty:                      sty,
 	}
+}
+
+// Message returns the message the item renders.
+func (m *UserMessageItem) Message() *message.Message {
+	return m.message
 }
 
 // Finished implements list.Item. User messages are immutable once

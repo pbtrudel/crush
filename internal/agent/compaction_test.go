@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/charmbracelet/crush/internal/config"
@@ -69,8 +69,7 @@ func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.Co
 	gitCfg := catwalk.Model{ContextWindow: 200_000, DefaultMaxTokens: 32_000}
 	m := Model{Model: model, CatwalkCfg: gitCfg}
 	return NewSessionAgent(SessionAgentOptions{
-		LargeModel:           m,
-		SmallModel:           m,
+		Models:               func() ModelSet { return ModelSet{Large: m, Small: m} },
 		SystemPrompt:         "SYSTEM PROMPT",
 		Sessions:             env.sessions,
 		Messages:             env.messages,
@@ -249,7 +248,7 @@ func TestShouldAutoCompact(t *testing.T) {
 	})
 
 	t.Run("configured threshold is honored", func(t *testing.T) {
-		cfg, err := config.Init(env.workingDir, "", false)
+		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 		require.NoError(t, err)
 		half := 0.5
 		cfg.Config().Options.AutoCompactThreshold = &half
@@ -261,7 +260,7 @@ func TestShouldAutoCompact(t *testing.T) {
 	})
 
 	t.Run("zero threshold disables auto-compaction", func(t *testing.T) {
-		cfg, err := config.Init(env.workingDir, "", false)
+		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 		require.NoError(t, err)
 		off := 0.0
 		cfg.Config().Options.AutoCompactThreshold = &off
@@ -322,7 +321,7 @@ func TestCompactionTailBudget(t *testing.T) {
 	})
 
 	t.Run("zero disables the tail", func(t *testing.T) {
-		cfg, err := config.Init(env.workingDir, "", false)
+		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 		require.NoError(t, err)
 		zero := 0
 		cfg.Config().Options.CompactTailTokens = &zero

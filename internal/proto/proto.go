@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/lsp"
 )
@@ -64,10 +64,29 @@ type UpdateAvailable struct {
 	IsDevelopment  bool   `json:"is_development"`
 }
 
+// ClientSession is the payload of a client_session event: the session a
+// client of a workspace is viewing has changed. An empty SessionID means
+// the client no longer views one, such as the landing screen or after it
+// went away.
+type ClientSession struct {
+	ClientID  string `json:"client_id"`
+	SessionID string `json:"session_id"`
+}
+
 // CurrentSession is the request body for the per-client
 // current-session endpoint. An empty SessionID clears the entry.
 type CurrentSession struct {
 	SessionID string `json:"session_id"`
+}
+
+// HostContext is what the application hosting Crush, such as an editor, has
+// in view: the files it has open, and the file and line the user is on. The
+// agent gets it with each prompt, so that "here" or "this file" means what
+// the user sees. The zero HostContext is none.
+type HostContext struct {
+	OpenFiles  []string `json:"open_files,omitempty"`
+	ActiveFile string   `json:"active_file,omitempty"`
+	Line       int      `json:"line,omitempty"` // 1-based line of the cursor in ActiveFile
 }
 
 // RunComplete is the authoritative end-of-run signal for a session,
@@ -169,6 +188,13 @@ type AgentAskRequest struct {
 // AgentAskResponse carries the answer to a side question.
 type AgentAskResponse struct {
 	Answer string `json:"answer"`
+}
+
+// SessionNote is something the host application tells a session's agent,
+// to be read with the session's next prompt. It starts no run and is not a
+// chat message.
+type SessionNote struct {
+	Text string `json:"text"`
 }
 
 // ShellCommandRequest represents a request to run a shell command directly.
@@ -283,7 +309,8 @@ type QuestionAnswerResponse struct {
 // QuestionNotification is published when a question batch is
 // resolved so non-answering clients can dismiss their forms.
 type QuestionNotification struct {
-	BatchID string `json:"batch_id"`
+	BatchID   string `json:"batch_id"`
+	SessionID string `json:"session_id"`
 }
 
 // PermissionSkipRequest represents a request to skip permission prompts.

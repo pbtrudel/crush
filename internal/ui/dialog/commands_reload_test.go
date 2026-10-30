@@ -16,7 +16,7 @@ func TestReloadConfigCommandSelectsAction(t *testing.T) {
 
 	sty := styles.CharmtonePantera()
 	com := &common.Common{Workspace: &rcCommandsWorkspace{}, Styles: &sty}
-	c, err := NewCommands(com, "", false, false, false, false, nil, nil)
+	c, err := NewCommands(com, "", false, false, false, false, false, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "Reload Configuration", commandTitle(c, "reload_config"))
 

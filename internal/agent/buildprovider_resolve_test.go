@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		providerCfg := config.ProviderConfig{
 			ID:      providerID,
 			BaseURL: "https://example.com/v1",
-			Type:    catwalk.TypeOpenAICompat,
+			Type:    catwalk.TypeCompletions,
 			APIKey:  "${CRUSH_TEST_UNSET_STRICT_KEY:?API key is required}",
 		}
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
@@ -32,7 +32,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		_, err := coord.buildProvider(providerCfg, config.SelectedModel{
 			Model:    "test-model",
 			Provider: providerID,
-		}, false)
+		}, false, catwalk.TypeCompletions)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), providerID)
 		// The error is safe to log: it must not carry the API key
@@ -47,7 +47,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		providerCfg := config.ProviderConfig{
 			ID:      providerID,
 			BaseURL: "${CRUSH_TEST_UNSET_STRICT_URL:?base URL is required}",
-			Type:    catwalk.TypeOpenAICompat,
+			Type:    catwalk.TypeCompletions,
 			APIKey:  "sk-test",
 		}
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
@@ -55,7 +55,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		_, err := coord.buildProvider(providerCfg, config.SelectedModel{
 			Model:    "test-model",
 			Provider: providerID,
-		}, false)
+		}, false, catwalk.TypeCompletions)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), providerID)
 	})
@@ -70,7 +70,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		providerCfg := config.ProviderConfig{
 			ID:      providerID,
 			BaseURL: "https://example.com/v1",
-			Type:    catwalk.TypeOpenAICompat,
+			Type:    catwalk.TypeCompletions,
 			APIKey:  "$CRUSH_TEST_UNSET_PLAIN_KEY",
 		}
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
@@ -78,7 +78,7 @@ func TestBuildProviderSurfacesResolveErrors(t *testing.T) {
 		provider, err := coord.buildProvider(providerCfg, config.SelectedModel{
 			Model:    "test-model",
 			Provider: providerID,
-		}, false)
+		}, false, catwalk.TypeCompletions)
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})

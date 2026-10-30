@@ -12,10 +12,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
@@ -28,6 +29,7 @@ import (
 	"github.com/charmbracelet/crush/internal/format"
 	"github.com/charmbracelet/crush/internal/herdr"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
@@ -88,6 +90,14 @@ type App struct {
 	// herdrClient reports agent state to herdr when running inside
 	// a herdr-managed pane. Nil when not in a herdr environment.
 	herdrClient *herdr.Client
+
+	// hookRunner runs user hooks for every event; it reads the config
+	// store on each event so reloads need no extra wiring.
+	hookRunner *hooks.Runner
+
+	// currentSessionID is the session the user is working in, reported
+	// by the TUI and the non-interactive runner, for SessionEnd.
+	currentSessionID atomic.Value
 }
 
 // New initializes a new application instance. skillsMgr carries the
@@ -106,17 +116,22 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		allowedTools = cfg.Permissions.AllowedTools
 	}
 
+	hookRunner := hooks.NewRunner(func() map[string][]config.HookConfig {
+		return store.Config().Hooks
+	}, store.WorkingDir(), store.WorkingDir())
+
 	app := &App{
 		Sessions:    sessions,
 		Messages:    messages,
 		History:     files,
-		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
+		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools, permissionHooks{hookRunner}),
 		Questions:   question.NewService(),
 		FileTracker: filetracker.NewService(q),
 		LSPManager:  lsp.NewManager(store),
 		Skills:      skillsMgr,
 
-		globalCtx: ctx,
+		globalCtx:  ctx,
+		hookRunner: hookRunner,
 
 		config: store,
 
@@ -192,6 +207,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if err := app.InitCoderAgent(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
 	}
+	go app.refreshDiscoveredModels(ctx, app.AgentCoordinator)
 
 	// Set up callback for LSP state updates.
 	app.LSPManager.SetCallback(func(name string, client *lsp.Client) {
@@ -208,6 +224,23 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	go app.LSPManager.TrackConfigured(ctx)
 
 	return app, nil
+}
+
+// refreshDiscoveredModels updates custom provider models that startup took
+// from the discovery cache. The coordinator is passed in rather than read
+// from app so this goroutine never races a later InitCoderAgent.
+func (app *App) refreshDiscoveredModels(ctx context.Context, coordinator agent.Coordinator) {
+	defer log.RecoverPanic("app.refreshDiscoveredModels", nil)
+	reloaded, err := app.config.RefreshDiscoveredModels(ctx)
+	if err != nil {
+		slog.Warn("Failed to apply refreshed provider models", "error", err)
+	}
+	if !reloaded {
+		return
+	}
+	if err := coordinator.UpdateModels(ctx); err != nil {
+		slog.Warn("Failed to update agent models after discovery", "error", err)
+	}
 }
 
 // Config returns the pure-data configuration.
@@ -250,38 +283,8 @@ func (app *App) RunCompletions() *pubsub.Broker[notify.RunComplete] {
 // is nil-safe. Call this whenever the active session changes (load,
 // new, or select).
 func (app *App) ReportCurrentSession(sessionID string) {
+	app.currentSessionID.Store(sessionID)
 	app.herdrClient.SetSessionID(sessionID)
-}
-
-// resolveSession resolves which session to use for a non-interactive run
-// If continueSessionID is set, it looks up that session by ID
-// If useLast is set, it returns the most recently updated top-level session
-// Otherwise, it creates a new session
-func (app *App) resolveSession(ctx context.Context, continueSessionID string, useLast bool) (session.Session, error) {
-	switch {
-	case continueSessionID != "":
-		if app.Sessions.IsAgentToolSession(continueSessionID) {
-			return session.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", continueSessionID)
-		}
-		sess, err := app.Sessions.Get(ctx, continueSessionID)
-		if err != nil {
-			return session.Session{}, fmt.Errorf("session not found: %s", continueSessionID)
-		}
-		if sess.ParentSessionID != "" {
-			return session.Session{}, fmt.Errorf("cannot continue a child session: %s", continueSessionID)
-		}
-		return sess, nil
-
-	case useLast:
-		sess, err := app.Sessions.GetLast(ctx)
-		if err != nil {
-			return session.Session{}, fmt.Errorf("no sessions found to continue")
-		}
-		return sess, nil
-
-	default:
-		return app.Sessions.Create(ctx, agent.DefaultSessionName)
-	}
 }
 
 // RunNonInteractive runs the application in non-interactive mode with the
@@ -792,7 +795,7 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 						Provider:        providerID,
 						Model:           small.ID,
 						MaxTokens:       small.DefaultMaxTokens,
-						ReasoningEffort: small.DefaultReasoningEffort,
+						ReasoningEffort: small.Reasoning.DefaultEffortLevel,
 					}
 				}
 				return largeModelCfg
@@ -805,7 +808,7 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		Provider:        providerID,
 		Model:           defaultSmallModelID,
 		MaxTokens:       model.DefaultMaxTokens,
-		ReasoningEffort: model.DefaultReasoningEffort,
+		ReasoningEffort: model.Reasoning.DefaultEffortLevel,
 	}
 }
 
@@ -990,6 +993,7 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		Notify:      app.agentNotifications,
 		RunComplete: app.runCompletions,
 		Skills:      app.Skills,
+		HookRunner:  app.hookRunner,
 		Interactive: interactive,
 	})
 	if err != nil {
@@ -1042,6 +1046,7 @@ func (app *App) Shutdown() {
 	if app.AgentCoordinator != nil {
 		app.AgentCoordinator.CancelAll()
 	}
+	app.fireSessionEnd()
 
 	// Shared shutdown context for all timeout-bounded cleanup.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -111,11 +111,11 @@ Use a package manager:
 # Homebrew
 brew install charmbracelet/tap/crush
 
-# NPM
+# NPM (macOS, Linux, and Windows)
 npm install -g @charmland/crush
 
 # Arch Linux (btw)
-yay -S crush-bin
+yay -S crush
 
 # Nix
 nix run github:numtide/nix-ai-tools#crush
@@ -182,8 +182,8 @@ You can use these modules directly in your flake by importing them from NUR. Sin
                   api_key = "sk-fake123456789abcdef...";
                   models = [
                     {
-                      id = "gpt-4";
-                      name = "GPT-4";
+                      id = "gpt-5.6-sol";
+                      name = "GPT-5.6 Sol";
                     }
                   ];
                 };
@@ -267,9 +267,9 @@ go install -tags sqlite3_dotlk github.com/charmbracelet/crush@latest
 The quickest way to get started is to choose a [Hyper][hyper] model from model
 picker. Follow the steps to authenticate and you'll be good to go.
 
-[Hyper], from Charm, is the official Crush provider. It’s subscription-based,
-with a free tier, and optimized for Crush. It’s privacy focused, with zero data
-retention (ZDR) is and designed to comply with GDPR. [More on Hyper][hyper].
+[Hyper], from Charm, is the official Crush provider. It’s subscription-based
+and optimized for Crush. It’s privacy focused, with zero data retention (ZDR)
+and is designed to comply with GDPR. [More on Hyper][hyper].
 
 <p><a href="https://hyper.charm.land"><img width="340" height="200" alt="Charm Hyper" src="https://github.com/user-attachments/assets/50875289-7992-454d-9f14-9f790413fb5e" /></a></p>
 
@@ -311,6 +311,7 @@ That said, you can also set environment variables for preferred providers:
 | `AZURE_OPENAI_API_KEY`      | Azure OpenAI models (optional when using Entra ID) |
 | `AZURE_OPENAI_API_VERSION`  | Azure OpenAI models                                |
 | `MOONSHOT_API_KEY`          | Moonshot                                           |
+| `XAI_API_KEY`               | xAI                                                |
 
 [hyper]: https://hyper.charm.land
 
@@ -474,10 +475,11 @@ dialog.
 
 #### Built-In Themes
 
-| Theme | Name |
-| --- | --- |
+| Theme             | Name                          |
+| ----------------- | ----------------------------- |
 | Charmtone Pantera | `charmtone-panther` (default) |
-| Gruvbox Dark | `gruvbox-dark` |
+| Gruvbox Dark      | `gruvbox-dark`                |
+| Keanu             | `keanu`                       |
 
 ### LSPs
 
@@ -900,11 +902,15 @@ Crush supports custom provider configurations for both OpenAI-compatible and
 Anthropic-compatible APIs.
 
 > [!NOTE]
-> Note that we support two "types" for OpenAI. Make sure to choose the right one
-> to ensure the best experience!
+> The provider type describes the API format the provider speaks. Make sure
+> to choose the right one to ensure the best experience!
 >
-> - `openai` should be used when proxying or routing requests through OpenAI.
-> - `openai-compat` should be used when using non-OpenAI providers that have OpenAI-compatible APIs.
+> - `responses` should be used when proxying or routing requests through OpenAI.
+> - `completions` should be used when using non-OpenAI providers that have OpenAI-compatible APIs.
+> - `messages` should be used for Anthropic-compatible APIs.
+>
+> Legacy values (`openai`, `openai-compat`, `anthropic`) are still accepted and
+> migrated automatically.
 
 #### OpenAI-Compatible APIs
 
@@ -912,7 +918,7 @@ Here’s an example configuration for Deepseek, which uses an OpenAI-compatible
 API. Don't forget to set `DEEPSEEK_API_KEY` in your environment.
 
 ```bash
-provider add deepseek --type openai-compat \
+provider add deepseek --type completions \
   --base-url "https://api.deepseek.com/v1" \
   --api-key "$DEEPSEEK_API_KEY"
 
@@ -932,7 +938,7 @@ Custom Anthropic-compatible providers follow this format:
 
 ```bash
 provider add custom-anthropic \
-  --type anthropic \
+  --type messages \
   --base-url "https://api.anthropic.com/v1" \
   --api-key "$ANTHROPIC_API_KEY" \
   --extra-header anthropic-version 2023-06-01
@@ -941,7 +947,7 @@ model add custom-anthropic/claude-sonnet-4-20250514 \
   --name "Claude Sonnet 4" \
   --context-window 200000 \
   --default-max-tokens 50000 \
-  --can-reason true \
+  --thinking toggleable \
   --supports-images true \
   --price-input 3 \
   --price-output 15 \
@@ -1002,13 +1008,13 @@ To add specific models to the configuration, configure as such:
 
 ```bash
 # crushrc — authentication still comes from gcloud and the VERTEXAI_* env vars.
-provider add vertexai --type google-vertex
+provider add vertexai
 
 model add vertexai/claude-sonnet-4@20250514 \
   --name "VertexAI Sonnet 4" \
   --context-window 200000 \
   --default-max-tokens 50000 \
-  --can-reason true \
+  --thinking toggleable \
   --supports-images true \
   --price-input 3 \
   --price-output 15 \
@@ -1104,12 +1110,12 @@ updates your local configuration.
 
 You can also override [Catwalk](https://github.com/charmbracelet/catwalk) default URL (for testing, using a fork).
 
-You can do so by setting `CATWALK_URL` enviromental variable. (e.g. `export CATWALK_URL=http://localhost:8000`)
+You can do so by setting the `CATWALK_URL` environment variable. (e.g. `export CATWALK_URL=http://localhost:8000`)
 
 ### Disabling automatic provider updates
 
 For those with restricted internet access, or those who prefer to work in
-air-gapped environments, this might not be want you want, and this feature can
+air-gapped environments, this might not be what you want, and this feature can
 be disabled.
 
 To disable automatic provider updates in your `crushrc`:
