@@ -104,9 +104,9 @@ func (m *UI) modelInfoKey() modelInfoKey {
 	k := modelInfoKey{
 		name:            model.CatwalkCfg.Name,
 		contextWindow:   model.CatwalkCfg.ContextWindow,
-		canReason:       model.CatwalkCfg.CanReason,
-		reasoningLevels: len(model.CatwalkCfg.ReasoningLevels),
-		reasoningEffort: cmp.Or(model.ModelCfg.ReasoningEffort, model.CatwalkCfg.DefaultReasoningEffort),
+		canReason:       model.CatwalkCfg.CanReason(),
+		reasoningLevels: len(model.CatwalkCfg.ReasoningEffortLevels()),
+		reasoningEffort: cmp.Or(model.ModelCfg.ReasoningEffort, model.CatwalkCfg.Reasoning.DefaultEffortLevel),
 		think:           model.ModelCfg.Think,
 	}
 	if providerConfig, ok := m.com.Config().Providers.Get(model.ModelCfg.Provider); ok {

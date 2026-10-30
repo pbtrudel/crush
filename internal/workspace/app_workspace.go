@@ -46,7 +46,7 @@ func NewAppWorkspace(a *app.App, store *config.ConfigStore) *AppWorkspace {
 // -- Sessions --
 
 func (w *AppWorkspace) CreateSession(ctx context.Context, title string) (session.Session, error) {
-	return w.app.Sessions.Create(ctx, title)
+	return w.app.CreateSession(ctx, title)
 }
 
 func (w *AppWorkspace) GetSession(ctx context.Context, sessionID string) (session.Session, error) {
@@ -89,9 +89,9 @@ func (w *AppWorkspace) RoutesChannelEvents() bool { return false }
 // -- Messages --
 
 func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	// Drain any debounced updates so the caller observes the latest
-	// in-memory state. message.Service buffers streaming deltas and a
-	// cold List would otherwise miss them at session-switch time.
+	if w.app.AgentCoordinator != nil {
+		return w.app.AgentCoordinator.ListSettledMessages(ctx, sessionID)
+	}
 	if err := w.app.Messages.FlushAll(ctx); err != nil {
 		return nil, err
 	}
@@ -295,6 +295,15 @@ func (w *AppWorkspace) PermissionSkipRequests() bool {
 
 func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 	w.app.Permissions.SetSkipRequests(skip)
+}
+
+// -- Host context --
+
+func (w *AppWorkspace) HostContext(_ context.Context) (proto.HostContext, error) {
+	if w.app.AgentCoordinator == nil {
+		return proto.HostContext{}, nil
+	}
+	return w.app.AgentCoordinator.HostContext(), nil
 }
 
 // -- Questions --

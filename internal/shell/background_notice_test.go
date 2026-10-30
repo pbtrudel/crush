@@ -20,7 +20,7 @@ func TestBackgroundJobCompletionNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	_, err := manager.StartWithSession(ctx, t.TempDir(), nil, "echo hello-notice", "", "session-notice")
+	_, err := manager.StartWithSession(ctx, t.TempDir(), nil, "echo hello-notice", "", "session-notice", testMaxJobs)
 	require.NoError(t, err)
 
 	deadline := time.After(5 * time.Second)
@@ -51,7 +51,7 @@ func TestBackgroundJobAwaitedSuppressesNotice(t *testing.T) {
 	dir := t.TempDir()
 	release := filepath.Join(dir, "release")
 	command := fmt.Sprintf("while [ ! -f %q ]; do sleep 0.01; done; echo awaited", release)
-	bgShell, err := manager.StartWithSession(ctx, dir, nil, command, "", "session-awaited")
+	bgShell, err := manager.StartWithSession(ctx, dir, nil, command, "", "session-awaited", testMaxJobs)
 	require.NoError(t, err)
 	bgShell.MarkAwaited()
 	require.NoError(t, os.WriteFile(release, nil, 0o644))
@@ -78,7 +78,7 @@ func TestBackgroundJobKillSuppressesNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	bgShell, err := manager.StartWithSession(ctx, t.TempDir(), nil, "sleep 30", "", "session-killed")
+	bgShell, err := manager.StartWithSession(ctx, t.TempDir(), nil, "sleep 30", "", "session-killed", testMaxJobs)
 	require.NoError(t, err)
 	bgShell.MarkKilledByModel()
 	require.NoError(t, manager.Kill(bgShell.ID))

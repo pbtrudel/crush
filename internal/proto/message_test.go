@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

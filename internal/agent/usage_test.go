@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
 	"github.com/charmbracelet/crush/internal/session"
@@ -63,10 +63,12 @@ func TestTokenUsageCost(t *testing.T) {
 	t.Parallel()
 
 	cfg := catwalk.Model{
-		CostPer1MIn:        3,
-		CostPer1MOut:       15,
-		CostPer1MInCached:  3.75,
-		CostPer1MOutCached: 0.3,
+		Pricing: catwalk.Pricing{
+			Input:       3,
+			Output:      15,
+			CacheCreate: 3.75,
+			CacheHit:    0.3,
+		},
 	}
 	usage := fantasy.Usage{
 		InputTokens:         1000,
@@ -85,10 +87,12 @@ func TestUpdateSessionUsageCostUsesModelRates(t *testing.T) {
 	var a sessionAgent
 	sess := &session.Session{}
 	model := Model{CatwalkCfg: catwalk.Model{
-		CostPer1MIn:        3,
-		CostPer1MOut:       15,
-		CostPer1MInCached:  3.75,
-		CostPer1MOutCached: 0.3,
+		Pricing: catwalk.Pricing{
+			Input:       3,
+			Output:      15,
+			CacheCreate: 3.75,
+			CacheHit:    0.3,
+		},
 	}}
 	usage := fantasy.Usage{
 		InputTokens:         1000,
@@ -130,7 +134,7 @@ func TestStepUsageForMatchesUpdateSessionUsage(t *testing.T) {
 
 	a := &sessionAgent{}
 	cachedModel := Model{
-		CatwalkCfg: catwalk.Model{ID: "m", CostPer1MIn: 3, CostPer1MOut: 15, CostPer1MInCached: 0.5, CostPer1MOutCached: 0.3},
+		CatwalkCfg: catwalk.Model{ID: "m", Pricing: catwalk.Pricing{Input: 3, Output: 15, CacheCreate: 0.5, CacheHit: 0.3}},
 	}
 	flatModel := cachedModel
 	flatModel.FlatRate = true

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/message"
@@ -90,8 +90,10 @@ func TestRun_QueuedRunIDPromptRunsRecursivelyAndPublishesRunComplete(t *testing.
 	small := &finishStreamModel{text: "title"}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:  Model{Model: large, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
-		SmallModel:  Model{Model: small, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
+		Models: fixedModels(
+			Model{Model: large, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
+			Model{Model: small, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
+		),
 		IsYolo:      true,
 		Sessions:    env.sessions,
 		Messages:    env.messages,

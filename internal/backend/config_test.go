@@ -239,7 +239,7 @@ func TestReloadConfigAppliesEdits(t *testing.T) {
 	configPath := filepath.Join(ws.Path, "crush.json")
 	writeReloadTestConfig(t, configPath, "before-model")
 
-	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	require.NoError(t, b.ReloadWorkspaceConfig(t.Context(), ws.ID))
 	awaitConfigChanged(t, evc, ws.ID)
 
 	provider, ok := ws.Cfg.Config().Providers.Get("reloadtest")
@@ -250,7 +250,7 @@ func TestReloadConfigAppliesEdits(t *testing.T) {
 	// Edit the file again: the old model must be gone after the next reload,
 	// not merged in.
 	writeReloadTestConfig(t, configPath, "after-model")
-	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	require.NoError(t, b.ReloadWorkspaceConfig(t.Context(), ws.ID))
 	awaitConfigChanged(t, evc, ws.ID)
 
 	provider, ok = ws.Cfg.Config().Providers.Get("reloadtest")
@@ -266,10 +266,10 @@ func TestReloadConfigRejectsInvalidEdit(t *testing.T) {
 
 	configPath := filepath.Join(ws.Path, "crush.json")
 	writeReloadTestConfig(t, configPath, "before-model")
-	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	require.NoError(t, b.ReloadWorkspaceConfig(t.Context(), ws.ID))
 
 	require.NoError(t, os.WriteFile(configPath, []byte("{not json"), 0o600))
-	require.Error(t, b.ReloadConfig(t.Context(), ws.ID))
+	require.Error(t, b.ReloadWorkspaceConfig(t.Context(), ws.ID))
 
 	provider, ok := ws.Cfg.Config().Providers.Get("reloadtest")
 	require.True(t, ok, "the previously loaded config must survive a bad edit")
@@ -286,7 +286,7 @@ func TestReloadConfigRefusesWhileBusy(t *testing.T) {
 	coord.busy = true
 	ws.AgentCoordinator = coord
 
-	err := b.ReloadConfig(t.Context(), ws.ID)
+	err := b.ReloadWorkspaceConfig(t.Context(), ws.ID)
 	require.ErrorIs(t, err, app.ErrConfigReloadBusy)
 }
 
@@ -297,7 +297,7 @@ func TestReloadConfigRefusesWhileBusy(t *testing.T) {
 func TestReloadConfigKeepsEventSubscribers(t *testing.T) {
 	b, ws, evc := newPublishingWorkspace(t)
 
-	require.NoError(t, b.ReloadConfig(t.Context(), ws.ID))
+	require.NoError(t, b.ReloadWorkspaceConfig(t.Context(), ws.ID))
 	// The reload publishes its own ConfigChanged; drain it, then prove the
 	// original subscription still delivers.
 	awaitConfigChanged(t, evc, ws.ID)

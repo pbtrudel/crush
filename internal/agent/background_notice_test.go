@@ -25,7 +25,7 @@ func TestBackgroundJobNotice(t *testing.T) {
 func TestHandleBackgroundJobEnqueuesOnBusySession(t *testing.T) {
 	t.Parallel()
 	env := testEnv(t)
-	cfg, err := config.Init(env.workingDir, "", false)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	sess, err := env.sessions.Create(t.Context(), "background")
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ func TestHandleBackgroundJobEnqueuesOnBusySession(t *testing.T) {
 
 func TestTakeWakeSlot(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Init(t.TempDir(), "", false)
+	cfg, err := config.Init(t.Context(), t.TempDir(), "", false)
 	require.NoError(t, err)
 	limit := 2
 	cfg.Config().Options.MaxConsecutiveWakes = &limit

@@ -48,7 +48,7 @@ func NewCompactionItem(sty *styles.Styles, msg *message.Message) MessageItem {
 		CycleColors: true,
 		NoScramble:  true,
 		Suffix: func() string {
-			return common.Elapsed()
+			return common.Elapsed(c.message.SessionID)
 		},
 		SuffixColor: sty.WorkingTimerColor,
 	})

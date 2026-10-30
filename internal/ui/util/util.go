@@ -72,10 +72,8 @@ type (
 		Msg  string
 		TTL  time.Duration
 	}
-	// ClearStatusMsg clears the status message. Gen carries the
-	// generation of the message whose timer fired; the clear applies
-	// only when it still matches the current message.
-	ClearStatusMsg struct{ Gen uint64 }
+	// ClearStatusMsg retires the status message with sequence Seq.
+	ClearStatusMsg struct{ Seq uint64 }
 )
 
 // IsEmpty checks if the [InfoMsg] is empty.

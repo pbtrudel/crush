@@ -25,7 +25,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/agent/notify"
@@ -275,6 +275,10 @@ type UI struct {
 	// config round-trip may not reflect the selection immediately.
 	userThemeSelected bool
 
+	// hostTheme tracks the theme a host application pushes through the
+	// server (see hosttheme.go).
+	hostTheme hostThemeState
+
 	focus uiFocusState
 	state uiState
 	mode  uiInputMode
@@ -340,9 +344,9 @@ type UI struct {
 	sendProgressBar    bool
 	progressBarEnabled bool
 
-	// turnOutcome is the result of the last agent turn reported to the
-	// terminal as program status (done or error) until the user has seen
-	// it, or empty.
+	// turnOutcome is the result of the last agent turn (done or error),
+	// reported to the terminal until the user has seen it. See
+	// trackTurnOutcome.
 	turnOutcome tea.ProgramState
 
 	// caps hold different terminal capabilities that we query for.
@@ -510,11 +514,19 @@ type UI struct {
 	// like promptQueueGen it lets a stale in-flight probe result be
 	// discarded and re-fetched instead of clobbering newer state.
 	busyFetchGen uint64
-	pillsView    string
+	// probedSessionBusy is the last busy probe of probedSession, covering
+	// runs this client did not start.
+	probedSession     string
+	probedSessionBusy bool
+	pillsView         string
 
 	// Todo spinner
 	todoSpinner    spinner.Model
 	todoIsSpinning bool
+
+	// pending is the turn this client sent; the placeholder items in the
+	// chat are derived from it by syncPendingItem.
+	pending pendingTurn
 
 	// preThemeStyles stores the styles before a theme preview so we can revert.
 	preThemeStyles *styles.Styles
@@ -942,6 +954,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.beginFrameUpdate()
 	// Update terminal capabilities
 	m.caps.Update(msg)
+	m.trackTurnOutcome(msg)
 	switch msg := msg.(type) {
 	case tea.EnvMsg:
 		// Is this Windows Terminal?
@@ -955,7 +968,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateNotificationBackend()
 	case tea.FocusMsg:
 		m.notifyWindowFocused = true
-		m.turnOutcome = ""
 	case tea.BlurMsg:
 		m.notifyWindowFocused = false
 	case dialog.CollapseInlineMsg:
@@ -965,6 +977,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case pubsub.Event[notify.RunComplete]:
+		m.endPendingTurn(msg.Payload.SessionID)
 		if cmd := m.handlePlanHandoff(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -984,7 +997,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case agentRunSubmittedMsg:
-		m.turnOutcome = ""
+		if msg.err != nil {
+			// The run never started, so no terminal event is coming to
+			// retire its spinner.
+			m.endPendingTurn(msg.sessionID)
+			cmds = append(cmds, util.ReportError(msg.err))
+		}
 		// A prompt was just accepted (run started or enqueued): fetch the
 		// authoritative busy/queue state to confirm the optimistic values
 		// sendMessage wrote.
@@ -1076,6 +1094,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd := m.resetPlanModeState(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			m.turnOutcome = ""
 		}
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
@@ -1706,40 +1725,48 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == util.InfoTypeError {
 			slog.Error("Error reported", "error", msg.Msg)
 		}
-		gen := m.status.SetInfoMsg(msg)
-		ttl := msg.TTL
-		if ttl <= 0 {
-			ttl = DefaultStatusTTL
-		}
-		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
+		cmds = append(cmds, m.status.Show(msg))
 	case app.ConfigStaleMsg:
 		// The config files changed under us. Crush keeps the snapshot it
 		// loaded at startup, so point at the reload command instead of
 		// silently running stale settings.
 		text := fmt.Sprintf("Configuration changed (%s). Run /reload to apply.", describeConfigChanges(msg))
-		ttl := 20 * time.Second
-		gen := m.status.SetInfoMsg(util.InfoMsg{
+		cmds = append(cmds, m.status.Show(util.InfoMsg{
 			Type: util.InfoTypeUpdate,
 			Msg:  text,
-			TTL:  ttl,
-		})
-		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
+			TTL:  20 * time.Second,
+		}))
 	case app.UpdateAvailableMsg:
 		text := fmt.Sprintf("Crush update available: v%s → v%s.", msg.CurrentVersion, msg.LatestVersion)
 		if msg.IsDevelopment {
 			text = fmt.Sprintf("This is a development version of Crush. The latest version is v%s.", msg.LatestVersion)
 		}
-		ttl := 10 * time.Second
-		gen := m.status.SetInfoMsg(util.InfoMsg{
+		cmds = append(cmds, m.status.Show(util.InfoMsg{
 			Type: util.InfoTypeUpdate,
 			Msg:  text,
-			TTL:  ttl,
-		})
-		cmds = append(cmds, clearInfoMsgCmd(ttl, gen))
+			TTL:  10 * time.Second,
+		}))
 	case workspace.ConnectionEvent:
 		cmds = append(cmds, m.handleConnectionEvent(msg)...)
+	case workspace.HostThemeEvent:
+		if cmd := m.handleHostThemeEvent(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case hostThemeStylesMsg:
+		if cmd := m.handleHostThemeStyles(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case transparencyToggledMsg:
+		// The user's choice wins over a host theme's override.
+		m.isTransparent = msg.transparent
+		m.hostTheme.transparent = false
+		status := "disabled"
+		if msg.transparent {
+			status = "enabled"
+		}
+		cmds = append(cmds, util.ReportInfo("Transparent background "+status))
 	case util.ClearStatusMsg:
-		m.status.ClearInfoMsgIfGen(msg.Gen)
+		m.status.ClearInfoMsg(msg.Seq)
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -1802,7 +1829,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// at this point this can only handle [message.Attachment] message, and we
 	// should return all cmds anyway.
-	if m.attachments.Update(msg) {
+	if _, isAttachment := msg.(message.Attachment); isAttachment && m.attachmentsLimitReached() {
+		max := m.currentModelMaxAttachments()
+		cmds = append(cmds, util.ReportWarn(fmt.Sprintf("Maximum attachment reached for this session (%d)", max)))
+	} else if m.attachments.Update(msg) {
 		m.invalidateFrames()
 	}
 	// Any update may have put a spinner on screen (new message, tool update,
@@ -1811,6 +1841,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// tea.Sequence.
 	if m.state == uiChat {
 		if cmd := m.chat.EnsureAnimating(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		// Same for the chat scrollbar's auto-hide: a scroll may be applied
+		// from anywhere, so the deadline is armed here instead of being
+		// handed back to each call site to forward.
+		if cmd := m.chat.EnsureScrollbarHide(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -1889,6 +1925,13 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	if cmd := m.chat.SetMessages(items...); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	// SetMessages rebuilds the items from stored messages, which cannot
+	// include the placeholder. Put it back when this session is still
+	// waiting on one, so switching away and back does not lose the
+	// spinner for the rest of the turn.
+	if m.syncPendingItem() {
+		m.chat.SetAnimationsAllowed(true)
+	}
 	m.chat.SelectLast()
 	return tea.Sequence(cmds...)
 }
@@ -1918,8 +1961,7 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 			TTL:  DefaultStatusTTL,
 		}
 	}
-	gen := m.status.SetInfoMsg(info)
-	cmds := []tea.Cmd{clearInfoMsgCmd(info.TTL, gen)}
+	cmds := []tea.Cmd{m.status.Show(info)}
 	if msg.State == workspace.ConnectionRecovered {
 		// Events published while the stream was down are gone: re-sync the
 		// memoized MCP states alongside the session reload.
@@ -2013,6 +2055,12 @@ func (m *UI) setMessagePlanFlags(items []chat.MessageItem) {
 func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 	var cmds []tea.Cmd
 
+	// The real message carries its own spinner from here on.
+	if msg.Role == message.Assistant && m.pending.sessionID == msg.SessionID {
+		m.handOffPendingTurn()
+	}
+	defer m.syncPendingItem()
+
 	existing := m.chat.MessageItem(msg.ID)
 	if existing != nil {
 		// message already exists, skip
@@ -2023,14 +2071,7 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 	case message.User:
 		// Shell commands are rendered live via shellResultMsg; skip
 		// the persisted duplicate.
-		hasShellCmd := false
-		for _, part := range msg.Parts {
-			if _, ok := part.(message.ShellCommand); ok {
-				hasShellCmd = true
-				break
-			}
-		}
-		if hasShellCmd {
+		if msg.HasShellCommand() {
 			return nil
 		}
 		m.lastUserMessageTime = msg.CreatedAt
@@ -2509,24 +2550,18 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}))
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleTransparentBackground:
+		// Flip what is on screen, which a host theme may have overridden,
+		// rather than the config value.
+		newValue := !m.isTransparent
+		ws := m.com.Workspace
 		cmds = append(cmds, func() tea.Msg {
-			cfg := m.com.Config()
-			if cfg == nil {
+			if ws.Config() == nil {
 				return util.ReportError(errors.New("configuration not found"))()
 			}
-
-			isTransparent := cfg.Options != nil && cfg.Options.TUI.IsTransparent()
-			newValue := !isTransparent
-			if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.tui.transparent", newValue); err != nil {
+			if err := ws.SetConfigField(config.ScopeGlobal, "options.tui.transparent", newValue); err != nil {
 				return util.ReportError(err)()
 			}
-			m.isTransparent = newValue
-
-			status := "disabled"
-			if newValue {
-				status = "enabled"
-			}
-			return util.NewInfoMsg("Transparent background " + status)
+			return transparencyToggledMsg{transparent: newValue}
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSwitchTheme:
@@ -2546,6 +2581,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 		m.applyTheme(newStyles)
 		m.preThemeStyles = nil
+		m.userAppliedTheme()
 		cmds = append(cmds, util.ReportInfo("Theme switched to "+themeName))
 		m.userThemeSelected = true
 		m.dialog.CloseDialog(dialog.ThemeID)
@@ -2613,6 +2649,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			}
 			m.applyTheme(newStyles)
 			m.preThemeStyles = nil
+			m.userAppliedTheme()
 		}
 		cmds = append(cmds, util.ReportInfo("Theme saved"))
 		m.dialog.CloseDialog(dialog.ThemeEditorID)
@@ -2641,6 +2678,10 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		if strings.EqualFold(common.ThemeNameFromConfig(m.com.Config()), msg.Name) {
 			if newStyles, err := styles.LoadTheme(msg.Name); err == nil {
 				m.applyTheme(newStyles)
+				// A preview snapshot holds the styles from before the
+				// revert; esc must not bring them back.
+				m.preThemeStyles = nil
+				m.userAppliedTheme()
 			}
 		}
 		cmds = append(cmds, util.ReportInfo("Reverted "+msg.Name+" to its built-in colors"))
@@ -2723,6 +2764,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			}
 			m.applyTheme(newStyles)
 			m.preThemeStyles = nil
+			m.userAppliedTheme()
 		}
 		cmds = append(cmds, util.ReportInfo("Deleted theme "+msg.Name))
 		m.dialog.CloseDialog(dialog.ThemeID)
@@ -3354,9 +3396,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		case key.Matches(msg, m.keyMap.Chat.EndFollow):
 			if m.state == uiChat && m.hasSession() {
-				if cmd := m.chat.ScrollToBottomAndSelectLast(); cmd != nil {
-					cmds = append(cmds, cmd)
-				}
+				m.chat.ScrollToBottomAndSelectLast()
 				return true
 			}
 		case key.Matches(msg, m.keyMap.Chat.TogglePills):
@@ -3678,7 +3718,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						m.completionsStartIndex = curIdx
 						m.completionsPositionStart = m.completionsPosition()
 						depth, limit := m.com.Config().Options.TUI.Completions.Limits()
-						cmds = append(cmds, m.completions.Open(depth, limit))
+						cmds = append(cmds, m.completions.Open(depth, limit, hostOpenFiles(m.com.Workspace)))
 					}
 				}
 
@@ -4079,8 +4119,7 @@ func (m *UI) View() tea.View {
 		if content, cursor, ok := m.frames.get(key); ok {
 			v.Content = content
 			v.Cursor = cursor
-			m.applyProgressBar(&v)
-			v.ProgramStatus = m.programStatus()
+			m.applyTerminalStatus(&v)
 			return v
 		}
 	}
@@ -4101,15 +4140,16 @@ func (m *UI) View() tea.View {
 	if cacheable {
 		m.storeFrame(key, content, v.Cursor)
 	}
-	m.applyProgressBar(&v)
-	v.ProgramStatus = m.programStatus()
+	m.applyTerminalStatus(&v)
 
 	return v
 }
 
-// applyProgressBar attaches the terminal progress bar while the agent is
-// busy. Kept outside the frame cache so the randomized value stays fresh.
-func (m *UI) applyProgressBar(v *tea.View) {
+// applyTerminalStatus attaches the program status, and the terminal progress
+// bar while the agent is busy. Kept outside the frame cache so the
+// randomized progress value stays fresh.
+func (m *UI) applyTerminalStatus(v *tea.View) {
+	v.ProgramStatus = m.programStatus()
 	if m.progressBarEnabled && m.sendProgressBar && m.isAgentBusy() {
 		// HACK: use a random percentage to prevent ghostty from hiding it
 		// after a timeout.
@@ -4446,7 +4486,46 @@ func (m *UI) currentModelSupportsImages() bool {
 		return false
 	}
 	model := cfg.GetModelByType(agentCfg.Model)
-	return model != nil && model.SupportsImages
+	return model != nil && model.Capabilities.Vision
+}
+
+func (m *UI) currentModelSupportsAudio() bool {
+	cfg := m.com.Config()
+	if cfg == nil {
+		return false
+	}
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return false
+	}
+	model := cfg.GetModelByType(agentCfg.Model)
+	return model != nil && model.Capabilities.Audio
+}
+
+// currentModelMaxAttachments returns the maximum number of attachments the
+// current model accepts in a single request. Zero means the provider does
+// not enforce a hard limit.
+func (m *UI) currentModelMaxAttachments() int {
+	cfg := m.com.Config()
+	if cfg == nil {
+		return 0
+	}
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return 0
+	}
+	model := cfg.GetModelByType(agentCfg.Model)
+	if model == nil {
+		return 0
+	}
+	return model.MaxAttachments
+}
+
+// attachmentsLimitReached reports whether the current model's attachment
+// limit is already exhausted by the pending attachments.
+func (m *UI) attachmentsLimitReached() bool {
+	max := m.currentModelMaxAttachments()
+	return max > 0 && len(m.attachments.List()) >= max
 }
 
 // toggleCompactMode toggles compact mode between uiChat and uiChatCompact states.
@@ -5043,7 +5122,7 @@ func (m *UI) switchPlanToYolo() tea.Cmd {
 // Mode banner copy shown in the status bar after switching modes.
 const (
 	planModeBannerMsg = "Plan with Crush before generating any code."
-	yoloModeBannerMsg = "Skip permission prompts. System level commands will be blocked."
+	yoloModeBannerMsg = "System level commands stay blocked. The rest run unprompted."
 )
 
 func (m *UI) setInputMode(target uiInputMode) tea.Cmd {
@@ -5160,6 +5239,9 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 		if !m.currentModelSupportsImages() && common.IsImagePath(path) {
 			return util.NewWarnMsg("The current model does not support image attachments")
 		}
+		if !m.currentModelSupportsAudio() && common.IsAudioPath(path) {
+			return util.NewWarnMsg("The current model does not support audio attachments")
+		}
 
 		absPath, _ := filepath.Abs(path)
 
@@ -5244,6 +5326,9 @@ func (m *UI) insertMCPResourceCompletion(item completions.ResourceCompletionValu
 
 		if !m.currentModelSupportsImages() && strings.HasPrefix(mimeType, "image/") {
 			return util.NewWarnMsg("The current model does not support image attachments")
+		}
+		if !m.currentModelSupportsAudio() && strings.HasPrefix(mimeType, "audio/") {
+			return util.NewWarnMsg("The current model does not support audio attachments")
 		}
 
 		return message.Attachment{
@@ -5358,7 +5443,9 @@ func (m *UI) cacheSidebarLogo(width int) {
 // invalidating the markdown renderer cache and re-rendering the entire
 // transcript for no visible change.
 // A theme explicitly selected in the config always wins, so provider
-// changes never discard the user's choice.
+// changes never discard the user's choice. An active host theme wins too:
+// the provider's theme is only recorded, to revert to once the host clears
+// its theme.
 func (m *UI) applyThemeForProvider(providerID string) {
 	// A theme the user explicitly selected always wins over the
 	// per-provider default, so provider or session changes never discard
@@ -5372,7 +5459,10 @@ func (m *UI) applyThemeForProvider(providerID string) {
 		return
 	}
 	m.themeKey = key
-	m.applyTheme(styles.ThemeForProvider(providerID))
+	if m.hostTheme.active {
+		return
+	}
+	m.applyTheme(styles.ThemeForKey(key))
 }
 
 // applyTheme replaces the active styles with the given theme, drops the
@@ -5411,10 +5501,9 @@ func (m *UI) refreshStyles() {
 	m.attachments.SetStyles(t.Attachments)
 	m.todoSpinner.Style = t.Pills.TodoSpinner
 	m.status.help.Styles = t.Help
-	if d := m.dialog.Dialog(dialog.ThemeID); d != nil {
-		if td, ok := d.(*dialog.Theme); ok {
-			td.RefreshStyles()
-		}
+	m.dialog.RefreshStyles()
+	if r, ok := m.activeInline.(dialog.StyleRefresher); ok {
+		r.RefreshStyles()
 	}
 }
 
@@ -5593,11 +5682,9 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 		return util.ReportError(err)
 	}
 
-	// Start the turn timer.
-	common.StartTurn()
-
 	// Any new prompt supersedes a pending, unconfirmed plan.
 	m.setPlanReadyPending("")
+	m.turnOutcome = ""
 
 	var cmds []tea.Cmd
 	loadCmd, err := m.ensureSession()
@@ -5606,6 +5693,24 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 	}
 	if loadCmd != nil {
 		cmds = append(cmds, loadCmd)
+	}
+
+	// A queued prompt belongs in the queue pill and keeps the running
+	// turn's spinner and clock. A fresh turn gets its own, from now.
+	sessionID := m.currentSessionID()
+	queued := m.turnInFlight(sessionID)
+	// Loading an idle session freezes ghost spinners; sending unfreezes.
+	m.chat.SetAnimationsAllowed(true)
+	if !queued {
+		common.StartTurn(sessionID)
+		echo := content
+		echoAttachments := attachments
+		if hidden {
+			echo, echoAttachments = "", nil
+		}
+		if m.showPendingTurn(sessionID, echo, echoAttachments) {
+			m.chat.ScrollToBottom()
+		}
 	}
 
 	ctx := context.Background()
@@ -5617,8 +5722,8 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 		return nil
 	})
 
-	// Capture session ID to avoid race with main goroutine updating m.session.
-	sessionID := m.session.ID
+	// sessionID is captured above, before the commands below run, so it
+	// cannot race the main goroutine updating m.session.
 	// Optimistically mark the agent busy: the prompt we are about to submit
 	// either starts a run or is enqueued behind one. This keeps esc pressed
 	// right after enter routing to cancelAgent instead of reading a stale
@@ -5638,13 +5743,10 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 			runCtx = message.WithHiddenUserMessage(runCtx)
 		}
 		err := m.com.Workspace.AgentRun(runCtx, sessionID, content, attachments...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return util.InfoMsg{
-				Type: util.InfoTypeError,
-				Msg:  fmt.Sprintf("%v", err),
-			}
+		if errors.Is(err, context.Canceled) {
+			err = nil
 		}
-		return agentRunSubmittedMsg{}
+		return agentRunSubmittedMsg{sessionID: sessionID, err: err}
 	})
 	return tea.Batch(cmds...)
 }
@@ -5761,6 +5863,7 @@ func (m *UI) runShellCommandInternal(command string, isFirstMessage bool) tea.Cm
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.bangCancel = cancel
+	m.turnOutcome = ""
 
 	cmds = append(cmds, func() tea.Msg {
 		resp, err := m.com.Workspace.AgentRunShellCommand(ctx, sessionID, command, contentWidth, onProgress, isFirstMessage)
@@ -5972,7 +6075,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.chat.RevealSecrets(), m.customCommands, m.mcpPrompts)
+	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.chat.RevealSecrets(), m.isTransparent, m.customCommands, m.mcpPrompts)
 	if err != nil {
 		return util.ReportError(err)
 	}
@@ -6055,6 +6158,11 @@ func (m *UI) openFilesDialog() tea.Cmd {
 
 // openPermissionsDialog opens the permissions dialog for a permission request.
 func (m *UI) openPermissionsDialog(perm permission.PermissionRequest) tea.Cmd {
+	// CRUSH_PERMISSIONS_PIPED=1: another client (an editor Crush runs in)
+	// shows the prompts and answers them, so this UI doesn't ask twice.
+	if piped, _ := strconv.ParseBool(os.Getenv("CRUSH_PERMISSIONS_PIPED")); piped {
+		return nil
+	}
 	// Close any existing permissions dialog first.
 	m.dialog.CloseDialog(dialog.PermissionsID)
 
@@ -6136,7 +6244,7 @@ func (m *UI) handlePermissionNotification(notification permission.PermissionNoti
 		if permItem, ok := toolItem.(chat.ToolMessageItem); ok {
 			if notification.Granted {
 				permItem.SetStatus(chat.ToolStatusRunning)
-			} else {
+			} else if !notification.Cancelled {
 				permItem.SetStatus(chat.ToolStatusAwaitingPermission)
 			}
 		}
@@ -6145,7 +6253,7 @@ func (m *UI) handlePermissionNotification(notification permission.PermissionNoti
 	// If this notification reflects a final resolution (granted or denied),
 	// dismiss any open permissions dialog whose tool call ID matches. This
 	// covers the case where another client resolved the request remotely.
-	if !notification.Granted && !notification.Denied {
+	if !notification.Granted && !notification.Denied && !notification.Cancelled {
 		return
 	}
 	if d := m.dialog.Dialog(dialog.PermissionsID); d != nil {
@@ -6246,8 +6354,6 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 	var cmds []tea.Cmd
 	switch n.Type {
 	case notify.TypeAgentFinished:
-		common.StopTurn()
-		m.turnOutcome = tea.ProgramStateDone
 		cmds = append(cmds, m.sendNotification(notification.Notification{
 			Title:   "Crush is waiting...",
 			Message: fmt.Sprintf("Agent's turn completed in \"%s\"", n.SessionTitle),
@@ -6260,9 +6366,9 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 			cmds = append(cmds, m.fetchHyperCredits())
 		}
 	case notify.TypeAgentError:
-		m.turnOutcome = tea.ProgramStateError
 		// Terminal edge like TypeAgentFinished; fall through to the
 		// busy/queue refresh below.
+		m.endPendingTurn(n.SessionID)
 	case notify.TypeReAuthenticate:
 		return m.handleReAuthenticate(n.ProviderID)
 	case notify.TypeAWSSSOAuth:
@@ -6355,6 +6461,7 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	planCmd := m.resetPlanModeState()
+	m.turnOutcome = ""
 	m.session = nil
 	m.sidebarOffset = 0
 	m.sessionFiles = nil
@@ -6448,7 +6555,7 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				return false
 			}
-			if !common.IsImagePath(path) {
+			if !common.IsImagePath(path) && !common.IsAudioPath(path) {
 				return false
 			}
 		}
@@ -6460,8 +6567,11 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 		m.checkBangModeAfterPaste()
 		return cmd
 	}
-	if !m.currentModelSupportsImages() {
+	if !m.currentModelSupportsImages() && slices.ContainsFunc(paths, common.IsImagePath) {
 		return util.ReportWarn("The current model does not support image attachments")
+	}
+	if !m.currentModelSupportsAudio() && slices.ContainsFunc(paths, common.IsAudioPath) {
+		return util.ReportWarn("The current model does not support audio attachments")
 	}
 
 	var cmds []tea.Cmd

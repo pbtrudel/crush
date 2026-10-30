@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +23,7 @@ func TestSetModelsTracksPreviousPair(t *testing.T) {
 	t.Parallel()
 	large := Model{CatwalkCfg: catwalk.Model{ContextWindow: 200_000}}
 	small := Model{CatwalkCfg: catwalk.Model{ContextWindow: 32_000}}
-	agent := NewSessionAgent(SessionAgentOptions{LargeModel: large, SmallModel: small}).(*sessionAgent)
+	agent := NewSessionAgent(SessionAgentOptions{Models: func() ModelSet { return ModelSet{Large: large, Small: small} }}).(*sessionAgent)
 
 	nextLarge := Model{CatwalkCfg: catwalk.Model{ContextWindow: 16_000}}
 	nextSmall := Model{CatwalkCfg: catwalk.Model{ContextWindow: 8_000}}

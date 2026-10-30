@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -140,7 +141,13 @@ crush --continue
 		)
 		go ws.Subscribe(program)
 
-		if _, err := program.Run(); err != nil {
+		restoreStderr, err := detachStderr()
+		if err != nil {
+			slog.Warn("Failed to detach stderr from the terminal", "error", err)
+		}
+		_, err = program.Run()
+		restoreStderr()
+		if err != nil {
 			event.Error(err)
 			slog.Error("TUI run error", "error", err)
 			return errors.New("Crush crashed. If metrics are enabled, we were notified about it. If you'd like to report it, please copy the stacktrace above and open an issue at https://github.com/charmbracelet/crush/issues/new?template=bug.yml") //nolint:staticcheck
@@ -208,12 +215,24 @@ func Execute() {
 		_, _ = w.WriteString(heartbit.String())
 		rootCmd.SetVersionTemplate(b.String() + "\n" + defaultVersionTemplate)
 	}
-	if err := fang.Execute(
-		context.Background(),
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
+	err := fang.Execute(
+		ctx,
 		rootCmd,
 		fang.WithVersion(version.Version),
-		fang.WithNotifySignal(os.Interrupt),
-	); err != nil {
+		fang.WithErrorHandler(func(w io.Writer, styles fang.Styles, err error) {
+			if ctx.Err() == nil {
+				fang.DefaultErrorHandler(w, styles, err)
+			}
+		}),
+	)
+	interrupted := ctx.Err() != nil
+	stop()
+	switch {
+	case interrupted:
+		// An interrupt is not a failure worth printing; exit like a shell would.
+		os.Exit(130)
+	case err != nil:
 		os.Exit(1)
 	}
 }
@@ -279,7 +298,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		return nil, nil, err
 	}
 
-	store, err := config.Init(cwd, dataDir, debug)
+	store, err := config.Init(ctx, cwd, dataDir, debug)
 	if err != nil {
 		return nil, nil, err
 	}

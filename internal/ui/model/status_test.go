@@ -22,15 +22,15 @@ func TestStatusMsgGenerationGuard(t *testing.T) {
 
 	s := &Status{}
 
-	s.SetInfoMsg(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "first"})
-	s.SetInfoMsg(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "second"})
+	s.Show(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "first"})
+	s.Show(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "second"})
 
 	// A stale clear (the first message's timer firing late) must not
 	// erase the newer message.
-	s.ClearInfoMsgIfGen(1)
+	s.ClearInfoMsg(1)
 	require.Equal(t, "second", s.msg.Msg)
 
-	s.ClearInfoMsgIfGen(2)
+	s.ClearInfoMsg(2)
 	require.True(t, s.msg.IsEmpty())
 }
 

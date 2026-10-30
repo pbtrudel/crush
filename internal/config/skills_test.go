@@ -9,7 +9,7 @@ import (
 func TestSkillsDiscoveryConfig(t *testing.T) {
 	t.Parallel()
 
-	store, err := Init(t.TempDir(), "", false)
+	store, err := Init(t.Context(), t.TempDir(), "", false)
 	require.NoError(t, err)
 
 	store.Config().Options.SkillsPaths = []string{"~/skills", "$HOME/more"}

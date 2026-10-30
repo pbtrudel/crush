@@ -84,6 +84,57 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(400, 404).
 			Handle(c.handlePostWorkspaceCurrentSession),
 
+		apigen.Get("/v1/workspaces/{id}/theme").
+			Summary("Get host theme").
+			Description("Returns the theme a host application set for the "+
+				"workspace; theme is null when none is set.").
+			Tags("workspaces").
+			PathParam("id", "Workspace ID").
+			Responds(proto.HostThemeState{}).
+			Fails(404).
+			Handle(c.handleGetWorkspaceTheme),
+
+		apigen.Post("/v1/workspaces/{id}/theme").
+			Summary("Set host theme").
+			Description("Sets the theme a host application (e.g. an editor "+
+				"running Crush in a pane) supplies for every client of the "+
+				"workspace, or clears it with a null theme. Palette keys are "+
+				"theme-file keys and syntax keys are code highlighting tokens; "+
+				"unknown keys are ignored, invalid colors and an unknown base "+
+				"theme are rejected. The theme is kept in memory only. A change "+
+				"is broadcast as a host_theme event, and clients attaching "+
+				"later receive the current theme first. Setting the current "+
+				"theme again is a no-op. Responds with the resulting state.").
+			Tags("workspaces").
+			PathParam("id", "Workspace ID").
+			QueryParam("client_id", "Client ID (UUID) of the caller; only logged").
+			Accepts(proto.HostThemeRequest{}).
+			Responds(proto.HostThemeState{}).
+			Fails(400, 404, 413).
+			Handle(c.handlePostWorkspaceTheme),
+
+		apigen.Get("/v1/workspaces/{id}/host-context").
+			Summary("Get host context").
+			Description("Returns what the host application (e.g. an editor "+
+				"running Crush) has in view; empty when none is set.").
+			Tags("workspaces").
+			PathParam("id", "Workspace ID").
+			Responds(proto.HostContext{}).
+			Fails(404).
+			Handle(c.handleGetWorkspaceHostContext),
+
+		apigen.Post("/v1/workspaces/{id}/host-context").
+			Summary("Set host context").
+			Description("Records what the host application has in view: its "+
+				"open files and the file and line the user is on. The agent "+
+				"gets it with each prompt, and file completions list the open "+
+				"files first. An empty body clears it.").
+			Tags("workspaces").
+			PathParam("id", "Workspace ID").
+			Accepts(proto.HostContext{}).
+			Fails(400, 404).
+			Handle(c.handlePostWorkspaceHostContext),
+
 		apigen.Get("/v1/workspaces/{id}/config").
 			Summary("Get workspace config").
 			Description("Returns the resolved workspace configuration (config.Config).").
@@ -104,7 +155,11 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Summary("Stream workspace events (SSE)").
 			Description("Streams workspace events as Server-Sent Events. The client must "+
 				"identify itself with the client_id query parameter; the stream attaches "+
-				"the client to the workspace until it disconnects.").
+				"the client to the workspace until it disconnects. Permission and "+
+				"question prompts are scoped to the session the client currently "+
+				"views (see POST current-session): they are only delivered to clients "+
+				"viewing the session that raised them, and clients viewing no session "+
+				"receive none. All other events are workspace-wide.").
 			Tags("workspaces").
 			PathParam("id", "Workspace ID").
 			RequiredQueryParam("client_id", "Client ID (UUID)").
@@ -377,6 +432,17 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			PathParam("sid", "Session ID").
 			Fails(404, 500).
 			Handle(c.handlePostWorkspaceAgentSessionPromptClear),
+
+		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/notes").
+			Summary("Add a note for the next prompt").
+			Description("Keeps text for the session's next prompt, which the agent reads "+
+				"with it. Starts no run and is not shown in the chat.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Accepts(proto.SessionNote{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceAgentSessionNote),
 
 		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/summarize").
 			Summary("Summarize session").

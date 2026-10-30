@@ -10,7 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
@@ -74,6 +74,17 @@ type ConnectionEvent struct {
 	// recovery attempts. The loop keeps retrying regardless; the UI
 	// should escalate from a transient notice to a persistent error.
 	Stuck bool
+}
+
+// HostThemeEvent is delivered to the TUI as a tea.Msg when the host
+// application running Crush in a pane (an editor, for example) sets or
+// clears its theme on the server. Clients also receive the current theme
+// when their event stream attaches, and the current theme or its absence
+// after a reconnect, so the same theme can arrive more than once. Local
+// (in-process) workspaces never emit it.
+type HostThemeEvent struct {
+	// Theme is the host's theme, or nil when the host cleared it.
+	Theme *proto.HostTheme
 }
 
 // LSPClientInfo holds information about an LSP client's state. This is
@@ -187,6 +198,10 @@ type Workspace interface {
 	PermissionDeny(perm permission.PermissionRequest) bool
 	PermissionSkipRequests() bool
 	PermissionSetSkipRequests(skip bool)
+
+	// HostContext returns what the host application has in view, such
+	// as its open files, or the zero context when there is no host.
+	HostContext(ctx context.Context) (proto.HostContext, error)
 
 	// Questions
 	//

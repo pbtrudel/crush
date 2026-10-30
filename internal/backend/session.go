@@ -17,7 +17,7 @@ func (b *Backend) CreateSession(ctx context.Context, workspaceID, title string) 
 		return session.Session{}, err
 	}
 
-	return ws.Sessions.Create(ctx, title)
+	return ws.CreateSession(ctx, title)
 }
 
 // GetSession retrieves a session by workspace and session ID.
@@ -74,9 +74,12 @@ func (b *Backend) ListSessionMessages(ctx context.Context, workspaceID, sessionI
 		return nil, err
 	}
 
-	// Drain debounced updates so HTTP clients (and the TUI on session
-	// switch) observe the latest in-memory state rather than racing the
-	// debounce timer in message.Service.
+	// Every remote client reads through here, so this is where interrupted
+	// calls get settled for them.
+	if ws.AgentCoordinator != nil {
+		return ws.AgentCoordinator.ListSettledMessages(ctx, sessionID)
+	}
+	// Drain debounced updates so clients observe the latest in-memory state.
 	if err := ws.Messages.FlushAll(ctx); err != nil {
 		return nil, err
 	}

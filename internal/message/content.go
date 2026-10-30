@@ -2,13 +2,14 @@ package message
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/google"
@@ -181,6 +182,11 @@ func (m *Message) HasShellCommand() bool {
 		}
 	}
 	return false
+}
+
+// IsPrompt reports whether the message is something the user typed.
+func (m *Message) IsPrompt() bool {
+	return m.Role == User && !m.HasShellCommand()
 }
 
 // ShellCommands returns all ShellCommand parts from the message.
@@ -496,6 +502,27 @@ func (m *Message) FinishToolCall(toolCallID string) {
 	}
 }
 
+// toolCallInput returns arguments safe to hand a provider. Empty or partial
+// input becomes {}, since providers disagree about what a blank means.
+func toolCallInput(input string) string {
+	if !json.Valid([]byte(input)) {
+		return "{}"
+	}
+	return input
+}
+
+func (m *Message) AddToolCall(tc ToolCall) {
+	for i, part := range m.Parts {
+		if c, ok := part.(ToolCall); ok {
+			if c.ID == tc.ID {
+				m.Parts[i] = tc
+				return
+			}
+		}
+	}
+	m.Parts = append(m.Parts, tc)
+}
+
 func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
@@ -510,18 +537,6 @@ func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 			}
 		}
 	}
-}
-
-func (m *Message) AddToolCall(tc ToolCall) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ToolCall); ok {
-			if c.ID == tc.ID {
-				m.Parts[i] = tc
-				return
-			}
-		}
-	}
-	m.Parts = append(m.Parts, tc)
 }
 
 func (m *Message) SetToolCalls(tc []ToolCall) {
@@ -576,6 +591,12 @@ func (m *Message) ResetStreamedContent() {
 }
 
 func (m *Message) AddFinish(reason FinishReason, message, details string) {
+	m.AddFinishAt(reason, message, details, time.Now().Unix())
+}
+
+// AddFinishAt is AddFinish with an explicit timestamp, for backdating a
+// repaired turn so response-time statistics stay honest.
+func (m *Message) AddFinishAt(reason FinishReason, message, details string, at int64) {
 	// remove any existing finish part
 	for i, part := range m.Parts {
 		if _, ok := part.(Finish); ok {
@@ -583,7 +604,7 @@ func (m *Message) AddFinish(reason FinishReason, message, details string) {
 			break
 		}
 	}
-	m.Parts = append(m.Parts, Finish{Reason: reason, Time: time.Now().Unix(), Message: message, Details: details})
+	m.Parts = append(m.Parts, Finish{Reason: reason, Time: at, Message: message, Details: details})
 }
 
 func (m *Message) AddImageURL(url, detail string) {
@@ -699,7 +720,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			parts = append(parts, fantasy.ToolCallPart{
 				ToolCallID:       call.ID,
 				ToolName:         call.Name,
-				Input:            call.Input,
+				Input:            toolCallInput(call.Input),
 				ProviderExecuted: call.ProviderExecuted,
 			})
 		}
