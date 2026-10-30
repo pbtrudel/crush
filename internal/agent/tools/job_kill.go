@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 
 	"charm.land/fantasy"
@@ -26,6 +27,13 @@ type JobKillResponseMetadata struct {
 	Description string `json:"description"`
 }
 
+// alreadyGoneResponse reports a kill that had nothing left to do. A shell
+// can finish and be reaped before the model's kill arrives, and that race
+// should not surface as a failed tool call.
+func alreadyGoneResponse(shellID string) fantasy.ToolResponse {
+	return fantasy.NewTextResponse(fmt.Sprintf("Background shell %s is not running; it may have already finished or been reaped.", shellID))
+}
+
 func NewJobKillTool() fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		JobKillToolName,
@@ -39,7 +47,7 @@ func NewJobKillTool() fantasy.AgentTool {
 
 			bgShell, ok := bgManager.Get(params.ShellID)
 			if !ok {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil
+				return alreadyGoneResponse(params.ShellID), nil
 			}
 
 			metadata := JobKillResponseMetadata{
@@ -51,6 +59,11 @@ func NewJobKillTool() fantasy.AgentTool {
 
 			err := bgManager.Kill(params.ShellID)
 			if err != nil {
+				// The shell can be reaped between Get and Kill, so a
+				// missing ID here is the same harmless race as above.
+				if errors.Is(err, shell.ErrBackgroundShellNotFound) {
+					return alreadyGoneResponse(params.ShellID), nil
+				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 

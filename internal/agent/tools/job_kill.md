@@ -3,6 +3,7 @@ Terminate a background shell process.
 <usage>
 - Provide the shell ID returned from a background bash execution
 - Cancels the running process and cleans up resources
+- Killing a shell that already finished is a no-op and succeeds
 </usage>
 
 <features>
