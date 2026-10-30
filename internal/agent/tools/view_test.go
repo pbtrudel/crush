@@ -12,6 +12,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/filetracker"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
@@ -275,6 +276,20 @@ func runViewTool(t *testing.T, tool fantasy.AgentTool, ctx context.Context, para
 }
 
 var _ filetracker.Service = mockFileTracker{}
+
+func TestViewToolExpandsHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	filePath := filepath.Join(home.Dir(), "tilde-view.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("hello from home"), 0o644))
+
+	tool := newViewToolForTest(t.TempDir())
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: "~/tilde-view.txt",
+	})
+	require.Contains(t, resp.Content, "hello from home")
+}
 
 func TestReadBuiltinFile(t *testing.T) {
 	t.Parallel()

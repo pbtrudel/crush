@@ -2,10 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,4 +75,23 @@ func TestGlobFilesCapsResultsOnLargeTree(t *testing.T) {
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(got), 10, "must not exceed limit")
 	require.True(t, truncated, "should report truncation on an over-limit tree")
+}
+
+func TestGlobToolExpandsHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, os.WriteFile(filepath.Join(home.Dir(), "tilde-glob.txt"), []byte("x"), 0o644))
+
+	tool := NewGlobTool(t.TempDir(), config.ToolGlob{})
+	input, err := json.Marshal(GlobParams{Pattern: "tilde-glob.txt", Path: "~"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  GlobToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "tilde-glob.txt")
 }

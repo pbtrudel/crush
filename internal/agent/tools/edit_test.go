@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,6 +60,30 @@ func TestReplaceContentPreservesCRLFAndMetadata(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
 	require.Equal(t, "alpha\nbeta\n", meta.OldContent)
 	require.Equal(t, "alpha\r\nBETA\r\n", meta.NewContent)
+}
+
+func TestEditToolExpandsHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	filePath := filepath.Join(home.Dir(), "tilde-edit.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("alpha"), 0o644))
+
+	tool := NewEditTool(nil, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, t.TempDir())
+	input, err := json.Marshal(EditParams{FilePath: "~/tilde-edit.txt", OldString: "alpha", NewString: "beta"})
+	require.NoError(t, err)
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp, err := tool.Run(ctx, fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  EditToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	require.Equal(t, "beta", string(content))
 }
 
 func TestDeleteContentRejectsMultipleMatchesWithoutReplaceAll(t *testing.T) {

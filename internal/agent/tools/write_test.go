@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,4 +47,26 @@ func TestWriteToolWritesEmptyNewFile(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(workingDir, "empty.txt"))
 	require.NoError(t, err)
 	require.Equal(t, "", string(b))
+}
+
+func TestWriteToolExpandsHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	tool := NewWriteTool(nil, &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, t.TempDir())
+
+	input, err := json.Marshal(WriteParams{FilePath: "~/tilde-write.txt", Content: "home content"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(ctx, fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  WriteToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+
+	b, err := os.ReadFile(filepath.Join(home.Dir(), "tilde-write.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "home content", string(b))
 }
