@@ -1858,7 +1858,12 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 }
 
 // updateAgentModels rebuilds the shared models and the given agent's tools
-// from the current config.
+// from the current config. The rebuilt pair is pushed into the live agent:
+// its request path reads models lazily from the coordinator, but Model()
+// (the UI's model display) and the compact-before-smaller-model-switch
+// guard run off the agent's own copy, so skipping the push makes a model
+// switch effective only at the next run while the UI keeps reporting the
+// old one.
 func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent, name string) error {
 	if err := c.rebuildModels(ctx); err != nil {
 		return err
@@ -1868,6 +1873,9 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	if !ok {
 		return fmt.Errorf("%w: %s", errMainAgentNotFound, name)
 	}
+
+	models := c.mainModels()
+	agent.SetModels(models.Large, models.Small)
 
 	tools, err := c.buildTools(ctx, agentCfg, false)
 	if err != nil {
