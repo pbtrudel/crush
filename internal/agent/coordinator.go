@@ -1206,6 +1206,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		tools.NewSourcegraphTool(nil),
 		tools.NewTodosTool(c.sessions),
 		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
 

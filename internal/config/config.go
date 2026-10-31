@@ -1191,6 +1191,7 @@ func allToolNames() []string {
 		"sourcegraph",
 		"todos",
 		"view",
+		"read",
 		"write",
 		"list_mcp_resources",
 		"read_mcp_resource",
@@ -1207,7 +1208,7 @@ func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 }
 
 func resolveReadOnlyTools(tools []string) []string {
-	readOnlyTools := []string{"glob", "grep", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "sourcegraph", "view"}
+	readOnlyTools := []string{"glob", "grep", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "sourcegraph", "view", "read"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }
@@ -1226,6 +1227,7 @@ func resolvePlanTools(tools []string) []string {
 		"question",
 		"sourcegraph",
 		"view",
+		"read",
 	}
 	return filterSlice(tools, planTools, true)
 }

@@ -170,6 +170,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				tools.NewGrepTool(tmpDir, c.cfg.Config().Tools.Grep),
 				tools.NewSourcegraphTool(client),
 				tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, nil, tmpDir),
+				tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, nil, tmpDir),
 			}
 			// Keep the sub-agent's palette sorted by name like every other
 			// tool list in the codebase; a stable order is what lets the

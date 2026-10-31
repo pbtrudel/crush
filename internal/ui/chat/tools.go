@@ -236,7 +236,7 @@ func NewToolMessageItem(
 		item = NewJobOutputToolMessageItem(sty, toolCall, result, canceled)
 	case tools.JobKillToolName:
 		item = NewJobKillToolMessageItem(sty, toolCall, result, canceled)
-	case tools.ViewToolName:
+	case tools.ViewToolName, tools.ReadToolName:
 		item = NewViewToolMessageItem(sty, toolCall, result, canceled)
 	case tools.WriteToolName:
 		item = NewWriteToolMessageItem(sty, toolCall, result, canceled)
@@ -1339,7 +1339,7 @@ func (t *baseToolMessageItem) formatParametersForCopy() string {
 			cmd = strings.ReplaceAll(cmd, "\t", "    ")
 			return fmt.Sprintf("**Command:** %s", cmd)
 		}
-	case tools.ViewToolName:
+	case tools.ViewToolName, tools.ReadToolName:
 		var params tools.ViewParams
 		if json.Unmarshal([]byte(t.toolCall.Input), &params) == nil {
 			var parts []string
@@ -1500,7 +1500,7 @@ func (t *baseToolMessageItem) formatResultForCopy() string {
 	switch t.toolCall.Name {
 	case tools.BashToolName:
 		return t.formatBashResultForCopy()
-	case tools.ViewToolName:
+	case tools.ViewToolName, tools.ReadToolName:
 		return t.formatViewResultForCopy()
 	case tools.EditToolName:
 		return t.formatEditResultForCopy()
@@ -1866,6 +1866,8 @@ func prettifyToolName(name string) string {
 		return "To-Do"
 	case tools.ViewToolName:
 		return "View"
+	case tools.ReadToolName:
+		return "Read"
 	case tools.WriteToolName:
 		return "Write"
 	default:
