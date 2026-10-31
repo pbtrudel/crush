@@ -1,6 +1,7 @@
 package model
 
 import (
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/message"
@@ -57,15 +58,30 @@ func (m *UI) updateLiveTPS(msg message.Message) {
 	}
 }
 
-// resetSessionTPS seeds the session average from the transcript so the
-// sidebar has a number immediately after a session load or switch.
-func (m *UI) resetSessionTPS(msgs []message.Message) {
+// resetTPS clears the live rate and the session average. It runs when the
+// active model changes so the average reflects only the model in use.
+func (m *UI) resetTPS() {
 	m.liveTPS = 0
 	m.liveTPSMsgID = ""
+	m.liveTPSStart = time.Time{}
+	m.liveTPSBytes = 0
+	m.liveTPSTokens = 0
 	m.sessionTPSOutput = 0
 	m.sessionTPSDuration = 0
+}
+
+// resetSessionTPS seeds the session average from the transcript so the
+// sidebar has a number immediately after a session load or switch. Only
+// steps from the session's active model are counted so the average does
+// not mix models the transcript went through.
+func (m *UI) resetSessionTPS(msgs []message.Message) {
+	m.resetTPS()
+	provider, model := activeModel(msgs)
 	for _, msg := range msgs {
 		if msg.Role != message.Assistant || msg.IsSummaryMessage || !msg.IsFinished() {
+			continue
+		}
+		if provider != "" && model != "" && (msg.Provider != provider || msg.Model != model) {
 			continue
 		}
 		bytes := assistantOutputBytes(msg)
@@ -75,6 +91,19 @@ func (m *UI) resetSessionTPS(msgs []message.Message) {
 		m.sessionTPSOutput += int64((bytes + 3) / 4)
 		m.sessionTPSDuration += time.Duration(max(msg.UpdatedAt-msg.CreatedAt, 1)) * time.Second
 	}
+}
+
+// activeModel returns the provider and model of the last finished,
+// non-summary assistant step, which is the model a session load restores.
+// Both are empty when the transcript predates model tracking.
+func activeModel(msgs []message.Message) (provider, model string) {
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role != message.Assistant || msg.IsSummaryMessage || !msg.IsFinished() {
+			continue
+		}
+		return msg.Provider, msg.Model
+	}
+	return "", ""
 }
 
 // tpsStats returns the live and session-average tokens per second.
