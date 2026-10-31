@@ -74,6 +74,7 @@ type ViewResponseMetadata struct {
 
 const (
 	ViewToolName     = "view"
+	ReadToolName     = "read"
 	MaxViewSize      = 200 * 1024 // 200KB
 	DefaultReadLimit = 200
 	MaxLineLength    = 2000
@@ -88,6 +89,7 @@ func (e contentTooLargeError) Error() string {
 	return fmt.Sprintf("content section is too large (%d bytes). Maximum size is %d bytes", e.Size, e.Max)
 }
 
+// NewViewTool returns the view tool, which reads a file by path.
 func NewViewTool(
 	lspManager *lsp.Manager,
 	permissions permission.Service,
@@ -96,8 +98,37 @@ func NewViewTool(
 	workingDir string,
 	skillsPaths ...string,
 ) fantasy.AgentTool {
+	return newViewLikeTool(ViewToolName, lspManager, permissions, filetracker, skillTracker, workingDir, skillsPaths...)
+}
+
+// NewReadTool returns the read alias of the view tool. Models occasionally
+// reach for "read" instead of Crush's "view"; registering the alias keeps
+// those calls working instead of failing as an unknown tool.
+func NewReadTool(
+	lspManager *lsp.Manager,
+	permissions permission.Service,
+	filetracker filetracker.Service,
+	skillTracker *skills.Tracker,
+	workingDir string,
+	skillsPaths ...string,
+) fantasy.AgentTool {
+	return newViewLikeTool(ReadToolName, lspManager, permissions, filetracker, skillTracker, workingDir, skillsPaths...)
+}
+
+// newViewLikeTool builds the file-reading tool under name. View and its read
+// alias share one implementation; the name only changes the advertised tool
+// and the ToolName reported on permission requests.
+func newViewLikeTool(
+	name string,
+	lspManager *lsp.Manager,
+	permissions permission.Service,
+	filetracker filetracker.Service,
+	skillTracker *skills.Tracker,
+	workingDir string,
+	skillsPaths ...string,
+) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
-		ViewToolName,
+		name,
 		viewDescription(),
 		func(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.FilePath == "" {
@@ -141,7 +172,7 @@ func NewViewTool(
 						SessionID:   sessionID,
 						Path:        absFilePath,
 						ToolCallID:  call.ID,
-						ToolName:    ViewToolName,
+						ToolName:    name,
 						Action:      "read",
 						Description: fmt.Sprintf("Read file outside working directory: %s", absFilePath),
 						Params:      ViewPermissionsParams(params),
