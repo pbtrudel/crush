@@ -3229,10 +3229,17 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		}
 	}
 
+	previousModel := cfg.Models[msg.ModelType]
 	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
 		cmds = append(cmds, util.ReportError(err))
 	} else {
 		if msg.ModelType == config.SelectedModelTypeLarge {
+			// A different model has its own throughput, so the average
+			// accumulated under the previous one is dropped. Re-selecting
+			// the current model keeps it.
+			if previousModel.Provider != msg.Model.Provider || previousModel.Model != msg.Model.Model {
+				m.resetTPS()
+			}
 			// Swap the theme live based on the newly selected large
 			// model's provider. Skipped when the provider resolves to
 			// the already-active theme, which avoids a full markdown

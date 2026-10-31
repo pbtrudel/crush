@@ -68,6 +68,62 @@ func TestResetSessionTPS(t *testing.T) {
 	require.Positive(t, average)
 }
 
+func TestResetSessionTPSFiltersByActiveModel(t *testing.T) {
+	t.Parallel()
+	m := &UI{}
+	msgs := []message.Message{
+		{
+			Role:      message.Assistant,
+			Provider:  "anthropic",
+			Model:     "claude",
+			CreatedAt: 100,
+			UpdatedAt: 102,
+			Parts:     []message.ContentPart{message.TextContent{Text: string(make([]byte, 400))}, message.Finish{Reason: message.FinishReasonEndTurn}},
+		},
+		{
+			Role:      message.Assistant,
+			Provider:  "openai",
+			Model:     "gpt",
+			CreatedAt: 200,
+			UpdatedAt: 202,
+			Parts:     []message.ContentPart{message.TextContent{Text: string(make([]byte, 800))}, message.Finish{Reason: message.FinishReasonEndTurn}},
+		},
+		{
+			Role:             message.Assistant,
+			Provider:         "anthropic",
+			Model:            "claude",
+			IsSummaryMessage: true,
+			CreatedAt:        300,
+			UpdatedAt:        302,
+			Parts:            []message.ContentPart{message.TextContent{Text: string(make([]byte, 400))}, message.Finish{Reason: message.FinishReasonEndTurn}},
+		},
+	}
+	m.resetSessionTPS(msgs)
+	_, average := m.tpsStats()
+	require.InDelta(t, 100.0, average, 0.001, "only the active model's steps count")
+}
+
+func TestResetTPSClearsLiveAndSession(t *testing.T) {
+	t.Parallel()
+	m := &UI{
+		liveTPS:            42,
+		liveTPSMsgID:       "a1",
+		liveTPSStart:       time.Now(),
+		liveTPSBytes:       400,
+		liveTPSTokens:      100,
+		sessionTPSOutput:   100,
+		sessionTPSDuration: time.Second,
+	}
+	m.resetTPS()
+	require.Zero(t, m.liveTPS)
+	require.Empty(t, m.liveTPSMsgID)
+	require.True(t, m.liveTPSStart.IsZero())
+	require.Zero(t, m.liveTPSBytes)
+	require.Zero(t, m.liveTPSTokens)
+	require.Zero(t, m.sessionTPSOutput)
+	require.Zero(t, m.sessionTPSDuration)
+}
+
 func TestAssistantOutputBytesCountsReasoning(t *testing.T) {
 	t.Parallel()
 	msg := message.Message{Parts: []message.ContentPart{
