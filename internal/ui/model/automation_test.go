@@ -166,3 +166,15 @@ func TestCancelAutomationLoops(t *testing.T) {
 	require.NotNil(t, cmd)
 	require.Empty(t, m.automation.state.Loops)
 }
+
+func TestLoadSessionKeepsPendingAutomation(t *testing.T) {
+	t.Parallel()
+
+	m, _ := newAutomationUI(t)
+	submitEditor(t, m, "/goal get the tests green")
+	require.True(t, m.automation.pendingGoal)
+
+	m.Update(loadSessionMsg{session: m.session})
+	require.True(t, m.automation.pendingGoal)
+	require.Equal(t, automation.GoalActive, m.automation.state.Goal.Status)
+}

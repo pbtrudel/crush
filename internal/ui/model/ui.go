@@ -1118,7 +1118,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
 		if m.automation != nil {
-			m.automation.load(msg.session.ID)
+			// A fresh session created by /goal or /loop is already
+			// loaded and has its pending turn set; reloading it here
+			// would reset that state.
+			if m.automation.sessionID != msg.session.ID {
+				m.automation.load(msg.session.ID)
+			}
 			if cmd := m.scheduleAutomationTick(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
