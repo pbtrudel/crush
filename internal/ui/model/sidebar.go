@@ -127,13 +127,18 @@ func (m *UI) updateSidebarScrollState() {
 	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), contentWidth, fileChangeCount(m.sessionFiles), true)
 
 	// Build the scrollable content.
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
+	sections := []string{
 		title,
 		"",
 		cwd,
 		"",
 		m.modelInfo(contentWidth),
+	}
+	if teamSection := m.teamInfo(contentWidth); teamSection != "" {
+		sections = append(sections, "", teamSection)
+	}
+	sections = append(
+		sections,
 		"",
 		filesSection,
 		"",
@@ -143,6 +148,7 @@ func (m *UI) updateSidebarScrollState() {
 		"",
 		skillsSection,
 	)
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	totalLines := strings.Count(content, "\n") + 1
 	m.sidebarContent = content

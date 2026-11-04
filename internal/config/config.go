@@ -490,6 +490,7 @@ type Options struct {
 	BackgroundJobNotifications *bool        `json:"background_job_notifications,omitempty" jsonschema:"description=Notify the agent in-session when a background shell finishes, instead of requiring job_output polling.,default=true"`
 	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
 	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
+	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 }
@@ -652,6 +653,16 @@ func (o *Options) GetBackgroundSubagents() bool {
 		return true
 	}
 	return *o.BackgroundSubagents
+}
+
+// GetAgentTeams reports whether Agent Teams is enabled. It is on by
+// default, matching the DSH profile bundle; the Lead decides whether to work
+// alone or dispatch teammates.
+func (o *Options) GetAgentTeams() bool {
+	if o == nil || o.AgentTeams == nil {
+		return true
+	}
+	return *o.AgentTeams
 }
 
 // GetRepeatToolReminders reports whether advisory repeat-tool reminders are
@@ -1196,6 +1207,15 @@ func allToolNames() []string {
 		"list_mcp_resources",
 		"read_mcp_resource",
 		"mcp_servers",
+		"spawn_teammate",
+		"send_message",
+		"list_agents",
+		"wait_agent",
+		"interrupt_agent",
+		"team_task_create",
+		"team_task_list",
+		"team_task_get",
+		"team_task_update",
 	}
 }
 

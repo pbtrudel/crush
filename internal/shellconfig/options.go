@@ -212,6 +212,7 @@ var optionSpecs = map[string]optionSpec{
 
 	"background-job-notifications": {jsonKey: "background_job_notifications", kind: optBool},
 	"background-subagents":         {jsonKey: "background_subagents", kind: optBool},
+	"agent-teams":                  {jsonKey: "agent_teams", kind: optBool},
 	"repeat-tool-reminders":        {jsonKey: "repeat_tool_reminders", kind: optBool},
 	"repetition-detection":         {jsonKey: "repetition_detection", kind: optBool},
 

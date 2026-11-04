@@ -475,6 +475,14 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills"),
 	)
 
+	teamLabel := "Enable Agent Teams"
+	if c.com.Config().Options.GetAgentTeams() {
+		teamLabel = "Disable Agent Teams"
+	}
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "toggle_agent_teams", teamLabel, "", ActionToggleAgentTeams{}).WithAliases("teams", "agent-teams"),
+	)
+
 	// Add reasoning toggle for models that support it
 	cfg := c.com.Config()
 	if agentCfg, ok := cfg.Agents[config.AgentCoder]; ok {

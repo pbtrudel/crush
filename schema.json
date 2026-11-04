@@ -757,6 +757,11 @@
           "description": "Run delegated subagents in the background and deliver their result through a completion notice.",
           "default": true
         },
+        "agent_teams": {
+          "type": "boolean",
+          "description": "Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.",
+          "default": true
+        },
         "repeat_tool_reminders": {
           "type": "boolean",
           "description": "Inject advisory reminders when the model repeats the same tool call",

@@ -161,6 +161,8 @@ type (
 	// ActionToggleRemoteControl is a message to start or stop the
 	// Discord remote-control bridge for the current session.
 	ActionToggleRemoteControl struct{}
+	// ActionToggleAgentTeams is a message to enable or disable Agent Teams.
+	ActionToggleAgentTeams struct{}
 )
 
 // Messages for MCP OAuth authentication dialog.
