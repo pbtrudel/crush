@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/discover"
@@ -242,6 +243,9 @@ type coordinator struct {
 	wakeCounts map[string]int
 	subagents  *subagentManager
 
+	// team is the experimental Agent Teams domain. Nil unless enabled.
+	team *agentteam.Service
+
 	readyWg errgroup.Group
 
 	hostContext csync.Value[proto.HostContext]
@@ -300,6 +304,12 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		wakeCounts:   make(map[string]int),
 		subagents:    newSubagentManager(),
 		hookRunner:   opts.HookRunner,
+	}
+
+	// Agent Teams is on by default, matching the DSH profile bundle. The
+	// Lead decides whether to work alone or dispatch teammates.
+	if err := c.syncAgentTeams(); err != nil {
+		return nil, err
 	}
 
 	agentCfg, ok := opts.Config.Config().Agents[config.AgentCoder]
@@ -1179,6 +1189,10 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		allTools = append(allTools, agenticFetchTool)
 	}
 
+	if c.team != nil {
+		allTools = append(allTools, c.teamTools(agentteam.MemberFromContext(ctx))...)
+	}
+
 	// Get the model name for the agent
 	modelID := ""
 	if modelCfg, ok := c.cfg.Config().Models[agent.Model]; ok {
@@ -1924,6 +1938,9 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 // they were built with. Agents the new config no longer defines are skipped
 // rather than failed.
 func (c *coordinator) RefreshModels(ctx context.Context) error {
+	if err := c.syncAgentTeams(); err != nil {
+		return err
+	}
 	for name, agent := range c.agents {
 		if _, ok := c.cfg.Config().Agents[name]; !ok {
 			continue

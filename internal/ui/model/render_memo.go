@@ -48,6 +48,7 @@ type sidebarCacheKey struct {
 	credits       int
 	tpsLive       int
 	tpsAverage    int
+	teamSig       string
 }
 
 // pillsCacheKey captures every input renderPills reads.
@@ -80,6 +81,7 @@ func (m *UI) sidebarCacheKey() sidebarCacheKey {
 		filesLen:   len(m.sessionFiles),
 		logo:       m.sidebarLogo,
 		hyper:      m.com.IsHyper(),
+		teamSig:    m.teamSignature,
 	}
 	liveTPS, averageTPS := m.tpsStats()
 	// Key on tenths to match the sidebar's one-decimal display without

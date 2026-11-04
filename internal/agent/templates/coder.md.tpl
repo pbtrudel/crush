@@ -430,3 +430,7 @@ The following is personal content added by the user that they'd like you to foll
 {{end}}
 </user_preferences>
 {{end}}
+{{if .TeamPolicy}}
+
+{{.TeamPolicy}}
+{{end}}

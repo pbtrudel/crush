@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/gitutil"
@@ -44,6 +45,9 @@ type PromptDat struct {
 	ContextBudget       *ContextBudget
 	GlobalContextBudget *ContextBudget
 	AvailSkillXML       string
+	// TeamPolicy carries the Agent Teams coordination policy when the
+	// experimental feature is enabled.
+	TeamPolicy string
 }
 
 type ContextFile struct {
@@ -400,6 +404,9 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		Platform:      platform,
 		Date:          p.now().Format("1/2/2006"),
 		AvailSkillXML: availSkillXML,
+	}
+	if cfg.Options.GetAgentTeams() {
+		data.TeamPolicy = agentteam.Policy
 	}
 
 	data.ContextFiles = contextFiles

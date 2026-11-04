@@ -31,6 +31,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/clipboard"
 	"github.com/charmbracelet/crush/internal/commands"
@@ -282,6 +283,10 @@ type UI struct {
 
 	// automation holds the goal and loop state for the open session.
 	automation *automationState
+
+	// teamState is the last-read Agent Teams snapshot for the sidebar.
+	teamState     agentteam.State
+	teamSignature string
 
 	focus uiFocusState
 	state uiState
@@ -703,6 +708,8 @@ func (m *UI) Init() tea.Cmd {
 	}
 	// load the user commands async
 	cmds = append(cmds, m.loadCustomCommands())
+	// Poll the durable Agent Teams state for the sidebar.
+	cmds = append(cmds, m.teamTick())
 	// Prime the memoized LSP state off-thread.
 	if cmd := m.requestLSPRefresh(); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -994,6 +1001,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.automation.tickScheduled = false
 		}
 		if cmd := m.handleAutomationTick(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case teamStatusMsg:
+		if cmd := m.handleTeamStatus(msg); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case goalVerifiedMsg:
@@ -2904,6 +2915,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionDisableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.disableDockerMCP)
+	case dialog.ActionToggleAgentTeams:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.setAgentTeams(!m.com.Config().Options.GetAgentTeams()))
 	case dialog.ActionToggleMCP:
 		cmds = append(cmds, m.applyMCPToggle(msg))
 	case dialog.ActionInitializeProject:
@@ -5756,6 +5770,10 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
 		return m.handleLoopCommand(strings.TrimSpace(strings.TrimPrefix(value, "/loop"))), true
+	case value == "/team on":
+		return m.setAgentTeams(true), true
+	case value == "/team off":
+		return m.setAgentTeams(false), true
 	}
 	return nil, false
 }
@@ -5764,6 +5782,19 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 // agents. The command palette and the /reload slash command share it.
 func (m *UI) reloadConfig() tea.Cmd {
 	return func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+	}
+}
+
+// setAgentTeams persists the Agent Teams toggle and applies it in place. The
+// coordinator creates or tears down the Team service during the reload.
+func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.agent_teams", enabled); err != nil {
+			return util.ReportError(err)()
+		}
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
 		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
