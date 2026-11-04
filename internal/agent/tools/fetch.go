@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"charm.land/fantasy"
 	md "github.com/JohannesKaufmann/html-to-markdown"
@@ -136,13 +135,11 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 				return fantasy.NewTextErrorResponse("Failed to read response body: " + err.Error()), nil
 			}
 
-			content := string(body)
-
-			validUTF8 := utf8.ValidString(content)
-			if !validUTF8 {
-				return fantasy.NewTextErrorResponse("Response content is not valid UTF-8"), nil
-			}
 			contentType := resp.Header.Get("Content-Type")
+			content, err := decodeResponseBody(body, contentType)
+			if err != nil {
+				return fantasy.NewTextErrorResponse("Failed to decode response body: " + err.Error()), nil
+			}
 
 			switch format {
 			case "text":

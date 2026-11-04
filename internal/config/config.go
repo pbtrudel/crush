@@ -449,6 +449,7 @@ type Options struct {
 	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
 	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
+	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. When exceeded, the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
 	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
@@ -557,6 +558,10 @@ const DefaultCompactTailTokens = 24576
 // separately) when the user has not configured a budget.
 const DefaultContextMaxBytes = 64 * 1024
 
+// DefaultMaxImages bounds the images sent in one request when the user has
+// not configured a budget. The oldest images are replaced first.
+const DefaultMaxImages = 100
+
 // DefaultCompactionPruneChars is the per-tool-result character budget used
 // before a compaction request when the user has not configured one.
 const DefaultCompactionPruneChars = 8192
@@ -605,6 +610,16 @@ func (o *Options) GetContextMaxBytes() int {
 		return DefaultContextMaxBytes
 	}
 	return max(0, *o.ContextMaxBytes)
+}
+
+// GetMaxImages returns the maximum images sent in one request. The nil
+// receiver and the unset field both mean DefaultMaxImages; an explicit 0 or
+// negative value disables the budget.
+func (o *Options) GetMaxImages() int {
+	if o == nil || o.MaxImages == nil {
+		return DefaultMaxImages
+	}
+	return max(0, *o.MaxImages)
 }
 
 // GetCompactionPruneChars returns the per-tool-result character budget used

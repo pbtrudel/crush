@@ -373,3 +373,17 @@ func (bs *BackgroundShell) WaitContext(ctx context.Context) bool {
 		return false
 	}
 }
+
+// WaitContextOrSteering blocks until the shell completes, the context is
+// canceled, or steering is closed. It reports whether the shell completed.
+// A nil steering channel disables the steering case.
+func (bs *BackgroundShell) WaitContextOrSteering(ctx context.Context, steering <-chan struct{}) bool {
+	select {
+	case <-bs.done:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-steering:
+		return false
+	}
+}
