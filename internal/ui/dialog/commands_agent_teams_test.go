@@ -34,6 +34,7 @@ func TestAgentTeamsToggleCommand(t *testing.T) {
 	sty := styles.CharmtonePantera()
 
 	t.Run("enabled offers disable", func(t *testing.T) {
+		t.Parallel()
 		com := &common.Common{Workspace: &teamCommandsWorkspace{enabled: true}, Styles: &sty}
 		c, err := NewCommands(com, "", false, false, false, false, false, nil, nil)
 		require.NoError(t, err)
@@ -45,6 +46,7 @@ func TestAgentTeamsToggleCommand(t *testing.T) {
 	})
 
 	t.Run("disabled offers enable", func(t *testing.T) {
+		t.Parallel()
 		com := &common.Common{Workspace: &teamCommandsWorkspace{enabled: false}, Styles: &sty}
 		c, err := NewCommands(com, "", false, false, false, false, false, nil, nil)
 		require.NoError(t, err)
