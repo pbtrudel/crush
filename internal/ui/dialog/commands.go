@@ -9,12 +9,14 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // CommandsID is the identifier for the commands dialog.
@@ -29,6 +31,18 @@ func (c CommandType) String() string { return []string{"System", "User", "MCP"}[
 const (
 	sidebarCompactModeBreakpoint = 120
 )
+
+// commandDeckBorder is the terminal bezel used by the command palette.
+var commandDeckBorder = lipgloss.Border{
+	Top:         "═",
+	Bottom:      "═",
+	Left:        "║",
+	Right:       "║",
+	TopLeft:     "╔",
+	TopRight:    "╗",
+	BottomLeft:  "╚",
+	BottomRight: "╝",
+}
 
 const (
 	SystemCommands CommandType = iota
@@ -109,7 +123,8 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 
 	c.input = textinput.New()
 	c.input.SetVirtualCursor(false)
-	c.input.Placeholder = "Type to filter"
+	c.input.Placeholder = "Search commands"
+	c.input.Prompt = "⌕ "
 	c.input.SetStyles(com.Styles.TextInput)
 	c.input.Focus()
 
@@ -266,41 +281,50 @@ func (c *Commands) InitialCmd() tea.Cmd {
 
 // Cursor returns the cursor position relative to the dialog.
 func (c *Commands) Cursor() *tea.Cursor {
-	return InputCursor(c.com.Styles, c.input.Cursor())
+	cur := InputCursor(c.com.Styles, c.input.Cursor())
+	if cur != nil {
+		// The palette draws a gradient rule between the title and the
+		// search bar. The generic dialog cursor offset does not know
+		// about that extra row.
+		cur.Y++
+	}
+	return cur
 }
 
 // commandsRadioView generates the command type selector radio buttons.
-func commandsRadioView(sty *styles.Styles, selected CommandType, hasUserCmds bool, hasMCPPrompts bool) string {
+// commandsTabsView renders the command category tabs as filled pills.
+func commandsTabsView(sty *styles.Styles, selected CommandType, hasUserCmds bool, hasMCPPrompts bool) string {
 	if !hasUserCmds && !hasMCPPrompts {
 		return ""
 	}
 
-	selectedFn := func(t CommandType) string {
-		if t == selected {
-			return sty.Radio.On.Padding(0, 1).Render() + sty.Radio.Label.Render(t.String())
-		}
-		return sty.Radio.Off.Padding(0, 1).Render() + sty.Radio.Label.Render(t.String())
-	}
-
-	parts := []string{
-		selectedFn(SystemCommands),
-	}
-
+	tabs := []CommandType{SystemCommands}
 	if hasUserCmds {
-		parts = append(parts, selectedFn(UserCommands))
+		tabs = append(tabs, UserCommands)
 	}
 	if hasMCPPrompts {
-		parts = append(parts, selectedFn(MCPPrompts))
+		tabs = append(tabs, MCPPrompts)
 	}
 
-	return strings.Join(parts, " ")
+	parts := make([]string, 0, len(tabs))
+	for _, tab := range tabs {
+		label := " " + strings.ToUpper(tab.String()) + " "
+		if tab == selected {
+			parts = append(parts, sty.Dialog.Palette.TabActive.Render(label))
+			continue
+		}
+		parts = append(parts, sty.Dialog.Palette.TabInactive.Render(label))
+	}
+	return " " + strings.Join(parts, " ")
 }
 
 // Draw implements [Dialog].
 func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := c.com.Styles
 	width := max(0, min(defaultDialogMaxWidth, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
-	height := max(0, min(defaultDialogHeight, area.Dy()-t.Dialog.View.GetVerticalBorderSize()))
+	// The palette adds a rule, a preview, and a second rule around the
+	// list, so it needs three more rows than a standard dialog.
+	height := max(0, min(defaultDialogHeight+3, area.Dy()-t.Dialog.View.GetVerticalBorderSize()))
 	if area.Dx() != c.windowWidth && c.selected == SystemCommands {
 		c.windowWidth = area.Dx()
 		// since some items in the list depend on width (e.g. toggle sidebar command),
@@ -309,10 +333,12 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	innerWidth := width - c.com.Styles.Dialog.View.GetHorizontalFrameSize()
+	// The palette adds three rows around the list: a rule under the
+	// title, a selection preview, and a rule above the help.
 	heightOffset := t.Dialog.Title.GetVerticalFrameSize() + titleContentHeight +
 		t.Dialog.InputPrompt.GetVerticalFrameSize() + inputContentHeight +
 		t.Dialog.HelpView.GetVerticalFrameSize() +
-		t.Dialog.View.GetVerticalFrameSize()
+		t.Dialog.View.GetVerticalFrameSize() + 3
 
 	c.input.SetWidth(dialogInputTextWidth(t, c.input, innerWidth))
 
@@ -322,12 +348,38 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	applyInfoColumnVisibility(c.list.FilteredItems(), innerWidth, commandInfoMaxPercent)
 
 	rc := NewRenderContext(t, width)
-	rc.Title = "Commands"
-	rc.TitleInfo = commandsRadioView(t, c.selected, len(c.customCommands) > 0, len(c.mcpPrompts) > 0)
+	rc.ViewStyle = t.Dialog.View.Border(commandDeckBorder).BorderForeground(t.Chrome.SidebarRailFrom)
+	rc.Title = "> COMMAND DECK"
+	rc.TitleInfo = commandsTabsView(t, c.selected, len(c.customCommands) > 0, len(c.mcpPrompts) > 0)
+
+	rc.AddPart(styles.ApplyForegroundGrad(
+		t.Dialog.Palette.Rule,
+		strings.Repeat("─", innerWidth),
+		t.Dialog.Palette.RuleFromColor,
+		t.Dialog.Palette.RuleToColor,
+	))
+
 	inputView := t.Dialog.InputPrompt.Render(c.input.View())
 	rc.AddPart(inputView)
+
+	if item, ok := c.list.SelectedItem().(*CommandItem); ok && item != nil {
+		previewText := item.description
+		if previewText == "" {
+			previewText = c.selected.String() + " command · enter to run"
+		}
+		previewText = ansi.Truncate(previewText, max(0, innerWidth-2), "…")
+		rc.AddPart(t.Dialog.Palette.PreviewIcon.Render("▸") + " " + t.Dialog.Palette.Preview.Render(previewText))
+	}
+
 	listView := t.Dialog.List.Height(c.list.Height()).Render(c.list.Render())
 	rc.AddPart(listView)
+
+	rc.AddPart(styles.ApplyForegroundGrad(
+		t.Dialog.Palette.Rule,
+		strings.Repeat("─", innerWidth),
+		t.Dialog.Palette.RuleToColor,
+		t.Dialog.Palette.RuleFromColor,
+	))
 	rc.Help = renderDialogHelp(t, &c.help, c, innerWidth)
 
 	if c.loading {
@@ -456,23 +508,23 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 // defaultCommands returns the list of default system commands.
 func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
-		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear"),
-		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}),
-		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}),
+		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
+		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
+		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}).WithIcon("◇"),
 	}
 
 	// Only show compact command if there's an active session
 	if c.hasSession {
-		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "export_session", "Export Session as Markdown", "", ActionExportSession{SessionID: c.sessionID}).WithAliases("export", "markdown"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "ask_side_question", "Ask Side Question", "", ActionAskSideQuestion{SessionID: c.sessionID}).WithAliases("btw", "side"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "goal", "Set Goal", "", ActionGoal{}).WithAliases("goals", "objective"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "loop", "Start Loop", "", ActionLoop{}).WithAliases("loops", "schedule"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize").WithIcon("⊟"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "export_session", "Export Session as Markdown", "", ActionExportSession{SessionID: c.sessionID}).WithAliases("export", "markdown").WithIcon("↧"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "ask_side_question", "Ask Side Question", "", ActionAskSideQuestion{SessionID: c.sessionID}).WithAliases("btw", "side").WithIcon("?"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "goal", "Set Goal", "", ActionGoal{}).WithAliases("goals", "objective").WithIcon("◎"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "loop", "Start Loop", "", ActionLoop{}).WithAliases("loops", "schedule").WithIcon("↻"))
 	}
 
 	commands = append(commands,
-		NewCommandItem(c.com.Styles, "reload_config", "Reload Configuration", "", ActionReloadConfig{}).WithAliases("reload", "reload-config"),
-		NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills"),
+		NewCommandItem(c.com.Styles, "reload_config", "Reload Configuration", "", ActionReloadConfig{}).WithAliases("reload", "reload-config").WithIcon("⟳"),
+		NewCommandItem(c.com.Styles, "reload_skills", "Reload Skills", "", ActionReloadSkills{}).WithAliases("reload-skills").WithIcon("⟳"),
 	)
 
 	teamLabel := "Enable Agent Teams"
@@ -480,7 +532,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		teamLabel = "Disable Agent Teams"
 	}
 	commands = append(commands,
-		NewCommandItem(c.com.Styles, "toggle_agent_teams", teamLabel, "", ActionToggleAgentTeams{}).WithAliases("teams", "agent-teams"),
+		NewCommandItem(c.com.Styles, "toggle_agent_teams", teamLabel, "", ActionToggleAgentTeams{}).WithAliases("teams", "agent-teams").WithIcon("⌬"),
 	)
 
 	// Add reasoning toggle for models that support it
@@ -498,27 +550,27 @@ func (c *Commands) defaultCommands() []*CommandItem {
 				if selectedModel.Think {
 					status = "Disable"
 				}
-				commands = append(commands, NewCommandItem(c.com.Styles, "toggle_thinking", status+" Thinking Mode", "", ActionToggleThinking{}))
+				commands = append(commands, NewCommandItem(c.com.Styles, "toggle_thinking", status+" Thinking Mode", "", ActionToggleThinking{}).WithIcon("◇"))
 			}
 
 			// OpenAI models: reasoning effort dialog
 			if len(effortLevels) > 0 {
 				commands = append(commands, NewCommandItem(c.com.Styles, "select_reasoning_effort", "Select Reasoning Effort", "", ActionOpenDialog{
 					DialogID: ReasoningID,
-				}))
+				}).WithIcon("◈"))
 			}
 		}
 	}
 	// Only show toggle compact mode command if window width is larger than compact breakpoint (120)
 	if c.windowWidth >= sidebarCompactModeBreakpoint && c.hasSession {
-		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_sidebar", "Toggle Sidebar", "ctrl+b", ActionToggleCompactMode{}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_sidebar", "Toggle Sidebar", "ctrl+b", ActionToggleCompactMode{}).WithIcon("▥"))
 	}
 	if c.hasSession {
 		revealLabel := "Reveal Secrets"
 		if c.revealSecrets {
 			revealLabel = "Hide Secrets"
 		}
-		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_secret_reveal", revealLabel, "", ActionToggleSecretReveal{}).WithAliases("secrets"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_secret_reveal", revealLabel, "", ActionToggleSecretReveal{}).WithAliases("secrets").WithIcon("◉"))
 	}
 	if c.hasSession {
 		cfgPrime := c.com.Config()
@@ -527,7 +579,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		if model != nil && model.Capabilities.Vision {
 			commands = append(commands, NewCommandItem(c.com.Styles, "file_picker", "Open File Picker", "ctrl+f", ActionOpenDialog{
 				DialogID: FilePickerID,
-			}))
+			}).WithIcon("▤"))
 		}
 	}
 
@@ -537,17 +589,17 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// because os.Getenv does IO is breaks the TEA paradigm and is generally an
 	// antipattern.
 	if os.Getenv("EDITOR") != "" {
-		commands = append(commands, NewCommandItem(c.com.Styles, "open_external_editor", "Open External Editor", "ctrl+o", ActionExternalEditor{}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "open_external_editor", "Open External Editor", "ctrl+o", ActionExternalEditor{}).WithIcon("✎"))
 	}
 
 	// Add Docker MCP command if available and not already enabled.
 	if !cfg.IsDockerMCPEnabled() && c.dockerMCPAvailable != nil && *c.dockerMCPAvailable {
-		commands = append(commands, NewCommandItem(c.com.Styles, "enable_docker_mcp", "Enable Docker MCP Catalog", "", ActionEnableDockerMCP{}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "enable_docker_mcp", "Enable Docker MCP Catalog", "", ActionEnableDockerMCP{}).WithIcon("⬡"))
 	}
 
 	// Add disable Docker MCP command if it's currently enabled
 	if cfg.IsDockerMCPEnabled() {
-		commands = append(commands, NewCommandItem(c.com.Styles, "disable_docker_mcp", "Disable Docker MCP Catalog", "", ActionDisableDockerMCP{}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "disable_docker_mcp", "Disable Docker MCP Catalog", "", ActionDisableDockerMCP{}).WithIcon("⬡"))
 	}
 
 	// Toggle MCP servers for this repository when any are configured.
@@ -604,7 +656,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 
 	commands = append(
 		commands,
-		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", tea.QuitMsg{}).WithAliases("exit"),
+		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", tea.QuitMsg{}).WithAliases("exit").WithIcon("⏻"),
 	)
 
 	return commands

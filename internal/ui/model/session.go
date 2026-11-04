@@ -200,9 +200,9 @@ func (m *UI) handleFileEvent(file history.File) tea.Cmd {
 func (m *UI) filesInfo(cwd string, width, maxItems int, isSection bool) string {
 	t := m.com.Styles
 
-	title := t.Files.SectionTitle.Render("Modified Files")
+	title := t.Files.SectionTitle.Render("▮ Modified Files")
 	if isSection {
-		title = common.Section(t, "Modified Files", width)
+		title = common.Section(t, "▮ Modified Files", width)
 	}
 	list := t.Files.EmptyMessage.Render("None")
 	var filesWithChanges []SessionFile

@@ -84,10 +84,11 @@ func todoPill(todos []session.Todo, spinnerView string, panelFocused bool, t *st
 
 	label := t.Pills.TodoLabel.Render("To-Do")
 	progress := t.Pills.TodoProgress.Render(fmt.Sprintf("%d/%d", completed, total))
+	bar := todoProgressBar(completed, total, t)
 
 	var content string
 	if panelFocused {
-		content = fmt.Sprintf("%s %s", label, progress)
+		content = fmt.Sprintf("%s %s %s", label, bar, progress)
 	} else if currentTodo != nil {
 		taskText := currentTodo.Content
 		if currentTodo.ActiveForm != "" {
@@ -97,12 +98,25 @@ func todoPill(todos []session.Todo, spinnerView string, panelFocused bool, t *st
 			taskText = ansi.Truncate(taskText, maxTaskDisplayLength-1, "…")
 		}
 		task := t.Pills.TodoCurrentTask.Render(taskText)
-		content = fmt.Sprintf("%s %s %s  %s", spinnerView, label, progress, task)
+		content = fmt.Sprintf("%s %s %s %s  %s", spinnerView, label, bar, progress, task)
 	} else {
-		content = fmt.Sprintf("%s %s", label, progress)
+		content = fmt.Sprintf("%s %s %s", label, bar, progress)
 	}
 
 	return t.Pills.Focused.Render(content)
+}
+
+// todoProgressBar renders a compact segmented progress bar for the todo
+// pill.
+func todoProgressBar(completed, total int, t *styles.Styles) string {
+	const width = 6
+	filled := 0
+	if total > 0 {
+		filled = completed * width / total
+	}
+	filled = max(0, min(width, filled))
+	return t.Pills.TodoProgress.Render(strings.Repeat("▰", filled)) +
+		t.Chrome.MeterEmpty.Render(strings.Repeat("▱", width-filled))
 }
 
 // todoList renders the expanded todo list.

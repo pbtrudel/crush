@@ -86,7 +86,8 @@ func (m *UserMessageItem) SetRevealSecrets(reveal bool) {
 
 // RawRender implements [MessageItem].
 func (m *UserMessageItem) RawRender(width int) string {
-	cappedWidth := cappedMessageWidth(width)
+	// Leave room for the prompt marker and the filled block's padding.
+	cappedWidth := cappedMessageWidth(width) - 2
 
 	content, height, ok := m.getCachedRender(cappedWidth)
 	// cache hit
@@ -176,15 +177,17 @@ func (m *UserMessageItem) Render(width int) string {
 			return cached
 		}
 	}
-	var prefix string
+	block := m.sty.Messages.UserBlurred
 	if m.focused {
-		prefix = m.sty.Messages.UserFocused.Render()
-	} else {
-		prefix = m.sty.Messages.UserBlurred.Render()
+		block = m.sty.Messages.UserFocused
 	}
 	lines := strings.Split(m.RawRender(width), "\n")
 	for i, line := range lines {
-		lines[i] = prefix + line
+		marker := "  "
+		if i == 0 {
+			marker = "> "
+		}
+		lines[i] = block.Render(marker + line)
 	}
 	out := strings.Join(lines, "\n")
 	if useCache {

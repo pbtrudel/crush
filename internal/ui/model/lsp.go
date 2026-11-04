@@ -122,7 +122,7 @@ func (m *UI) lspInfo(width, maxItems int, isSection bool) string {
 		}})
 	}
 
-	title := t.Resource.Heading.Render("LSPs")
+	title := t.Resource.Heading.Render("▮ LSPs")
 	if isSection {
 		title = common.Section(t, title, width)
 	}

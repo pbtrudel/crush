@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"image/color"
+	"math"
 	"strconv"
 	"strings"
 
@@ -164,13 +165,35 @@ func formatTokensAndCost(t *styles.Styles, tokens, contextWindow int64, cost flo
 	if estimated {
 		percentageText = "~" + percentageText
 	}
+	meter := ContextMeter(t, percentage, 6)
 	formattedPercentage := t.ModelInfo.TokenPercentage.Render(percentageText)
-	formattedTokens = fmt.Sprintf("%s %s", formattedPercentage, formattedTokens)
+	formattedTokens = fmt.Sprintf("%s %s %s", meter, formattedPercentage, formattedTokens)
 	if percentage > 80 {
 		formattedTokens = fmt.Sprintf("%s %s", styles.LSPWarningIcon, formattedTokens)
 	}
 
 	return fmt.Sprintf("%s %s", formattedTokens, formattedCost)
+}
+
+// ContextMeter renders a segmented usage meter for a percentage (0-100).
+// width is the number of cells. Filled cells use the meter color for the
+// usage band, empty cells use the empty style.
+func ContextMeter(t *styles.Styles, percentage float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	pct := math.Max(0, math.Min(100, percentage))
+	filled := int(math.Round(pct / 100 * float64(width)))
+	filled = max(0, min(width, filled))
+	style := t.Chrome.MeterLow
+	switch {
+	case pct >= 85:
+		style = t.Chrome.MeterHigh
+	case pct >= 60:
+		style = t.Chrome.MeterMid
+	}
+	return style.Render(strings.Repeat("▰", filled)) +
+		t.Chrome.MeterEmpty.Render(strings.Repeat("▱", width-filled))
 }
 
 // FormatCredits formats an integer with comma separators for thousands.
@@ -242,27 +265,20 @@ func Status(t *styles.Styles, opts StatusOpts, width int) string {
 	return strings.Join(content, " ")
 }
 
-// Section renders a section header with a title and a horizontal line filling
-// the remaining width.
+// Section renders a section header with an optional right-aligned info
+// string. It deliberately draws no rule so the sidebar and landing page
+// stay free of extra lines.
 func Section(t *styles.Styles, text string, width int, info ...string) string {
-	char := styles.SectionSeparator
-	length := lipgloss.Width(text) + 1
-	remainingWidth := width - length
-
-	var infoText string
-	if len(info) > 0 {
-		infoText = strings.Join(info, " ")
-		if len(infoText) > 0 {
-			infoText = " " + infoText
-			remainingWidth -= lipgloss.Width(infoText)
-		}
-	}
-
 	text = t.Section.Title.Render(text)
-	if remainingWidth > 0 {
-		text = text + " " + t.Section.Line.Render(strings.Repeat(char, remainingWidth)) + infoText
+	infoText := strings.Join(info, " ")
+	if infoText == "" {
+		return text
 	}
-	return text
+	gap := width - lipgloss.Width(text) - lipgloss.Width(infoText)
+	if gap < 1 {
+		return text + " " + infoText
+	}
+	return text + strings.Repeat(" ", gap) + infoText
 }
 
 // DialogTitle renders a dialog title with a decorative line filling the

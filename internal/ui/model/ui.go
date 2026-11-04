@@ -104,6 +104,14 @@ const TextareaMaxHeight = 15
 // account for the attachments row (top) and bottom margin.
 const editorHeightMargin = 2
 
+// ambientAnimFPS is the refresh rate of the decorative animation clock.
+// It is deliberately lower than the spinner clock: the motion is subtle
+// and a slower tick keeps idle CPU cost down.
+const ambientAnimFPS = 10
+
+// shimmerCycle is the number of ambient frames in one full shimmer sweep.
+const shimmerCycle = 96
+
 // TextareaMinHeight is the minimum height of the prompt textarea.
 const TextareaMinHeight = 3
 
@@ -138,6 +146,11 @@ const (
 type openEditorMsg struct {
 	Text string
 }
+
+// uiAnimTickMsg advances the ambient animation clock. gen identifies the
+// clock generation that armed it so a tick from a retired clock is
+// ignored.
+type uiAnimTickMsg struct{ gen uint64 }
 
 type shellResultMsg struct {
 	PendingID string // ID of the pending ShellItem to update.
@@ -258,6 +271,15 @@ type UI struct {
 	width  int
 	height int
 	layout uiLayout
+
+	// Ambient animation clock. It drives decorative motion (the wordmark
+	// shimmer, the status LED pulse, the prompt rules) while the landing
+	// screen is visible or the agent is working. animFrame advances once
+	// per tick and is read by the draw functions.
+	animFrame   int
+	animRunning bool
+	animArmedAt time.Time
+	animGen     uint64
 
 	isTransparent bool
 
@@ -602,6 +624,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		com.Styles.Completions.Focused,
 		com.Styles.Completions.Match,
 	)
+	comp.SetChrome(com.Styles)
 
 	todoSpinner := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
@@ -758,7 +781,44 @@ func (m *UI) Init() tea.Cmd {
 	if cmd := m.requestMCPRefresh(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	// Start the ambient animation clock for the landing screen.
+	if cmd := m.ensureAmbientAnimating(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return tea.Batch(cmds...)
+}
+
+// ambientAnimationsActive reports whether decorative motion should run.
+// The rain and shimmer run continuously so the interface always feels
+// alive.
+func (m *UI) ambientAnimationsActive() bool {
+	return true
+}
+
+// ensureAmbientAnimating arms the ambient animation clock when motion is
+// active and no tick is outstanding. Like the chat clock it tolerates a
+// lost tick by re-arming after a short grace period.
+func (m *UI) ensureAmbientAnimating() tea.Cmd {
+	if !m.ambientAnimationsActive() {
+		m.animRunning = false
+		m.animGen++
+		return nil
+	}
+	if m.animRunning && time.Since(m.animArmedAt) < animClockLostAfter {
+		return nil
+	}
+	m.animRunning = true
+	m.animArmedAt = time.Now()
+	m.animGen++
+	gen := m.animGen
+	return tea.Tick(time.Second/ambientAnimFPS, func(time.Time) tea.Msg {
+		return uiAnimTickMsg{gen: gen}
+	})
+}
+
+// animPhase returns the current shimmer position in the range [0,1).
+func (m *UI) animPhase() float64 {
+	return float64(m.animFrame%shimmerCycle) / shimmerCycle
 }
 
 // loadInitialSession loads the initial session if one was specified on startup.
@@ -876,6 +936,7 @@ func (m *UI) setState(state uiState, focus uiFocusState) {
 		// Always turn off compact mode when going to landing
 		m.isCompact = false
 	}
+
 	m.state = state
 	m.focus = focus
 	// Changing the state may change layout, so update it.
@@ -968,6 +1029,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.caps.Update(msg)
 	m.trackTurnOutcome(msg)
 	switch msg := msg.(type) {
+	case uiAnimTickMsg:
+		// Ignore ticks from a clock that was retired by a state change.
+		if msg.gen != m.animGen {
+			break
+		}
+		m.animFrame++
+		m.animRunning = false
+		m.invalidateFrames()
 	case tea.EnvMsg:
 		// Is this Windows Terminal?
 		if !m.sendProgressBar {
@@ -1896,6 +1965,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.chat.EnsureScrollbarHide(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	}
+	// Keep the ambient clock alive across state changes (landing to chat,
+	// idle to busy) and stop it when nothing is moving.
+	if cmd := m.ensureAmbientAnimating(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	if cmd := m.endFrameUpdate(); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -4027,7 +4101,39 @@ func (m *UI) drawHeader(scr uv.Screen, area uv.Rectangle) {
 		m.lspErrorCount(),
 		m.hyperCredits,
 		m.gitBranch,
+		m.isAgentBusy(),
+		m.animPhase(),
+		m.headerModelName(),
+		m.headerProviderName(),
+		m.headerContextWindow(),
 	)
+}
+
+// headerContextWindow returns the active large model's context window for
+// the header HUD. It comes from the same memoized agent model as the name
+// so the meter and the name cannot describe different models.
+func (m *UI) headerContextWindow() int64 {
+	if model := m.selectedLargeModel(); model != nil {
+		return model.CatwalkCfg.ContextWindow
+	}
+	return 0
+}
+
+// headerModelName returns the active large model name for the header HUD.
+func (m *UI) headerModelName() string {
+	if model := m.selectedLargeModel(); model != nil {
+		return model.CatwalkCfg.Name
+	}
+	return ""
+}
+
+// headerProviderName returns the active large model provider for the
+// header HUD.
+func (m *UI) headerProviderName() string {
+	if model := m.selectedLargeModel(); model != nil {
+		return model.ModelCfg.Provider
+	}
+	return ""
 }
 
 // Draw implements [uv.Drawable] and draws the UI model.
@@ -4122,6 +4228,25 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	isOnboarding := m.state == uiOnboarding
+
+	// The digital rain fills only empty cells, so text and panel
+	// backgrounds stay readable. It runs on every screen.
+	switch m.state {
+	case uiOnboarding, uiInitialize, uiLanding:
+		rainArea := layout.main
+		rainArea.Max.Y = rainArea.Min.Y + min(8, rainArea.Dy())
+		// Keep the left half, where the readout lives, clear.
+		rainArea.Min.X += rainArea.Dx() / 2
+		m.drawMatrixRain(scr, rainArea)
+	case uiChat:
+		if !m.isCompact {
+			m.drawMatrixRain(scr, layout.sidebar)
+		}
+		// A thin rain curtain on the right edge of the prompt.
+		editorRain := layout.editor
+		editorRain.Min.X = max(editorRain.Min.X, editorRain.Max.X-6)
+		m.drawMatrixRain(scr, editorRain)
+	}
 
 	// Add status and help layer
 	m.status.SetHideHelp(isOnboarding)
@@ -5528,17 +5653,18 @@ func (m *UI) randomizePlaceholders() {
 	m.readyPlaceholder = readyPlaceholders[rand.Intn(len(readyPlaceholders))]
 }
 
-// renderEditorView renders the editor view with attachments if any.
+// renderEditorView renders the editor view with attachments if any. The
+// first row is always reserved for attachments, so the cursor and mouse
+// offsets in Draw and forwardMouseToTextarea stay aligned with the
+// textarea.
 func (m *UI) renderEditorView(width int) string {
-	var attachmentsView string
 	if len(m.attachments.List()) > 0 {
-		attachmentsView = m.attachments.Render(width)
+		return strings.Join([]string{
+			m.attachments.Render(width),
+			m.textarea.View(),
+		}, "\n")
 	}
-	return strings.Join([]string{
-		attachmentsView,
-		m.textarea.View(),
-		"", // margin at bottom of editor
-	}, "\n")
+	return "\n" + m.textarea.View()
 }
 
 // cacheSidebarLogo renders and caches the sidebar logo at the specified width.
@@ -5608,6 +5734,7 @@ func (m *UI) refreshStyles() {
 	}
 	m.textarea.SetStyles(t.Editor.Textarea)
 	m.completions.SetStyles(t.Completions.Normal, t.Completions.Focused, t.Completions.Match)
+	m.completions.SetChrome(t)
 	m.attachments.SetStyles(t.Attachments)
 	m.todoSpinner.Style = t.Pills.TodoSpinner
 	m.status.help.Styles = t.Help
@@ -7018,5 +7145,22 @@ func renderLogo(t *styles.Styles, compact, hyper bool, width int) string {
 		VersionColor: t.Logo.VersionColor,
 		Width:        width,
 		Hyper:        hyper,
+	})
+}
+
+// renderLogoAnimated renders the wide logo with a moving highlight. It is
+// only used in the header, where the ambient clock is already running.
+func renderLogoAnimated(t *styles.Styles, compact, hyper bool, width int, phase float64) string {
+	return logo.Render(t.Logo.GradCanvas, version.Version, compact, logo.Opts{
+		FieldColor:     t.Logo.FieldColor,
+		TitleColorA:    t.Logo.TitleColorA,
+		TitleColorB:    t.Logo.TitleColorB,
+		CharmColor:     t.Logo.CharmColor,
+		VersionColor:   t.Logo.VersionColor,
+		Width:          width,
+		Hyper:          hyper,
+		Animate:        true,
+		AnimPhase:      phase,
+		HighlightColor: t.Chrome.TopRuleEdge.GetForeground(),
 	})
 }

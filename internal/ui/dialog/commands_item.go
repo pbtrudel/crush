@@ -14,6 +14,7 @@ import (
 type CommandItem struct {
 	*list.Versioned
 	id          string
+	icon        string
 	title       string
 	shortcut    string
 	description string
@@ -49,6 +50,12 @@ func (c *CommandItem) Finished() bool {
 // WithAliases returns the CommandItem with the given aliases for filtering.
 func (c *CommandItem) WithAliases(aliases ...string) *CommandItem {
 	c.aliases = aliases
+	return c
+}
+
+// WithIcon returns the CommandItem with the given leading glyph.
+func (c *CommandItem) WithIcon(icon string) *CommandItem {
+	c.icon = icon
 	return c
 }
 
@@ -140,7 +147,23 @@ func (c *CommandItem) Render(width int) string {
 	if c.hideInfo {
 		shortcut = ""
 	}
-	rendered := renderItem(styles, c.title, shortcut, c.focused, width, c.cache, &c.m)
+	icon := c.icon
+	if icon == "" {
+		icon = "▸"
+	}
+	prefix := icon + " "
+	match := c.m
+	if len(match.MatchedIndexes) > 0 {
+		// The icon shifts the display text; move the fuzzy match ranges
+		// with it so the underline lands on the matched letters.
+		offset := len(prefix)
+		indexes := make([]int, len(match.MatchedIndexes))
+		for i, idx := range match.MatchedIndexes {
+			indexes[i] = idx + offset
+		}
+		match.MatchedIndexes = indexes
+	}
+	rendered := renderItem(styles, prefix+c.title, shortcut, c.focused, width, c.cache, &match)
 	if c.description != "" {
 		descStyle := c.t.Dialog.SecondaryText
 		if c.focused {

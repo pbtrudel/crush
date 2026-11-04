@@ -312,7 +312,7 @@ func TestHostTheme_InvalidThemeReportsError(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, util.InfoTypeError, info.Type)
 	require.Contains(t, info.Msg, "broken")
-	require.Equal(t, "#6b50ff", primaryOf(m), "the current theme stays")
+	require.Equal(t, "#00ff41", primaryOf(m), "the current theme stays")
 	require.False(t, m.hostTheme.active)
 }
 
