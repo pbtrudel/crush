@@ -4,7 +4,6 @@ package logo
 import (
 	"fmt"
 	"image/color"
-	"math/rand/v2"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -16,8 +15,6 @@ import (
 // a given amount via the boolean argument.
 type letterform func(bool) string
 
-const diag = `╱`
-
 // Opts are the options for rendering the Crush title art.
 type Opts struct {
 	FieldColor   color.Color // diagonal lines
@@ -28,122 +25,120 @@ type Opts struct {
 	Width        int         // width of the rendered logo, used for truncation
 	Hyper        bool        // whether it is Crush or Hypercrush
 
-	// When true, stretch a random letterform on each render. Has no effect in
-	// compact mode. Mainly for testing. In production you will want to cache
-	// the stretched letterform to keep the logo from jittering on resize.
-	Unstable bool
+	// Animate adds a moving highlight to the wordmark gradient. AnimPhase
+	// is the highlight position in the range [0,1) and HighlightColor is
+	// the color it blends toward.
+	Animate        bool
+	AnimPhase      float64
+	HighlightColor color.Color
 }
 
-// Render renders the Crush logo. Set the argument to true to render the narrow
-// version, intended for use in a sidebar.
-//
-// The compact argument determines whether it renders compact for the sidebar
-// or wider for the main pane.
+// blockLetters is a 3-row block font. Each glyph is three cells wide;
+// renderBlockWord adds the one-cell gap between letters.
+var blockLetters = map[rune][3]string{
+	'C': {"█▀▀", "█  ", "▀▀▀"},
+	'R': {"█▀▀", "█▀▀", "▀ ▀"},
+	'U': {"█ █", "█ █", " ▀ "},
+	'S': {"█▀▀", "▀▀█", "▀▀▀"},
+	'H': {"█ █", "█▀█", "▀ ▀"},
+	'Y': {"█ █", " ▀ ", " ▀ "},
+	'P': {"█▀▀", "█▀▀", "▀  "},
+	'E': {"█▀▀", "█▀▀", "▀▀▀"},
+}
+
+// Render renders the Crush mark. The compact form is a small stacked
+// badge for the sidebar; the wide form is the hero shown above the
+// landing screen.
 func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
-	charm := "Charm™"
-	if !o.Hyper {
-		charm = " " + charm
-	}
-
-	fg := func(c color.Color, s string) string {
-		return lipgloss.NewStyle().Foreground(c).Render(s)
-	}
-
-	// Title.
-	const spacing = 1
-	var hyperLetterforms []letterform
+	name := "CRUSH"
 	if o.Hyper {
-		hyperLetterforms = []letterform{
-			LetterH,
-			LetterYAlt,
-			LetterP,
-			LetterE,
-			LetterR,
-		}
+		name = "HYPERCRUSH"
 	}
-	crushLetterforms := []letterform{
-		LetterC,
-		LetterR,
-		LetterU,
-		LetterSAlt,
-		LetterH,
-	}
-	if o.Hyper && !compact {
-		crushLetterforms = append(hyperLetterforms, crushLetterforms...)
-	}
-
-	stretchIndex := -1 // -1 means no stretching.
-	if !compact && !o.Unstable {
-		// Always stretch the same letterform, which is picked once at random.
-		stretchIndex = cachedRandN(len(crushLetterforms))
-	} else if !compact && o.Unstable {
-		// Stretch a random letterform on every render.
-		stretchIndex = rand.IntN(len(crushLetterforms))
-	}
-	crush := renderWord(spacing, stretchIndex, crushLetterforms...)
-	if o.Hyper && compact {
-		crush = renderWord(spacing, stretchIndex, hyperLetterforms...) + "\n" + crush
-	}
-	crushWidth := lipgloss.Width(crush)
-	b := new(strings.Builder)
-	for r := range strings.SplitSeq(crush, "\n") {
-		fmt.Fprintln(b, styles.ApplyForegroundGrad(base, r, o.TitleColorA, o.TitleColorB))
-	}
-	crush = b.String()
-
-	// Charm and version.
-	metaRowGap := 1
-	maxVersionWidth := crushWidth - lipgloss.Width(charm) - metaRowGap
-	version = ansi.Truncate(version, maxVersionWidth, "…") // truncate version if too long.
-	if o.Hyper && compact {
-		version += " "
-	}
-	gap := max(0, crushWidth-lipgloss.Width(charm)-lipgloss.Width(version))
-	metaRow := fg(o.CharmColor, charm) + strings.Repeat(" ", gap) + fg(o.VersionColor, version)
-
-	// Join the meta row and big Crush title.
-	crush = strings.TrimSpace(metaRow + "\n" + crush)
-
-	// Narrow version. If this is Hypercrush, this is also a stacked version.
 	if compact {
-		field := fg(o.FieldColor, strings.Repeat(diag, crushWidth))
-		return strings.Join([]string{field, field, crush, field, ""}, "\n")
+		return renderCompact(base, name, version, o)
 	}
+	return renderHero(base, name, version, o)
+}
 
-	fieldHeight := lipgloss.Height(crush)
-
-	// Left field.
-	const leftWidth = 6
-	leftFieldRow := fg(o.FieldColor, strings.Repeat(diag, leftWidth))
-	leftField := new(strings.Builder)
-	for range fieldHeight {
-		fmt.Fprintln(leftField, leftFieldRow)
-	}
-
-	// Right field.
-	rightWidth := max(15, o.Width-crushWidth-leftWidth-2) // 2 for the gap.
-	const stepDownAt = 0
-	rightField := new(strings.Builder)
-	for i := range fieldHeight {
-		width := rightWidth
-		if i >= stepDownAt {
-			width = rightWidth - (i - stepDownAt)
+// renderBlockWord renders name in the 3-row block font.
+func renderBlockWord(name string) string {
+	rows := make([]strings.Builder, 3)
+	for _, r := range name {
+		glyph, ok := blockLetters[r]
+		if !ok {
+			continue
 		}
-		fmt.Fprint(rightField, fg(o.FieldColor, strings.Repeat(diag, width)), "\n")
-	}
-
-	// Return the wide version.
-	const hGap = " "
-	logo := lipgloss.JoinHorizontal(lipgloss.Top, leftField.String(), hGap, crush, hGap, rightField.String())
-	if o.Width > 0 {
-		// Truncate the logo to the specified width.
-		lines := strings.Split(logo, "\n")
-		for i, line := range lines {
-			lines[i] = ansi.Truncate(line, o.Width, "")
+		for i := range 3 {
+			rows[i].WriteString(glyph[i])
+			rows[i].WriteString(" ")
 		}
-		logo = strings.Join(lines, "\n")
 	}
-	return logo
+	lines := make([]string, 3)
+	for i := range 3 {
+		lines[i] = strings.TrimRight(rows[i].String(), " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderBlockGradient paints the block wordmark with the theme gradient
+// and, when animated, a moving highlight.
+func renderBlockGradient(base lipgloss.Style, wordmark string, o Opts) string {
+	lines := strings.Split(wordmark, "\n")
+	for i, line := range lines {
+		if o.Animate {
+			lines[i] = styles.ApplyShimmerGrad(base.Bold(true), line, o.TitleColorA, o.TitleColorB, o.HighlightColor, o.AnimPhase)
+			continue
+		}
+		lines[i] = styles.ApplyBoldForegroundGrad(base, line, o.TitleColorA, o.TitleColorB)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderTextWordmark is the fallback for names too wide for the block
+// font in the sidebar.
+func renderTextWordmark(base lipgloss.Style, name string, o Opts) string {
+	if o.Animate {
+		return styles.ApplyShimmerGrad(base.Bold(true), name, o.TitleColorA, o.TitleColorB, o.HighlightColor, o.AnimPhase)
+	}
+	return styles.ApplyBoldForegroundGrad(base, name, o.TitleColorA, o.TitleColorB)
+}
+
+// renderHero renders the wide header mark: the block wordmark beside the
+// tagline and version line.
+func renderHero(base lipgloss.Style, name, version string, o Opts) string {
+	wordmark := renderBlockGradient(base, renderBlockWord(name), o)
+	tagline := lipgloss.NewStyle().Foreground(o.CharmColor).Render("terminal coding agent")
+	meta := lipgloss.NewStyle().Foreground(o.VersionColor).Render("Charm™ · " + version)
+	right := lipgloss.JoinVertical(lipgloss.Left, tagline, meta)
+	mark := lipgloss.JoinHorizontal(lipgloss.Center, wordmark, "  ", right)
+	return truncateLines(mark, o.Width)
+}
+
+// renderCompact renders the sidebar badge: the block wordmark, its meta
+// line, and a gradient rule underneath.
+func renderCompact(base lipgloss.Style, name, version string, o Opts) string {
+	wordmark := renderBlockWord(name)
+	if lipgloss.Width(wordmark) > 28 {
+		wordmark = renderTextWordmark(base, name, o)
+	} else {
+		wordmark = renderBlockGradient(base, wordmark, o)
+	}
+	meta := lipgloss.NewStyle().Foreground(o.VersionColor).Render("Charm™ " + version)
+	mark := lipgloss.JoinVertical(lipgloss.Left, wordmark, meta)
+	return truncateLines(mark, o.Width)
+}
+
+// truncateLines clips every line of s to width cells. A zero or negative
+// width leaves the mark untouched.
+func truncateLines(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, width, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // SmallRender renders a smaller version of the Crush logo, suitable for

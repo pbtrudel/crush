@@ -52,6 +52,48 @@ func newAnimTestUI(t *testing.T) (u *UI, top, bottom *spinTestItem) {
 	return u, top, bottom
 }
 
+func TestAmbientClock_ArmsContinuously(t *testing.T) {
+	t.Parallel()
+
+	u := newFrameTestUI(t)
+	u.state = uiLanding
+
+	require.NotNil(t, u.ensureAmbientAnimating())
+	require.True(t, u.animRunning)
+	require.Nil(t, u.ensureAmbientAnimating(), "the clock must not be double-armed")
+
+	// The rain runs in chat too, even while the agent is idle.
+	u.state = uiChat
+	u.agentBusyCache.set(false)
+	require.True(t, u.ambientAnimationsActive())
+}
+
+func TestAmbientClock_ReArmsAfterLostTick(t *testing.T) {
+	t.Parallel()
+
+	u := newFrameTestUI(t)
+	u.ensureAmbientAnimating()
+	gen := u.animGen
+
+	// A tick that never arrives must not freeze the rain forever.
+	u.animArmedAt = time.Now().Add(-2 * animClockLostAfter)
+	require.NotNil(t, u.ensureAmbientAnimating())
+	require.NotEqual(t, gen, u.animGen)
+}
+
+func TestAnimPhaseWraps(t *testing.T) {
+	t.Parallel()
+
+	u := &UI{animFrame: 0}
+	require.InDelta(t, 0.0, u.animPhase(), 1e-9)
+
+	u.animFrame = shimmerCycle / 2
+	require.InDelta(t, 0.5, u.animPhase(), 1e-9)
+
+	u.animFrame = shimmerCycle
+	require.InDelta(t, 0.0, u.animPhase(), 1e-9)
+}
+
 func TestAnimClock_StartsFromUpdateTailWhenSpinnerVisible(t *testing.T) {
 	t.Parallel()
 	u, _, _ := newAnimTestUI(t)

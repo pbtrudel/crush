@@ -26,7 +26,6 @@ func main() {
 		CharmColor:   s.Logo.CharmColor,
 		VersionColor: s.Logo.VersionColor,
 		Width:        w,
-		Unstable:     true,
 	}
 
 	renderCompact := func(hyper bool) string {

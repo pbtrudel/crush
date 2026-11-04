@@ -234,6 +234,26 @@ func quickStyle(o quickStyleOpts) Styles {
 
 	s.Background = o.bgBase
 
+	// Chrome: the decorative frame and HUD pieces. Everything is derived
+	// from the palette so any theme gets the same structure.
+	s.Chrome.TopRule = lipgloss.NewStyle()
+	s.Chrome.TopRuleFrom = o.primary
+	s.Chrome.TopRuleTo = o.secondary
+	s.Chrome.TopRuleEdge = lipgloss.NewStyle().Foreground(o.accent)
+	s.Chrome.SidebarRail = lipgloss.NewStyle()
+	s.Chrome.SidebarRailFrom = o.primary
+	s.Chrome.SidebarRailTo = o.secondary
+	s.Chrome.StatusBar = lipgloss.NewStyle().Background(o.bgLeastVisible)
+	s.Chrome.LEDIdle = lipgloss.NewStyle().Foreground(o.success)
+	s.Chrome.LEDBusy = lipgloss.NewStyle().Foreground(o.busy)
+	s.Chrome.LEDError = lipgloss.NewStyle().Foreground(o.error)
+	s.Chrome.MeterLow = lipgloss.NewStyle().Foreground(o.success)
+	s.Chrome.MeterMid = lipgloss.NewStyle().Foreground(o.warningSubtle)
+	s.Chrome.MeterHigh = lipgloss.NewStyle().Foreground(o.destructive)
+	s.Chrome.MeterEmpty = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+	s.Chrome.MatrixRain = lipgloss.NewStyle().Foreground(o.bgMostVisible)
+	s.Chrome.MatrixRainHead = lipgloss.NewStyle().Foreground(o.successMostSubtle).Bold(true)
+
 	// Populate color fields
 	s.WorkingGradFromColor = o.primary
 	s.WorkingGradToColor = o.secondary
@@ -939,6 +959,11 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.QuestionCheckOn = lipgloss.NewStyle().Foreground(o.secondary).SetString(RadioOn)
 	s.Editor.QuestionCheckOff = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
 
+	// Prompt rules: gradient hairlines above and below the textarea.
+	s.Editor.RuleBase = lipgloss.NewStyle()
+	s.Editor.RuleFromColor = o.primary
+	s.Editor.RuleToColor = o.secondary
+
 	s.Radio.On = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOn)
 	s.Radio.Off = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
 	s.Radio.Label = lipgloss.NewStyle().Foreground(o.fgSubtle)
@@ -988,6 +1013,8 @@ func quickStyle(o quickStyleOpts) Styles {
 	// Section
 	s.Section.Title = subtle
 	s.Section.Line = base.Foreground(o.separator)
+	s.Section.LineFromColor = o.primary
+	s.Section.LineToColor = o.secondary
 
 	// Initialize
 	s.Initialize.Header = base
@@ -995,9 +1022,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Initialize.Accent = base.Foreground(o.successMostSubtle)
 
 	// ResourceGroup (LSP/MCP/skills sidebar lists).
-	s.Resource.Heading = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Resource.Heading = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Resource.Name = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
-	s.Resource.StatusText = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Resource.StatusText = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Resource.OfflineIcon = lipgloss.NewStyle().Foreground(o.bgMostVisible).SetString("●")
 	s.Resource.BusyIcon = s.Resource.OfflineIcon.Foreground(o.busy)
 	s.Resource.ErrorIcon = s.Resource.OfflineIcon.Foreground(o.destructive)
@@ -1005,8 +1032,8 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Resource.OnlineText = lipgloss.NewStyle().Foreground(o.successMostSubtle)
 	s.Resource.NeedsAuthIcon = s.Resource.OfflineIcon.Foreground(o.attention)
 	s.Resource.DisabledIcon = lipgloss.NewStyle().Foreground(o.fgMoreSubtle).SetString("●")
-	s.Resource.AdditionalText = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
-	s.Resource.CapabilityCount = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Resource.AdditionalText = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+	s.Resource.CapabilityCount = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Resource.RowTitleBase = lipgloss.NewStyle().Foreground(o.fgBase)
 	s.Resource.RowDescBase = lipgloss.NewStyle().Foreground(o.fgBase)
 	s.Resource.DefaultTitleFg = o.fgMoreSubtle
@@ -1051,15 +1078,24 @@ func quickStyle(o quickStyleOpts) Styles {
 	messageFocussedBorder := lipgloss.Border{
 		Left: "▌",
 	}
+	toolCallBorder := lipgloss.Border{
+		Left: "┆",
+	}
 
 	s.Messages.NoContent = lipgloss.NewStyle().Foreground(o.fgBase)
-	s.Messages.UserBlurred = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(o.primary).BorderStyle(lipgloss.NormalBorder())
-	s.Messages.UserFocused = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(o.primary).BorderStyle(messageFocussedBorder)
-	s.Messages.AssistantBlurred = s.Messages.NoContent.PaddingLeft(2)
-	s.Messages.AssistantFocused = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
+	// User prompts are filled blocks: a dark green surface with a bright
+	// prompt marker. Assistant replies stay plain bright text with a solid
+	// accent, so the two roles read differently at a glance.
+	s.Messages.UserBlurred = s.Messages.NoContent.
+		Background(o.bgLessVisible).
+		Padding(0, 1)
+	s.Messages.UserFocused = s.Messages.NoContent.
+		Background(o.bgMostVisible).
+		Padding(0, 1)
+	s.Messages.AssistantBlurred = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
 		BorderForeground(o.successMostSubtle).BorderStyle(messageFocussedBorder)
+	s.Messages.AssistantFocused = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
+		BorderForeground(o.primary).BorderStyle(messageFocussedBorder)
 	s.Messages.Thinking = lipgloss.NewStyle().MaxHeight(10)
 	s.Messages.ErrorTag = lipgloss.NewStyle().Padding(0, 1).
 		Background(o.destructive).Foreground(o.onPrimary)
@@ -1068,7 +1104,7 @@ func quickStyle(o quickStyleOpts) Styles {
 
 	// Message item styles
 	s.Messages.ToolCallFocused = muted.PaddingLeft(1).
-		BorderStyle(messageFocussedBorder).
+		BorderStyle(toolCallBorder).
 		BorderLeft(true).
 		BorderForeground(o.successMostSubtle)
 	s.Messages.ToolCallBlurred = muted.PaddingLeft(2)
@@ -1137,7 +1173,27 @@ func quickStyle(o quickStyleOpts) Styles {
 	// secondary hints like keybind shortcuts, so mute it when blurred and
 	// keep it readable on the focused row.
 	s.Dialog.ListItem.InfoBlurred = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
-	s.Dialog.ListItem.InfoFocused = lipgloss.NewStyle().Foreground(o.fgBase)
+	s.Dialog.ListItem.InfoFocused = lipgloss.NewStyle().
+		Foreground(o.onPrimary).
+		Background(o.secondary).
+		Bold(true).
+		Padding(0, 1)
+
+	// Dialog.Palette: the command deck chrome.
+	s.Dialog.Palette.TabActive = lipgloss.NewStyle().
+		Foreground(o.onPrimary).
+		Background(o.primary).
+		Bold(true)
+	s.Dialog.Palette.TabInactive = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+	s.Dialog.Palette.Rule = lipgloss.NewStyle()
+	s.Dialog.Palette.RuleFromColor = o.primary
+	s.Dialog.Palette.RuleToColor = o.secondary
+	s.Dialog.Palette.RowIcon = lipgloss.NewStyle().Foreground(o.secondary)
+	s.Dialog.Palette.RowIconFocused = lipgloss.NewStyle().Foreground(o.onPrimary)
+	s.Dialog.Palette.Shortcut = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Dialog.Palette.ShortcutFocused = s.Dialog.ListItem.InfoFocused
+	s.Dialog.Palette.Preview = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+	s.Dialog.Palette.PreviewIcon = lipgloss.NewStyle().Foreground(o.accent).Bold(true)
 
 	// Dialog.Models
 	s.Dialog.Models.ConfiguredText = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
@@ -1163,8 +1219,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.Help.FullDesc = base.Foreground(o.fgMostSubtle)
 	s.Dialog.Help.FullSeparator = base.Foreground(o.separator)
 	s.Dialog.NormalItem = base.Padding(0, 1).Foreground(o.fgBase)
-	s.Dialog.SelectedItem = base.Padding(0, 1).Background(o.primary).Foreground(o.onPrimary)
-	s.Dialog.InputPrompt = base.Margin(1, 1)
+	s.Dialog.SelectedItem = base.Padding(0, 1).Background(o.primary).Foreground(o.onPrimary).
+		BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(o.secondary)
+	s.Dialog.InputPrompt = base.Background(o.bgLessVisible).Padding(0, 1).Margin(0, 0, 1, 0)
 
 	s.Dialog.List = base.Margin(0, 0, 1, 0)
 	s.Dialog.ContentPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(1, 2)
@@ -1221,7 +1278,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.Sessions.InfoBlurred = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
 	s.Dialog.Sessions.InfoFocused = lipgloss.NewStyle().Foreground(o.fgBase)
 
-	s.Status.Help = lipgloss.NewStyle().Padding(0, 1)
+	s.Status.Help = lipgloss.NewStyle().Padding(0, 1).Background(o.bgLeastVisible)
 	s.Status.ModeBadgePlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.primary).Padding(0, 1).Bold(true).SetString("PLAN MODE")
 	s.Status.ModeBadgeYolo = lipgloss.NewStyle().Foreground(badgeInk(o.busy, o.bgBase, o.fgBase)).Background(o.busy).Padding(0, 1).Bold(true).SetString("YOLO MODE")
 	s.Status.ModeBannerPlanBadge = s.Status.ModeBadgePlan

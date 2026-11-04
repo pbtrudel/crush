@@ -130,6 +130,8 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 			helpView = strings.ReplaceAll(helpView, "\n", "\n"+indent)
 			helpView = strings.Repeat(" ", badgeLeftInset) + badge + " " + helpView
 		}
+		// Paint the full-width status strip behind the hints.
+		helpView = s.com.Styles.Chrome.StatusBar.Width(area.Dx()).Render(helpView)
 		uv.NewStyledString(helpView).Draw(scr, area)
 	}
 

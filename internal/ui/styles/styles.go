@@ -186,6 +186,14 @@ type Styles struct {
 		PromptQuestionIconFocused lipgloss.Style
 		PromptQuestionIconBlurred lipgloss.Style
 
+		// Gradient rules framing the prompt: one above the textarea and
+		// one below it. They render in the rows already reserved for the
+		// attachment bar and the bottom margin, so the layout is
+		// unchanged.
+		RuleBase      lipgloss.Style
+		RuleFromColor color.Color
+		RuleToColor   color.Color
+
 		// Question choice styling.
 		QuestionSelected   lipgloss.Style // Active choice text (Dolly).
 		QuestionUnselected lipgloss.Style // Inactive header text (Sash).
@@ -220,6 +228,34 @@ type Styles struct {
 	// Background
 	Background color.Color
 
+	// Chrome holds the decorative frame and HUD pieces: the top rule,
+	// the sidebar rail, the status strip, status LEDs, and the context
+	// meter. These are derived from the palette by quickStyle.
+	Chrome struct {
+		TopRule     lipgloss.Style // Base for the top gradient rule.
+		TopRuleFrom color.Color    // Top rule gradient start.
+		TopRuleTo   color.Color    // Top rule gradient end.
+		TopRuleEdge lipgloss.Style // Diamond caps on the top rule.
+
+		SidebarRail     lipgloss.Style // Base for the vertical sidebar rail.
+		SidebarRailFrom color.Color    // Rail gradient start (top).
+		SidebarRailTo   color.Color    // Rail gradient end (bottom).
+
+		StatusBar lipgloss.Style // Full-width status strip background.
+
+		LEDIdle  lipgloss.Style // Idle status dot.
+		LEDBusy  lipgloss.Style // Working status dot.
+		LEDError lipgloss.Style // Error status dot.
+
+		MeterLow   lipgloss.Style // Context meter below 60%.
+		MeterMid   lipgloss.Style // Context meter between 60% and 85%.
+		MeterHigh  lipgloss.Style // Context meter above 85%.
+		MeterEmpty lipgloss.Style // Unfilled meter cells.
+
+		MatrixRain     lipgloss.Style // Dim digital-rain glyphs.
+		MatrixRainHead lipgloss.Style // Bright leading glyph of a rain column.
+	}
+
 	// Logo
 	Logo struct {
 		FieldColor         color.Color
@@ -245,8 +281,10 @@ type Styles struct {
 
 	// Section Title
 	Section struct {
-		Title lipgloss.Style
-		Line  lipgloss.Style
+		Title         lipgloss.Style
+		Line          lipgloss.Style
+		LineFromColor color.Color // Section rule gradient start.
+		LineToColor   color.Color // Section rule gradient end.
 	}
 
 	// Initialize
@@ -523,6 +561,22 @@ type Styles struct {
 		ListItem struct {
 			InfoBlurred lipgloss.Style
 			InfoFocused lipgloss.Style
+		}
+
+		// Palette styles the command palette: category tabs, gradient
+		// rules, row icons, shortcut chips, and the selection preview.
+		Palette struct {
+			TabActive       lipgloss.Style
+			TabInactive     lipgloss.Style
+			Rule            lipgloss.Style
+			RuleFromColor   color.Color
+			RuleToColor     color.Color
+			RowIcon         lipgloss.Style
+			RowIconFocused  lipgloss.Style
+			Shortcut        lipgloss.Style
+			ShortcutFocused lipgloss.Style
+			Preview         lipgloss.Style
+			PreviewIcon     lipgloss.Style
 		}
 
 		Models struct {

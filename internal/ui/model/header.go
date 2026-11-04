@@ -2,10 +2,11 @@ package model
 
 import (
 	"fmt"
+	"image"
+	"math"
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -23,13 +24,10 @@ const (
 )
 
 type header struct {
-	// cached logo and compact logo
-	logo        string
+	// compactLogo is the cached "Charm™ CRUSH" label used in compact mode.
 	compactLogo string
 
-	com     *common.Common
-	width   int
-	compact bool
+	com *common.Common
 }
 
 // newHeader creates a new header model.
@@ -47,18 +45,12 @@ func (h *header) refresh() {
 	t := h.com.Styles
 	isHyper := h.com.IsHyper()
 	charm := "Charm™"
-	if !isHyper {
-		charm = " " + charm
-	}
 	name := "CRUSH"
 	if isHyper {
 		name = "HYPERCRUSH"
 	}
 	h.compactLogo = t.Header.Charm.Render(charm) + " " +
 		styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, t.Header.LogoGradFromColor, t.Header.LogoGradToColor) + " "
-	// Force drawHeader to re-render the wide logo on the next frame.
-	h.width = 0
-	h.logo = ""
 }
 
 // drawHeader draws the header for the given session. lspErrorCount comes
@@ -74,25 +66,27 @@ func (h *header) drawHeader(
 	lspErrorCount int,
 	hyperCredits *int,
 	gitBranch string,
+	busy bool,
+	animPhase float64,
+	modelName string,
+	providerName string,
+	contextWindow int64,
 ) {
 	t := h.com.Styles
-	if width != h.width || compact != h.compact {
-		h.logo = renderLogo(h.com.Styles, compact, h.com.IsHyper(), width)
-	}
-
-	h.width = width
-	h.compact = compact
-
-	if !compact || session == nil {
-		uv.NewStyledString(h.logo).Draw(scr, area)
+	if !compact {
+		logoView := renderLogoAnimated(h.com.Styles, compact, h.com.IsHyper(), width, animPhase)
+		uv.NewStyledString(logoView).Draw(scr, area)
+		h.drawHUD(scr, area, session, lspErrorCount, gitBranch, busy, animPhase, modelName, providerName, contextWindow)
 		return
 	}
 
-	if session.ID == "" {
+	if session == nil || session.ID == "" {
 		return
 	}
 
 	var b strings.Builder
+	b.WriteString(h.statusLED(busy, animPhase))
+	b.WriteString(" ")
 	b.WriteString(h.compactLogo)
 
 	availDetailWidth := width - leftPadding - rightPadding - lipgloss.Width(b.String()) - minHeaderDiags - diagToDetailsSpacing
@@ -104,6 +98,7 @@ func (h *header) drawHeader(
 		availDetailWidth,
 		hyperCredits,
 		gitBranch,
+		contextWindow,
 	)
 
 	remainingWidth := width -
@@ -128,6 +123,104 @@ func (h *header) drawHeader(
 	view.Draw(scr, area)
 }
 
+// statusLED renders the live status dot. While the agent is working the
+// dot breathes between its base color and the accent color.
+func (h *header) statusLED(busy bool, animPhase float64) string {
+	t := h.com.Styles
+	led := t.Chrome.LEDIdle
+	if busy {
+		led = t.Chrome.LEDBusy
+		amount := 0.35 + 0.35*math.Sin(animPhase*2*math.Pi)
+		led = led.Foreground(styles.PulseColor(
+			led.GetForeground(),
+			t.Chrome.TopRuleEdge.GetForeground(),
+			amount,
+		))
+	}
+	return led.Render("●")
+}
+
+// drawHUD draws the right-aligned status readout over the logo field. It
+// shows the agent state, model, context meter, and working directory in a
+// single floating block, giving the header a cockpit feel.
+func (h *header) drawHUD(
+	scr uv.Screen,
+	area uv.Rectangle,
+	session *session.Session,
+	lspErrorCount int,
+	gitBranch string,
+	busy bool,
+	animPhase float64,
+	modelName string,
+	providerName string,
+	contextWindow int64,
+) {
+	t := h.com.Styles
+	const panelWidth = 38
+	// Keep enough room for the wordmark on the left; below this the HUD
+	// would cover the logo instead of sitting beside it.
+	if area.Dx() < panelWidth+50 || area.Dy() < 2 {
+		return
+	}
+	height := min(area.Dy(), 3)
+	contentWidth := panelWidth - 3 // rail + horizontal padding
+
+	led := h.statusLED(busy, animPhase)
+	status := "READY"
+	if busy {
+		status = "WORKING"
+	}
+	if lspErrorCount > 0 {
+		led = t.Chrome.LEDError.Render("●")
+		status = fmt.Sprintf("%d LSP ERRORS", lspErrorCount)
+	}
+
+	if modelName == "" {
+		modelName = "…"
+	}
+	var pct float64
+	if session != nil && contextWindow > 0 {
+		pct = (float64(session.CompletionTokens+session.PromptTokens) / float64(contextWindow)) * 100
+	}
+
+	providerSuffix := ""
+	if providerName != "" {
+		providerSuffix = "   " + t.Header.GitBranch.Render("via "+providerName)
+	}
+
+	branch := ""
+	if gitBranch != "" {
+		branch = "⎇ " + gitBranch
+	}
+	cwd := fsext.DirTrim(fsext.PrettyPath(h.com.Workspace.WorkingDir()), 3)
+
+	lines := []string{
+		led + " " + t.Header.Charm.Render(status) + "   " +
+			t.Header.GitBranch.Render(styles.ModelIcon) + " " + t.Header.GitBranch.Render(modelName),
+		common.ContextMeter(t, pct, 10) + " " + t.Header.GitBranch.Render(fmt.Sprintf("%d%%", int(pct))) + providerSuffix,
+		t.Header.GitBranch.Render(branch) + " " + t.Header.GitBranch.Render(cwd),
+	}
+	lines = lines[:min(height, len(lines))]
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], contentWidth, "…")
+		if w := lipgloss.Width(lines[i]); w < contentWidth {
+			lines[i] += strings.Repeat(" ", contentWidth-w)
+		}
+	}
+
+	rail := styles.VerticalGradient(
+		t.Chrome.SidebarRail,
+		len(lines),
+		"▌",
+		t.Chrome.SidebarRailFrom,
+		t.Chrome.SidebarRailTo,
+	)
+	body := t.Chrome.StatusBar.Padding(0, 1).Width(panelWidth - 1).Render(strings.Join(lines, "\n"))
+	panel := lipgloss.JoinHorizontal(lipgloss.Top, rail, body)
+	rect := image.Rect(area.Max.X-panelWidth, area.Min.Y, area.Max.X, area.Min.Y+len(lines))
+	uv.NewStyledString(panel).Draw(scr, rect)
+}
+
 // renderHeaderDetails renders the details section of the header.
 func renderHeaderDetails(
 	com *common.Common,
@@ -137,6 +230,7 @@ func renderHeaderDetails(
 	availWidth int,
 	hyperCredits *int,
 	gitBranch string,
+	contextWindow int64,
 ) string {
 	t := com.Styles
 
@@ -146,16 +240,14 @@ func renderHeaderDetails(
 		parts = append(parts, t.LSP.ErrorDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPErrorIcon, lspErrorCount)))
 	}
 
-	agentCfg := com.Config().Agents[config.AgentCoder]
-	model := com.Config().GetModelByType(agentCfg.Model)
-	if model != nil && model.ContextWindow > 0 {
-		percentage := (float64(session.CompletionTokens+session.PromptTokens) / float64(model.ContextWindow)) * 100
+	if contextWindow > 0 {
+		percentage := (float64(session.CompletionTokens+session.PromptTokens) / float64(contextWindow)) * 100
 		percentageText := fmt.Sprintf("%d%%", int(percentage))
 		if session.EstimatedUsage {
 			percentageText = "~" + percentageText
 		}
 		formattedPercentage := t.Header.Percentage.Render(percentageText)
-		parts = append(parts, formattedPercentage)
+		parts = append(parts, common.ContextMeter(t, percentage, 5)+" "+formattedPercentage)
 	}
 
 	if com.IsHyper() && hyperCredits != nil {

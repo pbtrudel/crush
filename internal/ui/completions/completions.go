@@ -2,6 +2,7 @@ package completions
 
 import (
 	"cmp"
+	"image/color"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/ui/list"
+	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/ordered"
 )
@@ -66,6 +68,12 @@ type Completions struct {
 	focusedStyle lipgloss.Style
 	matchStyle   lipgloss.Style
 
+	// Header chrome, set by SetChrome so the popup matches the theme.
+	headerStyle lipgloss.Style
+	headerEdge  lipgloss.Style
+	headerFrom  color.Color
+	headerTo    color.Color
+
 	allItems []list.FilterableItem
 	filtered []list.FilterableItem
 }
@@ -111,6 +119,15 @@ func New(normalStyle, focusedStyle, matchStyle lipgloss.Style) *Completions {
 	}
 }
 
+// SetChrome updates the header chrome so the popup matches the active
+// theme.
+func (c *Completions) SetChrome(t *styles.Styles) {
+	c.headerStyle = t.Chrome.TopRule
+	c.headerEdge = t.Chrome.TopRuleEdge
+	c.headerFrom = t.Chrome.TopRuleFrom
+	c.headerTo = t.Chrome.TopRuleTo
+}
+
 // SetStyles updates the styles used when rendering completion items.
 // Existing items are not restyled; subsequent SetItems calls pick up the
 // new styles.
@@ -136,10 +153,10 @@ func (c *Completions) Query() string {
 	return c.query
 }
 
-// Size returns the visible size of the popup.
+// Size returns the visible size of the popup, including the header row.
 func (c *Completions) Size() (width, height int) {
 	visible := len(c.filtered)
-	return c.width, min(visible, c.height)
+	return c.width, min(visible, c.height) + 1
 }
 
 // KeyMap returns the key bindings.
@@ -410,7 +427,17 @@ func (c *Completions) Render() string {
 		return ""
 	}
 
-	return c.list.List.Render()
+	header := c.headerEdge.Render(">") + " " +
+		styles.ApplyForegroundGrad(c.headerStyle, "COMMANDS", c.headerFrom, c.headerTo)
+	if ruleWidth := c.width - lipgloss.Width(header) - 1; ruleWidth > 0 {
+		header += " " + styles.ApplyForegroundGrad(
+			c.headerStyle,
+			strings.Repeat("─", ruleWidth),
+			c.headerFrom,
+			c.headerTo,
+		)
+	}
+	return header + "\n" + c.list.List.Render()
 }
 
 // loadFiles lists the files under the working directory, with the open ones

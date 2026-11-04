@@ -38,7 +38,7 @@ func cachedBuiltinSkills() []*skills.Skill {
 func (m *UI) skillsInfo(width, maxItems int, isSection bool) string {
 	t := m.com.Styles
 
-	title := t.Resource.Heading.Render("Skills")
+	title := t.Resource.Heading.Render("▮ Skills")
 	if isSection {
 		title = common.Section(t, title, width)
 	}

@@ -92,3 +92,15 @@ func TestModelInfoAlwaysRendersTPSStat(t *testing.T) {
 
 	require.Contains(t, actual, "TPS: 0.0")
 }
+
+func TestContextMeter(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+
+	require.Equal(t, 6, ansi.StringWidth(ContextMeter(&sty, 0, 6)))
+	require.Equal(t, "▱▱▱▱▱▱", ansi.Strip(ContextMeter(&sty, 0, 6)))
+	require.Equal(t, "▰▰▰▰▰▰", ansi.Strip(ContextMeter(&sty, 100, 6)))
+	require.Equal(t, "▰▰▰▱▱▱", ansi.Strip(ContextMeter(&sty, 50, 6)))
+	require.Equal(t, "", ContextMeter(&sty, 50, 0))
+}

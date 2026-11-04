@@ -40,8 +40,13 @@ func ThemeForKey(key string) Styles {
 	case "hyper":
 		return HypercrushObsidiana()
 	default:
-		return CharmtonePantera()
+		return Matrix()
 	}
+}
+
+// Matrix returns the Matrix-inspired theme: phosphor green on black.
+func Matrix() Styles {
+	return keanuOverrides(quickStyle(keanuOpts()))
 }
 
 // CharmtonePantera returns the Charmtone dark theme. It's the default style
@@ -170,7 +175,7 @@ func charmtoneOverrides(s Styles) Styles {
 
 // HypercrushObsidiana returns the Hypercrush dark theme.
 func HypercrushObsidiana() Styles {
-	return CharmtonePantera()
+	return Matrix()
 }
 
 // gruvboxDarkOpts returns the quickStyleOpts for the Gruvbox Dark theme,
@@ -257,8 +262,8 @@ func gruvboxDarkOverrides(s Styles) Styles {
 
 // keanuOpts returns the quickStyleOpts for the Keanu theme, a black
 // terminal with phosphor-green text in the spirit of the Matrix films'
-// digital rain. Statuses keep their conventional hues (red for
-// errors, amber for warnings) so they stay readable against the green.
+// digital rain. The palette stays in the green/lime family, keeping red
+// only for errors so failures stay unmistakable.
 func keanuOpts() quickStyleOpts {
 	return quickStyleOpts{
 		primary:   lipgloss.Color("#00ff41"), // neon green
@@ -284,18 +289,18 @@ func keanuOpts() quickStyleOpts {
 		error:             lipgloss.Color("#d43d3d"), // deep red
 		warningSubtle:     lipgloss.Color("#d7f75b"), // lime
 		warning:           lipgloss.Color("#b8d43d"), // dark lime
-		attention:         lipgloss.Color("#ff9f43"), // amber
+		attention:         lipgloss.Color("#c8ff4d"), // electric lime
 		busy:              lipgloss.Color("#c8ff4d"), // electric lime
-		info:              lipgloss.Color("#00d9c3"), // teal
-		infoMoreSubtle:    lipgloss.Color("#00b3a1"), // mid teal
-		infoMostSubtle:    lipgloss.Color("#008f7f"), // dark teal
+		info:              lipgloss.Color("#7dffa6"), // pale phosphor green
+		infoMoreSubtle:    lipgloss.Color("#00c443"), // mid green
+		infoMostSubtle:    lipgloss.Color("#009637"), // dark green
 		success:           lipgloss.Color("#00ff41"), // neon green
 		successMoreSubtle: lipgloss.Color("#00c443"), // mid green
 		successMostSubtle: lipgloss.Color("#009637"), // dark green
 
 		yolo:           lipgloss.Color("#c8ff4d"), // electric lime
-		plan:           lipgloss.Color("#4dffb8"), // bright teal-green
-		planMoreSubtle: lipgloss.Color("#0d332b"), // deep teal
+		plan:           lipgloss.Color("#7dffa6"), // pale phosphor green
+		planMoreSubtle: lipgloss.Color("#0e2415"), // darkest green surface
 
 		// Diff colors derive from success/destructive over bgBase.
 
@@ -310,18 +315,18 @@ func keanuOpts() quickStyleOpts {
 		ansiRed:     lipgloss.Color("#ff5252"),
 		ansiGreen:   lipgloss.Color("#00d447"),
 		ansiYellow:  lipgloss.Color("#d7f75b"),
-		ansiBlue:    lipgloss.Color("#00b8d9"),
-		ansiMagenta: lipgloss.Color("#b98cff"),
-		ansiCyan:    lipgloss.Color("#00e0c3"),
+		ansiBlue:    lipgloss.Color("#00b86b"),
+		ansiMagenta: lipgloss.Color("#7dffa6"),
+		ansiCyan:    lipgloss.Color("#00e08a"),
 		ansiWhite:   lipgloss.Color("#a8d9b8"),
 
 		ansiBrightBlack:   lipgloss.Color("#24572f"),
 		ansiBrightRed:     lipgloss.Color("#ff7a7a"),
 		ansiBrightGreen:   lipgloss.Color("#00ff41"),
 		ansiBrightYellow:  lipgloss.Color("#eaff66"),
-		ansiBrightBlue:    lipgloss.Color("#33cfff"),
-		ansiBrightMagenta: lipgloss.Color("#d1a6ff"),
-		ansiBrightCyan:    lipgloss.Color("#66ffe0"),
+		ansiBrightBlue:    lipgloss.Color("#33ff9e"),
+		ansiBrightMagenta: lipgloss.Color("#b6ffd0"),
+		ansiBrightCyan:    lipgloss.Color("#66ffb2"),
 		ansiBrightWhite:   lipgloss.Color("#e6ffe6"),
 	}
 }
@@ -420,7 +425,7 @@ func BuiltinThemeNames() []string {
 // over built-in themes of the same name. Empty names use Charmtone.
 func LoadTheme(name string) (Styles, error) {
 	if name == "" {
-		return CharmtonePantera(), nil
+		return Matrix(), nil
 	}
 	key := normalizeThemeName(name)
 
@@ -451,7 +456,7 @@ func ThemeFromConfig(name string) Styles {
 	s, err := LoadTheme(name)
 	if err != nil {
 		slog.Warn("Falling back to the default theme", "configured_theme", name, "reason", err)
-		return CharmtonePantera()
+		return Matrix()
 	}
 	return s
 }

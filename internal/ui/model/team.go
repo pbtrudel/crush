@@ -85,7 +85,7 @@ func (m *UI) teamInfo(width int) string {
 		return ""
 	}
 	t := m.com.Styles
-	title := common.Section(t, t.Resource.Heading.Render("Agent Team"), width)
+	title := common.Section(t, t.Resource.Heading.Render("▮ Agent Team"), width)
 
 	lines := []string{teamMemberLine(t, "lead", agentteam.StatusRunning, width)}
 	for _, member := range m.teamState.Members {
