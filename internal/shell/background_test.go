@@ -443,3 +443,49 @@ func TestBackgroundShellManager_PruneDropsOldestFinished(t *testing.T) {
 
 	require.NoError(t, manager.Kill(bgShell.ID))
 }
+
+func TestBackgroundShell_WaitContextOrSteering(t *testing.T) {
+	t.Parallel()
+
+	t.Run("completes", func(t *testing.T) {
+		t.Parallel()
+		manager := newBackgroundShellManager()
+		bgShell, err := manager.Start(t.Context(), t.TempDir(), nil, "echo done", "", testMaxJobs)
+		require.NoError(t, err)
+		defer manager.Kill(bgShell.ID)
+
+		require.True(t, bgShell.WaitContextOrSteering(t.Context(), nil))
+	})
+
+	t.Run("steering releases the wait", func(t *testing.T) {
+		t.Parallel()
+		manager := newBackgroundShellManager()
+		bgShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 100", "", testMaxJobs)
+		require.NoError(t, err)
+		defer manager.Kill(bgShell.ID)
+
+		steering := make(chan struct{})
+		result := make(chan bool, 1)
+		go func() { result <- bgShell.WaitContextOrSteering(t.Context(), steering) }()
+		close(steering)
+
+		select {
+		case completed := <-result:
+			require.False(t, completed)
+		case <-time.After(time.Second):
+			t.Fatal("steering did not release the wait")
+		}
+	})
+
+	t.Run("context cancellation releases the wait", func(t *testing.T) {
+		t.Parallel()
+		manager := newBackgroundShellManager()
+		bgShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 100", "", testMaxJobs)
+		require.NoError(t, err)
+		defer manager.Kill(bgShell.ID)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.False(t, bgShell.WaitContextOrSteering(ctx, nil))
+	})
+}

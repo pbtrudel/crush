@@ -17,6 +17,7 @@ type (
 	supportsImagesKey   string
 	modelNameKey        string
 	channelContextKey   string
+	steeringContextKey  string
 )
 
 const (
@@ -30,6 +31,9 @@ const (
 	ModelNameContextKey modelNameKey = "model_name"
 	// ChannelContextKey is the key for the channel that originated the turn.
 	ChannelContextKey channelContextKey = "channel"
+	// SteeringContextKey is the key for the channel that is closed when the
+	// user steers the current turn with a new prompt.
+	SteeringContextKey steeringContextKey = "steering"
 )
 
 // getContextValue is a generic helper that retrieves a typed value from context.
@@ -53,6 +57,16 @@ func GetSessionFromContext(ctx context.Context) string {
 // GetChannelFromContext retrieves the channel that originated the current turn.
 func GetChannelFromContext(ctx context.Context) string {
 	return getContextValue(ctx, ChannelContextKey, "")
+}
+
+// SteeringChannel returns the channel that is closed when the user steers
+// the current turn with a new prompt, or nil when no signal is set.
+func SteeringChannel(ctx context.Context) <-chan struct{} {
+	ch := getContextValue[chan struct{}](ctx, SteeringContextKey, nil)
+	if ch == nil {
+		return nil
+	}
+	return ch
 }
 
 // GetMessageFromContext retrieves the message ID from the context.

@@ -14,6 +14,7 @@ import (
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/charset"
 )
 
 // BrowserUserAgent is a realistic browser User-Agent for better compatibility.
@@ -49,13 +50,11 @@ func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (s
 		return "", fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	content := string(body)
-
-	if !utf8.ValidString(content) {
-		return "", errors.New("response content is not valid UTF-8")
-	}
-
 	contentType := resp.Header.Get("Content-Type")
+	content, err := decodeResponseBody(body, contentType)
+	if err != nil {
+		return "", err
+	}
 
 	// Convert HTML to markdown for better AI processing.
 	if strings.Contains(contentType, "text/html") {
@@ -76,6 +75,27 @@ func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (s
 	}
 
 	return content, nil
+}
+
+// decodeResponseBody converts a response body to UTF-8. Bodies that are
+// already valid UTF-8 are returned unchanged; otherwise the charset from the
+// Content-Type header or an HTML meta tag is used to transcode them.
+func decodeResponseBody(body []byte, contentType string) (string, error) {
+	if utf8.Valid(body) {
+		return string(body), nil
+	}
+	reader, err := charset.NewReader(bytes.NewReader(body), contentType)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode response body: %w", err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to read decoded response body: %w", err)
+	}
+	if !utf8.Valid(decoded) {
+		return "", errors.New("response content is not valid UTF-8")
+	}
+	return string(decoded), nil
 }
 
 // removeNoisyElements removes script, style, nav, header, footer, and other

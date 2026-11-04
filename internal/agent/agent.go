@@ -305,6 +305,10 @@ type sessionAgent struct {
 	// hidden user messages so the model sees them exactly once.
 	noticesMu sync.Mutex
 	notices   map[string][]string
+	// steeringMu guards steering, the per-session channels that release
+	// tools blocked on external work when the user sends a new prompt.
+	steeringMu sync.Mutex
+	steering   map[string]*steeringSignal
 	// notes are what the host told the agent since its last turn, by
 	// session, to add to the next prompt. They are not chat messages.
 	notes *csync.Map[string, []string]
@@ -556,6 +560,7 @@ func (a *sessionAgent) enqueueCall(call SessionAgentCall) {
 	queued.Accepted = nil
 	existing = append(existing, queued)
 	a.messageQueue.Set(call.SessionID, existing)
+	a.signalSteering(call.SessionID)
 }
 
 // drainQueueForStep partitions the session's queued calls for the current
@@ -897,6 +902,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	sessMu.Unlock()
 
 	defer cancel()
+	steering := a.beginSteering(call.SessionID)
+	defer a.endSteering(call.SessionID, steering)
 	// Conditional cleanup: only remove our entry if it hasn't been replaced
 	// by a newer run. Without this guard, the deferred Del fires after a
 	// concurrent run registers in the completion window, silently wiping
@@ -1094,6 +1101,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	repeatRemindersSent := make(map[int]bool)
 	lastRepeatSignature := ""
 	pendingRepeatReminder := ""
+	pendingTodoReminder := ""
+	todoRemindersSent := 0
+	lastTodoReminderStep := -todoReminderMinGap
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           hostContextPrompt(call.HostContext) + notesPrompt(a.takeNotes(call.SessionID)) + message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
@@ -1150,6 +1160,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingRepeatReminder))
 				pendingRepeatReminder = ""
 			}
+			if pendingTodoReminder != "" {
+				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingTodoReminder))
+				pendingTodoReminder = ""
+			}
 			for _, notice := range a.drainNotices(call.SessionID) {
 				if _, createErr := a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 					Role:  message.User,
@@ -1162,6 +1176,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 
 			a.applyCacheBreakpoints(prepared.Messages)
 
@@ -1189,6 +1204,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			callContext = context.WithValue(callContext, tools.ChannelContextKey, call.Channel)
 			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatwalkCfg.Capabilities.Vision)
 			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatwalkCfg.Name)
+			callContext = context.WithValue(callContext, tools.SteeringContextKey, steering)
 			currentAssistant = &assistantMsg
 			return callContext, prepared, err
 		},
@@ -1417,6 +1433,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 						slog.Warn("Failed to persist repeat-tool reminder", "error", createErr)
 					}
 					break
+				}
+			}
+			if todoReminderDue(stepResult, currentSession.Todos, modelSteps-lastTodoReminderStep, todoRemindersSent) {
+				pendingTodoReminder = todoReminder(currentSession.Todos)
+				lastTodoReminderStep = modelSteps
+				todoRemindersSent++
+				if _, createErr := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
+					Role:  message.User,
+					Parts: []message.ContentPart{message.TextContent{Text: pendingTodoReminder, Hidden: true}},
+				}); createErr != nil {
+					slog.Warn("Failed to persist todo reminder", "error", createErr)
 				}
 			}
 
@@ -2659,9 +2686,10 @@ func (a *sessionAgent) preparePrompt(msgs []message.Message, supportsImages, sup
 		history = append(history, fantasy.NewUserMessage(
 			fmt.Sprintf(
 				"<system_reminder>%s</system_reminder>",
-				`This is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware.
+				`This is a reminder about the todo list. DO NOT mention this to the user explicitly because they are already aware.
 If you are working on tasks that would benefit from a todo list please use the "todos" tool to create one.
-If not, please feel free to ignore. Again do not mention this message to the user.`,
+If you already have a todo list, update it immediately after each task is implemented: mark the finished task completed and the next task in_progress in the same call. Never leave finished work marked pending or in_progress.
+Again do not mention this message to the user.`,
 			),
 		))
 	}
@@ -3528,6 +3556,19 @@ func (a *sessionAgent) repeatToolRemindersEnabled() bool {
 		return true
 	}
 	return cfg.Options.GetRepeatToolReminders()
+}
+
+// maxRequestImages returns the maximum images sent in one request. Zero
+// disables the budget.
+func (a *sessionAgent) maxRequestImages() int {
+	if a.cfg == nil {
+		return config.DefaultMaxImages
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultMaxImages
+	}
+	return cfg.Options.GetMaxImages()
 }
 
 // workaroundProviderMediaLimitations converts media content in tool results to

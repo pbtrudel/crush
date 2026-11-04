@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agent/tools"
 )
 
 //go:embed templates/subagent_output.md
@@ -38,6 +39,9 @@ func (c *coordinator) subagentOutputTool() fantasy.AgentTool {
 				case <-run.done:
 				case <-ctx.Done():
 					return fantasy.NewTextErrorResponse("timed out waiting for subagent"), nil
+				case <-tools.SteeringChannel(ctx):
+					// The user sent a new prompt; report the current state and
+					// let the subagent keep running.
 				}
 			}
 			output, done, found, err := c.subagents.result(params.SubagentID)
