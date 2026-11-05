@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Defaults mirror the experimental DSH Agent Teams bundle.
@@ -29,13 +30,21 @@ const (
 // mirrors the experimental DSH Agent Teams policy.
 const Policy = `## Agent Teams
 
-Agent Teams is available in this session
+Agent Teams is available in this session. Use it by default: the Lead coordinates and delegates, and teammates do the work.
+
+Work solo only for a single trivial action (one command, one file read, a direct factual answer) or when the user explicitly asks you to. Everything else goes to the Team: create shared tasks, spawn at least one teammate, and delegate. Requests with two or more steps, multiple files, investigation, or tests must use the Team. Reuse existing teammates before spawning new ones. When in doubt, delegate.
 
 The Team Lead and all teammates share the same working directory and filesystem. Edits are immediately visible to every member. Split write work into disjoint scopes, record expected write scopes on shared tasks, and use task dependencies when work must be ordered. Write-scope overlap is advisory, not a lock.
 
+The Lead owns the task worktree. Create it with the worktree tool before delegating, include its absolute path in every task description, and have every teammate work inside that path. Remove it only after the branch is pushed and merged.
+
 Prefer read/edit/write for file changes. If a file operation returns FS_STALE_VERSION, read the current file, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.
 
-Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`
+Keep the shared task board current at every step, because the user watches it. Create a task for each unit of work before delegating it, claim it with the current revision, and complete it the moment the work is verified. Edit tasks whose scope changed, and delete tasks that are superseded, abandoned, or no longer relevant. Once a completed task's result has been reported, delete it too, so the board holds only live work. Never report work as done while its task is still pending or in progress.
+
+Report progress to the Lead as you work. Send a one-line message when you start a task, when you finish it, and when you are blocked; never end a turn silently. A settled turn also sends the Lead an automatic report, and wait_agent returns the current roster and live task board, so the Lead always knows where things stand. Finish your tasks before ending a turn: the service completes the tasks you leave in progress when your turn succeeds, and releases them when it fails.
+
+Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change; it also returns the current roster and live task board, so re-list only when you need the full task details. The Lead must wait for required teammates before giving the final answer.`
 
 // Role is a Team member role.
 type Role string
@@ -184,6 +193,7 @@ type TaskView struct {
 	Subject            string     `json:"subject"`
 	Description        string     `json:"description"`
 	Status             TaskStatus `json:"status"`
+	OwnerID            string     `json:"ownerId,omitempty"`
 	OwnerName          string     `json:"ownerName,omitempty"`
 	BlockedBy          []string   `json:"blockedBy"`
 	WriteScopes        []string   `json:"writeScopes"`
@@ -251,11 +261,30 @@ type UpdateTaskRequest struct {
 	BlockedBy        []string
 	WriteScopes      []string
 	Owner            string
+	// SessionID is the caller's session, used to reconcile session todos
+	// when the Lead completes a task itself.
+	SessionID string
 }
 
-// WaitResult reports whether a wait timed out.
+// ProgressTask is a compact task row for progress snapshots.
+type ProgressTask struct {
+	ID        string     `json:"id"`
+	Subject   string     `json:"subject"`
+	Status    TaskStatus `json:"status"`
+	OwnerName string     `json:"ownerName,omitempty"`
+	Ready     bool       `json:"ready"`
+}
+
+// Progress is a compact roster and live task board snapshot.
+type Progress struct {
+	Members []MemberView   `json:"members"`
+	Tasks   []ProgressTask `json:"tasks"`
+}
+
+// WaitResult reports whether a wait timed out and the state it observed.
 type WaitResult struct {
-	TimedOut bool
+	TimedOut bool     `json:"timedOut"`
+	Progress Progress `json:"progress"`
 }
 
 // Run is one live teammate turn.
@@ -264,6 +293,8 @@ type Run interface {
 	SessionID() string
 	// Done closes when the run settles.
 	Done() <-chan struct{}
+	// Output is the teammate's final report for this turn.
+	Output() string
 	// Err reports the run failure, if any.
 	Err() error
 	// Cancel stops the run.
@@ -319,6 +350,9 @@ type Service struct {
 	starting map[string]bool
 	changes  chan struct{}
 	now      func() time.Time
+	// taskCompletedHook is called after a task settles as completed. It
+	// runs without the service lock and is best-effort.
+	taskCompletedHook func(sessionID, subject string)
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -367,6 +401,15 @@ func (s *Service) SetRunner(runner Runner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runner = runner
+}
+
+// SetTaskCompletedHook installs a best-effort callback invoked after a task
+// settles as completed. It receives the Lead's session ID and the task
+// subject, and runs without the service lock.
+func (s *Service) SetTaskCompletedHook(hook func(sessionID, subject string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskCompletedHook = hook
 }
 
 // notifyLocked wakes every waiter. Callers must hold s.mu.
@@ -574,12 +617,13 @@ func (s *Service) watch(name string, run Run) {
 	if s.runs[name] == run {
 		delete(s.runs, name)
 	}
-	if err := run.Err(); err != nil {
+	runErr := run.Err()
+	if runErr != nil {
 		for i := range s.state.Members {
 			if s.state.Members[i].Name == name {
 				s.state.Members[i].Diagnostics = append(
 					s.state.Members[i].Diagnostics,
-					err.Error(),
+					runErr.Error(),
 				)
 			}
 		}
@@ -589,15 +633,110 @@ func (s *Service) watch(name string, run Run) {
 			s.state.Members[i].Status = StatusInactive
 		}
 	}
+	member := s.stateMemberLocked(name)
+	settled, completed := s.settleTasksLocked(member.ID, runErr)
+	s.enqueueLocked(name, leadName, runReport(name, run.Output(), settled, runErr))
 	s.saveLocked()
 	s.notifyLocked()
 	pending := s.drainLocked(name)
-	member := s.stateMemberLocked(name)
+	hook := s.taskCompletedHook
 	s.mu.Unlock()
+	if hook != nil {
+		for _, subject := range completed {
+			hook(member.ParentID, subject)
+		}
+	}
 	if len(pending) == 0 {
 		return
 	}
-	_, _ = s.startRun(context.WithoutCancel(context.Background()), member, resumePrompt(pending))
+	if _, err := s.startRun(context.WithoutCancel(context.Background()), member, resumePrompt(pending)); err != nil {
+		s.mu.Lock()
+		s.enqueueLocked(name, leadName, fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending)))
+		s.saveLocked()
+		s.notifyLocked()
+		s.mu.Unlock()
+		s.failMember(name, err)
+	}
+}
+
+// settleTasksLocked closes out the tasks a finished teammate left in flight.
+// A successful turn completes them; a failed or interrupted turn releases
+// them back to the board so they never stay half-done forever. It returns
+// the report labels and the subjects of the completed tasks.
+func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, completed []string) {
+	if ownerID == "" || ownerID == leadName {
+		return nil, nil
+	}
+	for i := range s.state.Tasks {
+		task := &s.state.Tasks[i]
+		if task.OwnerID != ownerID || task.Status != TaskInProgress {
+			continue
+		}
+		task.Revision++
+		if runErr == nil {
+			task.Status = TaskCompleted
+			settled = append(settled, task.ID+" completed")
+			completed = append(completed, task.Subject)
+		} else {
+			task.Status = TaskPending
+			task.OwnerID = ""
+			settled = append(settled, task.ID+" released")
+		}
+	}
+	return settled, completed
+}
+
+// enqueueLocked appends one inbox message without waking the target.
+func (s *Service) enqueueLocked(from, to, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if len(text) > s.cfg.MaxMessageBytes {
+		text = truncateText(text, s.cfg.MaxMessageBytes)
+	}
+	s.state.NextMessage++
+	s.state.Messages = append(s.state.Messages, Message{
+		ID:        fmt.Sprintf("message-%d", s.state.NextMessage),
+		From:      from,
+		To:        to,
+		Text:      text,
+		CreatedAt: s.now(),
+	})
+}
+
+// runReport renders the automatic progress report a settled teammate sends
+// the Lead.
+func runReport(name, output string, settled []string, runErr error) string {
+	var sb strings.Builder
+	if runErr != nil {
+		fmt.Fprintf(&sb, "%s failed: %s.", name, runErr.Error())
+	} else {
+		fmt.Fprintf(&sb, "%s finished its turn.", name)
+	}
+	if len(settled) > 0 {
+		fmt.Fprintf(&sb, " Tasks: %s.", strings.Join(settled, ", "))
+	}
+	if text := strings.TrimSpace(output); text != "" {
+		const maxReport = 2000
+		if len(text) > maxReport {
+			text = truncateText(text, maxReport) + "…"
+		}
+		sb.WriteString("\n\n")
+		sb.WriteString(text)
+	}
+	return sb.String()
+}
+
+// truncateText cuts s to at most n bytes without splitting a rune.
+func truncateText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // failMember records a creation failure.
@@ -701,12 +840,57 @@ func (s *Service) WaitForChange(ctx context.Context, caller string, timeout time
 	defer timer.Stop()
 	select {
 	case <-ch:
-		return WaitResult{}, nil
+		return s.waitResult(false), nil
 	case <-timer.C:
-		return WaitResult{TimedOut: true}, nil
+		return s.waitResult(true), nil
 	case <-ctx.Done():
-		return WaitResult{TimedOut: true}, nil
+		return s.waitResult(true), nil
 	}
+}
+
+// waitResult snapshots the roster and live task board.
+func (s *Service) waitResult(timedOut bool) WaitResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WaitResult{TimedOut: timedOut, Progress: s.progressLocked()}
+}
+
+// Progress returns the current roster and live task board.
+func (s *Service) Progress(caller string) Progress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.memberLocked(caller); !ok {
+		return Progress{}
+	}
+	return s.progressLocked()
+}
+
+// progressLocked builds the progress snapshot. Callers must hold s.mu.
+func (s *Service) progressLocked() Progress {
+	progress := Progress{
+		Members: []MemberView{s.viewLocked(Member{ID: leadName, Name: leadName, Role: RoleLead})},
+	}
+	for _, member := range s.state.Members {
+		progress.Members = append(progress.Members, s.viewLocked(member))
+	}
+	const maxTasks = 50
+	for _, task := range s.state.Tasks {
+		if task.Status == TaskDeleted || task.Status == TaskCompleted {
+			continue
+		}
+		if len(progress.Tasks) == maxTasks {
+			break
+		}
+		view := projectTaskView(s.state, task)
+		progress.Tasks = append(progress.Tasks, ProgressTask{
+			ID:        view.ID,
+			Subject:   view.Subject,
+			Status:    view.Status,
+			OwnerName: view.OwnerName,
+			Ready:     view.Ready,
+		})
+	}
+	return progress
 }
 
 // Interrupt stops one teammate's current turn.
@@ -896,10 +1080,21 @@ func (s *Service) ListTasks(caller string, filter TaskFilter) (TaskList, error) 
 // UpdateTask applies one compare-and-set task transition.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var completedSubject, parentSessionID string
+	defer func() {
+		hook := s.taskCompletedHook
+		s.mu.Unlock()
+		if completedSubject != "" && hook != nil {
+			hook(parentSessionID, completedSubject)
+		}
+	}()
 	member, ok := s.memberLocked(caller)
 	if !ok {
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
+	}
+	parentSessionID = member.ParentID
+	if parentSessionID == "" {
+		parentSessionID = req.SessionID
 	}
 	current, ok := s.taskLocked(req.TaskID)
 	if !ok {
@@ -990,6 +1185,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			return TaskView{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
 		}
 		next.Status = TaskCompleted
+		completedSubject = next.Subject
 	case "reopen":
 		if err := authorizeOwner(); err != nil {
 			return TaskView{}, err
@@ -1158,6 +1354,7 @@ func projectTaskView(state State, task Task) TaskView {
 		Subject:     task.Subject,
 		Description: task.Description,
 		Status:      task.Status,
+		OwnerID:     task.OwnerID,
 		BlockedBy:   append([]string{}, task.BlockedBy...),
 		WriteScopes: append([]string{}, task.WriteScopes...),
 		Ready:       task.Status == TaskPending && taskReady(state, task),

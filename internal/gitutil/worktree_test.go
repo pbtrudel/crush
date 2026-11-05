@@ -65,3 +65,69 @@ func TestWorktreeSlug(t *testing.T) {
 	require.Equal(t, "fix-issue-42", WorktreeSlug("fix/issue #42"))
 	require.Equal(t, "session", WorktreeSlug(""))
 }
+
+func TestListWorktrees(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestRepo(t)
+	path, branch, err := CreateWorktree(context.Background(), repo, "feature")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(path)) })
+
+	worktrees, err := ListWorktrees(context.Background(), repo)
+	require.NoError(t, err)
+	require.Len(t, worktrees, 2)
+	require.True(t, worktrees[0].Current)
+	require.Equal(t, "main", worktrees[0].Branch)
+	require.Equal(t, path, worktrees[1].Path)
+	require.Equal(t, branch, worktrees[1].Branch)
+	require.False(t, worktrees[1].Current)
+}
+
+func TestCurrentWorktree(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestRepo(t)
+	path, branch, err := CreateWorktree(context.Background(), repo, "feature")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(path)) })
+
+	current, linked, err := CurrentWorktree(context.Background(), repo)
+	require.NoError(t, err)
+	require.False(t, linked)
+	require.Equal(t, "main", current.Branch)
+
+	current, linked, err = CurrentWorktree(context.Background(), path)
+	require.NoError(t, err)
+	require.True(t, linked)
+	require.Equal(t, branch, current.Branch)
+}
+
+func TestRemoveWorktree(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestRepo(t)
+	path, branch, err := CreateWorktree(context.Background(), repo, "feature")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(path)) })
+
+	require.NoError(t, os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("x"), 0o644))
+	err = RemoveWorktree(context.Background(), repo, path, false)
+	require.ErrorContains(t, err, "uncommitted changes")
+
+	require.NoError(t, RemoveWorktree(context.Background(), repo, path, true))
+	require.NoDirExists(t, path)
+
+	require.NoError(t, DeleteBranch(context.Background(), repo, branch, true))
+	worktrees, err := ListWorktrees(context.Background(), repo)
+	require.NoError(t, err)
+	require.Len(t, worktrees, 1)
+}
+
+func TestRemoveWorktreeRefusesCurrent(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestRepo(t)
+	err := RemoveWorktree(context.Background(), repo, repo, true)
+	require.ErrorContains(t, err, "refusing to remove")
+}

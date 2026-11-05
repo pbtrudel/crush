@@ -17,11 +17,13 @@ import (
 
 type teamFakeRun struct {
 	done   chan struct{}
+	output string
 	cancel func()
 }
 
 func (r *teamFakeRun) SessionID() string     { return "session-fake" }
 func (r *teamFakeRun) Done() <-chan struct{} { return r.done }
+func (r *teamFakeRun) Output() string        { return r.output }
 func (r *teamFakeRun) Err() error            { return nil }
 func (r *teamFakeRun) Cancel()               { r.cancel() }
 

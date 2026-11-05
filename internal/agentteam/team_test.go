@@ -2,6 +2,7 @@ package agentteam
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -20,8 +21,9 @@ func (r *fakeRun) SessionID() string { return "session-fake" }
 func (r *fakeRun) Done() <-chan struct{} {
 	return r.done
 }
-func (r *fakeRun) Err() error { return r.err }
-func (r *fakeRun) Cancel()    { r.cancel() }
+func (r *fakeRun) Output() string { return "" }
+func (r *fakeRun) Err() error     { return r.err }
+func (r *fakeRun) Cancel()        { r.cancel() }
 
 type fakeRunner struct {
 	mu      sync.Mutex
@@ -48,6 +50,14 @@ func (r *fakeRunner) Start(_ context.Context, member Member, prompt string) (Run
 func (r *fakeRunner) finish(name string) {
 	r.mu.Lock()
 	run := r.runs[name]
+	r.mu.Unlock()
+	run.cancel()
+}
+
+func (r *fakeRunner) finishWithErr(name string, err error) {
+	r.mu.Lock()
+	run := r.runs[name]
+	run.err = err
 	r.mu.Unlock()
 	run.cancel()
 }
@@ -159,7 +169,8 @@ func TestSendMessageResumesInactiveTeammate(t *testing.T) {
 	require.Equal(t, 2, runner.promptCount())
 
 	pending := service.DrainInbox("lead")
-	require.Empty(t, pending)
+	require.Len(t, pending, 1)
+	require.Contains(t, pending[0].Text, "reviewer finished its turn")
 }
 
 func TestSendMessageToRunningTeammateQueues(t *testing.T) {
@@ -401,4 +412,163 @@ func TestStatePersistsAcrossReopen(t *testing.T) {
 	task, err := reopened.GetTask("lead", "task-1")
 	require.NoError(t, err)
 	require.Equal(t, "One", task.Subject)
+}
+
+func TestWatchSettlesTasksAndReportsToLead(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p",
+	})
+	require.NoError(t, err)
+
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	require.NoError(t, err)
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	runner.finish("reviewer")
+	require.Eventually(t, func() bool {
+		got, err := service.GetTask("lead", task.ID)
+		return err == nil && got.Status == TaskCompleted
+	}, time.Second, 10*time.Millisecond)
+
+	pending := service.DrainInbox("lead")
+	require.Len(t, pending, 1)
+	require.Contains(t, pending[0].Text, "reviewer finished its turn")
+	require.Contains(t, pending[0].Text, task.ID+" completed")
+}
+
+func TestWatchReleasesTasksOnFailure(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p",
+	})
+	require.NoError(t, err)
+
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	require.NoError(t, err)
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	runner.finishWithErr("reviewer", errors.New("boom"))
+	require.Eventually(t, func() bool {
+		got, err := service.GetTask("lead", task.ID)
+		return err == nil && got.Status == TaskPending && got.OwnerName == ""
+	}, time.Second, 10*time.Millisecond)
+
+	pending := service.DrainInbox("lead")
+	require.Len(t, pending, 1)
+	require.Contains(t, pending[0].Text, "reviewer failed")
+	require.Contains(t, pending[0].Text, task.ID+" released")
+}
+
+func TestWaitResultIncludesProgress(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	require.NoError(t, err)
+
+	result, err := service.WaitForChange(context.Background(), "lead", 10*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, result.TimedOut)
+	require.Len(t, result.Progress.Members, 2)
+	require.Len(t, result.Progress.Tasks, 1)
+	require.Equal(t, task.ID, result.Progress.Tasks[0].ID)
+}
+
+func TestSettledTaskCallsCompletedHook(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	type completed struct{ sessionID, subject string }
+	got := make(chan completed, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- completed{sessionID: sessionID, subject: subject}
+	})
+
+	runner.finish("reviewer")
+	select {
+	case value := <-got:
+		require.Equal(t, "session-a", value.sessionID)
+		require.Equal(t, "Review the diff", value.subject)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
+}
+
+func TestUpdateTaskCompleteCallsCompletedHook(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	claimed, err := service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	got := make(chan string, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- sessionID + "|" + subject
+	})
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
+	})
+	require.NoError(t, err)
+	select {
+	case value := <-got:
+		require.Equal(t, "session-a|Review the diff", value)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
+}
+
+func TestUpdateTaskCompleteUsesCallerSessionForLead(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	claimed, err := service.UpdateTask("lead", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	got := make(chan string, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- sessionID + "|" + subject
+	})
+	_, err = service.UpdateTask("lead", UpdateTaskRequest{
+		TaskID: claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
+		SessionID: "lead-session",
+	})
+	require.NoError(t, err)
+	select {
+	case value := <-got:
+		require.Equal(t, "lead-session|Review the diff", value)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
 }

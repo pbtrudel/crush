@@ -31,6 +31,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/clipboard"
@@ -309,6 +310,11 @@ type UI struct {
 	// teamState is the last-read Agent Teams snapshot for the sidebar.
 	teamState     agentteam.State
 	teamSignature string
+
+	// agentRuns is the last-read registry of live agents, including
+	// subagents from other sessions.
+	agentRuns          []agentrun.Run
+	agentRunsSignature string
 
 	focus uiFocusState
 	state uiState
