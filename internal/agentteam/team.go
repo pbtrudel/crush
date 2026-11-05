@@ -347,6 +347,9 @@ type Service struct {
 	starting map[string]bool
 	changes  chan struct{}
 	now      func() time.Time
+	// taskCompletedHook is called after a task settles as completed. It
+	// runs without the service lock and is best-effort.
+	taskCompletedHook func(sessionID, subject string)
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -395,6 +398,15 @@ func (s *Service) SetRunner(runner Runner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runner = runner
+}
+
+// SetTaskCompletedHook installs a best-effort callback invoked after a task
+// settles as completed. It receives the Lead's session ID and the task
+// subject, and runs without the service lock.
+func (s *Service) SetTaskCompletedHook(hook func(sessionID, subject string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskCompletedHook = hook
 }
 
 // notifyLocked wakes every waiter. Callers must hold s.mu.
@@ -618,13 +630,19 @@ func (s *Service) watch(name string, run Run) {
 			s.state.Members[i].Status = StatusInactive
 		}
 	}
-	settled := s.settleTasksLocked(s.stateMemberLocked(name).ID, runErr)
+	member := s.stateMemberLocked(name)
+	settled, completed := s.settleTasksLocked(member.ID, runErr)
 	s.enqueueLocked(name, leadName, runReport(name, run.Output(), settled, runErr))
 	s.saveLocked()
 	s.notifyLocked()
 	pending := s.drainLocked(name)
-	member := s.stateMemberLocked(name)
+	hook := s.taskCompletedHook
 	s.mu.Unlock()
+	if hook != nil {
+		for _, subject := range completed {
+			hook(member.ParentID, subject)
+		}
+	}
 	if len(pending) == 0 {
 		return
 	}
@@ -640,12 +658,12 @@ func (s *Service) watch(name string, run Run) {
 
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
 // A successful turn completes them; a failed or interrupted turn releases
-// them back to the board so they never stay half-done forever.
-func (s *Service) settleTasksLocked(ownerID string, runErr error) []string {
+// them back to the board so they never stay half-done forever. It returns
+// the report labels and the subjects of the completed tasks.
+func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, completed []string) {
 	if ownerID == "" || ownerID == leadName {
-		return nil
+		return nil, nil
 	}
-	var settled []string
 	for i := range s.state.Tasks {
 		task := &s.state.Tasks[i]
 		if task.OwnerID != ownerID || task.Status != TaskInProgress {
@@ -655,13 +673,14 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) []string {
 		if runErr == nil {
 			task.Status = TaskCompleted
 			settled = append(settled, task.ID+" completed")
+			completed = append(completed, task.Subject)
 		} else {
 			task.Status = TaskPending
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" released")
 		}
 	}
-	return settled
+	return settled, completed
 }
 
 // enqueueLocked appends one inbox message without waking the target.
@@ -1058,11 +1077,19 @@ func (s *Service) ListTasks(caller string, filter TaskFilter) (TaskList, error) 
 // UpdateTask applies one compare-and-set task transition.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var completedSubject, parentSessionID string
+	defer func() {
+		hook := s.taskCompletedHook
+		s.mu.Unlock()
+		if completedSubject != "" && hook != nil {
+			hook(parentSessionID, completedSubject)
+		}
+	}()
 	member, ok := s.memberLocked(caller)
 	if !ok {
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
+	parentSessionID = member.ParentID
 	current, ok := s.taskLocked(req.TaskID)
 	if !ok {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
@@ -1152,6 +1179,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			return TaskView{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
 		}
 		next.Status = TaskCompleted
+		completedSubject = next.Subject
 	case "reopen":
 		if err := authorizeOwner(); err != nil {
 			return TaskView{}, err

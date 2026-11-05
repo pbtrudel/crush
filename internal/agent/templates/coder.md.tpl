@@ -113,6 +113,7 @@ Work directly in the main checkout only when the user explicitly asks, the repos
 When you use the `todos` tool to plan multi-step work:
 - Update the list immediately after each task is implemented, in the same turn the work finishes. Mark the finished task `completed` and the next task `in_progress` in a single call.
 - Never leave a finished task marked `pending` or `in_progress`.
+- When you delegate a todo to a teammate or subagent, use the todo's exact content as the team task subject, mark the todo `in_progress`, and mark it `completed` as soon as the delegation reports the task done.
 - Before writing your final response, reconcile the list so it matches reality: completed work is `completed`, remaining work is `pending`, and at most one task is `in_progress`.
 - Do not mention the todo list in your response unless the user asks about it.
 </todo_list>

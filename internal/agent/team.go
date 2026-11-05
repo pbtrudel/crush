@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,12 +70,53 @@ func (c *coordinator) syncAgentTeams() error {
 			return fmt.Errorf("initialize Agent Teams: %w", err)
 		}
 		teamService.SetRunner(&teamRunner{c: c})
+		teamService.SetTaskCompletedHook(c.completeMatchingTodo)
 		c.team = teamService
 	case !enabled && c.team != nil:
 		c.team.Shutdown()
 		c.team = nil
 	}
 	return nil
+}
+
+// completeMatchingTodo closes the session todo that matches a completed team
+// task. The match is exact after normalization, so an unrelated todo is
+// never closed by mistake; the Lead is told to reuse the todo text as the
+// task subject.
+func (c *coordinator) completeMatchingTodo(sessionID, subject string) {
+	if c.sessions == nil || sessionID == "" || subject == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	target := normalizeTodoText(subject)
+	changed := false
+	for i := range sess.Todos {
+		if sess.Todos[i].Status != session.TodoStatusInProgress {
+			continue
+		}
+		if normalizeTodoText(sess.Todos[i].Content) != target {
+			continue
+		}
+		sess.Todos[i].Status = session.TodoStatusCompleted
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := c.sessions.UpdateTodos(ctx, sessionID, sess.Todos); err != nil {
+		slog.Warn("Failed to complete session todo for team task", "session", sessionID, "error", err)
+	}
+}
+
+// normalizeTodoText lowercases and collapses whitespace so a todo and a
+// team task subject compare reliably.
+func normalizeTodoText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 // teamRun is one live teammate turn.

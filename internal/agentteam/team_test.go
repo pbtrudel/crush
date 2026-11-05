@@ -485,3 +485,63 @@ func TestWaitResultIncludesProgress(t *testing.T) {
 	require.Len(t, result.Progress.Tasks, 1)
 	require.Equal(t, task.ID, result.Progress.Tasks[0].ID)
 }
+
+func TestSettledTaskCallsCompletedHook(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	type completed struct{ sessionID, subject string }
+	got := make(chan completed, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- completed{sessionID: sessionID, subject: subject}
+	})
+
+	runner.finish("reviewer")
+	select {
+	case value := <-got:
+		require.Equal(t, "session-a", value.sessionID)
+		require.Equal(t, "Review the diff", value.subject)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
+}
+
+func TestUpdateTaskCompleteCallsCompletedHook(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	claimed, err := service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	got := make(chan string, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- sessionID + "|" + subject
+	})
+	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
+		TaskID: claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
+	})
+	require.NoError(t, err)
+	select {
+	case value := <-got:
+		require.Equal(t, "session-a|Review the diff", value)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
+}

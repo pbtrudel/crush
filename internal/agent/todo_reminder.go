@@ -27,6 +27,13 @@ var taskProgressToolNames = map[string]struct{}{
 	tools.BashToolName:          {},
 	tools.ReplaceSymbolToolName: {},
 	tools.RenameToolName:        {},
+	// Delegation and team-task transitions can finish a task without the
+	// Lead touching a file, so they must trigger the same reminder.
+	AgentToolName:          {},
+	SubagentOutputToolName: {},
+	SpawnTeammateToolName:  {},
+	WaitAgentToolName:      {},
+	TeamTaskUpdateToolName: {},
 }
 
 // stepMadeTaskProgress reports whether the step ran a tool that can finish a
