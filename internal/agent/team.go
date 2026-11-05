@@ -87,6 +87,8 @@ func (c *coordinator) completeMatchingTodo(sessionID, subject string) {
 	if c.sessions == nil || sessionID == "" || subject == "" {
 		return
 	}
+	c.todoMu.Lock()
+	defer c.todoMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	sess, err := c.sessions.Get(ctx, sessionID)

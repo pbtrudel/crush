@@ -251,6 +251,11 @@ type coordinator struct {
 	// team is the experimental Agent Teams domain. Nil unless enabled.
 	team *agentteam.Service
 
+	// todoMu serializes the read-modify-write that reconciles a session
+	// todo with a settled team task, so concurrent completions cannot
+	// clobber each other.
+	todoMu sync.Mutex
+
 	readyWg errgroup.Group
 
 	hostContext csync.Value[proto.HostContext]
