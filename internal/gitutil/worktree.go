@@ -126,7 +126,7 @@ func ListWorktrees(ctx context.Context, dir string) ([]Worktree, error) {
 		worktrees = append(worktrees, current)
 		current = Worktree{}
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			flush()
