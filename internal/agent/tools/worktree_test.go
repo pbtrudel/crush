@@ -16,7 +16,7 @@ func initWorktreeRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := exec.CommandContext(context.Background(), "git", append([]string{"-C", dir}, args...)...)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
 	}
