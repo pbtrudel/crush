@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/question"
 )
 
@@ -85,6 +86,13 @@ func NewQuestionTool(svc question.Service) fantasy.AgentTool {
 		QuestionToolName,
 		questionDescription,
 		func(ctx context.Context, params QuestionParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			// Teammates keep this tool so their palette matches the Lead's,
+			// but only the Lead owns the user's attention: a teammate's
+			// question would surface with no way to route the answer back
+			// through the roster.
+			if !agentteam.IsLead(ctx) {
+				return fantasy.NewTextErrorResponse("teammates cannot ask the user directly; send a message to the Lead instead"), nil
+			}
 			sessionID := GetSessionFromContext(ctx)
 
 			if len(params.Questions) == 0 {

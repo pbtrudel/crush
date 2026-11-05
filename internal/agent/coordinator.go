@@ -333,7 +333,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 
-	agent, err := c.buildAgent(ctx, coderPrompt, agentCfg, false)
+	agent, err := c.buildAgent(ctx, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +349,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 
-	planAgent, err := c.buildAgent(ctx, planSystemPrompt, planCfg, false)
+	planAgent, err := c.buildAgent(ctx, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +376,14 @@ func (c *coordinator) activeAgent() (SessionAgent, string) {
 func (c *coordinator) currentAgent() SessionAgent {
 	agent, _ := c.activeAgent()
 	return agent
+}
+
+// coderAgent returns the coder agent. Teammates extend its built system
+// prompt instead of rendering the coder template a second time.
+func (c *coordinator) coderAgent() SessionAgent {
+	c.agentMu.RLock()
+	defer c.agentMu.RUnlock()
+	return c.agents[config.AgentCoder]
 }
 
 func (c *coordinator) SetMainAgent(agentName string) error {
@@ -1120,14 +1128,40 @@ func mergeCallOptions(model Model, cfg config.ProviderConfig) (fantasy.ProviderO
 	return modelOptions, temp, topP, topK, freqPenalty, presPenalty
 }
 
-func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
+// agentRole selects the model slot and the tool palette an agent is built
+// with. A teammate bills as a sub-agent but keeps the Lead's palette: the
+// tools block is serialized first, so any difference there invalidates the
+// provider's cached prefix for the whole request.
+type agentRole int
+
+const (
+	roleLead agentRole = iota
+	roleSubAgent
+	roleTeammate
+)
+
+// isSubAgent reports whether the role bills as agent-initiated.
+func (r agentRole) isSubAgent() bool { return r != roleLead }
+
+// agentSystemPrompt is where buildAgent takes the base system prompt from.
+// Template is rendered against the current environment; Prebuilt is used
+// verbatim, which is how a teammate extends the Lead's already-built prompt
+// instead of rendering the template a second time. Suffix is appended after
+// the per-session MCP instructions.
+type agentSystemPrompt struct {
+	Template *prompt.Prompt
+	Prebuilt string
+	Suffix   string
+}
+
+func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, agent config.Agent, role agentRole) (SessionAgent, error) {
 	if c.models.Get().large.Model == nil {
 		if err := c.rebuildModels(ctx); err != nil {
 			return nil, err
 		}
 	}
 	models := c.mainModels
-	if isSubAgent {
+	if role.isSubAgent() {
 		models = c.subAgentModels
 	}
 	large := models().Large
@@ -1136,8 +1170,9 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	result := NewSessionAgent(SessionAgentOptions{
 		Models:               models,
 		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
-		SystemPrompt:         "",
-		IsSubAgent:           isSubAgent,
+		SystemPrompt:         system.Prebuilt,
+		SystemPromptSuffix:   system.Suffix,
+		IsSubAgent:           role.isSubAgent(),
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
 		IsYolo:               c.permissions.SkipRequests(),
 		Sessions:             c.sessions,
@@ -1161,17 +1196,19 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	// values; the work is local and always completes.
 	initCtx := context.WithoutCancel(ctx)
 
-	c.readyWg.Go(func() error {
-		systemPrompt, err := prompt.Build(initCtx, large.Model.Provider(), large.Model.Model(), c.cfg)
-		if err != nil {
-			return err
-		}
-		result.SetSystemPrompt(systemPrompt)
-		return nil
-	})
+	if system.Template != nil {
+		c.readyWg.Go(func() error {
+			systemPrompt, err := system.Template.Build(initCtx, large.Model.Provider(), large.Model.Model(), c.cfg)
+			if err != nil {
+				return err
+			}
+			result.SetSystemPrompt(systemPrompt)
+			return nil
+		})
+	}
 
 	c.readyWg.Go(func() error {
-		tools, err := c.buildTools(initCtx, agent, isSubAgent)
+		tools, err := c.buildTools(initCtx, agent, role)
 		if err != nil {
 			return err
 		}
@@ -1182,7 +1219,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	return result, nil
 }
 
-func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role agentRole) ([]fantasy.AgentTool, error) {
 	var allTools []fantasy.AgentTool
 	if slices.Contains(agent.AllowedTools, AgentToolName) {
 		agentTool, err := c.agentTool(ctx)
@@ -1237,7 +1274,9 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	)
 
 	// Question tool is interactive-only and not available to sub-agents.
-	if !isSubAgent && c.interactive {
+	// Teammates keep it so their palette matches the Lead's byte for byte
+	// and refuse at run time instead (see agentteam.IsLead).
+	if role != roleSubAgent && c.interactive {
 		allTools = append(allTools, tools.NewQuestionTool(c.questions))
 	}
 
@@ -1308,7 +1347,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	// without hook interception to avoid firing the user's hook N times
 	// per delegated turn. The top-level invocation of the sub-agent tool
 	// itself is still wrapped from the coder's side.
-	filteredTools = wrapToolsWithHooks(filteredTools, c.hookRunner, isSubAgent)
+	filteredTools = wrapToolsWithHooks(filteredTools, c.hookRunner, role.isSubAgent())
 
 	return filteredTools, nil
 }
@@ -1904,7 +1943,7 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	models := c.mainModels()
 	agent.SetModels(models.Large, models.Small)
 
-	tools, err := c.buildTools(ctx, agentCfg, false)
+	tools, err := c.buildTools(ctx, agentCfg, roleLead)
 	if err != nil {
 		return err
 	}
@@ -1935,7 +1974,7 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		agentTools, err := c.buildTools(ctx, agentCfg, false)
+		agentTools, err := c.buildTools(ctx, agentCfg, roleLead)
 		if err != nil {
 			return fmt.Errorf("rebuild tools for agent %s: %w", name, err)
 		}
@@ -2141,6 +2180,16 @@ type subAgentParams struct {
 	ToolCallID     string
 	Prompt         string
 	SessionTitle   string
+	// Channel is the channel the parent session runs in. A teammate inherits
+	// it so filterToolsForChannel keeps the same channel-scoped MCP tools in
+	// its palette as the Lead's; an empty channel would drop them and change
+	// the tools block, which is the first thing the provider caches.
+	Channel string
+	// StickySessionID overrides the session id sent as the provider's
+	// sticky-routing hint. A teammate sends the Lead's session id so both
+	// requests are pinned to the same upstream provider and can share its
+	// prompt cache; ordinary sub-agents keep their own session id.
+	StickySessionID string
 	// SessionSetup is an optional callback invoked after session creation
 	// but before agent execution, for custom session configuration.
 	SessionSetup func(sessionID string)
@@ -2288,9 +2337,10 @@ func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, s
 	// Run the agent
 	run := func() (*fantasy.AgentResult, error) {
 		subOpts := getProviderOptions(model, providerCfg)
-		injectOpenrouterSessionID(subOpts, sess.ID)
+		injectOpenrouterSessionID(subOpts, cmp.Or(params.StickySessionID, sess.ID))
 		return agent.Run(ctx, SessionAgentCall{
 			SessionID:        sess.ID,
+			Channel:          params.Channel,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
 			ProviderOptions:  c.withPromptCacheKey(subOpts, providerCfg),
@@ -2309,17 +2359,10 @@ func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, s
 		return "", err
 	}
 
-	// Update parent session usage on a best-effort basis. A failure here must
-	// not discard the sub-agent output that was already produced.
-	if err := c.updateParentSessionUsage(ctx, sess.ID, params.SessionID); err != nil {
-		slog.Warn(
-			"Failed to update parent session usage",
-			"child_session", sess.ID,
-			"parent_session", params.SessionID,
-			"error", err,
-		)
-	}
-
+	// The parent's totals already carry this child's usage: the session
+	// service rolls every usage write up as it lands, which is what keeps
+	// the sidebar and the Discord metrics live during the run instead of
+	// jumping once the sub-agent finishes.
 	return subAgentOutput(result), nil
 }
 
@@ -2328,30 +2371,6 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 		return ""
 	}
 	return result.Response.Content.Text()
-}
-
-// updateParentSessionUsage accumulates the cost and cache usage from a child
-// session to its parent session. Child sessions (task and fetch sub-agents)
-// are hidden from listings and stats, so the parent carries the only
-// user-visible totals - including the cached-share percentage.
-//
-// The accumulation is a SQL-side increment so sub-agents finishing
-// concurrently cannot lose each other's usage.
-func (c *coordinator) updateParentSessionUsage(ctx context.Context, childSessionID, parentSessionID string) error {
-	childSession, err := c.sessions.Get(ctx, childSessionID)
-	if err != nil {
-		return fmt.Errorf("get child session: %w", err)
-	}
-
-	if _, err := c.sessions.Get(ctx, parentSessionID); err != nil {
-		return fmt.Errorf("get parent session: %w", err)
-	}
-
-	if err := c.sessions.AddSessionUsage(ctx, parentSessionID, childSession.TotalCacheReadTokens, childSession.TotalContextTokens, childSession.Cost); err != nil {
-		return fmt.Errorf("add child session usage to parent: %w", err)
-	}
-
-	return nil
 }
 
 // discoverSkills is a thin fallback wrapper used only when no

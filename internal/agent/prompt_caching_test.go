@@ -325,14 +325,14 @@ func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
 		},
 	}
 
-	first, err := c.buildTools(t.Context(), agentCfg, false)
+	first, err := c.buildTools(t.Context(), agentCfg, roleLead)
 	require.NoError(t, err)
 	require.NotEmpty(t, first)
 	require.True(t, slices.IsSortedFunc(first, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	}), "tool lists must be sorted by name")
 
-	second, err := c.buildTools(t.Context(), agentCfg, false)
+	second, err := c.buildTools(t.Context(), agentCfg, roleLead)
 	require.NoError(t, err)
 	require.Len(t, second, len(first))
 

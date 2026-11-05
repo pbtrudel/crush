@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 )
 
@@ -45,7 +46,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		return nil, err
 	}
 
-	defaultAgent, err := c.buildAgent(ctx, systemPrompt, agentCfg, true)
+	defaultAgent, err := c.buildAgent(ctx, agentSystemPrompt{Template: systemPrompt}, agentCfg, roleSubAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +60,13 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		AgentToolName,
 		description,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			// A teammate keeps this tool so its palette matches the Lead's,
+			// but nested delegation is not supported: the Team domain has
+			// one level, and a teammate's sub-agent would run outside the
+			// roster the Lead coordinates.
+			if !agentteam.IsLead(ctx) {
+				return fantasy.NewTextErrorResponse("nested delegation is not supported inside a teammate; ask the Lead instead"), nil
+			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
 			}
@@ -79,7 +87,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				if err != nil {
 					return fantasy.NewTextErrorResponse(err.Error()), nil
 				}
-				agent, err = c.buildAgent(ctx, systemPrompt, preset, true)
+				agent, err = c.buildAgent(ctx, agentSystemPrompt{Template: systemPrompt}, preset, roleSubAgent)
 				if err != nil {
 					return fantasy.NewTextErrorResponse(err.Error()), nil
 				}

@@ -329,3 +329,223 @@ func TestAddStepUsage(t *testing.T) {
 	}
 	require.Len(t, seen, 2)
 }
+
+// waitForSessionUpdate reports whether an update for sessionID arrives before
+// the timeout, draining every other session's updates on the way.
+func waitForSessionUpdate(t *testing.T, updates <-chan Session, sessionID string) bool {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case s := <-updates:
+			if s.ID == sessionID {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+func newRollupService(t *testing.T) Service {
+	t.Helper()
+	dataDir := t.TempDir()
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	return NewService(db.New(conn), conn)
+}
+
+// A child agent's usage must reach the parent as it happens: the sidebar and
+// the Discord bridge read only the parent's totals, so a rollup deferred to
+// the end of the sub-agent leaves the cache-hit percentage stale for the whole
+// run.
+func TestAddStepUsageRollsUpToParent(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	parent, err := svc.Create(ctx, "parent")
+	require.NoError(t, err)
+	child, err := svc.CreateTaskSession(ctx, "rollup-step-child", parent.ID, "child")
+	require.NoError(t, err)
+
+	updates := make(chan Session, 16)
+	sub := svc.Subscribe(ctx)
+	go func() {
+		for ev := range sub {
+			if ev.Type == pubsub.UpdatedEvent {
+				updates <- ev.Payload
+			}
+		}
+	}()
+
+	_, err = svc.AddStepUsage(ctx, child.ID, StepUsage{
+		PromptTokens: 100, CompletionTokens: 40, CacheReadTokens: 1000, ContextTokens: 500, Cost: 1.5,
+	})
+	require.NoError(t, err)
+
+	parentAfter, err := svc.Get(ctx, parent.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1000), parentAfter.TotalCacheReadTokens)
+	require.Equal(t, int64(500), parentAfter.TotalContextTokens)
+	require.InDelta(t, 1.5, parentAfter.Cost, 1e-9)
+
+	childAfter, err := svc.Get(ctx, child.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1000), childAfter.TotalCacheReadTokens, "the child keeps its own totals")
+
+	require.True(t, waitForSessionUpdate(t, updates, parent.ID), "the parent's update must be published live")
+}
+
+func TestAddSessionUsageRollsUpToParent(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	parent, err := svc.Create(ctx, "parent")
+	require.NoError(t, err)
+	child, err := svc.CreateTitleSession(ctx, parent.ID)
+	require.NoError(t, err)
+
+	updates := make(chan Session, 16)
+	sub := svc.Subscribe(ctx)
+	go func() {
+		for ev := range sub {
+			if ev.Type == pubsub.UpdatedEvent {
+				updates <- ev.Payload
+			}
+		}
+	}()
+
+	require.NoError(t, svc.AddSessionUsage(ctx, child.ID, 700, 900, 0.25))
+
+	parentAfter, err := svc.Get(ctx, parent.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(700), parentAfter.TotalCacheReadTokens)
+	require.Equal(t, int64(900), parentAfter.TotalContextTokens)
+	require.InDelta(t, 0.25, parentAfter.Cost, 1e-9)
+
+	require.True(t, waitForSessionUpdate(t, updates, parent.ID), "the parent's update must be published live")
+}
+
+// A grandchild's usage must reach the root, not stop at the middle session:
+// only the root is listed and rendered, so a chain that halts after one hop
+// leaves the sidebar and Discord under-reporting every deeper agent. The hop
+// goes through AddSessionUsage on the parent, which rolls up again, and each
+// level is written exactly once.
+func TestUsageRollupReachesTheRootThroughTheChain(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	root, err := svc.Create(ctx, "root")
+	require.NoError(t, err)
+	middle, err := svc.CreateTaskSession(ctx, "rollup-middle", root.ID, "middle")
+	require.NoError(t, err)
+	leaf, err := svc.CreateTaskSession(ctx, "rollup-leaf", middle.ID, "leaf")
+	require.NoError(t, err)
+
+	_, err = svc.AddStepUsage(ctx, leaf.ID, StepUsage{CacheReadTokens: 100, ContextTokens: 200, Cost: 1})
+	require.NoError(t, err)
+
+	middleAfter, err := svc.Get(ctx, middle.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(100), middleAfter.TotalCacheReadTokens)
+	require.Equal(t, int64(200), middleAfter.TotalContextTokens)
+	require.InDelta(t, 1, middleAfter.Cost, 1e-9)
+
+	rootAfter, err := svc.Get(ctx, root.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(100), rootAfter.TotalCacheReadTokens, "one call must carry the leaf's usage to the root exactly once")
+	require.Equal(t, int64(200), rootAfter.TotalContextTokens)
+	require.InDelta(t, 1, rootAfter.Cost, 1e-9)
+
+	_, err = svc.AddStepUsage(ctx, middle.ID, StepUsage{CacheReadTokens: 10, ContextTokens: 20, Cost: 0.5})
+	require.NoError(t, err)
+
+	middleAfter, err = svc.Get(ctx, middle.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(110), middleAfter.TotalCacheReadTokens)
+	require.Equal(t, int64(220), middleAfter.TotalContextTokens)
+	require.InDelta(t, 1.5, middleAfter.Cost, 1e-9)
+
+	rootAfter, err = svc.Get(ctx, root.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(110), rootAfter.TotalCacheReadTokens, "the middle session's own step rolls up on top of the leaf's")
+	require.Equal(t, int64(220), rootAfter.TotalContextTokens)
+	require.InDelta(t, 1.5, rootAfter.Cost, 1e-9)
+}
+
+// A root session has no parent to roll into, so its totals stay exactly what
+// its own steps recorded.
+func TestUsageRollupLeavesRootSessionAlone(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	root, err := svc.Create(ctx, "root")
+	require.NoError(t, err)
+	require.Empty(t, root.ParentSessionID)
+
+	_, err = svc.AddStepUsage(ctx, root.ID, StepUsage{CacheReadTokens: 100, ContextTokens: 200, Cost: 1})
+	require.NoError(t, err)
+	require.NoError(t, svc.AddSessionUsage(ctx, root.ID, 10, 20, 0.5))
+
+	after, err := svc.Get(ctx, root.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(110), after.TotalCacheReadTokens)
+	require.Equal(t, int64(220), after.TotalContextTokens)
+	require.InDelta(t, 1.5, after.Cost, 1e-9)
+}
+
+// A session whose parent is itself must not roll into itself, which would
+// double every total.
+func TestUsageRollupIgnoresSelfParent(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	self, err := svc.CreateTaskSession(ctx, "rollup-self", "rollup-self", "self")
+	require.NoError(t, err)
+	require.Equal(t, self.ID, self.ParentSessionID)
+
+	_, err = svc.AddStepUsage(ctx, self.ID, StepUsage{CacheReadTokens: 100, ContextTokens: 200, Cost: 1})
+	require.NoError(t, err)
+	require.NoError(t, svc.AddSessionUsage(ctx, self.ID, 10, 20, 0.5))
+
+	after, err := svc.Get(ctx, self.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(110), after.TotalCacheReadTokens)
+	require.Equal(t, int64(220), after.TotalContextTokens)
+	require.InDelta(t, 1.5, after.Cost, 1e-9)
+}
+
+// A parent can be deleted while a child is still recording usage:
+// parent_session_id has no foreign key, so the parent row can be gone. The
+// rollup must not turn that into a failed write - the child's own totals still
+// have to land.
+func TestUsageRollupToleratesMissingParent(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	orphan, err := svc.CreateTaskSession(ctx, "rollup-orphan", "deleted-parent", "orphan")
+	require.NoError(t, err)
+
+	_, err = svc.AddStepUsage(ctx, orphan.ID, StepUsage{CacheReadTokens: 100, ContextTokens: 200, Cost: 1})
+	require.NoError(t, err)
+	require.NoError(t, svc.AddSessionUsage(ctx, orphan.ID, 10, 20, 0.5))
+
+	after, err := svc.Get(ctx, orphan.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(110), after.TotalCacheReadTokens)
+	require.Equal(t, int64(220), after.TotalContextTokens)
+	require.InDelta(t, 1.5, after.Cost, 1e-9)
+}
