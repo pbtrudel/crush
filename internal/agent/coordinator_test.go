@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -29,6 +28,8 @@ type mockSessionAgent struct {
 	cancelled []string
 	// tools records the most recent SetTools call, if any.
 	tools []fantasy.AgentTool
+	// systemPrompt records the most recent SetSystemPrompt call, if any.
+	systemPrompt string
 	// notices records EnqueueNotice calls.
 	notices []string
 	// busy controls IsSessionBusy.
@@ -48,7 +49,15 @@ func (m *mockSessionAgent) SetModels(large, small Model) {}
 func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool) {
 	m.tools = tools
 }
-func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {}
+
+func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {
+	m.systemPrompt = systemPrompt
+}
+func (m *mockSessionAgent) SystemPrompt() string { return m.systemPrompt }
+func (m *mockSessionAgent) AdoptedToolOrder(string) []string {
+	return nil
+}
+func (m *mockSessionAgent) SetAdoptedToolOrder(string, []string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
 	m.cancelled = append(m.cancelled, sessionID)
 }
@@ -370,15 +379,15 @@ func TestRunSubAgent(t *testing.T) {
 		require.NoError(t, err)
 
 		agent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			// Simulate the agent incurring usage by updating the child session.
-			childSession, err := env.sessions.Get(ctx, call.SessionID)
-			if err != nil {
-				return nil, err
-			}
-			childSession.Cost = 0.05
-			childSession.TotalCacheReadTokens = 700
-			childSession.TotalContextTokens = 900
-			_, err = env.sessions.Save(ctx, childSession)
+			// Simulate the agent incurring usage the way a real step does:
+			// the session service rolls the step into the parent as it lands.
+			_, err := env.sessions.AddStepUsage(ctx, call.SessionID, session.StepUsage{
+				PromptTokens:     900,
+				CompletionTokens: 40,
+				CacheReadTokens:  700,
+				ContextTokens:    900,
+				Cost:             0.05,
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -445,170 +454,6 @@ func TestWithPromptCacheKeyWorkspaceScoped(t *testing.T) {
 		require.NotNil(t, o.ExtraBody)
 		assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), o.ExtraBody["prompt_cache_key"])
 	})
-}
-
-func TestUpdateParentSessionUsage(t *testing.T) {
-	t.Run("accumulates cost and cache usage", func(t *testing.T) {
-		env := testEnv(t)
-		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-		require.NoError(t, err)
-		coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-		parent, err := env.sessions.Create(t.Context(), "Parent")
-		require.NoError(t, err)
-
-		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
-		require.NoError(t, err)
-
-		child.Cost = 0.10
-		child.TotalCacheReadTokens = 700
-		child.TotalContextTokens = 900
-		_, err = env.sessions.Save(t.Context(), child)
-		require.NoError(t, err)
-
-		err = coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID)
-		require.NoError(t, err)
-
-		updated, err := env.sessions.Get(t.Context(), parent.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.10, updated.Cost, 1e-9)
-		assert.Equal(t, int64(700), updated.TotalCacheReadTokens)
-		assert.Equal(t, int64(900), updated.TotalContextTokens)
-	})
-
-	t.Run("accumulates multiple child costs", func(t *testing.T) {
-		env := testEnv(t)
-		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-		require.NoError(t, err)
-		coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-		parent, err := env.sessions.Create(t.Context(), "Parent")
-		require.NoError(t, err)
-
-		child1, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child1")
-		require.NoError(t, err)
-		child1.Cost = 0.05
-		child1.TotalCacheReadTokens = 700
-		child1.TotalContextTokens = 900
-		_, err = env.sessions.Save(t.Context(), child1)
-		require.NoError(t, err)
-
-		child2, err := env.sessions.CreateTaskSession(t.Context(), "tool-2", parent.ID, "Child2")
-		require.NoError(t, err)
-		child2.Cost = 0.03
-		child2.TotalCacheReadTokens = 300
-		child2.TotalContextTokens = 400
-		_, err = env.sessions.Save(t.Context(), child2)
-		require.NoError(t, err)
-
-		err = coord.updateParentSessionUsage(t.Context(), child1.ID, parent.ID)
-		require.NoError(t, err)
-		err = coord.updateParentSessionUsage(t.Context(), child2.ID, parent.ID)
-		require.NoError(t, err)
-
-		updated, err := env.sessions.Get(t.Context(), parent.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.08, updated.Cost, 1e-9)
-		assert.Equal(t, int64(1000), updated.TotalCacheReadTokens)
-		assert.Equal(t, int64(1300), updated.TotalContextTokens)
-	})
-
-	t.Run("child session not found", func(t *testing.T) {
-		env := testEnv(t)
-		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-		require.NoError(t, err)
-		coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-		parent, err := env.sessions.Create(t.Context(), "Parent")
-		require.NoError(t, err)
-
-		err = coord.updateParentSessionUsage(t.Context(), "non-existent", parent.ID)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "get child session")
-	})
-
-	t.Run("parent session not found", func(t *testing.T) {
-		env := testEnv(t)
-		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-		require.NoError(t, err)
-		coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-		parent, err := env.sessions.Create(t.Context(), "Parent")
-		require.NoError(t, err)
-		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
-		require.NoError(t, err)
-
-		err = coord.updateParentSessionUsage(t.Context(), child.ID, "non-existent")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "get parent session")
-	})
-
-	t.Run("zero cost handled correctly", func(t *testing.T) {
-		env := testEnv(t)
-		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-		require.NoError(t, err)
-		coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-		parent, err := env.sessions.Create(t.Context(), "Parent")
-		require.NoError(t, err)
-		child, err := env.sessions.CreateTaskSession(t.Context(), "tool-1", parent.ID, "Child")
-		require.NoError(t, err)
-
-		err = coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID)
-		require.NoError(t, err)
-
-		updated, err := env.sessions.Get(t.Context(), parent.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.0, updated.Cost, 1e-9)
-	})
-}
-
-// TestUpdateParentSessionUsageConcurrent rolls up many child sessions
-// at the same time, as parallel task/fetch sub-agents do. Every child's
-// usage must land on the parent exactly once.
-func TestUpdateParentSessionUsageConcurrent(t *testing.T) {
-	env := testEnv(t)
-	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
-	require.NoError(t, err)
-	coord := &coordinator{cfg: cfg, sessions: env.sessions}
-
-	parent, err := env.sessions.Create(t.Context(), "Parent")
-	require.NoError(t, err)
-
-	const children = 32
-	var wantCache, wantContext int64
-	var wantCost float64
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := range children {
-		child, err := env.sessions.CreateTaskSession(t.Context(), fmt.Sprintf("tool-%d", i), parent.ID, "Child")
-		require.NoError(t, err)
-		child.Cost = 0.01
-		child.TotalCacheReadTokens = 100
-		child.TotalContextTokens = 200
-		_, err = env.sessions.Save(t.Context(), child)
-		require.NoError(t, err)
-		wantCache += 100
-		wantContext += 200
-		wantCost += 0.01
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			if err := coord.updateParentSessionUsage(t.Context(), child.ID, parent.ID); err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	close(start)
-	wg.Wait()
-
-	updated, err := env.sessions.Get(t.Context(), parent.ID)
-	require.NoError(t, err)
-	assert.Equal(t, wantCache, updated.TotalCacheReadTokens)
-	assert.Equal(t, wantContext, updated.TotalContextTokens)
-	assert.InDelta(t, wantCost, updated.Cost, 1e-9)
 }
 
 func TestGetProviderOptionsReasoningEffort(t *testing.T) {

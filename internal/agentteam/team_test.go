@@ -572,3 +572,13 @@ func TestUpdateTaskCompleteUsesCallerSessionForLead(t *testing.T) {
 		t.Fatal("task completed hook was not called")
 	}
 }
+
+// TestIsLead pins the caller check the Lead-only tools gate on. A context
+// with no member identity is the Lead's own run, which is what every
+// non-Team caller carries.
+func TestIsLead(t *testing.T) {
+	t.Parallel()
+	require.True(t, IsLead(context.Background()), "a context with no member is the Lead")
+	require.True(t, IsLead(WithMember(context.Background(), "lead")))
+	require.False(t, IsLead(WithMember(context.Background(), "reviewer")))
+}

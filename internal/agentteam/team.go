@@ -146,6 +146,13 @@ func MemberFromContext(ctx context.Context) string {
 	return leadName
 }
 
+// IsLead reports whether the caller is the Team Lead. A context with no
+// member identity is the Lead's own session, so tools that only the Lead may
+// run gate on this rather than on the member name.
+func IsLead(ctx context.Context) bool {
+	return MemberFromContext(ctx) == leadName
+}
+
 // Member is a durable roster entry. Names are permanent and never reused.
 type Member struct {
 	ID          string      `json:"id"`

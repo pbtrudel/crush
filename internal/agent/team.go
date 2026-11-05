@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/session"
@@ -31,26 +30,6 @@ Your Team Lead is named "lead".
 To message your Team Lead, use send_message({ target: "lead", message: "..." }).
 Use list_agents({}) to find your teammates and their names.
 To message another teammate, use send_message({ target: "<teammate name>", message: "..." }).`, member.Name)
-}
-
-// teamPrompt builds the teammate system prompt: the coder prompt plus the
-// member identity section.
-func teamPrompt(member agentteam.Member, workingDir string) (*prompt.Prompt, error) {
-	template := string(coderPromptTmpl) + "\n\n" + teamIdentity(member) + "\n"
-	return prompt.NewPrompt("team-"+member.Name, template, prompt.WithWorkingDir(workingDir))
-}
-
-// teammateTools keeps the full coder tool surface but removes nested
-// delegation, which the Team domain does not support.
-func teammateTools(allowed []string) []string {
-	result := make([]string, 0, len(allowed))
-	for _, name := range allowed {
-		if name == AgentToolName || name == SubagentOutputToolName {
-			continue
-		}
-		result = append(result, name)
-	}
-	return result
 }
 
 // teamRunner runs teammate turns with the coordinator's agent machinery.
@@ -138,33 +117,41 @@ func (r *teamRun) Cancel()               { r.cancel() }
 
 // Start creates or reuses the teammate session and runs one turn.
 func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptText string) (agentteam.Run, error) {
-	cfg := r.c.cfg.Config()
-	agentCfg, ok := cfg.Agents[config.AgentCoder]
-	if !ok {
-		return nil, errors.New("coder agent not configured")
-	}
-	agentCfg.AllowedTools = teammateTools(agentCfg.AllowedTools)
+	// The member identity has to reach tool.Run: the agent and question
+	// tools stay in the palette for cache parity but refuse outside the
+	// Lead. WithoutCancel keeps the value across the turn's timeout.
+	memberCtx := agentteam.WithMember(ctx, member.Name)
 
-	systemPrompt, err := teamPrompt(member, r.c.cfg.WorkingDir())
+	sess, err := r.teammateSession(memberCtx, member)
 	if err != nil {
 		return nil, err
 	}
 
-	agent, err := r.c.buildAgent(agentteam.WithMember(ctx, member.Name), systemPrompt, agentCfg, true)
+	agent, err := r.teammateAgent(memberCtx, member)
 	if err != nil {
 		return nil, err
 	}
 
-	sess, err := r.teammateSession(ctx, member)
-	if err != nil {
-		return nil, err
+	// The Lead's session decides how the teammate's request is filtered and
+	// routed: its channel keeps channel-scoped MCP tools in the palette, and
+	// its session id is the provider's sticky-routing hint, so both requests
+	// land on the same upstream provider and can share its cache.
+	lead := r.leadSession(memberCtx, member)
+
+	// A tool the Lead adopted mid-turn sits at the end of its palette. The
+	// teammate has to keep that order or its tools block stops matching the
+	// one the Lead already cached.
+	if lead.ID != "" {
+		if leadAgent := r.c.coderAgent(); leadAgent != nil {
+			agent.SetAdoptedToolOrder(sess.ID, leadAgent.AdoptedToolOrder(lead.ID))
+		}
 	}
 
 	if member.Context == agentteam.ContextFork {
-		promptText = r.forkPrefix(ctx, member) + promptText
+		promptText = r.forkPrefix(memberCtx, member) + promptText
 	}
 
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
 		sessionID: sess.ID,
 		done:      make(chan struct{}),
@@ -174,17 +161,62 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		defer close(run.done)
 		defer cancel()
 		output, runErr := r.c.executeSubAgent(runCtx, agent, sess, subAgentParams{
-			Agent:          agent,
-			SessionID:      member.ParentID,
-			AgentMessageID: member.ID,
-			ToolCallID:     member.ID,
-			Prompt:         promptText,
-			SessionTitle:   "Teammate " + member.Name,
+			Agent:           agent,
+			SessionID:       member.ParentID,
+			AgentMessageID:  member.ID,
+			ToolCallID:      member.ID,
+			Prompt:          promptText,
+			SessionTitle:    "Teammate " + member.Name,
+			Channel:         lead.Channel,
+			StickySessionID: lead.ID,
 		})
 		run.output = output
 		run.err = runErr
 	}()
 	return run, nil
+}
+
+// leadSession returns the session a teammate runs on behalf of. Its channel
+// and id are what keep the teammate's request filtered and routed like the
+// Lead's; a member without a reachable parent session gets an empty one and
+// the teammate keeps its own bindings.
+func (r *teamRunner) leadSession(ctx context.Context, member agentteam.Member) session.Session {
+	if member.ParentID == "" {
+		return session.Session{}
+	}
+	lead, err := r.c.sessions.Get(ctx, member.ParentID)
+	if err != nil {
+		slog.Warn("Failed to read the Lead session for a teammate run", "session", member.ParentID, "error", err)
+	}
+	return lead
+}
+
+// teammateAgent builds the agent a teammate turn runs on. The base prompt is
+// the Lead's built prompt, used verbatim, and only the member identity is
+// appended. Re-rendering the template here would let date, git state, and
+// context files drift between the two renders, and the provider caches on the
+// longest shared prefix of the request, which starts with the tools block and
+// the system message.
+func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member) (SessionAgent, error) {
+	// The Lead's prompt is rendered in the background, so wait for it rather
+	// than starting a teammate on an empty base prompt.
+	if err := r.c.readyWg.Wait(); err != nil {
+		return nil, err
+	}
+
+	agentCfg, ok := r.c.cfg.Config().Agents[config.AgentCoder]
+	if !ok {
+		return nil, errors.New("coder agent not configured")
+	}
+	lead := r.c.coderAgent()
+	if lead == nil {
+		return nil, errors.New("coder agent not configured")
+	}
+
+	return r.c.buildAgent(ctx, agentSystemPrompt{
+		Prebuilt: lead.SystemPrompt(),
+		Suffix:   teamIdentity(member),
+	}, agentCfg, roleTeammate)
 }
 
 // teammateSession reuses the member's session, or creates it on first run.

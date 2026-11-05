@@ -74,7 +74,7 @@ func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
 	agentCfg := cfg.Config().Agents[config.AgentCoder]
 
 	ctx, cancel := context.WithCancel(context.Background())
-	_, err = coord.buildAgent(ctx, p, agentCfg, false)
+	_, err = coord.buildAgent(ctx, agentSystemPrompt{Template: p}, agentCfg, roleLead)
 	require.NoError(t, err)
 
 	// The caller goes away, mirroring an HTTP handler returning and canceling

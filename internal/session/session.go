@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -90,6 +91,8 @@ type Service interface {
 	List(ctx context.Context) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
+	// AddSessionUsage accumulates usage on a session and, when the session is a
+	// child, on its parent too: a parent's totals cover every agent below it.
 	AddSessionUsage(ctx context.Context, sessionID string, cacheReadTokens, contextTokens int64, cost float64) error
 	// AddStepUsage records one agent step's usage in a single statement:
 	// the prompt/completion snapshots are replaced with the step's values
@@ -294,6 +297,7 @@ func (s *service) AddStepUsage(ctx context.Context, sessionID string, usage Step
 	session := s.fromDBItem(dbSession)
 	session.EstimatedUsage = usage.Estimated
 	s.Publish(pubsub.UpdatedEvent, session)
+	s.rollupUsageToParent(ctx, sessionID, session.ParentSessionID, usage.CacheReadTokens, usage.ContextTokens, usage.Cost)
 	return session, nil
 }
 
@@ -310,7 +314,39 @@ func (s *service) AddSessionUsage(ctx context.Context, sessionID string, cacheRe
 		return err
 	}
 	s.publishSessionUpdate(ctx, sessionID)
+	// This statement has no RETURNING row, so the parent has to be read
+	// back. A session that cannot be read must not fail the usage write
+	// that already landed.
+	if dbSession, err := s.q.GetSessionByID(ctx, sessionID); err != nil {
+		slog.Debug("Failed to read session for usage rollup", "error", err, "sessionID", sessionID)
+	} else {
+		s.rollupUsageToParent(ctx, sessionID, dbSession.ParentSessionID.String, cacheReadTokens, contextTokens, cost)
+	}
 	return nil
+}
+
+// rollupUsageToParent adds one agent's usage to its parent session.
+//
+// The parent's totals are the aggregation contract: they carry the parent's
+// own steps plus every child agent's steps, which is what the sidebar's
+// cache-hit percentage and the Discord metrics line read. Rolling up at the
+// end of a sub-agent leaves those surfaces stale for the whole run, so every
+// usage write rolls up here as it happens.
+//
+// The hop goes through AddSessionUsage on the parent rather than the query
+// directly, so a parent that is itself a sub-agent performs its own next hop
+// and a grandchild's tokens still reach the root. Each level is written
+// exactly once and the chain ends at the root, which has no parent.
+func (s *service) rollupUsageToParent(ctx context.Context, sessionID, parentSessionID string, cacheReadTokens, contextTokens int64, cost float64) {
+	if parentSessionID == "" || parentSessionID == sessionID {
+		return
+	}
+	if cacheReadTokens == 0 && contextTokens == 0 && cost == 0 {
+		return
+	}
+	if err := s.AddSessionUsage(ctx, parentSessionID, cacheReadTokens, contextTokens, cost); err != nil {
+		slog.Debug("Failed to roll usage into parent session", "error", err, "sessionID", sessionID, "parentSessionID", parentSessionID)
+	}
 }
 
 // UpdateTodos replaces the session's todo list without touching any
@@ -376,6 +412,13 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 func (s *service) publishSessionUpdate(ctx context.Context, sessionID string) {
 	session, err := s.Get(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// A child session can outlive its parent (parent_session_id has no
+			// foreign key), and a usage rollup into a deleted parent is still a
+			// successful write, so a vanished row is not an error.
+			slog.Debug("Session is gone before its update could be published", "sessionID", sessionID)
+			return
+		}
 		slog.Error("Failed to re-fetch session for event publish", "error", err, "sessionID", sessionID)
 		return
 	}

@@ -231,6 +231,17 @@ type SessionAgent interface {
 	BeginAccepted(sessionID string) *AcceptedRun
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
+	// SystemPrompt returns the agent's system prompt: the base prompt plus
+	// the configured suffix, without the per-session MCP instructions.
+	// Teammates use it to extend the Lead's prompt byte for byte.
+	SystemPrompt() string
+	// AdoptedToolOrder returns the tool names a session adopted mid-turn, in
+	// adoption order.
+	AdoptedToolOrder(sessionID string) []string
+	// SetAdoptedToolOrder seeds a session's adopted tool order. A teammate
+	// inherits the Lead's order so its tools block stays identical to the
+	// one the Lead already cached.
+	SetAdoptedToolOrder(sessionID string, names []string)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -274,6 +285,10 @@ type sessionAgent struct {
 	models             func() ModelSet
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
+	// systemPromptSuffix is fixed at construction: it extends the system
+	// prompt after the per-session MCP instructions so a teammate request
+	// keeps the Lead's system message as an exact cacheable prefix.
+	systemPromptSuffix string
 	tools              *csync.Slice[fantasy.AgentTool]
 
 	// modelSwitchMu guards the last model pair retired by SetModels. The
@@ -377,9 +392,15 @@ type sessionAgent struct {
 type SessionAgentOptions struct {
 	// Models hands out the agent's current models on every call, so a
 	// credential refresh reaches requests already in flight.
-	Models               func() ModelSet
-	SystemPromptPrefix   string
-	SystemPrompt         string
+	Models             func() ModelSet
+	SystemPromptPrefix string
+	SystemPrompt       string
+	// SystemPromptSuffix is appended to the system prompt after the
+	// per-session MCP instructions. Teammates use it to extend the Lead's
+	// built prompt instead of replacing it, so the Lead's system message
+	// stays an exact prefix of the teammate's and the provider's cached
+	// prefix still covers it.
+	SystemPromptSuffix   string
 	IsSubAgent           bool
 	DisableAutoSummarize bool
 	IsYolo               bool
@@ -409,6 +430,7 @@ func NewSessionAgent(
 		smallModel:           csync.NewValue(initial.Small),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		systemPromptSuffix:   opts.SystemPromptSuffix,
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -979,7 +1001,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}()
 
 	// Copy mutable fields under lock to avoid races with SetTools.
-	systemPrompt := a.systemPrompt.Get()
 	promptPrefix := a.systemPromptPrefix.Get()
 
 	// Resolve the tool list and the MCP instruction block once per turn and
@@ -992,7 +1013,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
-	systemPrompt += a.mcpInstructionsForSession(call.SessionID)
+	systemPrompt := a.systemPromptForSession(call.SessionID)
 
 	a.applyToolCacheBreakpoint(agentTools)
 
@@ -1850,7 +1871,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// instruction and the summary are billed as new tokens. Rebuilding
 	// the prompt from a different system prompt or tool list — as this
 	// path once did — discards the cache for the entire context.
-	systemPrompt := a.systemPrompt.Get() + a.mcpInstructionsForSession(sessionID)
+	systemPrompt := a.systemPromptForSession(sessionID)
 	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
 	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	for i, tool := range compactionTools {
@@ -2305,6 +2326,18 @@ func (t compactionGuardTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 	t.inner.SetProviderOptions(opts)
 }
 
+// systemPromptForSession is the complete system message a turn sends: the
+// base prompt, then the session's MCP instructions, then the configured
+// suffix.
+//
+// The suffix goes last on purpose. A teammate's base prompt is the Lead's
+// built prompt verbatim, so keeping the suffix behind everything the Lead
+// also sends leaves the Lead's whole system message as an exact prefix of
+// the teammate's, which is what the provider's prompt cache matches on.
+func (a *sessionAgent) systemPromptForSession(sessionID string) string {
+	return a.systemPrompt.Get() + a.mcpInstructionsForSession(sessionID) + a.systemPromptSuffix
+}
+
 // mcpInstructionsForSession returns the MCP server instruction suffix for a
 // session, computed on the session's first turn and reused afterwards.
 //
@@ -2524,6 +2557,21 @@ func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel stri
 func (a *sessionAgent) adoptedToolOrder(sessionID string) []string {
 	names, _ := a.adoptedTools.Get(sessionID)
 	return names
+}
+
+func (a *sessionAgent) AdoptedToolOrder(sessionID string) []string {
+	return a.adoptedToolOrder(sessionID)
+}
+
+// SetAdoptedToolOrder seeds a session's adopted tool order. A teammate takes
+// the Lead's order because the tools block is serialized ahead of the system
+// prompt: a palette ordered differently from the Lead's re-reads the whole
+// cached prefix at full input price.
+func (a *sessionAgent) SetAdoptedToolOrder(sessionID string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	a.adoptedTools.Set(sessionID, slices.Clone(names))
 }
 
 // stableToolOrder reorders a session's tool list so tools it adopted
@@ -3458,6 +3506,10 @@ func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
 	a.systemPrompt.Set(systemPrompt)
+}
+
+func (a *sessionAgent) SystemPrompt() string {
+	return a.systemPrompt.Get() + a.systemPromptSuffix
 }
 
 func (a *sessionAgent) Model() Model {
