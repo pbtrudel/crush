@@ -180,7 +180,7 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		WaitAgentToolName,
-		"Wait for the next teammate status, message, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. Re-list after wakeup or timeout instead of polling.",
+		"Wait for the next teammate status, message, or shared-task change after this call starts. Returns the current roster and live task board with every result. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning.",
 		func(ctx context.Context, params waitAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			timeout := 30 * time.Second
 			if params.TimeoutMS != nil {
@@ -197,13 +197,14 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 						"reason":  "no-active-peer",
 						"message": noActivePeerMessage,
 					},
+					"progress": c.team.Progress(caller),
 				}), nil
 			}
 			result, err := c.team.WaitForChange(ctx, caller, timeout)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, map[string]bool{"timedOut": result.TimedOut}), nil
+			return c.teamResponse(caller, result), nil
 		},
 	)
 }

@@ -81,12 +81,14 @@ func (c *coordinator) syncAgentTeams() error {
 type teamRun struct {
 	sessionID string
 	done      chan struct{}
+	output    string
 	err       error
 	cancel    context.CancelFunc
 }
 
 func (r *teamRun) SessionID() string     { return r.sessionID }
 func (r *teamRun) Done() <-chan struct{} { return r.done }
+func (r *teamRun) Output() string        { return r.output }
 func (r *teamRun) Err() error            { return r.err }
 func (r *teamRun) Cancel()               { r.cancel() }
 
@@ -127,7 +129,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 	go func() {
 		defer close(run.done)
 		defer cancel()
-		_, runErr := r.c.executeSubAgent(runCtx, agent, sess, subAgentParams{
+		output, runErr := r.c.executeSubAgent(runCtx, agent, sess, subAgentParams{
 			Agent:          agent,
 			SessionID:      member.ParentID,
 			AgentMessageID: member.ID,
@@ -135,6 +137,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 			Prompt:         promptText,
 			SessionTitle:   "Teammate " + member.Name,
 		})
+		run.output = output
 		run.err = runErr
 	}()
 	return run, nil

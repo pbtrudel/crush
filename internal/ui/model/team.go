@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -17,11 +19,12 @@ import (
 
 // teamRefreshInterval is how often the sidebar re-reads the durable Team
 // state. The state file is small and written atomically.
-const teamRefreshInterval = 2 * time.Second
+const teamRefreshInterval = time.Second
 
 // teamStatusMsg carries one Team snapshot read off the update loop.
 type teamStatusMsg struct {
 	state agentteam.State
+	runs  []agentrun.Run
 	ok    bool
 }
 
@@ -37,15 +40,28 @@ func (m *UI) teamStatePath() string {
 	return filepath.Join(dir, "agent-teams", "team.json")
 }
 
+// agentRunsPath returns the durable agent run registry path.
+func (m *UI) agentRunsPath() string {
+	if m.com == nil || m.com.Config() == nil {
+		return ""
+	}
+	dir := m.com.Config().Options.DataDirectory
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "agent-teams", "agents.json")
+}
+
 // teamTick schedules the next Team state read.
 func (m *UI) teamTick() tea.Cmd {
 	path := m.teamStatePath()
+	runsPath := m.agentRunsPath()
 	return tea.Tick(teamRefreshInterval, func(time.Time) tea.Msg {
 		if path == "" {
 			return teamStatusMsg{}
 		}
 		state, err := agentteam.LoadState(path)
-		return teamStatusMsg{state: state, ok: err == nil}
+		return teamStatusMsg{state: state, runs: agentrun.Load(runsPath), ok: err == nil}
 	})
 }
 
@@ -53,9 +69,12 @@ func (m *UI) teamTick() tea.Cmd {
 func (m *UI) handleTeamStatus(msg teamStatusMsg) tea.Cmd {
 	if msg.ok {
 		signature := teamSignature(msg.state)
-		if signature != m.teamSignature {
+		runsSignature := agentRunsSignature(msg.runs)
+		if signature != m.teamSignature || runsSignature != m.agentRunsSignature {
 			m.teamState = msg.state
 			m.teamSignature = signature
+			m.agentRuns = msg.runs
+			m.agentRunsSignature = runsSignature
 			m.sidebarKeyValid = false
 		}
 	}
@@ -70,34 +89,52 @@ func teamSignature(state agentteam.State) string {
 		fmt.Fprintf(&sb, "|m:%s:%s:%s", member.Name, member.Status, strings.Join(member.Diagnostics, ","))
 	}
 	for _, task := range state.Tasks {
-		fmt.Fprintf(&sb, "|t:%s:%d:%s:%s", task.ID, task.Revision, task.Status, task.OwnerID)
+		fmt.Fprintf(&sb, "|t:%s:%d:%s:%s:%s", task.ID, task.Revision, task.Status, task.OwnerID, task.Subject)
 	}
 	return sb.String()
 }
 
-// teamInfo renders the Agent Team sidebar section. It stays empty until a
-// teammate exists, so solo sessions are unchanged.
-func (m *UI) teamInfo(width int) string {
-	if len(m.teamState.Members) == 0 {
-		return ""
+// agentRunsSignature summarizes the live agent registry for cheap change
+// detection.
+func agentRunsSignature(runs []agentrun.Run) string {
+	var sb strings.Builder
+	for _, run := range runs {
+		fmt.Fprintf(&sb, "|a:%s:%s:%s", run.ID, run.Status, run.Name)
 	}
+	return sb.String()
+}
+
+// teamInfo renders the Agent Team sidebar section for the current session.
+// It stays empty until this session has a teammate, so solo sessions and
+// other sessions' teams are hidden.
+func (m *UI) teamInfo(width int) string {
 	if m.com == nil || m.com.Config() == nil || !m.com.Config().Options.GetAgentTeams() {
 		return ""
+	}
+	sessionID := m.currentSessionID()
+	members := sessionMembers(m.teamState, sessionID)
+	if len(members) == 0 {
+		return ""
+	}
+	owners := map[string]bool{"lead": true}
+	for _, member := range members {
+		owners[member.ID] = true
 	}
 	t := m.com.Styles
 	title := common.Section(t, t.Resource.Heading.Render("▮ Agent Team"), width)
 
-	lines := []string{teamMemberLine(t, "lead", agentteam.StatusRunning, width)}
-	for _, member := range m.teamState.Members {
-		lines = append(lines, teamMemberLine(t, member.Name, member.Status, width))
-	}
-
-	active := make([]agentteam.TaskView, 0, len(m.teamState.Tasks))
+	busy := make(map[string]bool)
 	for _, task := range agentteam.TaskViews(m.teamState) {
-		if task.Status != agentteam.TaskDeleted {
-			active = append(active, task)
+		if task.Status == agentteam.TaskInProgress && owners[task.OwnerID] {
+			busy[task.OwnerName] = true
 		}
 	}
+	lines := []string{teamMemberLine(t, "lead", agentteam.StatusRunning, busy["lead"], width)}
+	for _, member := range members {
+		lines = append(lines, teamMemberLine(t, member.Name, member.Status, busy[member.Name], width))
+	}
+
+	active, completed := teamTaskBuckets(m.teamState, owners)
 	const maxTasks = 3
 	for i, task := range active {
 		if i == maxTasks {
@@ -108,13 +145,115 @@ func (m *UI) teamInfo(width int) string {
 		}
 		lines = append(lines, teamTaskLine(t, task, width))
 	}
+	if completed > 0 {
+		lines = append(lines, t.Resource.AdditionalText.Render(
+			fmt.Sprintf("  ✓ %d completed", completed),
+		))
+	}
+	if len(active) == 0 && completed == 0 {
+		lines = append(lines, t.Resource.AdditionalText.Render("  no active tasks"))
+	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body))
 }
 
-func teamMemberLine(t *styles.Styles, name string, status agentteam.Status, width int) string {
-	line := fmt.Sprintf("  %s %s", teamStatusGlyph(status), name)
+// sessionMembers returns the teammates spawned by sessionID.
+func sessionMembers(state agentteam.State, sessionID string) []agentteam.Member {
+	members := make([]agentteam.Member, 0, len(state.Members))
+	for _, member := range state.Members {
+		if member.ParentID == sessionID {
+			members = append(members, member)
+		}
+	}
+	return members
+}
+
+// sessionAgentRuns returns the live agent runs spawned by sessionID.
+func sessionAgentRuns(runs []agentrun.Run, sessionID string) []agentrun.Run {
+	filtered := make([]agentrun.Run, 0, len(runs))
+	for _, run := range runs {
+		if run.ParentSessionID == sessionID {
+			filtered = append(filtered, run)
+		}
+	}
+	return filtered
+}
+
+// agentsInfo renders the live agent section for the current session. It
+// stays empty when this session has no running agent.
+func (m *UI) agentsInfo(width int) string {
+	if m.com == nil {
+		return ""
+	}
+	sessionID := m.currentSessionID()
+	runs := sessionAgentRuns(m.agentRuns, sessionID)
+	if len(runs) == 0 {
+		return ""
+	}
+	t := m.com.Styles
+	title := common.Section(t, t.Resource.Heading.Render("▮ Agents"), width)
+	lines := make([]string, 0, len(runs))
+	for _, run := range runs {
+		lines = append(lines, agentRunLine(t, run, width))
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body))
+}
+
+func agentRunLine(t *styles.Styles, run agentrun.Run, width int) string {
+	line := fmt.Sprintf("  %s %s", agentRunGlyph(run), run.Name)
+	return t.Resource.AdditionalText.Render(ansi.Truncate(line, width, "…"))
+}
+
+func agentRunGlyph(run agentrun.Run) string {
+	switch run.Status {
+	case agentrun.StatusRunning:
+		return "◐"
+	case agentrun.StatusFailed:
+		return "✗"
+	default:
+		return "✓"
+	}
+}
+
+// teamTaskBuckets splits the current session's tasks into the live ones the
+// sidebar lists, in priority order, and a count of completed tasks. Deleted
+// tasks and tasks owned by other sessions are dropped.
+func teamTaskBuckets(state agentteam.State, owners map[string]bool) (active []agentteam.TaskView, completed int) {
+	for _, task := range agentteam.TaskViews(state) {
+		if !owners[task.OwnerID] {
+			continue
+		}
+		switch task.Status {
+		case agentteam.TaskCompleted:
+			completed++
+		case agentteam.TaskDeleted:
+		default:
+			active = append(active, task)
+		}
+	}
+	slices.SortStableFunc(active, func(a, b agentteam.TaskView) int {
+		return teamTaskRank(a) - teamTaskRank(b)
+	})
+	return active, completed
+}
+
+// teamTaskRank orders live tasks: work in flight first, then ready work,
+// then everything still blocked.
+func teamTaskRank(task agentteam.TaskView) int {
+	switch {
+	case task.Status == agentteam.TaskInProgress:
+		return 0
+	case task.Ready:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func teamMemberLine(t *styles.Styles, name string, status agentteam.Status, hasActiveTask bool, width int) string {
+	line := fmt.Sprintf("  %s %s", teamStatusGlyph(status, hasActiveTask), name)
 	if status == agentteam.StatusFailed {
 		line += " failed"
 	}
@@ -123,17 +262,23 @@ func teamMemberLine(t *styles.Styles, name string, status agentteam.Status, widt
 
 func teamTaskLine(t *styles.Styles, task agentteam.TaskView, width int) string {
 	line := fmt.Sprintf("  %s %s %s", teamTaskGlyph(task), task.ID, task.Subject)
+	if task.OwnerName != "" {
+		line += " · " + task.OwnerName
+	}
 	return t.Resource.AdditionalText.Render(ansi.Truncate(line, width, "…"))
 }
 
-func teamStatusGlyph(status agentteam.Status) string {
+func teamStatusGlyph(status agentteam.Status, hasActiveTask bool) string {
 	switch status {
 	case agentteam.StatusRunning, agentteam.StatusProvisioning:
 		return "◐"
 	case agentteam.StatusFailed:
 		return "✗"
 	default:
-		return "○"
+		if hasActiveTask {
+			return "!"
+		}
+		return "✓"
 	}
 }
 

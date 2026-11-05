@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
@@ -243,6 +244,10 @@ type coordinator struct {
 	wakeCounts map[string]int
 	subagents  *subagentManager
 
+	// agentRuns is the durable registry of live agent runs. The sidebar
+	// filters it to the current session.
+	agentRuns *agentrun.Registry
+
 	// team is the experimental Agent Teams domain. Nil unless enabled.
 	team *agentteam.Service
 
@@ -305,6 +310,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		subagents:    newSubagentManager(),
 		hookRunner:   opts.HookRunner,
 	}
+	c.agentRuns = agentrun.New(filepath.Join(opts.Config.Config().Options.DataDirectory, "agent-teams", "agents.json"))
 
 	// Agent Teams is on by default, matching the DSH profile bundle. The
 	// Lead decides whether to work alone or dispatch teammates.
@@ -1222,6 +1228,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
 
 	// Question tool is interactive-only and not available to sub-agents.
@@ -2151,7 +2158,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
+	c.startSubAgentRun(sess, params)
 	output, err := c.executeSubAgent(ctx, params.Agent, sess, params)
+	c.finishSubAgentRun(sess.ID, err)
 	if err != nil {
 		if errors.Is(err, errModelProviderNotConfigured) {
 			return fantasy.ToolResponse{}, err
@@ -2162,6 +2171,52 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
 	}
 	return fantasy.NewTextResponse(output), nil
+}
+
+// startSubAgentRun records a subagent in the durable run registry so the
+// sidebar can show it while it runs.
+func (c *coordinator) startSubAgentRun(sess session.Session, params subAgentParams) {
+	if c.agentRuns == nil {
+		return
+	}
+	c.agentRuns.Start(agentrun.Run{
+		ID:              sess.ID,
+		Kind:            agentrun.KindSubagent,
+		Name:            subAgentRunName(params.Prompt),
+		SessionID:       sess.ID,
+		ParentSessionID: params.SessionID,
+		Status:          agentrun.StatusRunning,
+	})
+}
+
+// finishSubAgentRun marks a subagent run settled in the registry.
+func (c *coordinator) finishSubAgentRun(sessionID string, err error) {
+	if c.agentRuns == nil {
+		return
+	}
+	status := agentrun.StatusDone
+	if err != nil {
+		status = agentrun.StatusFailed
+	}
+	c.agentRuns.Finish(sessionID, status)
+}
+
+// subAgentRunName derives a short sidebar label from the subagent prompt.
+func subAgentRunName(prompt string) string {
+	line := prompt
+	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
+		line = line[:idx]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "subagent"
+	}
+	const maxRunes = 60
+	runes := []rune(line)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "…"
+	}
+	return line
 }
 
 // startBackgroundSubAgent creates the child session and returns its id
@@ -2175,11 +2230,13 @@ func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params subAge
 	if c.subagents == nil {
 		c.subagents = newSubagentManager()
 	}
+	c.startSubAgentRun(sess, params)
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
 	run := c.subagents.start(sess.ID, params.SessionID, cancel)
 	go func() {
 		defer cancel()
 		output, runErr := c.executeSubAgent(runCtx, params.Agent, sess, params)
+		c.finishSubAgentRun(sess.ID, runErr)
 		c.subagents.finish(run, output, runErr)
 		event := SubagentEvent{
 			ID:              run.id,

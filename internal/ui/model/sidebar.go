@@ -137,6 +137,9 @@ func (m *UI) updateSidebarScrollState() {
 	if teamSection := m.teamInfo(contentWidth); teamSection != "" {
 		sections = append(sections, "", teamSection)
 	}
+	if agentsSection := m.agentsInfo(contentWidth); agentsSection != "" {
+		sections = append(sections, "", agentsSection)
+	}
 	sections = append(
 		sections,
 		"",

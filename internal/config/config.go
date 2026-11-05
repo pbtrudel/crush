@@ -1219,6 +1219,7 @@ func allToolNames() []string {
 		"view",
 		"read",
 		"write",
+		"worktree",
 		"list_mcp_resources",
 		"read_mcp_resource",
 		"mcp_servers",
