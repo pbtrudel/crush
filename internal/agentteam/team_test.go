@@ -545,3 +545,30 @@ func TestUpdateTaskCompleteCallsCompletedHook(t *testing.T) {
 		t.Fatal("task completed hook was not called")
 	}
 }
+
+func TestUpdateTaskCompleteUsesCallerSessionForLead(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	require.NoError(t, err)
+	claimed, err := service.UpdateTask("lead", UpdateTaskRequest{
+		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.NoError(t, err)
+
+	got := make(chan string, 1)
+	service.SetTaskCompletedHook(func(sessionID, subject string) {
+		got <- sessionID + "|" + subject
+	})
+	_, err = service.UpdateTask("lead", UpdateTaskRequest{
+		TaskID: claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
+		SessionID: "lead-session",
+	})
+	require.NoError(t, err)
+	select {
+	case value := <-got:
+		require.Equal(t, "lead-session|Review the diff", value)
+	case <-time.After(time.Second):
+		t.Fatal("task completed hook was not called")
+	}
+}

@@ -292,13 +292,14 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		TeamTaskUpdateToolName,
 		"Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list.",
-		func(_ context.Context, params teamTaskUpdateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params teamTaskUpdateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			request := agentteam.UpdateTaskRequest{
 				TaskID:           params.TaskID,
 				ExpectedRevision: params.ExpectedRevision,
 				Action:           params.Action,
 				BlockedBy:        params.BlockedBy,
 				WriteScopes:      params.WriteScopes,
+				SessionID:        tools.GetSessionFromContext(ctx),
 			}
 			if params.Subject != nil {
 				request.Subject = *params.Subject

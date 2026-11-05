@@ -261,6 +261,9 @@ type UpdateTaskRequest struct {
 	BlockedBy        []string
 	WriteScopes      []string
 	Owner            string
+	// SessionID is the caller's session, used to reconcile session todos
+	// when the Lead completes a task itself.
+	SessionID string
 }
 
 // ProgressTask is a compact task row for progress snapshots.
@@ -1090,6 +1093,9 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
 	parentSessionID = member.ParentID
+	if parentSessionID == "" {
+		parentSessionID = req.SessionID
+	}
 	current, ok := s.taskLocked(req.TaskID)
 	if !ok {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
