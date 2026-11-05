@@ -49,6 +49,7 @@ func (m *mockSessionAgent) SetModels(large, small Model) {}
 func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool) {
 	m.tools = tools
 }
+
 func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {
 	m.systemPrompt = systemPrompt
 }
