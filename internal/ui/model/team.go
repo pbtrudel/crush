@@ -104,17 +104,20 @@ func agentRunsSignature(runs []agentrun.Run) string {
 	return sb.String()
 }
 
-// teamInfo renders the Agent Team sidebar section for the current session.
-// It stays empty until this session has a teammate, so solo sessions and
-// other sessions' teams are hidden.
+// teamInfo renders the Agent Team sidebar section. It prefers the teammates
+// spawned by the current session and falls back to the whole workspace roster,
+// so switching sessions never hides a team that is still live.
 func (m *UI) teamInfo(width int) string {
 	if m.com == nil || m.com.Config() == nil || !m.com.Config().Options.GetAgentTeams() {
+		return ""
+	}
+	if len(m.teamState.Members) == 0 {
 		return ""
 	}
 	sessionID := m.currentSessionID()
 	members := sessionMembers(m.teamState, sessionID)
 	if len(members) == 0 {
-		return ""
+		members = m.teamState.Members
 	}
 	owners := map[string]bool{"lead": true}
 	for _, member := range members {
@@ -158,26 +161,68 @@ func (m *UI) teamInfo(width int) string {
 	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body))
 }
 
-// sessionMembers returns the teammates spawned by sessionID.
+// sessionMembers returns the teammates spawned by sessionID, including the
+// teammates those teammates spawned. An empty session id matches nothing:
+// before a session loads there is no team to scope to.
 func sessionMembers(state agentteam.State, sessionID string) []agentteam.Member {
+	if sessionID == "" {
+		return nil
+	}
+	links := make([][2]string, 0, len(state.Members))
+	for _, member := range state.Members {
+		if member.ParentID != "" && member.SessionID != "" {
+			links = append(links, [2]string{member.ParentID, member.SessionID})
+		}
+	}
+	sessions := sessionTree(sessionID, links)
 	members := make([]agentteam.Member, 0, len(state.Members))
 	for _, member := range state.Members {
-		if member.ParentID == sessionID {
+		if sessions[member.ParentID] {
 			members = append(members, member)
 		}
 	}
 	return members
 }
 
-// sessionAgentRuns returns the live agent runs spawned by sessionID.
+// sessionAgentRuns returns the live agent runs spawned by sessionID,
+// including runs started by agents that session spawned. An empty session id
+// matches nothing.
 func sessionAgentRuns(runs []agentrun.Run, sessionID string) []agentrun.Run {
+	if sessionID == "" {
+		return nil
+	}
+	links := make([][2]string, 0, len(runs))
+	for _, run := range runs {
+		if run.ParentSessionID != "" && run.SessionID != "" {
+			links = append(links, [2]string{run.ParentSessionID, run.SessionID})
+		}
+	}
+	sessions := sessionTree(sessionID, links)
 	filtered := make([]agentrun.Run, 0, len(runs))
 	for _, run := range runs {
-		if run.ParentSessionID == sessionID {
+		if sessions[run.ParentSessionID] {
 			filtered = append(filtered, run)
 		}
 	}
 	return filtered
+}
+
+// sessionTree returns sessionID plus every session reachable from it through
+// parent→child links.
+func sessionTree(sessionID string, links [][2]string) map[string]bool {
+	sessions := map[string]bool{sessionID: true}
+	for {
+		changed := false
+		for _, link := range links {
+			if sessions[link[0]] && !sessions[link[1]] {
+				sessions[link[1]] = true
+				changed = true
+			}
+		}
+		if !changed {
+			return sessions
+		}
+	}
 }
 
 // agentsInfo renders the live agent section for the current session. It

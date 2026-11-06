@@ -542,7 +542,17 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 		s.mu.Unlock()
 		return MemberView{}, newError(CodeInvalidMemberName, "teammate name %q is already used", req.Name)
 	}
-	if len(s.state.Members) >= s.cfg.MaxMembers {
+	// The limit bounds the teammates working at once, not the durable
+	// roster: a workspace keeps every member it ever created, so counting
+	// settled members would lock a new team out of the workspace forever.
+	live := 0
+	for _, existing := range s.state.Members {
+		switch s.statusLocked(existing.Name) {
+		case StatusRunning, StatusProvisioning:
+			live++
+		}
+	}
+	if live >= s.cfg.MaxMembers {
 		s.mu.Unlock()
 		return MemberView{}, newError(CodeMemberLimit, "Team member limit %d reached", s.cfg.MaxMembers)
 	}
@@ -556,6 +566,7 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 		Context:     mode,
 		Model:       req.Model,
 		ParentID:    req.ParentID,
+		Status:      StatusProvisioning,
 	}
 	s.state.Members = append(s.state.Members, member)
 	s.saveLocked()

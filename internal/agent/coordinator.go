@@ -2214,7 +2214,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 	c.startSubAgentRun(sess, params)
 	output, err := c.executeSubAgent(ctx, params.Agent, sess, params)
-	c.finishSubAgentRun(sess.ID, err)
+	c.finishAgentRun(sess.ID, err)
 	if err != nil {
 		if errors.Is(err, errModelProviderNotConfigured) {
 			return fantasy.ToolResponse{}, err
@@ -2243,8 +2243,24 @@ func (c *coordinator) startSubAgentRun(sess session.Session, params subAgentPara
 	})
 }
 
-// finishSubAgentRun marks a subagent run settled in the registry.
-func (c *coordinator) finishSubAgentRun(sessionID string, err error) {
+// startTeammateRun records a teammate turn in the durable run registry so the
+// sidebar can show it while it runs.
+func (c *coordinator) startTeammateRun(sess session.Session, member agentteam.Member) {
+	if c.agentRuns == nil {
+		return
+	}
+	c.agentRuns.Start(agentrun.Run{
+		ID:              sess.ID,
+		Kind:            agentrun.KindTeammate,
+		Name:            member.Name,
+		SessionID:       sess.ID,
+		ParentSessionID: member.ParentID,
+		Status:          agentrun.StatusRunning,
+	})
+}
+
+// finishAgentRun marks an agent run settled in the registry.
+func (c *coordinator) finishAgentRun(sessionID string, err error) {
 	if c.agentRuns == nil {
 		return
 	}
@@ -2290,7 +2306,7 @@ func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params subAge
 	go func() {
 		defer cancel()
 		output, runErr := c.executeSubAgent(runCtx, params.Agent, sess, params)
-		c.finishSubAgentRun(sess.ID, runErr)
+		c.finishAgentRun(sess.ID, runErr)
 		c.subagents.finish(run, output, runErr)
 		event := SubagentEvent{
 			ID:              run.id,

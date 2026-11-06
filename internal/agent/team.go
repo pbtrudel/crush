@@ -157,6 +157,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		done:      make(chan struct{}),
 		cancel:    cancel,
 	}
+	r.c.startTeammateRun(sess, member)
 	go func() {
 		defer close(run.done)
 		defer cancel()
@@ -172,6 +173,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		})
 		run.output = output
 		run.err = runErr
+		r.c.finishAgentRun(sess.ID, runErr)
 	}()
 	return run, nil
 }
@@ -227,7 +229,21 @@ func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Membe
 			return existing, nil
 		}
 	}
-	return r.c.sessions.CreateTaskSession(ctx, "team-"+member.ID, member.ParentID, "Teammate "+member.Name)
+	return r.c.sessions.CreateTaskSession(ctx, r.teammateSessionID(member), member.ParentID, "Teammate "+member.Name)
+}
+
+// teammateSessionID names a teammate session. Member ids restart with every
+// new Team, so the Team id keeps a fresh team from colliding with the sessions
+// an earlier team left in the same workspace database.
+func (r *teamRunner) teammateSessionID(member agentteam.Member) string {
+	if r.c.team == nil {
+		return "team-" + member.ID
+	}
+	teamID := strings.TrimPrefix(r.c.team.TeamID(), "team-")
+	if teamID == "" {
+		return "team-" + member.ID
+	}
+	return "team-" + member.ID + "-" + teamID
 }
 
 // forkPrefix renders the Lead's completed turns for a fork teammate.
