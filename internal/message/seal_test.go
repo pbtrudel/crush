@@ -66,7 +66,7 @@ func TestPartsSeal_GrowingPartIsNotLast(t *testing.T) {
 
 	msg.AddToolCall(ToolCall{ID: "call_1", Name: "bash", Input: "{\"comma"})
 	encodeEqual(t, &seal, msg.Parts)
-	msg.AppendToolCallInput("call_1", "nd\": true}")
+	msg.AddToolCall(ToolCall{ID: "call_1", Name: "bash", Input: "{\"command\": true}"})
 	encodeEqual(t, &seal, msg.Parts)
 	msg.FinishToolCall("call_1")
 	encodeEqual(t, &seal, msg.Parts)

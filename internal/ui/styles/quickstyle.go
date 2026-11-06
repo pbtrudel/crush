@@ -45,6 +45,7 @@ type quickStyleOpts struct {
 
 	// Statuses.
 	destructive       color.Color
+	destructiveSubtle color.Color
 	error             color.Color
 	warning           color.Color
 	warningSubtle     color.Color
@@ -812,7 +813,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Header.Keystroke = muted
 	s.Header.KeystrokeTip = subtle
 	s.Header.WorkingDir = muted
-	s.Header.GitBranch = base.Foreground(o.secondary)
+	s.Header.GitBranch = muted
 	s.Header.Separator = subtle
 	s.Header.Wrapper = lipgloss.NewStyle().Foreground(o.fgBase)
 	s.Header.LogoGradCanvas = lipgloss.NewStyle()
@@ -834,6 +835,7 @@ func quickStyle(o quickStyleOpts) Styles {
 
 	s.Tool.ParamMain = subtle
 	s.Tool.ParamKey = subtle
+	s.Tool.Description = base
 
 	// Content rendering - prepared styles that accept width parameter
 	s.Tool.ContentLine = muted.Background(o.bgLeastVisible)
@@ -874,6 +876,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	// Agent task styles
 	s.Tool.AgentTaskTag = base.Bold(true).Padding(0, 1).MarginLeft(2).Background(o.infoMoreSubtle).Foreground(o.onPrimary)
 	s.Tool.AgentPrompt = muted
+	s.Tool.AgentName = base.Foreground(o.infoMostSubtle)
+	s.Tool.AgentLabel = base.Foreground(o.fgMostSubtle)
+	s.Tool.AgentMessage = muted
 
 	// Agentic fetch styles
 	s.Tool.AgenticFetchPromptTag = base.Bold(true).Padding(0, 1).MarginLeft(2).Background(o.success).Foreground(badgeInk(o.success, o.separator, o.fgBase))
@@ -958,6 +963,11 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.QuestionRadioOff = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
 	s.Editor.QuestionCheckOn = lipgloss.NewStyle().Foreground(o.secondary).SetString(RadioOn)
 	s.Editor.QuestionCheckOff = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
+	// Sysadmin
+	s.Editor.PromptSysadminIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.bgBase).Background(o.destructive).Bold(true).SetString(" # ")
+	s.Editor.PromptSysadminIconBlurred = s.Editor.PromptSysadminIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
+	s.Editor.PromptSysadminDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.destructive).SetString(":::")
+	s.Editor.PromptSysadminDotsBlurred = s.Editor.PromptSysadminDotsFocused.Foreground(o.fgMoreSubtle)
 
 	// Prompt rules: gradient hairlines above and below the textarea.
 	s.Editor.RuleBase = lipgloss.NewStyle()
@@ -1030,6 +1040,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Resource.ErrorIcon = s.Resource.OfflineIcon.Foreground(o.destructive)
 	s.Resource.OnlineIcon = s.Resource.OfflineIcon.Foreground(o.successMostSubtle)
 	s.Resource.OnlineText = lipgloss.NewStyle().Foreground(o.successMostSubtle)
+	// Same green as OnlineIcon but with no preset glyph, for callers that
+	// supply their own (e.g. an animated spinner).
+	s.Resource.WorkingIcon = lipgloss.NewStyle().Foreground(o.successMostSubtle)
 	s.Resource.NeedsAuthIcon = s.Resource.OfflineIcon.Foreground(o.attention)
 	s.Resource.DisabledIcon = lipgloss.NewStyle().Foreground(o.fgMoreSubtle).SetString("●")
 	s.Resource.AdditionalText = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
@@ -1206,6 +1219,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	// Dialog.Quit
 	s.Dialog.Quit.Content = lipgloss.NewStyle().Foreground(o.fgBase)
 	s.Dialog.Quit.Hint = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Dialog.Quit.Warning = lipgloss.NewStyle().Foreground(o.destructive)
 	s.Dialog.Quit.Frame = lipgloss.NewStyle().BorderForeground(o.primary).Border(lipgloss.RoundedBorder()).Padding(1, 2)
 	s.Dialog.View = base.Border(lipgloss.RoundedBorder()).BorderForeground(o.primary)
 	s.Dialog.PrimaryText = base.Padding(0, 1).Foreground(o.primary)
@@ -1222,6 +1236,10 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.SelectedItem = base.Padding(0, 1).Background(o.primary).Foreground(o.onPrimary).
 		BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(o.secondary)
 	s.Dialog.InputPrompt = base.Background(o.bgLessVisible).Padding(0, 1).Margin(0, 0, 1, 0)
+	s.Dialog.PromptMessage = base.Foreground(o.fgSubtle).Padding(0, 1)
+	s.Dialog.PromptKey = base.Foreground(o.fgSubtle).Padding(0, 1)
+	s.Dialog.SSHMessage = base.Foreground(o.fgSubtle).Padding(0, 1)
+	s.Dialog.SSHKey = base.Foreground(o.fgSubtle).Padding(0, 1)
 
 	s.Dialog.List = base.Margin(0, 0, 1, 0)
 	s.Dialog.ContentPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(1, 2)
@@ -1281,10 +1299,13 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Status.Help = lipgloss.NewStyle().Padding(0, 1).Background(o.bgLeastVisible)
 	s.Status.ModeBadgePlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.primary).Padding(0, 1).Bold(true).SetString("PLAN MODE")
 	s.Status.ModeBadgeYolo = lipgloss.NewStyle().Foreground(badgeInk(o.busy, o.bgBase, o.fgBase)).Background(o.busy).Padding(0, 1).Bold(true).SetString("YOLO MODE")
+	s.Status.ModeBadgeSysadmin = lipgloss.NewStyle().Foreground(badgeInk(o.destructive, o.bgBase, o.fgBase)).Background(o.destructive).Padding(0, 1).Bold(true).SetString("SYSADMIN MODE")
 	s.Status.ModeBannerPlanBadge = s.Status.ModeBadgePlan
 	s.Status.ModeBannerPlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.planMoreSubtle).Padding(0, 1)
 	s.Status.ModeBannerYoloBadge = s.Status.ModeBadgeYolo
 	s.Status.ModeBannerYolo = lipgloss.NewStyle().Foreground(badgeInk(o.yolo, o.bgBase, o.fgBase)).Background(o.yolo).Padding(0, 1)
+	s.Status.ModeBannerSysadminBadge = s.Status.ModeBadgeSysadmin
+	s.Status.ModeBannerSysadmin = lipgloss.NewStyle().Foreground(badgeInk(o.destructiveSubtle, o.bgBase, o.fgBase)).Background(o.destructiveSubtle).Padding(0, 1)
 	// The badges and toasts write a background role on a status fill;
 	// badgeInk swaps it for fgBase where that reads better (light themes).
 	s.Status.SuccessIndicator = base.Foreground(badgeInk(o.success, o.bgLessVisible, o.fgBase)).Background(o.success).Padding(0, 1).Bold(true).SetString("OKAY!")

@@ -215,7 +215,7 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, errors.New("coder agent not configured")
 	}
 
-	return r.c.buildAgent(ctx, agentSystemPrompt{
+	return r.c.buildAgent(ctx, &r.c.readyWg, agentSystemPrompt{
 		Prebuilt: lead.SystemPrompt(),
 		Suffix:   teamIdentity(member),
 	}, agentCfg, roleTeammate)

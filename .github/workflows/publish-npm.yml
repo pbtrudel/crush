@@ -51,19 +51,18 @@ jobs:
         env:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          # Base version: the latest stable upstream release tag, read from
-          # charmbracelet/crush without importing tags (importing them would
-          # make the tag's own checkout of upstream workflows fire). Fall back
-          # to local tags, then 0.0.0. The run number makes every build unique
-          # so npm never sees a duplicate version.
-          base="$(git ls-remote --tags --refs --sort='-v:refname' \
-            https://github.com/charmbracelet/crush.git 'v*' \
-            | awk -F'refs/tags/' '$2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ {print $2; exit}' \
-            | sed 's/^v//;s/+.*$//')"
+          # Base version: the upstream release this fork has actually merged,
+          # recorded in UPSTREAM_VERSION by the sync commit. Reading the
+          # latest upstream tag here instead would jump the fork's version
+          # ahead of its code whenever upstream cuts a release we have not
+          # merged yet. The run number makes every build unique so npm never
+          # sees a duplicate version.
+          base="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          base="${base#v}"
           if [ -z "$base" ]; then
-            base="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/+.*$//' || true)"
+            echo "UPSTREAM_VERSION is missing or empty" >&2
+            exit 1
           fi
-          if [ -z "$base" ]; then base="0.0.0"; fi
           version="${base}-fork.${RUN_NUMBER}"
           git tag "v${version}"
           # Force-push so a re-run of the same workflow run re-publishes the

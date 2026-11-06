@@ -68,7 +68,7 @@ func TestPreparePrompt_ReplayMatchesLiveUserMessage(t *testing.T) {
 			{FileName: "photo.png", FilePath: "/tmp/photo.png", MimeType: "image/png", Content: []byte("fake-png")},
 		},
 	}
-	_, err = agent.createUserMessage(ctx, call)
+	_, err = agent.createUserMessage(ctx, call, "")
 	require.NoError(t, err)
 
 	msgs, err := env.messages.List(ctx, sess.ID)
@@ -325,14 +325,14 @@ func TestBuildToolsByteStableAcrossBuilds(t *testing.T) {
 		},
 	}
 
-	first, err := c.buildTools(t.Context(), agentCfg, roleLead)
+	first, err := c.buildTools(t.Context(), agentCfg, roleLead, func() Model { return c.mainModels().Large })
 	require.NoError(t, err)
 	require.NotEmpty(t, first)
 	require.True(t, slices.IsSortedFunc(first, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	}), "tool lists must be sorted by name")
 
-	second, err := c.buildTools(t.Context(), agentCfg, roleLead)
+	second, err := c.buildTools(t.Context(), agentCfg, roleLead, func() Model { return c.mainModels().Large })
 	require.NoError(t, err)
 	require.Len(t, second, len(first))
 

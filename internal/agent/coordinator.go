@@ -11,12 +11,14 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -49,6 +51,7 @@ import (
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/azure"
@@ -71,67 +74,6 @@ var (
 	errModelNotSelected           = errors.New("model not selected")
 	errModelNotFound              = errors.New("model not found in provider config")
 )
-
-// Copilot models that use the Responses API instead of Chat Completions.
-var copilotResponsesModels = map[string]bool{
-	"gpt-5.2":       true,
-	"gpt-5.2-codex": true,
-	"gpt-5.3-codex": true,
-	"gpt-5.4":       true,
-	"gpt-5.4-mini":  true,
-	"gpt-5.5":       true,
-	"gpt-5-mini":    true,
-	"gpt-5.6-luna":  true,
-	"gpt-5.6-terra": true,
-	"gpt-5.6-sol":   true,
-	"gpt-6-astra":   true,
-	"gpt-6-luna":    true,
-	"gpt-6-sol":     true,
-	"gpt-6.1-sol":   true,
-	"grok-4.5":      true,
-	"grok-4.6":      true,
-	"grok-4.7":      true,
-}
-
-// Extra Copilot model ids that must use the Responses API are loaded from
-// the user's crush config directory (copilot-responses-models). This keeps
-// new Copilot models working across Crush updates without rebuilding the
-// map in code.
-func init() {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "crush", "copilot-responses-models"))
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if id := strings.TrimSpace(line); id != "" && !strings.HasPrefix(id, "#") {
-			copilotResponsesModels[id] = true
-		}
-	}
-}
-
-// OpenCode models that use the Anthropic Messages API instead of Chat
-// Completions. Which endpoint serves each model differs per provider, see
-// https://opencode.ai/docs/zen and https://opencode.ai/docs/go.
-func isOpenCodeMessagesModel(providerID, modelID string) bool {
-	switch providerID {
-	case string(catwalk.InferenceProviderOpenCodeGo):
-		return strings.HasPrefix(modelID, "minimax-") ||
-			strings.HasPrefix(modelID, "qwen3.6-") ||
-			strings.HasPrefix(modelID, "qwen3.7-") ||
-			strings.HasPrefix(modelID, "qwen3.8-")
-	case string(catwalk.InferenceProviderOpenCodeZen):
-		return strings.HasPrefix(modelID, "claude-") ||
-			strings.HasPrefix(modelID, "qwen3.5-") ||
-			strings.HasPrefix(modelID, "qwen3.6-") ||
-			strings.HasPrefix(modelID, "qwen3.7-") ||
-			strings.HasPrefix(modelID, "qwen3.8-")
-	}
-	return false
-}
 
 // servingProvider returns the fantasy provider package that serves the
 // given provider and model. Providers with bespoke SDKs (Bedrock, Azure,
@@ -231,8 +173,37 @@ type coordinator struct {
 	models    csync.Value[coordinatorModels]
 	rebuildMu sync.Mutex
 
+	// awsRefresh shares one AWS SSO login among requests that need it.
+	awsRefresh singleflight.Group
+	// modelsGen counts rebuilds; override models rebuild when it moves.
+	modelsGen atomic.Uint64
+	// overrideModels shares builds of per-dispatch model overrides.
+	overrideModelsMu sync.Mutex
+	overrideModels   map[overrideModelKey]*overrideModel
+
+	// dispatched tracks detached subagents by parent session and label.
+	dispatched *csync.Map[string, *dispatchedAgent]
+	// dispatchMu makes checking a label and registering it one step.
+	dispatchMu sync.Mutex
+	// names hands each new subagent its first name.
+	names subagentNamer
+	// backgroundAfter is how long a blocking subagent runs before it is
+	// moved to the background. It mirrors the bash tool's threshold and is
+	// a field only so tests can shorten it.
+	backgroundAfter time.Duration
+	// reconciled records parent sessions already checked for subagents a
+	// previous process left unreported. Keys are session IDs.
+	reconciled sync.Map
+	// subSessions counts the runs in flight on each subagent session, so
+	// the busy check sees subagents the main agent is not running itself.
+	subSessionsMu sync.Mutex
+	subSessions   map[string]int
+
 	// Skills discovery results. The manager is the live source of
-	// truth; the slices below are its last-read snapshot.
+	// truth; the slices below are its last-read snapshot. skillsMu guards
+	// the snapshot: a config reload swaps it from the reload goroutine
+	// while turns read it to build tools.
+	skillsMu     sync.RWMutex
 	skillsMgr    *skills.Manager
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
 	activeSkills []*skills.Skill // Post-filter: active skills only.
@@ -242,7 +213,6 @@ type coordinator struct {
 	// used by background completion notifications.
 	wakeMu     sync.Mutex
 	wakeCounts map[string]int
-	subagents  *subagentManager
 
 	// agentRuns is the durable registry of live agent runs. The sidebar
 	// filters it to the current session.
@@ -259,6 +229,10 @@ type coordinator struct {
 	readyWg errgroup.Group
 
 	hostContext csync.Value[proto.HostContext]
+
+	// titles is shared by every agent built here, sub-agents included, so
+	// CancelAll on the current agent drains all title generation.
+	titles titleTracker
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -295,27 +269,35 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	skillTracker := skills.NewTracker(activeSkills)
 
 	c := &coordinator{
-		cfg:          opts.Config,
-		sessions:     opts.Sessions,
-		messages:     opts.Messages,
-		permissions:  opts.Permissions,
-		questions:    opts.Questions,
-		history:      opts.History,
-		filetracker:  opts.FileTracker,
-		lspManager:   opts.LSPManager,
-		notify:       opts.Notify,
-		runComplete:  opts.RunComplete,
-		agents:       make(map[string]SessionAgent),
-		skillsMgr:    opts.Skills,
-		allSkills:    allSkills,
-		activeSkills: activeSkills,
-		skillTracker: skillTracker,
-		interactive:  opts.Interactive,
-		wakeCounts:   make(map[string]int),
-		subagents:    newSubagentManager(),
-		hookRunner:   opts.HookRunner,
+		cfg:             opts.Config,
+		sessions:        opts.Sessions,
+		messages:        opts.Messages,
+		permissions:     opts.Permissions,
+		questions:       opts.Questions,
+		history:         opts.History,
+		filetracker:     opts.FileTracker,
+		lspManager:      opts.LSPManager,
+		notify:          opts.Notify,
+		runComplete:     opts.RunComplete,
+		agents:          make(map[string]SessionAgent),
+		skillsMgr:       opts.Skills,
+		allSkills:       allSkills,
+		activeSkills:    activeSkills,
+		skillTracker:    skillTracker,
+		interactive:     opts.Interactive,
+		wakeCounts:      make(map[string]int),
+		hookRunner:      opts.HookRunner,
+		dispatched:      csync.NewMap[string, *dispatchedAgent](),
+		backgroundAfter: subAgentBackgroundAfter,
 	}
 	c.agentRuns = agentrun.New(filepath.Join(opts.Config.Config().Options.DataDirectory, "agent-teams", "agents.json"))
+
+	// background_subagents=false keeps a delegated subagent in the
+	// foreground for the whole call instead of handing it off once it
+	// outruns the threshold.
+	if !opts.Config.Config().Options.GetBackgroundSubagents() {
+		c.backgroundAfter = math.MaxInt64
+	}
 
 	// Agent Teams is on by default, matching the DSH profile bundle. The
 	// Lead decides whether to work alone or dispatch teammates.
@@ -333,7 +315,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 
-	agent, err := c.buildAgent(ctx, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
+	agent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
@@ -344,12 +326,15 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errPlanAgentNotConfigured
 	}
 
-	planSystemPrompt, err := planPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	planSystemPrompt, err := planPrompt(
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithToolNames(c.effectiveToolNames(planCfg, roleLead)),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	planAgent, err := c.buildAgent(ctx, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
+	planAgent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +343,6 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	c.mainAgent = agent
 	c.mainAgentName = config.AgentCoder
 	go c.watchBackgroundJobs(ctx)
-	go c.watchSubagents(ctx)
 	return c, nil
 }
 
@@ -400,7 +384,7 @@ func (c *coordinator) SetMainAgent(agentName string) error {
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	return c.run(ctx, nil, sessionID, prompt, attachments...)
+	return c.run(ctx, nil, nil, sessionID, prompt, attachments...)
 }
 
 // SideQuestioner answers a question about the current session without
@@ -453,7 +437,7 @@ func (c *coordinator) Ask(ctx context.Context, sessionID, question string) (stri
 
 // RunAccepted implements Coordinator.
 func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	return c.run(ctx, accept, sessionID, prompt, attachments...)
+	return c.run(ctx, accept, nil, sessionID, prompt, attachments...)
 }
 
 // run is the shared implementation behind Run and RunAccepted. When
@@ -461,8 +445,14 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // Accepted so sessionAgent.Run can consume the accept reservation under
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
-func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	return c.runWithOptions(ctx, accept, sessionID, prompt, runOptions{}, attachments...)
+// runReport delivers a subagent report: it folds into a turn in progress, or
+// starts one.
+func (c *coordinator) runReport(ctx context.Context, sessionID string, report message.SubAgentReport) (*fantasy.AgentResult, error) {
+	return c.run(ctx, nil, &report, sessionID, report.PromptText())
+}
+
+func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, report *message.SubAgentReport, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.runWithOptions(ctx, accept, report, sessionID, prompt, runOptions{}, attachments...)
 }
 
 // runOptions distinguishes user-initiated turns from background-completion
@@ -472,7 +462,7 @@ type runOptions struct {
 	wakeup bool
 }
 
-func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, opts runOptions, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, report *message.SubAgentReport, sessionID string, prompt string, opts runOptions, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -546,6 +536,10 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, s
 		latest = rc
 		hasLatest = true
 	}
+	// Before the first turn on a session, tell it about any subagent a
+	// previous process left without a report.
+	c.reconcileDispatches(ctx, agent, sessionID)
+
 	// Propagate the caller-supplied RunID (set via agent.WithRunID
 	// at the HTTP boundary in backend.SendMessage) onto the
 	// SessionAgentCall so the terminal RunComplete event echoes it
@@ -567,6 +561,7 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, s
 			HiddenUserMessage: opts.hidden || message.HiddenUserMessage(ctx),
 			Wakeup:            opts.wakeup,
 			HostContext:       c.hostContext.Get(),
+			Report:            report,
 			Attachments:       attachments,
 			MaxOutputTokens:   maxTokens,
 			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg),
@@ -580,10 +575,10 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, s
 			OnAuthRefresh:     c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
-	beforeLoaded := c.skillTracker.LoadedNames()
+	_, activeSkills, skillTracker := c.skillsSnapshot()
+	beforeLoaded := skillTracker.LoadedNames()
 	result, originalErr := run()
-	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
-
+	logTurnSkillUsage(sessionID, prompt, activeSkills, skillTracker, beforeLoaded)
 	c.askToSignInAgain(originalErr, model)
 
 	if hasLatest && c.runComplete != nil {
@@ -648,37 +643,11 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 		return
 	}
 	go func() {
-		if _, err := c.runWithOptions(ctx, nil, sessionID, notice, runOptions{hidden: true, wakeup: true}); err != nil {
+		if _, err := c.runWithOptions(ctx, nil, nil, sessionID, notice, runOptions{hidden: true, wakeup: true}); err != nil {
 			slog.Warn("Failed to wake session for background completion", "session_id", sessionID, "error", err)
 			agent.EnqueueNotice(sessionID, notice)
 		}
 	}()
-}
-
-func (c *coordinator) watchSubagents(ctx context.Context) {
-	go func() {
-		<-ctx.Done()
-		if c.subagents != nil {
-			c.subagents.cancelAll()
-		}
-	}()
-	events := SubscribeSubagents(ctx)
-	for event := range events {
-		if event.Type != pubsub.CreatedEvent {
-			continue
-		}
-		c.handleSubagentEvent(ctx, event.Payload)
-	}
-}
-
-func (c *coordinator) handleSubagentEvent(ctx context.Context, event SubagentEvent) {
-	if event.ParentSessionID == "" {
-		return
-	}
-	if c.cfg == nil || c.cfg.Config() == nil || !c.cfg.Config().Options.GetBackgroundSubagents() {
-		return
-	}
-	c.deliverNotice(ctx, event.ParentSessionID, backgroundSubagentNotice(event))
 }
 
 func (c *coordinator) resetWakeCount(sessionID string) {
@@ -1154,7 +1123,16 @@ type agentSystemPrompt struct {
 	Suffix   string
 }
 
-func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, agent config.Agent, role agentRole) (SessionAgent, error) {
+func (c *coordinator) buildAgent(ctx context.Context, ready *errgroup.Group, system agentSystemPrompt, agent config.Agent, role agentRole) (SessionAgent, error) {
+	return c.buildAgentWithModels(ctx, ready, system, agent, role, nil)
+}
+
+// buildAgentWithModels builds an agent whose model set can be replaced.
+// modelsFn nil keeps the coordinator's shared set: main models for the
+// coder and plan agents, subagent models for subagents. A dispatch with
+// a model override passes a function serving that override, so every
+// per-turn model read picks it up.
+func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.Group, system agentSystemPrompt, agent config.Agent, role agentRole, modelsFn func() ModelSet) (SessionAgent, error) {
 	if c.models.Get().large.Model == nil {
 		if err := c.rebuildModels(ctx); err != nil {
 			return nil, err
@@ -1163,6 +1141,9 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 	models := c.mainModels
 	if role.isSubAgent() {
 		models = c.subAgentModels
+	}
+	if modelsFn != nil {
+		models = modelsFn
 	}
 	large := models().Large
 
@@ -1174,7 +1155,7 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 		SystemPromptSuffix:   system.Suffix,
 		IsSubAgent:           role.isSubAgent(),
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
-		IsYolo:               c.permissions.SkipRequests(),
+		IsYolo:               c.permissions.PermissionMode().SkipsPrompts(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,
 		Cfg:                  c.cfg,
@@ -1182,6 +1163,7 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
 		Hooks:                c.hookRunner,
+		titles:               &c.titles,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -1190,14 +1172,19 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 	// caller's context being canceled. Several entry points build an agent
 	// from a short-lived HTTP request context: the server's
 	// InitAgent/UpdateAgent handlers, and UpdateModels -> buildTools ->
-	// agentTool -> buildAgent for the sub-agent. The tool-list build reads
+	// agentTool -> buildAgent for the subagent. The tool-list build reads
 	// the MCP registry as it stands; servers still connecting are picked up
 	// by later runs. WithoutCancel drops cancellation while keeping context
 	// values; the work is local and always completes.
+	//
+	// The goroutines join ready, which the caller owns. Only the coordinator
+	// constructor may pass c.readyWg: runs Wait on it, and a WaitGroup must
+	// not gain work while a Wait is in flight. Agents built mid-session, such
+	// as the task subagents rebuilt on every turn, use a group of their own.
 	initCtx := context.WithoutCancel(ctx)
 
 	if system.Template != nil {
-		c.readyWg.Go(func() error {
+		ready.Go(func() error {
 			systemPrompt, err := system.Template.Build(initCtx, large.Model.Provider(), large.Model.Model(), c.cfg)
 			if err != nil {
 				return err
@@ -1207,8 +1194,8 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 		})
 	}
 
-	c.readyWg.Go(func() error {
-		tools, err := c.buildTools(initCtx, agent, role)
+	ready.Go(func() error {
+		tools, err := c.buildTools(initCtx, agent, role, func() Model { return models().Large })
 		if err != nil {
 			return err
 		}
@@ -1219,17 +1206,58 @@ func (c *coordinator) buildAgent(ctx context.Context, system agentSystemPrompt, 
 	return result, nil
 }
 
-func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role agentRole) ([]fantasy.AgentTool, error) {
+// effectiveToolNames narrows an agent's configured tool list to the tools
+// this coordinator actually attaches. Run mode decides how delegation
+// reports back: a TUI can receive a subagent's report as a later turn, a
+// headless run exits before one could arrive, so delegation blocks there and
+// detaches here. Subagents get neither, since they can neither fan out nor
+// ask questions. A teammate keeps the Lead's palette for prompt-cache
+// parity and refuses at run time instead.
+func (c *coordinator) effectiveToolNames(agentCfg config.Agent, role agentRole) []string {
+	return slices.DeleteFunc(slices.Clone(agentCfg.AllowedTools), func(name string) bool {
+		switch name {
+		case tools.QuestionToolName:
+			return role == roleSubAgent || !c.interactive
+		case AgentToolName:
+			return role.isSubAgent() || c.interactive
+		case AgentDispatchToolName, AgentSendToolName, AgentStatusToolName, AgentStopToolName:
+			return role == roleSubAgent || !c.interactive
+		}
+		return false
+	})
+}
+
+// buildTools builds an agent's tools. parentModel reports the model the
+// agent runs on, which a dispatched subagent inherits.
+func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role agentRole, parentModel func() Model) ([]fantasy.AgentTool, error) {
+	allowed := c.effectiveToolNames(agent, role)
+
 	var allTools []fantasy.AgentTool
-	if slices.Contains(agent.AllowedTools, AgentToolName) {
-		agentTool, err := c.agentTool(ctx)
+	if slices.Contains(allowed, AgentToolName) {
+		agentTool, err := c.agentTool(ctx, agent.ID)
 		if err != nil {
 			return nil, err
 		}
-		allTools = append(allTools, agentTool, c.subagentOutputTool())
+		allTools = append(allTools, agentTool)
+	}
+	if slices.Contains(allowed, AgentDispatchToolName) {
+		dispatchTool, err := c.agentDispatchTool(ctx, agent.ID, parentModel)
+		if err != nil {
+			return nil, err
+		}
+		allTools = append(allTools, dispatchTool)
+	}
+	if slices.Contains(allowed, AgentSendToolName) {
+		allTools = append(allTools, c.agentSendTool(parentModel))
+	}
+	if slices.Contains(allowed, AgentStatusToolName) {
+		allTools = append(allTools, c.agentStatusTool())
+	}
+	if slices.Contains(allowed, AgentStopToolName) {
+		allTools = append(allTools, c.agentStopTool())
 	}
 
-	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
+	if slices.Contains(allowed, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := c.agenticFetchTool(ctx, nil)
 		if err != nil {
 			return nil, err
@@ -1251,10 +1279,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crush.log")
 
+	allSkills, activeSkills, skillTracker := c.skillsSnapshot()
+
 	allTools = append(
 		allTools,
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs()),
-		tools.NewCrushInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions),
+		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker),
 		tools.NewCrushLogsTool(logFile),
 		tools.NewJobOutputTool(c.cfg.Config().Options.DataDirectory),
 		tools.NewJobKillTool(),
@@ -1267,16 +1297,15 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Tools.Ls),
 		tools.NewSourcegraphTool(nil),
 		tools.NewTodosTool(c.sessions),
-		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
-		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
 
-	// Question tool is interactive-only and not available to sub-agents.
-	// Teammates keep it so their palette matches the Lead's byte for byte
-	// and refuse at run time instead (see agentteam.IsLead).
-	if role != roleSubAgent && c.interactive {
+	// Interactive-only, and never given to subagents; effectiveToolNames
+	// is what decides both.
+	if slices.Contains(allowed, tools.QuestionToolName) {
 		allTools = append(allTools, tools.NewQuestionTool(c.questions))
 	}
 
@@ -1310,7 +1339,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	var filteredTools []fantasy.AgentTool
 	for _, tool := range allTools {
-		if slices.Contains(agent.AllowedTools, tool.Info().Name) {
+		if slices.Contains(allowed, tool.Info().Name) {
 			filteredTools = append(filteredTools, tool)
 		}
 	}
@@ -1343,9 +1372,9 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	})
 
 	// Wrap tools with hook interception for the top-level agent only.
-	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
+	// Subagents (the `agent` task tool, `agentic_fetch`, etc.) run
 	// without hook interception to avoid firing the user's hook N times
-	// per delegated turn. The top-level invocation of the sub-agent tool
+	// per delegated turn. The top-level invocation of the subagent tool
 	// itself is still wrapped from the coder's side.
 	filteredTools = wrapToolsWithHooks(filteredTools, c.hookRunner, role.isSubAgent())
 
@@ -1359,9 +1388,18 @@ func (c *coordinator) buildModel(ctx context.Context, slot config.SelectedModelT
 	if !ok {
 		return Model{}, fmt.Errorf("%s %w", slot, errModelNotSelected)
 	}
+	return c.buildModelFromSelection(ctx, modelCfg, isSubAgent)
+}
+
+// buildModelFromSelection builds the model for an explicit selection,
+// rather than one of the configured slots. A per-dispatch model override
+// goes through here, so an override gets everything a configured model
+// gets: provider construction, catalog resolution, request timeouts, and
+// the provider-specific wrappers.
+func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg config.SelectedModel, isSubAgent bool) (Model, error) {
 	providerCfg, ok := c.cfg.Config().Providers.Get(modelCfg.Provider)
 	if !ok {
-		return Model{}, fmt.Errorf("%s %w", slot, errModelProviderNotConfigured)
+		return Model{}, fmt.Errorf("%s %w", modelCfg.Provider, errModelProviderNotConfigured)
 	}
 	// Resolve the selected model from the provider's whole catalog: an
 	// API-key model, a ChatGPT subscription model, or a Grok one. The
@@ -1369,7 +1407,7 @@ func (c *coordinator) buildModel(ctx context.Context, slot config.SelectedModelT
 	// strands a Grok/ChatGPT model that catwalk doesn't also publish.
 	catwalkModel := c.cfg.Config().GetModel(modelCfg.Provider, modelCfg.Model)
 	if catwalkModel == nil {
-		return Model{}, fmt.Errorf("%s %w", slot, errModelNotFound)
+		return Model{}, fmt.Errorf("%s %w", modelCfg.Model, errModelNotFound)
 	}
 
 	provider, err := c.buildProvider(providerCfg, modelCfg, isSubAgent, catwalkModel.EffectiveType(providerCfg.Type))
@@ -1876,11 +1914,25 @@ func (c *coordinator) BeginAccepted(sessionID string) *AcceptedRun {
 }
 
 func (c *coordinator) Cancel(sessionID string) {
+	// Detached subagents outlive the turn that started them, so cancelling
+	// the parent's turn leaves them running; they report back when they
+	// finish, like a background job. Cancelling a subagent's own session
+	// stops that subagent.
+	for _, entry := range c.dispatched.Seq2() {
+		if entry.SessionID == sessionID {
+			entry.stop("cancelled by the user")
+		}
+	}
 	c.currentAgent().Cancel(sessionID)
 }
 
+// CancelAll stops everything, detached subagents included. It is the
+// shutdown path, so the subagents are stopped without reporting: nobody is
+// left to read a report, and the next run on each parent session reports
+// them as interrupted instead.
 func (c *coordinator) CancelAll() {
 	c.currentAgent().CancelAll()
+	c.stopAllDispatched(stopForShutdown, 5*time.Second)
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {
@@ -1895,8 +1947,12 @@ func (c *coordinator) IsBusy() bool {
 	return c.currentAgent().IsBusy()
 }
 
+// IsSessionBusy reports whether anything is working on sessionID, subagents
+// included. Readers use it to decide whether a half-written session is dead
+// and safe to settle, so it must not miss a subagent running on an agent
+// instance other than the main one.
 func (c *coordinator) IsSessionBusy(sessionID string) bool {
-	return c.currentAgent().IsSessionBusy(sessionID)
+	return c.currentAgent().IsSessionBusy(sessionID) || c.subSessionBusy(sessionID)
 }
 
 func (c *coordinator) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
@@ -1943,12 +1999,20 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	models := c.mainModels()
 	agent.SetModels(models.Large, models.Small)
 
-	tools, err := c.buildTools(ctx, agentCfg, roleLead)
+	tools, err := c.buildTools(ctx, agentCfg, roleLead, agent.Model)
 	if err != nil {
 		return err
 	}
 	agent.SetTools(tools)
 	return nil
+}
+
+// skillsSnapshot returns the current skill set and tracker under the skills
+// lock, so a reload cannot swap them between a reader's field accesses.
+func (c *coordinator) skillsSnapshot() (all, active []*skills.Skill, tracker *skills.Tracker) {
+	c.skillsMu.RLock()
+	defer c.skillsMu.RUnlock()
+	return c.allSkills, c.activeSkills, c.skillTracker
 }
 
 // RefreshSkills re-reads the workspace's skill snapshot after a reload
@@ -1960,6 +2024,7 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 		return nil
 	}
 
+	c.skillsMu.Lock()
 	c.allSkills = c.skillsMgr.AllSkills()
 	c.activeSkills = c.skillsMgr.ActiveSkills()
 
@@ -1968,13 +2033,14 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 		fresh.MarkLoaded(name)
 	}
 	c.skillTracker = fresh
+	c.skillsMu.Unlock()
 
 	for name, agent := range c.agents {
 		agentCfg, ok := c.cfg.Config().Agents[name]
 		if !ok {
 			continue
 		}
-		agentTools, err := c.buildTools(ctx, agentCfg, roleLead)
+		agentTools, err := c.buildTools(ctx, agentCfg, roleLead, agent.Model)
 		if err != nil {
 			return fmt.Errorf("rebuild tools for agent %s: %w", name, err)
 		}
@@ -2172,7 +2238,7 @@ func (c *coordinator) askToSignInAgain(err error, model Model) {
 	})
 }
 
-// subAgentParams holds the parameters for running a sub-agent.
+// subAgentParams holds the parameters for running a subagent.
 type subAgentParams struct {
 	Agent          SessionAgent
 	SessionID      string
@@ -2193,6 +2259,10 @@ type subAgentParams struct {
 	// SessionSetup is an optional callback invoked after session creation
 	// but before agent execution, for custom session configuration.
 	SessionSetup func(sessionID string)
+	// SkipCostRollup leaves billing the parent to the caller. Detached
+	// subagents roll their cost up themselves after every run, including
+	// runs that fail or are stopped part-way.
+	SkipCostRollup bool
 }
 
 // callTopK returns topK for use on fantasy.Call.TopK, suppressing it for
@@ -2206,25 +2276,69 @@ func callTopK(providerCfg config.ProviderConfig, topK *int64) *int64 {
 	return topK
 }
 
-// runSubAgent runs a sub-agent synchronously and returns its final text.
+// subAgentCall assembles the call a subagent turn runs under: the model
+// settings for the subagent's own model, not the parent's. Both the initial
+// task and any message sent to a running subagent go through it, so a
+// mid-flight message cannot start a turn with an unconfigured model. The
+// parent's channel and sticky session id ride along so a teammate keeps the
+// Lead's channel-scoped tools and provider routing.
+func (c *coordinator) subAgentCall(agent SessionAgent, sessionID, prompt string, params subAgentParams) (SessionAgentCall, Model, error) {
+	model := agent.Model()
+	maxTokens := model.CatwalkCfg.DefaultMaxTokens
+	if model.ModelCfg.MaxTokens != 0 {
+		maxTokens = model.ModelCfg.MaxTokens
+	}
+
+	providerCfg, ok := c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
+	if !ok {
+		return SessionAgentCall{}, Model{}, errModelProviderNotConfigured
+	}
+
+	opts := getProviderOptions(model, providerCfg)
+	injectOpenrouterSessionID(opts, cmp.Or(params.StickySessionID, sessionID))
+
+	return SessionAgentCall{
+		SessionID:        sessionID,
+		Channel:          params.Channel,
+		Prompt:           prompt,
+		MaxOutputTokens:  maxTokens,
+		ProviderOptions:  c.withPromptCacheKey(opts, providerCfg),
+		Temperature:      model.ModelCfg.Temperature,
+		TopP:             model.ModelCfg.TopP,
+		TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
+		FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
+		PresencePenalty:  model.ModelCfg.PresencePenalty,
+		NonInteractive:   true,
+		OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+	}, model, nil
+}
+
+// runSubAgent runs a subagent and handles session management. The parent's
+// totals already carry the child's usage: the session service rolls every
+// usage write up as it lands, which is what keeps the sidebar and the
+// Discord metrics live during the run instead of jumping once the sub-agent
+// finishes.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
 	sess, err := c.createSubAgentSession(ctx, params)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	c.startSubAgentRun(sess, params)
-	output, err := c.executeSubAgent(ctx, params.Agent, sess, params)
-	c.finishAgentRun(sess.ID, err)
+
+	call, model, err := c.subAgentCall(params.Agent, sess.ID, params.Prompt, params)
 	if err != nil {
-		if errors.Is(err, errModelProviderNotConfigured) {
-			return fantasy.ToolResponse{}, err
-		}
+		c.finishAgentRun(sess.ID, err)
+		return fantasy.ToolResponse{}, err
+	}
+	done := c.trackSubSession(sess.ID)
+	result, err := params.Agent.Run(ctx, call)
+	done()
+	c.finishAgentRun(sess.ID, err)
+	c.askToSignInAgain(err, model)
+	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
 	}
-	if output == "" {
-		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
-	}
-	return fantasy.NewTextResponse(output), nil
+	return subAgentResponse(result), nil
 }
 
 // startSubAgentRun records a subagent in the durable run registry so the
@@ -2289,43 +2403,6 @@ func subAgentRunName(prompt string) string {
 	return line
 }
 
-// startBackgroundSubAgent creates the child session and returns its id
-// immediately; the child runs independently and its result arrives through
-// a completion notice.
-func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
-	sess, err := c.createSubAgentSession(ctx, params)
-	if err != nil {
-		return fantasy.ToolResponse{}, err
-	}
-	if c.subagents == nil {
-		c.subagents = newSubagentManager()
-	}
-	c.startSubAgentRun(sess, params)
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
-	run := c.subagents.start(sess.ID, params.SessionID, cancel)
-	go func() {
-		defer cancel()
-		output, runErr := c.executeSubAgent(runCtx, params.Agent, sess, params)
-		c.finishAgentRun(sess.ID, runErr)
-		c.subagents.finish(run, output, runErr)
-		event := SubagentEvent{
-			ID:              run.id,
-			SessionID:       sess.ID,
-			ParentSessionID: params.SessionID,
-			Output:          output,
-		}
-		if runErr != nil {
-			event.Err = runErr.Error()
-		}
-		subagentBroker.Publish(pubsub.CreatedEvent, event)
-	}()
-	return fantasy.NewTextResponse(fmt.Sprintf(
-		"started subagent %s. You will be notified when it finishes; use subagent_output with subagent_id=%s and wait=true only if you are blocked.",
-		run.id,
-		run.id,
-	)), nil
-}
-
 func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgentParams) (session.Session, error) {
 	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
 	sess, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
@@ -2339,37 +2416,14 @@ func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgent
 }
 
 func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, sess session.Session, params subAgentParams) (string, error) {
-	model := agent.Model()
-	maxTokens := model.CatwalkCfg.DefaultMaxTokens
-	if model.ModelCfg.MaxTokens != 0 {
-		maxTokens = model.ModelCfg.MaxTokens
+	call, model, err := c.subAgentCall(agent, sess.ID, params.Prompt, params)
+	if err != nil {
+		return "", err
 	}
 
-	providerCfg, ok := c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
-	if !ok {
-		return "", errModelProviderNotConfigured
-	}
-
-	// Run the agent
-	run := func() (*fantasy.AgentResult, error) {
-		subOpts := getProviderOptions(model, providerCfg)
-		injectOpenrouterSessionID(subOpts, cmp.Or(params.StickySessionID, sess.ID))
-		return agent.Run(ctx, SessionAgentCall{
-			SessionID:        sess.ID,
-			Channel:          params.Channel,
-			Prompt:           params.Prompt,
-			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  c.withPromptCacheKey(subOpts, providerCfg),
-			Temperature:      model.ModelCfg.Temperature,
-			TopP:             model.ModelCfg.TopP,
-			TopK:             callTopK(providerCfg, model.ModelCfg.TopK),
-			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
-			PresencePenalty:  model.ModelCfg.PresencePenalty,
-			NonInteractive:   true,
-			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
-		})
-	}
-	result, err := run()
+	done := c.trackSubSession(sess.ID)
+	result, err := agent.Run(ctx, call)
+	done()
 	c.askToSignInAgain(err, model)
 	if err != nil {
 		return "", err
@@ -2382,11 +2436,52 @@ func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, s
 	return subAgentOutput(result), nil
 }
 
+const (
+	subAgentNoOutput  = "Subagent completed but produced no text output."
+	subAgentRefused   = "Subagent stopped early: the provider's safety classifier refused its response, so it never finished the task. The same task on the same model will likely be refused again; rephrase it or dispatch a new subagent on a different model."
+	subAgentTruncated = "Subagent stopped early: it ran out of output tokens mid-response, so it never finished the task. Ask it to continue in smaller steps."
+)
+
+// subAgentOutput returns a finished subagent run's final text, for callers
+// that only need the text rather than the tool response.
 func subAgentOutput(result *fantasy.AgentResult) string {
 	if result == nil {
 		return ""
 	}
 	return result.Response.Content.Text()
+}
+
+// subAgentResponse turns a finished subagent run into the parent's tool
+// result. The run's last step decides: fantasy falls back to an earlier
+// step's text when the last one has none, which after a cut-short step is
+// narration, not a report.
+func subAgentResponse(result *fantasy.AgentResult) fantasy.ToolResponse {
+	if result == nil {
+		return fantasy.NewTextErrorResponse(subAgentNoOutput)
+	}
+	var last fantasy.StepResult
+	if n := len(result.Steps); n > 0 {
+		last = result.Steps[n-1]
+	}
+	switch last.FinishReason {
+	case fantasy.FinishReasonContentFilter:
+		return fantasy.NewTextErrorResponse(withLastWords(subAgentRefused, last))
+	case fantasy.FinishReasonLength:
+		return fantasy.NewTextErrorResponse(withLastWords(subAgentTruncated, last))
+	}
+	if output := result.Response.Content.Text(); output != "" {
+		return fantasy.NewTextResponse(output)
+	}
+	return fantasy.NewTextErrorResponse(subAgentNoOutput)
+}
+
+// withLastWords appends whatever text the cut-short step did produce.
+func withLastWords(reason string, step fantasy.StepResult) string {
+	text := strings.TrimSpace(step.Content.Text())
+	if text == "" {
+		return reason
+	}
+	return reason + "\n\nIts last output before stopping:\n\n" + text
 }
 
 // discoverSkills is a thin fallback wrapper used only when no

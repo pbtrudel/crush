@@ -34,6 +34,8 @@ import (
 //	option request-timeout 300
 //	option request-timeout 0
 //	option max-background-jobs 200
+//	option pinentry-integrated false
+//	option pinentry-cache-timeout 300
 //
 // Boolean shortcuts: for boolean fields, omitting the value sets it to true.
 func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -205,10 +207,11 @@ type optionSpec struct {
 // handleOption above and do not appear here.
 var optionSpecs = map[string]optionSpec{
 	// Boolean fields (stored as-is).
-	"debug":     {jsonKey: "debug", kind: optBool},
-	"debug-lsp": {jsonKey: "debug_lsp", kind: optBool},
-	"auto-lsp":  {jsonKey: "auto_lsp", kind: optBool},
-	"progress":  {jsonKey: "progress", kind: optBool},
+	"debug":               {jsonKey: "debug", kind: optBool},
+	"debug-lsp":           {jsonKey: "debug_lsp", kind: optBool},
+	"auto-lsp":            {jsonKey: "auto_lsp", kind: optBool},
+	"progress":            {jsonKey: "progress", kind: optBool},
+	"pinentry-integrated": {jsonKey: "pinentry_integrated", kind: optBool},
 
 	"background-job-notifications": {jsonKey: "background_job_notifications", kind: optBool},
 	"background-subagents":         {jsonKey: "background_subagents", kind: optBool},
@@ -228,8 +231,9 @@ var optionSpecs = map[string]optionSpec{
 	"initialize-as":  {jsonKey: "initialize_as", kind: optString},
 
 	// Integer fields.
-	"request-timeout":     {jsonKey: "request_timeout", kind: optInt},
-	"max-background-jobs": {jsonKey: "max_background_jobs", kind: optInt},
+	"request-timeout":        {jsonKey: "request_timeout", kind: optInt},
+	"max-background-jobs":    {jsonKey: "max_background_jobs", kind: optInt},
+	"pinentry-cache-timeout": {jsonKey: "pinentry_cache_timeout", kind: optInt},
 
 	// Compaction tuning.
 	"auto-compact-threshold": {jsonKey: "auto_compact_threshold", kind: optFloat},

@@ -74,7 +74,7 @@ func TestUpdate_SealSurvivesStructuralChange(t *testing.T) {
 
 	msg.AddToolCall(ToolCall{ID: "c1", Name: "bash", Input: `{"command":`})
 	require.NoError(t, svc.Update(ctx, msg))
-	msg.AppendToolCallInput("c1", `"ls"`)
+	msg.AddToolCall(ToolCall{ID: "c1", Name: "bash", Input: `{"command":"ls"}`})
 	require.NoError(t, svc.Update(ctx, msg))
 	msg.FinishToolCall("c1")
 	msg.AppendContent("second half")

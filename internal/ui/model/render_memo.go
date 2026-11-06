@@ -64,6 +64,9 @@ type pillsCacheKey struct {
 	focusedTodos bool
 	focusedQueue bool
 	hasInline    bool
+	// gap records the blank line the panel reserves for the editor's
+	// attachments, so adding or clearing one rebuilds the panel.
+	gap bool
 }
 
 func (m *UI) sidebarCacheKey() sidebarCacheKey {
@@ -128,6 +131,7 @@ func (m *UI) pillsCacheKey() pillsCacheKey {
 		expanded:  m.pillsExpanded,
 		spinning:  m.todoIsSpinning,
 		hasInline: m.activeInline != nil,
+		gap:       m.pillsAttachmentGap(),
 	}
 	if k.queueLen > 0 {
 		k.queuePtr = &m.promptQueueItems[0]

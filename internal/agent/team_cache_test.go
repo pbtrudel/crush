@@ -36,7 +36,7 @@ func newTeammateTestCoordinator(t *testing.T) *coordinator {
 
 	lead := coord.coderAgent()
 	require.NotNil(t, lead)
-	leadTools, err := coord.buildTools(t.Context(), coord.cfg.Config().Agents[config.AgentCoder], roleLead)
+	leadTools, err := coord.buildTools(t.Context(), coord.cfg.Config().Agents[config.AgentCoder], roleLead, func() Model { return coord.mainModels().Large })
 	require.NoError(t, err)
 	lead.SetTools(leadTools)
 	return coord
@@ -49,6 +49,7 @@ func buildTeammateAgent(t *testing.T, coord *coordinator, member agentteam.Membe
 	require.NotNil(t, lead)
 	agent, err := coord.buildAgent(
 		agentteam.WithMember(t.Context(), member.Name),
+		&coord.readyWg,
 		agentSystemPrompt{Prebuilt: lead.SystemPrompt(), Suffix: teamIdentity(member)},
 		coord.cfg.Config().Agents[config.AgentCoder],
 		roleTeammate,
@@ -123,7 +124,7 @@ func TestTeammateSystemPromptExtendsLead(t *testing.T) {
 func TestAgentToolRefusesInsideTeammate(t *testing.T) {
 	coord := newTeammateTestCoordinator(t)
 
-	tool, err := coord.agentTool(t.Context())
+	tool, err := coord.agentTool(t.Context(), config.AgentCoder)
 	require.NoError(t, err)
 
 	teammateCtx := agentteam.WithMember(t.Context(), "reviewer")

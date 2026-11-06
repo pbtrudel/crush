@@ -30,7 +30,9 @@ var taskProgressToolNames = map[string]struct{}{
 	// Delegation and team-task transitions can finish a task without the
 	// Lead touching a file, so they must trigger the same reminder.
 	AgentToolName:          {},
-	SubagentOutputToolName: {},
+	AgentDispatchToolName:  {},
+	AgentSendToolName:      {},
+	AgentStopToolName:      {},
 	SpawnTeammateToolName:  {},
 	WaitAgentToolName:      {},
 	TeamTaskUpdateToolName: {},

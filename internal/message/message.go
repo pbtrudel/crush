@@ -169,9 +169,18 @@ func WithDebounce(d time.Duration) ServiceOption {
 	}
 }
 
+// CoalesceKey lets a newer UpdatedEvent snapshot replace an undelivered
+// older one for the same message, bounding what a slow subscriber holds.
+func CoalesceKey(ev pubsub.Event[Message]) string {
+	if ev.Type != pubsub.UpdatedEvent {
+		return ""
+	}
+	return ev.Payload.ID
+}
+
 func NewService(q db.Querier, opts ...ServiceOption) Service {
 	s := &service{
-		Broker:   pubsub.NewBroker[Message](),
+		Broker:   pubsub.NewCoalescingBroker(CoalesceKey),
 		q:        q,
 		debounce: defaultUpdateDebounce,
 		pending:  make(map[string]*pendingState),
@@ -677,6 +686,7 @@ const (
 	finishType          partType = "finish"
 	shellCommandType    partType = "shell_command"
 	compactionStatsType partType = "compaction_stats"
+	subAgentReportType  partType = "sub_agent_report"
 )
 
 type partWrapper struct {
@@ -709,6 +719,8 @@ func marshalParts(parts []ContentPart) ([]byte, error) {
 			typ = shellCommandType
 		case CompactionStats:
 			typ = compactionStatsType
+		case SubAgentReport:
+			typ = subAgentReportType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -769,6 +781,8 @@ func unmarshalPart(typ partType, data json.RawMessage) (ContentPart, error) {
 		return decodePart[ShellCommand](data)
 	case compactionStatsType:
 		return decodePart[CompactionStats](data)
+	case subAgentReportType:
+		return decodePart[SubAgentReport](data)
 	default:
 		return nil, fmt.Errorf("unknown part type: %s", typ)
 	}

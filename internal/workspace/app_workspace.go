@@ -19,11 +19,13 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 )
 
 // AppWorkspace implements the Workspace interface by delegating
@@ -289,12 +291,29 @@ func (w *AppWorkspace) PermissionDeny(perm permission.PermissionRequest) bool {
 	return w.app.Permissions.Deny(perm)
 }
 
-func (w *AppWorkspace) PermissionSkipRequests() bool {
-	return w.app.Permissions.SkipRequests()
+func (w *AppWorkspace) PermissionMode() permission.PermissionMode {
+	return w.app.Permissions.PermissionMode()
 }
 
+func (w *AppWorkspace) PermissionSetMode(mode permission.PermissionMode) {
+	w.app.Permissions.SetPermissionMode(mode)
+}
+
+// PermissionSetSkipRequests turns the mode that answers permission requests
+// automatically on or off. It backs the remote control's /yolo toggle, which
+// predates the three-mode permission API.
 func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
-	w.app.Permissions.SetSkipRequests(skip)
+	if skip {
+		w.app.Permissions.SetPermissionMode(permission.PermissionModeYolo)
+		return
+	}
+	w.app.Permissions.SetPermissionMode(permission.PermissionModeNormal)
+}
+
+// PermissionSkipRequests reports whether permission requests are answered
+// automatically.
+func (w *AppWorkspace) PermissionSkipRequests() bool {
+	return w.app.Permissions.PermissionMode().SkipsPrompts()
 }
 
 // -- Host context --
@@ -314,6 +333,26 @@ func (w *AppWorkspace) QuestionAnswer(responses []question.Answer) bool {
 
 func (w *AppWorkspace) QuestionCancel() bool {
 	return w.app.Questions.Cancel()
+}
+
+// -- Pinentry --
+
+func (w *AppWorkspace) PinentryRespond(id, secret string) bool {
+	return pinentry.DefaultPrompts().Respond(id, secret)
+}
+
+func (w *AppWorkspace) PinentryCancel(id string) bool {
+	return pinentry.DefaultPrompts().Cancel(id)
+}
+
+// -- SSH prompts --
+
+func (w *AppWorkspace) SSHRespond(id, secret string) bool {
+	return sshaskpass.DefaultPrompts().Respond(id, secret)
+}
+
+func (w *AppWorkspace) SSHCancel(id string) bool {
+	return sshaskpass.DefaultPrompts().Cancel(id)
 }
 
 // -- FileTracker --
@@ -530,7 +569,7 @@ func (w *AppWorkspace) DisableDockerMCP() error {
 
 // MCPServersDisabled returns the MCP servers disabled for this
 // repository. The override set is shared by every session, including
-// sub-agent sessions.
+// subagent sessions.
 func (w *AppWorkspace) MCPServersDisabled(ctx context.Context) ([]string, error) {
 	return w.app.Sessions.MCPDisabledServers(ctx)
 }

@@ -79,6 +79,7 @@ func charmtoneOpts() quickStyleOpts {
 		separator: charmtone.Char,
 
 		destructive:       charmtone.Coral,
+		destructiveSubtle: charmtone.Salmon,
 		error:             charmtone.Sriracha,
 		warningSubtle:     charmtone.Zest,
 		warning:           charmtone.Mustard,
@@ -286,6 +287,7 @@ func keanuOpts() quickStyleOpts {
 		separator: lipgloss.Color("#183c22"), // elevated green surface
 
 		destructive:       lipgloss.Color("#ff5252"), // bright red
+		destructiveSubtle: lipgloss.Color("#8f2b2b"), // deep red surface
 		error:             lipgloss.Color("#d43d3d"), // deep red
 		warningSubtle:     lipgloss.Color("#d7f75b"), // lime
 		warning:           lipgloss.Color("#b8d43d"), // dark lime

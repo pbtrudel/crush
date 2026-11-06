@@ -104,31 +104,29 @@ func agentRunsSignature(runs []agentrun.Run) string {
 	return sb.String()
 }
 
-// teamInfo renders the Agent Team sidebar section. It prefers the teammates
-// spawned by the current session and falls back to the whole workspace roster,
-// so switching sessions never hides a team that is still live.
+// teamInfo renders the Agent Team section for the current session. It shows
+// only the teammates and tasks this session spawned, including the ones its
+// teammates spawned; another session's team is never shown.
 func (m *UI) teamInfo(width int) string {
 	if m.com == nil || m.com.Config() == nil || !m.com.Config().Options.GetAgentTeams() {
 		return ""
 	}
-	if len(m.teamState.Members) == 0 {
+	sessionID := m.currentSessionID()
+	if sessionID == "" {
 		return ""
 	}
-	sessionID := m.currentSessionID()
-	members := sessionMembers(m.teamState, sessionID)
-	if len(members) == 0 {
-		members = m.teamState.Members
-	}
-	owners := map[string]bool{"lead": true}
-	for _, member := range members {
-		owners[member.ID] = true
+	sessions := stateSessionTree(m.teamState, sessionID)
+	members := stateSessionMembers(m.teamState, sessions)
+	active, completed := teamTaskBuckets(m.teamState, sessions)
+	if len(members) == 0 && len(active) == 0 && completed == 0 {
+		return ""
 	}
 	t := m.com.Styles
 	title := common.Section(t, t.Resource.Heading.Render("▮ Agent Team"), width)
 
 	busy := make(map[string]bool)
-	for _, task := range agentteam.TaskViews(m.teamState) {
-		if task.Status == agentteam.TaskInProgress && owners[task.OwnerID] {
+	for _, task := range active {
+		if task.Status == agentteam.TaskInProgress {
 			busy[task.OwnerName] = true
 		}
 	}
@@ -136,16 +134,7 @@ func (m *UI) teamInfo(width int) string {
 	for _, member := range members {
 		lines = append(lines, teamMemberLine(t, member.Name, member.Status, busy[member.Name], width))
 	}
-
-	active, completed := teamTaskBuckets(m.teamState, owners)
-	const maxTasks = 3
-	for i, task := range active {
-		if i == maxTasks {
-			lines = append(lines, t.Resource.AdditionalText.Render(
-				fmt.Sprintf("  +%d more", len(active)-maxTasks),
-			))
-			break
-		}
+	for _, task := range active {
 		lines = append(lines, teamTaskLine(t, task, width))
 	}
 	if completed > 0 {
@@ -165,6 +154,12 @@ func (m *UI) teamInfo(width int) string {
 // teammates those teammates spawned. An empty session id matches nothing:
 // before a session loads there is no team to scope to.
 func sessionMembers(state agentteam.State, sessionID string) []agentteam.Member {
+	return stateSessionMembers(state, stateSessionTree(state, sessionID))
+}
+
+// stateSessionTree returns sessionID plus every session reachable from it
+// through teammate spawn links. An empty session id matches nothing.
+func stateSessionTree(state agentteam.State, sessionID string) map[string]bool {
 	if sessionID == "" {
 		return nil
 	}
@@ -174,7 +169,12 @@ func sessionMembers(state agentteam.State, sessionID string) []agentteam.Member 
 			links = append(links, [2]string{member.ParentID, member.SessionID})
 		}
 	}
-	sessions := sessionTree(sessionID, links)
+	return sessionTree(sessionID, links)
+}
+
+// stateSessionMembers returns the roster entries spawned by any session in
+// sessions.
+func stateSessionMembers(state agentteam.State, sessions map[string]bool) []agentteam.Member {
 	members := make([]agentteam.Member, 0, len(state.Members))
 	for _, member := range state.Members {
 		if sessions[member.ParentID] {
@@ -264,10 +264,11 @@ func agentRunGlyph(run agentrun.Run) string {
 
 // teamTaskBuckets splits the current session's tasks into the live ones the
 // sidebar lists, in priority order, and a count of completed tasks. Deleted
-// tasks and tasks owned by other sessions are dropped.
-func teamTaskBuckets(state agentteam.State, owners map[string]bool) (active []agentteam.TaskView, completed int) {
+// tasks and tasks from other sessions are dropped; a task with no session
+// predates session scoping and is hidden rather than shown to every session.
+func teamTaskBuckets(state agentteam.State, sessions map[string]bool) (active []agentteam.TaskView, completed int) {
 	for _, task := range agentteam.TaskViews(state) {
-		if !owners[task.OwnerID] {
+		if task.SessionID == "" || !sessions[task.SessionID] {
 			continue
 		}
 		switch task.Status {

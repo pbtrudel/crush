@@ -12,7 +12,7 @@ import (
 // attribution at all: the model only writes a trailer when the user opted in,
 // and a default that suggests one is what put "Assisted-by" in commits.
 func TestBashDescription_NoAttributionByDefault(t *testing.T) {
-	description := bashDescription(&config.Attribution{})
+	description := bashDescription(&config.Attribution{}, nil)
 
 	require.NotContains(t, description, "Assisted-by")
 	require.NotContains(t, description, "Co-Authored-By")
@@ -24,7 +24,7 @@ func TestBashDescription_NoAttributionByDefault(t *testing.T) {
 // every time the model changes); the description carries a stable token the
 // tool expands when the command runs.
 func TestBashDescription_AssistedByUsesStableToken(t *testing.T) {
-	description := bashDescription(&config.Attribution{TrailerStyle: config.TrailerStyleAssistedBy})
+	description := bashDescription(&config.Attribution{TrailerStyle: config.TrailerStyleAssistedBy}, nil)
 
 	require.Contains(t, description, "Assisted-by: Crush:"+modelIDPlaceholder)
 	require.NotContains(t, description, "test-model")

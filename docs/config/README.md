@@ -480,6 +480,10 @@ Boolean Keys:
   debug-lsp                      enable LSP debug logging
   auto-lsp                       automatically configure language servers
   progress                       show progress indicators
+  pinentry-integrated            render GPG passphrase prompts as a native
+                                 Crush dialog instead of an external
+                                 pinentry program; never modifies GPG or
+                                 git configuration (default true)
   metrics                        send anonymous usage metrics
   auto-summarize                 automatically compact long conversations
   provider-auto-update           update the provider catalog automatically
@@ -507,6 +511,10 @@ Integer Keys:
   max-background-jobs int          background shell jobs allowed to run at
                                    once; finished jobs never count against it
                                    (default 50)
+  pinentry-cache-timeout int       seconds Crush keeps an entered GPG
+                                   passphrase in memory so repeated signing
+                                   does not re-prompt; 0 disables it
+                                   (default 0)
 
 Number Keys:
   auto-compact-threshold float     fraction of the context window at which a
