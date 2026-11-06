@@ -185,8 +185,10 @@ func resolveBlockedCommands(perms *config.Permissions) []string {
 		allowed[shell.NormalizeCommandName(cmd)] = struct{}{}
 	}
 
-	blocked := make([]string, 0, len(defaultBlockedCommands)+len(perms.BlockedCommands))
-	blocked = append(blocked, defaultBlockedCommands...)
+	// Clone rather than pre-sizing: the capacity arithmetic on two lengths
+	// is flagged as a possible overflow, and the append growth is cheap
+	// next to the config read that produced the list.
+	blocked := slices.Clone(defaultBlockedCommands)
 	for _, cmd := range perms.BlockedCommands {
 		if name := shell.NormalizeCommandName(cmd); name != "" {
 			blocked = append(blocked, name)
