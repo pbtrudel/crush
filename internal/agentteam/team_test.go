@@ -582,3 +582,30 @@ func TestIsLead(t *testing.T) {
 	require.True(t, IsLead(WithMember(context.Background(), "lead")))
 	require.False(t, IsLead(WithMember(context.Background(), "reviewer")))
 }
+
+func TestSpawnTeammateCountsOnlyLiveMembers(t *testing.T) {
+	t.Parallel()
+	runner := newFakeRunner()
+	service, err := New(filepath.Join(t.TempDir(), "team.json"), Config{MaxMembers: 1}, runner)
+	require.NoError(t, err)
+
+	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "one", Description: "d", Prompt: "p",
+	})
+	require.NoError(t, err)
+	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "two", Description: "d", Prompt: "p",
+	})
+	require.Equal(t, CodeMemberLimit, ErrorCode(err), "a live member must still count against the limit")
+
+	runner.finish("one")
+	require.Eventually(t, func() bool {
+		members, err := service.ListMembers("lead")
+		return err == nil && members[1].Status == StatusInactive
+	}, time.Second, 10*time.Millisecond)
+
+	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "two", Description: "d", Prompt: "p",
+	})
+	require.NoError(t, err, "an inactive member must not consume a live slot")
+}

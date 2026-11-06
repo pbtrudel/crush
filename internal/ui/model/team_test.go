@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/ui/common"
 )
 
 func TestSessionMembersFiltersByParentSession(t *testing.T) {
@@ -107,4 +109,73 @@ func TestTeamTaskBucketsEmptyBoard(t *testing.T) {
 
 	require.Empty(t, active)
 	require.Zero(t, completed)
+}
+
+func TestTeamInfoShowsWorkspaceRosterWhenSessionHasNoMembers(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	u.com = common.DefaultCommon(stubConfigWorkspace{})
+	u.session = &session.Session{ID: "session-lead"}
+	u.teamState = agentteam.State{
+		TeamID: "team-1",
+		Members: []agentteam.Member{
+			{ID: "member-1", Name: "one", ParentID: "session-other", Status: agentteam.StatusInactive},
+			{ID: "member-2", Name: "two", ParentID: "session-other", Status: agentteam.StatusInactive},
+		},
+	}
+
+	info := u.teamInfo(40)
+
+	require.NotEmpty(t, info, "a workspace team must stay visible from a session that did not spawn it")
+	require.Contains(t, info, "one")
+	require.Contains(t, info, "two")
+}
+
+func TestSessionMembersIgnoresEmptySession(t *testing.T) {
+	t.Parallel()
+	state := agentteam.State{
+		Members: []agentteam.Member{{ID: "member-1", Name: "one"}},
+	}
+
+	require.Empty(t, sessionMembers(state, ""))
+}
+
+func TestSessionAgentRunsIgnoresEmptySession(t *testing.T) {
+	t.Parallel()
+	runs := []agentrun.Run{{ID: "run-1"}}
+
+	require.Empty(t, sessionAgentRuns(runs, ""))
+}
+
+func TestSessionMembersIncludesNestedTeammates(t *testing.T) {
+	t.Parallel()
+	state := agentteam.State{
+		Members: []agentteam.Member{
+			{ID: "member-1", Name: "one", ParentID: "session-a", SessionID: "team-one"},
+			{ID: "member-2", Name: "two", ParentID: "team-one", SessionID: "team-two"},
+			{ID: "member-3", Name: "three", ParentID: "session-b"},
+		},
+	}
+
+	members := sessionMembers(state, "session-a")
+
+	require.Len(t, members, 2)
+	require.Equal(t, []string{"one", "two"}, []string{members[0].Name, members[1].Name},
+		"a teammate spawned by a teammate still belongs to the Lead's session")
+}
+
+func TestSessionAgentRunsIncludesNestedRuns(t *testing.T) {
+	t.Parallel()
+	runs := []agentrun.Run{
+		{ID: "run-1", SessionID: "run-1", ParentSessionID: "session-a"},
+		{ID: "run-2", SessionID: "run-2", ParentSessionID: "run-1"},
+		{ID: "run-3", SessionID: "run-3", ParentSessionID: "session-b"},
+	}
+
+	filtered := sessionAgentRuns(runs, "session-a")
+
+	require.Len(t, filtered, 2)
+	require.Equal(t, []string{"run-1", "run-2"}, []string{filtered[0].ID, filtered[1].ID},
+		"a run started by a nested agent still belongs to the Lead's session")
 }
