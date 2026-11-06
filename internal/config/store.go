@@ -92,14 +92,18 @@ type RuntimeOverrides struct {
 // as immutable: a mutator clones, mutates the clone, and swaps it in under
 // writeMu rather than mutating the live Config in place.
 type ConfigStore struct {
-	config             *Config
-	workingDir         string
-	resolver           VariableResolver
-	globalDataPath     string   // ~/.local/share/crush/crush.json
-	workspacePath      string   // .crush/crush.json
-	loadedPaths        []string // config files that were successfully loaded
-	knownProviders     []catwalk.Provider
-	overrides          RuntimeOverrides
+	config         *Config
+	workingDir     string
+	resolver       VariableResolver
+	globalDataPath string   // ~/.local/share/crush/crush.json
+	workspacePath  string   // .crush/crush.json
+	loadedPaths    []string // config files that were successfully loaded
+	knownProviders []catwalk.Provider
+	overrides      RuntimeOverrides
+	// stalenessMu guards trackedConfigPaths and snapshots: the config
+	// watcher reads them from its own goroutine while a reload or a typed
+	// mutator rewrites them.
+	stalenessMu        sync.RWMutex
 	trackedConfigPaths []string                // unique, normalized config file paths
 	snapshots          map[string]fileSnapshot // path -> snapshot at last capture
 	cachedDiscovery    []discoveryJob          // providers whose models came from the discovery cache; guarded by writeMu
@@ -244,19 +248,26 @@ func (s *ConfigStore) RefetchHyperProvider(ctx context.Context) error {
 		}
 		nc.Providers.Set(string(hyperProvider.ID), pc)
 	}
+	nc.SetupAgents()
 	s.setConfig(nc)
 
 	// Also update the memoized provider list so callers of
 	// config.Providers() (e.g. the models dialog) see fresh data.
 	UpdateProviderInList(hyperProvider)
-
-	s.SetupAgents()
 	return nil
 }
 
-// SetupAgents configures the coder and task agents on the config.
+// SetupAgents configures the coder and task agents on the config. It
+// publishes a fresh Config instead of mutating the live one: readers take
+// the pointer under configMu and treat it as immutable, so writing Agents
+// in place races a prompt build that copied the struct.
+//
+// It deliberately takes no store lock: the startup loader already holds
+// writeMu when it calls this, and setConfig serialises the publish itself.
 func (s *ConfigStore) SetupAgents() {
-	s.Config().SetupAgents()
+	nc := s.Config().cloneForWrite()
+	nc.SetupAgents()
+	s.setConfig(nc)
 }
 
 // Overrides returns the runtime overrides for this store.
@@ -1294,6 +1305,9 @@ type StalenessResult struct {
 // missing, along with sorted lists of affected paths. Stat errors are
 // captured in Errors map but still treated as non-existence for dirty detection.
 func (s *ConfigStore) ConfigStaleness() StalenessResult {
+	s.stalenessMu.RLock()
+	defer s.stalenessMu.RUnlock()
+
 	var result StalenessResult
 	result.Errors = make(map[string]error)
 
@@ -1343,6 +1357,14 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 // RefreshStalenessSnapshot captures fresh snapshots of all tracked config files.
 // Call this after reloading config to clear dirty state.
 func (s *ConfigStore) RefreshStalenessSnapshot() error {
+	s.stalenessMu.Lock()
+	defer s.stalenessMu.Unlock()
+	return s.refreshStalenessSnapshotLocked()
+}
+
+// refreshStalenessSnapshotLocked captures fresh snapshots. Callers must hold
+// stalenessMu for writing.
+func (s *ConfigStore) refreshStalenessSnapshotLocked() error {
 	if s.snapshots == nil {
 		s.snapshots = make(map[string]fileSnapshot)
 	}
@@ -1399,6 +1421,9 @@ func (s *ConfigStore) CaptureStalenessSnapshot(paths []string) {
 	}
 
 	// Build sorted list for deterministic ordering
+	s.stalenessMu.Lock()
+	defer s.stalenessMu.Unlock()
+
 	s.trackedConfigPaths = make([]string, 0, len(seen))
 	for p := range seen {
 		s.trackedConfigPaths = append(s.trackedConfigPaths, p)
@@ -1406,7 +1431,7 @@ func (s *ConfigStore) CaptureStalenessSnapshot(paths []string) {
 	slices.Sort(s.trackedConfigPaths)
 
 	// Capture initial snapshots
-	s.RefreshStalenessSnapshot()
+	_ = s.refreshStalenessSnapshotLocked()
 }
 
 // captureStalenessSnapshot is an alias for CaptureStalenessSnapshot for internal use.
@@ -1467,17 +1492,6 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}
 
-	// Save current state for potential rollback BEFORE configureProviders,
-	// which may write to disk via RemoveConfigField (e.g. removing stale
-	// OAuth providers). Capturing after would snapshot a config that has
-	// already been mutated, and the rollback would restore corrupted state.
-	oldConfig := s.Config()
-	oldLoadedPaths := s.loadedPaths
-	oldResolver := s.resolver
-	oldKnownProviders := s.knownProviders
-	oldOverrides := s.overrides
-	oldWorkspacePath := s.workspacePath
-
 	// Preserve runtime overrides
 	overrides := s.overrides
 
@@ -1508,39 +1522,37 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
-	// Update store state BEFORE running model/agent setup (so they see new config)
+	// Resolve the selected models before the config is published. Readers
+	// take the pointer under configMu and treat the Config as immutable, so
+	// writing cfg.Models after setConfig would race them. A resolution
+	// failure leaves the store on its previous config, so no rollback is
+	// needed.
+	resolvedModels := false
+	if !cfg.IsConfigured() {
+		slog.Warn("No providers configured after reload")
+	} else {
+		resolved, resolveErr := resolveSelectedModels(cfg, providers)
+		if resolveErr != nil {
+			return fmt.Errorf("failed to configure selected models during reload: %w", resolveErr)
+		}
+		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeSmall] = resolved.Small
+		resolvedModels = true
+	}
+
+	// Finish the config before publishing it: readers take the pointer under
+	// configMu and treat what they get as immutable.
+	if resolvedModels {
+		cfg.SetupAgents()
+	}
+
+	// Update store state once the config is complete and immutable.
 	s.setConfig(cfg)
 	s.loadedPaths = loadedPaths
 	s.resolver = resolver
 	s.knownProviders = providers
 	s.overrides = overrides
 	s.workspacePath = workspacePath
-
-	// Mirror startup flow: setup models and agents against NEW config.
-	var setupErr error
-	if !cfg.IsConfigured() {
-		slog.Warn("No providers configured after reload")
-	} else {
-		resolved, resolveErr := resolveSelectedModels(cfg, providers)
-		if resolveErr != nil {
-			setupErr = fmt.Errorf("failed to configure selected models during reload: %w", resolveErr)
-		} else {
-			cfg.Models[SelectedModelTypeLarge] = resolved.Large
-			cfg.Models[SelectedModelTypeSmall] = resolved.Small
-			s.SetupAgents()
-		}
-	}
-
-	// Rollback on setup failure
-	if setupErr != nil {
-		s.setConfig(oldConfig)
-		s.loadedPaths = oldLoadedPaths
-		s.resolver = oldResolver
-		s.knownProviders = oldKnownProviders
-		s.overrides = oldOverrides
-		s.workspacePath = oldWorkspacePath
-		return setupErr
-	}
 
 	// Rebuild staleness tracking. Track every discovered config path, not
 	// just the ones that loaded, so a config file created after this reload

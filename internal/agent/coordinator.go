@@ -200,7 +200,10 @@ type coordinator struct {
 	subSessions   map[string]int
 
 	// Skills discovery results. The manager is the live source of
-	// truth; the slices below are its last-read snapshot.
+	// truth; the slices below are its last-read snapshot. skillsMu guards
+	// the snapshot: a config reload swaps it from the reload goroutine
+	// while turns read it to build tools.
+	skillsMu     sync.RWMutex
 	skillsMgr    *skills.Manager
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
 	activeSkills []*skills.Skill // Post-filter: active skills only.
@@ -210,7 +213,6 @@ type coordinator struct {
 	// used by background completion notifications.
 	wakeMu     sync.Mutex
 	wakeCounts map[string]int
-	subagents  *subagentManager
 
 	// agentRuns is the durable registry of live agent runs. The sidebar
 	// filters it to the current session.
@@ -573,10 +575,10 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, r
 			OnAuthRefresh:     c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
-	beforeLoaded := c.skillTracker.LoadedNames()
+	_, activeSkills, skillTracker := c.skillsSnapshot()
+	beforeLoaded := skillTracker.LoadedNames()
 	result, originalErr := run()
-	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
-
+	logTurnSkillUsage(sessionID, prompt, activeSkills, skillTracker, beforeLoaded)
 	c.askToSignInAgain(originalErr, model)
 
 	if hasLatest && c.runComplete != nil {
@@ -646,32 +648,6 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 			agent.EnqueueNotice(sessionID, notice)
 		}
 	}()
-}
-
-func (c *coordinator) watchSubagents(ctx context.Context) {
-	go func() {
-		<-ctx.Done()
-		if c.subagents != nil {
-			c.subagents.cancelAll()
-		}
-	}()
-	events := SubscribeSubagents(ctx)
-	for event := range events {
-		if event.Type != pubsub.CreatedEvent {
-			continue
-		}
-		c.handleSubagentEvent(ctx, event.Payload)
-	}
-}
-
-func (c *coordinator) handleSubagentEvent(ctx context.Context, event SubagentEvent) {
-	if event.ParentSessionID == "" {
-		return
-	}
-	if c.cfg == nil || c.cfg.Config() == nil || !c.cfg.Config().Options.GetBackgroundSubagents() {
-		return
-	}
-	c.deliverNotice(ctx, event.ParentSessionID, backgroundSubagentNotice(event))
 }
 
 func (c *coordinator) resetWakeCount(sessionID string) {
@@ -1303,10 +1279,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crush.log")
 
+	allSkills, activeSkills, skillTracker := c.skillsSnapshot()
+
 	allTools = append(
 		allTools,
 		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions),
-		tools.NewCrushInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
+		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker),
 		tools.NewCrushLogsTool(logFile),
 		tools.NewJobOutputTool(c.cfg.Config().Options.DataDirectory),
 		tools.NewJobKillTool(),
@@ -1319,8 +1297,8 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Tools.Ls),
 		tools.NewSourcegraphTool(nil),
 		tools.NewTodosTool(c.sessions),
-		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
-		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
+		tools.NewReadTool(c.lspManager, c.permissions, c.filetracker, skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
@@ -2029,6 +2007,14 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	return nil
 }
 
+// skillsSnapshot returns the current skill set and tracker under the skills
+// lock, so a reload cannot swap them between a reader's field accesses.
+func (c *coordinator) skillsSnapshot() (all, active []*skills.Skill, tracker *skills.Tracker) {
+	c.skillsMu.RLock()
+	defer c.skillsMu.RUnlock()
+	return c.allSkills, c.activeSkills, c.skillTracker
+}
+
 // RefreshSkills re-reads the workspace's skill snapshot after a reload
 // and rebuilds every agent's tools so skill-dependent tools (crush_info,
 // view) serve the new set. Bookkeeping for skills that survive the
@@ -2038,6 +2024,7 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 		return nil
 	}
 
+	c.skillsMu.Lock()
 	c.allSkills = c.skillsMgr.AllSkills()
 	c.activeSkills = c.skillsMgr.ActiveSkills()
 
@@ -2046,6 +2033,7 @@ func (c *coordinator) RefreshSkills(ctx context.Context) error {
 		fresh.MarkLoaded(name)
 	}
 	c.skillTracker = fresh
+	c.skillsMu.Unlock()
 
 	for name, agent := range c.agents {
 		agentCfg, ok := c.cfg.Config().Agents[name]
@@ -2413,43 +2401,6 @@ func subAgentRunName(prompt string) string {
 		return string(runes[:maxRunes]) + "…"
 	}
 	return line
-}
-
-// startBackgroundSubAgent creates the child session and returns its id
-// immediately; the child runs independently and its result arrives through
-// a completion notice.
-func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
-	sess, err := c.createSubAgentSession(ctx, params)
-	if err != nil {
-		return fantasy.ToolResponse{}, err
-	}
-	if c.subagents == nil {
-		c.subagents = newSubagentManager()
-	}
-	c.startSubAgentRun(sess, params)
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
-	run := c.subagents.start(sess.ID, params.SessionID, cancel)
-	go func() {
-		defer cancel()
-		output, runErr := c.executeSubAgent(runCtx, params.Agent, sess, params)
-		c.finishAgentRun(sess.ID, runErr)
-		c.subagents.finish(run, output, runErr)
-		event := SubagentEvent{
-			ID:              run.id,
-			SessionID:       sess.ID,
-			ParentSessionID: params.SessionID,
-			Output:          output,
-		}
-		if runErr != nil {
-			event.Err = runErr.Error()
-		}
-		subagentBroker.Publish(pubsub.CreatedEvent, event)
-	}()
-	return fantasy.NewTextResponse(fmt.Sprintf(
-		"started subagent %s. You will be notified when it finishes; use subagent_output with subagent_id=%s and wait=true only if you are blocked.",
-		run.id,
-		run.id,
-	)), nil
 }
 
 func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgentParams) (session.Session, error) {

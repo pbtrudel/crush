@@ -37,7 +37,7 @@ Both sides changed the agent core heavily. Where they overlapped:
 
 | Area | Decision |
 | --- | --- |
-| Subagent machinery | Replaced the fork's `subagentManager`, `subagent_output` tool, and `run_in_background` parameter with upstream's dispatch system. |
+| Subagent machinery | Replaced the fork's `subagentManager`, `subagent_output` tool, and `run_in_background` parameter with upstream's dispatch system. The fork's files were deleted, not left dead. |
 | Agent Teams | Kept the fork's feature wholesale; it is orthogonal to upstream's subagents. |
 | `agent` tool | Upstream's read/write access variants plus the fork's `agent` preset selection. |
 | `buildAgent` / `buildTools` | Upstream's caller-owned readiness group and `parentModel`, with the fork's `agentRole` and `agentSystemPrompt`. |
@@ -66,8 +66,17 @@ sync.
 
 - `go build ./...`
 - `go test ./...`
+- `go test -race ./internal/config/ ./internal/backend/ ./internal/server/ ./internal/agent/`
 - `go vet ./...` (one pre-existing `internal/csync` lock-copy warning)
 - `gofumpt -w .`
+
+The race pass is not optional: the CI build runs `-race`, and it caught three
+publish-then-mutate races in the config reload path that a plain `go test`
+does not. `reloadFromDiskLocked` now finishes the Config (models, agents)
+before `setConfig` publishes it, `ConfigStore.SetupAgents` publishes a clone
+instead of mutating the live Config, the staleness snapshot has its own
+RWMutex, and the coordinator's skill snapshot is guarded so `RefreshSkills`
+cannot swap it under a running turn.
 
 ## Known limitations
 
