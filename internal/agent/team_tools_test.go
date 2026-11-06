@@ -12,8 +12,12 @@ import (
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 )
+
+// teamTestSessionID is the Lead session every Team tool test runs as.
+const teamTestSessionID = "session-team"
 
 type teamFakeRun struct {
 	done   chan struct{}
@@ -71,9 +75,14 @@ func runTeamTool(t *testing.T, tool fantasy.AgentTool, input any) string {
 
 func runTeamToolRaw(t *testing.T, tool fantasy.AgentTool, input any) fantasy.ToolResponse {
 	t.Helper()
+	return runTeamToolIn(t, context.WithValue(t.Context(), tools.SessionIDContextKey, teamTestSessionID), tool, input)
+}
+
+func runTeamToolIn(t *testing.T, ctx context.Context, tool fantasy.AgentTool, input any) fantasy.ToolResponse {
+	t.Helper()
 	data, err := json.Marshal(input)
 	require.NoError(t, err)
-	response, err := tool.Run(t.Context(), fantasy.ToolCall{
+	response, err := tool.Run(ctx, fantasy.ToolCall{
 		ID:    "call-1",
 		Name:  tool.Info().Name,
 		Input: string(data),
@@ -125,7 +134,7 @@ func TestTeamToolsSpawnListAndMessage(t *testing.T) {
 
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		members, err := c.team.ListMembers("lead")
+		members, err := c.team.ListMembers("lead", teamTestSessionID)
 		return err == nil && members[1].Status == agentteam.StatusInactive
 	}, time.Second, 10*time.Millisecond)
 
@@ -216,4 +225,30 @@ func TestTeamToolsLeadOnly(t *testing.T) {
 		"prompt":      "Test.",
 	})
 	require.Contains(t, spawned.Content, "only the Team Lead can create teammates")
+}
+
+// TestTeamToolsAreScopedToTheCallingSession pins that a tool call cannot see
+// or reach a team another session spawned.
+func TestTeamToolsAreScopedToTheCallingSession(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := c.teamTools("lead")
+	runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "reviewer",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+	})
+
+	other := context.WithValue(t.Context(), tools.SessionIDContextKey, "session-other")
+	listed := runTeamToolIn(t, other, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.NotContains(t, listed.Content, `"target":"reviewer"`, "another session must not see this session's teammate")
+
+	sent := runTeamToolIn(t, other, toolByName(leadTools, SendMessageToolName), map[string]any{
+		"target":  "reviewer",
+		"message": "hi",
+	})
+	require.True(t, sent.IsError, "another session must not message this session's teammate")
+
+	owned := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.Contains(t, owned, `"target":"reviewer"`, "the owning session still sees its teammate")
 }
