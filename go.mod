@@ -84,7 +84,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	git.sr.ht/~jackmordaunt/go-toast v1.1.2 // indirect
-	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
