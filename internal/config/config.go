@@ -415,6 +415,24 @@ type Permissions struct {
 	// otherwise prompt the user. The reviewer falls back to the prompt
 	// when it is unsure.
 	AutoReview *bool `json:"auto_review,omitempty" jsonschema:"description=Use a model to review tool calls before prompting the user,default=false"`
+	// BlockedCommands adds to the built-in list of commands treated as
+	// dangerous. Dangerous commands are prompted for in normal mode, and
+	// blocked at exec time when they turn up indirectly.
+	BlockedCommands []string `json:"blocked_commands,omitempty" jsonschema:"description=Extra shell commands to treat as dangerous (prompted for in normal mode),example=kubectl,example=terraform"`
+	// AllowedCommands removes entries from the effective dangerous list,
+	// including the built-in defaults.
+	AllowedCommands []string `json:"allowed_commands,omitempty" jsonschema:"description=Shell commands to drop from the dangerous list so they stop prompting,example=curl,example=ssh"`
+	// SafeCommands are exact command lines that skip the permission prompt
+	// entirely, e.g. "go build" or "cargo check". An entry matches only when
+	// the command is written exactly as given, with no extra arguments and
+	// no flags, so "go build" never covers "go build -o /usr/local/bin/x".
+	//
+	// This is the narrow form on purpose. The built-in list carries a flag
+	// policy per command, which is what lets `git log` through while holding
+	// back `git push` and `git diff --output=FILE`. Expressing that in
+	// configuration would be a small security language, and the thing people
+	// actually want to say is "the exact command I run fifty times a day".
+	SafeCommands []string `json:"safe_commands,omitempty" jsonschema:"description=Exact command lines that skip the permission prompt. Matched literally with no extra arguments,example=go build,example=cargo check"`
 }
 
 // GetAutoReview reports whether automatic tool-call review is enabled.
@@ -494,6 +512,12 @@ type Options struct {
 	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
+	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
+	// Crush dialog (loopback pinentry) instead of handing the terminal
+	// over to an external pinentry program. No GPG or git configuration
+	// is modified: the redirect only applies to processes Crush spawns.
+	PinentryIntegrated   *bool `json:"pinentry_integrated,omitempty" jsonschema:"description=Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.,default=true"`
+	PinentryCacheTimeout *int  `json:"pinentry_cache_timeout,omitempty" jsonschema:"description=Seconds Crush keeps an entered GPG passphrase in memory so repeated signing operations do not re-prompt. 0 (the default) disables it; gpg-agent's own cache applies regardless.,default=0,example=300"`
 }
 
 // ModelsOptions configures the model picker.
@@ -696,6 +720,28 @@ func (o *Options) GetRepetitionDetection() bool {
 		return true
 	}
 	return *o.RepetitionDetection
+}
+
+// GetPinentryIntegrated reports whether the integrated pinentry is
+// enabled. Enabled by default; callers use it to decide whether to
+// prompt in-app or let the external pinentry handle credentials.
+func (o *Options) GetPinentryIntegrated() bool {
+	if o == nil || o.PinentryIntegrated == nil {
+		return true
+	}
+	return *o.PinentryIntegrated
+}
+
+// GetPinentryCacheTimeout returns how long an entered GPG passphrase may
+// stay in Crush's memory, or 0 when caching is disabled.
+func (o *Options) GetPinentryCacheTimeout() time.Duration {
+	if o == nil || o.PinentryCacheTimeout == nil {
+		return 0
+	}
+	if *o.PinentryCacheTimeout <= 0 {
+		return 0
+	}
+	return time.Duration(*o.PinentryCacheTimeout) * time.Second
 }
 
 type MCPs map[string]MCPConfig
@@ -1152,6 +1198,30 @@ func (c *Config) IsModelAvailable(provider, model string) bool {
 	return false
 }
 
+// UsableModels returns the models the current credential can serve: a
+// ChatGPT or Grok login only reaches its subscription's models.
+func (p ProviderConfig) UsableModels() []catwalk.Model {
+	if models, ok := p.SubscriptionModels(); ok {
+		return models
+	}
+	return p.Models
+}
+
+// SubscriptionModels returns the models a ChatGPT or Grok login grants, and
+// whether the provider is signed in with one at all.
+func (p ProviderConfig) SubscriptionModels() ([]catwalk.Model, bool) {
+	if p.OAuthToken == nil {
+		return nil, false
+	}
+	switch catwalk.InferenceProvider(p.ID) {
+	case catwalk.InferenceProviderOpenAI:
+		return p.ChatGPTModels, true
+	case catwalk.InferenceProviderXAI:
+		return p.GrokModels, true
+	}
+	return nil, false
+}
+
 func (c *Config) GetProviderForModel(modelType SelectedModelType) *ProviderConfig {
 	model, ok := c.Models[modelType]
 	if !ok {
@@ -1192,6 +1262,10 @@ const maxRecentModelsPerType = 5
 func allToolNames() []string {
 	return []string{
 		"agent",
+		"agent_dispatch",
+		"agent_send",
+		"agent_status",
+		"agent_stop",
 		"bash",
 		"crush_info",
 		"crush_logs",
@@ -1251,9 +1325,15 @@ func resolveReadOnlyTools(tools []string) []string {
 
 func resolvePlanTools(tools []string) []string {
 	// The read-only LSP lookups mirror the task agent's tool set: planning
-	// needs symbol navigation just as much as research does.
+	// needs symbol navigation just as much as research does. Both
+	// delegation styles are listed; the coordinator keeps whichever one
+	// suits the run mode.
 	planTools := []string{
 		"agent",
+		"agent_dispatch",
+		"agent_send",
+		"agent_status",
+		"agent_stop",
 		"glob",
 		"grep",
 		"ls",
@@ -1266,6 +1346,13 @@ func resolvePlanTools(tools []string) []string {
 		"read",
 	}
 	return filterSlice(tools, planTools, true)
+}
+
+// resolveTaskTools returns the tools available to the task subagent: the
+// read-only set plus bash, so it can run git diff, tests, and rg while
+// reviewing. It still cannot edit or write files.
+func resolveTaskTools(tools []string) []string {
+	return filterSlice(tools, append(resolveReadOnlyTools(tools), "bash"), true)
 }
 
 func filterSlice(data []string, mask []string, include bool) []string {
@@ -1299,7 +1386,7 @@ func (c *Config) SetupAgents() {
 			Description:  "An agent that helps with searching for context and finding implementation details.",
 			Model:        SelectedModelTypeLarge,
 			ContextPaths: c.Options.ContextPaths,
-			AllowedTools: resolveReadOnlyTools(allowedTools),
+			AllowedTools: resolveTaskTools(allowedTools),
 			// NO MCPs or LSPs by default
 			AllowedMCP: map[string][]string{},
 		},

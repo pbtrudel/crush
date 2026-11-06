@@ -813,11 +813,11 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"bash", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
-	assert.Equal(t, []string{"agent", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "question", "sourcegraph", "view", "read"}, planAgent.AllowedTools)
+	assert.Equal(t, []string{"agent", "agent_dispatch", "agent_send", "agent_status", "agent_stop", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "question", "sourcegraph", "view", "read"}, planAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
@@ -835,15 +835,15 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
 
-	assert.Equal(t, []string{"agent", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "glob", "ls", "question", "sourcegraph", "todos", "view", "read", "write", "worktree", "list_mcp_resources", "read_mcp_resource", "mcp_servers", "spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"}, coderAgent.AllowedTools)
+	assert.Equal(t, []string{"agent", "agent_dispatch", "agent_send", "agent_status", "agent_stop", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "glob", "ls", "question", "sourcegraph", "todos", "view", "read", "write", "worktree", "list_mcp_resources", "read_mcp_resource", "mcp_servers", "spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"}, coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"bash", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
-	assert.Equal(t, []string{"agent", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "question", "sourcegraph", "view", "read"}, planAgent.AllowedTools)
+	assert.Equal(t, []string{"agent", "agent_dispatch", "agent_send", "agent_status", "agent_stop", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "question", "sourcegraph", "view", "read"}, planAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
@@ -851,6 +851,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 		Options: &Options{
 			DisabledTools: []string{
 				"agent",
+				"bash",
 				"glob",
 				"grep",
 				"ls",
@@ -867,7 +868,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 	cfg.SetupAgents()
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
-	assert.Equal(t, []string{"bash", "crush_info", "crush_logs", "job_output", "job_kill", "download", "edit", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "question", "todos", "write", "worktree", "list_mcp_resources", "read_mcp_resource", "mcp_servers", "spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"}, coderAgent.AllowedTools)
+	assert.Equal(t, []string{"agent_dispatch", "agent_send", "agent_status", "agent_stop", "crush_info", "crush_logs", "job_output", "job_kill", "download", "edit", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "question", "todos", "write", "worktree", "list_mcp_resources", "read_mcp_resource", "mcp_servers", "spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"}, coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
@@ -875,7 +876,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
-	assert.Equal(t, []string{"question"}, planAgent.AllowedTools)
+	assert.Equal(t, []string{"agent_dispatch", "agent_send", "agent_status", "agent_stop", "question"}, planAgent.AllowedTools)
 }
 
 func TestConfig_configureProvidersWithDisabledProvider(t *testing.T) {
@@ -1986,6 +1987,63 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Equal(t, "small-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
 		require.Equal(t, int64(500), small.MaxTokens)
+	})
+	t.Run("should keep reasoning options only for models that reason", func(t *testing.T) {
+		toggleable := catwalk.Reasoning{Thinking: catwalk.ThinkingToggleable}
+		withLevels := catwalk.Reasoning{
+			Thinking:           catwalk.ThinkingToggleable,
+			EffortLevels:       catwalk.NewEffortLevels("low", "high"),
+			DefaultEffortLevel: "low",
+		}
+		knownProviders := []catwalk.Provider{
+			{
+				ID:                  "openai",
+				APIKey:              "abc",
+				DefaultLargeModelID: "toggle",
+				DefaultSmallModelID: "toggle",
+				Models: []catwalk.Model{
+					{ID: "toggle", DefaultMaxTokens: 1000, Reasoning: toggleable},
+					{ID: "levels", DefaultMaxTokens: 1000, Reasoning: withLevels},
+					{ID: "never", DefaultMaxTokens: 1000, Reasoning: catwalk.Reasoning{Thinking: catwalk.ThinkingNever}},
+					{ID: "unknown", DefaultMaxTokens: 1000},
+				},
+			},
+		}
+
+		tests := []struct {
+			name       string
+			selected   SelectedModel
+			wantEffort string
+			wantThink  bool
+		}{
+			{"toggleable keeps think", SelectedModel{Model: "toggle", Think: true}, "", true},
+			{"levels keep a chosen effort", SelectedModel{Model: "levels", ReasoningEffort: "high"}, "high", false},
+			{"levels default an empty effort", SelectedModel{Model: "levels"}, "low", false},
+			{"never drops both", SelectedModel{Model: "never", ReasoningEffort: "high", Think: true}, "", false},
+			{"undeclared drops both", SelectedModel{Model: "unknown", ReasoningEffort: "high", Think: true}, "", false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				cfg := &Config{
+					Models: map[SelectedModelType]SelectedModel{
+						SelectedModelTypeLarge: tt.selected,
+						SelectedModelTypeSmall: tt.selected,
+					},
+				}
+				cfg.setDefaults(t.TempDir(), "")
+				env := env.NewFromMap(map[string]string{})
+				resolver := NewShellVariableResolver(env)
+				require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders))
+
+				resolved, err := resolveSelectedModels(cfg, knownProviders)
+				require.NoError(t, err)
+				for _, got := range []SelectedModel{resolved.Large, resolved.Small} {
+					require.Equal(t, tt.selected.Model, got.Model)
+					require.Equal(t, tt.wantEffort, got.ReasoningEffort)
+					require.Equal(t, tt.wantThink, got.Think)
+				}
+			})
+		}
 	})
 	t.Run("should be possible to use multiple providers", func(t *testing.T) {
 		knownProviders := []catwalk.Provider{

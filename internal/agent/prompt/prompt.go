@@ -30,6 +30,8 @@ type Prompt struct {
 	now        func() time.Time
 	platform   string
 	workingDir string
+	canWrite   bool
+	toolNames  []string
 }
 
 type PromptDat struct {
@@ -40,11 +42,16 @@ type PromptDat struct {
 	IsGitRepo           bool
 	Platform            string
 	Date                string
+	GitStatus           string
 	ContextFiles        []ContextFile
 	GlobalContextFiles  []ContextFile
 	ContextBudget       *ContextBudget
 	GlobalContextBudget *ContextBudget
 	AvailSkillXML       string
+	CanWrite            bool
+	// ToolNames are the tools the agent is actually given, which is not
+	// always its whole configured set: some tools depend on the run mode.
+	ToolNames []string
 	// TeamPolicy carries the Agent Teams coordination policy when the
 	// experimental feature is enabled.
 	TeamPolicy string
@@ -91,6 +98,21 @@ func WithTimeFunc(fn func() time.Time) Option {
 func WithPlatform(platform string) Option {
 	return func(p *Prompt) {
 		p.platform = platform
+	}
+}
+
+// WithCanWrite marks the prompt as belonging to an agent that can edit files.
+func WithCanWrite(canWrite bool) Option {
+	return func(p *Prompt) {
+		p.canWrite = canWrite
+	}
+}
+
+// WithToolNames sets the tools the agent is actually given, so a prompt that
+// advertises its tools cannot promise one that was never attached.
+func WithToolNames(names []string) Option {
+	return func(p *Prompt) {
+		p.toolNames = names
 	}
 }
 
@@ -404,6 +426,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		Platform:      platform,
 		Date:          p.now().Format("1/2/2006"),
 		AvailSkillXML: availSkillXML,
+		CanWrite:      p.canWrite,
+		ToolNames:     p.toolNames,
 	}
 	if cfg.Options.GetAgentTeams() {
 		data.TeamPolicy = agentteam.Policy

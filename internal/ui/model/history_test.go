@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
@@ -17,8 +18,8 @@ func (historyWorkspace) Config() *config.Config {
 	return &config.Config{}
 }
 
-func (historyWorkspace) PermissionSkipRequests() bool {
-	return false
+func (historyWorkspace) PermissionMode() permission.PermissionMode {
+	return permission.PermissionModeNormal
 }
 
 func TestHistoryBangCommandStripsPrefixWhileAlreadyInBangMode(t *testing.T) {

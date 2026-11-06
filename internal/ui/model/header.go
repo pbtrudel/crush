@@ -5,6 +5,7 @@ import (
 	"image"
 	"math"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/fsext"
@@ -71,6 +72,7 @@ func (h *header) drawHeader(
 	modelName string,
 	providerName string,
 	contextWindow int64,
+	runningSubAgents int,
 ) {
 	t := h.com.Styles
 	if !compact {
@@ -99,6 +101,7 @@ func (h *header) drawHeader(
 		hyperCredits,
 		gitBranch,
 		contextWindow,
+		runningSubAgents,
 	)
 
 	remainingWidth := width -
@@ -231,10 +234,19 @@ func renderHeaderDetails(
 	hyperCredits *int,
 	gitBranch string,
 	contextWindow int64,
+	runningSubAgents int,
 ) string {
 	t := com.Styles
 
 	var parts []string
+
+	// Subagents work out of sight in compact mode, so the header carries
+	// a live count of how many are still going.
+	if runningSubAgents > 0 {
+		parts = append(parts, t.Header.Percentage.Render(fmt.Sprintf(
+			"%s %d", subAgentSpinner(time.Now()), runningSubAgents,
+		)))
+	}
 
 	if lspErrorCount > 0 {
 		parts = append(parts, t.LSP.ErrorDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPErrorIcon, lspErrorCount)))

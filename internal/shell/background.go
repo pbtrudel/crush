@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -50,30 +49,6 @@ func SubscribeBackgroundJobs(ctx context.Context) <-chan pubsub.Event[Background
 	return backgroundJobBroker.Subscribe(ctx)
 }
 
-// syncBuffer is a thread-safe wrapper around bytes.Buffer.
-type syncBuffer struct {
-	buf bytes.Buffer
-	mu  sync.RWMutex
-}
-
-func (sb *syncBuffer) Write(p []byte) (n int, err error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Write(p)
-}
-
-func (sb *syncBuffer) WriteString(s string) (n int, err error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.WriteString(s)
-}
-
-func (sb *syncBuffer) String() string {
-	sb.mu.RLock()
-	defer sb.mu.RUnlock()
-	return sb.buf.String()
-}
-
 // BackgroundShell represents a shell running in the background.
 type BackgroundShell struct {
 	ID          string
@@ -84,8 +59,8 @@ type BackgroundShell struct {
 	WorkingDir  string
 	ctx         context.Context
 	cancel      context.CancelFunc
-	stdout      *syncBuffer
-	stderr      *syncBuffer
+	stdout      *cappedBuffer
+	stderr      *cappedBuffer
 	done        chan struct{}
 	exitErr     error
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
@@ -164,8 +139,8 @@ func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, b
 		Shell:       shell,
 		ctx:         shellCtx,
 		cancel:      cancel,
-		stdout:      &syncBuffer{},
-		stderr:      &syncBuffer{},
+		stdout:      newCappedBuffer(maxKeptOutput),
+		stderr:      newCappedBuffer(maxKeptOutput),
 		done:        make(chan struct{}),
 	}
 
@@ -358,6 +333,11 @@ func (bs *BackgroundShell) IsDone() bool {
 	default:
 		return false
 	}
+}
+
+// Done returns a channel that is closed when the background shell exits.
+func (bs *BackgroundShell) Done() <-chan struct{} {
+	return bs.done
 }
 
 // Wait blocks until the background shell completes.

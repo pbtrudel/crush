@@ -27,7 +27,7 @@
 
 Local patches and improvements over [upstream Crush](https://github.com/charmbracelet/crush):
 
-- **Copilot Responses-API routing:** Copilot models that only accept the `/responses` endpoint can be added through a `copilot-responses-models` file in the config directory, without rebuilding Crush.
+- **Versioning tied to the upstream sync:** `UPSTREAM_VERSION` records the upstream release this fork has actually merged, and releases are cut as `<that version>-fork.<run>`. Reading the latest upstream tag instead would move the fork's version ahead of its code whenever upstream releases something not yet merged.
 - **Mistral streaming and Vibe signing:** Mistral's content-block SSE streams are rewritten into reasoning and text (so thinking renders instead of raw JSON), reasoning history replays as Mistral thinking blocks instead of failing with 422, and requests to `api.mistral.ai` are signed like the Mistral Vibe CLI so subscription keys draw on the Vibe allowance.
 - **Discord remote control (`/rc`):** a session can be mirrored into a Discord thread and driven from Discord: `/model`, `/plan`, `/yolo`, `/stop`, permission decisions via reactions, `/compact`, and custom commands all work remotely (see [docs/discord-remote-control.md](docs/discord-remote-control.md)).
 - **Fork-aware update check:** the `-fork.N` release suffix is ignored, so fork builds are not prompted to "update" to upstream releases.
@@ -36,7 +36,7 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 - **Prompt-cache reuse across sessions:** replayed prompts stay byte-identical to the live request so cache hits survive across sessions, and sub-agent (task/fetch) cache reads count toward the session totals.
 - **Cache accounting for every OpenAI-compatible dialect:** cache reads are counted from OpenAI's `cached_tokens`, DeepSeek's `prompt_cache_hit_tokens`, and Kimi's top-level `cached_tokens`, not just the first.
 - **Background job completion notices:** when a background shell finishes, the owning session receives an in-session notice with a small output preview (busy turns get it on their next step; idle sessions are woken). `job_output` continues to serve full output, and `option background-job-notifications false` disables the notices.
-- **Background subagents:** the `agent` tool returns a subagent id immediately and delivers the result through a completion notice, so independent delegations run in parallel. Use `subagent_output` with `wait=true` only when genuinely blocked. `option background-subagents false` restores foreground delegation.
+- **Named subagents:** the `agent` tool blocks and hands a long call to the background after a minute, while `agent_dispatch` starts a detached subagent that reports back later; `agent_status`, `agent_send`, and `agent_stop` follow up on one by name, and a subagent can be given its own model and reasoning effort. `option background-subagents false` keeps blocking calls in the foreground.
 - **Agent Teams:** the Lead can spawn named, durable teammates, message them, wait for them, interrupt them, and coordinate through a shared task board with compare-and-set revisions, dependency readiness, and advisory write-scope warnings. Teammates report progress automatically when their turn settles, `wait_agent` returns the current roster and live task board, tasks a teammate leaves in progress are completed on success or released on failure, and a completed team task marks the matching session todo completed. The sidebar is scoped to the current session and shows live member and task status, the command palette toggles the feature on or off (`/team on` and `/team off` also work), and `crush team` / `crush team watch` / `crush team session <name>` expose the same view from the terminal. See [docs/agent-teams.md](docs/agent-teams.md).
 - **Worktrees by default:** the agent creates one isolated Git worktree per task, does all edits, commands, and tests inside it, pushes the branch, and removes the worktree and branch after the merge so the next task starts from a fresh one. The `worktree` tool supports `create`, `list`, and `remove` (refusing dirty worktrees unless forced), and `crush --worktree <name>` still starts a session directly in a new worktree.
 - **Loop and repetition guards:** advisory reminders fire when the model repeats the same tool call (3/5/8 consecutive repeats) before the hard stop, and a streaming detector stops a response that degenerates into the same character or a short repeated pattern. Both are configurable with `option repeat-tool-reminders` and `option repetition-detection`.
@@ -275,14 +275,18 @@ go install -tags sqlite3_dotlk github.com/charmbracelet/crush@latest
 
 ## Getting Started
 
-The quickest way to get started is to choose a [Hyper][hyper] model from model
-picker. Follow the steps to authenticate and you'll be good to go.
-
-[Hyper], from Charm, is the official Crush provider. It’s subscription-based
-and optimized for Crush. It’s privacy focused, with zero data retention (ZDR)
-and is designed to comply with GDPR. [More on Hyper][hyper].
+The quickest way to get started is to choose a [Hyper][hyper] model from the
+little model picker. Follow the steps to authenticate and you're ready to go.
 
 <p><a href="https://hyper.charm.land"><img width="340" height="200" alt="Charm Hyper" src="https://github.com/user-attachments/assets/50875289-7992-454d-9f14-9f790413fb5e" /></a></p>
+
+[Hyper][hyper], from Charm, is the official model provider for Crush. It’s 
+built  on open-weight models and is optimized for Crush, with an emphasis 
+on high-quality inference. There are subscription and prepaid options, including zero data retention 
+(ZDR). It's also GDPR compliant!
+
+[More on Hyper][hyper].
+
 
 ## API Keys
 
@@ -665,10 +669,12 @@ option compaction-prune-chars 8192
 ```
 
 Background jobs are started with the bash tool's `run_in_background` parameter
-and read with `job_output`. Background subagents are started with the `agent`
-tool (the default; pass `run_in_background: false` to wait in the same turn)
-and read with `subagent_output`. An idle session is woken by a completion; a
-busy session receives the notice on its next step.
+and read with `job_output`. Subagents are started with the `agent` tool, which
+blocks until the subagent finishes and moves a call that outruns a minute to
+the background, or with `agent_dispatch`, which starts a detached subagent
+straight away; `agent_status`, `agent_send`, and `agent_stop` follow up on a
+detached one by name. An idle session is woken by a completion; a busy session
+receives the notice on its next step.
 
 ### Sharing a workspace across clients
 
@@ -747,6 +753,13 @@ permissions. Use this with care.
 ```bash
 permissions allow view ls grep edit mcp_context7_get-library-doc
 ```
+
+The `bash` tool additionally runs a small set of read-only commands (`ls`,
+`pwd`, `git status`, `git log`, …) without prompting. Crush parses the command
+to decide, so it applies only when the whole command is provably inert: a
+redirection, a variable assignment, a command substitution, a pipeline, or an
+argument that mutates state (`git branch -D`, `git remote set-url`) all fall
+back to the normal permission prompt.
 
 ### Disabling Built-In Tools
 
@@ -1173,8 +1186,12 @@ collected.
 Details on exactly what’s collected are in the source code ([here](https://github.com/charmbracelet/crush/tree/main/internal/event)
 and [here](https://github.com/charmbracelet/crush/blob/main/internal/llm/agent/event.go)).
 
-You can opt out of metrics collection at any time by setting the environment
-variable by setting the following in your environment:
+Also, when you use Crush with [Hyper][hyper], your Crush usage metrics may 
+be associated with your Hyper account to help us improve the service and
+diagnose issues. For more information, see [the Hyper Privacy Policy](https://hyper.charm.land/legal/privacy-policy).
+
+Either way, you can opt out of metrics collection at any time by setting 
+the following  in your environment:
 
 ```bash
 export CRUSH_DISABLE_METRICS=1

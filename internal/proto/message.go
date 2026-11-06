@@ -202,6 +202,17 @@ type CompactionStats struct {
 
 func (CompactionStats) isPart() {}
 
+// SubAgentReport stores the result a detached subagent reported back.
+type SubAgentReport struct {
+	Label  string `json:"label"`
+	Output string `json:"output"`
+	Failed bool   `json:"failed,omitempty"`
+	// Model is provider/model, for display.
+	Model string `json:"model,omitempty"`
+}
+
+func (SubAgentReport) isPart() {}
+
 // MarshalJSON implements the [json.Marshaler] interface.
 func (m Message) MarshalJSON() ([]byte, error) {
 	parts, err := MarshalParts(m.Parts)
@@ -534,6 +545,7 @@ const (
 	finishType          partType = "finish"
 	shellCommandType    partType = "shell_command"
 	compactionStatsType partType = "compaction_stats"
+	subAgentReportType  partType = "sub_agent_report"
 )
 
 type partWrapper struct {
@@ -567,6 +579,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = shellCommandType
 		case CompactionStats:
 			typ = compactionStatsType
+		case SubAgentReport:
+			typ = subAgentReportType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -650,6 +664,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case compactionStatsType:
 			part := CompactionStats{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case subAgentReportType:
+			part := SubAgentReport{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

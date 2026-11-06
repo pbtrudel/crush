@@ -140,6 +140,12 @@ func (m *UI) updateSidebarScrollState() {
 	if agentsSection := m.agentsInfo(contentWidth); agentsSection != "" {
 		sections = append(sections, "", agentsSection)
 	}
+	// The subagent section renders empty until something is dispatched, so
+	// it takes no space in a session that never uses them.
+	subAgents := m.subAgentStatuses()
+	if subAgentSection := m.subAgentsInfo(subAgents, contentWidth, len(subAgents), true); subAgentSection != "" {
+		sections = append(sections, "", subAgentSection)
+	}
 	sections = append(
 		sections,
 		"",
