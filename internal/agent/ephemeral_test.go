@@ -14,9 +14,10 @@ import (
 // recordingLanguageModel records every call it receives so tests can assert
 // on the request the ephemeral path builds.
 type recordingLanguageModel struct {
-	mu    sync.Mutex
-	calls []fantasy.Call
-	reply string
+	mu     sync.Mutex
+	calls  []fantasy.Call
+	reply  string
+	finish fantasy.FinishReason
 }
 
 func (m *recordingLanguageModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
@@ -28,9 +29,13 @@ func (m *recordingLanguageModel) Stream(_ context.Context, call fantasy.Call) (f
 	m.calls = append(m.calls, call)
 	m.mu.Unlock()
 	reply := m.reply
+	finish := m.finish
+	if finish == "" {
+		finish = fantasy.FinishReasonStop
+	}
 	return func(yield func(fantasy.StreamPart) bool) {
 		if reply == "" {
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: finish})
 			return
 		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "0"})
@@ -128,4 +133,45 @@ func TestEphemeralKeepsConversationHistory(t *testing.T) {
 	}
 	require.Contains(t, joined.String(), "we picked the pooled connection")
 	require.Contains(t, joined.String(), "what was the pooling option?")
+}
+
+// TestEphemeralReportsWhyAnAnswerIsEmpty pins the failure mode behind the
+// "(the model returned no answer)" card: when the provider ends the response
+// without any text, the ephemeral run used to return an empty answer and no
+// error, so callers could not tell a silent provider stop from a real answer.
+// The run must surface the finish reason instead.
+func TestEphemeralReportsWhyAnAnswerIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		finish fantasy.FinishReason
+		want   string
+	}{
+		{"provider stopped", fantasy.FinishReasonError, "finish_reason=error"},
+		{"truncated", fantasy.FinishReasonLength, "finish_reason=length"},
+		{"empty stop", fantasy.FinishReasonStop, "finish_reason=stop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := testEnv(t)
+			model := &recordingLanguageModel{finish: tc.finish}
+			agent := testSessionAgent(env, model, model, "system prompt")
+
+			sess, err := env.sessions.Create(t.Context(), "New Session")
+			require.NoError(t, err)
+
+			res, err := agent.Run(t.Context(), SessionAgentCall{
+				SessionID: sess.ID,
+				Prompt:    "what is taking so long?",
+				Ephemeral: true,
+			})
+			require.Error(t, err)
+			require.Nil(t, res)
+			require.Contains(t, err.Error(), tc.want)
+			require.Contains(t, err.Error(), "no answer")
+		})
+	}
 }
