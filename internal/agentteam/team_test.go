@@ -93,6 +93,7 @@ func TestSpawnTeammate(t *testing.T) {
 		Name:        "reviewer",
 		Description: "Reviews the diff",
 		Prompt:      "Review the current diff.",
+		ParentID:    "session-a",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "reviewer", view.Target)
@@ -100,7 +101,7 @@ func TestSpawnTeammate(t *testing.T) {
 	require.Equal(t, StatusRunning, view.Status)
 	require.Equal(t, 1, runner.promptCount())
 
-	members, err := service.ListMembers("lead")
+	members, err := service.ListMembers("lead", "session-a")
 	require.NoError(t, err)
 	require.Len(t, members, 2)
 	require.Equal(t, "lead", members[0].Target)
@@ -108,7 +109,7 @@ func TestSpawnTeammate(t *testing.T) {
 
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		members, err := service.ListMembers("lead")
+		members, err := service.ListMembers("lead", "session-a")
 		return err == nil && members[1].Status == StatusInactive
 	}, time.Second, 10*time.Millisecond)
 }
@@ -117,11 +118,11 @@ func TestSpawnTeammateRejectsDuplicateName(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.Equal(t, CodeInvalidMemberName, ErrorCode(err))
 }
@@ -141,11 +142,11 @@ func TestMemberLimit(t *testing.T) {
 	service, err := New(filepath.Join(t.TempDir(), "team.json"), Config{MaxMembers: 1}, runner)
 	require.NoError(t, err)
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "one", Description: "d", Prompt: "p",
+		Name: "one", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "two", Description: "d", Prompt: "p",
+		Name: "two", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.Equal(t, CodeMemberLimit, ErrorCode(err))
 }
@@ -154,16 +155,16 @@ func TestSendMessageResumesInactiveTeammate(t *testing.T) {
 	t.Parallel()
 	service, runner := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		members, err := service.ListMembers("lead")
+		members, err := service.ListMembers("lead", "session-a")
 		return err == nil && members[1].Status == StatusInactive
 	}, time.Second, 10*time.Millisecond)
 
-	require.NoError(t, service.SendMessage(context.Background(), "lead", SendRequest{
+	require.NoError(t, service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
 		Target: "reviewer", Message: "Check the tests.",
 	}))
 	require.Equal(t, 2, runner.promptCount())
@@ -177,11 +178,11 @@ func TestSendMessageToRunningTeammateQueues(t *testing.T) {
 	t.Parallel()
 	service, runner := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, service.SendMessage(context.Background(), "lead", SendRequest{
+	require.NoError(t, service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
 		Target: "reviewer", Message: "Steer left.",
 	}))
 	require.Equal(t, 1, runner.promptCount())
@@ -196,10 +197,10 @@ func TestSendMessageToLeadInbox(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
-	require.NoError(t, service.SendMessage(context.Background(), "reviewer", SendRequest{
+	require.NoError(t, service.SendMessage(context.Background(), "reviewer", "session-a", SendRequest{
 		Target: "lead", Message: "Done.",
 	}))
 	pending := service.DrainInbox("lead")
@@ -211,21 +212,21 @@ func TestInterruptTeammate(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
-	previous, err := service.Interrupt("lead", "reviewer")
+	previous, err := service.Interrupt("lead", "session-a", "reviewer")
 	require.NoError(t, err)
 	require.Equal(t, StatusRunning, previous)
 
 	// Wait for the settlement write before the test's temp dir is removed.
 	require.Eventually(t, func() bool {
-		members, err := service.ListMembers("lead")
+		members, err := service.ListMembers("lead", "session-a")
 		return err == nil && members[1].Status == StatusInactive
 	}, time.Second, 10*time.Millisecond)
 
-	_, err = service.Interrupt("reviewer", "reviewer")
+	_, err = service.Interrupt("reviewer", "session-a", "reviewer")
 	require.Equal(t, CodeLeadRequired, ErrorCode(err))
 }
 
@@ -233,21 +234,21 @@ func TestWaitForChange(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		_ = service.SendMessage(context.Background(), "lead", SendRequest{
+		_ = service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
 			Target: "reviewer", Message: "ping",
 		})
 	}()
-	result, err := service.WaitForChange(context.Background(), "lead", time.Second)
+	result, err := service.WaitForChange(context.Background(), "lead", "session-a", time.Second)
 	require.NoError(t, err)
 	require.False(t, result.TimedOut)
 
-	result, err = service.WaitForChange(context.Background(), "lead", 20*time.Millisecond)
+	result, err = service.WaitForChange(context.Background(), "lead", "session-a", 20*time.Millisecond)
 	require.NoError(t, err)
 	require.True(t, result.TimedOut)
 }
@@ -256,11 +257,11 @@ func TestTaskBoardLifecycle(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
-	task, err := service.CreateTask("lead", CreateTaskRequest{
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject:     "Add rate limiting",
 		Description: "Implement the middleware.",
 		WriteScopes: []string{"./internal/middleware/", "internal/middleware"},
@@ -280,7 +281,8 @@ func TestTaskBoardLifecycle(t *testing.T) {
 	require.Equal(t, 2, claimed.Revision)
 
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: "task-1", ExpectedRevision: 1, Action: "complete",
+		SessionID: "session-a",
+		TaskID:    "task-1", ExpectedRevision: 1, Action: "complete",
 	})
 	require.Equal(t, CodeTaskStaleRevision, ErrorCode(err))
 
@@ -301,27 +303,29 @@ func TestTaskBoardLifecycle(t *testing.T) {
 func TestTaskReadinessAndDependencies(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
-	first, err := service.CreateTask("lead", CreateTaskRequest{
+	first, err := service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "First", Description: "d",
 	})
 	require.NoError(t, err)
-	second, err := service.CreateTask("lead", CreateTaskRequest{
+	second, err := service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "Second", Description: "d", BlockedBy: []string{first.ID},
 	})
 	require.NoError(t, err)
 	require.False(t, second.Ready)
 
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: second.ID, ExpectedRevision: 1, Action: "claim",
+		SessionID: "session-a",
+		TaskID:    second.ID, ExpectedRevision: 1, Action: "claim",
 	})
 	require.Equal(t, CodeTaskBlocked, ErrorCode(err))
 
-	_, err = service.CreateTask("lead", CreateTaskRequest{
+	_, err = service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "Cycle", Description: "d", BlockedBy: []string{"task-1"},
 	})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: "task-1", ExpectedRevision: 1, Action: "set_dependencies",
+		SessionID: "session-a",
+		TaskID:    "task-1", ExpectedRevision: 1, Action: "set_dependencies",
 		BlockedBy: []string{"task-3"},
 	})
 	require.Equal(t, CodeTaskDependencyCycle, ErrorCode(err))
@@ -330,19 +334,20 @@ func TestTaskReadinessAndDependencies(t *testing.T) {
 func TestTaskWriteScopeWarnings(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
-	_, err := service.CreateTask("lead", CreateTaskRequest{
+	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "One", Description: "d", WriteScopes: []string{"internal/ui"},
 	})
 	require.NoError(t, err)
-	_, err = service.CreateTask("lead", CreateTaskRequest{
+	_, err = service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "Two", Description: "d", WriteScopes: []string{"internal/ui/chat"},
 	})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: "task-1", ExpectedRevision: 1, Action: "claim",
+		SessionID: "session-a",
+		TaskID:    "task-1", ExpectedRevision: 1, Action: "claim",
 	})
 	require.NoError(t, err)
-	view, err := service.GetTask("lead", "task-2")
+	view, err := service.GetTask("lead", "session-a", "task-2")
 	require.NoError(t, err)
 	require.Equal(t, []string{"write scopes overlap with task-1"}, view.WriteScopeWarnings)
 }
@@ -350,14 +355,15 @@ func TestTaskWriteScopeWarnings(t *testing.T) {
 func TestDeleteTaskWithDependents(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
-	_, err := service.CreateTask("lead", CreateTaskRequest{Subject: "One", Description: "d"})
+	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "One", Description: "d"})
 	require.NoError(t, err)
-	_, err = service.CreateTask("lead", CreateTaskRequest{
+	_, err = service.CreateTask("lead", "session-a", CreateTaskRequest{
 		Subject: "Two", Description: "d", BlockedBy: []string{"task-1"},
 	})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: "task-1", ExpectedRevision: 1, Action: "delete",
+		SessionID: "session-a",
+		TaskID:    "task-1", ExpectedRevision: 1, Action: "delete",
 	})
 	require.Equal(t, CodeTaskHasDependents, ErrorCode(err))
 }
@@ -365,27 +371,28 @@ func TestDeleteTaskWithDependents(t *testing.T) {
 func TestListTasksFilters(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
-	_, err := service.CreateTask("lead", CreateTaskRequest{Subject: "One", Description: "d"})
+	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "One", Description: "d"})
 	require.NoError(t, err)
-	_, err = service.CreateTask("lead", CreateTaskRequest{Subject: "Two", Description: "d"})
+	_, err = service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Two", Description: "d"})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: "task-1", ExpectedRevision: 1, Action: "claim",
+		SessionID: "session-a",
+		TaskID:    "task-1", ExpectedRevision: 1, Action: "claim",
 	})
 	require.NoError(t, err)
 
 	status := TaskInProgress
-	list, err := service.ListTasks("lead", TaskFilter{Status: &status})
+	list, err := service.ListTasks("lead", "session-a", TaskFilter{Status: &status})
 	require.NoError(t, err)
 	require.Len(t, list.Tasks, 1)
 	require.Equal(t, "task-1", list.Tasks[0].ID)
 
-	list, err = service.ListTasks("lead", TaskFilter{Owner: "unowned"})
+	list, err = service.ListTasks("lead", "session-a", TaskFilter{Owner: "unowned"})
 	require.NoError(t, err)
 	require.Len(t, list.Tasks, 1)
 	require.Equal(t, "task-2", list.Tasks[0].ID)
 
-	list, err = service.ListTasks("lead", TaskFilter{Limit: 1})
+	list, err = service.ListTasks("lead", "session-a", TaskFilter{Limit: 1})
 	require.NoError(t, err)
 	require.Len(t, list.Tasks, 1)
 	require.Equal(t, 1, list.NextCursor)
@@ -397,19 +404,19 @@ func TestStatePersistsAcrossReopen(t *testing.T) {
 	service, err := New(path, Config{}, newFakeRunner())
 	require.NoError(t, err)
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
-	_, err = service.CreateTask("lead", CreateTaskRequest{Subject: "One", Description: "d"})
+	_, err = service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "One", Description: "d"})
 	require.NoError(t, err)
 
 	reopened, err := New(path, Config{}, nil)
 	require.NoError(t, err)
-	members, err := reopened.ListMembers("lead")
+	members, err := reopened.ListMembers("lead", "session-a")
 	require.NoError(t, err)
 	require.Len(t, members, 2)
 	require.Equal(t, StatusInactive, members[1].Status)
-	task, err := reopened.GetTask("lead", "task-1")
+	task, err := reopened.GetTask("lead", "session-a", "task-1")
 	require.NoError(t, err)
 	require.Equal(t, "One", task.Subject)
 }
@@ -418,11 +425,11 @@ func TestWatchSettlesTasksAndReportsToLead(t *testing.T) {
 	t.Parallel()
 	service, runner := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review", Description: "d"})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
 		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
@@ -431,7 +438,7 @@ func TestWatchSettlesTasksAndReportsToLead(t *testing.T) {
 
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		got, err := service.GetTask("lead", task.ID)
+		got, err := service.GetTask("lead", "session-a", task.ID)
 		return err == nil && got.Status == TaskCompleted
 	}, time.Second, 10*time.Millisecond)
 
@@ -445,11 +452,11 @@ func TestWatchReleasesTasksOnFailure(t *testing.T) {
 	t.Parallel()
 	service, runner := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review", Description: "d"})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
 		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
@@ -458,7 +465,7 @@ func TestWatchReleasesTasksOnFailure(t *testing.T) {
 
 	runner.finishWithErr("reviewer", errors.New("boom"))
 	require.Eventually(t, func() bool {
-		got, err := service.GetTask("lead", task.ID)
+		got, err := service.GetTask("lead", "session-a", task.ID)
 		return err == nil && got.Status == TaskPending && got.OwnerName == ""
 	}, time.Second, 10*time.Millisecond)
 
@@ -472,13 +479,13 @@ func TestWaitResultIncludesProgress(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
 	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "reviewer", Description: "d", Prompt: "p",
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review", Description: "d"})
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review", Description: "d"})
 	require.NoError(t, err)
 
-	result, err := service.WaitForChange(context.Background(), "lead", 10*time.Millisecond)
+	result, err := service.WaitForChange(context.Background(), "lead", "session-a", 10*time.Millisecond)
 	require.NoError(t, err)
 	require.True(t, result.TimedOut)
 	require.Len(t, result.Progress.Members, 2)
@@ -493,7 +500,7 @@ func TestSettledTaskCallsCompletedHook(t *testing.T) {
 		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
 	require.NoError(t, err)
 	_, err = service.UpdateTask("reviewer", UpdateTaskRequest{
 		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
@@ -523,7 +530,7 @@ func TestUpdateTaskCompleteCallsCompletedHook(t *testing.T) {
 		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
 	require.NoError(t, err)
 	claimed, err := service.UpdateTask("reviewer", UpdateTaskRequest{
 		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
@@ -549,10 +556,11 @@ func TestUpdateTaskCompleteCallsCompletedHook(t *testing.T) {
 func TestUpdateTaskCompleteUsesCallerSessionForLead(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
-	task, err := service.CreateTask("lead", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
+	task, err := service.CreateTask("lead", "lead-session", CreateTaskRequest{Subject: "Review the diff", Description: "d"})
 	require.NoError(t, err)
 	claimed, err := service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+		SessionID: "lead-session",
+		TaskID:    task.ID, ExpectedRevision: task.Revision, Action: "claim",
 	})
 	require.NoError(t, err)
 
@@ -561,8 +569,8 @@ func TestUpdateTaskCompleteUsesCallerSessionForLead(t *testing.T) {
 		got <- sessionID + "|" + subject
 	})
 	_, err = service.UpdateTask("lead", UpdateTaskRequest{
-		TaskID: claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
 		SessionID: "lead-session",
+		TaskID:    claimed.ID, ExpectedRevision: claimed.Revision, Action: "complete",
 	})
 	require.NoError(t, err)
 	select {
@@ -590,22 +598,109 @@ func TestSpawnTeammateCountsOnlyLiveMembers(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "one", Description: "d", Prompt: "p",
+		Name: "one", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err)
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "two", Description: "d", Prompt: "p",
+		Name: "two", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.Equal(t, CodeMemberLimit, ErrorCode(err), "a live member must still count against the limit")
 
 	runner.finish("one")
 	require.Eventually(t, func() bool {
-		members, err := service.ListMembers("lead")
+		members, err := service.ListMembers("lead", "session-a")
 		return err == nil && members[1].Status == StatusInactive
 	}, time.Second, 10*time.Millisecond)
 
 	_, err = service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
-		Name: "two", Description: "d", Prompt: "p",
+		Name: "two", Description: "d", Prompt: "p", ParentID: "session-a",
 	})
 	require.NoError(t, err, "an inactive member must not consume a live slot")
+}
+
+// TestTeamStateIsScopedToItsSession pins the session boundary: a second
+// session must not see, message, or interrupt another session's team.
+func TestTeamStateIsScopedToItsSession(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Review", Description: "d"})
+	require.NoError(t, err)
+
+	members, err := service.ListMembers("lead", "session-b")
+	require.NoError(t, err)
+	require.Len(t, members, 1, "a new session must not see another session's teammates")
+	require.Equal(t, "lead", members[0].Target)
+
+	list, err := service.ListTasks("lead", "session-b", TaskFilter{})
+	require.NoError(t, err)
+	require.Empty(t, list.Tasks, "a new session must not see another session's tasks")
+
+	progress := service.Progress("lead", "session-b")
+	require.Len(t, progress.Members, 1, "a new session's roster is just its own Lead")
+	require.Empty(t, progress.Tasks)
+	require.False(t, service.HasActivePeer("lead", "session-b"))
+
+	_, err = service.GetTask("lead", "session-b", task.ID)
+	require.Equal(t, CodeTaskNotFound, ErrorCode(err))
+	_, err = service.UpdateTask("lead", UpdateTaskRequest{
+		SessionID: "session-b", TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim",
+	})
+	require.Equal(t, CodeTaskNotFound, ErrorCode(err))
+	require.Equal(t, CodeMemberNotFound, ErrorCode(service.SendMessage(context.Background(), "lead", "session-b", SendRequest{
+		Target: "reviewer", Message: "hi",
+	})))
+	_, err = service.Interrupt("lead", "session-b", "reviewer")
+	require.Equal(t, CodeMemberNotFound, ErrorCode(err))
+
+	members, err = service.ListMembers("lead", "session-a")
+	require.NoError(t, err)
+	require.Len(t, members, 2, "the owning session still sees its team")
+	list, err = service.ListTasks("lead", "session-a", TaskFilter{})
+	require.NoError(t, err)
+	require.Len(t, list.Tasks, 1)
+}
+
+// TestScopeLockedFollowsNestedTeammates pins the nested traversal: a teammate
+// spawned by a teammate belongs to the same session tree, and a sibling
+// session stays out of it.
+func TestScopeLockedFollowsNestedTeammates(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	service.state.Members = []Member{
+		{ID: "member-1", Name: "one", ParentID: "session-a", SessionID: "team-one"},
+		{ID: "member-2", Name: "two", ParentID: "team-one", SessionID: "team-two"},
+		{ID: "member-3", Name: "three", ParentID: "session-b", SessionID: "team-three"},
+	}
+
+	scope := service.scopeLocked("lead", "session-a")
+
+	require.True(t, scope["session-a"])
+	require.True(t, scope["team-one"])
+	require.True(t, scope["team-two"], "a teammate spawned by a teammate stays in the tree")
+	require.False(t, scope["session-b"])
+	require.Nil(t, service.scopeLocked("lead", ""), "a call with no session sees nothing")
+
+	other := service.scopeLocked("three", "session-a")
+	require.True(t, other["session-b"], "a teammate is scoped to the session that spawned it")
+	require.False(t, other["session-a"])
+}
+
+// TestLegacyTasksStayHidden pins that a task written before session scoping
+// never appears on a session's board.
+func TestLegacyTasksStayHidden(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	service.state.Tasks = []Task{{ID: "task-1", Revision: 1, Subject: "Old", Status: TaskPending}}
+
+	list, err := service.ListTasks("lead", "session-a", TaskFilter{})
+	require.NoError(t, err)
+	require.Empty(t, list.Tasks)
+
+	_, err = service.GetTask("lead", "session-a", "task-1")
+	require.Equal(t, CodeTaskNotFound, ErrorCode(err))
 }

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -78,28 +79,28 @@ func TestAgentRunsSignatureChanges(t *testing.T) {
 	require.NotEqual(t, first, agentRunsSignature(runs))
 }
 
-func TestTeamTaskBucketsKeepsOnlyOwnedLiveTasks(t *testing.T) {
+func TestTeamTaskBucketsKeepsOnlySessionTasks(t *testing.T) {
 	t.Parallel()
 	state := agentteam.State{
 		Tasks: []agentteam.Task{
-			{ID: "task-1", Status: agentteam.TaskCompleted, Subject: "Done", OwnerID: "member-1"},
-			{ID: "task-2", Status: agentteam.TaskDeleted, Subject: "Gone", OwnerID: "member-1"},
-			{ID: "task-3", Status: agentteam.TaskPending, Subject: "Blocked", BlockedBy: []string{"task-4"}, OwnerID: "member-1"},
-			{ID: "task-4", Status: agentteam.TaskInProgress, Subject: "Running", OwnerID: "member-1"},
-			{ID: "task-5", Status: agentteam.TaskPending, Subject: "Ready", OwnerID: "member-1"},
-			{ID: "task-6", Status: agentteam.TaskInProgress, Subject: "Other session", OwnerID: "member-2"},
-			{ID: "task-7", Status: agentteam.TaskPending, Subject: "Unowned"},
+			{ID: "task-1", Status: agentteam.TaskCompleted, Subject: "Done", OwnerID: "member-1", SessionID: "session-a"},
+			{ID: "task-2", Status: agentteam.TaskDeleted, Subject: "Gone", OwnerID: "member-1", SessionID: "session-a"},
+			{ID: "task-3", Status: agentteam.TaskPending, Subject: "Blocked", BlockedBy: []string{"task-4"}, OwnerID: "member-1", SessionID: "session-a"},
+			{ID: "task-4", Status: agentteam.TaskInProgress, Subject: "Running", OwnerID: "member-1", SessionID: "session-a"},
+			{ID: "task-5", Status: agentteam.TaskPending, Subject: "Ready", OwnerID: "member-1", SessionID: "session-a"},
+			{ID: "task-6", Status: agentteam.TaskInProgress, Subject: "Other session", OwnerID: "member-2", SessionID: "session-b"},
+			{ID: "task-7", Status: agentteam.TaskPending, Subject: "Legacy"},
 		},
 	}
-	owners := map[string]bool{"lead": true, "member-1": true}
+	sessions := map[string]bool{"session-a": true}
 
-	active, completed := teamTaskBuckets(state, owners)
+	active, completed := teamTaskBuckets(state, sessions)
 
 	require.Equal(t, 1, completed)
 	require.Len(t, active, 3)
 	require.Equal(t, []string{"task-4", "task-5", "task-3"}, []string{
 		active[0].ID, active[1].ID, active[2].ID,
-	}, "in-progress work first, then ready work, then blocked work; other sessions' tasks are hidden")
+	}, "in-progress work first, then ready work, then blocked work; other sessions and legacy tasks are hidden")
 }
 
 func TestTeamTaskBucketsEmptyBoard(t *testing.T) {
@@ -111,7 +112,7 @@ func TestTeamTaskBucketsEmptyBoard(t *testing.T) {
 	require.Zero(t, completed)
 }
 
-func TestTeamInfoShowsWorkspaceRosterWhenSessionHasNoMembers(t *testing.T) {
+func TestTeamInfoHidesAnotherSessionsTeam(t *testing.T) {
 	t.Parallel()
 
 	u := newTestUI()
@@ -120,16 +121,45 @@ func TestTeamInfoShowsWorkspaceRosterWhenSessionHasNoMembers(t *testing.T) {
 	u.teamState = agentteam.State{
 		TeamID: "team-1",
 		Members: []agentteam.Member{
-			{ID: "member-1", Name: "one", ParentID: "session-other", Status: agentteam.StatusInactive},
-			{ID: "member-2", Name: "two", ParentID: "session-other", Status: agentteam.StatusInactive},
+			{ID: "member-1", Name: "one", ParentID: "session-other", SessionID: "team-one", Status: agentteam.StatusInactive},
+			{ID: "member-2", Name: "two", ParentID: "session-other", SessionID: "team-two", Status: agentteam.StatusInactive},
+		},
+		Tasks: []agentteam.Task{
+			{ID: "task-1", Subject: "Other work", Status: agentteam.TaskPending, SessionID: "session-other"},
 		},
 	}
 
-	info := u.teamInfo(40)
+	require.Empty(t, u.teamInfo(40), "a session must not show another session's team")
+}
 
-	require.NotEmpty(t, info, "a workspace team must stay visible from a session that did not spawn it")
-	require.Contains(t, info, "one")
-	require.Contains(t, info, "two")
+func TestTeamInfoRendersEveryActiveTask(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	u.com = common.DefaultCommon(stubConfigWorkspace{})
+	u.session = &session.Session{ID: "session-lead"}
+	state := agentteam.State{
+		TeamID: "team-1",
+		Members: []agentteam.Member{
+			{ID: "member-1", Name: "one", ParentID: "session-lead", SessionID: "team-one", Status: agentteam.StatusInactive},
+		},
+	}
+	for i := 1; i <= 5; i++ {
+		state.Tasks = append(state.Tasks, agentteam.Task{
+			ID:        fmt.Sprintf("task-%d", i),
+			Subject:   fmt.Sprintf("Work %d", i),
+			Status:    agentteam.TaskPending,
+			SessionID: "session-lead",
+		})
+	}
+	u.teamState = state
+
+	info := u.teamInfo(60)
+
+	for i := 1; i <= 5; i++ {
+		require.Contains(t, info, fmt.Sprintf("task-%d", i), "every active task must render")
+	}
+	require.NotContains(t, info, "more", "the sidebar must not hide tasks behind a +N more line")
 }
 
 func TestSessionMembersIgnoresEmptySession(t *testing.T) {

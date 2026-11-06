@@ -191,6 +191,10 @@ type Task struct {
 	OwnerID     string     `json:"owner_id,omitempty"`
 	BlockedBy   []string   `json:"blocked_by"`
 	WriteScopes []string   `json:"write_scopes"`
+	// SessionID is the Lead session whose team owns the task. Tasks
+	// written before this field existed carry no session; they are
+	// hidden from every scope so they cannot leak into a new session.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -206,6 +210,7 @@ type TaskView struct {
 	WriteScopes        []string   `json:"writeScopes"`
 	Ready              bool       `json:"ready"`
 	WriteScopeWarnings []string   `json:"writeScopeWarnings"`
+	SessionID          string     `json:"sessionId,omitempty"`
 }
 
 // Message is one inbox entry.
@@ -268,8 +273,9 @@ type UpdateTaskRequest struct {
 	BlockedBy        []string
 	WriteScopes      []string
 	Owner            string
-	// SessionID is the caller's session, used to reconcile session todos
-	// when the Lead completes a task itself.
+	// SessionID is the caller's session. It scopes the task to the caller's
+	// team and reconciles session todos when the Lead completes a task
+	// itself.
 	SessionID string
 }
 
@@ -449,6 +455,87 @@ func (s *Service) memberLocked(name string) (Member, bool) {
 	return Member{}, false
 }
 
+// scopeRootLocked returns the Lead session that owns the caller's team: the
+// caller's own session for the Lead, and the session that spawned the caller
+// for a teammate. Callers must hold s.mu.
+func (s *Service) scopeRootLocked(caller, sessionID string) string {
+	if caller == leadName {
+		return sessionID
+	}
+	member, ok := s.memberLocked(caller)
+	if !ok {
+		return ""
+	}
+	return member.ParentID
+}
+
+// scopeLocked returns the Lead sessions the caller may see. It starts at the
+// caller's scope root and follows teammate spawn links, so a teammate spawned
+// by a teammate stays in the same tree. An empty root yields a nil scope,
+// which matches nothing: a call with no session must not see another
+// session's team. Callers must hold s.mu.
+func (s *Service) scopeLocked(caller, sessionID string) map[string]bool {
+	root := s.scopeRootLocked(caller, sessionID)
+	if root == "" {
+		return nil
+	}
+	links := make([][2]string, 0, len(s.state.Members))
+	for _, member := range s.state.Members {
+		if member.ParentID != "" && member.SessionID != "" {
+			links = append(links, [2]string{member.ParentID, member.SessionID})
+		}
+	}
+	scope := map[string]bool{root: true}
+	for {
+		changed := false
+		for _, link := range links {
+			if scope[link[0]] && !scope[link[1]] {
+				scope[link[1]] = true
+				changed = true
+			}
+		}
+		if !changed {
+			return scope
+		}
+	}
+}
+
+// visibleMembersLocked returns the roster entries in scope, in creation
+// order. Callers must hold s.mu.
+func (s *Service) visibleMembersLocked(scope map[string]bool) []Member {
+	if len(scope) == 0 {
+		return nil
+	}
+	members := make([]Member, 0, len(s.state.Members))
+	for _, member := range s.state.Members {
+		if scope[member.ParentID] {
+			members = append(members, member)
+		}
+	}
+	return members
+}
+
+// memberVisibleLocked reports whether name is addressable from scope. The
+// Lead is the root of every scope, so it is visible whenever the scope is
+// non-empty. Callers must hold s.mu.
+func (s *Service) memberVisibleLocked(scope map[string]bool, name string) bool {
+	if len(scope) == 0 {
+		return false
+	}
+	if name == leadName {
+		return true
+	}
+	member, ok := s.memberLocked(name)
+	return ok && scope[member.ParentID]
+}
+
+// taskVisibleLocked reports whether task belongs to scope. A task with no
+// session predates session scoping; it is hidden from every scope rather
+// than leaking into a session that did not create it.
+func taskVisibleLocked(scope map[string]bool, task Task) bool {
+	return task.SessionID != "" && scope[task.SessionID]
+}
+
 func (s *Service) statusLocked(name string) Status {
 	if _, ok := s.runs[name]; ok {
 		return StatusRunning
@@ -487,15 +574,20 @@ func (s *Service) viewLocked(member Member) MemberView {
 	return view
 }
 
-// ListMembers returns the Lead first, then teammates in creation order.
-func (s *Service) ListMembers(caller string) ([]MemberView, error) {
+// ListMembers returns the Lead first, then the caller's teammates in creation
+// order. A session only ever sees the team it spawned.
+func (s *Service) ListMembers(caller, sessionID string) ([]MemberView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.memberLocked(caller); !ok {
 		return nil, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
+	scope := s.scopeLocked(caller, sessionID)
+	if len(scope) == 0 {
+		return []MemberView{}, nil
+	}
 	views := []MemberView{s.viewLocked(Member{ID: leadName, Name: leadName, Role: RoleLead})}
-	for _, member := range s.state.Members {
+	for _, member := range s.visibleMembersLocked(scope) {
 		views = append(views, s.viewLocked(member))
 	}
 	return views, nil
@@ -781,8 +873,9 @@ func (s *Service) viewFor(name string) MemberView {
 	return s.viewLocked(s.stateMemberLocked(name))
 }
 
-// SendMessage queues one direct message and wakes an inactive target.
-func (s *Service) SendMessage(ctx context.Context, from string, req SendRequest) error {
+// SendMessage queues one direct message and wakes an inactive target. The
+// target must belong to the caller's session tree.
+func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req SendRequest) error {
 	if strings.TrimSpace(req.Message) == "" {
 		return newError(CodeInvalidArgument, "message is required")
 	}
@@ -794,11 +887,11 @@ func (s *Service) SendMessage(ctx context.Context, from string, req SendRequest)
 		s.mu.Unlock()
 		return newError(CodeNotMember, "agent %q is not a member of an active Agent Team", from)
 	}
-	target, ok := s.memberLocked(req.Target)
-	if !ok {
+	if !s.memberVisibleLocked(s.scopeLocked(from, sessionID), req.Target) {
 		s.mu.Unlock()
 		return newError(CodeMemberNotFound, "Team member %q not found", req.Target)
 	}
+	target, _ := s.memberLocked(req.Target)
 	s.state.NextMessage++
 	s.state.Messages = append(s.state.Messages, Message{
 		ID:        fmt.Sprintf("message-%d", s.state.NextMessage),
@@ -846,7 +939,7 @@ func (s *Service) drainLocked(name string) []Message {
 }
 
 // WaitForChange waits for the next roster, message, or task change.
-func (s *Service) WaitForChange(ctx context.Context, caller string, timeout time.Duration) (WaitResult, error) {
+func (s *Service) WaitForChange(ctx context.Context, caller, sessionID string, timeout time.Duration) (WaitResult, error) {
 	s.mu.Lock()
 	if _, ok := s.memberLocked(caller); !ok {
 		s.mu.Unlock()
@@ -858,41 +951,46 @@ func (s *Service) WaitForChange(ctx context.Context, caller string, timeout time
 	defer timer.Stop()
 	select {
 	case <-ch:
-		return s.waitResult(false), nil
+		return s.waitResult(false, caller, sessionID), nil
 	case <-timer.C:
-		return s.waitResult(true), nil
+		return s.waitResult(true, caller, sessionID), nil
 	case <-ctx.Done():
-		return s.waitResult(true), nil
+		return s.waitResult(true, caller, sessionID), nil
 	}
 }
 
-// waitResult snapshots the roster and live task board.
-func (s *Service) waitResult(timedOut bool) WaitResult {
+// waitResult snapshots the caller's roster and live task board.
+func (s *Service) waitResult(timedOut bool, caller, sessionID string) WaitResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return WaitResult{TimedOut: timedOut, Progress: s.progressLocked()}
+	return WaitResult{TimedOut: timedOut, Progress: s.progressLocked(s.scopeLocked(caller, sessionID))}
 }
 
-// Progress returns the current roster and live task board.
-func (s *Service) Progress(caller string) Progress {
+// Progress returns the caller's roster and live task board.
+func (s *Service) Progress(caller, sessionID string) Progress {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.memberLocked(caller); !ok {
 		return Progress{}
 	}
-	return s.progressLocked()
+	return s.progressLocked(s.scopeLocked(caller, sessionID))
 }
 
 // progressLocked builds the progress snapshot. Callers must hold s.mu.
-func (s *Service) progressLocked() Progress {
-	progress := Progress{
-		Members: []MemberView{s.viewLocked(Member{ID: leadName, Name: leadName, Role: RoleLead})},
+func (s *Service) progressLocked(scope map[string]bool) Progress {
+	progress := Progress{Members: []MemberView{}}
+	if len(scope) == 0 {
+		return progress
 	}
-	for _, member := range s.state.Members {
+	progress.Members = append(progress.Members, s.viewLocked(Member{ID: leadName, Name: leadName, Role: RoleLead}))
+	for _, member := range s.visibleMembersLocked(scope) {
 		progress.Members = append(progress.Members, s.viewLocked(member))
 	}
 	const maxTasks = 50
 	for _, task := range s.state.Tasks {
+		if !taskVisibleLocked(scope, task) {
+			continue
+		}
 		if task.Status == TaskDeleted || task.Status == TaskCompleted {
 			continue
 		}
@@ -911,8 +1009,9 @@ func (s *Service) progressLocked() Progress {
 	return progress
 }
 
-// Interrupt stops one teammate's current turn.
-func (s *Service) Interrupt(caller, target string) (Status, error) {
+// Interrupt stops one teammate's current turn. The Lead may only interrupt a
+// teammate in its own session tree.
+func (s *Service) Interrupt(caller, sessionID, target string) (Status, error) {
 	if caller != leadName {
 		return "", newError(CodeLeadRequired, "only the Team Lead can interrupt a teammate")
 	}
@@ -921,7 +1020,7 @@ func (s *Service) Interrupt(caller, target string) (Status, error) {
 	if target == leadName {
 		return "", newError(CodeInvalidArgument, "the Team Lead cannot interrupt itself")
 	}
-	if _, ok := s.memberLocked(target); !ok {
+	if !s.memberVisibleLocked(s.scopeLocked(caller, sessionID), target) {
 		return "", newError(CodeMemberNotFound, "Team member %q not found", target)
 	}
 	run, ok := s.runs[target]
@@ -932,20 +1031,17 @@ func (s *Service) Interrupt(caller, target string) (Status, error) {
 	return StatusRunning, nil
 }
 
-// HasActivePeer reports whether another member is running or provisioning.
-func (s *Service) HasActivePeer(caller string) bool {
+// HasActivePeer reports whether another member of the caller's team is running
+// or provisioning.
+func (s *Service) HasActivePeer(caller, sessionID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for name := range s.runs {
-		if name != caller {
-			return true
-		}
-	}
-	for _, member := range s.state.Members {
+	for _, member := range s.visibleMembersLocked(s.scopeLocked(caller, sessionID)) {
 		if member.Name == caller {
 			continue
 		}
-		if s.statusLocked(member.Name) == StatusProvisioning {
+		switch s.statusLocked(member.Name) {
+		case StatusRunning, StatusProvisioning:
 			return true
 		}
 	}
@@ -972,16 +1068,21 @@ func (s *Service) Shutdown() {
 	}
 }
 
-// CreateTask adds one unowned pending task.
-func (s *Service) CreateTask(caller string, req CreateTaskRequest) (TaskView, error) {
+// CreateTask adds one unowned pending task to the caller's team board.
+func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (TaskView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.memberLocked(caller); !ok {
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
+	root := s.scopeRootLocked(caller, sessionID)
+	if root == "" {
+		return TaskView{}, newError(CodeNotMember, "agent %q has no session to own a team task", caller)
+	}
+	scope := s.scopeLocked(caller, sessionID)
 	active := 0
 	for _, task := range s.state.Tasks {
-		if task.Status != TaskDeleted {
+		if task.Status != TaskDeleted && taskVisibleLocked(scope, task) {
 			active++
 		}
 	}
@@ -1005,9 +1106,10 @@ func (s *Service) CreateTask(caller string, req CreateTaskRequest) (TaskView, er
 		Status:      TaskPending,
 		BlockedBy:   []string{},
 		WriteScopes: []string{},
+		SessionID:   root,
 	}
 	if req.BlockedBy != nil {
-		blockedBy, err := s.dependenciesLocked(req.BlockedBy, task.ID)
+		blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, task.ID)
 		if err != nil {
 			s.state.NextTask--
 			return TaskView{}, err
@@ -1032,27 +1134,28 @@ func (s *Service) CreateTask(caller string, req CreateTaskRequest) (TaskView, er
 	return projectTaskView(s.state, task), nil
 }
 
-// GetTask returns one task view.
-func (s *Service) GetTask(caller, id string) (TaskView, error) {
+// GetTask returns one task view from the caller's team board.
+func (s *Service) GetTask(caller, sessionID, id string) (TaskView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.memberLocked(caller); !ok {
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
 	task, ok := s.taskLocked(id)
-	if !ok {
+	if !ok || !taskVisibleLocked(s.scopeLocked(caller, sessionID), task) {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", id)
 	}
 	return projectTaskView(s.state, task), nil
 }
 
-// ListTasks returns a filtered page of shared tasks.
-func (s *Service) ListTasks(caller string, filter TaskFilter) (TaskList, error) {
+// ListTasks returns a filtered page of the caller's shared tasks.
+func (s *Service) ListTasks(caller, sessionID string, filter TaskFilter) (TaskList, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.memberLocked(caller); !ok {
 		return TaskList{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
+	scope := s.scopeLocked(caller, sessionID)
 	cursor := filter.Cursor
 	limit := filter.Limit
 	if limit == 0 {
@@ -1066,6 +1169,9 @@ func (s *Service) ListTasks(caller string, filter TaskFilter) (TaskList, error) 
 	}
 	var filtered []TaskView
 	for _, task := range s.state.Tasks {
+		if !taskVisibleLocked(scope, task) {
+			continue
+		}
 		view := projectTaskView(s.state, task)
 		if filter.Status != nil && view.Status != *filter.Status {
 			continue
@@ -1114,8 +1220,9 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	if parentSessionID == "" {
 		parentSessionID = req.SessionID
 	}
+	scope := s.scopeLocked(caller, req.SessionID)
 	current, ok := s.taskLocked(req.TaskID)
-	if !ok {
+	if !ok || !taskVisibleLocked(scope, current) {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
 	}
 	if current.Revision != req.ExpectedRevision {
@@ -1190,7 +1297,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		if req.BlockedBy == nil {
 			return TaskView{}, newError(CodeInvalidArgument, "set_dependencies requires blocked_by")
 		}
-		blockedBy, err := s.dependenciesLocked(req.BlockedBy, current.ID)
+		blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, current.ID)
 		if err != nil {
 			return TaskView{}, err
 		}
@@ -1229,7 +1336,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			return TaskView{}, newError(CodeTaskBlocked, "team task %q is blocked", current.ID)
 		}
 		assignee, ok := s.memberLocked(req.Owner)
-		if !ok {
+		if !ok || !s.memberVisibleLocked(scope, req.Owner) {
 			return TaskView{}, newError(CodeMemberNotFound, "Team member %q not found", req.Owner)
 		}
 		next.Status = TaskInProgress
@@ -1272,7 +1379,7 @@ func (s *Service) taskLocked(id string) (Task, bool) {
 	return Task{}, false
 }
 
-func (s *Service) dependenciesLocked(ids []string, self string) ([]string, error) {
+func (s *Service) dependenciesLocked(scope map[string]bool, ids []string, self string) ([]string, error) {
 	seen := make(map[string]bool, len(ids))
 	result := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -1283,7 +1390,7 @@ func (s *Service) dependenciesLocked(ids []string, self string) ([]string, error
 			return nil, newError(CodeInvalidArgument, "duplicate blocker %q", id)
 		}
 		task, ok := s.taskLocked(id)
-		if !ok || task.Status == TaskDeleted {
+		if !ok || task.Status == TaskDeleted || !taskVisibleLocked(scope, task) {
 			return nil, newError(CodeTaskNotFound, "blocker task %q not found", id)
 		}
 		seen[id] = true
@@ -1376,6 +1483,7 @@ func projectTaskView(state State, task Task) TaskView {
 		BlockedBy:   append([]string{}, task.BlockedBy...),
 		WriteScopes: append([]string{}, task.WriteScopes...),
 		Ready:       task.Status == TaskPending && taskReady(state, task),
+		SessionID:   task.SessionID,
 	}
 	if task.OwnerID != "" {
 		if task.OwnerID == leadName {

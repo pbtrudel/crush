@@ -151,7 +151,7 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 		SendMessageToolName,
 		"Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn.",
 		func(ctx context.Context, params sendMessageParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			err := c.team.SendMessage(ctx, caller, agentteam.SendRequest{
+			err := c.team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
 				Target:  params.Target,
 				Message: params.Message,
 			})
@@ -167,8 +167,8 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		ListAgentsToolName,
 		"List the Lead and every durable teammate with an addressable target and current availability. inactive means no turn is executing, not a task result. provisioning and failed describe member creation.",
-		func(_ context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			members, err := c.team.ListMembers(caller)
+		func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			members, err := c.team.ListMembers(caller, tools.GetSessionFromContext(ctx))
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -190,17 +190,17 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 				}
 				timeout = time.Duration(ms) * time.Millisecond
 			}
-			if !c.team.HasActivePeer(caller) {
+			if !c.team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
 				return c.teamResponse(caller, map[string]any{
 					"timedOut": false,
 					"noProgress": map[string]string{
 						"reason":  "no-active-peer",
 						"message": noActivePeerMessage,
 					},
-					"progress": c.team.Progress(caller),
+					"progress": c.team.Progress(caller, tools.GetSessionFromContext(ctx)),
 				}), nil
 			}
-			result, err := c.team.WaitForChange(ctx, caller, timeout)
+			result, err := c.team.WaitForChange(ctx, caller, tools.GetSessionFromContext(ctx), timeout)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -213,8 +213,8 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		InterruptAgentToolName,
 		"Interrupt one teammate's current turn while preserving its pending inbox. Team Lead only.",
-		func(_ context.Context, params interruptAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			previous, err := c.team.Interrupt(caller, params.Target)
+		func(ctx context.Context, params interruptAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			previous, err := c.team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -227,8 +227,8 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		TeamTaskCreateToolName,
 		"Create one unowned pending task on the shared Team task board.",
-		func(_ context.Context, params teamTaskCreateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			view, err := c.team.CreateTask(caller, agentteam.CreateTaskRequest{
+		func(ctx context.Context, params teamTaskCreateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			view, err := c.team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,
 				BlockedBy:   params.BlockedBy,
@@ -246,7 +246,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		TeamTaskListToolName,
 		"List shared tasks, including readiness, owner, revision, blockers, and write-scope warnings.",
-		func(_ context.Context, params teamTaskListParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params teamTaskListParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			filter := agentteam.TaskFilter{Ready: params.Ready}
 			if params.Status != nil {
 				status := agentteam.TaskStatus(*params.Status)
@@ -261,7 +261,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if params.Limit != nil {
 				filter.Limit = *params.Limit
 			}
-			list, err := c.team.ListTasks(caller, filter)
+			list, err := c.team.ListTasks(caller, tools.GetSessionFromContext(ctx), filter)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -278,8 +278,8 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		TeamTaskGetToolName,
 		"Read the complete latest value of one shared task before changing or executing it.",
-		func(_ context.Context, params teamTaskGetParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			view, err := c.team.GetTask(caller, params.TaskID)
+		func(ctx context.Context, params teamTaskGetParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			view, err := c.team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
 			if err != nil {
 				return c.teamError(err), nil
 			}
