@@ -52,13 +52,14 @@ func SubscribeBackgroundJobs(ctx context.Context) <-chan pubsub.Event[Background
 // BackgroundShell represents a shell running in the background.
 type BackgroundShell struct {
 	ID          string
-	SessionID   string
 	Command     string
 	Description string
 	Shell       *Shell
 	WorkingDir  string
 	ctx         context.Context
 	cancel      context.CancelFunc
+	sessionMu   sync.RWMutex
+	sessionID   string
 	stdout      *cappedBuffer
 	stderr      *cappedBuffer
 	done        chan struct{}
@@ -66,6 +67,20 @@ type BackgroundShell struct {
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
 	awaited     atomic.Bool
 	killed      atomic.Bool
+}
+
+// SetSessionID attaches the owning session to a job that outlived its
+// foreground window, so its completion still earns an in-session notice.
+func (bs *BackgroundShell) SetSessionID(sessionID string) {
+	bs.sessionMu.Lock()
+	defer bs.sessionMu.Unlock()
+	bs.sessionID = sessionID
+}
+
+func (bs *BackgroundShell) session() string {
+	bs.sessionMu.RLock()
+	defer bs.sessionMu.RUnlock()
+	return bs.sessionID
 }
 
 // MarkAwaited records that the model is waiting for this job's result, so
@@ -132,7 +147,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, b
 
 	bgShell := &BackgroundShell{
 		ID:          id,
-		SessionID:   sessionID,
+		sessionID:   sessionID,
 		Command:     command,
 		Description: description,
 		WorkingDir:  workingDir,
@@ -153,7 +168,11 @@ func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, b
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())
-		if bgShell.awaited.Load() || bgShell.killed.Load() {
+		// A job with no owning session finished while the model was still
+		// waiting on it: its output already reached the tool response, so
+		// there is no completion to announce.
+		sessionID := bgShell.session()
+		if sessionID == "" || bgShell.awaited.Load() || bgShell.killed.Load() {
 			return
 		}
 		output := bgShell.stdout.String()
@@ -165,7 +184,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, b
 		}
 		backgroundJobBroker.Publish(pubsub.CreatedEvent, BackgroundJobEvent{
 			ShellID:     bgShell.ID,
-			SessionID:   bgShell.SessionID,
+			SessionID:   sessionID,
 			Command:     bgShell.Command,
 			Description: bgShell.Description,
 			Output:      inlineBackgroundOutput(output, 2048),
