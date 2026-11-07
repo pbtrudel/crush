@@ -30,6 +30,16 @@ type JobOutputResponseMetadata struct {
 	WorkingDirectory string `json:"working_directory"`
 }
 
+// goneResponse reports a shell ID the manager no longer tracks. That is not
+// a failed call: the job finished and was reaped, or the session moved to a
+// process that never knew it. Its output is unrecoverable either way.
+func goneResponse(shellID string) fantasy.ToolResponse {
+	return fantasy.NewTextResponse(fmt.Sprintf(
+		"Background shell %s is no longer tracked, so its output is gone. It finished and was reaped, or the session outlived its process. Re-run the command if you still need the output.",
+		shellID,
+	))
+}
+
 func NewJobOutputTool(spillDir string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		JobOutputToolName,
@@ -42,7 +52,7 @@ func NewJobOutputTool(spillDir string) fantasy.AgentTool {
 			bgManager := shell.GetBackgroundShellManager()
 			bgShell, ok := bgManager.Get(params.ShellID)
 			if !ok {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil
+				return goneResponse(params.ShellID), nil
 			}
 
 			if params.Wait {
