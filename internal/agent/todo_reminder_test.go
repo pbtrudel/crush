@@ -162,21 +162,21 @@ func TestTodoReminder(t *testing.T) {
 			{Content: "Read the code", Status: session.TodoStatusCompleted},
 			{Content: "Run the tests", Status: session.TodoStatusInProgress},
 			{Content: "Update the docs", Status: session.TodoStatusPending},
-		})
+		}, 0)
 		require.Contains(t, got, "Run the tests")
-		require.Contains(t, got, "in_progress")
+		require.Contains(t, got, "unfinished")
 		require.Contains(t, got, "completed")
 		require.Contains(t, got, "todos")
 		require.NotContains(t, got, "Read the code")
 	})
 
-	t.Run("no task in progress", func(t *testing.T) {
+	t.Run("no task in progress names the first open item", func(t *testing.T) {
 		t.Parallel()
 		got := todoReminder([]session.Todo{
 			{Content: "Read the code", Status: session.TodoStatusPending},
 			{Content: "Update the docs", Status: session.TodoStatusPending},
-		})
-		require.Contains(t, got, "2 open")
+		}, 0)
+		require.Contains(t, got, "Read the code")
 		require.Contains(t, got, "completed")
 		require.Contains(t, got, "todos")
 	})
@@ -185,8 +185,74 @@ func TestTodoReminder(t *testing.T) {
 		t.Parallel()
 		require.Empty(t, todoReminder([]session.Todo{
 			{Content: "Read the code", Status: session.TodoStatusCompleted},
-		}))
+		}, 0))
 	})
+
+	t.Run("escalates once reminders go unanswered", func(t *testing.T) {
+		t.Parallel()
+		todos := []session.Todo{{Content: "Deploy it", Status: session.TodoStatusInProgress}}
+
+		first := todoReminder(todos, 0)
+		require.Contains(t, first, "If you finished that task in the previous step")
+
+		escalated := todoReminder(todos, todoReminderEscalateAfter)
+		require.Contains(t, escalated, "Deploy it")
+		require.Contains(t, escalated, "went unanswered")
+		require.Contains(t, escalated, "Do not end this turn claiming that work is complete")
+		require.NotContains(t, escalated, "If you finished that task in the previous step")
+	})
+}
+
+func TestStaleTodo(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "Run the tests", staleTodo([]session.Todo{
+		{Content: "Read the code", Status: session.TodoStatusCompleted},
+		{Content: "Update the docs", Status: session.TodoStatusPending},
+		{Content: "Run the tests", Status: session.TodoStatusInProgress},
+	}))
+	require.Equal(t, "Read the code", staleTodo([]session.Todo{
+		{Content: "Read the code", Status: session.TodoStatusPending},
+	}))
+	require.Empty(t, staleTodo([]session.Todo{
+		{Content: "Read the code", Status: session.TodoStatusCompleted},
+	}))
+	require.Empty(t, staleTodo(nil))
+}
+
+func TestTodoStillOpen(t *testing.T) {
+	t.Parallel()
+
+	todos := []session.Todo{
+		{Content: "Run the tests", Status: session.TodoStatusCompleted},
+		{Content: "Deploy it", Status: session.TodoStatusInProgress},
+	}
+	require.False(t, todoStillOpen(todos, "Run the tests"))
+	require.True(t, todoStillOpen(todos, "Deploy it"))
+	// An item dropped from the list counts as resolved.
+	require.False(t, todoStillOpen(todos, "Never existed"))
+}
+
+func TestStaleTodoAtTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	open := []session.Todo{{Content: "Deploy it", Status: session.TodoStatusInProgress}}
+	done := []session.Todo{{Content: "Deploy it", Status: session.TodoStatusCompleted}}
+
+	// One reminder is still a nudge; the note starts once it goes unanswered.
+	require.False(t, staleTodoAtTurnEnd("Deploy it", 0, open))
+	require.True(t, staleTodoAtTurnEnd("Deploy it", todoReminderEscalateAfter-1, open))
+	require.False(t, staleTodoAtTurnEnd("Deploy it", todoReminderEscalateAfter, done))
+	require.False(t, staleTodoAtTurnEnd("", todoReminderEscalateAfter, open))
+}
+
+func TestStaleTodoNote(t *testing.T) {
+	t.Parallel()
+
+	got := staleTodoNote("Deploy it", 3)
+	require.Contains(t, got, "Deploy it")
+	require.Contains(t, got, "3 reminders")
+	require.Contains(t, got, "Crush added this note")
 }
 
 func TestTodoReminderDue(t *testing.T) {

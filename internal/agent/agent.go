@@ -1233,6 +1233,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	pendingTodoReminder := ""
 	todoRemindersSent := 0
 	lastTodoReminderStep := -todoReminderMinGap
+	// todoStaleItem is the item the reminders have been about, so the
+	// unanswered count only grows while the same item stays behind. A turn
+	// that ends with it still open is reported to the user.
+	todoStaleItem := ""
+	todoReminderUnanswered := 0
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           modelContext + message.PromptWithTextAttachments(strings.TrimSpace(call.Prompt), call.Attachments),
 		Files:            files,
@@ -1547,7 +1552,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 			}
 			if todoReminderDue(stepResult, currentSession.Todos, modelSteps-lastTodoReminderStep, todoRemindersSent) {
-				pendingTodoReminder = todoReminder(currentSession.Todos)
+				stale := staleTodo(currentSession.Todos)
+				if stale != "" && stale == todoStaleItem {
+					todoReminderUnanswered++
+				} else {
+					todoReminderUnanswered = 0
+				}
+				todoStaleItem = stale
+				pendingTodoReminder = todoReminder(currentSession.Todos, todoReminderUnanswered)
 				lastTodoReminderStep = modelSteps
 				todoRemindersSent++
 				if _, createErr := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
@@ -1794,6 +1806,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	finished := currentAssistant != nil && !continued
+
+	// A turn that ends with the list still behind the work is reported to
+	// the user by Crush, not by the model. By the time execution reaches
+	// here the model has ignored repeated reminders about the same item, so
+	// a further reminder would not help; the note keeps the user from
+	// discovering the stale list only when they open it.
+	if finished && !a.isSubAgent && todoStaleItem != "" {
+		if latest, getErr := a.sessions.Get(cleanupCtx, call.SessionID); getErr != nil {
+			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
+		} else if staleTodoAtTurnEnd(todoStaleItem, todoReminderUnanswered, latest.Todos) {
+			currentAssistant.AppendContent(staleTodoNote(todoStaleItem, todoReminderUnanswered+1))
+			if updateErr := a.messages.Update(cleanupCtx, *currentAssistant); updateErr != nil {
+				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
+			}
+		}
+	}
 
 	// Route the finished turn's response back to the channel it came
 	if currentAssistant != nil && (!shouldSummarize || (!overflowRecovery && len(currentAssistant.ToolCalls()) == 0)) {
