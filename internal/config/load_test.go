@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/csync"
@@ -1480,9 +1479,11 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(1000), large.MaxTokens)
-		require.Equal(t, "small-model", small.Model)
+		// The small slot follows the large one so a fresh config never
+		// bills a second model the user did not choose.
+		require.Equal(t, "large-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(500), small.MaxTokens)
+		require.Equal(t, int64(1000), small.MaxTokens)
 	})
 	t.Run("should error if no providers configured", func(t *testing.T) {
 		knownProviders := []catwalk.Provider{
@@ -1674,9 +1675,11 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(1000), large.MaxTokens)
-		require.Equal(t, "small-model", small.Model)
+		// The small slot follows the large one so a fresh config never
+		// bills a second model the user did not choose.
+		require.Equal(t, "large-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(500), small.MaxTokens)
+		require.Equal(t, int64(1000), small.MaxTokens)
 	})
 }
 
@@ -1927,10 +1930,11 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		cfg.Models[SelectedModelTypeLarge] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
 
-		// In-memory falls back to default.
+		// The selection is kept even though the catalog does not list it,
+		// so no other model can be billed in its place.
 		require.True(t, resolved.LargeFallback)
-		require.Equal(t, "openai", cfg.Models[SelectedModelTypeLarge].Provider)
-		require.Equal(t, "large-model", cfg.Models[SelectedModelTypeLarge].Model)
+		require.Equal(t, "ghost", cfg.Models[SelectedModelTypeLarge].Provider)
+		require.Equal(t, "missing", cfg.Models[SelectedModelTypeLarge].Model)
 
 		// Disk remains unchanged (resolveSelectedModels never persists).
 		data, readErr := os.ReadFile(globalPath)
@@ -1984,9 +1988,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Equal(t, "larger-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(2000), large.MaxTokens)
-		require.Equal(t, "small-model", small.Model)
+		// With no small selection, the small slot follows the large one.
+		require.Equal(t, "larger-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(500), small.MaxTokens)
+		require.Equal(t, int64(2000), small.MaxTokens)
 	})
 	t.Run("should keep reasoning options only for models that reason", func(t *testing.T) {
 		toggleable := catwalk.Reasoning{Thinking: catwalk.ThinkingToggleable}
@@ -2152,7 +2157,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(100), large.MaxTokens)
 	})
-	t.Run("resolve and persist fallback under writeMu does not deadlock", func(t *testing.T) {
+	t.Run("a model the catalog does not list is never replaced or written", func(t *testing.T) {
 		dir := t.TempDir()
 		globalPath := filepath.Join(dir, "crush.json")
 		require.NoError(t, os.WriteFile(globalPath, []byte(`{}`), 0o600))
@@ -2180,53 +2185,19 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		store := &ConfigStore{config: cfg, globalDataPath: globalPath}
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), store, env, resolver, knownProviders)
-		require.NoError(t, err)
+		require.NoError(t, cfg.configureProviders(context.Background(), store, env, resolver, knownProviders))
 
-		// Simulate the Load path: resolve (pure), then persist fallbacks
-		// under writeMu using updateLocked. Before the refactor, the
-		// combined configureSelectedModels(persist=true) self-deadlocked
-		// because UpdatePreferredModel re-acquired writeMu.
-		done := make(chan error, 1)
-		go func() {
-			resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
-			if resolveErr != nil {
-				done <- resolveErr
-				return
-			}
-			cfg.Models[SelectedModelTypeLarge] = resolved.Large
-			cfg.Models[SelectedModelTypeSmall] = resolved.Small
+		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
+		require.NoError(t, resolveErr)
+		require.True(t, resolved.LargeFallback)
+		require.True(t, resolved.SmallFallback)
+		require.Equal(t, "this-model-does-not-exist", resolved.Large.Model)
+		require.Equal(t, "also-does-not-exist", resolved.Small.Model)
 
-			store.writeMu.Lock()
-			defer store.writeMu.Unlock()
-			if resolved.LargeFallback {
-				if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-					return store.updatePreferredModelFields(c, SelectedModelTypeLarge, resolved.Large)
-				}); err != nil {
-					done <- err
-					return
-				}
-			}
-			if resolved.SmallFallback {
-				if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-					return store.updatePreferredModelFields(c, SelectedModelTypeSmall, resolved.Small)
-				}); err != nil {
-					done <- err
-					return
-				}
-			}
-			done <- nil
-		}()
-
-		select {
-		case err := <-done:
-			require.NoError(t, err)
-			// Should have fallen back to defaults.
-			require.Equal(t, "large-model", cfg.Models[SelectedModelTypeLarge].Model)
-			require.Equal(t, "small-model", cfg.Models[SelectedModelTypeSmall].Model)
-		case <-time.After(5 * time.Second):
-			t.Fatal("resolve + persist deadlocked under writeMu")
-		}
+		// Nothing is written, so the user's choices stay on disk untouched.
+		data, readErr := os.ReadFile(globalPath)
+		require.NoError(t, readErr)
+		require.Equal(t, "{}", string(data))
 	})
 }
 

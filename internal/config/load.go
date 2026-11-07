@@ -378,21 +378,9 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 	cfg.Models[SelectedModelTypeLarge] = resolved.Large
 	cfg.Models[SelectedModelTypeSmall] = resolved.Small
 
-	// Persist any fallback corrections while we still hold writeMu.
-	if resolved.LargeFallback {
-		if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-			return store.updatePreferredModelFields(c, SelectedModelTypeLarge, resolved.Large)
-		}); err != nil {
-			return nil, fmt.Errorf("failed to update preferred large model: %w", err)
-		}
-	}
-	if resolved.SmallFallback {
-		if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-			return store.updatePreferredModelFields(c, SelectedModelTypeSmall, resolved.Small)
-		}); err != nil {
-			return nil, fmt.Errorf("failed to update preferred small model: %w", err)
-		}
-	}
+	// A selection the catalog does not list is kept as-is and never written
+	// back: the request fails with a clear error, which is better than
+	// silently billing a model the user did not pick.
 	store.SetupAgents()
 
 	// Capture initial staleness snapshot. Track every discovered config path,
@@ -913,20 +901,10 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 			ReasoningEffort: defaultLargeModel.Reasoning.DefaultEffortLevel,
 		}
 
-		defaultSmallModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
-		if defaultSmallModel == nil {
-			slog.Warn("Default small model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
-			if len(providerConfig.Models) == 0 {
-				return largeModel, smallModel, fmt.Errorf("default small model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
-			}
-			defaultSmallModel = &providerConfig.Models[0]
-		}
-		smallModel = SelectedModel{
-			Provider:        string(p.ID),
-			Model:           defaultSmallModel.ID,
-			MaxTokens:       defaultSmallModel.DefaultMaxTokens,
-			ReasoningEffort: defaultSmallModel.Reasoning.DefaultEffortLevel,
-		}
+		// Both slots resolve to the same model. The small slot only serves
+		// internal work such as session titles, and a second catalog model
+		// here means Crush bills a model the user never chose on first run.
+		smallModel = largeModel
 		return largeModel, smallModel, err
 	}
 
@@ -965,8 +943,8 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 type resolvedModels struct {
 	Large         SelectedModel
 	Small         SelectedModel
-	LargeFallback bool // true if Large was corrected to a default
-	SmallFallback bool // true if Small was corrected to a default
+	LargeFallback bool // true if Large names a model the catalog does not list
+	SmallFallback bool // true if Small names a model the catalog does not list
 }
 
 // resolveSelectedModels validates the user's configured model selections
@@ -991,22 +969,12 @@ func resolveSelectedModels(cfg *Config, knownProviders []catwalk.Provider) (reso
 		small, result.SmallFallback = applySelection(cfg, defaultSmall, cfg.Models[SelectedModelTypeSmall])
 	}
 
-	// When small isn't explicitly configured and the provider isn't a
-	// known built-in, use the large model as the small model. This
-	// prevents two different models from being requested concurrently
-	// for local/openai-compat providers.
+	// Without an explicit small selection, the small slot follows the large
+	// one. The small model only serves internal work such as session titles,
+	// and picking a second catalog model here would bill a model the user
+	// never chose.
 	if !smallModelConfigured {
-		isKnownProvider := false
-		for _, kp := range knownProviders {
-			if string(kp.ID) == small.Provider {
-				isKnownProvider = true
-				break
-			}
-		}
-		if !isKnownProvider {
-			slog.Warn("Using large model as small model for unknown provider", "provider", large.Provider, "model", large.Model)
-			small = large
-		}
+		small = large
 	}
 
 	result.Large = large
@@ -1015,14 +983,21 @@ func resolveSelectedModels(cfg *Config, knownProviders []catwalk.Provider) (reso
 }
 
 // applySelection overlays a configured selection onto def. It reports a
-// fallback, returning def unchanged, when the selection names no known model.
+// fallback when the selection names no known model, and in that case keeps
+// the selection: substituting another model is how a model the user never
+// picked ends up being billed, so the request fails with a clear error
+// instead.
 func applySelection(cfg *Config, def, sel SelectedModel) (SelectedModel, bool) {
 	out := def
 	out.Model = cmp.Or(sel.Model, def.Model)
 	out.Provider = cmp.Or(sel.Provider, def.Provider)
 	model := cfg.GetModel(out.Provider, out.Model)
 	if model == nil {
-		return def, true
+		slog.Warn("Selected model is not in the provider catalog; using it anyway",
+			"provider", out.Provider,
+			"model", out.Model,
+		)
+		return out, true
 	}
 
 	out.MaxTokens = model.DefaultMaxTokens

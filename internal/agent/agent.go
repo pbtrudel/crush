@@ -3155,6 +3155,49 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	a.generateTitle(ctx, sessionID, userPrompt)
 }
 
+// Title attempts are capped so a runaway model cannot spend a session's
+// budget on a title. A plain model needs only a handful of tokens, but a
+// reasoning model spends most of its budget thinking before it writes the
+// title, so the small cap makes every attempt end on FinishReasonLength.
+const (
+	plainTitleTokens     = int64(40)
+	reasoningTitleTokens = int64(512)
+)
+
+// titleTokenBudget is the output budget for one title attempt.
+func titleTokenBudget(m Model) int64 {
+	if !m.CatwalkCfg.CanReason() {
+		return plainTitleTokens
+	}
+	if m.CatwalkCfg.DefaultMaxTokens > reasoningTitleTokens {
+		return m.CatwalkCfg.DefaultMaxTokens
+	}
+	return reasoningTitleTokens
+}
+
+// sameModel reports whether two builds address the same provider model.
+func sameModel(a, b Model) bool {
+	return a.ModelCfg.Provider == b.ModelCfg.Provider &&
+		a.ModelCfg.Model == b.ModelCfg.Model
+}
+
+// titleAttempt names one model to try for a session title.
+type titleAttempt struct {
+	name  string
+	model Model
+}
+
+// titleAttempts is the ordered list of models to try for a title. A large
+// model identical to the small one is dropped: retrying it would bill a
+// second request for an answer the first one already gave.
+func titleAttempts(small, large Model) []titleAttempt {
+	attempts := []titleAttempt{{"small", small}}
+	if !sameModel(small, large) {
+		attempts = append(attempts, titleAttempt{"large", large})
+	}
+	return attempts
+}
+
 // generateTitle is GenerateTitle without tracking, for callers that
 // register with a.titles themselves.
 func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, userPrompt string) {
@@ -3215,24 +3258,18 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		},
 	}
 
-	type modelAttempt struct {
-		name  string
-		model Model
-	}
-	attempts := []modelAttempt{
-		{"small", smallModel},
-		{"large", largeModel},
-	}
-
 	var resp *fantasy.AgentResult
 	var err error
 	var model Model
 	var success bool
-	for _, attempt := range attempts {
-		tok := int64(40)
-		if attempt.model.CatwalkCfg.CanReason() && attempt.model.CatwalkCfg.DefaultMaxTokens > 0 {
-			tok = attempt.model.CatwalkCfg.DefaultMaxTokens
-		}
+	for _, attempt := range titleAttempts(smallModel, largeModel) {
+		tok := titleTokenBudget(attempt.model)
+		slog.Info("Generating session title",
+			"attempt", attempt.name,
+			"provider", attempt.model.ModelCfg.Provider,
+			"model", attempt.model.ModelCfg.Model,
+			"max_tokens", tok,
+		)
 		agent := newAgent(attempt.model.Model, titlePrompt, tok)
 		resp, err = agent.Stream(ctx, streamCall)
 		if err == nil && resp.Response.FinishReason != fantasy.FinishReasonLength {
@@ -3242,9 +3279,17 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 			break
 		}
 		if err != nil {
-			slog.Error("Error generating title with "+attempt.name+" model; trying next", "err", err)
+			slog.Error("Error generating title with "+attempt.name+" model; trying next",
+				"provider", attempt.model.ModelCfg.Provider,
+				"model", attempt.model.ModelCfg.Model,
+				"err", err,
+			)
 		} else {
-			slog.Error("Title generation hit token limit with " + attempt.name + " model; trying next")
+			slog.Error("Title generation hit token limit with "+attempt.name+" model; trying next",
+				"provider", attempt.model.ModelCfg.Provider,
+				"model", attempt.model.ModelCfg.Model,
+				"max_tokens", tok,
+			)
 		}
 	}
 	if !success {
