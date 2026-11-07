@@ -837,7 +837,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 		maxOutputTokens = &call.MaxOutputTokens
 	}
 
-	return agent.Stream(ctx, fantasy.AgentStreamCall{
+	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
 		Messages:         history,
@@ -866,6 +866,28 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 			return callContext, prepared, nil
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	// An empty answer with no error is a provider stop, not an answer: the
+	// stream can end on an abnormal finish reason (capacity, truncation)
+	// without yielding any text. Report the reason instead of handing
+	// callers an empty answer they can only render as "(no answer)".
+	if strings.TrimSpace(subAgentOutput(result)) == "" {
+		reason := fantasy.FinishReasonUnknown
+		if n := len(result.Steps); n > 0 {
+			reason = result.Steps[n-1].FinishReason
+		}
+		slog.Warn(
+			"Side question returned no text",
+			"session_id", call.SessionID,
+			"provider", largeModel.ModelCfg.Provider,
+			"model", largeModel.ModelCfg.Model,
+			"finish_reason", string(reason),
+		)
+		return nil, fmt.Errorf("the model returned no answer (finish_reason=%s)", reason)
+	}
+	return result, nil
 }
 
 // turnFinish maps the upstream finish reason of a step onto what the
