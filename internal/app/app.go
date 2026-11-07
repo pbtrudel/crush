@@ -803,7 +803,9 @@ func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort str
 }
 
 // GetDefaultSmallModel returns the default small model for the given
-// provider. Falls back to the large model if no default is found.
+// provider. It prefers the model the user already selected on that provider,
+// so Crush never bills a model the user did not choose, and falls back to the
+// provider's declared default only when nothing else is available.
 func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 	cfg := app.config.Config()
 	largeModelCfg := cfg.Models[config.SelectedModelTypeLarge]
@@ -824,38 +826,22 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		return largeModelCfg
 	}
 
+	// The small slot only serves internal work such as session titles, so
+	// reusing the model the user picked on this provider is always safe and
+	// never introduces a model they did not choose. The provider's declared
+	// default small model is a last resort for a provider the user has not
+	// selected anything on.
+	if largeModelCfg.Provider == providerID && largeModelCfg.Model != "" {
+		slog.Info("Using the selected large model as the small model",
+			"provider", providerID, "model", largeModelCfg.Model)
+		return largeModelCfg
+	}
+
 	defaultSmallModelID := knownProvider.DefaultSmallModelID
 	model := cfg.GetModel(providerID, defaultSmallModelID)
 	if model == nil {
 		slog.Warn("Default small model not found, using large model", "provider", providerID, "model", largeModelCfg.Model)
 		return largeModelCfg
-	}
-
-	// A subscription-authenticated provider only serves the models its
-	// subscription grants, so the default small model must come from that
-	// catalog as well. This applies to ChatGPT-authenticated OpenAI and
-	// Grok-authenticated xAI alike.
-	if largeModelCfg.Provider == providerID {
-		var pick func(config.ProviderConfig) *catwalk.Model
-		switch providerID {
-		case string(catwalk.InferenceProviderOpenAI):
-			pick = chatGPTSmallModel
-		case string(catwalk.InferenceProviderXAI):
-			pick = grokSmallModel
-		}
-		if pick != nil {
-			if pc, ok := cfg.Providers.Get(providerID); ok && pc.OAuthToken != nil {
-				if small := pick(pc); small != nil {
-					return config.SelectedModel{
-						Provider:        providerID,
-						Model:           small.ID,
-						MaxTokens:       small.DefaultMaxTokens,
-						ReasoningEffort: small.Reasoning.DefaultEffortLevel,
-					}
-				}
-				return largeModelCfg
-			}
-		}
 	}
 
 	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
@@ -865,40 +851,6 @@ func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 		MaxTokens:       model.DefaultMaxTokens,
 		ReasoningEffort: model.Reasoning.DefaultEffortLevel,
 	}
-}
-
-// chatGPTSmallModel picks a lightweight model from the ChatGPT catalog,
-// preferring a "mini" variant and falling back to the last entry (the
-// catalog lists heavier models first). Returns nil when the catalog is
-// empty.
-func chatGPTSmallModel(pc config.ProviderConfig) *catwalk.Model {
-	for i := range pc.ChatGPTModels {
-		if strings.Contains(pc.ChatGPTModels[i].ID, "mini") {
-			return &pc.ChatGPTModels[i]
-		}
-	}
-	if len(pc.ChatGPTModels) > 0 {
-		return &pc.ChatGPTModels[len(pc.ChatGPTModels)-1]
-	}
-	return nil
-}
-
-// grokSmallModel picks a lightweight model from the Grok catalog,
-// preferring a "fast" or "mini" variant and falling back to the last
-// entry (the catalog lists heavier models first). Returns nil when the
-// catalog is empty.
-func grokSmallModel(pc config.ProviderConfig) *catwalk.Model {
-	for _, marker := range []string{"fast", "mini"} {
-		for i := range pc.GrokModels {
-			if strings.Contains(pc.GrokModels[i].ID, marker) {
-				return &pc.GrokModels[i]
-			}
-		}
-	}
-	if len(pc.GrokModels) > 0 {
-		return &pc.GrokModels[len(pc.GrokModels)-1]
-	}
-	return nil
 }
 
 func (app *App) setupEvents() {
