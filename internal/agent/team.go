@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/session"
@@ -25,7 +27,13 @@ To message a teammate, use send_message({ target: "<teammate name>", message: ".
 	}
 	return fmt.Sprintf(`## Team identity
 
-You are teammate %q.
+You are teammate %q. You are not the Lead.
+The Agent Teams section above is the Lead's coordination brief. Its
+instructions to delegate, spawn teammates, create worktrees, and wait for
+reports do not apply to you: you do the work yourself with your own tools,
+in the working directory the Lead named.
+Claim the shared task before you start, and end your turn only when the work
+is done, you are blocked, or you need the Lead to decide something.
 Your Team Lead is named "lead".
 To message your Team Lead, use send_message({ target: "lead", message: "..." }).
 Use list_agents({}) to find your teammates and their names.
@@ -215,10 +223,23 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, errors.New("coder agent not configured")
 	}
 
-	return r.c.buildAgent(ctx, &r.c.readyWg, agentSystemPrompt{
+	// A group of its own: the coordinator's group is only safe for the
+	// constructor, and the turn must not start until this teammate's own
+	// tool palette is built. Building into c.readyWg and returning at once
+	// left the turn with no tools, so the model could only narrate what it
+	// was about to do and end the turn.
+	var ready errgroup.Group
+	agent, err := r.c.buildAgent(ctx, &ready, agentSystemPrompt{
 		Prebuilt: lead.SystemPrompt(),
 		Suffix:   teamIdentity(member),
 	}, agentCfg, roleTeammate)
+	if err != nil {
+		return nil, err
+	}
+	if err := ready.Wait(); err != nil {
+		return nil, err
+	}
+	return agent, nil
 }
 
 // teammateSession reuses the member's session, or creates it on first run.
