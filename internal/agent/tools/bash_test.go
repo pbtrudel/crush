@@ -78,6 +78,33 @@ func TestBashTool_DefaultAutoBackgroundThreshold(t *testing.T) {
 	require.Contains(t, meta.Output, "done")
 }
 
+func TestBashTool_BackgroundJobFastCompletionStaysReadable(t *testing.T) {
+	workingDir := t.TempDir()
+	tool := newBashToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runBashTool(t, tool, ctx, BashParams{
+		Description:     "quick background",
+		Command:         "echo quick",
+		RunInBackground: true,
+	})
+
+	require.False(t, resp.IsError)
+	var meta BashResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.NotEmpty(t, meta.ShellID)
+	require.Contains(t, meta.Output, "quick")
+
+	bgManager := shell.GetBackgroundShellManager()
+	defer bgManager.Kill(meta.ShellID)
+
+	// The completion notice for this job points at its ID, so the ID must
+	// still resolve once the fast-failure probe has seen it finish.
+	bgShell, ok := bgManager.Get(meta.ShellID)
+	require.True(t, ok, "a job the model is told to read must stay readable")
+	require.True(t, bgShell.IsDone())
+}
+
 func TestBashTool_CustomAutoBackgroundThreshold(t *testing.T) {
 	workingDir := t.TempDir()
 	tool := newBashToolForTest(workingDir)

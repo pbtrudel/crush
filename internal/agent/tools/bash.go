@@ -363,8 +363,10 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 		stdout, stderr, done, execErr := bgShell.GetOutput()
 
 		if done {
-			// Command failed or completed very quickly
-			bgManager.Remove(bgShell.ID)
+			// Finished inside the fast-failure probe window. Keep it tracked:
+			// the completion notice already told the model to read this job
+			// with job_output, and the retention window reaps it later.
+			// Removing it here made that instruction a dead end.
 
 			interrupted := shell.IsInterrupt(execErr)
 			exitCode := shell.ExitCode(execErr)
@@ -381,6 +383,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 				Description:      params.Description,
 				Background:       params.RunInBackground,
 				WorkingDirectory: bgShell.WorkingDir,
+				ShellID:          bgShell.ID,
 			}
 			if stdout == "" {
 				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
@@ -405,9 +408,12 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	// Start synchronous execution with auto-background support
 	startTime := time.Now()
 
-	// Start with detached context so it can survive if moved to background
+	// Start with detached context so it can survive if moved to background.
+	// No session is attached yet: a command that finishes while we wait is
+	// answered inline, so announcing it as a background completion would
+	// send the model after output it already has.
 	bgManager := shell.GetBackgroundShellManager()
-	bgShell, err := bgManager.StartWithSession(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, sessionID, maxBackgroundJobs)
+	bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, maxBackgroundJobs)
 	if err != nil {
 		return fantasy.NewTextErrorResponse("Failed to start shell: " + err.Error()), nil
 	}
@@ -427,6 +433,11 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 		bgManager.Kill(bgShell.ID)
 		return fantasy.ToolResponse{}, ctx.Err()
 	}
+	if !bgShell.IsDone() {
+		// It outlived the foreground window, so it is a background job now
+		// and its completion should reach the model as a notice.
+		bgShell.SetSessionID(sessionID)
+	}
 	stdout, stderr, done, execErr := bgShell.GetOutput()
 
 	if done {
@@ -438,7 +449,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 		interrupted := shell.IsInterrupt(execErr)
 		exitCode := shell.ExitCode(execErr)
 		if exitCode == 0 && !interrupted && execErr != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("[Job %s] Error executing command: %s", bgShell.ID, execErr)), nil
+			return fantasy.NewTextErrorResponse("Error executing command: " + execErr.Error()), nil
 		}
 
 		stdout = formatOutput(stdout, stderr, execErr, spillDir)

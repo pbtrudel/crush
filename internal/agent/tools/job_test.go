@@ -12,6 +12,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestJobOutputUnknownShellIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	tool := NewJobOutputTool(t.TempDir())
+	input, err := json.Marshal(JobOutputParams{ShellID: "reaped"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  JobOutputToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "no longer tracked")
+}
+
 func TestJobKillUnknownShellIsNoop(t *testing.T) {
 	t.Parallel()
 
