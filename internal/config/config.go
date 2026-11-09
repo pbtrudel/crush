@@ -1317,12 +1317,6 @@ func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 	return filterSlice(allTools, disabledTools, false)
 }
 
-func resolveReadOnlyTools(tools []string) []string {
-	readOnlyTools := []string{"glob", "grep", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "sourcegraph", "view", "read"}
-	// filter to only include tools that are in allowedtools (include mode)
-	return filterSlice(tools, readOnlyTools, true)
-}
-
 func resolvePlanTools(tools []string) []string {
 	// The read-only LSP lookups mirror the task agent's tool set: planning
 	// needs symbol navigation just as much as research does. Both
@@ -1348,11 +1342,45 @@ func resolvePlanTools(tools []string) []string {
 	return filterSlice(tools, planTools, true)
 }
 
-// resolveTaskTools returns the tools available to the task subagent: the
-// read-only set plus bash, so it can run git diff, tests, and rg while
-// reviewing. It still cannot edit or write files.
-func resolveTaskTools(tools []string) []string {
-	return filterSlice(tools, append(resolveReadOnlyTools(tools), "bash"), true)
+// subAgentExcludedTools are the tools a subagent never gets: the delegation
+// tools would let it spawn further subagents, question needs a human, and the
+// team tools coordinate the Lead's roster rather than a subagent's task.
+var subAgentExcludedTools = []string{
+	"agent",
+	"agent_dispatch",
+	"agent_send",
+	"agent_status",
+	"agent_stop",
+	"agentic_fetch",
+	"question",
+	"spawn_teammate",
+	"send_message",
+	"list_agents",
+	"wait_agent",
+	"interrupt_agent",
+	"team_task_create",
+	"team_task_list",
+	"team_task_get",
+	"team_task_update",
+}
+
+// subAgentWriteTools are the tools that change files. Only the read-write
+// subagent variant gets them.
+var subAgentWriteTools = []string{
+	"edit",
+	"multiedit",
+	"write",
+	"lsp_rename",
+	"lsp_replace_symbol",
+	"worktree",
+}
+
+// resolveSubAgentTools returns the tools available to the read-only subagent:
+// everything the Lead has except delegation, interactive, and file-editing
+// tools. MCP servers ride along, so a subagent can use the same integrations
+// the Lead can.
+func resolveSubAgentTools(tools []string) []string {
+	return filterSlice(filterSlice(tools, subAgentExcludedTools, false), subAgentWriteTools, false)
 }
 
 func filterSlice(data []string, mask []string, include bool) []string {
@@ -1370,15 +1398,17 @@ func filterSlice(data []string, mask []string, include bool) []string {
 func (c *Config) SetupAgents() {
 	allowedTools := resolveAllowedTools(allToolNames(), c.Options.DisabledTools)
 
+	coder := Agent{
+		ID:           AgentCoder,
+		Name:         "Coder",
+		Description:  "An agent that helps with executing coding tasks.",
+		Model:        SelectedModelTypeLarge,
+		ContextPaths: c.Options.ContextPaths,
+		AllowedTools: allowedTools,
+	}
+
 	agents := map[string]Agent{
-		AgentCoder: {
-			ID:           AgentCoder,
-			Name:         "Coder",
-			Description:  "An agent that helps with executing coding tasks.",
-			Model:        SelectedModelTypeLarge,
-			ContextPaths: c.Options.ContextPaths,
-			AllowedTools: allowedTools,
-		},
+		AgentCoder: coder,
 
 		AgentTask: {
 			ID:           AgentTask,
@@ -1386,9 +1416,9 @@ func (c *Config) SetupAgents() {
 			Description:  "An agent that helps with searching for context and finding implementation details.",
 			Model:        SelectedModelTypeLarge,
 			ContextPaths: c.Options.ContextPaths,
-			AllowedTools: resolveTaskTools(allowedTools),
-			// NO MCPs or LSPs by default
-			AllowedMCP: map[string][]string{},
+			AllowedTools: resolveSubAgentTools(allowedTools),
+			// A subagent works with the same MCP servers as the coder.
+			AllowedMCP: coder.AllowedMCP,
 		},
 
 		AgentPlan: {
