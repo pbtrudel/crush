@@ -809,6 +809,12 @@ func ValidateCall(call SessionAgentCall) error {
 	return nil
 }
 
+// sideQuestionRetrySuffix is appended to the question when a side question
+// comes back empty. The system prompt already says the model has no tools,
+// but a history full of tool turns is a stronger signal than the prompt, so
+// the retry states the instruction where the model reads it last.
+const sideQuestionRetrySuffix = "\n\nAnswer from the conversation above only. Do not call any tools."
+
 // runEphemeral answers a side question against the session's existing
 // history without persisting anything or exposing tools to the model.
 func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -837,57 +843,74 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 		maxOutputTokens = &call.MaxOutputTokens
 	}
 
-	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
-		Files:            files,
-		Messages:         history,
-		Headers:          sessionHeaders(call.SessionID),
-		ProviderOptions:  call.ProviderOptions,
-		MaxOutputTokens:  maxOutputTokens,
-		TopP:             call.TopP,
-		Temperature:      call.Temperature,
-		PresencePenalty:  call.PresencePenalty,
-		TopK:             call.TopK,
-		FrequencyPenalty: call.FrequencyPenalty,
-		OnAuthRefresh:    call.OnAuthRefresh,
-		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
-			// No tools are registered on this agent; disable them
-			// explicitly so nothing a caller added can leak in.
-			prepared := fantasy.PrepareStepResult{Messages: options.Messages, DisableAllTools: true}
-			for i := range prepared.Messages {
-				prepared.Messages[i].ProviderOptions = nil
-			}
-			a.normalizePromptMessages(prepared.Messages)
-			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
-			a.applyCacheBreakpoints(prepared.Messages)
-			if promptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
-			}
-			return callContext, prepared, nil
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	// An empty answer with no error is a provider stop, not an answer: the
-	// stream can end on an abnormal finish reason (capacity, truncation)
-	// without yielding any text. Report the reason instead of handing
-	// callers an empty answer they can only render as "(no answer)".
-	if strings.TrimSpace(subAgentOutput(result)) == "" {
+	prompt := message.PromptWithTextAttachments(call.Prompt, call.Attachments)
+	var result *fantasy.AgentResult
+	for attempt := 0; ; attempt++ {
+		result, err = agent.Stream(ctx, fantasy.AgentStreamCall{
+			Prompt:           prompt,
+			Files:            files,
+			Messages:         history,
+			Headers:          sessionHeaders(call.SessionID),
+			ProviderOptions:  call.ProviderOptions,
+			MaxOutputTokens:  maxOutputTokens,
+			TopP:             call.TopP,
+			Temperature:      call.Temperature,
+			PresencePenalty:  call.PresencePenalty,
+			TopK:             call.TopK,
+			FrequencyPenalty: call.FrequencyPenalty,
+			OnAuthRefresh:    call.OnAuthRefresh,
+			PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+				// No tools are registered on this agent; disable them
+				// explicitly so nothing a caller added can leak in.
+				prepared := fantasy.PrepareStepResult{Messages: options.Messages, DisableAllTools: true}
+				for i := range prepared.Messages {
+					prepared.Messages[i].ProviderOptions = nil
+				}
+				a.normalizePromptMessages(prepared.Messages)
+				prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+				a.applyCacheBreakpoints(prepared.Messages)
+				if promptPrefix != "" {
+					prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
+				}
+				return callContext, prepared, nil
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(subAgentOutput(result)) != "" {
+			return result, nil
+		}
+
+		// An empty answer with no error is a provider stop, not an answer:
+		// the stream can end on an abnormal finish reason (capacity,
+		// truncation) without yielding any text. A long agentic history
+		// also teaches the model to answer with a tool call; with tools
+		// disabled the provider drops the call and reports a normal stop
+		// with no content. Retry once spelling out the only move left.
 		reason := fantasy.FinishReasonUnknown
 		if n := len(result.Steps); n > 0 {
 			reason = result.Steps[n-1].FinishReason
 		}
+		if attempt > 0 {
+			slog.Warn(
+				"Side question returned no text",
+				"session_id", call.SessionID,
+				"provider", largeModel.ModelCfg.Provider,
+				"model", largeModel.ModelCfg.Model,
+				"finish_reason", string(reason),
+			)
+			return nil, fmt.Errorf("the model returned no answer (finish_reason=%s)", reason)
+		}
 		slog.Warn(
-			"Side question returned no text",
+			"Side question returned no text; retrying with an answer-only instruction",
 			"session_id", call.SessionID,
 			"provider", largeModel.ModelCfg.Provider,
 			"model", largeModel.ModelCfg.Model,
 			"finish_reason", string(reason),
 		)
-		return nil, fmt.Errorf("the model returned no answer (finish_reason=%s)", reason)
+		prompt = message.PromptWithTextAttachments(call.Prompt+sideQuestionRetrySuffix, call.Attachments)
 	}
-	return result, nil
 }
 
 // turnFinish maps the upstream finish reason of a step onto what the
