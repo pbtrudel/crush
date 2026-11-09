@@ -16,6 +16,9 @@ func TestSubAgentPaletteKeepsMCPTools(t *testing.T) {
 
 	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
+	// A config with no providers loaded skips agent setup, so build the
+	// presets explicitly: CI has no user config to fall back on.
+	cfg.SetupAgents()
 	// Pin every input buildTools reads so the test is hermetic against the
 	// developer's user config (same reasoning as coderAgent in common_test).
 	cfg.Config().Options.Attribution = &config.Attribution{}
