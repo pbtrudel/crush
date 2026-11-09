@@ -53,7 +53,7 @@ func TestCurrentModelSupportsImages(t *testing.T) {
 		cfg := &config.Config{
 			Providers: csync.NewMap[string, config.ProviderConfig](),
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 		ui := newTestUIWithConfig(t, cfg)
@@ -73,14 +73,14 @@ func TestCurrentModelSupportsImages(t *testing.T) {
 
 		cfg := &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
-				config.SelectedModelTypeLarge: {
+				config.SelectedModelTypeMain: {
 					Provider: "test-provider",
 					Model:    "test-model",
 				},
 			},
 			Providers: providers,
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 
@@ -116,7 +116,7 @@ func TestCurrentModelSupportsAudio(t *testing.T) {
 		cfg := &config.Config{
 			Providers: csync.NewMap[string, config.ProviderConfig](),
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 		ui := newTestUIWithConfig(t, cfg)
@@ -136,14 +136,14 @@ func TestCurrentModelSupportsAudio(t *testing.T) {
 
 		cfg := &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
-				config.SelectedModelTypeLarge: {
+				config.SelectedModelTypeMain: {
 					Provider: "test-provider",
 					Model:    "test-model",
 				},
 			},
 			Providers: providers,
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 
@@ -164,14 +164,14 @@ func TestCurrentModelSupportsAudio(t *testing.T) {
 
 		cfg := &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
-				config.SelectedModelTypeLarge: {
+				config.SelectedModelTypeMain: {
 					Provider: "test-provider",
 					Model:    "test-model",
 				},
 			},
 			Providers: providers,
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 
@@ -193,14 +193,14 @@ func TestAttachmentsLimit(t *testing.T) {
 		})
 		return &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
-				config.SelectedModelTypeLarge: {
+				config.SelectedModelTypeMain: {
 					Provider: "test-provider",
 					Model:    "test-model",
 				},
 			},
 			Providers: providers,
 			Agents: map[string]config.Agent{
-				config.AgentCoder: {Model: config.SelectedModelTypeLarge},
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
 			},
 		}
 	}

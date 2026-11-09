@@ -15,10 +15,10 @@ func TestCloneForWrite_Isolation(t *testing.T) {
 
 	orig := &Config{
 		Models: map[SelectedModelType]SelectedModel{
-			SelectedModelTypeLarge: {Provider: "openai", Model: "gpt-4"},
+			SelectedModelTypeMain: {Provider: "openai", Model: "gpt-4"},
 		},
 		RecentModels: map[SelectedModelType][]SelectedModel{
-			SelectedModelTypeLarge: {{Provider: "openai", Model: "gpt-4"}},
+			SelectedModelTypeMain: {{Provider: "openai", Model: "gpt-4"}},
 		},
 		MCP:       MCPs{"a": {}},
 		Providers: csync.NewMap[string, ProviderConfig](),
@@ -30,8 +30,8 @@ func TestCloneForWrite_Isolation(t *testing.T) {
 	clone := orig.cloneForWrite()
 
 	// Mutate every field the typed mutators touch.
-	clone.Models[SelectedModelTypeLarge] = SelectedModel{Provider: "anthropic", Model: "claude"}
-	clone.RecentModels[SelectedModelTypeLarge] = []SelectedModel{{Provider: "anthropic", Model: "claude"}}
+	clone.Models[SelectedModelTypeMain] = SelectedModel{Provider: "anthropic", Model: "claude"}
+	clone.RecentModels[SelectedModelTypeMain] = []SelectedModel{{Provider: "anthropic", Model: "claude"}}
 	clone.MCP["b"] = MCPConfig{}
 	clone.Options.TUI.CompactMode = true
 	enabled := true
@@ -40,8 +40,8 @@ func TestCloneForWrite_Isolation(t *testing.T) {
 	clone.Options.TUI.Mouse = &disabled
 
 	// The original must be untouched.
-	require.Equal(t, "openai", orig.Models[SelectedModelTypeLarge].Provider, "Models leaked")
-	require.Equal(t, "openai", orig.RecentModels[SelectedModelTypeLarge][0].Provider, "RecentModels leaked")
+	require.Equal(t, "openai", orig.Models[SelectedModelTypeMain].Provider, "Models leaked")
+	require.Equal(t, "openai", orig.RecentModels[SelectedModelTypeMain][0].Provider, "RecentModels leaked")
 	require.NotContains(t, orig.MCP, "b", "MCP leaked")
 	require.False(t, orig.Options.TUI.CompactMode, "Options.TUI.CompactMode leaked")
 	require.Nil(t, orig.Options.TUI.Transparent, "Options.TUI.Transparent leaked")

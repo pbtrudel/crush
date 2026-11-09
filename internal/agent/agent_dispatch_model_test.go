@@ -39,7 +39,7 @@ const overrideTestConfig = `{
       "base_url": "http://127.0.0.1:9/v1", "api_key": "test-key",
       "models": [{"id": "other-model", "name": "Other", "context_window": 8192, "default_max_tokens": 128}]}
   },
-  "models": {"large": {"provider": "mock", "model": "mock-reasoner"},
+  "models": {"main": {"provider": "mock", "model": "mock-reasoner"},
              "small": {"provider": "mock", "model": "mock-model"}}
 }`
 

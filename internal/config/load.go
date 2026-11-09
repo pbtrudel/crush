@@ -80,7 +80,7 @@ var legacyModelPricingFields = map[string]string{
 // capabilities.vision, and the can_reason/reasoning_levels/
 // default_reasoning_effort trio became the reasoning object. The
 // rewrite is pure and is a no-op for configs already written with v3
-// fields; use migrateCatwalkV2File to persist the result.
+// fields; use migrateConfigFile to persist the result.
 func migrateCatwalkV2(data []byte) ([]byte, bool) {
 	var root map[string]any
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -127,12 +127,12 @@ func migrateCatwalkV2(data []byte) ([]byte, bool) {
 	return out, true
 }
 
-// migrateCatwalkV2File migrates a JSON config file from the catwalk v2
-// model schema onto v3 and persists the rewrite atomically, preserving
-// the file's permissions. The returned bytes are always the migrated
-// form, so loading continues even when the write fails.
-func migrateCatwalkV2File(path string, data []byte) []byte {
-	migrated, changed := migrateCatwalkV2(data)
+// migrateConfigFile migrates a JSON config file onto the current schema and
+// persists the rewrite atomically, preserving the file's permissions. The
+// returned bytes are always the migrated form, so loading continues even when
+// the write fails.
+func migrateConfigFile(path string, data []byte) []byte {
+	migrated, changed := migrateConfig(data)
 	if !changed {
 		return data
 	}
@@ -143,9 +143,68 @@ func migrateCatwalkV2File(path string, data []byte) []byte {
 	if err := atomicWriteFile(path, migrated, perm); err != nil {
 		slog.Warn("Failed to write migrated config", "path", path, "error", err)
 	} else {
-		slog.Info("Migrated config file to the catwalk v3 model schema", "path", path)
+		slog.Info("Migrated config file to the current schema", "path", path)
 	}
 	return migrated
+}
+
+// migrateConfig runs every config-schema migration in order.
+func migrateConfig(data []byte) ([]byte, bool) {
+	migrated, changed := migrateCatwalkV2(data)
+	slots, slotChanged := migrateModelSlots(migrated)
+	return slots, changed || slotChanged
+}
+
+// migrateModelSlots rewrites the model slot names that predate the main
+// slot: models.large and recent_models.large become .main, and an agent whose
+// model field names "large" follows. The rewrite is pure and a no-op for
+// configs already written with "main".
+func migrateModelSlots(data []byte) ([]byte, bool) {
+	var root map[string]any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&root); err != nil {
+		return data, false
+	}
+
+	changed := false
+	for _, key := range []string{"models", "recent_models"} {
+		slots, ok := root[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		legacy, ok := slots["large"]
+		if !ok {
+			continue
+		}
+		if _, exists := slots["main"]; !exists {
+			slots["main"] = legacy
+		}
+		delete(slots, "large")
+		changed = true
+	}
+
+	if agents, ok := root["agents"].(map[string]any); ok {
+		for _, raw := range agents {
+			agent, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if agent["model"] == "large" {
+				agent["model"] = "main"
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data, false
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return data, false
+	}
+	return out, true
 }
 
 // migrateCatwalkV2Model migrates a single model object in place and
@@ -266,7 +325,7 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 		if !json.Valid(wsData) {
 			return nil, fmt.Errorf("invalid JSON in config file %s", store.workspacePath)
 		}
-		wsData = migrateCatwalkV2File(store.workspacePath, wsData)
+		wsData = migrateConfigFile(store.workspacePath, wsData)
 		merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
 		if mergeErr == nil {
 			// Preserve defaults that setDefaults already applied.
@@ -375,7 +434,7 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure selected models: %w", err)
 	}
-	cfg.Models[SelectedModelTypeLarge] = resolved.Large
+	cfg.Models[SelectedModelTypeMain] = resolved.Large
 	cfg.Models[SelectedModelTypeSmall] = resolved.Small
 
 	// A selection the catalog does not list is kept as-is and never written
@@ -901,10 +960,7 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 			ReasoningEffort: defaultLargeModel.Reasoning.DefaultEffortLevel,
 		}
 
-		// Both slots resolve to the same model. The small slot only serves
-		// internal work such as session titles, and a second catalog model
-		// here means Crush bills a model the user never chose on first run.
-		smallModel = largeModel
+		smallModel = c.DefaultSmallModel(string(p.ID), largeModel, knownProviders)
 		return largeModel, smallModel, err
 	}
 
@@ -929,12 +985,7 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 		Model:     defaultLargeModel.ID,
 		MaxTokens: defaultLargeModel.DefaultMaxTokens,
 	}
-	defaultSmallModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	smallModel = SelectedModel{
-		Provider:  providerConfig.ID,
-		Model:     defaultSmallModel.ID,
-		MaxTokens: defaultSmallModel.DefaultMaxTokens,
-	}
+	smallModel = c.DefaultSmallModel(providerConfig.ID, largeModel, knownProviders)
 	return largeModel, smallModel, err
 }
 
@@ -960,7 +1011,7 @@ func resolveSelectedModels(cfg *Config, knownProviders []catwalk.Provider) (reso
 	}
 	large, small := defaultLarge, defaultSmall
 
-	largeModelSelected, largeModelConfigured := cfg.Models[SelectedModelTypeLarge]
+	largeModelSelected, largeModelConfigured := cfg.Models[SelectedModelTypeMain]
 	if largeModelConfigured {
 		large, result.LargeFallback = applySelection(cfg, defaultLarge, largeModelSelected)
 	}
@@ -969,12 +1020,10 @@ func resolveSelectedModels(cfg *Config, knownProviders []catwalk.Provider) (reso
 		small, result.SmallFallback = applySelection(cfg, defaultSmall, cfg.Models[SelectedModelTypeSmall])
 	}
 
-	// Without an explicit small selection, the small slot follows the large
-	// one. The small model only serves internal work such as session titles,
-	// and picking a second catalog model here would bill a model the user
-	// never chose.
+	// Without an explicit small selection, the small slot takes the default
+	// for the provider the user's model runs on.
 	if !smallModelConfigured {
-		small = large
+		small = cfg.DefaultSmallModel(large.Provider, large, knownProviders)
 	}
 
 	result.Large = large
@@ -1115,7 +1164,7 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 			if !json.Valid(data) {
 				return nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
 			}
-			data = migrateCatwalkV2File(path, data)
+			data = migrateConfigFile(path, data)
 			addTopLevelKeys(jsonDirKeys, dir, data)
 			configs = append(configs, data)
 			loaded = append(loaded, path)
@@ -1176,7 +1225,7 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	// Safety net for sources that cannot be rewritten on disk (e.g.
 	// crushrc builtins producing JSON): migrate the merged result in
 	// memory so decoding always sees the v3 schema.
-	data, _ = migrateCatwalkV2(data)
+	data, _ = migrateConfig(data)
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err

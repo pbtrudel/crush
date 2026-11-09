@@ -16,7 +16,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
@@ -699,7 +698,7 @@ func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) e
 	}
 
 	cfg := app.config.Config()
-	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
+	currentLarge := cfg.Models[config.SelectedModelTypeMain]
 	if currentLarge.Provider == lastMsg.Provider && currentLarge.Model == lastMsg.Model {
 		return nil
 	}
@@ -711,7 +710,7 @@ func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) e
 		return nil
 	}
 
-	app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
+	app.config.OverridePreferredModel(config.SelectedModelTypeMain, config.SelectedModel{
 		Provider: lastMsg.Provider,
 		Model:    lastMsg.Model,
 	})
@@ -744,15 +743,15 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 
 	var largeProviderID string
 
-	// Override large model.
+	// Override the main model.
 	if largeModel != "" {
-		found, err := validateMatches(largeMatches, largeModel, "large")
+		found, err := validateMatches(largeMatches, largeModel, "main")
 		if err != nil {
 			return err
 		}
 		largeProviderID = found.provider
-		slog.Info("Overriding large model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
+		slog.Info("Overriding the main model for non-interactive run", "provider", found.provider, "model", found.modelID)
+		app.config.OverridePreferredModel(config.SelectedModelTypeMain, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		})
@@ -772,7 +771,7 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 		})
 
 	case largeModel != "":
-		// No small model specified, but large model was - use provider's default.
+		// No small model specified, but the main model was - use the provider's default.
 		smallCfg := app.GetDefaultSmallModel(largeProviderID)
 		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallCfg)
 	}
@@ -781,14 +780,14 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 }
 
 // overrideReasoningEffort validates the requested reasoning effort against
-// the large model in effect for this run (which may have been overridden by
+// the main model in effect for this run (which may have been overridden by
 // --model or restored from a continued session) and applies it as an
 // in-memory override.
 func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort string) error {
 	cfg := app.config.Config()
-	selected, ok := cfg.Models[config.SelectedModelTypeLarge]
+	selected, ok := cfg.Models[config.SelectedModelTypeMain]
 	if !ok {
-		return fmt.Errorf("no large model selected; set one with the --model flag or 'model large'")
+		return fmt.Errorf("no model selected; set one with the --model flag or 'model main'")
 	}
 	if err := cfg.ValidateReasoningEffort(selected.Provider, selected.Model, reasoningEffort); err != nil {
 		return err
@@ -798,7 +797,7 @@ func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort str
 		"provider", selected.Provider,
 		"model", selected.Model,
 		"reasoning_effort", reasoningEffort)
-	app.config.OverridePreferredModel(config.SelectedModelTypeLarge, selected)
+	app.config.OverridePreferredModel(config.SelectedModelTypeMain, selected)
 	return app.AgentCoordinator.UpdateModels(ctx)
 }
 
@@ -808,49 +807,13 @@ func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort str
 // provider's declared default only when nothing else is available.
 func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
 	cfg := app.config.Config()
-	largeModelCfg := cfg.Models[config.SelectedModelTypeLarge]
-
-	// Find the provider in the known providers list to get its default small model.
+	mainModelCfg := cfg.Models[config.SelectedModelTypeMain]
 	knownProviders, _ := config.Providers(cfg)
-	var knownProvider *catwalk.Provider
-	for _, p := range knownProviders {
-		if string(p.ID) == providerID {
-			knownProvider = &p
-			break
-		}
-	}
 
-	// For unknown/local providers, use the large model as small.
-	if knownProvider == nil {
-		slog.Warn("Using large model as small model for unknown provider", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
-	}
-
-	// The small slot only serves internal work such as session titles, so
-	// reusing the model the user picked on this provider is always safe and
-	// never introduces a model they did not choose. The provider's declared
-	// default small model is a last resort for a provider the user has not
-	// selected anything on.
-	if largeModelCfg.Provider == providerID && largeModelCfg.Model != "" {
-		slog.Info("Using the selected large model as the small model",
-			"provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
-	}
-
-	defaultSmallModelID := knownProvider.DefaultSmallModelID
-	model := cfg.GetModel(providerID, defaultSmallModelID)
-	if model == nil {
-		slog.Warn("Default small model not found, using large model", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
-	}
-
-	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
-	return config.SelectedModel{
-		Provider:        providerID,
-		Model:           defaultSmallModelID,
-		MaxTokens:       model.DefaultMaxTokens,
-		ReasoningEffort: model.Reasoning.DefaultEffortLevel,
-	}
+	small := cfg.DefaultSmallModel(providerID, mainModelCfg, knownProviders)
+	slog.Info("Using default small model",
+		"provider", small.Provider, "model", small.Model)
+	return small
 }
 
 func (app *App) setupEvents() {

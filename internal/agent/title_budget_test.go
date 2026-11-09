@@ -54,7 +54,7 @@ func TestTitleAttempts(t *testing.T) {
 		attempts := titleAttempts(small, large)
 		require.Len(t, attempts, 2)
 		require.Equal(t, "small", attempts[0].name)
-		require.Equal(t, "large", attempts[1].name)
+		require.Equal(t, "main", attempts[1].name)
 	})
 
 	t.Run("the same model is not retried", func(t *testing.T) {

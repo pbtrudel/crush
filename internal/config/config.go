@@ -54,7 +54,11 @@ func (s SelectedModelType) String() string {
 }
 
 const (
-	SelectedModelTypeLarge SelectedModelType = "large"
+	// SelectedModelTypeMain is the model the user selected: it serves the
+	// conversation and every user-facing turn.
+	SelectedModelTypeMain SelectedModelType = "main"
+	// SelectedModelTypeSmall serves internal work only: session titles,
+	// the permission reviewer, and the agentic_fetch subagent.
 	SelectedModelTypeSmall SelectedModelType = "small"
 )
 
@@ -988,7 +992,7 @@ type Agent struct {
 	// This is the id of the system prompt used by the agent
 	Disabled bool `json:"disabled,omitempty"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=main,enum=small,default=main"`
 
 	// The available tools for the agent
 	//  if this is nil, all tools are available
@@ -1046,8 +1050,8 @@ type HookConfig = hooks.HookConfig
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
 
-	// We currently only support large/small as values here.
-	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
+	// We currently only support main/small as values here.
+	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"main\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
@@ -1242,7 +1246,7 @@ func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
 }
 
 func (c *Config) LargeModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeLarge]
+	model, ok := c.Models[SelectedModelTypeMain]
 	if !ok {
 		return nil
 	}
@@ -1255,6 +1259,59 @@ func (c *Config) SmallModel() *catwalk.Model {
 		return nil
 	}
 	return c.GetModel(model.Provider, model.Model)
+}
+
+// preferredSmallModelID is the model Crush picks for internal work when the
+// user has not chosen one. It only serves session titles, the permission
+// reviewer, and the agentic_fetch subagent, so a cheap fast model is enough.
+const preferredSmallModelID = "deepseek-v4.1-flash"
+
+// DefaultSmallModel returns the small slot to use on providerID when the user
+// has not configured one: the preferred cheap model when that provider serves
+// it, then the provider's declared small model, then the main model itself.
+// main is the fallback so a provider with no small model never leaves the
+// slot empty.
+func (c *Config) DefaultSmallModel(providerID string, main SelectedModel, knownProviders []catwalk.Provider) SelectedModel {
+	if providerID == "" {
+		return main
+	}
+
+	if providerCfg, ok := c.Providers.Get(providerID); ok {
+		for _, model := range providerCfg.UsableModels() {
+			if !isPreferredSmallModel(model.ID) {
+				continue
+			}
+			return SelectedModel{
+				Provider:        providerID,
+				Model:           model.ID,
+				MaxTokens:       model.DefaultMaxTokens,
+				ReasoningEffort: model.Reasoning.DefaultEffortLevel,
+			}
+		}
+	}
+
+	for _, p := range knownProviders {
+		if string(p.ID) != providerID {
+			continue
+		}
+		if model := c.GetModel(providerID, p.DefaultSmallModelID); model != nil {
+			return SelectedModel{
+				Provider:        providerID,
+				Model:           model.ID,
+				MaxTokens:       model.DefaultMaxTokens,
+				ReasoningEffort: model.Reasoning.DefaultEffortLevel,
+			}
+		}
+	}
+	return main
+}
+
+// isPreferredSmallModel reports whether id names the preferred small model.
+// Providers prefix their catalog ids inconsistently (commandcode serves
+// "deepseek/deepseek-v4.1-flash", neuralwatt "deepseek-v4.1-flash"), so the
+// suffix is what identifies the model.
+func isPreferredSmallModel(id string) bool {
+	return id == preferredSmallModelID || strings.HasSuffix(id, "/"+preferredSmallModelID)
 }
 
 const maxRecentModelsPerType = 5
@@ -1402,7 +1459,7 @@ func (c *Config) SetupAgents() {
 		ID:           AgentCoder,
 		Name:         "Coder",
 		Description:  "An agent that helps with executing coding tasks.",
-		Model:        SelectedModelTypeLarge,
+		Model:        SelectedModelTypeMain,
 		ContextPaths: c.Options.ContextPaths,
 		AllowedTools: allowedTools,
 	}
@@ -1414,7 +1471,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentTask,
 			Name:         "Task",
 			Description:  "An agent that helps with searching for context and finding implementation details.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolveSubAgentTools(allowedTools),
 			// A subagent works with the same MCP servers as the coder.
@@ -1425,7 +1482,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentPlan,
 			Name:         "Plan",
 			Description:  "An agent that performs deep analysis and prepares implementation plans without modifying files.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolvePlanTools(allowedTools),
 			// NO MCPs or LSPs by default

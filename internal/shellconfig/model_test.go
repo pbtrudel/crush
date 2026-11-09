@@ -78,7 +78,7 @@ func TestModelSelectRejectsInvalidTopP(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "crushrc")
-	_, err := LoadShellConfig(t.Context(), path, []byte(`model large openai/gpt-x --top-p 1.5`))
+	_, err := LoadShellConfig(t.Context(), path, []byte(`model main openai/gpt-x --top-p 1.5`))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "between 0 and 1")
 }
@@ -87,7 +87,7 @@ func TestModelSelectRejectsNonObjectProviderOptions(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "crushrc")
-	_, err := LoadShellConfig(t.Context(), path, []byte(`model large openai/gpt-x --provider-options '[]'`))
+	_, err := LoadShellConfig(t.Context(), path, []byte(`model main openai/gpt-x --provider-options '[]'`))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expects a JSON object")
 }
@@ -138,11 +138,11 @@ model remove openai/a`)
 func TestModelLargeSmall(t *testing.T) {
 	t.Parallel()
 
-	result := loadScript(t, `model large openai/gpt-4o --think
+	result := loadScript(t, `model main openai/gpt-4o --think
 model small anthropic/claude-3-5-haiku`)
 
 	models := result["models"].(map[string]any)
-	large := models["large"].(map[string]any)
+	large := models["main"].(map[string]any)
 	require.Equal(t, "openai", large["provider"])
 	require.Equal(t, "gpt-4o", large["model"])
 	require.Equal(t, true, large["think"])
@@ -157,7 +157,7 @@ model small anthropic/claude-3-5-haiku`)
 func TestModelLargePrint(t *testing.T) {
 	t.Parallel()
 
-	result := loadScript(t, `model large openai/gpt-4o
+	result := loadScript(t, `model main openai/gpt-4o
 option data-directory "$(model large)"`)
 
 	require.Equal(t, "openai/gpt-4o", result["options"].(map[string]any)["data_directory"])

@@ -22,7 +22,7 @@ func BenchmarkUpdatePreferredModel(b *testing.B) {
 
 	cfg := `{
 		"models": {
-			"large": {"provider": "openai", "model": "gpt-4"},
+			"main": {"provider": "openai", "model": "gpt-4"},
 			"small": {"provider": "openai", "model": "gpt-4o-mini"}
 		},
 		"providers": {
@@ -64,7 +64,7 @@ func BenchmarkUpdatePreferredModel(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		m := models[i%len(models)]
-		if err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge, m); err != nil {
+		if err := store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeMain, m); err != nil {
 			b.Fatal(err)
 		}
 		i++
@@ -83,7 +83,7 @@ func BenchmarkReloadFromDisk(b *testing.B) {
 	b.Cleanup(resetProviderState)
 
 	cfg := `{
-		"models": {"large": {"provider": "openai", "model": "gpt-4"}},
+		"models": {"main": {"provider": "openai", "model": "gpt-4"}},
 		"providers": {
 			"openai": {"api_key": "test-key", "models": [{"id": "gpt-4", "name": "GPT-4"}]}
 		}

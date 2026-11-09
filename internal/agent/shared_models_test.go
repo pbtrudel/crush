@@ -56,7 +56,7 @@ func TestSubAgentRetriesWithRenewedCredential(t *testing.T) {
   "providers": {"mock": {"id": "mock", "name": "Mock", "type": "openai-compat",
     "base_url": %q, "api_key": "first",
     "models": [{"id": "mock-model", "name": "Mock", "context_window": 8192, "default_max_tokens": 128}]}},
-  "models": {"large": {"provider": "mock", "model": "mock-model"},
+  "models": {"main": {"provider": "mock", "model": "mock-model"},
              "small": {"provider": "mock", "model": "mock-model"}}
 }`, srv.URL)
 	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "crush.json"), []byte(crushJSON), 0o644))

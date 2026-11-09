@@ -21,15 +21,15 @@ import (
 type ModelType int
 
 const (
-	ModelTypeLarge ModelType = iota
+	ModelTypeMain ModelType = iota
 	ModelTypeSmall
 )
 
 // String returns the string representation of the [ModelType].
 func (mt ModelType) String() string {
 	switch mt {
-	case ModelTypeLarge:
-		return "Large Task"
+	case ModelTypeMain:
+		return "Model"
 	case ModelTypeSmall:
 		return "Small Task"
 	default:
@@ -40,8 +40,8 @@ func (mt ModelType) String() string {
 // Config returns the corresponding config model type.
 func (mt ModelType) Config() config.SelectedModelType {
 	switch mt {
-	case ModelTypeLarge:
-		return config.SelectedModelTypeLarge
+	case ModelTypeMain:
+		return config.SelectedModelTypeMain
 	case ModelTypeSmall:
 		return config.SelectedModelTypeSmall
 	default:
@@ -52,8 +52,8 @@ func (mt ModelType) Config() config.SelectedModelType {
 // Placeholder returns the input placeholder for the model type.
 func (mt ModelType) Placeholder() string {
 	switch mt {
-	case ModelTypeLarge:
-		return largeModelInputPlaceholder
+	case ModelTypeMain:
+		return mainModelInputPlaceholder
 	case ModelTypeSmall:
 		return smallModelInputPlaceholder
 	default:
@@ -63,8 +63,8 @@ func (mt ModelType) Placeholder() string {
 
 const (
 	onboardingModelInputPlaceholder = "Find your fave"
-	largeModelInputPlaceholder      = "Choose a model for large, complex tasks"
-	smallModelInputPlaceholder      = "Choose a model for small, simple tasks"
+	mainModelInputPlaceholder       = "Choose the model Crush runs on"
+	smallModelInputPlaceholder      = "Choose a model for titles and internal work"
 )
 
 // ModelsID is the identifier for the model selection dialog.
@@ -239,10 +239,10 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			if m.isOnboarding {
 				break
 			}
-			if m.modelType == ModelTypeLarge {
+			if m.modelType == ModelTypeMain {
 				m.modelType = ModelTypeSmall
 			} else {
-				m.modelType = ModelTypeLarge
+				m.modelType = ModelTypeMain
 			}
 			if err := m.setProviderItems(); err != nil {
 				return util.ReportError(err)
@@ -292,19 +292,19 @@ func (m *Models) Cursor() *tea.Cursor {
 func (m *Models) modelTypeRadioView() string {
 	t := m.com.Styles
 	textStyle := t.Radio.Label
-	largeRadioStyle := t.Radio.Off
+	mainRadioStyle := t.Radio.Off
 	smallRadioStyle := t.Radio.Off
-	if m.modelType == ModelTypeLarge {
-		largeRadioStyle = t.Radio.On
+	if m.modelType == ModelTypeMain {
+		mainRadioStyle = t.Radio.On
 	} else {
 		smallRadioStyle = t.Radio.On
 	}
 
-	largeRadio := largeRadioStyle.Padding(0, 1).Render()
+	mainRadio := mainRadioStyle.Padding(0, 1).Render()
 	smallRadio := smallRadioStyle.Padding(0, 1).Render()
 
 	return fmt.Sprintf("%s%s  %s%s",
-		largeRadio, textStyle.Render(ModelTypeLarge.String()),
+		mainRadio, textStyle.Render(ModelTypeMain.String()),
 		smallRadio, textStyle.Render(ModelTypeSmall.String()))
 }
 

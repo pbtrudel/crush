@@ -254,7 +254,7 @@ func TestLoadRefreshesGrokModelsWhenCatwalkUpdates(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "grok-fresh", pc.GrokModels[0].ID, "the stale catalog is replaced")
 
-	large, ok := store.Config().Models[SelectedModelTypeLarge]
+	large, ok := store.Config().Models[SelectedModelTypeMain]
 	require.True(t, ok)
 	require.Equal(t, "grok-4.5", large.Model, "the resolved default model survives the catalog refresh")
 }

@@ -40,7 +40,7 @@ func findModels(providers map[string]config.ProviderConfig, largeModel, smallMod
 	for _, pf := range []struct {
 		filter, label string
 	}{
-		{largeProviderFilter, "large"},
+		{largeProviderFilter, "main"},
 		{smallProviderFilter, "small"},
 	} {
 		if pf.filter != "" {

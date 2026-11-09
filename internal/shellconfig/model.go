@@ -20,23 +20,24 @@ import (
 //	    [--price-cache-hit F] [--reasoning-effort low|medium|high]
 //	    [--max-attachments N]
 //	model remove <provider>/<id>   (alias: rm)
-//	model large [<provider>/<id>] [--think] [--reasoning-effort L]
+//	model main [<provider>/<id>] [--think] [--reasoning-effort L]
 //	    [--max-tokens N] [--temperature F] [--top-p F] [--top-k N]
 //	    [--frequency-penalty F] [--presence-penalty F]
 //	    [--provider-options JSON]
 //	model small [<provider>/<id>] [...]
 //
 // "add" registers a model on an existing provider (the provider must have
-// been declared with `provider add` first). "remove" removes it. "large" and
+// been declared with `provider add` first). "remove" removes it. "main" and
 // "small" set the selected model for that slot, or print the current
-// selection as <provider>/<id> when given no argument.
+// selection as <provider>/<id> when given no argument. "large" is accepted as
+// a deprecated alias for "main".
 func handleModel(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	b := configBuilderFromCtx(ctx)
 	if b == nil {
 		return nil
 	}
 	if len(args) < 2 {
-		return usage(stderr, "usage: model add|remove <provider>/<id> | model large|small [<provider>/<id>]")
+		return usage(stderr, "usage: model add|remove <provider>/<id> | model main|small [<provider>/<id>]")
 	}
 
 	switch args[1] {
@@ -44,10 +45,17 @@ func handleModel(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return modelAdd(b, args, stderr)
 	case "remove", "rm":
 		return modelRemove(b, args, stderr)
-	case "large", "small":
+	case "main", "small":
+		return modelSelect(b, args, stdout, stderr)
+	case "large":
+		// The slot was called "large" before it became the only model the
+		// user selects. Keep accepting it so existing crushrc files load.
+		slog.Warn("`model large` is deprecated; use `model main`", "provider", "shellconfig")
+		args = slices.Clone(args)
+		args[1] = "main"
 		return modelSelect(b, args, stdout, stderr)
 	default:
-		return usage(stderr, fmt.Sprintf("model: unknown subcommand %q (expected add, remove, large, or small)", args[1]))
+		return usage(stderr, fmt.Sprintf("model: unknown subcommand %q (expected add, remove, main, or small)", args[1]))
 	}
 }
 

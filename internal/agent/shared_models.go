@@ -29,13 +29,13 @@ func (c *coordinator) rebuildModels(ctx context.Context) error {
 	c.rebuildMu.Lock()
 	defer c.rebuildMu.Unlock()
 
-	large, err := c.buildModel(ctx, config.SelectedModelTypeLarge, false)
+	large, err := c.buildModel(ctx, config.SelectedModelTypeMain, false)
 	if err != nil {
 		return err
 	}
 	subLarge := large
 	if large.ModelCfg.Provider == string(catwalk.InferenceProviderCopilot) {
-		subLarge, err = c.buildModel(ctx, config.SelectedModelTypeLarge, true)
+		subLarge, err = c.buildModel(ctx, config.SelectedModelTypeMain, true)
 		if err != nil {
 			return err
 		}

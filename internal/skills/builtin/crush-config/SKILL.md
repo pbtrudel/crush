@@ -43,7 +43,7 @@ source ~/.config/crush/shared.sh
 
 provider add anthropic --api-key "$ANTHROPIC_API_KEY"
 
-model large anthropic/claude-sonnet-4-20250514 --max-tokens 16384
+model main anthropic/claude-sonnet-4-20250514 --max-tokens 16384
 model small anthropic/claude-haiku-4-20250514
 
 option skill-path ./skills
@@ -91,7 +91,7 @@ provider add deepseek \
 ```bash
 model add <provider>/<id> [flags]      # register a custom model (provider must exist)
 model remove <provider>/<id>           # alias: rm
-model large [<provider>/<id>] [flags]  # set the large slot; no arg prints it
+model main [<provider>/<id>] [flags]   # set the selected model; no arg prints it
 model small [<provider>/<id>] [flags]  # set the small slot; no arg prints it
 ```
 
@@ -102,13 +102,15 @@ model small [<provider>/<id>] [flags]  # set the small slot; no arg prints it
   `--price-input F`, `--price-output F`, `--price-cache-create F`,
   `--price-cache-hit F`, `--reasoning-effort low|medium|high`,
   `--max-attachments N`.
-- `model large`/`model small` flags: `--think`, `--reasoning-effort`,
+- `model main`/`model small` flags: `--think`, `--reasoning-effort`,
   `--max-tokens N`, `--temperature F`, `--top-p F`, `--top-k N`,
   `--frequency-penalty F`, `--presence-penalty F`, `--provider-options JSON`.
-- `model large` with no argument prints the current selection as `provider/id`,
-  usable in `$(model large)`.
+- `model main` with no argument prints the current selection as `provider/id`,
+  usable in `$(model main)`.
+- `model large` is still accepted as a deprecated alias for `model main`.
 
-`large` is the primary coding model; `small` is used for summarization.
+`main` is the model the conversation runs on; `small` serves internal work only
+(session titles, the permission reviewer, and the `agentic_fetch` subagent).
 
 ### mcp
 
@@ -369,7 +371,7 @@ The `$schema` property enables IDE autocomplete but is optional.
 | ------------------------------------ | ------------------------------------------------------ |
 | `provider add openai --api-key "$K"` | `providers.openai = {"api_key": "$K"}`                 |
 | `model add openai/gpt-x --name X`    | append to `providers.openai.models[]`                  |
-| `model large openai/gpt-x`           | `models.large = {"provider":"openai","model":"gpt-x"}` |
+| `model main openai/gpt-x`            | `models.main = {"provider":"openai","model":"gpt-x"}`  |
 | `mcp add gh --type http --url U`     | `mcp.gh = {"type":"http","url":"U"}`                   |
 | `lsp add go --command gopls`         | `lsp.go = {"command":"gopls"}`                         |
 | `hook add PreToolUse --command C`    | append to `hooks.PreToolUse[]`                         |

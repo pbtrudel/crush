@@ -1480,11 +1480,11 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(1000), large.MaxTokens)
-		// The small slot follows the large one so a fresh config never
-		// bills a second model the user did not choose.
-		require.Equal(t, "large-model", small.Model)
+		// The small slot takes the provider's declared small model: it only
+		// serves internal work such as titles.
+		require.Equal(t, "small-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(1000), small.MaxTokens)
+		require.Equal(t, int64(500), small.MaxTokens)
 	})
 	t.Run("should error if no providers configured", func(t *testing.T) {
 		knownProviders := []catwalk.Provider{
@@ -1676,11 +1676,11 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(1000), large.MaxTokens)
-		// The small slot follows the large one so a fresh config never
-		// bills a second model the user did not choose.
-		require.Equal(t, "large-model", small.Model)
+		// The small slot takes the provider's declared small model: it only
+		// serves internal work such as titles.
+		require.Equal(t, "small-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(1000), small.MaxTokens)
+		require.Equal(t, int64(500), small.MaxTokens)
 	})
 }
 
@@ -1899,7 +1899,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 	t.Run("reload mode should not persist fallback defaults", func(t *testing.T) {
 		dir := t.TempDir()
 		globalPath := filepath.Join(dir, "crush.json")
-		require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{"large":{"provider":"ghost","model":"missing"}}}`), 0o600))
+		require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{"main":{"provider":"ghost","model":"missing"}}}`), 0o600))
 
 		knownProviders := []catwalk.Provider{
 			{
@@ -1916,7 +1916,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		cfg := &Config{
 			Models: map[SelectedModelType]SelectedModel{
-				SelectedModelTypeLarge: {Provider: "ghost", Model: "missing"},
+				SelectedModelTypeMain: {Provider: "ghost", Model: "missing"},
 			},
 		}
 		cfg.setDefaults(dir, "")
@@ -1928,14 +1928,14 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
 		require.NoError(t, resolveErr)
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeMain] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
 
 		// The selection is kept even though the catalog does not list it,
 		// so no other model can be billed in its place.
 		require.True(t, resolved.LargeFallback)
-		require.Equal(t, "ghost", cfg.Models[SelectedModelTypeLarge].Provider)
-		require.Equal(t, "missing", cfg.Models[SelectedModelTypeLarge].Model)
+		require.Equal(t, "ghost", cfg.Models[SelectedModelTypeMain].Provider)
+		require.Equal(t, "missing", cfg.Models[SelectedModelTypeMain].Model)
 
 		// Disk remains unchanged (resolveSelectedModels never persists).
 		data, readErr := os.ReadFile(globalPath)
@@ -1969,7 +1969,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		cfg := &Config{
 			Models: map[SelectedModelType]SelectedModel{
-				"large": {
+				"main": {
 					Model: "larger-model",
 				},
 			},
@@ -1982,17 +1982,18 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
 		require.NoError(t, resolveErr)
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeMain] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
-		large := cfg.Models[SelectedModelTypeLarge]
+		large := cfg.Models[SelectedModelTypeMain]
 		small := cfg.Models[SelectedModelTypeSmall]
 		require.Equal(t, "larger-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(2000), large.MaxTokens)
-		// With no small selection, the small slot follows the large one.
-		require.Equal(t, "larger-model", small.Model)
+		// With no small selection, the small slot takes the provider's
+		// declared small model.
+		require.Equal(t, "small-model", small.Model)
 		require.Equal(t, "openai", small.Provider)
-		require.Equal(t, int64(2000), small.MaxTokens)
+		require.Equal(t, int64(500), small.MaxTokens)
 	})
 	t.Run("should keep reasoning options only for models that reason", func(t *testing.T) {
 		toggleable := catwalk.Reasoning{Thinking: catwalk.ThinkingToggleable}
@@ -2032,7 +2033,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				cfg := &Config{
 					Models: map[SelectedModelType]SelectedModel{
-						SelectedModelTypeLarge: tt.selected,
+						SelectedModelTypeMain:  tt.selected,
 						SelectedModelTypeSmall: tt.selected,
 					},
 				}
@@ -2104,9 +2105,9 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
 		require.NoError(t, resolveErr)
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeMain] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
-		large := cfg.Models[SelectedModelTypeLarge]
+		large := cfg.Models[SelectedModelTypeMain]
 		small := cfg.Models[SelectedModelTypeSmall]
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
@@ -2138,7 +2139,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		cfg := &Config{
 			Models: map[SelectedModelType]SelectedModel{
-				"large": {
+				"main": {
 					MaxTokens: 100,
 				},
 			},
@@ -2151,9 +2152,9 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
 		require.NoError(t, resolveErr)
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeMain] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
-		large := cfg.Models[SelectedModelTypeLarge]
+		large := cfg.Models[SelectedModelTypeMain]
 		require.Equal(t, "large-model", large.Model)
 		require.Equal(t, "openai", large.Provider)
 		require.Equal(t, int64(100), large.MaxTokens)
@@ -2178,7 +2179,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 
 		cfg := &Config{
 			Models: map[SelectedModelType]SelectedModel{
-				SelectedModelTypeLarge: {Provider: "openai", Model: "this-model-does-not-exist"},
+				SelectedModelTypeMain:  {Provider: "openai", Model: "this-model-does-not-exist"},
 				SelectedModelTypeSmall: {Provider: "openai", Model: "also-does-not-exist"},
 			},
 		}
@@ -2769,4 +2770,63 @@ func TestNormalizeProviderType(t *testing.T) {
 	} {
 		require.Equal(t, want, NormalizeProviderType(in), string(in))
 	}
+}
+
+func TestMigrateModelSlots(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renames the large slot and leaves main alone", func(t *testing.T) {
+		t.Parallel()
+
+		in := `{"models":{"large":{"provider":"openai","model":"gpt-4o"},"small":{"provider":"openai","model":"gpt-4o-mini"}}}`
+		out, changed := migrateModelSlots([]byte(in))
+		require.True(t, changed)
+
+		var root map[string]any
+		require.NoError(t, json.Unmarshal(out, &root))
+		models := root["models"].(map[string]any)
+		require.NotContains(t, models, "large")
+		require.Equal(t, "gpt-4o", models["main"].(map[string]any)["model"])
+		require.Equal(t, "gpt-4o-mini", models["small"].(map[string]any)["model"])
+	})
+
+	t.Run("keeps a main slot that already exists", func(t *testing.T) {
+		t.Parallel()
+
+		in := `{"models":{"large":{"provider":"openai","model":"old"},"main":{"provider":"openai","model":"new"}}}`
+		out, changed := migrateModelSlots([]byte(in))
+		require.True(t, changed)
+
+		var root map[string]any
+		require.NoError(t, json.Unmarshal(out, &root))
+		models := root["models"].(map[string]any)
+		require.NotContains(t, models, "large")
+		require.Equal(t, "new", models["main"].(map[string]any)["model"])
+	})
+
+	t.Run("renames recent models and agent references", func(t *testing.T) {
+		t.Parallel()
+
+		in := `{"recent_models":{"large":[{"provider":"openai","model":"gpt-4o"}]},"agents":{"coder":{"model":"large"},"task":{"model":"small"}}}`
+		out, changed := migrateModelSlots([]byte(in))
+		require.True(t, changed)
+
+		var root map[string]any
+		require.NoError(t, json.Unmarshal(out, &root))
+		recent := root["recent_models"].(map[string]any)
+		require.NotContains(t, recent, "large")
+		require.Len(t, recent["main"], 1)
+		agents := root["agents"].(map[string]any)
+		require.Equal(t, "main", agents["coder"].(map[string]any)["model"])
+		require.Equal(t, "small", agents["task"].(map[string]any)["model"])
+	})
+
+	t.Run("is a no-op for a current config", func(t *testing.T) {
+		t.Parallel()
+
+		in := `{"models":{"main":{"provider":"openai","model":"gpt-4o"}}}`
+		out, changed := migrateModelSlots([]byte(in))
+		require.False(t, changed)
+		require.Equal(t, in, string(out))
+	})
 }
