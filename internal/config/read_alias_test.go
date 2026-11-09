@@ -15,6 +15,6 @@ func TestReadToolAliasInDefaultToolLists(t *testing.T) {
 
 	all := allToolNames()
 	require.Contains(t, all, "read")
-	require.Contains(t, resolveReadOnlyTools(all), "read")
+	require.Contains(t, resolveSubAgentTools(all), "read")
 	require.Contains(t, resolvePlanTools(all), "read")
 }

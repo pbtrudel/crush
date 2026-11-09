@@ -53,3 +53,21 @@ func TestResolveSubAgentPreset(t *testing.T) {
 		require.ErrorContains(t, err, "disabled")
 	})
 }
+
+// TestWriteAgentConfigInheritsCoderMCPs pins that the read-write subagent
+// gets the coder's MCP servers. It used to inherit the task preset's empty
+// allow-list, so a subagent could not call any MCP tool the Lead could.
+func TestWriteAgentConfigInheritsCoderMCPs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Agents: map[string]config.Agent{
+			config.AgentTask:  {ID: config.AgentTask, AllowedTools: []string{"glob"}},
+			config.AgentCoder: {ID: config.AgentCoder, AllowedTools: []string{"glob", "write"}, AllowedMCP: map[string][]string{"github": nil}},
+		},
+	}
+
+	write := writeAgentConfig(cfg)
+	require.Equal(t, []string{"glob", "write"}, write.AllowedTools)
+	require.Equal(t, map[string][]string{"github": nil}, write.AllowedMCP)
+}

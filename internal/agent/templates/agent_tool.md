@@ -5,7 +5,7 @@ Use this to:
 - Keep your own context clean. A subagent can read a large amount of material and hand back only the conclusion, which extends how long this session runs before it needs compaction.
 
 Set `access` to choose how much the subagent can do:
-- `read` (the default) gives it glob, grep, ls, view, bash, and the LSP tools. It can inspect and run things but cannot change files. Use it for review, search, and investigation.
+- `read` (the default) gives it everything you have except the editing tools: glob, grep, ls, view, bash, the LSP tools, fetch, jobs, todos, and every MCP server. It can inspect and run things but cannot change files. Use it for review, search, and investigation.
 - `write` adds the editing tools, so it can carry out a change end to end. Use it when the task is a self-contained piece of work you want done rather than described. Give it a scope it will not collide with, since parallel write subagents editing the same files will clobber each other.
 
 Either way the subagent cannot launch further subagents.

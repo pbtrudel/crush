@@ -38,12 +38,13 @@ const (
 )
 
 // writeAgentConfig derives the read-write variant of the task agent: the same
-// agent, given the coder's tools. Subagents never get the delegation tools;
-// effectiveToolNames strips them.
+// agent, given the coder's tools and MCP servers. Subagents never get the
+// delegation tools; effectiveToolNames strips them.
 func writeAgentConfig(cfg *config.Config) config.Agent {
 	task := cfg.Agents[config.AgentTask]
 	if coder, ok := cfg.Agents[config.AgentCoder]; ok {
 		task.AllowedTools = slices.Clone(coder.AllowedTools)
+		task.AllowedMCP = coder.AllowedMCP
 	}
 	return task
 }

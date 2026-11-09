@@ -812,7 +812,8 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"bash", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"bash", "crush_info", "crush_logs", "job_output", "job_kill", "download", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "fetch", "glob", "grep", "ls", "sourcegraph", "todos", "view", "read", "list_mcp_resources", "read_mcp_resource", "mcp_servers"}, taskAgent.AllowedTools)
+	assert.Nil(t, taskAgent.AllowedMCP, "subagents use every MCP server, like the coder")
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
@@ -838,7 +839,7 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"bash", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "sourcegraph", "view", "read"}, taskAgent.AllowedTools)
+	assert.Equal(t, []string{"bash", "crush_info", "crush_logs", "job_output", "job_kill", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "fetch", "glob", "ls", "sourcegraph", "todos", "view", "read", "list_mcp_resources", "read_mcp_resource", "mcp_servers"}, taskAgent.AllowedTools)
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
@@ -871,7 +872,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Len(t, taskAgent.AllowedTools, 0)
+	assert.Equal(t, []string{"crush_info", "crush_logs", "job_output", "job_kill", "download", "lsp_diagnostics", "lsp_references", "lsp_restart", "fetch", "todos", "list_mcp_resources", "read_mcp_resource", "mcp_servers"}, taskAgent.AllowedTools)
 
 	planAgent, ok := cfg.Agents[AgentPlan]
 	require.True(t, ok)
