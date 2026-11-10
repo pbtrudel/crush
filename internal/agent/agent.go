@@ -3216,7 +3216,7 @@ type titleAttempt struct {
 func titleAttempts(small, large Model) []titleAttempt {
 	attempts := []titleAttempt{{"small", small}}
 	if !sameModel(small, large) {
-		attempts = append(attempts, titleAttempt{"large", large})
+		attempts = append(attempts, titleAttempt{"main", large})
 	}
 	return attempts
 }

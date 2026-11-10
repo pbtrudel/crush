@@ -20,7 +20,7 @@ func newTestAuthMethod() *AuthMethod {
 		false,
 		catwalk.Provider{ID: catwalk.InferenceProviderOpenAI, Name: "OpenAI"},
 		config.SelectedModel{Provider: "openai", Model: "gpt-5.1"},
-		config.SelectedModelTypeLarge,
+		config.SelectedModelTypeMain,
 	)
 }
 
@@ -36,7 +36,7 @@ func TestAuthMethodDefaultsToOAuth(t *testing.T) {
 	require.True(t, selected.UseOAuth)
 	require.Equal(t, "openai", string(selected.Provider.ID))
 	require.Equal(t, "gpt-5.1", selected.Model.Model)
-	require.Equal(t, config.SelectedModelTypeLarge, selected.ModelType)
+	require.Equal(t, config.SelectedModelTypeMain, selected.ModelType)
 }
 
 func TestAuthMethodTogglesToAPIKey(t *testing.T) {

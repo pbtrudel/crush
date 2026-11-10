@@ -434,7 +434,7 @@ func (b *Bridge) setYolo(on bool) {
 // changeModel switches the preferred large model and rebuilds the agent
 // models, then notifies the TUI.
 func (b *Bridge) changeModel(ctx context.Context, sel config.SelectedModel) error {
-	if err := b.env.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, sel); err != nil {
+	if err := b.env.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeMain, sel); err != nil {
 		return err
 	}
 	if err := b.env.UpdateAgentModel(ctx); err != nil {
@@ -2094,7 +2094,7 @@ func (b *Bridge) modelContextWindow() int64 {
 	if cfg == nil {
 		return 0
 	}
-	sel, ok := cfg.Models[config.SelectedModelTypeLarge]
+	sel, ok := cfg.Models[config.SelectedModelTypeMain]
 	if !ok {
 		return 0
 	}

@@ -520,17 +520,17 @@ func overrideModels(
 	var largeProviderID string
 
 	if largeModel != "" {
-		found, err := validateModelMatches(largeMatches, largeModel, "large")
+		found, err := validateModelMatches(largeMatches, largeModel, "main")
 		if err != nil {
 			return err
 		}
 		largeProviderID = found.provider
-		slog.Info("Overriding large model", "provider", found.provider, "model", found.modelID)
-		if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, config.SelectedModel{
+		slog.Info("Overriding the main model", "provider", found.provider, "model", found.modelID)
+		if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeMain, config.SelectedModel{
 			Provider: found.provider,
 			Model:    found.modelID,
 		}); err != nil {
-			return fmt.Errorf("failed to set large model: %w", err)
+			return fmt.Errorf("failed to set the main model: %w", err)
 		}
 	}
 
@@ -585,7 +585,7 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 	}
 
 	cfg := ws.Config
-	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
+	currentLarge := cfg.Models[config.SelectedModelTypeMain]
 	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
 		return nil
 	}
@@ -601,8 +601,8 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 		Provider: lastAssistant.Provider,
 		Model:    lastAssistant.Model,
 	}
-	if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selectedModel); err != nil {
-		return fmt.Errorf("failed to set large model: %w", err)
+	if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeMain, selectedModel); err != nil {
+		return fmt.Errorf("failed to set the main model: %w", err)
 	}
 
 	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
@@ -620,7 +620,7 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 }
 
 // overrideReasoningEffort validates the requested reasoning effort against
-// the large model in effect for this run (which may have been overridden by
+// the main model in effect for this run (which may have been overridden by
 // --model or restored from a continued session) and applies it on the
 // server.
 func overrideReasoningEffort(ctx context.Context, c *client.Client, wsID, reasoningEffort string) error {
@@ -629,9 +629,9 @@ func overrideReasoningEffort(ctx context.Context, c *client.Client, wsID, reason
 		return fmt.Errorf("failed to get config: %w", err)
 	}
 
-	selected, ok := cfg.Models[config.SelectedModelTypeLarge]
+	selected, ok := cfg.Models[config.SelectedModelTypeMain]
 	if !ok {
-		return fmt.Errorf("no large model selected; set one with the --model flag or 'model large'")
+		return fmt.Errorf("no model selected; set one with the --model flag or 'model main'")
 	}
 	if err := cfg.ValidateReasoningEffort(selected.Provider, selected.Model, reasoningEffort); err != nil {
 		return err
@@ -641,7 +641,7 @@ func overrideReasoningEffort(ctx context.Context, c *client.Client, wsID, reason
 		"provider", selected.Provider,
 		"model", selected.Model,
 		"reasoning_effort", reasoningEffort)
-	if err := c.UpdatePreferredModel(ctx, wsID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selected); err != nil {
+	if err := c.UpdatePreferredModel(ctx, wsID, config.ScopeWorkspace, config.SelectedModelTypeMain, selected); err != nil {
 		return fmt.Errorf("failed to set reasoning effort: %w", err)
 	}
 	return c.UpdateAgent(ctx, wsID)

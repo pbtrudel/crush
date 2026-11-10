@@ -54,7 +54,7 @@ func NewCoordinator(
 		Models:  []catwalk.Model{{ID: modelID, DefaultMaxTokens: 4096}},
 	})
 	selected := config.SelectedModel{Provider: providerID, Model: modelID}
-	cfg.OverridePreferredModel(config.SelectedModelTypeLarge, selected)
+	cfg.OverridePreferredModel(config.SelectedModelTypeMain, selected)
 	cfg.OverridePreferredModel(config.SelectedModelTypeSmall, selected)
 	cfg.SetupAgents()
 

@@ -573,6 +573,14 @@
             32768
           ]
         },
+        "max_images": {
+          "type": "integer",
+          "description": "Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.",
+          "default": 100,
+          "examples": [
+            50
+          ]
+        },
         "skills_paths": {
           "items": {
             "type": "string",
@@ -759,7 +767,7 @@
         },
         "agent_teams": {
           "type": "boolean",
-          "description": "Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.",
+          "description": "Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.",
           "default": true
         },
         "repeat_tool_reminders": {
@@ -801,6 +809,11 @@
           },
           "type": "array",
           "description": "List of tools that don't require permission prompts"
+        },
+        "auto_review": {
+          "type": "boolean",
+          "description": "Use a model to review tool calls before prompting the user",
+          "default": false
         },
         "blocked_commands": {
           "items": {

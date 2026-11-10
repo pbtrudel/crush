@@ -153,7 +153,7 @@ func TestDiscovery_StartupKeepsSelectionAndRefreshesInBackground(t *testing.T) {
 		"options": {"disable_default_providers": true},
 		"providers": {"local": {"base_url": %q}},
 		"models": {
-			"large": {"provider": "local", "model": "b"},
+			"main": {"provider": "local", "model": "b"},
 			"small": {"provider": "local", "model": "b"}
 		}
 	}`, server.URL+"/v1"))
@@ -166,7 +166,7 @@ func TestDiscovery_StartupKeepsSelectionAndRefreshesInBackground(t *testing.T) {
 	require.Equal(t, before, server.requests.Load(), "a cached provider is not probed during startup")
 
 	cfg := store.Config()
-	require.Equal(t, "b", cfg.Models[SelectedModelTypeLarge].Model)
+	require.Equal(t, "b", cfg.Models[SelectedModelTypeMain].Model)
 	p, ok := cfg.Providers.Get("local")
 	require.True(t, ok)
 	require.Equal(t, []string{"a", "b"}, modelIDs(p.Models))

@@ -33,7 +33,7 @@ func TestUpdateModelsRefreshesAgentModel(t *testing.T) {
 			{ID: "model-b", DefaultMaxTokens: 4096},
 		},
 	})
-	cfg.OverridePreferredModel(config.SelectedModelTypeLarge,
+	cfg.OverridePreferredModel(config.SelectedModelTypeMain,
 		config.SelectedModel{Provider: providerID, Model: "model-a"})
 	cfg.OverridePreferredModel(config.SelectedModelTypeSmall,
 		config.SelectedModel{Provider: providerID, Model: "model-a"})
@@ -54,7 +54,7 @@ func TestUpdateModelsRefreshesAgentModel(t *testing.T) {
 	require.Equal(t, "model-a", coord.Model().ModelCfg.Model,
 		"the coordinator must report the initially configured model")
 
-	cfg.OverridePreferredModel(config.SelectedModelTypeLarge,
+	cfg.OverridePreferredModel(config.SelectedModelTypeMain,
 		config.SelectedModel{Provider: providerID, Model: "model-b"})
 	require.NoError(t, coord.UpdateModels(t.Context()))
 

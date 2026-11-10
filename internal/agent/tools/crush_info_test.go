@@ -51,14 +51,14 @@ func TestCrushInfo_Models(t *testing.T) {
 
 	cfg := config.NewTestStore(&config.Config{
 		Models: map[config.SelectedModelType]config.SelectedModel{
-			config.SelectedModelTypeLarge: {Model: "claude-sonnet-4-20250514", Provider: "anthropic"},
+			config.SelectedModelTypeMain:  {Model: "claude-sonnet-4-20250514", Provider: "anthropic"},
 			config.SelectedModelTypeSmall: {Model: "claude-haiku-3-20250307", Provider: "anthropic"},
 		},
 		Providers: csync.NewMap[string, config.ProviderConfig](),
 	})
 	output := buildCrushInfo(cfg, nil, nil, nil, nil)
 	require.Contains(t, output, "[model]")
-	require.Contains(t, output, "large = claude-sonnet-4-20250514 (anthropic)")
+	require.Contains(t, output, "main = claude-sonnet-4-20250514 (anthropic)")
 	require.Contains(t, output, "small = claude-haiku-3-20250307 (anthropic)")
 }
 

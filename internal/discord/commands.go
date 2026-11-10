@@ -306,7 +306,7 @@ func (b *Bridge) commandStatus(ctx context.Context) string {
 	model := "unknown"
 	var selected config.SelectedModel
 	if cfg := b.env.Config(); cfg != nil {
-		if sel, ok := cfg.Models[config.SelectedModelTypeLarge]; ok {
+		if sel, ok := cfg.Models[config.SelectedModelTypeMain]; ok {
 			selected = sel
 			model = sel.Provider + "/" + sel.Model
 		}
@@ -389,7 +389,7 @@ func currentModelType(cfg *config.Config) config.SelectedModelType {
 			return agentCfg.Model
 		}
 	}
-	return config.SelectedModelTypeLarge
+	return config.SelectedModelTypeMain
 }
 
 // currentEffort returns the effort that applies to the selected model.

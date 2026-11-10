@@ -376,7 +376,7 @@ func newFakeEnv() *fakeEnv {
 		cfg: &config.Config{
 			Providers: csync.NewMap[string, config.ProviderConfig](),
 			Models: map[config.SelectedModelType]config.SelectedModel{
-				config.SelectedModelTypeLarge: {Provider: "openai", Model: "gpt-4o"},
+				config.SelectedModelTypeMain: {Provider: "openai", Model: "gpt-4o"},
 			},
 			Options: &config.Options{
 				DataDirectory: filepath.Join(os.TempDir(), "crush-discord-tests"),

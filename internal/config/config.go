@@ -54,7 +54,11 @@ func (s SelectedModelType) String() string {
 }
 
 const (
-	SelectedModelTypeLarge SelectedModelType = "large"
+	// SelectedModelTypeMain is the model the user selected: it serves the
+	// conversation and every user-facing turn.
+	SelectedModelTypeMain SelectedModelType = "main"
+	// SelectedModelTypeSmall serves internal work only: session titles,
+	// the permission reviewer, and the agentic_fetch subagent.
 	SelectedModelTypeSmall SelectedModelType = "small"
 )
 
@@ -467,7 +471,7 @@ type Options struct {
 	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
 	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
-	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. When exceeded, the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
 	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
@@ -509,7 +513,7 @@ type Options struct {
 	BackgroundJobNotifications *bool        `json:"background_job_notifications,omitempty" jsonschema:"description=Notify the agent in-session when a background shell finishes, instead of requiring job_output polling.,default=true"`
 	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
 	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
-	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
+	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
@@ -988,7 +992,7 @@ type Agent struct {
 	// This is the id of the system prompt used by the agent
 	Disabled bool `json:"disabled,omitempty"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=main,enum=small,default=main"`
 
 	// The available tools for the agent
 	//  if this is nil, all tools are available
@@ -1046,8 +1050,8 @@ type HookConfig = hooks.HookConfig
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
 
-	// We currently only support large/small as values here.
-	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
+	// We currently only support main/small as values here.
+	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"main\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
@@ -1242,7 +1246,7 @@ func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
 }
 
 func (c *Config) LargeModel() *catwalk.Model {
-	model, ok := c.Models[SelectedModelTypeLarge]
+	model, ok := c.Models[SelectedModelTypeMain]
 	if !ok {
 		return nil
 	}
@@ -1255,6 +1259,59 @@ func (c *Config) SmallModel() *catwalk.Model {
 		return nil
 	}
 	return c.GetModel(model.Provider, model.Model)
+}
+
+// preferredSmallModelID is the model Crush picks for internal work when the
+// user has not chosen one. It only serves session titles, the permission
+// reviewer, and the agentic_fetch subagent, so a cheap fast model is enough.
+const preferredSmallModelID = "deepseek-v4.1-flash"
+
+// DefaultSmallModel returns the small slot to use on providerID when the user
+// has not configured one: the preferred cheap model when that provider serves
+// it, then the provider's declared small model, then the main model itself.
+// main is the fallback so a provider with no small model never leaves the
+// slot empty.
+func (c *Config) DefaultSmallModel(providerID string, main SelectedModel, knownProviders []catwalk.Provider) SelectedModel {
+	if providerID == "" {
+		return main
+	}
+
+	if providerCfg, ok := c.Providers.Get(providerID); ok {
+		for _, model := range providerCfg.UsableModels() {
+			if !isPreferredSmallModel(model.ID) {
+				continue
+			}
+			return SelectedModel{
+				Provider:        providerID,
+				Model:           model.ID,
+				MaxTokens:       model.DefaultMaxTokens,
+				ReasoningEffort: model.Reasoning.DefaultEffortLevel,
+			}
+		}
+	}
+
+	for _, p := range knownProviders {
+		if string(p.ID) != providerID {
+			continue
+		}
+		if model := c.GetModel(providerID, p.DefaultSmallModelID); model != nil {
+			return SelectedModel{
+				Provider:        providerID,
+				Model:           model.ID,
+				MaxTokens:       model.DefaultMaxTokens,
+				ReasoningEffort: model.Reasoning.DefaultEffortLevel,
+			}
+		}
+	}
+	return main
+}
+
+// isPreferredSmallModel reports whether id names the preferred small model.
+// Providers prefix their catalog ids inconsistently (commandcode serves
+// "deepseek/deepseek-v4.1-flash", neuralwatt "deepseek-v4.1-flash"), so the
+// suffix is what identifies the model.
+func isPreferredSmallModel(id string) bool {
+	return id == preferredSmallModelID || strings.HasSuffix(id, "/"+preferredSmallModelID)
 }
 
 const maxRecentModelsPerType = 5
@@ -1402,7 +1459,7 @@ func (c *Config) SetupAgents() {
 		ID:           AgentCoder,
 		Name:         "Coder",
 		Description:  "An agent that helps with executing coding tasks.",
-		Model:        SelectedModelTypeLarge,
+		Model:        SelectedModelTypeMain,
 		ContextPaths: c.Options.ContextPaths,
 		AllowedTools: allowedTools,
 	}
@@ -1414,7 +1471,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentTask,
 			Name:         "Task",
 			Description:  "An agent that helps with searching for context and finding implementation details.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolveSubAgentTools(allowedTools),
 			// A subagent works with the same MCP servers as the coder.
@@ -1425,7 +1482,7 @@ func (c *Config) SetupAgents() {
 			ID:           AgentPlan,
 			Name:         "Plan",
 			Description:  "An agent that performs deep analysis and prepares implementation plans without modifying files.",
-			Model:        SelectedModelTypeLarge,
+			Model:        SelectedModelTypeMain,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: resolvePlanTools(allowedTools),
 			// NO MCPs or LSPs by default

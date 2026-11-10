@@ -51,7 +51,7 @@ func newModelsForTest(t *testing.T, cfg *config.Config, providers []catwalk.Prov
 	m := &Models{
 		com:              com,
 		isOnboarding:     isOnboarding,
-		modelType:        ModelTypeLarge,
+		modelType:        ModelTypeMain,
 		providers:        providers,
 		list:             NewModelsList(&sty),
 		showAllProviders: isOnboarding || cfg.Options.GetShowAllProviders(),
@@ -132,7 +132,7 @@ func TestModelItemCyclesReasoningEffort(t *testing.T) {
 		},
 	}
 
-	item := NewModelItem(&sty, prov, model, ModelTypeLarge, false)
+	item := NewModelItem(&sty, prov, model, ModelTypeMain, false)
 	require.Equal(t, "medium", item.SelectedModel().ReasoningEffort)
 
 	require.True(t, item.CycleReasoningEffort())
@@ -149,7 +149,7 @@ func TestModelItemWithoutReasoningLevelsDoesNotCycle(t *testing.T) {
 	prov := catwalk.Provider{ID: "test", Name: "Test"}
 	model := catwalk.Model{ID: "plain", Name: "Plain"}
 
-	item := NewModelItem(&sty, prov, model, ModelTypeLarge, false)
+	item := NewModelItem(&sty, prov, model, ModelTypeMain, false)
 	require.False(t, item.CycleReasoningEffort())
 	require.Empty(t, item.SelectedModel().ReasoningEffort)
 }

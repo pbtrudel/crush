@@ -704,7 +704,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	// Seed the active theme key from the large model provider so the
 	// first model selection can correctly skip a redundant theme swap.
 	if cfg := com.Config(); cfg != nil {
-		ui.themeKey = styles.ThemeKeyForProvider(cfg.Models[config.SelectedModelTypeLarge].Provider)
+		ui.themeKey = styles.ThemeKeyForProvider(cfg.Models[config.SelectedModelTypeMain].Provider)
 		ui.userThemeSelected = common.ThemeNameFromConfig(cfg) != ""
 	}
 
@@ -3388,7 +3388,7 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		return nil
 	}
 
-	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
+	currentLarge := cfg.Models[config.SelectedModelTypeMain]
 	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
 		return nil
 	}
@@ -3404,7 +3404,7 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		Provider: lastAssistant.Provider,
 		Model:    lastAssistant.Model,
 	}
-	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, selectedModel); err != nil {
+	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeMain, selectedModel); err != nil {
 		slog.Error("Failed to restore model from session", "error", err)
 		return nil
 	}
@@ -3527,7 +3527,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
 		cmds = append(cmds, util.ReportError(err))
 	} else {
-		if msg.ModelType == config.SelectedModelTypeLarge {
+		if msg.ModelType == config.SelectedModelTypeMain {
 			// A different model has its own throughput, so the average
 			// accumulated under the previous one is dropped. Re-selecting
 			// the current model keeps it.

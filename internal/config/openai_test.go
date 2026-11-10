@@ -407,7 +407,7 @@ func TestLoadRefreshesChatGPTModelsWhenCatwalkUpdates(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "gpt-fresh", pc.ChatGPTModels[0].ID, "the stale catalog is replaced")
 
-	large, ok := store.Config().Models[SelectedModelTypeLarge]
+	large, ok := store.Config().Models[SelectedModelTypeMain]
 	require.True(t, ok)
 	require.Equal(t, "gpt-5.1", large.Model, "the resolved default model survives the catalog refresh")
 }

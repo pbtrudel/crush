@@ -1476,7 +1476,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		if !json.Valid(wsData) {
 			return fmt.Errorf("invalid JSON in config file %s", workspacePath)
 		}
-		wsData = migrateCatwalkV2File(workspacePath, wsData)
+		wsData = migrateConfigFile(workspacePath, wsData)
 		merged, mergeErr := loadFromBytes(append([][]byte{mustMarshalConfig(cfg)}, wsData))
 		if mergeErr == nil {
 			dataDir := cfg.Options.DataDirectory
@@ -1535,7 +1535,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		if resolveErr != nil {
 			return fmt.Errorf("failed to configure selected models during reload: %w", resolveErr)
 		}
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeMain] = resolved.Large
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
 		resolvedModels = true
 	}

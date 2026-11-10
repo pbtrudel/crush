@@ -82,7 +82,7 @@ func TestLoadShellConfig_Model(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	script := `model large openai/gpt-4o --think
+	script := `model main openai/gpt-4o --think
 model small anthropic/claude-3-5-haiku`
 	path := filepath.Join(dir, "crushrc")
 
@@ -93,7 +93,7 @@ model small anthropic/claude-3-5-haiku`
 	require.NoError(t, json.Unmarshal(jsonBytes, &result))
 
 	models := result["models"].(map[string]any)
-	large := models["large"].(map[string]any)
+	large := models["main"].(map[string]any)
 	require.Equal(t, "openai", large["provider"])
 	require.Equal(t, "gpt-4o", large["model"])
 	require.Equal(t, true, large["think"])
@@ -463,7 +463,7 @@ provider add anthropic --api-key "$ANTHROPIC_API_KEY"
 provider add my-llm --type openai --api-key "ollama" --base-url "http://localhost:11434/v1"
 
 # Models
-model large openai/gpt-4o --think
+model main openai/gpt-4o --think
 model small anthropic/claude-3-5-haiku
 
 # MCP
@@ -501,7 +501,7 @@ option metrics false`
 
 	// Verify models
 	models := result["models"].(map[string]any)
-	large := models["large"].(map[string]any)
+	large := models["main"].(map[string]any)
 	require.Equal(t, "openai", large["provider"])
 	require.Equal(t, "gpt-4o", large["model"])
 	require.Equal(t, true, large["think"])

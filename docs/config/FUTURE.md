@@ -14,11 +14,11 @@ it as a scratchpad for what's next, not as documentation of current behavior.
 ### Motivation
 
 Right now `crushrc` runs once, at startup. If you want to change something
-mid-session — swap the large model, allow a tool, add an MCP server — you edit
+mid-session — swap the main model, allow a tool, add an MCP server — you edit
 the file and restart.
 
 The idea: let the agent's `bash` tool run the same config commands
-(`model large …`, `option …`, `mcp add …`) to reconfigure the **running
+(`model main …`, `option …`, `mcp add …`) to reconfigure the **running
 session**. The mental model is exactly a shell and its `.bashrc`:
 
 - Running a config command changes the **current session only** — like typing
@@ -72,7 +72,7 @@ Each applies immediately to the session and is forgotten on exit.
 3. **Reconcile subsystems**, roughly in order of difficulty:
    - Easy: `option` flags, `permissions allow`, disabled tools/skills — read
      on demand.
-   - Medium: `model large|small` — already reconciled live by the switch
+   - Medium: `model main|small` — already reconciled live by the switch
      dialog.
    - Harder: `provider add` — rebuild the model client with the new
      key/base-url.
@@ -103,7 +103,7 @@ larger, later increment.
 - Should a live change be echoed back to the user somehow ("switched large
   model to …"), so it's not silent?
 - Do we want a way to *see* the effective live config from the bash tool
-  (a read-only `option get` / `model large` print)? `model large` already
+  (a read-only `option get` / `model main` print)? `model main` already
   prints its selection; a broader introspection surface could follow.
 - Should subagents be allowed to reconfigure the session, or only the
   top-level agent? Probably top-level only, mirroring how hooks scope.

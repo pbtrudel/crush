@@ -197,7 +197,7 @@ Usage:
 
 ### model
 
-Manage custom models and the large/small model slots. Model references use the
+Manage custom models and the main/small model slots. Model references use the
 same `<provider>/<id>` form printed by `crush models`.
 
 ```text
@@ -208,7 +208,7 @@ Available Commands:
   add       Register a custom model on an existing provider
   remove    Remove a custom model
   rm        Alias for remove
-  large     Set or print the large model
+  main      Set or print the selected model
   small     Set or print the small model
 ```
 
@@ -244,14 +244,16 @@ Usage:
   model rm <provider>/<id>
 ```
 
-#### `model large`, `model small`
+#### `model main`, `model small`
 
-Set the large or small model slot. With no model argument, print the current
-selection.
+Set the main or small model slot. The main slot is the model Crush runs the
+conversation on; the small slot serves internal work only (session titles, the
+permission reviewer, and the `agentic_fetch` subagent). With no model argument,
+print the current selection.
 
 ```text
 Usage:
-  model large [<provider>/<id>] [flags]
+  model main [<provider>/<id>] [flags]
   model small [<provider>/<id>] [flags]
 
 Flags:
@@ -267,8 +269,8 @@ Flags:
 ```
 
 ```bash
-model large openai/gpt-4o --think
-echo "coding with: $(model large)"   # prints: openai/gpt-4o
+model main openai/gpt-4o --think
+echo "coding with: $(model main)"   # prints: openai/gpt-4o
 ```
 
 ### mcp
@@ -631,7 +633,7 @@ to Bash-based config.
     "anthropic": { "api_key": "$ANTHROPIC_API_KEY" },
   },
   "models": {
-    "large": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "main": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
   },
   "permissions": { "allowed_tools": ["view", "ls", "grep"] },
 }
