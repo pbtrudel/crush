@@ -471,7 +471,7 @@ type Options struct {
 	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
 	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
-	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. When exceeded, the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
 	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
@@ -513,7 +513,7 @@ type Options struct {
 	BackgroundJobNotifications *bool        `json:"background_job_notifications,omitempty" jsonschema:"description=Notify the agent in-session when a background shell finishes, instead of requiring job_output polling.,default=true"`
 	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
 	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
-	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams: named teammates, direct messages, and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
+	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
