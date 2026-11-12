@@ -45,6 +45,11 @@ type ActionSelectModel struct {
 	ReAuthenticate bool
 }
 
+// ActionSelectAgent is a message indicating an agent has been selected.
+type ActionSelectAgent struct {
+	Agent AgentDescriptor
+}
+
 // Messages for commands
 type (
 	ActionNewSession              struct{}

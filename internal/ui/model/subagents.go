@@ -38,6 +38,7 @@ const subAgentIdleRetention = 5 * time.Minute
 // retires on the next render rather than exactly on the deadline.
 func (m *UI) subAgentStatuses() []chat.DispatchStatus {
 	var statuses []chat.DispatchStatus
+	now := time.Now()
 	for i := range m.chat.Len() {
 		item, ok := m.chat.MessageItemAt(i).(*chat.AgentToolMessageItem)
 		if !ok {
@@ -47,13 +48,22 @@ func (m *UI) subAgentStatuses() []chat.DispatchStatus {
 		if !ok {
 			continue
 		}
-		if !status.Running && !status.Finished.IsZero() &&
-			time.Since(status.Finished) > subAgentIdleRetention {
+		if !subAgentStatusRetained(status, now) {
 			continue
 		}
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+// subAgentStatusRetained reports whether a dispatched subagent is still
+// worth showing. A running subagent always is; a finished one retires
+// [subAgentIdleRetention] after its report landed.
+func subAgentStatusRetained(status chat.DispatchStatus, now time.Time) bool {
+	if status.Running || status.Finished.IsZero() {
+		return true
+	}
+	return now.Sub(status.Finished) <= subAgentIdleRetention
 }
 
 // runningSubAgents counts the subagents still working.
