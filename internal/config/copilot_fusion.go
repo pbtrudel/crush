@@ -44,7 +44,7 @@ func withCopilotFusionModels(models []catwalk.Model) []catwalk.Model {
 	for _, model := range models {
 		existing[model.ID] = true
 	}
-	out := make([]catwalk.Model, 0, len(models)+len(copilotFusionTiers))
+	out := make([]catwalk.Model, 0, len(models))
 	out = append(out, models...)
 	for _, model := range []catwalk.Model{
 		fusionModel(CopilotFusionStandardModel, "Copilot Fusion (Standard)"),
