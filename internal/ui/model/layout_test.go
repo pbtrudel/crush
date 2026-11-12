@@ -1,6 +1,7 @@
 package model
 
 import (
+	"image"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,7 +13,9 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/completions"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/stretchr/testify/require"
 )
 
 // testMessageItem is a minimal chat item used to populate the chat list
@@ -85,6 +88,24 @@ func newTestUI() *UI {
 	}
 
 	return u
+}
+
+func TestAgentViewerUILayoutUsesContentRectWithoutChangingMainLayout(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	mainLayout := u.generateLayout(120, 40)
+	u.agentViewer = newAgentViewer(u.com, dialog.AgentDescriptor{SessionID: "child"}, config.ScrollbarDefault, 1)
+	viewerLayout := u.generateLayout(120, 40)
+
+	require.Equal(t, image.Rect(1, 1, 119, 38), viewerLayout.agentViewer)
+	require.Equal(t, mainLayout.main, viewerLayout.main)
+	require.Equal(t, mainLayout.editor, viewerLayout.editor)
+	u.width, u.height = 120, 40
+	u.updateLayoutAndSize()
+	require.Equal(t, viewerLayout.agentViewer.Dx(), u.agentViewer.width)
+	require.Equal(t, viewerLayout.agentViewer.Dy(), u.agentViewer.height)
+	require.Equal(t, viewerLayout.agentViewer.Dy()-2, u.agentViewer.chat.Height())
 }
 
 func TestGenerateLayout_HelpAndSidebarDoNotOverlap(t *testing.T) {

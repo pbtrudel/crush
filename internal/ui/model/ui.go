@@ -218,8 +218,9 @@ type (
 		action dialog.ActionSelectModel
 	}
 
-	// copyChatHighlightMsg is sent to copy the current chat highlight to clipboard.
-	copyChatHighlightMsg struct{}
+	// copyChatHighlightMsg copies the highlight from the chat where the mouse
+	// selection originated, even if the visible chat changes before the delay.
+	copyChatHighlightMsg struct{ chat *Chat }
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
@@ -297,7 +298,8 @@ type UI struct {
 	// themeKey identifies the currently applied theme so applyTheme can
 	// skip the expensive style rebuild when switching to a provider that
 	// resolves to the same theme.
-	themeKey string
+	themeKey        string
+	themeGeneration uint64
 
 	// userThemeSelected records that the user explicitly chose a theme
 	// during this session. It guards against provider-driven theme swaps
@@ -427,6 +429,12 @@ type UI struct {
 
 	// Chat components
 	chat *Chat
+
+	// agentViewer is an independent, read-only transcript shown above the
+	// intact main session. Its generation is UI-global so a replacement cannot
+	// accept an earlier viewer's asynchronous load result.
+	agentViewer           *agentViewer
+	agentViewerGeneration uint64
 
 	// onboarding state
 	onboarding struct {
@@ -1038,15 +1046,16 @@ func (m *UI) loadCustomCommands() tea.Cmd {
 // is moved rather than scrolled to so a large coalesced delta is applied in
 // full instead of being rewound to the selected item.
 func (m *UI) applyChatScroll(lines int) {
-	m.chat.ScrollBy(lines)
-	if m.chat.SelectedItemInView() {
+	chat := m.activeChat()
+	chat.ScrollBy(lines)
+	if chat.SelectedItemInView() {
 		return
 	}
-	if lines > 0 && m.chat.AtBottom() {
-		m.chat.SelectLast()
+	if lines > 0 && chat.AtBottom() {
+		chat.SelectLast()
 		return
 	}
-	m.chat.SelectNearestInView(lines < 0)
+	chat.SelectNearestInView(lines < 0)
 }
 
 // loadMCPrompts loads the MCP prompts asynchronously.
@@ -1234,6 +1243,26 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the same thread; follow it when the TUI is still showing the
 		// cleared session for the bridge it tracks.
 		cmds = append(cmds, m.followRemoteClear(msg)...)
+	case agentViewerLoadMsg:
+		if m.agentViewer == nil {
+			break
+		}
+		viewer := m.agentViewer
+		if msg.generation != viewer.generation || msg.sessionID != viewer.descriptor.SessionID {
+			break
+		}
+		if cmd := viewer.HandleLoad(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if msg.err != nil && !msg.reconcile {
+			cmds = append(cmds, m.closeAgentViewer(), util.ReportError(msg.err))
+		}
+	case agentViewerReconcileMsg:
+		if m.agentViewer != nil {
+			if cmd := m.agentViewer.HandleReconcile(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 	case loadSessionMsg:
 		if m.forceCompactMode {
 			m.isCompact = true
@@ -1409,6 +1438,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.autoExpandPillsIfReasonable()
 		}
 	case pubsub.Event[message.Message]:
+		// The viewer is independent of the main session. Offer it the event
+		// before either the nil-session or non-main early exits, without
+		// suppressing the main transcript's nested-tool handling below.
+		if m.agentViewer != nil {
+			if cmd := m.agentViewer.HandleEvent(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		// Check if this is a child session message for an agent tool.
 		if m.session == nil {
 			break
@@ -1533,11 +1570,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// only reflows visible items; it settles (and recomputes) shortly
 		// after the last resize event.
 		if m.state == uiChat {
-			cmds = append(cmds, m.chat.BeginResize())
+			cmds = append(cmds, m.activeChat().BeginResize())
 		}
 		m.updateLayoutAndSize()
-		if m.state == uiChat && m.chat.Follow() {
-			m.chat.ScrollToBottom()
+		if m.state == uiChat && m.activeChat().Follow() {
+			m.activeChat().ScrollToBottom()
 		}
 	case tea.KeyboardEnhancementsMsg:
 		m.keyenh = msg
@@ -1546,10 +1583,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.keyMap.Editor.Newline.SetHelp("shift+enter", "newline")
 		}
 	case copyChatHighlightMsg:
-		cmds = append(cmds, m.copyChatHighlight())
+		cmds = append(cmds, m.copyChatHighlight(msg.chat))
 	case DelayedClickMsg:
 		// Handle delayed single-click action (e.g., expansion).
-		m.chat.HandleDelayedClick(msg)
+		m.activeChat().HandleDelayedClick(msg)
 	case tea.MouseClickMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
@@ -1557,6 +1594,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 			return m, tea.Batch(cmds...)
+		}
+
+		if m.agentViewer != nil {
+			x, y := m.agentViewerMousePosition(msg.X, msg.Y)
+			if handled, cmd := m.agentViewer.chat.HandleMouseDown(x, y); handled {
+				m.lastClickTime = time.Now()
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			break
 		}
 
 		// Route clicks to inline editors that support mouse interaction.
@@ -1629,6 +1677,25 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
+		if m.agentViewer != nil {
+			x, y := m.agentViewerMousePosition(msg.X, msg.Y)
+			if y <= 0 {
+				m.agentViewer.chat.ScrollBy(-1)
+				if !m.agentViewer.chat.SelectedItemInView() {
+					m.agentViewer.chat.SelectPrev()
+					m.agentViewer.chat.ScrollToSelected()
+				}
+			} else if y >= m.agentViewer.chat.Height()-1 {
+				m.agentViewer.chat.ScrollBy(1)
+				if !m.agentViewer.chat.SelectedItemInView() {
+					m.agentViewer.chat.SelectNext()
+					m.agentViewer.chat.ScrollToSelected()
+				}
+			}
+			m.agentViewer.chat.HandleMouseDrag(x, y)
+			break
+		}
+
 		// Track hover position for inline editors.
 		if m.activeInline != nil {
 			if selectable, ok := m.activeInline.(dialog.MouseSelectableEditor); ok &&
@@ -1688,6 +1755,20 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
+		if m.agentViewer != nil {
+			x, y := m.agentViewerMousePosition(msg.X, msg.Y)
+			chat := m.agentViewer.chat
+			if chat.HandleMouseUp(x, y) && chat.HasHighlight() {
+				cmds = append(cmds, tea.Tick(doubleClickThreshold, func(t time.Time) tea.Msg {
+					if time.Since(m.lastClickTime) >= doubleClickThreshold {
+						return copyChatHighlightMsg{chat: chat}
+					}
+					return nil
+				}))
+			}
+			break
+		}
+
 		if m.activeInline != nil {
 			if selectable, ok := m.activeInline.(dialog.MouseSelectableEditor); ok {
 				if handled, cmd := selectable.HandleMouseRelease(msg.X, msg.Y); handled {
@@ -1716,16 +1797,35 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Adjust for chat area position
 			x -= m.layout.main.Min.X
 			y -= m.layout.main.Min.Y
-			if m.chat.HandleMouseUp(x, y) && m.chat.HasHighlight() {
+			chat := m.chat
+			if chat.HandleMouseUp(x, y) && chat.HasHighlight() {
 				cmds = append(cmds, tea.Tick(doubleClickThreshold, func(t time.Time) tea.Msg {
 					if time.Since(m.lastClickTime) >= doubleClickThreshold {
-						return copyChatHighlightMsg{}
+						return copyChatHighlightMsg{chat: chat}
 					}
 					return nil
 				}))
 			}
 		}
 	case common.CoalescedWheelMsg:
+		// Pass mouse events to dialogs first if any are open.
+		if m.dialog.HasDialogs() {
+			m.dialog.Update(msg)
+			return m, tea.Batch(cmds...)
+		}
+
+		if m.agentViewer != nil {
+			if msg.DeltaX != 0 {
+				m.agentViewer.chat.ScrollSelectedShellHorizontal(int(msg.DeltaX))
+			}
+			lines := int(msg.DeltaY)
+			if lines != 0 {
+				m.markScrollOnly()
+				m.applyChatScroll(lines)
+			}
+			break
+		}
+
 		// Route wheel events to active inline editor only when the
 		// mouse is over the editor area, so scrolling over the chat
 		// still scrolls the chat.
@@ -1734,12 +1834,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				we.HandleWheel(msg.DeltaX, msg.DeltaY)
 				return m, tea.Batch(cmds...)
 			}
-		}
-
-		// Pass mouse events to dialogs first if any are open.
-		if m.dialog.HasDialogs() {
-			m.dialog.Update(msg)
-			return m, tea.Batch(cmds...)
 		}
 
 		// Otherwise handle mouse wheel for chat. Use the coalesced delta
@@ -1777,13 +1871,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case scrollbarHideMsg:
 		if m.state == uiChat {
-			m.chat.HideScrollbar(msg.seq)
+			m.activeChat().HideScrollbar(msg.seq)
 		}
 	case chatWarmMsg:
 		// A resize has settled; warm the message cache one batch at a time
 		// so the scrollbar recompute never blocks the UI thread.
 		if m.state == uiChat {
-			cmd, done := m.chat.WarmStep(msg.seq)
+			cmd, done := m.activeChat().WarmStep(msg.seq)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			} else if done {
@@ -2024,15 +2118,21 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// then jumped several frames whenever an unrelated message happened to
 	// force a repaint.
 	m.subAgentsRunning = m.runningSubAgents()
-	if m.state == uiChat {
-		m.chat.SetExternalAnimation(m.subAgentsRunning > 0)
-		if cmd := m.chat.EnsureAnimating(); cmd != nil {
+	if m.state == uiChat || m.agentViewer != nil {
+		activeChat := m.activeChat()
+		if m.agentViewer != nil {
+			m.chat.SetExternalAnimation(false)
+			m.agentViewer.chat.SetExternalAnimation(m.agentViewer.descriptor.Status == agentrun.StatusRunning)
+		} else {
+			m.chat.SetExternalAnimation(m.subAgentsRunning > 0)
+		}
+		if cmd := activeChat.EnsureAnimating(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		// Same for the chat scrollbar's auto-hide: a scroll may be applied
 		// from anywhere, so the deadline is armed here instead of being
 		// handed back to each call site to forward.
-		if cmd := m.chat.EnsureScrollbarHide(); cmd != nil {
+		if cmd := activeChat.EnsureScrollbarHide(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -2052,6 +2152,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // that did keeps the view pinned to the bottom while following, since
 // animated items can change height.
 func (m *UI) handleAnimTick(msg animTickMsg) tea.Cmd {
+	if m.agentViewer != nil {
+		m.chat.stopAnimating(msg)
+		changed, cmd := m.agentViewer.chat.Tick(msg)
+		if !changed {
+			m.markScrollOnly()
+		}
+		if m.agentViewer.chat.Follow() {
+			m.agentViewer.chat.ScrollToBottom()
+		}
+		return cmd
+	}
 	if m.state != uiChat {
 		m.chat.stopAnimating(msg)
 		m.markScrollOnly()
@@ -2079,31 +2190,16 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	for i := range msgs {
 		msgPtrs[i] = &msgs[i]
 	}
-	toolResultMap := chat.BuildToolResultMap(msgPtrs)
-	if len(msgPtrs) > 0 {
-		m.lastUserMessageTime = msgPtrs[0].CreatedAt
-	}
 
-	// Add messages to chat with linked tool results
-	items := make([]chat.MessageItem, 0, len(msgs)*2)
-	for _, msg := range msgPtrs {
-		switch msg.Role {
-		case message.User:
-			m.lastUserMessageTime = msg.CreatedAt
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-		case message.Assistant:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-			if chat.ShouldShowAssistantInfo(msg) {
-				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(m.lastUserMessageTime, 0))
-				items = append(items, infoItem)
-			}
-		default:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-		}
+	// Project the persisted transcript into chat items.
+	projection := projectTranscriptMessages(m.com, msgs)
+	if len(msgPtrs) > 0 {
+		m.lastUserMessageTime = projection.lastUserMessageTime
 	}
+	items := projection.items
 
 	// Load nested tool calls for agent/agentic_fetch tools.
-	m.loadNestedToolCalls(items)
+	loadNestedToolCalls(m.com, items)
 	m.setMessagePlanFlags(items)
 	replayDispatchReports(items, msgPtrs, func(messageID, toolCallID string) bool {
 		return m.com.Workspace.AgentIsSessionBusy(m.com.Workspace.CreateAgentToolSessionID(messageID, toolCallID))
@@ -2216,68 +2312,9 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 		if m.session != nil {
 			cmds = append(cmds, m.loadSession(m.session.ID))
 		}
+		cmds = append(cmds, m.reloadAgentViewer())
 	}
 	return cmds
-}
-
-// loadNestedToolCalls recursively loads nested tool calls for agent/agentic_fetch tools.
-func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
-	for _, item := range items {
-		nestedContainer, ok := item.(chat.NestedToolContainer)
-		if !ok {
-			continue
-		}
-		toolItem, ok := item.(chat.ToolMessageItem)
-		if !ok {
-			continue
-		}
-
-		tc := toolItem.ToolCall()
-		messageID := toolItem.MessageID()
-
-		// Get the agent tool session ID.
-		agentSessionID := m.com.Workspace.CreateAgentToolSessionID(messageID, tc.ID)
-
-		// Fetch nested messages.
-		nestedCtx, cancelNested := common.WorkspaceOpContext()
-		nestedMsgs, err := m.com.Workspace.ListMessages(nestedCtx, agentSessionID)
-		cancelNested()
-		if err != nil || len(nestedMsgs) == 0 {
-			continue
-		}
-
-		// Build tool result map for nested messages.
-		nestedMsgPtrs := make([]*message.Message, len(nestedMsgs))
-		for i := range nestedMsgs {
-			nestedMsgPtrs[i] = &nestedMsgs[i]
-		}
-		nestedToolResultMap := chat.BuildToolResultMap(nestedMsgPtrs)
-
-		// Extract nested tool items.
-		var nestedTools []chat.ToolMessageItem
-		for _, nestedMsg := range nestedMsgPtrs {
-			nestedItems := chat.ExtractMessageItems(m.com.Styles, nestedMsg, nestedToolResultMap, m.com.Workspace.WorkingDir())
-			for _, nestedItem := range nestedItems {
-				if nestedToolItem, ok := nestedItem.(chat.ToolMessageItem); ok {
-					// Mark nested tools as simple (compact) rendering.
-					if simplifiable, ok := nestedToolItem.(chat.Compactable); ok {
-						simplifiable.SetCompact(true)
-					}
-					nestedTools = append(nestedTools, nestedToolItem)
-				}
-			}
-		}
-
-		// Recursively load nested tool calls for any agent tools within.
-		nestedMessageItems := make([]chat.MessageItem, len(nestedTools))
-		for i, nt := range nestedTools {
-			nestedMessageItems[i] = nt
-		}
-		m.loadNestedToolCalls(nestedMessageItems)
-
-		// Set nested tools on the parent.
-		nestedContainer.SetNestedTools(nestedTools)
-	}
 }
 
 // setMessagePlanFlags marks assistant message items as plan-agent output
@@ -2638,7 +2675,10 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		cmds = append(cmds, m.loadSession(msg.Session.ID))
+		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
+	case dialog.ActionSelectAgent:
+		m.dialog.CloseDialog(dialog.AgentsID)
+		cmds = append(cmds, m.openAgentViewer(msg.Agent))
 
 	// Open dialog message.
 	case dialog.ActionOpenDialog:
@@ -3682,6 +3722,73 @@ func (m *UI) openAuthenticationDialogWithMethod(provider catwalk.Provider, model
 	return cmd
 }
 
+// handleAgentViewerKeyPress routes transcript navigation to the visible agent
+// without letting hidden editor, sidebar, pills, or cancellation handlers run.
+func (m *UI) handleAgentViewerKeyPress(msg tea.KeyPressMsg) tea.Cmd {
+	viewerChat := m.agentViewer.chat
+	if key.Matches(msg, m.keyMap.Chat.Cancel) {
+		return m.closeAgentViewer()
+	}
+
+	var cmds []tea.Cmd
+	switch {
+	case key.Matches(msg, m.keyMap.Chat.Expand):
+		viewerChat.ToggleExpandedSelectedItem()
+	case key.Matches(msg, m.keyMap.Chat.Up):
+		viewerChat.ScrollBy(-1)
+		if !viewerChat.SelectedItemInView() {
+			viewerChat.SelectPrev()
+			viewerChat.ScrollToSelected()
+		}
+	case key.Matches(msg, m.keyMap.Chat.Down):
+		viewerChat.ScrollBy(1)
+		if !viewerChat.SelectedItemInView() {
+			viewerChat.SelectNext()
+			viewerChat.ScrollToSelected()
+		}
+	case key.Matches(msg, m.keyMap.Chat.UpOneItem):
+		viewerChat.SelectPrev()
+		viewerChat.ScrollToSelected()
+	case key.Matches(msg, m.keyMap.Chat.DownOneItem):
+		viewerChat.SelectNext()
+		viewerChat.ScrollToSelected()
+	case key.Matches(msg, m.keyMap.Chat.HalfPageUp):
+		viewerChat.ScrollBy(-viewerChat.Height() / 2)
+		viewerChat.SelectFirstInView()
+	case key.Matches(msg, m.keyMap.Chat.HalfPageDown):
+		viewerChat.ScrollBy(viewerChat.Height() / 2)
+		viewerChat.SelectLastInView()
+	case key.Matches(msg, m.keyMap.Chat.PageUp):
+		viewerChat.ScrollBy(-viewerChat.Height())
+		viewerChat.SelectFirstInView()
+	case key.Matches(msg, m.keyMap.Chat.PageDown):
+		viewerChat.ScrollBy(viewerChat.Height())
+		viewerChat.SelectLastInView()
+	case key.Matches(msg, m.keyMap.Chat.Home):
+		viewerChat.ScrollToTop()
+		viewerChat.SelectFirst()
+	case key.Matches(msg, m.keyMap.Chat.End), key.Matches(msg, m.keyMap.Chat.EndFollow):
+		viewerChat.ScrollToBottomAndSelectLast()
+	default:
+		if ok, cmd := viewerChat.HandleKeyMsg(msg); ok {
+			cmds = append(cmds, cmd)
+			break
+		}
+		switch {
+		case key.Matches(msg, m.keyMap.Commands):
+			cmds = append(cmds, m.openCommandsDialog())
+		case key.Matches(msg, m.keyMap.Models):
+			cmds = append(cmds, m.openModelsDialog())
+		case key.Matches(msg, m.keyMap.Sessions):
+			cmds = append(cmds, m.openSessionsDialog())
+		case key.Matches(msg, m.keyMap.Help):
+			m.status.ToggleHelp()
+			m.updateLayoutAndSize()
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
 func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	var cmds []tea.Cmd
 
@@ -3779,6 +3886,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	// Route all messages to dialog if one is open.
 	if m.dialog.HasDialogs() {
 		return m.handleDialogMsg(msg)
+	}
+
+	if m.agentViewer != nil {
+		return m.handleAgentViewerKeyPress(msg)
 	}
 
 	// Tab always toggles focus between editor and chat, even when
@@ -4302,71 +4413,75 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	// Clear the screen first
 	screen.Clear(scr)
 
-	switch m.state {
-	case uiOnboarding:
-		m.drawHeader(scr, layout.header)
-
-		// NOTE: Onboarding flow will be rendered as dialogs below, but
-		// positioned at the bottom left of the screen.
-
-	case uiInitialize:
-		m.drawHeader(scr, layout.header)
-
-		main := uv.NewStyledString(m.initializeView())
-		main.Draw(scr, layout.main)
-
-	case uiLanding:
-		m.drawHeader(scr, layout.header)
-		main := uv.NewStyledString(m.landingView())
-		main.Draw(scr, layout.main)
-
-		if m.activeInline != nil {
-			m.activeInline.SetFocused(m.focus == uiFocusEditor)
-			if collapsed, ok := m.collapsedInlineEditor(); ok {
-				collapsed.DrawCollapsed(scr, layout.editor)
-				m.inlineCursor = nil
-			} else {
-				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
-			}
-		} else {
-			editor := uv.NewStyledString(m.renderEditorView(scr.Bounds().Dx()))
-			editor.Draw(scr, layout.editor)
-			m.inlineCursor = nil
-		}
-
-	case uiChat:
-		if m.isCompact {
+	if m.agentViewer != nil {
+		m.agentViewer.Draw(scr, layout.agentViewer)
+	} else {
+		switch m.state {
+		case uiOnboarding:
 			m.drawHeader(scr, layout.header)
-		} else {
-			m.drawSidebar(scr, layout.sidebar)
-		}
 
-		m.chat.Draw(scr, layout.main)
-		if layout.pills.Dy() > 0 && m.pillsView != "" {
-			uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
-		}
+			// NOTE: Onboarding flow will be rendered as dialogs below, but
+			// positioned at the bottom left of the screen.
 
-		if m.activeInline != nil {
-			m.activeInline.SetFocused(m.focus == uiFocusEditor)
-			if collapsed, ok := m.collapsedInlineEditor(); ok {
-				collapsed.DrawCollapsed(scr, layout.editor)
-				m.inlineCursor = nil
+		case uiInitialize:
+			m.drawHeader(scr, layout.header)
+
+			main := uv.NewStyledString(m.initializeView())
+			main.Draw(scr, layout.main)
+
+		case uiLanding:
+			m.drawHeader(scr, layout.header)
+			main := uv.NewStyledString(m.landingView())
+			main.Draw(scr, layout.main)
+
+			if m.activeInline != nil {
+				m.activeInline.SetFocused(m.focus == uiFocusEditor)
+				if collapsed, ok := m.collapsedInlineEditor(); ok {
+					collapsed.DrawCollapsed(scr, layout.editor)
+					m.inlineCursor = nil
+				} else {
+					m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
+				}
 			} else {
-				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
+				editor := uv.NewStyledString(m.renderEditorView(scr.Bounds().Dx()))
+				editor.Draw(scr, layout.editor)
+				m.inlineCursor = nil
 			}
-		} else {
-			editorWidth := scr.Bounds().Dx()
-			if !m.isCompact {
-				editorWidth -= layout.sidebar.Dx()
-			}
-			editor := uv.NewStyledString(m.renderEditorView(editorWidth))
-			editor.Draw(scr, layout.editor)
-			m.inlineCursor = nil
-		}
 
-		// Draw details overlay in compact mode when open
-		if m.isCompact && m.detailsOpen {
-			m.drawSessionDetails(scr, layout.sessionDetails)
+		case uiChat:
+			if m.isCompact {
+				m.drawHeader(scr, layout.header)
+			} else {
+				m.drawSidebar(scr, layout.sidebar)
+			}
+
+			m.chat.Draw(scr, layout.main)
+			if layout.pills.Dy() > 0 && m.pillsView != "" {
+				uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
+			}
+
+			if m.activeInline != nil {
+				m.activeInline.SetFocused(m.focus == uiFocusEditor)
+				if collapsed, ok := m.collapsedInlineEditor(); ok {
+					collapsed.DrawCollapsed(scr, layout.editor)
+					m.inlineCursor = nil
+				} else {
+					m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
+				}
+			} else {
+				editorWidth := scr.Bounds().Dx()
+				if !m.isCompact {
+					editorWidth -= layout.sidebar.Dx()
+				}
+				editor := uv.NewStyledString(m.renderEditorView(editorWidth))
+				editor.Draw(scr, layout.editor)
+				m.inlineCursor = nil
+			}
+
+			// Draw details overlay in compact mode when open
+			if m.isCompact && m.detailsOpen {
+				m.drawSessionDetails(scr, layout.sessionDetails)
+			}
 		}
 	}
 
@@ -4374,21 +4489,23 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	// The digital rain fills only empty cells, so text and panel
 	// backgrounds stay readable. It runs on every screen.
-	switch m.state {
-	case uiOnboarding, uiInitialize, uiLanding:
-		rainArea := layout.main
-		rainArea.Max.Y = rainArea.Min.Y + min(8, rainArea.Dy())
-		// Keep the left half, where the readout lives, clear.
-		rainArea.Min.X += rainArea.Dx() / 2
-		m.drawMatrixRain(scr, rainArea)
-	case uiChat:
-		if !m.isCompact {
-			m.drawMatrixRain(scr, layout.sidebar)
+	if m.agentViewer == nil {
+		switch m.state {
+		case uiOnboarding, uiInitialize, uiLanding:
+			rainArea := layout.main
+			rainArea.Max.Y = rainArea.Min.Y + min(8, rainArea.Dy())
+			// Keep the left half, where the readout lives, clear.
+			rainArea.Min.X += rainArea.Dx() / 2
+			m.drawMatrixRain(scr, rainArea)
+		case uiChat:
+			if !m.isCompact {
+				m.drawMatrixRain(scr, layout.sidebar)
+			}
+			// A thin rain curtain on the right edge of the prompt.
+			editorRain := layout.editor
+			editorRain.Min.X = max(editorRain.Min.X, editorRain.Max.X-6)
+			m.drawMatrixRain(scr, editorRain)
 		}
-		// A thin rain curtain on the right edge of the prompt.
-		editorRain := layout.editor
-		editorRain.Min.X = max(editorRain.Min.X, editorRain.Max.X-6)
-		m.drawMatrixRain(scr, editorRain)
 	}
 
 	// Add status and help layer
@@ -4397,7 +4514,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	m.status.Draw(scr, layout.status)
 
 	// Draw completions popup if open
-	if !isOnboarding && m.completionsOpen && m.completions.HasItems() {
+	if !isOnboarding && m.agentViewer == nil && m.completionsOpen && m.completions.HasItems() {
 		w, h := m.completions.Size()
 		x := m.completionsPositionStart.X
 		y := m.completionsPositionStart.Y - h
@@ -4431,6 +4548,10 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	// accordingly.
 	if m.dialog.HasDialogs() {
 		return m.dialog.Draw(scr, scr.Bounds())
+	}
+
+	if m.agentViewer != nil {
+		return nil
 	}
 
 	switch m.focus {
@@ -5082,6 +5203,9 @@ func (m *UI) updateSize() {
 	m.status.SetWidth(m.layout.status.Dx())
 
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
+	if m.agentViewer != nil {
+		m.agentViewer.SetSize(m.layout.agentViewer.Dx(), m.layout.agentViewer.Dy())
+	}
 	m.textarea.MaxHeight = TextareaMaxHeight
 	m.textarea.SetWidth(m.layout.editor.Dx())
 	if resizable, ok := m.activeInline.(dialog.ResizableInlineEditor); ok {
@@ -5152,8 +5276,9 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 	}
 
 	uiLayout := uiLayout{
-		area:   area,
-		status: helpRect,
+		area:        area,
+		status:      helpRect,
+		agentViewer: appRect,
 	}
 
 	// Handle different app states
@@ -5313,6 +5438,10 @@ type uiLayout struct {
 
 	// main is the area for the main pane. (e.x chat, configure, landing)
 	main uv.Rectangle
+
+	// agentViewer is the full application-content area used by an open agent
+	// transcript. The normal main layout is still calculated underneath it.
+	agentViewer uv.Rectangle
 
 	// pills is the area for the pills panel.
 	pills uv.Rectangle
@@ -5958,10 +6087,15 @@ func (m *UI) applyThemeForProvider(providerID string) {
 // shared style caches, and refreshes every component that caches style
 // data.
 func (m *UI) applyTheme(s styles.Styles) {
+	m.themeGeneration++
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateRenderCaches()
+	if m.agentViewer != nil {
+		m.agentViewer.themeGeneration = m.themeGeneration
+		m.agentViewer.InvalidateRenderCaches()
+	}
 }
 
 // previewTheme applies the given styles for live preview inside an open
@@ -5970,10 +6104,15 @@ func (m *UI) applyTheme(s styles.Styles) {
 // cached output so browsing themes stays fast in large sessions. Off-screen
 // messages follow along when the theme is actually applied.
 func (m *UI) previewTheme(s styles.Styles) {
+	m.themeGeneration++
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateVisibleRenderCaches()
+	if m.agentViewer != nil {
+		m.agentViewer.themeGeneration = m.themeGeneration
+		m.agentViewer.InvalidateVisibleRenderCaches()
+	}
 }
 
 // refreshStyles pushes the current *m.com.Styles into every subcomponent
@@ -6135,6 +6274,7 @@ func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
 		return nil
 	}
 	return []tea.Cmd{
+		m.closeAgentViewerForSession(msg.To),
 		m.loadSession(msg.To),
 		util.ReportInfo("Context cleared (from Discord) — switched to the new session"),
 	}
@@ -6496,6 +6636,10 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openSessionsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.AgentsID:
+		if cmd := m.openAgentsDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.ModelsID:
 		if cmd := m.openModelsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -6645,6 +6789,80 @@ func (m *UI) openSessionsDialog() tea.Cmd {
 
 	m.dialog.OpenDialog(dialog)
 	return nil
+}
+
+// openAgentsDialog opens the selector for agents in the current session tree.
+func (m *UI) openAgentsDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.AgentsID) {
+		m.dialog.BringToFront(dialog.AgentsID)
+		return nil
+	}
+	m.dialog.OpenDialog(dialog.NewAgents(m.com, m.agentDescriptors()))
+	return nil
+}
+
+// openAgentViewer opens an independent transcript without changing the main
+// session or consuming the agent's run lifecycle.
+func (m *UI) openAgentViewer(descriptor dialog.AgentDescriptor) tea.Cmd {
+	if m.agentViewer != nil {
+		m.agentViewer.Close()
+	}
+	m.agentViewerGeneration++
+	viewer := newAgentViewer(m.com, descriptor, m.chat.scrollbarMode, m.agentViewerGeneration)
+	viewer.themeGeneration = m.themeGeneration
+	viewer.chat.Focus()
+	viewer.chat.SetRevealSecrets(m.chat.RevealSecrets())
+	m.agentViewer = viewer
+	m.updateLayoutAndSize()
+	m.invalidateFrames()
+	return viewer.Start()
+}
+
+// closeAgentViewer closes only the transcript overlay and restores animation
+// and scrollbar servicing for the intact main chat.
+func (m *UI) closeAgentViewer() tea.Cmd {
+	if m.agentViewer == nil {
+		return nil
+	}
+	m.agentViewer.Close()
+	m.agentViewer = nil
+	m.updateLayoutAndSize()
+	m.invalidateFrames()
+	m.chat.SetExternalAnimation(m.subAgentsRunning > 0)
+	return tea.Batch(m.chat.EnsureAnimating(), m.chat.EnsureScrollbarHide())
+}
+
+// closeAgentViewerForSession closes the viewer before a main-session switch,
+// while allowing same-session reloads used by connection recovery.
+func (m *UI) closeAgentViewerForSession(sessionID string) tea.Cmd {
+	if m.agentViewer == nil || (m.session != nil && m.session.ID == sessionID) {
+		return nil
+	}
+	return m.closeAgentViewer()
+}
+
+// reloadAgentViewer reloads the selected child with a UI-global generation so
+// stale results cannot land in a replacement viewer for the same session.
+func (m *UI) reloadAgentViewer() tea.Cmd {
+	if m.agentViewer == nil {
+		return nil
+	}
+	m.agentViewerGeneration++
+	return m.agentViewer.Reload(m.agentViewerGeneration)
+}
+
+// activeChat returns the visible transcript without ever redirecting main
+// session state or message loading to the selected agent.
+func (m *UI) activeChat() *Chat {
+	if m.agentViewer != nil {
+		return m.agentViewer.chat
+	}
+	return m.chat
+}
+
+func (m *UI) agentViewerMousePosition(x, y int) (int, int) {
+	const headerHeight = 2
+	return x - m.layout.agentViewer.Min.X, y - m.layout.agentViewer.Min.Y - headerHeight
 }
 
 // openFilesDialog opens the file picker dialog.
@@ -6973,6 +7191,7 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	planCmd := m.resetPlanModeState()
+	closeViewerCmd := m.closeAgentViewer()
 	m.turnOutcome = ""
 	m.session = nil
 	m.sidebarOffset = 0
@@ -6994,6 +7213,7 @@ func (m *UI) newSession() tea.Cmd {
 	agenttools.ResetCache()
 	return tea.Batch(
 		planCmd,
+		closeViewerCmd,
 		func() tea.Msg {
 			m.com.Workspace.LSPStopAll(context.Background())
 			return nil
@@ -7372,13 +7592,18 @@ func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 	}
 }
 
-func (m *UI) copyChatHighlight() tea.Cmd {
-	text := m.chat.HighlightContent()
-	return common.CopyToClipboardWithCallback(
+var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
+
+func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
+	if chat == nil {
+		chat = m.activeChat()
+	}
+	text := chat.HighlightContent()
+	return copyChatHighlightToClipboard(
 		text,
 		"Selected text copied to clipboard",
 		func() tea.Msg {
-			m.chat.ClearMouse()
+			chat.ClearMouse()
 			return nil
 		},
 	)

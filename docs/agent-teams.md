@@ -62,6 +62,16 @@ crush team watch            # live refresh until interrupted
 crush team session reviewer # print the command to open a teammate session
 ```
 
+## Viewing agent transcripts
+
+Open the command palette and choose **View Agents** to inspect a running or
+recently completed subagent or teammate. The viewer shows the agent's task,
+reasoning, responses, and tool activity as they stream. It is read-only: agents
+continue running and the main session keeps updating underneath.
+
+Use the normal chat keys to scroll, expand, and copy content. Press **Esc** to
+return to the main session without cancelling either agent.
+
 ## Differences from DSH
 
 - The `agent` tool stays available alongside the Team tools; DSH's bundle
