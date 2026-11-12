@@ -234,6 +234,15 @@ func LoadProviders(ctx context.Context, cfg *Config, refreshHyper HyperTokenRefr
 		} else {
 			providerList = slices.Collect(providers.Seq())
 		}
+		// The Claude Agent provider is not part of the Catwalk catalog: its
+		// models come from the user's own Claude Code login, which is read
+		// locally. It is appended last so it never shadows a catalog provider,
+		// and skipped with the rest of the defaults when those are disabled.
+		if !customProvidersOnly {
+			if agent, ok := ClaudeAgentProvider(providerList); ok {
+				providerList = append(providerList, agent)
+			}
+		}
 		providerErr = errors.Join(catwalkErr, hyperErr)
 	})
 	return providerList, providerErr

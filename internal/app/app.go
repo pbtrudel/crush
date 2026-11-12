@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/clipboard"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
@@ -1086,6 +1088,11 @@ func (app *App) Shutdown() {
 	// Shutdown all LSP clients.
 	wg.Go(func() {
 		app.LSPManager.KillAll(shutdownCtx)
+	})
+
+	// Stop the Claude Agent provider's processes so they do not outlive Crush.
+	wg.Go(func() {
+		claudeagent.DefaultManager(filepath.Dir(config.GlobalConfigData())).Close()
 	})
 
 	// Call all cleanup functions.
