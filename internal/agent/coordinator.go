@@ -1420,6 +1420,11 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 	if modelCfg.Provider == openrouter.Name && isExactoSupported(modelID) {
 		modelID += ":exacto"
 	}
+	// The Copilot long-context entries are catalog-only: the API takes the
+	// tier from the prompt size and knows the model by its plain ID.
+	if modelCfg.Provider == string(catwalk.InferenceProviderCopilot) {
+		modelID = config.CopilotBaseModelID(modelID)
+	}
 
 	languageModel, err := provider.LanguageModel(ctx, modelID)
 	if err != nil {

@@ -543,6 +543,38 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 	require.True(t, ok, "OpenAI provider should still be present")
 }
 
+func TestConfig_configureProvidersCopilotLongContext(t *testing.T) {
+	knownProviders := []catwalk.Provider{
+		{
+			ID:          catwalk.InferenceProviderCopilot,
+			APIEndpoint: "https://api.githubcopilot.com",
+			Models: []catwalk.Model{
+				{ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5", ContextWindow: 328_000},
+				{ID: "gpt-4o", Name: "GPT-4o", ContextWindow: 128_000},
+			},
+		},
+	}
+
+	cfg := &Config{
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"copilot": {APIKey: "token"},
+		}),
+	}
+	cfg.setDefaults("/tmp", "")
+	env := env.NewFromMap(map[string]string{})
+	resolver := NewShellVariableResolver(env)
+	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	require.NoError(t, err)
+
+	pc, ok := cfg.Providers.Get("copilot")
+	require.True(t, ok)
+	require.Len(t, pc.Models, 3)
+	require.Equal(t, "claude-sonnet-5.5", pc.Models[0].ID)
+	require.Equal(t, "gpt-4o", pc.Models[1].ID)
+	require.Equal(t, "claude-sonnet-5.5[long]", pc.Models[2].ID)
+	require.Equal(t, int64(936_000), pc.Models[2].ContextWindow)
+}
+
 func TestConfig_configureProvidersBedrockWithCredentials(t *testing.T) {
 	knownProviders := []catwalk.Provider{
 		{

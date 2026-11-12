@@ -595,7 +595,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			if config.OAuthToken != nil {
 				prepared.SetupGitHubCopilot()
 			}
-			prepared.Models = withCopilotFusionModels(prepared.Models)
+			prepared.Models = withCopilotLongContextModels(withCopilotFusionModels(prepared.Models))
 		}
 
 		switch p.ID {
