@@ -60,8 +60,7 @@ func ClaudeAgentProvider(known []catwalk.Provider) (catwalk.Provider, bool) {
 	if catalog == nil {
 		return catwalk.Provider{}, false
 	}
-	prices := anthropicPrices(known)
-	return claudeagent.ProviderEntry(catalog, prices), true
+	return claudeagent.ProviderEntry(catalog, anthropicModels(known)), true
 }
 
 // claudeAgentCatalogFor loads the cached catalog, probing once when there is
@@ -101,10 +100,11 @@ func workingDirForProbe() string {
 	return dir
 }
 
-// anthropicPrices indexes the Anthropic catalog by model ID so the Claude Agent
-// models can show the same prices. A subscription login ignores them, but an
-// API key login is billed at those rates.
-func anthropicPrices(known []catwalk.Provider) func(string) (catwalk.Model, bool) {
+// anthropicModels indexes the Anthropic catalog by model ID so the Claude Agent
+// models can show the same versioned names, context windows, and prices. A
+// subscription login ignores the prices, but an API key login is billed at
+// those rates.
+func anthropicModels(known []catwalk.Provider) func(string) (catwalk.Model, bool) {
 	for _, provider := range known {
 		if provider.ID != catwalk.InferenceProviderAnthropic {
 			continue

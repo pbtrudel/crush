@@ -1,18 +1,24 @@
 package claudeagent
 
 import (
+	"strings"
+
 	"charm.land/catwalk/v3/pkg/catwalk"
 )
 
-// defaultContextWindow is used when the CLI has not reported a model's window.
+// defaultContextWindow is used when neither the CLI nor the Anthropic catalog
+// reports a model's window.
 const defaultContextWindow = 200_000
+
+// longContextWindow is the window of the 1M-context model variants.
+const longContextWindow = 1_000_000
 
 // ProviderEntry builds the catalog entry Crush shows in its model picker.
 //
-// prices resolves a model's Anthropic pricing by its canonical name. It is nil
-// for a subscription login, which covers usage and therefore costs nothing at
-// the point of use.
-func ProviderEntry(catalog *Catalog, prices func(resolved string) (catwalk.Model, bool)) catwalk.Provider {
+// known looks a model up in the Anthropic catalog by its canonical name, so
+// the Claude Agent models get the same versioned names, context windows, and
+// prices. It is nil when the Anthropic catalog is not available.
+func ProviderEntry(catalog *Catalog, known func(id string) (catwalk.Model, bool)) catwalk.Provider {
 	provider := catwalk.Provider{
 		ID:   catwalk.InferenceProvider(Name),
 		Name: DisplayName,
@@ -21,13 +27,14 @@ func ProviderEntry(catalog *Catalog, prices func(resolved string) (catwalk.Model
 		return provider
 	}
 	for _, model := range catalog.Models {
+		match := anthropicModel(model, known)
 		provider.Models = append(provider.Models, catwalk.Model{
 			ID:            model.ID,
-			Name:          model.Name,
-			ContextWindow: contextWindow(model),
+			Name:          modelName(model, match),
+			ContextWindow: contextWindow(model, match),
 			Reasoning:     reasoning(model),
 			Capabilities:  catwalk.Capabilities{Vision: true},
-			Pricing:       pricing(model, prices),
+			Pricing:       match.Pricing,
 		})
 	}
 	if len(provider.Models) > 0 {
@@ -42,9 +49,28 @@ func ProviderEntry(catalog *Catalog, prices func(resolved string) (catwalk.Model
 	return provider
 }
 
-func contextWindow(model CatalogModel) int64 {
+// modelName takes the version from the Anthropic catalog, since the CLI
+// reports a bare family name such as "Opus". The "Claude " prefix is dropped
+// because the provider is already labeled Claude Agent.
+func modelName(model CatalogModel, match catwalk.Model) string {
+	if match.Name != "" {
+		return strings.TrimPrefix(match.Name, "Claude ")
+	}
+	return model.Name
+}
+
+// contextWindow prefers what the CLI reports. The 1M suffix is checked before
+// the Anthropic catalog because the suffixed variant matches the base model's
+// entry, which can list the smaller window.
+func contextWindow(model CatalogModel, match catwalk.Model) int64 {
 	if model.ContextWindow > 0 {
 		return model.ContextWindow
+	}
+	if strings.HasSuffix(model.ID, "[1m]") || strings.HasSuffix(model.Resolved, "[1m]") {
+		return longContextWindow
+	}
+	if match.ContextWindow > 0 {
+		return match.ContextWindow
 	}
 	return defaultContextWindow
 }
@@ -60,12 +86,12 @@ func reasoning(model CatalogModel) catwalk.Reasoning {
 	}
 }
 
-// pricing looks up the model's Anthropic prices by its canonical name. The
-// 1M-context variant shares the base model's tiers, and Bedrock and Vertex list
-// the same model under a prefix or a version suffix.
-func pricing(model CatalogModel, prices func(string) (catwalk.Model, bool)) catwalk.Pricing {
-	if prices == nil {
-		return catwalk.Pricing{}
+// anthropicModel looks the model up in the Anthropic catalog by its canonical
+// name. The 1M-context variant shares the base model's entry, and Bedrock and
+// Vertex list the same model under a prefix or a version suffix.
+func anthropicModel(model CatalogModel, known func(string) (catwalk.Model, bool)) catwalk.Model {
+	if known == nil {
+		return catwalk.Model{}
 	}
 	name := model.Resolved
 	if name == "" {
@@ -78,11 +104,11 @@ func pricing(model CatalogModel, prices func(string) (catwalk.Model, bool)) catw
 		trimContextSuffix(trimProviderPrefix(name)),
 	}
 	for _, candidate := range candidates {
-		if priced, ok := prices(candidate); ok {
-			return priced.Pricing
+		if match, ok := known(candidate); ok {
+			return match
 		}
 	}
-	return catwalk.Pricing{}
+	return catwalk.Model{}
 }
 
 func trimContextSuffix(name string) string {
