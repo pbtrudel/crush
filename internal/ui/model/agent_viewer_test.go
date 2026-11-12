@@ -393,12 +393,12 @@ func TestAgentViewerEventDeleteNestedAgentToolsReindexesRemainingItems(t *testin
 	parentContainer := viewer.chat.MessageItem("parent-agent").(chat.NestedToolContainer)
 	parentContainer.SetNestedTools([]chat.ToolMessageItem{chat.NewToolMessageItem(
 		viewer.com.Styles, parent.ID, message.ToolCall{ID: "nested-delete", Name: "view", Input: `{}`, Finished: true}, nil, false, viewer.com.Workspace.WorkingDir(),
-	).(chat.ToolMessageItem)})
+	)})
 	viewer.chat.UpdateNestedToolIDs("parent-agent")
 	siblingContainer := viewer.chat.MessageItem("sibling-agent").(chat.NestedToolContainer)
 	siblingContainer.SetNestedTools([]chat.ToolMessageItem{chat.NewToolMessageItem(
 		viewer.com.Styles, sibling.ID, message.ToolCall{ID: "nested-keep", Name: "view", Input: `{}`, Finished: true}, nil, false, viewer.com.Workspace.WorkingDir(),
-	).(chat.ToolMessageItem)})
+	)})
 	viewer.chat.UpdateNestedToolIDs("sibling-agent")
 	siblingItem := viewer.chat.MessageItem("sibling-agent")
 	require.NotNil(t, viewer.chat.MessageItem("nested-delete"))
