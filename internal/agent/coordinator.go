@@ -1437,14 +1437,60 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 		languageModel = newHyperCreditsModel(languageModel, c.hyperAPIKey)
 	}
 
-	return Model{
+	model := Model{
 		Model:        languageModel,
 		CatwalkCfg:   *catwalkModel,
 		ModelCfg:     modelCfg,
 		FlatRate:     providerCfg.FlatRate,
 		OAuth:        providerCfg.OAuthToken != nil,
 		ProviderName: providerCfg.Name,
-	}, nil
+	}
+	// A Fusion entry stands for a router, not a concrete model: every path
+	// that uses it has to resolve a real model first. The session agent
+	// swaps in the full phase runner for its own turns.
+	if config.IsCopilotFusionModel(modelCfg.Model) {
+		model.Fusion = c.newFusionConfig(modelCfg, providerCfg)
+		model.Model = newFusionSoloModel(*model.Fusion)
+	}
+	return model, nil
+}
+
+// newFusionConfig builds the router client and the model factory a Fusion
+// entry needs. Credentials resolve per request so a refreshed OAuth token is
+// picked up without rebuilding the model.
+func (c *coordinator) newFusionConfig(modelCfg config.SelectedModel, providerCfg config.ProviderConfig) *FusionConfig {
+	tier, _ := config.CopilotFusionTier(modelCfg.Model)
+	return &FusionConfig{
+		Tier:    tier,
+		ModelID: modelCfg.Model,
+		Router: copilotFusionRouter{
+			resolveBaseURL: func() (string, error) { return c.cfg.Resolve(providerCfg.BaseURL) },
+			resolveAPIKey:  func() (string, error) { return c.cfg.Resolve(providerCfg.APIKey) },
+			headers:        providerCfg.ExtraHeaders,
+		},
+		Factory: func(ctx context.Context, modelID, effort string) (fantasy.LanguageModel, error) {
+			return c.buildFusionStepModel(ctx, providerCfg, modelID, effort)
+		},
+	}
+}
+
+// buildFusionStepModel builds the language model for one plan step, with the
+// reasoning effort the router picked for it.
+func (c *coordinator) buildFusionStepModel(ctx context.Context, providerCfg config.ProviderConfig, modelID, effort string) (fantasy.LanguageModel, error) {
+	catwalkModel := c.cfg.Config().GetModel(string(providerCfg.ID), modelID)
+	if catwalkModel == nil {
+		return nil, fmt.Errorf("fusion: model %q is not available from provider %q", modelID, providerCfg.ID)
+	}
+	selected := config.SelectedModel{
+		Provider:        string(providerCfg.ID),
+		Model:           modelID,
+		ReasoningEffort: effort,
+	}
+	provider, err := c.buildProvider(providerCfg, selected, false, catwalkModel.EffectiveType(providerCfg.Type))
+	if err != nil {
+		return nil, err
+	}
+	return provider.LanguageModel(ctx, modelID)
 }
 
 // hyperAPIKey resolves the Hyper API key from the live config, so an

@@ -591,8 +591,11 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			store.RemoveConfigField(ScopeGlobal, "providers.anthropic")
 			c.Providers.Del(string(p.ID))
 			continue
-		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
-			prepared.SetupGitHubCopilot()
+		case p.ID == catwalk.InferenceProviderCopilot:
+			if config.OAuthToken != nil {
+				prepared.SetupGitHubCopilot()
+			}
+			prepared.Models = withCopilotFusionModels(prepared.Models)
 		}
 
 		switch p.ID {

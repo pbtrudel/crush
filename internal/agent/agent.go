@@ -278,7 +278,10 @@ type Model struct {
 	Model      fantasy.LanguageModel
 	CatwalkCfg catwalk.Model
 	ModelCfg   config.SelectedModel
-	FlatRate   bool
+	// Fusion is set when the model is a Copilot Fusion entry. The session
+	// agent swaps the model for the full phase runner on its own turns.
+	Fusion   *FusionConfig
+	FlatRate bool
 	// OAuth is true when the provider signs in by OAuth, so a rejected
 	// credential calls for a new sign-in rather than a config change.
 	OAuth bool
@@ -1166,6 +1169,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	a.applyToolCacheBreakpoint(agentTools)
 
+	// Copilot Fusion resolves its plan per turn, so the phase runner is built
+	// here where the turn's prompt and the read-only review tools are known.
+	// ModelProvider below has to hand this instance to fantasy: the fresh
+	// build it normally returns is the plain router, not the phase runner.
+	turnModel := largeModel.Model
+	if largeModel.Fusion != nil {
+		turnModel = newFusionModel(*largeModel.Fusion, agentTools, call.Prompt)
+		largeModel.Model = turnModel
+	}
+
 	agent := fantasy.NewAgent(
 		largeModel.Model,
 		fantasy.WithSystemPrompt(systemPrompt),
@@ -1490,9 +1503,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnAuthRefresh: call.OnAuthRefresh,
 		ModelProvider: func() fantasy.LanguageModel {
-			slog.Info("ModelProvider called",
-				"provider", largeModel.ModelCfg.Provider,
-				"model", largeModel.ModelCfg.Model)
+			if _, ok := turnModel.(*fusionModel); ok {
+				return turnModel
+			}
 			return a.currentBuildOf(largeModel)
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
