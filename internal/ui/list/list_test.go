@@ -885,3 +885,19 @@ func TestList_AtBottom_TallFirstVisibleItem(t *testing.T) {
 		require.True(t, l.AtBottom(), "gap=%d: back at bottom after scrolling down", gap)
 	}
 }
+
+func TestListSetScrollPositionRestoresAndClamps(t *testing.T) {
+	t.Parallel()
+	items := []Item{newTallItem(5), newTallItem(5), newTallItem(5), newTallItem(5), newTallItem(5)}
+	l := NewList(items...)
+	l.SetSize(40, 4)
+	l.SetScrollPosition(3, 2)
+	idx, line := l.ScrollPosition()
+	require.Equal(t, 3, idx)
+	require.Equal(t, 2, line)
+
+	l.SetScrollPosition(999, 999)
+	idx, line = l.ScrollPosition()
+	require.Less(t, idx, l.Len())
+	require.GreaterOrEqual(t, line, 0)
+}

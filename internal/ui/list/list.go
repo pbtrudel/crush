@@ -258,6 +258,21 @@ func (l *List) ScrollPosition() (offsetIdx, offsetLine int) {
 	return l.offsetIdx, l.offsetLine
 }
 
+// SetScrollPosition restores the scroll position to the given item index and
+// line offset into it. Both are clamped to the current list, so a position
+// saved against older content can never scroll past the end. An empty list
+// stores (0, 0).
+func (l *List) SetScrollPosition(offsetIdx, offsetLine int) {
+	if len(l.items) == 0 {
+		l.offsetIdx = 0
+		l.offsetLine = 0
+		return
+	}
+	l.offsetIdx = min(max(offsetIdx, 0), len(l.items)-1)
+	height := l.getItem(l.offsetIdx).height
+	l.offsetLine = min(max(offsetLine, 0), max(height-1, 0))
+}
+
 // Offset returns the current scroll offset in lines from the top.
 func (l *List) Offset() int {
 	offset := 0

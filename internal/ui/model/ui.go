@@ -2079,31 +2079,16 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	for i := range msgs {
 		msgPtrs[i] = &msgs[i]
 	}
-	toolResultMap := chat.BuildToolResultMap(msgPtrs)
-	if len(msgPtrs) > 0 {
-		m.lastUserMessageTime = msgPtrs[0].CreatedAt
-	}
 
-	// Add messages to chat with linked tool results
-	items := make([]chat.MessageItem, 0, len(msgs)*2)
-	for _, msg := range msgPtrs {
-		switch msg.Role {
-		case message.User:
-			m.lastUserMessageTime = msg.CreatedAt
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-		case message.Assistant:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-			if chat.ShouldShowAssistantInfo(msg) {
-				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(m.lastUserMessageTime, 0))
-				items = append(items, infoItem)
-			}
-		default:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
-		}
+	// Project the persisted transcript into chat items.
+	projection := projectTranscriptMessages(m.com, msgs)
+	if len(msgPtrs) > 0 {
+		m.lastUserMessageTime = projection.lastUserMessageTime
 	}
+	items := projection.items
 
 	// Load nested tool calls for agent/agentic_fetch tools.
-	m.loadNestedToolCalls(items)
+	loadNestedToolCalls(m.com, items)
 	m.setMessagePlanFlags(items)
 	replayDispatchReports(items, msgPtrs, func(messageID, toolCallID string) bool {
 		return m.com.Workspace.AgentIsSessionBusy(m.com.Workspace.CreateAgentToolSessionID(messageID, toolCallID))
@@ -2218,66 +2203,6 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 		}
 	}
 	return cmds
-}
-
-// loadNestedToolCalls recursively loads nested tool calls for agent/agentic_fetch tools.
-func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
-	for _, item := range items {
-		nestedContainer, ok := item.(chat.NestedToolContainer)
-		if !ok {
-			continue
-		}
-		toolItem, ok := item.(chat.ToolMessageItem)
-		if !ok {
-			continue
-		}
-
-		tc := toolItem.ToolCall()
-		messageID := toolItem.MessageID()
-
-		// Get the agent tool session ID.
-		agentSessionID := m.com.Workspace.CreateAgentToolSessionID(messageID, tc.ID)
-
-		// Fetch nested messages.
-		nestedCtx, cancelNested := common.WorkspaceOpContext()
-		nestedMsgs, err := m.com.Workspace.ListMessages(nestedCtx, agentSessionID)
-		cancelNested()
-		if err != nil || len(nestedMsgs) == 0 {
-			continue
-		}
-
-		// Build tool result map for nested messages.
-		nestedMsgPtrs := make([]*message.Message, len(nestedMsgs))
-		for i := range nestedMsgs {
-			nestedMsgPtrs[i] = &nestedMsgs[i]
-		}
-		nestedToolResultMap := chat.BuildToolResultMap(nestedMsgPtrs)
-
-		// Extract nested tool items.
-		var nestedTools []chat.ToolMessageItem
-		for _, nestedMsg := range nestedMsgPtrs {
-			nestedItems := chat.ExtractMessageItems(m.com.Styles, nestedMsg, nestedToolResultMap, m.com.Workspace.WorkingDir())
-			for _, nestedItem := range nestedItems {
-				if nestedToolItem, ok := nestedItem.(chat.ToolMessageItem); ok {
-					// Mark nested tools as simple (compact) rendering.
-					if simplifiable, ok := nestedToolItem.(chat.Compactable); ok {
-						simplifiable.SetCompact(true)
-					}
-					nestedTools = append(nestedTools, nestedToolItem)
-				}
-			}
-		}
-
-		// Recursively load nested tool calls for any agent tools within.
-		nestedMessageItems := make([]chat.MessageItem, len(nestedTools))
-		for i, nt := range nestedTools {
-			nestedMessageItems[i] = nt
-		}
-		m.loadNestedToolCalls(nestedMessageItems)
-
-		// Set nested tools on the parent.
-		nestedContainer.SetNestedTools(nestedTools)
-	}
 }
 
 // setMessagePlanFlags marks assistant message items as plan-agent output

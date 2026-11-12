@@ -708,6 +708,14 @@ func (m *Chat) ScrollPosition() (offsetIdx, offsetLine int) {
 	return m.list.ScrollPosition()
 }
 
+// RestoreScrollPosition puts the list back at a saved scroll position and
+// leaves follow mode, so restored content is not yanked to the bottom by the
+// next message that lands.
+func (m *Chat) RestoreScrollPosition(offsetIdx, offsetLine int) {
+	m.follow = false
+	m.list.SetScrollPosition(offsetIdx, offsetLine)
+}
+
 // Offset returns the scroll offset in lines from the top of the list.
 func (m *Chat) Offset() int {
 	return m.list.Offset()
@@ -716,6 +724,16 @@ func (m *Chat) Offset() int {
 // Selected returns the index of the selected item.
 func (m *Chat) Selected() int {
 	return m.list.Selected()
+}
+
+// SelectedID returns the ID of the selected message, or "" when nothing is
+// selected.
+func (m *Chat) SelectedID() string {
+	item, ok := m.list.SelectedItem().(chat.MessageItem)
+	if !ok {
+		return ""
+	}
+	return item.ID()
 }
 
 // Focused returns whether the chat list is focused.
@@ -894,6 +912,13 @@ func (m *Chat) SetSelected(index int) {
 				return
 			}
 		}
+	}
+}
+
+// SelectID selects the item registered for the given message ID, if any.
+func (m *Chat) SelectID(id string) {
+	if idx, ok := m.idInxMap[id]; ok {
+		m.list.SetSelected(idx)
 	}
 }
 
