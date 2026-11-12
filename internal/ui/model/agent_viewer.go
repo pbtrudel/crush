@@ -22,11 +22,12 @@ const agentViewerReconcileDelay = 100 * time.Millisecond
 type agentViewerReconcileMsg struct{ generation, sequence uint64 }
 
 type agentViewer struct {
-	com        *common.Common
-	chat       *Chat
-	descriptor dialog.AgentDescriptor
-	generation uint64
-	session    session.Session
+	com             *common.Common
+	chat            *Chat
+	descriptor      dialog.AgentDescriptor
+	generation      uint64
+	themeGeneration uint64
+	session         session.Session
 
 	messagesByID        map[string]message.Message
 	itemIDsByMessage    map[string][]string
@@ -76,6 +77,11 @@ func (v *agentViewer) HandleLoad(msg agentViewerLoadMsg) tea.Cmd {
 	if msg.generation != v.generation || msg.sessionID != v.descriptor.SessionID {
 		return nil
 	}
+	if msg.err == nil && msg.themeGeneration != v.themeGeneration {
+		// The item snapshot contains construction-time theme state. Keep the
+		// read outstanding and repeat it with the current immutable styles.
+		return v.loadSnapshot(msg.reconcile)
+	}
 	if msg.reconcile {
 		v.reconcileInFlight = false
 	} else {
@@ -85,8 +91,13 @@ func (v *agentViewer) HandleLoad(msg agentViewerLoadMsg) tea.Cmd {
 	if msg.err != nil {
 		v.loadErr = msg.err
 		if msg.reconcile {
-			v.reconcileNeeded = false
+			// Retain the current transcript, but do not strand events that
+			// arrived while the failed read was outstanding. The next selected
+			// event arms the only retry; any timer from this read is stale.
+			v.drainBuffered()
+			v.reconcileNeeded = true
 			v.reconcileTimerArmed = false
+			v.reconcileSeq++
 			return util.ReportWarn(fmt.Sprintf("Could not refresh agent transcript: %v", msg.err))
 		}
 		return nil
@@ -143,7 +154,11 @@ func (v *agentViewer) HandleEvent(event pubsub.Event[message.Message]) tea.Cmd {
 		}
 		return nil
 	}
-	return v.applyEvent(event)
+	cmd := v.applyEvent(event)
+	if v.reconcileNeeded {
+		return tea.Batch(cmd, v.armReconcile())
+	}
+	return cmd
 }
 
 func (v *agentViewer) drainBuffered() {
@@ -171,9 +186,7 @@ func (v *agentViewer) applyEvent(event pubsub.Event[message.Message]) tea.Cmd {
 		if msg.Role == message.Tool {
 			v.detachToolResults(msg)
 		}
-		for _, itemID := range v.itemIDsByMessage[msg.ID] {
-			v.chat.RemoveMessage(itemID)
-		}
+		v.chat.RemoveMessages(v.itemIDsByMessage[msg.ID]...)
 		delete(v.itemIDsByMessage, msg.ID)
 		delete(v.messagesByID, msg.ID)
 	}
@@ -306,9 +319,7 @@ func (v *agentViewer) detachToolResults(msg message.Message) {
 }
 
 func (v *agentViewer) removeOwnedItems(messageID string) {
-	for _, id := range v.itemIDsByMessage[messageID] {
-		v.chat.RemoveMessage(id)
-	}
+	v.chat.RemoveMessages(v.itemIDsByMessage[messageID]...)
 	delete(v.itemIDsByMessage, messageID)
 }
 
@@ -350,6 +361,9 @@ func (v *agentViewer) reconcileTick(delay time.Duration) tea.Cmd {
 
 func (v *agentViewer) HandleReconcile(msg agentViewerReconcileMsg) tea.Cmd {
 	if msg.generation != v.generation || msg.sequence != v.reconcileSeq {
+		return nil
+	}
+	if !v.reconcileTimerArmed {
 		return nil
 	}
 	if !v.reconcileNeeded {

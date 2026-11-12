@@ -60,7 +60,7 @@ func (m *UI) agentDescriptors() []dialog.AgentDescriptor {
 		}
 	}
 
-	for _, run := range sessionAgentRuns(m.agentRuns, rootID) {
+	for _, run := range freshestAgentRuns(sessionAgentRuns(m.agentRuns, rootID)) {
 		src := dialog.AgentDescriptor{
 			SessionID:       run.SessionID,
 			ParentSessionID: run.ParentSessionID,
@@ -88,6 +88,59 @@ func (m *UI) agentDescriptors() []dialog.AgentDescriptor {
 	})
 	sortAgentDescriptors(descriptors)
 	return descriptors
+}
+
+// freshestAgentRuns deduplicates reopened child sessions before registry
+// records are merged. Registry display ordering is not freshness ordering: a
+// new running record sorts ahead of the older terminal record for the same
+// child, so last-record-wins would resurrect the old lifecycle.
+func freshestAgentRuns(runs []agentrun.Run) []agentrun.Run {
+	latest := make(map[string]agentrun.Run, len(runs))
+	order := make([]string, 0, len(runs))
+	for _, run := range runs {
+		current, exists := latest[run.SessionID]
+		if !exists {
+			order = append(order, run.SessionID)
+		}
+		if !exists || compareAgentRunFreshness(run, current) > 0 {
+			latest[run.SessionID] = run
+		}
+	}
+	freshest := make([]agentrun.Run, 0, len(latest))
+	for _, sessionID := range order {
+		freshest = append(freshest, latest[sessionID])
+	}
+	return freshest
+}
+
+// compareAgentRunFreshness returns a positive value when a is fresher than b.
+// Start time is the primary freshness signal. Running wins a same-start tie
+// against a terminal record; the remaining fields provide a total, deterministic
+// tie-break independent of registry ordering.
+func compareAgentRunFreshness(a, b agentrun.Run) int {
+	if c := a.StartedAt.Compare(b.StartedAt); c != 0 {
+		return c
+	}
+	aRunning := a.Status == agentrun.StatusRunning
+	bRunning := b.Status == agentrun.StatusRunning
+	if aRunning != bRunning {
+		if aRunning {
+			return 1
+		}
+		return -1
+	}
+	if c := a.FinishedAt.Compare(b.FinishedAt); c != 0 {
+		return c
+	}
+	// Reverse string comparisons so the lexicographically smallest record
+	// wins, matching the descriptor sort's deterministic ID tie-break.
+	return cmp.Or(
+		cmp.Compare(b.ID, a.ID),
+		cmp.Compare(b.ParentSessionID, a.ParentSessionID),
+		cmp.Compare(b.Kind, a.Kind),
+		cmp.Compare(b.Name, a.Name),
+		cmp.Compare(b.Status, a.Status),
+	)
 }
 
 // mergeAgentDescriptor layers a registry run's lifecycle over an existing

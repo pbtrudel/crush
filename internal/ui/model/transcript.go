@@ -3,9 +3,12 @@ package model
 import (
 	"time"
 
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 // transcriptProjection is what a set of persisted messages projects to: the
@@ -18,10 +21,34 @@ type transcriptProjection struct {
 	lastUserMessageTime int64
 }
 
+// transcriptProjectionOptions is an immutable construction-time view of the
+// presentation configuration. Styles are copied because theme preview replaces
+// the shared struct in place. Workspace configurations are published as
+// immutable snapshots, so retaining the pointer retains one consistent config.
+type transcriptProjectionOptions struct {
+	styles     *styles.Styles
+	config     *config.Config
+	workingDir string
+}
+
+func newTranscriptProjectionOptions(com *common.Common) transcriptProjectionOptions {
+	styleSnapshot := *com.Styles
+	return transcriptProjectionOptions{
+		styles:     &styleSnapshot,
+		config:     com.Config(),
+		workingDir: com.Workspace.WorkingDir(),
+	}
+}
+
 // projectTranscriptMessages projects every message of a session into the
 // transcript items a chat renders. It is pure: it performs no I/O and touches
-// no chat, so a caller can run it off the UI goroutine.
+// no chat, so a caller can run it off the UI goroutine with an immutable option
+// snapshot.
 func projectTranscriptMessages(com *common.Common, msgs []message.Message) transcriptProjection {
+	return projectTranscriptMessagesWithOptions(newTranscriptProjectionOptions(com), msgs)
+}
+
+func projectTranscriptMessagesWithOptions(options transcriptProjectionOptions, msgs []message.Message) transcriptProjection {
 	msgPtrs := make([]*message.Message, len(msgs))
 	for i := range msgs {
 		msgPtrs[i] = &msgs[i]
@@ -36,7 +63,7 @@ func projectTranscriptMessages(com *common.Common, msgs []message.Message) trans
 		projection.lastUserMessageTime = msgPtrs[0].CreatedAt
 	}
 	for _, msg := range msgPtrs {
-		projected := projectTranscriptMessage(com, msg, results, projection.lastUserMessageTime)
+		projected := projectTranscriptMessageWithOptions(options, msg, results, projection.lastUserMessageTime)
 		projection.items = append(projection.items, projected.items...)
 		projection.lastUserMessageTime = projected.lastUserMessageTime
 		for messageID, ids := range projected.itemIDsByMessage {
@@ -50,12 +77,16 @@ func projectTranscriptMessages(com *common.Common, msgs []message.Message) trans
 // current last-user timestamp so incremental updates apply the same
 // assistant-info rules as a full load.
 func projectTranscriptMessage(com *common.Common, msg *message.Message, results map[string]message.ToolResult, lastUser int64) transcriptProjection {
-	items := chat.ExtractMessageItems(com.Styles, msg, results, com.Workspace.WorkingDir())
+	return projectTranscriptMessageWithOptions(newTranscriptProjectionOptions(com), msg, results, lastUser)
+}
+
+func projectTranscriptMessageWithOptions(options transcriptProjectionOptions, msg *message.Message, results map[string]message.ToolResult, lastUser int64) transcriptProjection {
+	items := chat.ExtractMessageItems(options.styles, msg, results, options.workingDir)
 
 	// The info footer belongs to the assistant turn it follows, so the
 	// message owns it too and removing the message removes the footer.
 	if msg.Role == message.Assistant && chat.ShouldShowAssistantInfo(msg) {
-		items = append(items, chat.NewAssistantInfoItem(com.Styles, msg, com.Config(), time.Unix(lastUser, 0)))
+		items = append(items, chat.NewAssistantInfoItem(options.styles, msg, options.config, time.Unix(lastUser, 0)))
 	}
 
 	projection := transcriptProjection{
@@ -88,20 +119,24 @@ func recordProjectionItems(dst map[string][]string, messageID string, items []ch
 // agent/agentic_fetch tools. It performs blocking workspace reads, so callers
 // run it from a command rather than from Update or Draw.
 func loadNestedToolCalls(com *common.Common, items []chat.MessageItem) {
+	loadNestedToolCallsWithOptions(com.Workspace, newTranscriptProjectionOptions(com), items)
+}
+
+func loadNestedToolCallsWithOptions(ws workspace.Workspace, options transcriptProjectionOptions, items []chat.MessageItem) {
 	for _, item := range items {
 		container, containerOK := item.(chat.NestedToolContainer)
 		tool, toolOK := item.(chat.ToolMessageItem)
 		if !containerOK || !toolOK {
 			continue
 		}
-		sessionID := com.Workspace.CreateAgentToolSessionID(tool.MessageID(), tool.ToolCall().ID)
+		sessionID := ws.CreateAgentToolSessionID(tool.MessageID(), tool.ToolCall().ID)
 		ctx, cancel := common.WorkspaceOpContext()
-		msgs, err := com.Workspace.ListMessages(ctx, sessionID)
+		msgs, err := ws.ListMessages(ctx, sessionID)
 		cancel()
 		if err != nil || len(msgs) == 0 {
 			continue
 		}
-		nested := projectTranscriptMessages(com, msgs)
+		nested := projectTranscriptMessagesWithOptions(options, msgs)
 		tools := make([]chat.ToolMessageItem, 0, len(nested.items))
 		for _, nestedItem := range nested.items {
 			if toolItem, ok := nestedItem.(chat.ToolMessageItem); ok {
@@ -115,7 +150,7 @@ func loadNestedToolCalls(com *common.Common, items []chat.MessageItem) {
 		for i := range tools {
 			nestedItems[i] = tools[i]
 		}
-		loadNestedToolCalls(com, nestedItems)
+		loadNestedToolCallsWithOptions(ws, options, nestedItems)
 		container.SetNestedTools(tools)
 	}
 }

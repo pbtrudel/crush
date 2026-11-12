@@ -378,6 +378,41 @@ func TestAgentViewerEventDeleteRemovesDerivedItems(t *testing.T) {
 	require.NotContains(t, viewer.itemIDsByMessage, "assistant-1")
 }
 
+func TestAgentViewerEventDeleteNestedAgentToolsReindexesRemainingItems(t *testing.T) {
+	t.Parallel()
+	viewer, _ := newLoadedAgentViewer(t)
+	parent := message.Message{ID: "parent-message", SessionID: "child", Role: message.Assistant, Parts: []message.ContentPart{
+		message.ToolCall{ID: "parent-agent", Name: agent.AgentToolName, Input: `{}`, Finished: true},
+	}}
+	sibling := message.Message{ID: "sibling-message", SessionID: "child", Role: message.Assistant, Parts: []message.ContentPart{
+		message.ToolCall{ID: "sibling-agent", Name: agent.AgentToolName, Input: `{}`, Finished: true},
+	}}
+	viewer.HandleEvent(agentViewerEvent(pubsub.CreatedEvent, parent))
+	viewer.HandleEvent(agentViewerEvent(pubsub.CreatedEvent, sibling))
+
+	parentContainer := viewer.chat.MessageItem("parent-agent").(chat.NestedToolContainer)
+	parentContainer.SetNestedTools([]chat.ToolMessageItem{chat.NewToolMessageItem(
+		viewer.com.Styles, parent.ID, message.ToolCall{ID: "nested-delete", Name: "view", Input: `{}`, Finished: true}, nil, false, viewer.com.Workspace.WorkingDir(),
+	).(chat.ToolMessageItem)})
+	viewer.chat.UpdateNestedToolIDs("parent-agent")
+	siblingContainer := viewer.chat.MessageItem("sibling-agent").(chat.NestedToolContainer)
+	siblingContainer.SetNestedTools([]chat.ToolMessageItem{chat.NewToolMessageItem(
+		viewer.com.Styles, sibling.ID, message.ToolCall{ID: "nested-keep", Name: "view", Input: `{}`, Finished: true}, nil, false, viewer.com.Workspace.WorkingDir(),
+	).(chat.ToolMessageItem)})
+	viewer.chat.UpdateNestedToolIDs("sibling-agent")
+	siblingItem := viewer.chat.MessageItem("sibling-agent")
+	require.NotNil(t, viewer.chat.MessageItem("nested-delete"))
+	require.NotNil(t, viewer.chat.MessageItem("nested-keep"))
+
+	viewer.HandleEvent(agentViewerEvent(pubsub.DeletedEvent, parent))
+
+	require.Nil(t, viewer.chat.MessageItem("parent-agent"))
+	require.Nil(t, viewer.chat.MessageItem("nested-delete"), "deleted containers must unregister every nested tool ID")
+	require.Same(t, siblingItem, viewer.chat.MessageItem("sibling-agent"))
+	require.NotNil(t, viewer.chat.MessageItem("nested-keep"), "remaining nested IDs must move with their container")
+	require.Equal(t, 1, viewer.chat.Len())
+}
+
 func TestAgentViewerEventDeleteToolResultClearsLinkedResult(t *testing.T) {
 	t.Parallel()
 	viewer, _ := newLoadedAgentViewer(t)

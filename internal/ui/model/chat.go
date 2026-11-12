@@ -464,24 +464,17 @@ func (m *Chat) InvalidateVisibleRenderCaches() {
 
 // SetMessages sets the chat messages to the provided list of message items.
 func (m *Chat) SetMessages(msgs ...chat.MessageItem) tea.Cmd {
-	m.idInxMap = make(map[string]int)
 	m.resetScrollbar() // Reset scrollbar visibility on new session load
 
 	items := make([]list.Item, len(msgs))
 	for i, msg := range msgs {
-		m.idInxMap[msg.ID()] = i
-		// Register nested tool IDs for tools that contain nested tools.
-		if container, ok := msg.(chat.NestedToolContainer); ok {
-			for _, nested := range container.NestedTools() {
-				m.idInxMap[nested.ID()] = i
-			}
-		}
 		if sr, ok := msg.(chat.SecretRevealable); ok {
 			sr.SetRevealSecrets(m.revealSecrets)
 		}
 		items[i] = msg
 	}
 	m.list.SetItems(items...)
+	m.rebuildMessageIndex()
 	m.ScrollToBottom()
 	return nil
 }
@@ -500,13 +493,7 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 	items := make([]list.Item, len(msgs))
 	indexOffset := m.list.Len()
 	for i, msg := range msgs {
-		m.idInxMap[msg.ID()] = indexOffset + i
-		// Register nested tool IDs for tools that contain nested tools.
-		if container, ok := msg.(chat.NestedToolContainer); ok {
-			for _, nested := range container.NestedTools() {
-				m.idInxMap[nested.ID()] = indexOffset + i
-			}
-		}
+		m.registerMessageItemIDs(msg, indexOffset+i)
 		if sr, ok := msg.(chat.SecretRevealable); ok {
 			sr.SetRevealSecrets(m.revealSecrets)
 		}
@@ -535,26 +522,10 @@ func containsMessage(msgs []chat.MessageItem, id string) bool {
 
 // UpdateNestedToolIDs updates the ID map for nested tools within a container.
 // Call this after modifying nested tools to ensure animations work correctly.
-func (m *Chat) UpdateNestedToolIDs(containerID string) {
-	idx, ok := m.idInxMap[containerID]
-	if !ok {
-		return
-	}
-
-	item, ok := m.list.ItemAt(idx).(chat.MessageItem)
-	if !ok {
-		return
-	}
-
-	container, ok := item.(chat.NestedToolContainer)
-	if !ok {
-		return
-	}
-
-	// Register all nested tool IDs to point to the container's index.
-	for _, nested := range container.NestedTools() {
-		m.idInxMap[nested.ID()] = idx
-	}
+func (m *Chat) UpdateNestedToolIDs(_ string) {
+	// Nested tools may have been removed as well as added. Rebuild from the
+	// authoritative item tree so no previous nested IDs remain behind.
+	m.rebuildMessageIndex()
 }
 
 // animTickMsg is the shared animation clock. One tick advances every
@@ -1036,22 +1007,54 @@ func (m *Chat) ClearMessages() {
 
 // RemoveMessage removes a message from the chat list by its ID.
 func (m *Chat) RemoveMessage(id string) {
-	idx, ok := m.idInxMap[id]
-	if !ok {
+	m.RemoveMessages(id)
+}
+
+// RemoveMessages removes all top-level items owning any of the given IDs and
+// rebuilds the complete index once. IDs of nested tools map to their owning
+// top-level container, just as they do in MessageItem.
+func (m *Chat) RemoveMessages(ids ...string) {
+	indices := make([]int, 0, len(ids))
+	seen := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		idx, ok := m.idInxMap[id]
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[idx]; duplicate {
+			continue
+		}
+		seen[idx] = struct{}{}
+		indices = append(indices, idx)
+	}
+	if len(indices) == 0 {
 		return
 	}
 
-	// Remove from list
-	m.list.RemoveItem(idx)
+	slices.Sort(indices)
+	for i := len(indices) - 1; i >= 0; i-- {
+		m.list.RemoveItem(indices[i])
+	}
+	m.rebuildMessageIndex()
+}
 
-	// Remove from index map
-	delete(m.idInxMap, id)
-
-	// Rebuild index map for all items after the removed one
-	for i := idx; i < m.list.Len(); i++ {
+func (m *Chat) rebuildMessageIndex() {
+	m.idInxMap = make(map[string]int, m.list.Len())
+	for i := range m.list.Len() {
 		if item, ok := m.list.ItemAt(i).(chat.MessageItem); ok {
-			m.idInxMap[item.ID()] = i
+			m.registerMessageItemIDs(item, i)
 		}
+	}
+}
+
+func (m *Chat) registerMessageItemIDs(item chat.MessageItem, idx int) {
+	m.idInxMap[item.ID()] = idx
+	container, ok := item.(chat.NestedToolContainer)
+	if !ok {
+		return
+	}
+	for _, nested := range container.NestedTools() {
+		m.registerMessageItemIDs(nested, idx)
 	}
 }
 
@@ -1062,10 +1065,26 @@ func (m *Chat) MessageItem(id string) chat.MessageItem {
 		return nil
 	}
 	item, ok := m.list.ItemAt(idx).(chat.MessageItem)
-	if !ok {
+	if !ok || !messageItemHasID(item, id) {
 		return nil
 	}
 	return item
+}
+
+func messageItemHasID(item chat.MessageItem, id string) bool {
+	if item.ID() == id {
+		return true
+	}
+	container, ok := item.(chat.NestedToolContainer)
+	if !ok {
+		return false
+	}
+	for _, nested := range container.NestedTools() {
+		if messageItemHasID(nested, id) {
+			return true
+		}
+	}
+	return false
 }
 
 // MessageItemAt returns the message item at index i, or nil if i is out of

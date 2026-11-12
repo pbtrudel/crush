@@ -95,6 +95,50 @@ func TestAgentDescriptorsMergesRegistryOverDispatch(t *testing.T) {
 	require.Equal(t, status.Finished, got[0].FinishedAt, "zero registry finish should backfill from dispatch")
 }
 
+func TestAgentDescriptorsSelectsFreshestRunForReopenedSession(t *testing.T) {
+	t.Parallel()
+
+	newerRunning := agentrun.Run{
+		ID: "run-new", SessionID: "child", ParentSessionID: "root", Name: "new", Kind: agentrun.KindSubagent,
+		Status: agentrun.StatusRunning, StartedAt: time.Unix(200, 0),
+	}
+	olderFinished := agentrun.Run{
+		ID: "run-old", SessionID: "child", ParentSessionID: "root", Name: "old", Kind: agentrun.KindSubagent,
+		Status: agentrun.StatusDone, StartedAt: time.Unix(100, 0), FinishedAt: time.Unix(300, 0),
+	}
+	for _, runs := range [][]agentrun.Run{{newerRunning, olderFinished}, {olderFinished, newerRunning}} {
+		u := newTestUI()
+		u.session = &session.Session{ID: "root"}
+		u.agentRuns = runs
+
+		got := u.agentDescriptors()
+
+		require.Len(t, got, 1)
+		require.Equal(t, "new", got[0].Name)
+		require.Equal(t, agentrun.StatusRunning, got[0].Status)
+		require.Equal(t, newerRunning.StartedAt, got[0].StartedAt)
+		require.True(t, got[0].FinishedAt.IsZero())
+	}
+
+	tieA := agentrun.Run{
+		ID: "run-a", SessionID: "child", ParentSessionID: "root", Name: "a", Kind: agentrun.KindSubagent,
+		Status: agentrun.StatusRunning, StartedAt: newerRunning.StartedAt,
+	}
+	tieB := tieA
+	tieB.ID = "run-b"
+	tieB.Name = "b"
+	for _, runs := range [][]agentrun.Run{{tieB, tieA}, {tieA, tieB}} {
+		u := newTestUI()
+		u.session = &session.Session{ID: "root"}
+		u.agentRuns = runs
+
+		got := u.agentDescriptors()
+
+		require.Len(t, got, 1)
+		require.Equal(t, "a", got[0].Name, "equal timestamps use a deterministic run-ID tie-break")
+	}
+}
+
 func TestAgentDescriptorsSkipsDispatchWithoutWorkspace(t *testing.T) {
 	t.Parallel()
 	u := newTestUI()

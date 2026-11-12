@@ -218,8 +218,9 @@ type (
 		action dialog.ActionSelectModel
 	}
 
-	// copyChatHighlightMsg is sent to copy the current chat highlight to clipboard.
-	copyChatHighlightMsg struct{}
+	// copyChatHighlightMsg copies the highlight from the chat where the mouse
+	// selection originated, even if the visible chat changes before the delay.
+	copyChatHighlightMsg struct{ chat *Chat }
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
@@ -297,7 +298,8 @@ type UI struct {
 	// themeKey identifies the currently applied theme so applyTheme can
 	// skip the expensive style rebuild when switching to a provider that
 	// resolves to the same theme.
-	themeKey string
+	themeKey        string
+	themeGeneration uint64
 
 	// userThemeSelected records that the user explicitly chose a theme
 	// during this session. It guards against provider-driven theme swaps
@@ -1581,7 +1583,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.keyMap.Editor.Newline.SetHelp("shift+enter", "newline")
 		}
 	case copyChatHighlightMsg:
-		cmds = append(cmds, m.copyChatHighlight())
+		cmds = append(cmds, m.copyChatHighlight(msg.chat))
 	case DelayedClickMsg:
 		// Handle delayed single-click action (e.g., expansion).
 		m.activeChat().HandleDelayedClick(msg)
@@ -1755,10 +1757,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.agentViewer != nil {
 			x, y := m.agentViewerMousePosition(msg.X, msg.Y)
-			if m.agentViewer.chat.HandleMouseUp(x, y) && m.agentViewer.chat.HasHighlight() {
+			chat := m.agentViewer.chat
+			if chat.HandleMouseUp(x, y) && chat.HasHighlight() {
 				cmds = append(cmds, tea.Tick(doubleClickThreshold, func(t time.Time) tea.Msg {
 					if time.Since(m.lastClickTime) >= doubleClickThreshold {
-						return copyChatHighlightMsg{}
+						return copyChatHighlightMsg{chat: chat}
 					}
 					return nil
 				}))
@@ -1794,10 +1797,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Adjust for chat area position
 			x -= m.layout.main.Min.X
 			y -= m.layout.main.Min.Y
-			if m.chat.HandleMouseUp(x, y) && m.chat.HasHighlight() {
+			chat := m.chat
+			if chat.HandleMouseUp(x, y) && chat.HasHighlight() {
 				cmds = append(cmds, tea.Tick(doubleClickThreshold, func(t time.Time) tea.Msg {
 					if time.Since(m.lastClickTime) >= doubleClickThreshold {
-						return copyChatHighlightMsg{}
+						return copyChatHighlightMsg{chat: chat}
 					}
 					return nil
 				}))
@@ -6083,11 +6087,13 @@ func (m *UI) applyThemeForProvider(providerID string) {
 // shared style caches, and refreshes every component that caches style
 // data.
 func (m *UI) applyTheme(s styles.Styles) {
+	m.themeGeneration++
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateRenderCaches()
 	if m.agentViewer != nil {
+		m.agentViewer.themeGeneration = m.themeGeneration
 		m.agentViewer.InvalidateRenderCaches()
 	}
 }
@@ -6098,11 +6104,13 @@ func (m *UI) applyTheme(s styles.Styles) {
 // cached output so browsing themes stays fast in large sessions. Off-screen
 // messages follow along when the theme is actually applied.
 func (m *UI) previewTheme(s styles.Styles) {
+	m.themeGeneration++
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateVisibleRenderCaches()
 	if m.agentViewer != nil {
+		m.agentViewer.themeGeneration = m.themeGeneration
 		m.agentViewer.InvalidateVisibleRenderCaches()
 	}
 }
@@ -6801,6 +6809,7 @@ func (m *UI) openAgentViewer(descriptor dialog.AgentDescriptor) tea.Cmd {
 	}
 	m.agentViewerGeneration++
 	viewer := newAgentViewer(m.com, descriptor, m.chat.scrollbarMode, m.agentViewerGeneration)
+	viewer.themeGeneration = m.themeGeneration
 	viewer.chat.Focus()
 	viewer.chat.SetRevealSecrets(m.chat.RevealSecrets())
 	m.agentViewer = viewer
@@ -7583,10 +7592,14 @@ func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 	}
 }
 
-func (m *UI) copyChatHighlight() tea.Cmd {
-	chat := m.activeChat()
+var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
+
+func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
+	if chat == nil {
+		chat = m.activeChat()
+	}
 	text := chat.HighlightContent()
-	return common.CopyToClipboardWithCallback(
+	return copyChatHighlightToClipboard(
 		text,
 		"Selected text copied to clipboard",
 		func() tea.Msg {

@@ -193,7 +193,7 @@ func TestAgentViewerReconcileFailureKeepsItemsAndDoesNotRetry(t *testing.T) {
 	require.Contains(t, warningMsg.Msg, readErr.Error())
 	require.Contains(t, ansi.Strip(viewer.chat.MessageItem(created.ID).RawRender(100)), "retained content")
 	require.False(t, viewer.reconcileInFlight)
-	require.False(t, viewer.reconcileNeeded)
+	require.True(t, viewer.reconcileNeeded, "a failed snapshot still needs reconciliation")
 	require.False(t, viewer.reconcileTimerArmed)
 	require.Equal(t, initialReads+1, ws.listCalls())
 	clock.Advance(time.Second)
@@ -206,6 +206,55 @@ func TestAgentViewerReconcileFailureKeepsItemsAndDoesNotRetry(t *testing.T) {
 	explicitReload := viewer.Start()
 	require.NotNil(t, explicitReload)
 	require.IsType(t, agentViewerLoadMsg{}, explicitReload())
+	require.Equal(t, initialReads+2, ws.listCalls())
+}
+
+func TestAgentViewerReconcileFailureDrainsBufferAndRearmsOnNextEvent(t *testing.T) {
+	t.Parallel()
+	viewer, ws := newLoadedAgentViewer(t)
+	clock := &agentViewerFakeClock{now: time.Unix(100, 0)}
+	viewer.now = clock.Now
+	initialReads := ws.listCalls()
+	created := agentViewerTextMessage("assistant-failed-buffer", "before failure")
+	timer := bufferAgentViewerEventDuringLoad(viewer, agentViewerEvent(pubsub.CreatedEvent, created))
+	readErr := errors.New("reconciliation failed")
+	ws.mu.Lock()
+	ws.listErr = readErr
+	ws.mu.Unlock()
+	failed := runAgentViewerReconcileTimer(t, viewer, clock, timer)
+	bufferedUpdate := agentViewerTextMessage(created.ID, "buffered during failed read")
+	viewer.HandleEvent(agentViewerEvent(pubsub.UpdatedEvent, bufferedUpdate))
+	staleSequence := viewer.reconcileSeq
+
+	warning := viewer.HandleLoad(failed)
+
+	require.NotNil(t, warning)
+	require.Empty(t, viewer.buffered)
+	require.Contains(t, ansi.Strip(viewer.chat.MessageItem(created.ID).RawRender(100)), bufferedUpdate.Parts[0].(message.TextContent).Text)
+	require.True(t, viewer.reconcileNeeded)
+	require.False(t, viewer.reconcileTimerArmed)
+	require.False(t, viewer.reconcileInFlight)
+	require.Equal(t, initialReads+1, ws.listCalls())
+
+	clock.Advance(time.Second)
+	require.Nil(t, viewer.HandleReconcile(agentViewerReconcileMsg{generation: viewer.generation, sequence: staleSequence}))
+	require.Equal(t, initialReads+1, ws.listCalls(), "a failed read never retries from its old timer")
+
+	ws.mu.Lock()
+	ws.listErr = nil
+	ws.mu.Unlock()
+	liveUpdate := agentViewerTextMessage(created.ID, "live event after failure")
+	trailing := viewer.HandleEvent(agentViewerEvent(pubsub.UpdatedEvent, liveUpdate))
+	require.NotNil(t, trailing)
+	require.True(t, viewer.reconcileTimerArmed)
+	require.True(t, viewer.reconcileNeeded)
+	require.Contains(t, ansi.Strip(viewer.chat.MessageItem(created.ID).RawRender(100)), liveUpdate.Parts[0].(message.TextContent).Text)
+	require.Equal(t, initialReads+1, ws.listCalls(), "the selected event arms a trailing read instead of reading immediately")
+
+	clock.Advance(agentViewerReconcileDelay)
+	loadCmd := viewer.HandleReconcile(agentViewerReconcileMsg{generation: viewer.generation, sequence: viewer.reconcileSeq})
+	require.NotNil(t, loadCmd)
+	require.IsType(t, agentViewerLoadMsg{}, loadCmd())
 	require.Equal(t, initialReads+2, ws.listCalls())
 }
 
