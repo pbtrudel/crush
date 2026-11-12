@@ -91,6 +91,8 @@ func newTestUI() *UI {
 }
 
 func TestAgentViewerUILayoutUsesContentRectWithoutChangingMainLayout(t *testing.T) {
+	t.Parallel()
+
 	u := newTestUI()
 	mainLayout := u.generateLayout(120, 40)
 	u.agentViewer = newAgentViewer(u.com, dialog.AgentDescriptor{SessionID: "child"}, config.ScrollbarDefault, 1)

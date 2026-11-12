@@ -79,6 +79,8 @@ func openLoadedAgentViewerUI(t *testing.T, u *UI, descriptor dialog.AgentDescrip
 }
 
 func TestAgentViewerUICommandPaletteContainsViewAgents(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	commands, err := dialog.NewCommands(u.com, "main", true, false, false, false, false, nil, nil)
 	require.NoError(t, err)
@@ -94,6 +96,8 @@ func TestAgentViewerUICommandPaletteContainsViewAgents(t *testing.T) {
 }
 
 func TestAgentViewerUIOpenSelectorAndReplacementGeneration(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	u.chat.SetRevealSecrets(true)
 	u.agentRuns = []agentrun.Run{{
@@ -149,6 +153,8 @@ func TestAgentViewerUIOpenSelectorAndReplacementGeneration(t *testing.T) {
 }
 
 func TestAgentViewerUIClosePreservesMainAndDialogPriority(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	mainSession := u.session
 	mainItems := make([]chat.MessageItem, 0, 20)
@@ -190,6 +196,8 @@ func TestAgentViewerUIClosePreservesMainAndDialogPriority(t *testing.T) {
 }
 
 func TestAgentViewerUIInitialLoadFailureClosesOnlyViewer(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	loadErr := errors.New("history unavailable")
 	ws.getErr = loadErr
@@ -217,6 +225,8 @@ func TestAgentViewerUIInitialLoadFailureClosesOnlyViewer(t *testing.T) {
 }
 
 func TestAgentViewerUIEventForwardingKeepsMainProcessing(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	parentTool := chat.NewToolMessageItem(u.com.Styles, "parent-message", message.ToolCall{
 		ID: "parent-tool", Name: agent.AgentToolName, Input: `{}`, Finished: true,
@@ -253,6 +263,8 @@ func TestAgentViewerUIEventForwardingKeepsMainProcessing(t *testing.T) {
 }
 
 func TestAgentViewerUIDrawsFullScreenAndBypassesFrameCache(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	child := message.Message{
 		ID: "child-message", SessionID: "child", Role: message.User,
@@ -353,6 +365,8 @@ func agentViewerUIItems(prefix string, count int) ([]chat.MessageItem, []*agentV
 }
 
 func TestAgentViewerUIKeyboardRoutesScrollExpandCopyAndGlobals(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	mainItems, mainTyped := agentViewerUIItems("main", 30)
 	u.chat.SetMessages(mainItems...)
@@ -393,6 +407,8 @@ func TestAgentViewerUIKeyboardRoutesScrollExpandCopyAndGlobals(t *testing.T) {
 }
 
 func TestAgentViewerUIMouseDelayedCopyScrollbarAndWarmRouting(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	mainItem := &agentViewerUIItem{id: "main", text: "main text"}
 	u.chat.SetMessages(mainItem)
@@ -448,6 +464,8 @@ func TestAgentViewerUIMouseDelayedCopyScrollbarAndWarmRouting(t *testing.T) {
 }
 
 func TestAgentViewerUIWheelRoutesOnlyToViewer(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	mainItems, _ := agentViewerUIItems("main", 40)
 	u.chat.SetMessages(mainItems...)
@@ -467,6 +485,8 @@ func TestAgentViewerUIWheelRoutesOnlyToViewer(t *testing.T) {
 }
 
 func TestAgentViewerUIAnimationOwnsVisibleClockAndRearmsMainOnClose(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	ws.busy = true
 	mainSpinner := &agentViewerUIItem{id: "main", text: "main", spinning: true}
@@ -504,6 +524,8 @@ func TestAgentViewerUIAnimationOwnsVisibleClockAndRearmsMainOnClose(t *testing.T
 }
 
 func TestAgentViewerUIReconciliationErrorKeepsViewerOpen(t *testing.T) {
+	t.Parallel()
+
 	u, _ := newAgentViewerUITest(t)
 	viewer := openLoadedAgentViewerUI(t, u, dialog.AgentDescriptor{SessionID: "child", Name: "researcher"})
 	viewer.reconcileInFlight = true
@@ -520,6 +542,8 @@ func TestAgentViewerUIReconciliationErrorKeepsViewerOpen(t *testing.T) {
 }
 
 func TestAgentViewerUITextRemainsReadableAtNarrowWidth(t *testing.T) {
+	t.Parallel()
+
 	u, ws := newAgentViewerUITest(t)
 	ws.messages["child"] = []message.Message{{
 		ID: "long", SessionID: "child", Role: message.User,
