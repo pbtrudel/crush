@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+
+	"github.com/charmbracelet/crush/internal/agent/tools"
 )
 
 // fusionAcceptScore is the lowest judge score that accepts the draft and skips
@@ -38,12 +40,11 @@ type fusionModel struct {
 	tools  []fantasy.AgentTool
 	prompt string
 
-	mu          sync.Mutex
-	plan        *fusionPlan
-	models      map[string]fantasy.LanguageModel
-	phase       string
-	handoff     string
-	handoffSent bool
+	mu      sync.Mutex
+	plan    *fusionPlan
+	models  map[string]fantasy.LanguageModel
+	phase   string
+	handoff string
 }
 
 func newFusionModel(cfg FusionConfig, tools []fantasy.AgentTool, prompt string) *fusionModel {
@@ -57,15 +58,15 @@ func newFusionModel(cfg FusionConfig, tools []fantasy.AgentTool, prompt string) 
 
 // fusionReviewTools keeps only the read-only tools the judge and critic may
 // use. Anything that can change the workspace stays out of their reach.
-func fusionReviewTools(tools []fantasy.AgentTool) []fantasy.AgentTool {
+func fusionReviewTools(available []fantasy.AgentTool) []fantasy.AgentTool {
 	allowed := map[string]bool{
-		"view": true,
-		"grep": true,
-		"glob": true,
-		"ls":   true,
+		tools.ViewToolName: true,
+		tools.GrepToolName: true,
+		tools.GlobToolName: true,
+		tools.LSToolName:   true,
 	}
 	var out []fantasy.AgentTool
-	for _, tool := range tools {
+	for _, tool := range available {
 		if allowed[tool.Info().Name] {
 			out = append(out, tool)
 		}
@@ -171,7 +172,6 @@ func (m *fusionModel) streamPrimary(ctx context.Context, call fantasy.Call, plan
 	m.mu.Lock()
 	m.phase = "repair"
 	m.handoff = handoff
-	m.handoffSent = false
 	m.mu.Unlock()
 	return m.streamRepair(ctx, call, plan)
 }
@@ -187,12 +187,16 @@ func (m *fusionModel) streamRepair(ctx context.Context, call fantasy.Call, plan 
 
 	m.mu.Lock()
 	handoff := m.handoff
-	first := !m.handoffSent
-	m.handoffSent = true
 	m.mu.Unlock()
 
-	if first && handoff != "" {
-		call.Prompt = append(call.Prompt, fantasy.NewUserMessage(handoff))
+	// The handoff is not part of the persisted history, so every repair step
+	// gets it appended to the prompt it is about to send. Copy the slice
+	// first: appending to the caller's slice could write past its length.
+	if handoff != "" {
+		prompt := make(fantasy.Prompt, 0, len(call.Prompt)+1)
+		prompt = append(prompt, call.Prompt...)
+		prompt = append(prompt, fantasy.NewUserMessage(handoff))
+		call.Prompt = prompt
 	}
 	return model.Stream(ctx, call)
 }
