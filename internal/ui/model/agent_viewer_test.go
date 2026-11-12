@@ -164,6 +164,36 @@ func TestAgentViewerLoadHistoryAndNestedTools(t *testing.T) {
 	require.Equal(t, 1, ws.busyProbeCalls(), "only the asynchronous load command probes busy state")
 }
 
+func TestAgentViewerLoadRecursivelyLoadsRawNestedTranscripts(t *testing.T) {
+	t.Parallel()
+	nestedSessionID := "nested:assistant-1:tool-1"
+	nestedParent := message.Message{ID: "nested-parent", SessionID: nestedSessionID, Role: message.Assistant, Parts: []message.ContentPart{
+		message.ToolCall{ID: "nested-agent", Name: agent.AgentToolName, Input: `{"prompt":"look deeper"}`, Finished: true},
+	}}
+	deepSessionID := "nested:nested-parent:nested-agent"
+	ws := &agentViewerWorkspace{messages: map[string][]message.Message{
+		"child":         agentViewerHistoryMessages(),
+		nestedSessionID: {nestedParent},
+		deepSessionID: {
+			{ID: "deep-message", SessionID: deepSessionID, Role: message.Assistant, Parts: []message.ContentPart{
+				message.ToolCall{ID: "deep-tool", Name: "view", Input: `{}`, Finished: true},
+			}},
+		},
+	}}
+	_, viewer := newAgentViewerTest(t, ws, 7)
+
+	load := runAgentViewerLoad(t, viewer)
+
+	require.Contains(t, load.nestedMessages, nestedSessionID)
+	require.Contains(t, load.nestedMessages, deepSessionID)
+	rootContainer := viewer.chat.MessageItem("tool-1").(chat.NestedToolContainer)
+	require.Len(t, rootContainer.NestedTools(), 1)
+	nestedContainer := rootContainer.NestedTools()[0].(chat.NestedToolContainer)
+	require.Len(t, nestedContainer.NestedTools(), 1)
+	require.Equal(t, "deep-tool", nestedContainer.NestedTools()[0].ID())
+	require.NotNil(t, viewer.chat.MessageItem("deep-tool"))
+}
+
 func TestAgentViewerLoadCompletedSnapshotSuppressesGhostSpinner(t *testing.T) {
 	t.Parallel()
 	messages := agentViewerHistoryMessages()
@@ -181,13 +211,11 @@ func TestAgentViewerLoadRejectsStaleResultsAndDoesNotProbeBusy(t *testing.T) {
 	t.Parallel()
 	ws := &agentViewerWorkspace{messages: map[string][]message.Message{"child": agentViewerHistoryMessages()}}
 	_, viewer := newAgentViewerTest(t, ws, 8)
-	projection := projectTranscriptMessages(viewer.com, ws.messages["child"])
 	valid := agentViewerLoadMsg{
 		generation: 8,
 		sessionID:  "child",
 		session:    session.Session{ID: "child"},
 		messages:   ws.messages["child"],
-		projection: projection,
 		busy:       true,
 	}
 
@@ -276,7 +304,6 @@ func TestAgentViewerEventDuplicateCreateBufferedDuringLoad(t *testing.T) {
 		generation: viewer.generation,
 		sessionID:  "child",
 		session:    session.Session{ID: "child"},
-		projection: projectTranscriptMessages(viewer.com, nil),
 	})
 
 	require.Len(t, viewer.messagesByID, 1)
@@ -532,7 +559,6 @@ func TestAgentViewerUpdateDescriptorRetainsTranscriptAndChangesStatus(t *testing
 				reconcile:  true,
 				session:    session.Session{ID: "child"},
 				messages:   []message.Message{retained},
-				projection: projectTranscriptMessages(viewer.com, []message.Message{retained}),
 				busy:       true,
 			})
 			require.False(t, viewer.chat.animAllowed, "a busy snapshot is not a live event and cannot revive a finished viewer")

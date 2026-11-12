@@ -126,7 +126,6 @@ func TestAgentViewerUIOpenSelectorAndReplacementGeneration(t *testing.T) {
 		sessionID:  first.descriptor.SessionID,
 		session:    session.Session{ID: "child"},
 		messages:   []message.Message{agentViewerTextMessage("stale", "STALE_TRANSCRIPT")},
-		projection: projectTranscriptMessages(u.com, []message.Message{agentViewerTextMessage("stale", "STALE_TRANSCRIPT")}),
 	}
 	_ = u.openAgentViewer(dialog.AgentDescriptor{SessionID: "child-two", Name: "second"})
 	require.NotSame(t, first, u.agentViewer)
@@ -146,7 +145,6 @@ func TestAgentViewerUIOpenSelectorAndReplacementGeneration(t *testing.T) {
 		sessionID:  "child-two",
 		session:    session.Session{ID: "child-two"},
 		messages:   []message.Message{currentMessage},
-		projection: projectTranscriptMessages(u.com, []message.Message{currentMessage}),
 	})
 	require.NotNil(t, u.agentViewer.chat.MessageItem("current"))
 	require.Nil(t, u.agentViewer.chat.MessageItem("stale"))

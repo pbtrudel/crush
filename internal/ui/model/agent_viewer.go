@@ -78,8 +78,9 @@ func (v *agentViewer) HandleLoad(msg agentViewerLoadMsg) tea.Cmd {
 		return nil
 	}
 	if msg.err == nil && msg.themeGeneration != v.themeGeneration {
-		// The item snapshot contains construction-time theme state. Keep the
-		// read outstanding and repeat it with the current immutable styles.
+		// Keep generation checking even though projection now happens at
+		// installation: a load that overlapped theme invalidation is retried
+		// before any items are installed.
 		return v.loadSnapshot(msg.reconcile)
 	}
 	if msg.reconcile {
@@ -133,14 +134,20 @@ func (v *agentViewer) HandleLoad(msg agentViewerLoadMsg) tea.Cmd {
 }
 
 func (v *agentViewer) installSnapshot(msg agentViewerLoadMsg) {
+	// Projection is deliberately restricted to the UI goroutine. Using the
+	// shared styles pointer keeps every installed item live across later
+	// in-place theme apply and preview operations.
+	projection := projectTranscriptMessages(v.com, msg.messages)
+	attachNestedTranscripts(v.com, projection.items, msg.nestedMessages)
+
 	v.session = msg.session
 	v.messagesByID = make(map[string]message.Message, len(msg.messages))
 	for _, persisted := range msg.messages {
 		v.messagesByID[persisted.ID] = persisted
 	}
-	v.itemIDsByMessage = msg.projection.itemIDsByMessage
-	v.lastUserMessageTime = msg.projection.lastUserMessageTime
-	v.chat.SetMessages(msg.projection.items...)
+	v.itemIDsByMessage = projection.itemIDsByMessage
+	v.lastUserMessageTime = projection.lastUserMessageTime
+	v.chat.SetMessages(projection.items...)
 }
 
 func (v *agentViewer) HandleEvent(event pubsub.Event[message.Message]) tea.Cmd {

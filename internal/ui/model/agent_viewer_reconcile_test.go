@@ -32,7 +32,6 @@ func installAgentViewerSnapshot(viewer *agentViewer, messages ...message.Message
 		sessionID:  viewer.descriptor.SessionID,
 		session:    session.Session{ID: viewer.descriptor.SessionID},
 		messages:   messages,
-		projection: projectTranscriptMessages(viewer.com, messages),
 	})
 }
 
@@ -307,7 +306,6 @@ func TestAgentViewerReconcilePreservesManualScrollAndSelection(t *testing.T) {
 		reconcile:  true,
 		session:    session.Session{ID: "child"},
 		messages:   []message.Message{first, second},
-		projection: projectTranscriptMessages(viewer.com, []message.Message{first, second}),
 	})
 
 	require.False(t, viewer.chat.Follow())

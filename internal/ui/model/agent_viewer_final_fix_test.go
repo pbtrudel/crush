@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,11 +10,43 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
+	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 )
+
+func agentViewerThemeTestStyles(t *testing.T, primary, mostSubtle string) styles.Styles {
+	t.Helper()
+	sty, err := styles.HostThemeStyles("", map[string]string{
+		"primary":        primary,
+		"fg_base":        "#ff0101",
+		"fg_subtle":      "#ff0202",
+		"fg_more_subtle": "#ff0303",
+		"fg_most_subtle": mostSubtle,
+		"success":        "#ff0505",
+	}, nil)
+	require.NoError(t, err)
+	return sty
+}
+
+func agentViewerThemeSGR(color string) string {
+	var r, g, b int
+	_, _ = fmt.Sscanf(color, "#%02x%02x%02x", &r, &g, &b)
+	return fmt.Sprintf("2;%d;%d;%dm", r, g, b)
+}
+
+func agentViewerThemeHistory(sessionID, messageID, toolCallID string) []message.Message {
+	return []message.Message{
+		{ID: messageID, SessionID: sessionID, Role: message.Assistant, Parts: []message.ContentPart{
+			message.ToolCall{ID: toolCallID, Name: "glob", Input: `{"pattern":"*.go"}`, Finished: true},
+		}},
+		{ID: messageID + "-result", SessionID: sessionID, Role: message.Tool, Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: toolCallID, Content: "main.go"},
+		}},
+	}
+}
 
 type agentViewerThemeBlockingWorkspace struct {
 	*agentViewerUIWorkspace
@@ -44,7 +77,7 @@ func TestAgentViewerLoadThemeChangeDuringReadRetriesWithCurrentStyles(t *testing
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			u, base := newAgentViewerUITest(t)
-			base.messages["child"] = []message.Message{agentViewerTextMessage("theme-message", "theme-safe transcript")}
+			base.messages["child"] = agentViewerThemeHistory("child", "theme-message", "theme-tool")
 			ws := &agentViewerThemeBlockingWorkspace{
 				agentViewerUIWorkspace: base,
 				started:                make(chan struct{}),
@@ -69,10 +102,11 @@ func TestAgentViewerLoadThemeChangeDuringReadRetriesWithCurrentStyles(t *testing
 			case <-time.After(5 * time.Second):
 				require.FailNow(t, "load did not reach the blocking message read")
 			}
+			firstTheme := agentViewerThemeTestStyles(t, "#010203", "#ff0404")
 			if apply {
-				u.applyTheme(styles.CharmtonePantera())
+				u.applyTheme(firstTheme)
 			} else {
-				u.previewTheme(styles.CharmtonePantera())
+				u.previewTheme(firstTheme)
 			}
 			close(ws.release)
 			released = true
@@ -95,7 +129,17 @@ func TestAgentViewerLoadThemeChangeDuringReadRetriesWithCurrentStyles(t *testing
 			require.True(t, ok)
 			viewer.HandleLoad(refreshed)
 			require.False(t, viewer.loading)
-			require.NotNil(t, viewer.chat.MessageItem("theme-message"))
+			viewerItem := viewer.chat.MessageItem("theme-tool")
+			require.NotNil(t, viewerItem)
+
+			_ = u.setSessionMessages(agentViewerThemeHistory("main", "main-theme-message", "main-theme-tool"))
+			mainItem := u.chat.MessageItem("main-theme-tool")
+			require.NotNil(t, mainItem)
+			secondTheme := agentViewerThemeTestStyles(t, "#030201", "#05ff06")
+			u.applyTheme(secondTheme)
+			for name, item := range map[string]chat.MessageItem{"viewer": viewerItem, "main history": mainItem} {
+				require.Contains(t, item.Render(80), agentViewerThemeSGR("#05ff06"), "%s item retained a detached pre-theme style snapshot", name)
+			}
 		})
 	}
 }
