@@ -16,8 +16,8 @@ const longContextWindow = 1_000_000
 // ProviderEntry builds the catalog entry Crush shows in its model picker.
 //
 // known looks a model up in the Anthropic catalog by its canonical name, so
-// the Claude Agent models get the same context windows and prices. It is nil
-// when the Anthropic catalog is not available.
+// the Claude Agent models get the same versioned names, context windows, and
+// prices. It is nil when the Anthropic catalog is not available.
 func ProviderEntry(catalog *Catalog, known func(id string) (catwalk.Model, bool)) catwalk.Provider {
 	provider := catwalk.Provider{
 		ID:   catwalk.InferenceProvider(Name),
@@ -30,7 +30,7 @@ func ProviderEntry(catalog *Catalog, known func(id string) (catwalk.Model, bool)
 		match := anthropicModel(model, known)
 		provider.Models = append(provider.Models, catwalk.Model{
 			ID:            model.ID,
-			Name:          model.Name,
+			Name:          modelName(model, match),
 			ContextWindow: contextWindow(model, match),
 			Reasoning:     reasoning(model),
 			Capabilities:  catwalk.Capabilities{Vision: true},
@@ -47,6 +47,16 @@ func ProviderEntry(catalog *Catalog, known func(id string) (catwalk.Model, bool)
 		}
 	}
 	return provider
+}
+
+// modelName takes the version from the Anthropic catalog, since the CLI
+// reports a bare family name such as "Opus". The "Claude " prefix is dropped
+// because the provider is already labeled Claude Agent.
+func modelName(model CatalogModel, match catwalk.Model) string {
+	if match.Name != "" {
+		return strings.TrimPrefix(match.Name, "Claude ")
+	}
+	return model.Name
 }
 
 // contextWindow prefers what the CLI reports. The 1M suffix is checked before

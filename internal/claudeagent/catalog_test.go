@@ -131,3 +131,52 @@ func TestProviderEntryPricing(t *testing.T) {
 	entry := ProviderEntry(&Catalog{Models: []CatalogModel{{ID: "opus", Resolved: "claude-opus-5-5"}}}, nil)
 	require.Equal(t, catwalk.Pricing{}, entry.Models[0].Pricing)
 }
+
+func TestProviderEntryName(t *testing.T) {
+	t.Parallel()
+
+	lookup := anthropicLookup(
+		catwalk.Model{ID: "claude-opus-5-5", Name: "Claude Opus 5.5"},
+		catwalk.Model{ID: "claude-fable-5-1", Name: "Claude Fable 5.1"},
+	)
+
+	tests := []struct {
+		name   string
+		model  CatalogModel
+		lookup func(string) (catwalk.Model, bool)
+		want   string
+	}{
+		{
+			name:   "anthropic catalog supplies the version",
+			model:  CatalogModel{ID: "opus", Name: "Opus", Resolved: "claude-opus-5-5"},
+			lookup: lookup,
+			want:   "Opus 5.5",
+		},
+		{
+			name:   "1m variant takes the base model name",
+			model:  CatalogModel{ID: "claude-fable-5-1[1m]", Name: "Fable", Resolved: "claude-fable-5-1"},
+			lookup: lookup,
+			want:   "Fable 5.1",
+		},
+		{
+			name:  "cli name without a lookup",
+			model: CatalogModel{ID: "opus", Name: "Opus", Resolved: "claude-opus-5-5"},
+			want:  "Opus",
+		},
+		{
+			name:   "cli name for an unknown model",
+			model:  CatalogModel{ID: "mystery", Name: "Mystery", Resolved: "claude-mystery-1"},
+			lookup: lookup,
+			want:   "Mystery",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry := ProviderEntry(&Catalog{Models: []CatalogModel{tt.model}}, tt.lookup)
+			require.Len(t, entry.Models, 1)
+			require.Equal(t, tt.want, entry.Models[0].Name)
+		})
+	}
+}

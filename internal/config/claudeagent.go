@@ -101,8 +101,9 @@ func workingDirForProbe() string {
 }
 
 // anthropicModels indexes the Anthropic catalog by model ID so the Claude Agent
-// models can show the same context windows and prices. A subscription login
-// ignores the prices, but an API key login is billed at those rates.
+// models can show the same versioned names, context windows, and prices. A
+// subscription login ignores the prices, but an API key login is billed at
+// those rates.
 func anthropicModels(known []catwalk.Provider) func(string) (catwalk.Model, bool) {
 	for _, provider := range known {
 		if provider.ID != catwalk.InferenceProviderAnthropic {
