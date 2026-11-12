@@ -59,6 +59,19 @@ func newAgentViewer(com *common.Common, descriptor dialog.AgentDescriptor, scrol
 	}
 }
 
+// Reload refreshes the transcript after connection recovery. The UI owns the
+// generation counter so a result cannot match a replacement viewer for the
+// same child session.
+func (v *agentViewer) Reload(generation uint64) tea.Cmd {
+	v.generation = generation
+	v.reconcileSeq++
+	v.loading = false
+	v.reconcileNeeded = false
+	v.reconcileTimerArmed = false
+	v.reconcileInFlight = true
+	return v.loadSnapshot(true)
+}
+
 func (v *agentViewer) HandleLoad(msg agentViewerLoadMsg) tea.Cmd {
 	if msg.generation != v.generation || msg.sessionID != v.descriptor.SessionID {
 		return nil
@@ -374,6 +387,17 @@ func (v *agentViewer) UpdateDescriptor(descriptor dialog.AgentDescriptor) {
 	if !running {
 		v.chat.SetAnimationsAllowed(false)
 	}
+}
+
+// InvalidateRenderCaches drops cached rendered output on every viewer item.
+func (v *agentViewer) InvalidateRenderCaches() {
+	v.chat.InvalidateRenderCaches()
+}
+
+// InvalidateVisibleRenderCaches drops cached output only on visible viewer
+// items, keeping theme previews cheap for large transcripts.
+func (v *agentViewer) InvalidateVisibleRenderCaches() {
+	v.chat.InvalidateVisibleRenderCaches()
 }
 
 func (v *agentViewer) SetSize(width, height int) {

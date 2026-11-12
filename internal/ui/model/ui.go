@@ -2308,6 +2308,7 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 		if m.session != nil {
 			cmds = append(cmds, m.loadSession(m.session.ID))
 		}
+		cmds = append(cmds, m.reloadAgentViewer())
 	}
 	return cmds
 }
@@ -2670,7 +2671,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		cmds = append(cmds, m.loadSession(msg.Session.ID))
+		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
 	case dialog.ActionSelectAgent:
 		m.dialog.CloseDialog(dialog.AgentsID)
 		cmds = append(cmds, m.openAgentViewer(msg.Agent))
@@ -6086,6 +6087,9 @@ func (m *UI) applyTheme(s styles.Styles) {
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateRenderCaches()
+	if m.agentViewer != nil {
+		m.agentViewer.InvalidateRenderCaches()
+	}
 }
 
 // previewTheme applies the given styles for live preview inside an open
@@ -6098,6 +6102,9 @@ func (m *UI) previewTheme(s styles.Styles) {
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
 	m.chat.InvalidateVisibleRenderCaches()
+	if m.agentViewer != nil {
+		m.agentViewer.InvalidateVisibleRenderCaches()
+	}
 }
 
 // refreshStyles pushes the current *m.com.Styles into every subcomponent
@@ -6259,6 +6266,7 @@ func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
 		return nil
 	}
 	return []tea.Cmd{
+		m.closeAgentViewerForSession(msg.To),
 		m.loadSession(msg.To),
 		util.ReportInfo("Context cleared (from Discord) — switched to the new session"),
 	}
@@ -6815,6 +6823,25 @@ func (m *UI) closeAgentViewer() tea.Cmd {
 	return tea.Batch(m.chat.EnsureAnimating(), m.chat.EnsureScrollbarHide())
 }
 
+// closeAgentViewerForSession closes the viewer before a main-session switch,
+// while allowing same-session reloads used by connection recovery.
+func (m *UI) closeAgentViewerForSession(sessionID string) tea.Cmd {
+	if m.agentViewer == nil || (m.session != nil && m.session.ID == sessionID) {
+		return nil
+	}
+	return m.closeAgentViewer()
+}
+
+// reloadAgentViewer reloads the selected child with a UI-global generation so
+// stale results cannot land in a replacement viewer for the same session.
+func (m *UI) reloadAgentViewer() tea.Cmd {
+	if m.agentViewer == nil {
+		return nil
+	}
+	m.agentViewerGeneration++
+	return m.agentViewer.Reload(m.agentViewerGeneration)
+}
+
 // activeChat returns the visible transcript without ever redirecting main
 // session state or message loading to the selected agent.
 func (m *UI) activeChat() *Chat {
@@ -7155,6 +7182,7 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	planCmd := m.resetPlanModeState()
+	closeViewerCmd := m.closeAgentViewer()
 	m.turnOutcome = ""
 	m.session = nil
 	m.sidebarOffset = 0
@@ -7176,6 +7204,7 @@ func (m *UI) newSession() tea.Cmd {
 	agenttools.ResetCache()
 	return tea.Batch(
 		planCmd,
+		closeViewerCmd,
 		func() tea.Msg {
 			m.com.Workspace.LSPStopAll(context.Background())
 			return nil

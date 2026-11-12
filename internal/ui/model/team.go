@@ -77,6 +77,15 @@ func (m *UI) handleTeamStatus(msg teamStatusMsg) tea.Cmd {
 			m.agentRunsSignature = runsSignature
 			m.sidebarKeyValid = false
 		}
+		if m.agentViewer != nil {
+			selectedID := m.agentViewer.descriptor.SessionID
+			for _, descriptor := range m.agentDescriptors() {
+				if descriptor.SessionID == selectedID {
+					m.agentViewer.UpdateDescriptor(descriptor)
+					break
+				}
+			}
+		}
 	}
 	return m.teamTick()
 }
