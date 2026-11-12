@@ -21,6 +21,7 @@ import (
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
+	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/discover"
 	"github.com/charmbracelet/crush/internal/env"
@@ -596,6 +597,21 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 
 		switch p.ID {
 		// Handle specific providers that require additional configuration
+		case catwalk.InferenceProvider(claudeagent.Name):
+			// The credential is the user's own `claude` login, which lives
+			// outside Crush. Without the CLI there is nothing to run.
+			if _, err := claudeagent.FindExecutable(); err != nil {
+				if configExists {
+					slog.Warn("Skipping Claude Agent provider: Claude Code is not installed")
+					c.Providers.Del(string(p.ID))
+				}
+				continue
+			}
+			// A Claude plan covers usage, so a session costs nothing at the
+			// point of use. An API key login is metered and keeps its prices.
+			if catalog := claudeAgentCatalogFor(); catalog != nil && catalog.IsSubscription() {
+				prepared.FlatRate = true
+			}
 		case catwalk.InferenceProviderVertexAI:
 			var (
 				project  = env.Get("VERTEXAI_PROJECT")

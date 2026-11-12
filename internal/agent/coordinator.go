@@ -30,6 +30,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/discover"
@@ -1827,6 +1828,8 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 	}
 
 	switch providerCfg.ID {
+	case claudeagent.Name:
+		return c.buildClaudeAgentProvider(model, apiKey, baseURL)
 	case string(catwalk.InferenceProviderBedrock), string(catwalk.InferenceProviderBedrockEurope):
 		return c.buildBedrockProvider(apiKey, headers, providerCfg.ID)
 	case string(catwalk.InferenceProviderAzure):
@@ -1891,6 +1894,20 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}
+}
+
+// buildClaudeAgentProvider builds the provider that runs Claude models through
+// the user's own Claude Code login.
+func (c *coordinator) buildClaudeAgentProvider(model config.SelectedModel, apiKey, baseURL string) (fantasy.Provider, error) {
+	manager := claudeagent.DefaultManager(filepath.Dir(config.GlobalConfigData()))
+	// The connection settings are read through the same helper the catalog
+	// uses, so a resolved API key and every provider option reach the CLI.
+	conn := config.ClaudeAgentConnection(c.cfg.Config())
+	conn.APIKey = cmp.Or(apiKey, conn.APIKey)
+	conn.BaseURL = cmp.Or(baseURL, conn.BaseURL)
+	// Only an explicit choice is passed through. Without one, Claude Code's own
+	// default effort applies, which is what the user sees in a terminal.
+	return claudeagent.NewProvider(manager, c.cfg.WorkingDir(), model.ReasoningEffort, conn), nil
 }
 
 func isExactoSupported(modelID string) bool {

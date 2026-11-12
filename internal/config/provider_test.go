@@ -19,6 +19,16 @@ func resetProviderState() {
 	providerErr = nil
 	catwalkSyncer = &catwalkSync{}
 	hyperSyncer = &hyperSync{}
+	claudeAgentOnce = sync.Once{}
+	claudeAgentCatalog = nil
+}
+
+// withoutClaudeAgent keeps the Claude Agent provider out of a test that
+// asserts an exact provider list. It is appended whenever the `claude` CLI is
+// installed, so a developer machine would otherwise see one more provider.
+func withoutClaudeAgent(t *testing.T) {
+	t.Helper()
+	t.Setenv("CRUSH_CLAUDE_PATH", filepath.Join(t.TempDir(), "no-claude-here"))
 }
 
 func TestProviders_Integration_AutoUpdateDisabled(t *testing.T) {
@@ -324,6 +334,7 @@ func TestCachePathFor(t *testing.T) {
 // so losing it there removed the provider entirely and invalidated the
 // user's saved model.
 func TestProviders_KeepsCatalogWhenCachingFails(t *testing.T) {
+	withoutClaudeAgent(t)
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
@@ -369,6 +380,7 @@ func TestProviders_KeepsCatalogWhenCachingFails(t *testing.T) {
 // catalog when it could not be fetched at all, using the copy bundled with
 // this release.
 func TestProviders_FallsBackToEmbeddedHyper(t *testing.T) {
+	withoutClaudeAgent(t)
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
@@ -395,6 +407,7 @@ func TestProviders_FallsBackToEmbeddedHyper(t *testing.T) {
 // TestProviders_HonorsDisableDefaultProviders makes sure the embedded Hyper
 // fallback does not smuggle a default provider back in.
 func TestProviders_HonorsDisableDefaultProviders(t *testing.T) {
+	withoutClaudeAgent(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	resetProviderState()
