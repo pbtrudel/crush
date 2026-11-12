@@ -510,8 +510,13 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
-		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}).WithIcon("◇"),
 	}
+	if c.hasSession {
+		commands = append(commands, NewCommandItem(c.com.Styles, "view_agents", "View Agents", "", ActionOpenDialog{AgentsID}).WithAliases("agents", "subagents", "teammates").WithIcon("⧉"))
+	}
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}).WithIcon("◇"),
+	)
 
 	// Only show compact command if there's an active session
 	if c.hasSession {

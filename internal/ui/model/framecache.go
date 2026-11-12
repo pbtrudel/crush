@@ -191,7 +191,7 @@ func (m *UI) endFrameUpdate() tea.Cmd {
 // frameCacheable reports whether the current UI state renders frames that
 // may be memoized.
 func (m *UI) frameCacheable() bool {
-	return m.frames != nil && m.state == uiChat && !m.dialog.HasDialogs()
+	return m.frames != nil && m.state == uiChat && m.agentViewer == nil && !m.dialog.HasDialogs()
 }
 
 func (m *UI) armFrameGC() tea.Cmd {
