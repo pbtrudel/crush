@@ -67,6 +67,47 @@ func TestAgentDescriptorsUsesDispatchSessionIDAndRetention(t *testing.T) {
 	}, time.Now()))
 }
 
+func TestAgentDescriptorsMergesRegistryOverDispatch(t *testing.T) {
+	t.Parallel()
+	u := newTestUI()
+	u.com.Workspace = agentDiscoveryWorkspace{}
+	u.session = &session.Session{ID: "root"}
+	call := message.ToolCall{ID: "call-1", Name: agent.AgentDispatchToolName, Input: `{"label":"review","prompt":"inspect"}`}
+	item := chat.NewToolMessageItem(u.com.Styles, "parent-message", call, nil, false, u.com.Workspace.WorkingDir()).(*chat.AgentToolMessageItem)
+	item.MarkDispatchReported()
+	u.chat.SetMessages(item)
+	status, ok := item.DispatchStatus()
+	require.True(t, ok)
+
+	sharedID := u.com.Workspace.CreateAgentToolSessionID(item.MessageID(), "call-1")
+	u.agentRuns = []agentrun.Run{
+		{ID: "run-1", SessionID: sharedID, ParentSessionID: "root", Name: "registry", Kind: agentrun.KindTeammate, Status: agentrun.StatusFailed},
+	}
+
+	got := u.agentDescriptors()
+
+	require.Len(t, got, 1)
+	require.Equal(t, sharedID, got[0].SessionID)
+	require.Equal(t, "review", got[0].Name, "dispatch name should win over the registry name")
+	require.Equal(t, agentrun.StatusFailed, got[0].Status, "registry lifecycle should win")
+	require.Equal(t, agentrun.KindTeammate, got[0].Kind, "registry kind should win")
+	require.Equal(t, status.Started, got[0].StartedAt, "zero registry start should backfill from dispatch")
+	require.Equal(t, status.Finished, got[0].FinishedAt, "zero registry finish should backfill from dispatch")
+}
+
+func TestAgentDescriptorsSkipsDispatchWithoutWorkspace(t *testing.T) {
+	t.Parallel()
+	u := newTestUI()
+	u.session = &session.Session{ID: "root"}
+	call := message.ToolCall{ID: "call-1", Name: agent.AgentDispatchToolName, Input: `{"label":"review","prompt":"inspect"}`}
+	item := chat.NewToolMessageItem(u.com.Styles, "parent-message", call, nil, false, "").(*chat.AgentToolMessageItem)
+	u.chat.SetMessages(item)
+
+	got := u.agentDescriptors()
+
+	require.Empty(t, got)
+}
+
 func TestAgentDescriptorsOrdersRunningFirstAndStable(t *testing.T) {
 	t.Parallel()
 

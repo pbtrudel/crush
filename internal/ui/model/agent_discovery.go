@@ -38,24 +38,26 @@ func (m *UI) agentDescriptors() []dialog.AgentDescriptor {
 		})
 	}
 
-	for i := range m.chat.Len() {
-		item, ok := m.chat.MessageItemAt(i).(*chat.AgentToolMessageItem)
-		if !ok {
-			continue
+	if m.com != nil && m.com.Workspace != nil {
+		for i := range m.chat.Len() {
+			item, ok := m.chat.MessageItemAt(i).(*chat.AgentToolMessageItem)
+			if !ok {
+				continue
+			}
+			status, ok := item.DispatchStatus()
+			if !ok || !subAgentStatusRetained(status, now) {
+				continue
+			}
+			descriptors = append(descriptors, dialog.AgentDescriptor{
+				SessionID:       m.com.Workspace.CreateAgentToolSessionID(item.MessageID(), item.ToolCall().ID),
+				ParentSessionID: rootID,
+				Name:            status.Label,
+				Kind:            agentrun.KindSubagent,
+				Status:          agentRunStatusFromDispatch(status),
+				StartedAt:       status.Started,
+				FinishedAt:      status.Finished,
+			})
 		}
-		status, ok := item.DispatchStatus()
-		if !ok || !subAgentStatusRetained(status, now) {
-			continue
-		}
-		descriptors = append(descriptors, dialog.AgentDescriptor{
-			SessionID:       m.com.Workspace.CreateAgentToolSessionID(item.MessageID(), item.ToolCall().ID),
-			ParentSessionID: rootID,
-			Name:            status.Label,
-			Kind:            agentrun.KindSubagent,
-			Status:          agentRunStatusFromDispatch(status),
-			StartedAt:       status.Started,
-			FinishedAt:      status.Finished,
-		})
 	}
 
 	for _, run := range sessionAgentRuns(m.agentRuns, rootID) {
