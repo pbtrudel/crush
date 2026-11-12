@@ -46,7 +46,7 @@ func withCopilotLongContextModels(models []catwalk.Model) []catwalk.Model {
 	if len(models) == 0 {
 		return models
 	}
-	out := make([]catwalk.Model, 0, len(models)+len(copilotLongContextWindows))
+	out := make([]catwalk.Model, 0, len(models))
 	out = append(out, models...)
 	existing := make(map[string]bool, len(models))
 	for _, model := range models {
