@@ -314,10 +314,11 @@ type sessionAgent struct {
 	// next run uses it to compact with the previous model before adopting a
 	// smaller context window, rather than letting the new model overflow on
 	// history it cannot fit.
-	modelSwitchMu      sync.Mutex
-	previousLarge      Model
-	previousSmall      Model
-	modelSwitchPending bool
+	modelSwitchMu          sync.Mutex
+	previousLarge          Model
+	previousSmall          Model
+	modelSwitchPending     bool
+	fusionCompactionModels *csync.Map[string, fusionCompactionModel]
 
 	isSubAgent bool
 	sessions   session.Service
@@ -348,7 +349,8 @@ type sessionAgent struct {
 	steering   map[string]*steeringSignal
 	// notes are what the host told the agent since its last turn, by
 	// session, to add to the next prompt. They are not chat messages.
-	notes *csync.Map[string, []string]
+	notes   *csync.Map[string, []string]
+	notesMu sync.Mutex
 	// mcpInstructions freezes the MCP server instruction suffix per session
 	// so a server that connects mid-session cannot rewrite the system prompt
 	// (and with it the whole prompt-cache prefix). See
@@ -455,35 +457,36 @@ func NewSessionAgent(
 		initial = opts.Models()
 	}
 	a := &sessionAgent{
-		largeModel:           csync.NewValue(initial.Large),
-		smallModel:           csync.NewValue(initial.Small),
-		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
-		systemPrompt:         csync.NewValue(opts.SystemPrompt),
-		systemPromptSuffix:   opts.SystemPromptSuffix,
-		isSubAgent:           opts.IsSubAgent,
-		sessions:             opts.Sessions,
-		messages:             opts.Messages,
-		cfg:                  opts.Cfg,
-		disableAutoSummarize: opts.DisableAutoSummarize,
-		isYolo:               opts.IsYolo,
-		permissions:          opts.Permissions,
-		tools:                csync.NewSliceFrom(opts.Tools),
-		notify:               opts.Notify,
-		runComplete:          opts.RunComplete,
-		hooks:                opts.Hooks,
-		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
-		notes:                csync.NewMap[string, []string](),
-		activeRequests:       csync.NewMap[string, *activeCancel](),
-		notices:              make(map[string][]string),
-		mcpInstructions:      csync.NewMap[string, string](),
-		promptHashes:         csync.NewMap[string, []string](),
-		toolsHashes:          csync.NewMap[string, []string](),
-		adoptedTools:         csync.NewMap[string, []string](),
-		titles:               cmp.Or(opts.titles, new(titleTracker)),
-		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
-		acceptedRuns:         csync.NewMap[string, int](),
-		cancelMark:           csync.NewMap[string, uint64](),
-		now:                  opts.Now,
+		largeModel:             csync.NewValue(initial.Large),
+		smallModel:             csync.NewValue(initial.Small),
+		systemPromptPrefix:     csync.NewValue(opts.SystemPromptPrefix),
+		systemPrompt:           csync.NewValue(opts.SystemPrompt),
+		systemPromptSuffix:     opts.SystemPromptSuffix,
+		isSubAgent:             opts.IsSubAgent,
+		sessions:               opts.Sessions,
+		messages:               opts.Messages,
+		cfg:                    opts.Cfg,
+		disableAutoSummarize:   opts.DisableAutoSummarize,
+		isYolo:                 opts.IsYolo,
+		permissions:            opts.Permissions,
+		tools:                  csync.NewSliceFrom(opts.Tools),
+		notify:                 opts.Notify,
+		runComplete:            opts.RunComplete,
+		hooks:                  opts.Hooks,
+		messageQueue:           csync.NewMap[string, []SessionAgentCall](),
+		notes:                  csync.NewMap[string, []string](),
+		activeRequests:         csync.NewMap[string, *activeCancel](),
+		notices:                make(map[string][]string),
+		mcpInstructions:        csync.NewMap[string, string](),
+		promptHashes:           csync.NewMap[string, []string](),
+		toolsHashes:            csync.NewMap[string, []string](),
+		adoptedTools:           csync.NewMap[string, []string](),
+		titles:                 cmp.Or(opts.titles, new(titleTracker)),
+		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
+		acceptedRuns:           csync.NewMap[string, int](),
+		cancelMark:             csync.NewMap[string, uint64](),
+		fusionCompactionModels: csync.NewMap[string, fusionCompactionModel](),
+		now:                    opts.Now,
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -1174,8 +1177,38 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// ModelProvider below has to hand this instance to fantasy: the fresh
 	// build it normally returns is the plain router, not the phase runner.
 	turnModel := largeModel.Model
+	pendingNotes := a.takeNotes(call.SessionID)
+	notesPersisted := false
+	defer func() {
+		if !notesPersisted {
+			a.restoreNotes(call.SessionID, pendingNotes)
+		}
+	}()
+	var routedPrimary *fusionCompactionModel
 	if largeModel.Fusion != nil {
-		turnModel = newFusionModel(*largeModel.Fusion, agentTools, call.Prompt)
+		fusion := newFusionModel(*largeModel.Fusion, agentTools, call.Prompt)
+		fusion.requestedOutput = call.MaxOutputTokens
+		prepareErr := fusion.prepare(genCtx)
+		if prepareErr == nil {
+			if budget, known := fusion.PromptBudget(); known && budget == 0 {
+				prepareErr = fmt.Errorf("%w: no usable input capacity", errFusionPhaseBudget)
+			}
+		}
+		if prepareErr != nil {
+			if errors.Is(prepareErr, context.Canceled) {
+				return nil, errors.Join(prepareErr, a.persistCanceledTurn(ctx, call, false))
+			}
+			modelContext := hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
+			if _, persistErr := a.createUserMessage(context.WithoutCancel(ctx), call, modelContext); persistErr != nil {
+				return nil, errors.Join(prepareErr, persistErr)
+			}
+			notesPersisted = true
+			return nil, prepareErr
+		}
+		if routed, budget, known, routeErr := fusion.primaryCompactionModel(genCtx, largeModel); routeErr == nil && known {
+			routedPrimary = &fusionCompactionModel{model: routed, budget: budget}
+		}
+		turnModel = fusion
 		largeModel.Model = turnModel
 	}
 
@@ -1200,9 +1233,36 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// A model switch can land on a smaller context window. Compact with
 	// the previous model before adopting it, so the first request on the
 	// new model is not rejected for history it can no longer hold.
-	if compacted, compactErr := a.maybeCompactForModelSwitch(ctx, call.SessionID, currentSession, msgs, call.ProviderOptions, call.OnAuthRefresh); compactErr != nil {
-		return nil, compactErr
-	} else if compacted {
+	persistPromptOnError := func(cause error) error {
+		if errors.Is(cause, context.Canceled) {
+			return errors.Join(cause, a.persistCanceledTurn(ctx, call, false))
+		}
+		modelContext := hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
+		if _, persistErr := a.createUserMessage(context.WithoutCancel(ctx), call, modelContext); persistErr != nil {
+			return errors.Join(cause, persistErr)
+		}
+		notesPersisted = true
+		return cause
+	}
+	preflightPrompt := call.Prompt + hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
+	compacted, compactErr := a.maybeCompactForModelSwitch(genCtx, call.SessionID, currentSession, msgs, largeModel, call.ProviderOptions, call.OnAuthRefresh)
+	if compactErr != nil {
+		return nil, persistPromptOnError(compactErr)
+	}
+	preflightCompact := a.shouldCompactFusionPreflight(largeModel, currentSession, msgs, systemPrompt+promptPrefix, preflightPrompt, agentTools, call.Attachments)
+	if !compacted && routedPrimary != nil && preflightCompact {
+		compacted, compactErr = a.maybeCompactForFusionRoute(genCtx, call.SessionID, effectiveContextWindow(largeModel), call.ProviderOptions, call.OnAuthRefresh)
+		if compactErr != nil {
+			return nil, persistPromptOnError(compactErr)
+		}
+	}
+	if !compacted && preflightCompact {
+		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false); err != nil {
+			return nil, persistPromptOnError(err)
+		}
+		compacted = true
+	}
+	if compacted {
 		currentSession, err = a.sessions.Get(ctx, call.SessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload session after model-switch compaction: %w", err)
@@ -1210,6 +1270,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		msgs, err = a.getSessionMessages(ctx, currentSession)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload messages after model-switch compaction: %w", err)
+		}
+		if fusion, ok := largeModel.Model.(*fusionModel); ok {
+			if budget, known := fusion.PromptBudget(); known && a.fusionPromptEstimate(largeModel, msgs, systemPrompt+promptPrefix, preflightPrompt, agentTools, call.Attachments) > budget {
+				return nil, persistPromptOnError(fmt.Errorf("%w: prompt exceeds routed model capacity after compaction", errFusionPhaseBudget))
+			}
 		}
 	}
 
@@ -1239,11 +1304,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	// Add the user message to the session. The context sent ahead of the
 	// prompt is stored with it so later requests replay the same text.
-	modelContext := hostContextPrompt(call.HostContext) + notesPrompt(a.takeNotes(call.SessionID))
+	modelContext := hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
 	_, err = a.createUserMessage(ctx, call, modelContext)
 	if err != nil {
 		return nil, err
 	}
+	notesPersisted = true
 	userMsgCreated = true
 
 	// Add the session to the context. The run context (genCtx) and its
@@ -1632,7 +1698,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		StopWhen: []fantasy.StopCondition{
 			func(_ []fantasy.StepResult) bool {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				if _, ok := largeModel.Model.(*fusionModel); ok {
+					threshold, _ := a.compactionConfig()
+					if threshold <= 0 {
+						return false
+					}
+				}
+				cw := effectiveContextWindow(largeModel)
 				// If context window is unknown (0), skip auto-summarize
 				// to avoid immediately truncating custom/local models.
 				if cw == 0 {
@@ -1659,6 +1731,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	})
 
 	a.eventPromptResponded(call.SessionID, time.Since(startTime).Truncate(time.Second))
+	if err == nil && routedPrimary != nil && a.fusionCompactionModels != nil {
+		a.fusionCompactionModels.Set(call.SessionID, *routedPrimary)
+	}
 
 	if repetitionDetected {
 		// The run context was cancelled to stop the stream. Trim the
@@ -1828,7 +1903,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto)
+		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false)
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
@@ -2007,13 +2082,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual)
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false)
 }
 
 // summarize runs one compaction request. active reports that the caller
 // already owns the session's active-run registration (the model-switch path
 // runs inside Run), so this call must not replace or clear it.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string) error {
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned bool) error {
 	if !active && a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -2097,8 +2172,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		}
 	}()
 
+	summaryModel := largeModel.Model
+	if fusion, ok := largeModel.Model.(*fusionModel); ok && fusion.plan != nil && len(fusion.plan.Steps) > 0 {
+		var err error
+		summaryModel, err = fusion.stepModel(ctx, fusion.plan.Steps[0])
+		if err != nil {
+			return err
+		}
+	}
 	agent := fantasy.NewAgent(
-		largeModel.Model,
+		summaryModel,
 		fantasy.WithSystemPrompt(systemPrompt),
 		fantasy.WithTools(compactionTools...),
 		fantasy.WithUserAgent(userAgent),
@@ -2124,6 +2207,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		ProviderOptions: opts,
 		OnAuthRefresh:   onAuthRefresh,
 		ModelProvider: func() fantasy.LanguageModel {
+			if _, ok := largeModel.Model.(*fusionModel); ok || pinned {
+				return summaryModel
+			}
 			return a.currentBuildOf(largeModel)
 		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
@@ -2300,6 +2386,76 @@ func (a *sessionAgent) compactionConfig() (threshold float64, tailTokens int64) 
 	return threshold, tailTokens
 }
 
+func effectiveContextWindow(model Model) int64 {
+	if fusion, ok := model.Model.(*fusionModel); ok {
+		if budget, known := fusion.PromptBudget(); known {
+			return budget
+		}
+	}
+	return int64(model.CatwalkCfg.ContextWindow)
+}
+
+func (a *sessionAgent) shouldCompactFusionPreflight(model Model, sess session.Session, msgs []message.Message, systemPrompt, userPrompt string, agentTools []fantasy.AgentTool, attachments []message.Attachment) bool {
+	fusion, ok := model.Model.(*fusionModel)
+	if !ok || a.disableAutoSummarize {
+		return false
+	}
+	window, known := fusion.PromptBudget()
+	if !known {
+		return false
+	}
+	threshold, _ := a.compactionConfig()
+	if threshold <= 0 {
+		return false
+	}
+	estimate := a.fusionPromptEstimate(model, msgs, systemPrompt, userPrompt, agentTools, attachments)
+	return float64(estimate) >= threshold*float64(window)
+}
+
+type fusionCompactionModel struct {
+	model  Model
+	budget int64
+}
+
+func (a *sessionAgent) maybeCompactForFusionRoute(
+	ctx context.Context,
+	sessionID string,
+	nextBudget int64,
+	opts fantasy.ProviderOptions,
+	onAuthRefresh func(context.Context, *fantasy.ProviderError) error,
+) (bool, error) {
+	if a.fusionCompactionModels == nil {
+		return false, nil
+	}
+	previous, ok := a.fusionCompactionModels.Get(sessionID)
+	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
+		return false, nil
+	}
+	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true); err != nil {
+		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
+	}
+	return true, nil
+}
+
+func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message, systemPrompt, userPrompt string, agentTools []fantasy.AgentTool, attachments []message.Attachment) int64 {
+	estimate := approxTokenCount(systemPrompt) + approxTokenCount(userPrompt)
+	for _, msg := range msgs {
+		estimate += messageTokens(msg)
+	}
+	history, files := a.preparePrompt(msgs, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
+	assembled := estimateMessageTokens(history) + approxTokenCount(systemPrompt) + approxTokenCount(userPrompt)
+	for _, file := range files {
+		assembled += estimateMessagePartTokens(file)
+	}
+	for _, tool := range agentTools {
+		data, err := json.Marshal(tool.Info())
+		if err == nil {
+			assembled += approxTokenCount(string(data))
+		}
+	}
+	return max(estimate, assembled)
+}
+
 // compactionPruneChars returns the per-tool-result character budget applied
 // before a compaction request, or zero when pruning is disabled.
 func (a *sessionAgent) compactionPruneChars() int {
@@ -2323,6 +2479,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	sessionID string,
 	sess session.Session,
 	msgs []message.Message,
+	current Model,
 	opts fantasy.ProviderOptions,
 	onAuthRefresh func(context.Context, *fantasy.ProviderError) error,
 ) (bool, error) {
@@ -2336,7 +2493,11 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	a.modelSwitchPending = false
 	a.modelSwitchMu.Unlock()
 
-	current := a.largeModel.Get()
+	if a.disableAutoSummarize {
+		if _, ok := current.Model.(*fusionModel); ok {
+			return false, nil
+		}
+	}
 	if previousLarge.Model == nil || current.Model == nil {
 		return false, nil
 	}
@@ -2350,7 +2511,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto); err != nil {
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
@@ -2364,8 +2525,8 @@ func needsModelSwitchCompaction(previous, next Model, tokens int64, threshold fl
 	if threshold <= 0 || tokens <= 0 {
 		return false
 	}
-	previousWindow := int64(previous.CatwalkCfg.ContextWindow)
-	nextWindow := int64(next.CatwalkCfg.ContextWindow)
+	previousWindow := effectiveContextWindow(previous)
+	nextWindow := effectiveContextWindow(next)
 	if previousWindow <= 0 || nextWindow <= 0 || nextWindow >= previousWindow {
 		return false
 	}
@@ -2379,7 +2540,7 @@ func (a *sessionAgent) shouldAutoCompact(model Model, sess session.Session) bool
 	if a.disableAutoSummarize {
 		return false
 	}
-	cw := int64(model.CatwalkCfg.ContextWindow)
+	cw := effectiveContextWindow(model)
 	if cw == 0 {
 		return false
 	}
@@ -2399,7 +2560,7 @@ func (a *sessionAgent) compactionTailBudget(model Model, msgs []message.Message)
 	if budget <= 0 {
 		return 0
 	}
-	if cw := int64(model.CatwalkCfg.ContextWindow); cw > 0 && cw/4 < budget {
+	if cw := effectiveContextWindow(model); cw > 0 && cw/4 < budget {
 		budget = cw / 4
 	}
 	var total int64
@@ -2416,7 +2577,7 @@ func (a *sessionAgent) compactionTailBudget(model Model, msgs []message.Message)
 // clamped down for small windows and models with a lower output limit.
 func compactionMaxOutputTokens(model Model) int64 {
 	maxTokens := int64(defaultCompactionMaxOutputTokens)
-	if cw := int64(model.CatwalkCfg.ContextWindow); cw > 0 && cw/4 < maxTokens {
+	if cw := effectiveContextWindow(model); cw > 0 && cw/4 < maxTokens {
 		maxTokens = cw / 4
 	}
 	if model.CatwalkCfg.DefaultMaxTokens > 0 && model.CatwalkCfg.DefaultMaxTokens < maxTokens {
@@ -3709,12 +3870,26 @@ func (a *sessionAgent) AddNote(sessionID, text string) {
 	if text == "" {
 		return
 	}
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
 	existing, _ := a.notes.Get(sessionID)
 	a.notes.Set(sessionID, append(existing, text))
 }
 
+func (a *sessionAgent) restoreNotes(sessionID string, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
+	later, _ := a.notes.Get(sessionID)
+	a.notes.Set(sessionID, append(append([]string{}, notes...), later...))
+}
+
 // takeNotes returns and forgets the session's notes, for the prompt about to run.
 func (a *sessionAgent) takeNotes(sessionID string) []string {
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
 	notes, _ := a.notes.Get(sessionID)
 	a.notes.Del(sessionID)
 	return notes

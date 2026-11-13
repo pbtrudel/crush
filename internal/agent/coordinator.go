@@ -1476,6 +1476,24 @@ func (c *coordinator) newFusionConfig(modelCfg config.SelectedModel, providerCfg
 		Factory: func(ctx context.Context, modelID, effort string) (fantasy.LanguageModel, error) {
 			return c.buildFusionStepModel(ctx, providerCfg, modelID, effort)
 		},
+		Limits: func(ctx context.Context) map[string]copilot.ModelLimits {
+			baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+			if err != nil {
+				return nil
+			}
+			apiKey, err := c.cfg.Resolve(providerCfg.APIKey)
+			if err != nil {
+				return nil
+			}
+			return sharedFusionLimits.get(ctx, baseURL, apiKey, providerCfg.ExtraHeaders)
+		},
+		MaxOutput: func(modelID string) int64 {
+			model := c.cfg.Config().GetModel(string(providerCfg.ID), modelID)
+			if model == nil {
+				return 0
+			}
+			return model.DefaultMaxTokens
+		},
 	}
 }
 
