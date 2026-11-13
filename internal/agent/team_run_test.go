@@ -4,10 +4,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/stretchr/testify/require"
 
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/config"
 )
 
 func TestTeammateRunRegistersInAgentRunRegistry(t *testing.T) {
@@ -56,4 +58,75 @@ func TestTeammateSessionIDDoesNotCollideWithAnOlderTeam(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotEqual(t, "team-member-1", sess.ID, "a new team must not reuse an old teammate session id")
+}
+
+// TestTeammateAgentRunsOnModelOverride pins that a teammate with a persisted
+// override builds its agent on that model on every run, and that an override
+// the config can no longer serve is an error rather than a silent fallback to
+// the default model.
+func TestTeammateAgentRunsOnModelOverride(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+
+	mockProvider, ok := coord.cfg.Config().Providers.Get("mock")
+	require.True(t, ok)
+	mockProvider.Models = append(mockProvider.Models, catwalk.Model{
+		ID:               "mock-reasoner",
+		Name:             "Mock Reasoner",
+		ContextWindow:    8192,
+		DefaultMaxTokens: 128,
+		Reasoning: catwalk.Reasoning{
+			Thinking:           catwalk.ThinkingToggleable,
+			EffortLevels:       catwalk.NewEffortLevels("low", "high"),
+			DefaultEffortLevel: "low",
+		},
+	})
+	coord.cfg.Config().Providers.Set("mock", mockProvider)
+	coord.cfg.Config().Providers.Set("other", config.ProviderConfig{
+		ID:      "other",
+		Name:    "Other",
+		Type:    "openai",
+		BaseURL: "http://127.0.0.1:9/v1",
+		APIKey:  "test-key",
+		Models: []catwalk.Model{{
+			ID: "other-model", Name: "Other", ContextWindow: 8192, DefaultMaxTokens: 128,
+		}},
+	})
+	runner := &teamRunner{c: coord}
+
+	overridden, err := runner.teammateAgent(t.Context(), agentteam.Member{
+		Name: "reviewer", Role: agentteam.RoleTeammate,
+		Model: "other-model", ModelProvider: "other",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "other-model", overridden.Model().ModelCfg.Model)
+	require.Equal(t, "other", overridden.Model().ModelCfg.Provider)
+
+	// Reasoning recorded at spawn is re-applied on the rebuilt model.
+	withReasoning, err := runner.teammateAgent(t.Context(), agentteam.Member{
+		Name: "reviewer", Role: agentteam.RoleTeammate,
+		Model: "mock-reasoner", ModelProvider: "mock", Reasoning: "high",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "high", withReasoning.Model().ModelCfg.ReasoningEffort)
+
+	// A member without an override keeps the subagent default.
+	plain, err := runner.teammateAgent(t.Context(), agentteam.Member{
+		Name: "reviewer", Role: agentteam.RoleTeammate,
+	})
+	require.NoError(t, err)
+	require.Equal(t, coord.subAgentModels().Large.ModelCfg, plain.Model().ModelCfg)
+
+	_, err = runner.teammateAgent(t.Context(), agentteam.Member{
+		Name: "reviewer", Role: agentteam.RoleTeammate,
+		Model: "other-model", ModelProvider: "gone",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `provider "gone" is not available`)
+
+	_, err = runner.teammateAgent(t.Context(), agentteam.Member{
+		Name: "reviewer", Role: agentteam.RoleTeammate,
+		Model: "gone-model", ModelProvider: "other",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `model "gone-model" is not available from provider "other"`)
 }

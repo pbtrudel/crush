@@ -34,6 +34,12 @@ Teammates run as real Crush sessions with the full coder toolset minus
 nested delegation. Their session IDs appear in `crush team status`, and
 `crush team session <name>` prints the command that opens one.
 
+`spawn_teammate` takes optional `model`, `provider`, and `reasoning`
+arguments, with the same rules as `agent_dispatch`: a model-only override
+inherits the Lead's provider, and the teammate runs every turn on the
+resolved model. An override the config can no longer serve fails the turn
+instead of falling back to the default model.
+
 ## Durable state
 
 State lives at `<data-directory>/agent-teams/team.json` (by default

@@ -223,16 +223,21 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, errors.New("coder agent not configured")
 	}
 
+	models, err := r.teammateModels(member, lead.Model())
+	if err != nil {
+		return nil, err
+	}
+
 	// A group of its own: the coordinator's group is only safe for the
 	// constructor, and the turn must not start until this teammate's own
 	// tool palette is built. Building into c.readyWg and returning at once
 	// left the turn with no tools, so the model could only narrate what it
 	// was about to do and end the turn.
 	var ready errgroup.Group
-	agent, err := r.c.buildAgent(ctx, &ready, agentSystemPrompt{
+	agent, err := r.c.buildAgentWithModels(ctx, &ready, agentSystemPrompt{
 		Prebuilt: lead.SystemPrompt(),
 		Suffix:   teamIdentity(member),
-	}, agentCfg, roleTeammate)
+	}, agentCfg, roleTeammate, models)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +245,34 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, err
 	}
 	return agent, nil
+}
+
+// teammateModels returns the model set a teammate turn runs on, or nil for
+// the shared subagent set. A member with an override is re-resolved against
+// the current config on every build, so a provider or model that went away
+// is an error rather than a silent fallback to the default model.
+func (r *teamRunner) teammateModels(member agentteam.Member, parent Model) (func() ModelSet, error) {
+	if strings.TrimSpace(member.Model) == "" {
+		return nil, nil
+	}
+	sel, ok, refusal := r.c.resolveModelOverride(AgentDispatchParams{
+		Model:     member.Model,
+		Provider:  member.ModelProvider,
+		Reasoning: member.Reasoning,
+	}, parent)
+	if refusal != "" {
+		return nil, fmt.Errorf("teammate %q: %s", member.Name, refusal)
+	}
+	if !ok {
+		return nil, fmt.Errorf("teammate %q has no model override to resolve", member.Name)
+	}
+	entry, err := r.c.overrideModel(sel)
+	if err != nil {
+		return nil, fmt.Errorf("teammate %q: failed to set up the requested model: %w", member.Name, err)
+	}
+	return func() ModelSet {
+		return ModelSet{Large: entry.current(r.c), Small: r.c.subAgentModels().Small}
+	}, nil
 }
 
 // teammateSession reuses the member's session, or creates it on first run.
