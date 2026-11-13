@@ -71,8 +71,9 @@ type ModelContextInfo struct {
 }
 
 // ModelInfo renders model information including name, provider, reasoning
-// settings, and optional context usage/cost.
-func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, context *ModelContextInfo, width int, hyperCredits *int) string {
+// settings, and optional context usage/cost. copilotCredits is the AI
+// credits used this billing cycle and is rendered whenever it is non-nil.
+func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, context *ModelContextInfo, width int, hyperCredits, copilotCredits *int) string {
 	modelIcon := t.ModelInfo.Icon.Render(styles.ModelIcon)
 	modelName = t.ModelInfo.Name.Render(modelName)
 
@@ -126,6 +127,11 @@ func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, 
 		hcInfo += " "
 		hcInfo += t.ModelInfo.HypercreditText.Render(fmt.Sprintf("%s Hypercredits", FormatCredits(*hyperCredits)))
 		parts = append(parts, "", hcInfo)
+	}
+
+	if copilotCredits != nil {
+		used := t.ModelInfo.HypercreditText.Render(fmt.Sprintf("%s AI credits used", FormatCredits(*copilotCredits)))
+		parts = append(parts, "", used)
 	}
 
 	return lipgloss.NewStyle().Width(width).Render(

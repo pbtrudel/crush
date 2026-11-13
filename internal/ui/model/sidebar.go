@@ -6,6 +6,7 @@ import (
 	"image"
 	"strings"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	mcp "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
@@ -58,15 +59,21 @@ func (m *UI) modelInfo(width int) string {
 			TPSAverage:     averageTPS,
 		}
 	}
-	var modelName string
+	var (
+		modelName      string
+		copilotCredits *int
+	)
 	if model != nil {
 		modelName = model.CatwalkCfg.Name
+		if model.ModelCfg.Provider == string(catwalk.InferenceProviderCopilot) {
+			copilotCredits = m.copilotCredits
+		}
 	} else {
 		// The agent isn't ready yet; show a placeholder instead of a
 		// bare icon.
 		modelName = "…"
 	}
-	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits)
+	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits, copilotCredits)
 }
 
 // cacheReadPercent returns the share of prompt tokens served from the

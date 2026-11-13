@@ -46,6 +46,8 @@ type sidebarCacheKey struct {
 	hyper         bool
 	hasCredits    bool
 	credits       int
+	hasCopilot    bool
+	copilot       int
 	tpsLive       int
 	tpsAverage    int
 	teamSig       string
@@ -99,6 +101,10 @@ func (m *UI) sidebarCacheKey() sidebarCacheKey {
 	if m.hyperCredits != nil {
 		k.hasCredits = true
 		k.credits = *m.hyperCredits
+	}
+	if m.copilotCredits != nil {
+		k.hasCopilot = true
+		k.copilot = *m.copilotCredits
 	}
 	return k
 }

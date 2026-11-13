@@ -217,6 +217,12 @@ func (c *Common) IsHyper() bool {
 	return largeModelProviderID(c.Workspace) == "hyper"
 }
 
+// IsCopilot reports whether the currently selected large model is provided
+// by GitHub Copilot.
+func (c *Common) IsCopilot() bool {
+	return largeModelProviderID(c.Workspace) == "copilot"
+}
+
 // CenterRect returns a new [Rectangle] centered within the given area with the
 // specified width and height.
 func CenterRect(area uv.Rectangle, width, height int) uv.Rectangle {
