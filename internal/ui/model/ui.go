@@ -47,6 +47,7 @@ import (
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -90,8 +91,8 @@ const pasteColsThreshold = 1000
 // Session details panel max height.
 const sessionDetailsMaxHeight = 20
 
-// hyperCreditsPollInterval is how often the Hyper credits balance is
-// refreshed while no session is running.
+// hyperCreditsPollInterval is how often the Hyper and Copilot credit
+// readouts are refreshed while no session is running.
 const hyperCreditsPollInterval = 60 * time.Second
 
 // gitBranchPollInterval is how often the workspace's checked-out branch is
@@ -234,7 +235,14 @@ type (
 		credits *int
 	}
 
-	// hyperCreditsPollMsg is sent by the Hyper credits poll timer.
+	// copilotCreditsUpdatedMsg carries the Copilot AI credits used this
+	// billing cycle.
+	copilotCreditsUpdatedMsg struct {
+		used int
+	}
+
+	// hyperCreditsPollMsg is sent by the credits poll timer. It drives
+	// both the Hyper and the Copilot credits refresh.
 	hyperCreditsPollMsg struct{}
 
 	// gitBranchUpdatedMsg carries the workspace's checked-out branch. branch
@@ -616,6 +624,11 @@ type UI struct {
 	// no balance is rendered in either case.
 	hyperCredits *int
 
+	// copilotCredits is the Copilot AI credits used this billing cycle as
+	// last fetched. It is nil until a fetch succeeds; a failed fetch keeps
+	// the last known value.
+	copilotCredits *int
+
 	// gitBranch is the workspace's checked-out branch as of the last poll,
 	// empty when there is none to show. Reading it costs a file read
 	// locally and a request in client/server mode, so renders take it from
@@ -819,6 +832,9 @@ func (m *UI) Init() tea.Cmd {
 	// for every provider: it is a no-op unless Hyper is selected.
 	if m.com.IsHyper() {
 		cmds = append(cmds, m.fetchHyperCredits())
+	}
+	if m.com.IsCopilot() {
+		cmds = append(cmds, m.fetchCopilotCredits())
 	}
 	// The branch is shown from the first frame on, so read it now and keep
 	// polling for checkouts made outside Crush.
@@ -1976,12 +1992,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case creditsUpdatedMsg:
 		m.hyperCredits = msg.credits
+	case copilotCreditsUpdatedMsg:
+		m.copilotCredits = &msg.used
 	case hyperCreditsPollMsg:
 		// While a session runs every response refreshes the balance, so
 		// the poll only has to cover idle time. Re-arm it either way: the
 		// next poll may well land after the agent went idle again.
 		if m.com.IsHyper() && !m.isAgentBusy() {
 			cmds = append(cmds, m.fetchHyperCredits())
+		}
+		if m.com.IsCopilot() && !m.isAgentBusy() {
+			cmds = append(cmds, m.fetchCopilotCredits())
 		}
 		cmds = append(cmds, m.hyperCreditsTicker())
 	case gitBranchUpdatedMsg:
@@ -3377,7 +3398,33 @@ func (m *UI) fetchHyperCredits() tea.Cmd {
 	}
 }
 
-// hyperCreditsTicker schedules the next Hyper credits poll.
+// fetchCopilotCredits returns a command that asynchronously fetches the
+// Copilot AI credits used this billing cycle. GitHub authenticates the
+// usage endpoint with the GitHub OAuth token, which Crush stores as the
+// Copilot provider's refresh token.
+func (m *UI) fetchCopilotCredits() tea.Cmd {
+	return func() tea.Msg {
+		cfg := m.com.Config()
+		if cfg == nil || cfg.Providers == nil {
+			return nil
+		}
+		providerCfg, ok := cfg.Providers.Get(string(catwalk.InferenceProviderCopilot))
+		if !ok || providerCfg.OAuthToken == nil || providerCfg.OAuthToken.RefreshToken == "" {
+			return nil
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		used, err := copilot.FetchCreditsUsed(ctx, providerCfg.OAuthToken.RefreshToken)
+		if err != nil {
+			slog.Warn("Failed to fetch Copilot credits", "error", err)
+			return nil
+		}
+		return copilotCreditsUpdatedMsg{used: used}
+	}
+}
+
+// hyperCreditsTicker schedules the next credits poll.
 func (m *UI) hyperCreditsTicker() tea.Cmd {
 	return tea.Tick(hyperCreditsPollInterval, func(time.Time) tea.Msg {
 		return hyperCreditsPollMsg{}
@@ -3629,6 +3676,8 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		}
 	} else if m.com.IsHyper() {
 		cmds = append(cmds, m.fetchHyperCredits())
+	} else if m.com.IsCopilot() {
+		cmds = append(cmds, m.fetchCopilotCredits())
 	}
 
 	return tea.Batch(cmds...)
@@ -7094,6 +7143,9 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 		m.updateHyperCredits()
 		if m.com.IsHyper() {
 			cmds = append(cmds, m.fetchHyperCredits())
+		}
+		if m.com.IsCopilot() {
+			cmds = append(cmds, m.fetchCopilotCredits())
 		}
 	case notify.TypeAgentError:
 		// Terminal edge like TypeAgentFinished; fall through to the

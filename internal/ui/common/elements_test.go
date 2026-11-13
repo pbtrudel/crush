@@ -33,7 +33,7 @@ func TestModelInfoRendersCachedPercentage(t *testing.T) {
 		ModelContext: 1000,
 		CachePercent: 43,
 	}
-	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil, nil))
 
 	require.Contains(t, actual, "43% cached")
 }
@@ -48,7 +48,7 @@ func TestModelInfoOmitsCachedPercentageWhenZero(t *testing.T) {
 		ModelContext: 1000,
 		CachePercent: 0,
 	}
-	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil, nil))
 
 	require.NotContains(t, actual, "cached")
 }
@@ -74,7 +74,7 @@ func TestModelInfoRendersTPSStat(t *testing.T) {
 		TPSLive:      12.3,
 		TPSAverage:   8.1,
 	}
-	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil, nil))
 
 	require.Contains(t, actual, "TPS: 12.3")
 	require.Contains(t, actual, "TPS_AVG 8.1")
@@ -88,9 +88,28 @@ func TestModelInfoAlwaysRendersTPSStat(t *testing.T) {
 		ContextUsed:  500,
 		ModelContext: 1000,
 	}
-	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil))
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "provider", "", context, 80, nil, nil))
 
 	require.Contains(t, actual, "TPS: 0.0")
+}
+
+func TestModelInfoRendersCopilotCreditsUsed(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	used := 2568
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "GitHub Copilot", "", nil, 80, nil, &used))
+
+	require.Contains(t, actual, "2,568 AI credits used")
+}
+
+func TestModelInfoOmitsCopilotCreditsWhenUnknown(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	actual := ansi.Strip(ModelInfo(&sty, "Model", "GitHub Copilot", "", nil, 80, nil, nil))
+
+	require.NotContains(t, actual, "AI credits used")
 }
 
 func TestContextMeter(t *testing.T) {
