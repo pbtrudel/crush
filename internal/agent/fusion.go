@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/oauth/copilot"
 )
 
 // fusionAcceptScore is the lowest judge score that accepts the draft and skips
@@ -21,10 +24,12 @@ const fusionAcceptScore = 3
 // Fusion turn: the tier to route, the router client, and a factory that builds
 // a language model for a model ID and reasoning effort.
 type FusionConfig struct {
-	Tier    string
-	ModelID string
-	Router  fusionRouter
-	Factory func(ctx context.Context, modelID, effort string) (fantasy.LanguageModel, error)
+	Tier      string
+	ModelID   string
+	Router    fusionRouter
+	Factory   func(ctx context.Context, modelID, effort string) (fantasy.LanguageModel, error)
+	Limits    func(context.Context) map[string]copilot.ModelLimits
+	MaxOutput func(string) int64
 }
 
 // fusionModel resolves the Copilot Fusion plan for a turn and runs its phases.
@@ -40,11 +45,13 @@ type fusionModel struct {
 	tools  []fantasy.AgentTool
 	prompt string
 
-	mu      sync.Mutex
-	plan    *fusionPlan
-	models  map[string]fantasy.LanguageModel
-	phase   string
-	handoff string
+	mu              sync.Mutex
+	plan            *fusionPlan
+	models          map[string]fantasy.LanguageModel
+	phase           string
+	handoff         string
+	limits          map[string]copilot.ModelLimits
+	requestedOutput int64
 }
 
 func newFusionModel(cfg FusionConfig, tools []fantasy.AgentTool, prompt string) *fusionModel {
@@ -72,6 +79,92 @@ func fusionReviewTools(available []fantasy.AgentTool) []fantasy.AgentTool {
 		}
 	}
 	return out
+}
+
+var errFusionPhaseBudget = errors.New("fusion: phase prompt exceeds model budget")
+
+func (m *fusionModel) prepare(ctx context.Context) error {
+	_, err := m.ensurePlan(ctx)
+	if err != nil {
+		return err
+	}
+	if m.cfg.Limits != nil {
+		m.limits = m.cfg.Limits(ctx)
+	}
+	return nil
+}
+
+func (m *fusionModel) stepBudget(step fusionStep, requested ...int64) (int64, bool) {
+	id := config.CopilotBaseModelID(step.ModelID)
+	var output int64
+	if m.cfg.MaxOutput != nil {
+		output = m.cfg.MaxOutput(id)
+	}
+	if output <= 0 {
+		output = m.limits[id].MaxOutputTokens
+	}
+	output = max(output, m.requestedOutput)
+	for _, reserve := range requested {
+		output = max(output, reserve)
+	}
+	return fusionUsableInput(m.limits[id], output)
+}
+
+func (m *fusionModel) primaryCompactionModel(ctx context.Context, base Model) (Model, int64, bool, error) {
+	plan, err := m.ensurePlan(ctx)
+	if err != nil {
+		return Model{}, 0, false, err
+	}
+	if len(plan.Steps) == 0 {
+		return Model{}, 0, false, errors.New("fusion: routed plan has no generation step")
+	}
+	step := plan.Steps[0]
+	model, err := m.stepModel(ctx, step)
+	if err != nil {
+		return Model{}, 0, false, err
+	}
+	budget, known := m.stepBudget(step)
+	if !known {
+		return base, 0, false, nil
+	}
+	base.Model = model
+	base.Fusion = nil
+	base.ModelCfg.Provider = "copilot"
+	base.ModelCfg.Model = step.ModelID
+	base.CatwalkCfg.ContextWindow = budget
+	if m.cfg.MaxOutput != nil {
+		if output := m.cfg.MaxOutput(config.CopilotBaseModelID(step.ModelID)); output > 0 {
+			base.CatwalkCfg.DefaultMaxTokens = output
+		}
+	}
+	return base, budget, true, nil
+}
+
+func (m *fusionModel) PromptBudget() (int64, bool) {
+	if m.plan == nil || len(m.plan.Steps) == 0 {
+		return 0, false
+	}
+	budget, known := m.stepBudget(m.plan.Steps[0])
+	if !known {
+		return 0, false
+	}
+	if len(m.plan.Steps) > 1 && m.plan.Pattern != "solo" && m.plan.Pattern != "single" {
+		repair, ok := m.stepBudget(m.plan.Steps[len(m.plan.Steps)-1])
+		if !ok {
+			return 0, false
+		}
+		if repair < budget {
+			budget = repair
+		}
+	}
+	return budget, true
+}
+
+func (m *fusionModel) ReviewBudget() (int64, bool) {
+	if m.plan == nil || len(m.plan.Steps) < 2 || m.plan.Pattern == "solo" || m.plan.Pattern == "single" {
+		return 0, false
+	}
+	return m.stepBudget(m.plan.Steps[1])
 }
 
 func (m *fusionModel) Provider() string { return "copilot" }
@@ -198,6 +291,16 @@ func (m *fusionModel) streamRepair(ctx context.Context, call fantasy.Call, plan 
 		prompt = append(prompt, fantasy.NewUserMessage(handoff))
 		call.Prompt = prompt
 	}
+	var requested int64
+	if call.MaxOutputTokens != nil {
+		requested = *call.MaxOutputTokens
+	}
+	if budget, known := m.stepBudget(step, requested); known {
+		toolData, _ := json.Marshal(call.Tools)
+		if estimateMessageTokens(call.Prompt)+approxTokenCount(string(toolData)) > budget {
+			return nil, fmt.Errorf("%w: repair", errFusionPhaseBudget)
+		}
+	}
 	return model.Stream(ctx, call)
 }
 
@@ -209,11 +312,6 @@ func (m *fusionModel) review(ctx context.Context, plan *fusionPlan, draft string
 		return true, "", nil
 	}
 	step := plan.Steps[1]
-	model, err := m.stepModel(ctx, step)
-	if err != nil {
-		return false, "", err
-	}
-
 	var systemPrompt, userPrompt string
 	switch plan.Pattern {
 	case "cascade":
@@ -226,12 +324,34 @@ func (m *fusionModel) review(ctx context.Context, plan *fusionPlan, draft string
 		return true, "", nil
 	}
 
+	var toolTokens int64
+	for _, tool := range m.tools {
+		data, err := json.Marshal(tool.Info())
+		if err == nil {
+			toolTokens += approxTokenCount(string(data))
+		}
+	}
+	if budget, known := m.ReviewBudget(); known && approxTokenCount(systemPrompt)+approxTokenCount(userPrompt)+toolTokens > budget {
+		return false, "", fmt.Errorf("%w: review", errFusionPhaseBudget)
+	}
+	model, err := m.stepModel(ctx, step)
+	if err != nil {
+		return false, "", err
+	}
 	reviewer := fantasy.NewAgent(
 		model,
 		fantasy.WithSystemPrompt(systemPrompt),
 		fantasy.WithTools(m.tools...),
 	)
-	result, err := reviewer.Stream(ctx, fantasy.AgentStreamCall{Prompt: userPrompt})
+	result, err := reviewer.Stream(ctx, fantasy.AgentStreamCall{
+		Prompt: userPrompt,
+		PrepareStep: func(ctx context.Context, options fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+			if budget, known := m.ReviewBudget(); known && estimateMessageTokens(options.Messages)+toolTokens > budget {
+				return ctx, fantasy.PrepareStepResult{}, fmt.Errorf("%w: review", errFusionPhaseBudget)
+			}
+			return ctx, fantasy.PrepareStepResult{Messages: options.Messages}, nil
+		},
+	})
 	if err != nil {
 		return false, "", fmt.Errorf("fusion: review phase failed: %w", err)
 	}
