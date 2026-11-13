@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/config"
 )
 
 // teamTestSessionID is the Lead session every Team tool test runs as.
@@ -63,7 +65,22 @@ func newTeamTestCoordinator(t *testing.T) (*coordinator, *teamFakeRunner) {
 	runner := newTeamFakeRunner()
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, runner)
 	require.NoError(t, err)
-	return &coordinator{team: service}, runner
+
+	// The spawn tool resolves model overrides against a real provider
+	// catalog, so the coordinator needs the config a Lead would have.
+	workingDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "crush.json"), []byte(overrideTestConfig), 0o644))
+	cfg, err := config.Init(t.Context(), workingDir, "", false)
+	require.NoError(t, err)
+	c := &coordinator{cfg: cfg, team: service}
+	require.NoError(t, c.rebuildModels(context.Background()))
+	return c, runner
+}
+
+// testTeamTools returns the Team tools for a caller, with the parent model
+// a Lead agent would pass along.
+func testTeamTools(c *coordinator, caller string) []fantasy.AgentTool {
+	return c.teamTools(caller, func() Model { return c.mainModels().Large })
 }
 
 func runTeamTool(t *testing.T, tool fantasy.AgentTool, input any) string {
@@ -103,7 +120,7 @@ func toolByName(tools []fantasy.AgentTool, name string) fantasy.AgentTool {
 func TestTeamToolsSpawnListAndMessage(t *testing.T) {
 	t.Parallel()
 	c, runner := newTeamTestCoordinator(t)
-	leadTools := c.teamTools("lead")
+	leadTools := testTeamTools(c, "lead")
 	require.Len(t, leadTools, 9)
 
 	spawned := runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
@@ -148,10 +165,76 @@ func TestTeamToolsSpawnListAndMessage(t *testing.T) {
 	require.Equal(t, 3, runner.count)
 }
 
+// TestTeamToolsSpawnWithModelOverride pins that a spawn can pin its
+// teammate to another model, and that the roster shows the model and
+// provider the Lead asked for.
+func TestTeamToolsSpawnWithModelOverride(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+
+	spawnTool := toolByName(leadTools, SpawnTeammateToolName)
+	require.Contains(t, spawnTool.Info().Description, "Models available to `model`",
+		"the spawn tool must advertise the same model catalog as agent_dispatch")
+
+	spawned := runTeamTool(t, spawnTool, map[string]any{
+		"name":        "reviewer",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"model":       "mock-reasoner",
+		"reasoning":   "high",
+	})
+	require.Contains(t, spawned, `"model":"mock-reasoner"`)
+	require.Contains(t, spawned, `"model_provider":"mock"`,
+		"a model-only override inherits the Lead's provider")
+	require.Contains(t, spawned, `"reasoning":"high"`)
+
+	listed := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.Contains(t, listed, `"model":"mock-reasoner"`)
+	require.Contains(t, listed, `"model_provider":"mock"`)
+	require.Contains(t, listed, `"reasoning":"high"`)
+}
+
+// TestTeamToolsSpawnRejectsInvalidModelOverride pins that a refused
+// override returns a tool error before any member exists, so the call can
+// be corrected and retried with the same name.
+func TestTeamToolsSpawnRejectsInvalidModelOverride(t *testing.T) {
+	t.Parallel()
+	c, runner := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+	spawnTool := toolByName(leadTools, SpawnTeammateToolName)
+
+	unknownModel := runTeamToolRaw(t, spawnTool, map[string]any{
+		"name":        "reviewer",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"model":       "gone-model",
+	})
+	require.True(t, unknownModel.IsError)
+	require.Contains(t, unknownModel.Content, `model "gone-model" is not available from provider "mock"`)
+
+	providerOnly := runTeamToolRaw(t, spawnTool, map[string]any{
+		"name":        "reviewer",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"provider":    "mock",
+	})
+	require.True(t, providerOnly.IsError)
+	require.Contains(t, providerOnly.Content, "provider is given without model")
+
+	runner.mu.Lock()
+	started := runner.count
+	runner.mu.Unlock()
+	require.Zero(t, started, "a refused override must not start a member")
+
+	listed := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.NotContains(t, listed, `"target":"reviewer"`)
+}
+
 func TestTeamToolsTaskBoard(t *testing.T) {
 	t.Parallel()
 	c, _ := newTeamTestCoordinator(t)
-	leadTools := c.teamTools("lead")
+	leadTools := testTeamTools(c, "lead")
 
 	created := runTeamTool(t, toolByName(leadTools, TeamTaskCreateToolName), map[string]any{
 		"subject":      "Add rate limiting",
@@ -190,14 +273,14 @@ func TestTeamToolsTaskBoard(t *testing.T) {
 func TestTeamToolsDeliverPeerMessages(t *testing.T) {
 	t.Parallel()
 	c, _ := newTeamTestCoordinator(t)
-	leadTools := c.teamTools("lead")
+	leadTools := testTeamTools(c, "lead")
 	runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
 		"name":        "reviewer",
 		"description": "Reviews the diff",
 		"prompt":      "Review the diff.",
 	})
 
-	teammateTools := c.teamTools("reviewer")
+	teammateTools := testTeamTools(c, "reviewer")
 	runTeamTool(t, toolByName(teammateTools, SendMessageToolName), map[string]any{
 		"target":  "lead",
 		"message": "Found a bug.",
@@ -211,14 +294,14 @@ func TestTeamToolsDeliverPeerMessages(t *testing.T) {
 func TestTeamToolsLeadOnly(t *testing.T) {
 	t.Parallel()
 	c, _ := newTeamTestCoordinator(t)
-	leadTools := c.teamTools("lead")
+	leadTools := testTeamTools(c, "lead")
 	runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
 		"name":        "reviewer",
 		"description": "Reviews the diff",
 		"prompt":      "Review the diff.",
 	})
 
-	teammateTools := c.teamTools("reviewer")
+	teammateTools := testTeamTools(c, "reviewer")
 	spawned := runTeamToolRaw(t, toolByName(teammateTools, SpawnTeammateToolName), map[string]any{
 		"name":        "tester",
 		"description": "Tests",
@@ -232,7 +315,7 @@ func TestTeamToolsLeadOnly(t *testing.T) {
 func TestTeamToolsAreScopedToTheCallingSession(t *testing.T) {
 	t.Parallel()
 	c, _ := newTeamTestCoordinator(t)
-	leadTools := c.teamTools("lead")
+	leadTools := testTeamTools(c, "lead")
 	runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
 		"name":        "reviewer",
 		"description": "Reviews the diff",

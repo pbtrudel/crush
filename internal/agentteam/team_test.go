@@ -3,6 +3,7 @@ package agentteam
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -112,6 +113,67 @@ func TestSpawnTeammate(t *testing.T) {
 		members, err := service.ListMembers("lead", "session-a")
 		return err == nil && members[1].Status == StatusInactive
 	}, time.Second, 10*time.Millisecond)
+}
+
+// TestSpawnTeammatePersistsModelOverride pins that a model override is
+// durable: a reopened Team still knows the model and reasoning the Lead
+// asked for, which is what lets every later turn rebuild it.
+func TestSpawnTeammatePersistsModelOverride(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "team.json")
+	service, err := New(path, Config{}, newFakeRunner())
+	require.NoError(t, err)
+
+	view, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name:          "reviewer",
+		Description:   "Reviews the diff",
+		Prompt:        "Review the current diff.",
+		ParentID:      "session-a",
+		Model:         "mock-reasoner",
+		ModelProvider: "mock",
+		Reasoning:     "high",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "mock-reasoner", view.Model)
+	require.Equal(t, "mock", view.ModelProvider)
+	require.Equal(t, "high", view.Reasoning)
+
+	reopened, err := New(path, Config{}, nil)
+	require.NoError(t, err)
+	members, err := reopened.ListMembers("lead", "session-a")
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+	require.Equal(t, "mock-reasoner", members[1].Model)
+	require.Equal(t, "mock", members[1].ModelProvider)
+	require.Equal(t, "high", members[1].Reasoning)
+}
+
+// TestLoadTeamWithoutModelOverrideFields pins backward compatibility: a
+// team.json written before the override fields existed still loads, and its
+// members simply carry no override.
+func TestLoadTeamWithoutModelOverrideFields(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "team.json")
+	legacy := `{
+  "version": 1,
+  "team_id": "team-1",
+  "members": [
+    {"id": "member-1", "name": "reviewer", "role": "teammate",
+     "description": "Reviews the diff", "context": "fresh",
+     "parent_session_id": "session-a", "status": "inactive"}
+  ],
+  "next_member": 1
+}`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o644))
+
+	service, err := New(path, Config{}, nil)
+	require.NoError(t, err)
+	members, err := service.ListMembers("lead", "session-a")
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+	require.Empty(t, members[1].Model)
+	require.Empty(t, members[1].ModelProvider)
+	require.Empty(t, members[1].Reasoning)
 }
 
 func TestSpawnTeammateRejectsDuplicateName(t *testing.T) {

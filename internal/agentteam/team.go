@@ -154,31 +154,37 @@ func IsLead(ctx context.Context) bool {
 }
 
 // Member is a durable roster entry. Names are permanent and never reused.
+// Provider is the runtime that hosts the member, not its model provider;
+// the optional model override is Model, ModelProvider, and Reasoning.
 type Member struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Role        Role        `json:"role"`
-	Description string      `json:"description,omitempty"`
-	Provider    string      `json:"provider,omitempty"`
-	Context     ContextMode `json:"context,omitempty"`
-	Model       string      `json:"model,omitempty"`
-	SessionID   string      `json:"session_id,omitempty"`
-	ParentID    string      `json:"parent_session_id,omitempty"`
-	Status      Status      `json:"status,omitempty"`
-	Failed      bool        `json:"failed,omitempty"`
-	Diagnostics []string    `json:"diagnostics,omitempty"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	Role          Role        `json:"role"`
+	Description   string      `json:"description,omitempty"`
+	Provider      string      `json:"provider,omitempty"`
+	Context       ContextMode `json:"context,omitempty"`
+	Model         string      `json:"model,omitempty"`
+	ModelProvider string      `json:"model_provider,omitempty"`
+	Reasoning     string      `json:"reasoning,omitempty"`
+	SessionID     string      `json:"session_id,omitempty"`
+	ParentID      string      `json:"parent_session_id,omitempty"`
+	Status        Status      `json:"status,omitempty"`
+	Failed        bool        `json:"failed,omitempty"`
+	Diagnostics   []string    `json:"diagnostics,omitempty"`
 }
 
 // MemberView is the model-facing roster row.
 type MemberView struct {
-	Target      string      `json:"target"`
-	Role        Role        `json:"role"`
-	Status      Status      `json:"status"`
-	Description string      `json:"description,omitempty"`
-	Provider    string      `json:"provider,omitempty"`
-	Context     ContextMode `json:"context,omitempty"`
-	Model       string      `json:"model,omitempty"`
-	Diagnostics []string    `json:"diagnostics"`
+	Target        string      `json:"target"`
+	Role          Role        `json:"role"`
+	Status        Status      `json:"status"`
+	Description   string      `json:"description,omitempty"`
+	Provider      string      `json:"provider,omitempty"`
+	Context       ContextMode `json:"context,omitempty"`
+	Model         string      `json:"model,omitempty"`
+	ModelProvider string      `json:"model_provider,omitempty"`
+	Reasoning     string      `json:"reasoning,omitempty"`
+	Diagnostics   []string    `json:"diagnostics"`
 }
 
 // Task is a durable shared task.
@@ -225,13 +231,15 @@ type Message struct {
 
 // SpawnRequest describes one teammate creation.
 type SpawnRequest struct {
-	Name        string
-	Description string
-	Prompt      string
-	Context     ContextMode
-	Provider    string
-	Model       string
-	ParentID    string
+	Name          string
+	Description   string
+	Prompt        string
+	Context       ContextMode
+	Provider      string
+	Model         string
+	ModelProvider string
+	Reasoning     string
+	ParentID      string
 }
 
 // SendRequest describes one direct message.
@@ -558,14 +566,16 @@ func (s *Service) statusLocked(name string) Status {
 
 func (s *Service) viewLocked(member Member) MemberView {
 	view := MemberView{
-		Target:      member.Name,
-		Role:        member.Role,
-		Status:      s.statusLocked(member.Name),
-		Description: member.Description,
-		Provider:    member.Provider,
-		Context:     member.Context,
-		Model:       member.Model,
-		Diagnostics: append([]string{}, member.Diagnostics...),
+		Target:        member.Name,
+		Role:          member.Role,
+		Status:        s.statusLocked(member.Name),
+		Description:   member.Description,
+		Provider:      member.Provider,
+		Context:       member.Context,
+		Model:         member.Model,
+		ModelProvider: member.ModelProvider,
+		Reasoning:     member.Reasoning,
+		Diagnostics:   append([]string{}, member.Diagnostics...),
 	}
 	if view.Role == RoleLead {
 		view.Status = StatusRunning
@@ -650,15 +660,17 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 	}
 	s.state.NextMember++
 	member := Member{
-		ID:          fmt.Sprintf("member-%d", s.state.NextMember),
-		Name:        req.Name,
-		Role:        RoleTeammate,
-		Description: description,
-		Provider:    req.Provider,
-		Context:     mode,
-		Model:       req.Model,
-		ParentID:    req.ParentID,
-		Status:      StatusProvisioning,
+		ID:            fmt.Sprintf("member-%d", s.state.NextMember),
+		Name:          req.Name,
+		Role:          RoleTeammate,
+		Description:   description,
+		Provider:      req.Provider,
+		Context:       mode,
+		Model:         req.Model,
+		ModelProvider: req.ModelProvider,
+		Reasoning:     req.Reasoning,
+		ParentID:      req.ParentID,
+		Status:        StatusProvisioning,
 	}
 	s.state.Members = append(s.state.Members, member)
 	s.saveLocked()

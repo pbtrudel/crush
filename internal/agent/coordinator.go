@@ -1267,7 +1267,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	}
 
 	if c.team != nil {
-		allTools = append(allTools, c.teamTools(agentteam.MemberFromContext(ctx))...)
+		allTools = append(allTools, c.teamTools(agentteam.MemberFromContext(ctx), parentModel)...)
 	}
 
 	// Get the model name for the agent

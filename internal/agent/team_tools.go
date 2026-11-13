@@ -34,6 +34,12 @@ type spawnTeammateParams struct {
 	Description string `json:"description" description:"Short description of the delegated responsibility."`
 	Prompt      string `json:"prompt" description:"Complete initial task for the teammate."`
 	Context     string `json:"context,omitempty" description:"fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh."`
+
+	// Model override. When none of these is given the teammate runs on
+	// the subagent model with its configured settings.
+	Model     string `json:"model,omitempty" description:"The model ID for this teammate, as used by the provider API. Omit provider to use the parent agent's provider. Other settings default to the model's own"`
+	Provider  string `json:"provider,omitempty" description:"The provider ID for the overridden model; requires model. Defaults to the parent agent's provider when only model is given"`
+	Reasoning string `json:"reasoning,omitempty" description:"How hard the teammate reasons: one of the values listed in brackets after its model. Defaults to the model's own"`
 }
 
 type sendMessageParams struct {
@@ -79,10 +85,12 @@ type teamTaskUpdateParams struct {
 	Owner            *string  `json:"owner,omitempty" description:"Member target from spawn_teammate or list_agents for Lead-only reassign; omit to unassign."`
 }
 
-// teamTools returns the nine Team-scoped tools bound to one caller.
-func (c *coordinator) teamTools(caller string) []fantasy.AgentTool {
+// teamTools returns the nine Team-scoped tools bound to one caller. The
+// parent model is what a spawn's model-only override takes its provider
+// from, the same rule agent_dispatch follows.
+func (c *coordinator) teamTools(caller string, parentModel func() Model) []fantasy.AgentTool {
 	return []fantasy.AgentTool{
-		c.spawnTeammateTool(caller),
+		c.spawnTeammateTool(caller, parentModel),
 		c.sendMessageTool(caller),
 		c.listAgentsTool(caller),
 		c.waitAgentTool(caller),
@@ -121,23 +129,40 @@ func (c *coordinator) teamError(err error) fantasy.ToolResponse {
 	return fantasy.NewTextErrorResponse(err.Error())
 }
 
-func (c *coordinator) spawnTeammateTool(caller string) fantasy.AgentTool {
+func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		SpawnTeammateToolName,
-		"Create one named, durable teammate. Only the Team Lead may call this tool.",
+		"Create one named, durable teammate. Only the Team Lead may call this tool."+
+			dispatchModelCatalog(c.cfg.Config(), parentModel()),
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {
 				mode = agentteam.ContextFresh
 			}
-			view, err := c.team.SpawnTeammate(ctx, caller, agentteam.SpawnRequest{
+			request := agentteam.SpawnRequest{
 				Name:        params.Name,
 				Description: params.Description,
 				Prompt:      params.Prompt,
 				Context:     mode,
 				Provider:    "crush",
 				ParentID:    tools.GetSessionFromContext(ctx),
-			})
+			}
+			// Resolve the override first, so a refused model leaves no
+			// roster entry behind and the call can be retried.
+			sel, hasOverride, refusal := c.resolveModelOverride(AgentDispatchParams{
+				Model:     params.Model,
+				Provider:  params.Provider,
+				Reasoning: params.Reasoning,
+			}, parentModel())
+			if refusal != "" {
+				return fantasy.NewTextErrorResponse(refusal), nil
+			}
+			if hasOverride {
+				request.Model = sel.Model
+				request.ModelProvider = sel.Provider
+				request.Reasoning = strings.TrimSpace(params.Reasoning)
+			}
+			view, err := c.team.SpawnTeammate(ctx, caller, request)
 			if err != nil {
 				return c.teamError(err), nil
 			}
