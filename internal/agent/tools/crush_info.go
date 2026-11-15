@@ -29,23 +29,25 @@ func NewCrushInfoTool(
 	allSkills []*skills.Skill,
 	activeSkills []*skills.Skill,
 	skillTracker *skills.Tracker,
+	models func() string,
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		CrushInfoToolName,
 		crushInfoDescription,
 		func(ctx context.Context, _ CrushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse(buildCrushInfo(cfg, lspManager, allSkills, activeSkills, skillTracker)), nil
+			return fantasy.NewTextResponse(buildCrushInfo(cfg, lspManager, allSkills, activeSkills, skillTracker, models)), nil
 		},
 	)
 }
 
-func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {
+func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker, models func() string) string {
 	var b strings.Builder
 
 	writeConfigFiles(&b, cfg)
 	writeConfigStaleness(&b, cfg)
 	writeModels(&b, cfg)
 	writeProviders(&b, cfg)
+	writeModelCatalog(&b, models)
 	writeLSP(&b, lspManager, cfg)
 	writeMCP(&b, mcp.GetStates(), cfg)
 	writeSkills(&b, allSkills, activeSkills, skillTracker, cfg)
@@ -135,6 +137,21 @@ func writeProviders(b *strings.Builder, cfg *config.ConfigStore) {
 		fmt.Fprintf(b, "%s = enabled (%d models)\n", p.name, p.count)
 	}
 	b.WriteString("\n")
+}
+
+func writeModelCatalog(b *strings.Builder, models func() string) {
+	if models == nil {
+		return
+	}
+	catalog := strings.TrimSpace(models())
+	if catalog == "" {
+		return
+	}
+	// Served here rather than in a tool description so the catalog only
+	// costs tokens when a model override is actually being chosen.
+	b.WriteString("[models]\n")
+	b.WriteString("Models a subagent or teammate can run on, by provider, with the reasoning values each accepts in brackets:\n")
+	b.WriteString(catalog + "\n\n")
 }
 
 func writeLSP(b *strings.Builder, lspManager *lsp.Manager, cfg *config.ConfigStore) {

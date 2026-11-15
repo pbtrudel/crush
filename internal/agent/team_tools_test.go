@@ -174,8 +174,10 @@ func TestTeamToolsSpawnWithModelOverride(t *testing.T) {
 	leadTools := testTeamTools(c, "lead")
 
 	spawnTool := toolByName(leadTools, SpawnTeammateToolName)
-	require.Contains(t, spawnTool.Info().Description, "Models available to `model`",
-		"the spawn tool must advertise the same model catalog as agent_dispatch")
+	require.NotContains(t, spawnTool.Info().Description, "mock-reasoner",
+		"the model catalog must not be embedded in the tool description")
+	require.Contains(t, spawnTool.Info().Description, "crush_info",
+		"the spawn tool must point at the models section of crush_info")
 
 	spawned := runTeamTool(t, spawnTool, map[string]any{
 		"name":        "reviewer",

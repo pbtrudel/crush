@@ -1285,7 +1285,9 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	allTools = append(
 		allTools,
 		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions),
-		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker),
+		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker, func() string {
+			return modelCatalog(c.cfg.Config())
+		}),
 		tools.NewCrushLogsTool(logFile),
 		tools.NewJobOutputTool(c.cfg.Config().Options.DataDirectory),
 		tools.NewJobKillTool(),

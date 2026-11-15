@@ -50,7 +50,7 @@ type AgentDispatchParams struct {
 	// session's subagent model with its configured settings.
 	Model     string `json:"model,omitempty" description:"The model ID for this subagent, as used by the provider API. Omit provider to use the parent agent's provider. Other settings default to the model's own"`
 	Provider  string `json:"provider,omitempty" description:"The provider ID for the overridden model; requires model. Defaults to the parent agent's provider when only model is given"`
-	Reasoning string `json:"reasoning,omitempty" description:"How hard the subagent reasons: one of the values listed in brackets after its model. Defaults to the model's own"`
+	Reasoning string `json:"reasoning,omitempty" description:"How hard the subagent reasons: one of the values the [models] section of crush_info lists in brackets for its model. Defaults to the model's own"`
 }
 
 // AgentSendResponseMetadata tells the UI which subagent a message went to,
@@ -85,9 +85,9 @@ type AgentSendParams struct {
 
 	// Model switch, for a subagent that is not running. Same meaning as on
 	// agent_dispatch; the subagent keeps its session.
-	Model     string `json:"model,omitempty" description:"Move the subagent to this model before delivering, keeping its session. Only for a subagent that is not running. Same IDs as agent_dispatch's model list"`
+	Model     string `json:"model,omitempty" description:"Move the subagent to this model before delivering, keeping its session. Only for a subagent that is not running. The [models] section of crush_info lists the IDs"`
 	Provider  string `json:"provider,omitempty" description:"The provider ID for model; requires model. Defaults to the parent agent's provider"`
-	Reasoning string `json:"reasoning,omitempty" description:"How hard the subagent reasons on its new model: one of the values in agent_dispatch's model list"`
+	Reasoning string `json:"reasoning,omitempty" description:"How hard the subagent reasons on its new model: one of the values the [models] section of crush_info lists in brackets for it"`
 }
 
 func (p AgentSendParams) switchesModel() bool {
@@ -387,7 +387,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 
 	return fantasy.NewParallelAgentTool(
 		AgentDispatchToolName,
-		strings.TrimSpace(agentDispatchToolDescription)+dispatchModelCatalog(c.cfg.Config(), parentModel()),
+		strings.TrimSpace(agentDispatchToolDescription),
 		func(ctx context.Context, params AgentDispatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
