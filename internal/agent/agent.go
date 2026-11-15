@@ -3080,7 +3080,10 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 			Parts: []message.ContentPart{*call.Report},
 		})
 	}
-	parts := []message.ContentPart{message.TextContent{Text: call.Prompt, Hidden: call.HiddenUserMessage, Context: modelContext}}
+	// Run sends the trimmed prompt, so the stored text has to be trimmed
+	// too, or the next turn replays different bytes than this turn sent
+	// and misses the provider's prefix cache.
+	parts := []message.ContentPart{message.TextContent{Text: strings.TrimSpace(call.Prompt), Hidden: call.HiddenUserMessage, Context: modelContext}}
 	var attachmentParts []message.ContentPart
 	for _, attachment := range call.Attachments {
 		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.Ref(), MIMEType: attachment.MimeType, Data: attachment.Content})

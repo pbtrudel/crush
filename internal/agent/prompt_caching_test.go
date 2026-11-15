@@ -75,7 +75,8 @@ func TestPreparePrompt_ReplayMatchesLiveUserMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	// Live form: the prompt string and the files passed to the provider.
-	livePrompt := message.PromptWithTextAttachments(call.Prompt, call.Attachments)
+	// The prompt is built the way Run builds it.
+	livePrompt := message.PromptWithTextAttachments(strings.TrimSpace(call.Prompt), call.Attachments)
 	_, liveFiles := agent.preparePrompt(msgs, true, false, call.Attachments...)
 	require.Len(t, liveFiles, 1, "only the image is sent as a file part")
 
