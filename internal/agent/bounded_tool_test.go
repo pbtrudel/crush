@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -149,4 +150,78 @@ func TestOversizedToolOutputIsBoundedInTheRunningTurn(t *testing.T) {
 	}
 	require.NotEmpty(t, stored)
 	require.Equal(t, stored, live, "the text sent in the turn must be the text stored for replay")
+}
+
+// recordingBound wraps the real bound and records what it was handed, so a
+// test can tell whether the outer layer is actually in the chain.
+func recordingBound(t *testing.T, real func(string) string) (func(string) string, *[]string) {
+	t.Helper()
+	var seen []string
+	return func(s string) string {
+		seen = append(seen, s)
+		return real(s)
+	}, &seen
+}
+
+// TestCompactionToolWrappersCompose pins the two layers the compaction tool
+// list needs: the guard refuses to execute, and the output bound is still
+// wired around it, so text from a tool can never exceed the stored budget.
+// Compaction tools never run today because the guard answers first, which is
+// exactly why the composition has to be asserted here: a future guard that
+// passes through must not silently drop the bound.
+func TestCompactionToolWrappersCompose(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "prompt").(*sessionAgent)
+	bound, seen := recordingBound(t, agent.truncateToolOutput)
+
+	t.Run("the guard refuses and the tool never runs", func(t *testing.T) {
+		t.Parallel()
+		inner := &probeTool{output: strings.Repeat("x", 300_000)}
+		tool := boundedOutputTool{inner: compactionGuardTool{inner: inner}, bound: bound}
+
+		resp, err := tool.Run(t.Context(), fantasy.ToolCall{})
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "disabled during context compaction")
+		require.Zero(t, inner.runs, "compaction must not execute tools")
+		require.Len(t, *seen, 1, "the output bound must still run over the refused result")
+	})
+
+	t.Run("the same bound truncates a result that does pass through", func(t *testing.T) {
+		t.Parallel()
+		inner := &probeTool{output: strings.Repeat("x", 300_000)}
+		tool := boundedOutputTool{inner: inner, bound: agent.truncateToolOutput}
+
+		resp, err := tool.Run(t.Context(), fantasy.ToolCall{})
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(resp.Content), 50_000)
+		require.True(t, tools.HasSpillNotice(resp.Content))
+	})
+
+	t.Run("both layers stay transparent to the agent", func(t *testing.T) {
+		t.Parallel()
+		recorder := &recordingTool{name: "alpha"}
+		tool := boundedOutputTool{inner: compactionGuardTool{inner: recorder}, bound: bound}
+		require.Equal(t, "alpha", tool.Info().Name)
+
+		opts := fantasy.ProviderOptions{
+			anthropic.Name: &anthropic.ProviderCacheControlOptions{
+				CacheControl: anthropic.CacheControl{Type: "ephemeral"},
+			},
+		}
+		tool.SetProviderOptions(opts)
+		require.Equal(t, opts, recorder.opts, "the cache marker must land on the real tool")
+		require.Equal(t, opts, tool.ProviderOptions())
+
+		// The extra layer must not change a byte of the definition, or the
+		// compaction request stops matching the live turn's tool block and
+		// the provider stops serving it from cache.
+		bare, err := json.Marshal(recorder.Info())
+		require.NoError(t, err)
+		composed, err := json.Marshal(tool.Info())
+		require.NoError(t, err)
+		require.Equal(t, bare, composed)
+	})
 }

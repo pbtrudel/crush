@@ -1,6 +1,10 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
@@ -166,4 +170,112 @@ func TestSummarizeRecordsRequestUsage(t *testing.T) {
 	require.Equal(t, int64(20_000), usage.CacheReadTokens)
 	require.Equal(t, int64(3_000), usage.CacheWriteTokens)
 	require.Equal(t, int64(100), usage.OutputTokens)
+}
+
+// twoStepSummaryModel answers a compaction request the way a reasoning model
+// that ignores the instruction does: it calls a (refused) tool first and only
+// writes the summary on its second step, reporting different usage for each.
+// The recorded usage must be the sum of both steps, not the last one.
+type twoStepSummaryModel struct {
+	mu      sync.Mutex
+	calls   int
+	usages  []fantasy.Usage
+	prompts []fantasy.Prompt
+}
+
+func (m *twoStepSummaryModel) Provider() string { return "stub" }
+func (m *twoStepSummaryModel) Model() string    { return "stub-model" }
+
+func (m *twoStepSummaryModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *twoStepSummaryModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	m.mu.Lock()
+	step := m.calls
+	m.calls++
+	m.prompts = append(m.prompts, slices.Clone(call.Prompt))
+	m.mu.Unlock()
+
+	usage := m.usages[min(step, len(m.usages)-1)]
+	return func(yield func(fantasy.StreamPart) bool) {
+		if step == 0 {
+			if !yield(fantasy.StreamPart{
+				Type:          fantasy.StreamPartTypeToolCall,
+				ID:            "refused-1",
+				ToolCallName:  "probe",
+				ToolCallInput: "{}",
+			}) {
+				return
+			}
+			yield(fantasy.StreamPart{
+				Type:         fantasy.StreamPartTypeFinish,
+				FinishReason: fantasy.FinishReasonToolCalls,
+				Usage:        usage,
+			})
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: "# Conversation Summary\n\nAll good."})
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
+		yield(fantasy.StreamPart{
+			Type:         fantasy.StreamPartTypeFinish,
+			FinishReason: fantasy.FinishReasonStop,
+			Usage:        usage,
+		})
+	}, nil
+}
+
+func (m *twoStepSummaryModel) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *twoStepSummaryModel) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+// TestSummarizeRecordsAccumulatedUsage covers a compaction that needed two
+// steps because the model called a tool the guard refused: the recorded
+// numbers must be the whole request's cost, not the last step's.
+func TestSummarizeRecordsAccumulatedUsage(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	refused := fantasy.Usage{InputTokens: 1_000, CacheCreationTokens: 4_000, OutputTokens: 50, TotalTokens: 5_050}
+	summary := fantasy.Usage{InputTokens: 200, CacheReadTokens: 9_000, OutputTokens: 150, TotalTokens: 9_350}
+	model := &twoStepSummaryModel{usages: []fantasy.Usage{refused, summary}}
+	probe := &probeTool{output: "must not run"}
+	agent := newCompactionAgent(env, model, nil, false, probe)
+
+	sess, err := env.sessions.Create(ctx, "two step compaction")
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.NoError(t, env.messages.FlushAll(ctx))
+	require.Equal(t, 2, model.calls, "the model must have taken two steps")
+
+	updated, err := env.sessions.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	stored, err := env.messages.Get(ctx, updated.SummaryMessageID)
+	require.NoError(t, err)
+
+	// The tool call the model made was answered without running anything,
+	// and the refusal reached the next step: the compaction tool list still
+	// carries the guard.
+	require.Zero(t, probe.runs, "no tool may run during compaction")
+	require.Len(t, model.prompts, 2)
+	require.Contains(t, promptWithResults(model.prompts[1]), "disabled during context compaction")
+
+	usage := finishUsage(t, stored)
+	require.NotNil(t, usage)
+	require.Equal(t, int64(1_200), usage.InputTokens, "input tokens of both steps")
+	require.Equal(t, int64(9_000), usage.CacheReadTokens)
+	require.Equal(t, int64(4_000), usage.CacheWriteTokens)
+	require.Equal(t, int64(200), usage.OutputTokens, "output tokens of both steps")
+	require.NotEqual(t, summary.OutputTokens, usage.OutputTokens, "the last step alone is not the answer")
 }
