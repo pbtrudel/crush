@@ -30,6 +30,75 @@ func TestBashDescription_AssistedByUsesStableToken(t *testing.T) {
 	require.NotContains(t, description, "test-model")
 }
 
+// The commit and pull request procedure used to be part of this description,
+// which every request carries whether or not a commit is involved. It now
+// lives in a skill, and the description keeps only a pointer plus the rules
+// that have to hold at all times.
+func TestBashDescription_PointsAtGitWorkflowSkill(t *testing.T) {
+	description := bashDescription(&config.Attribution{}, nil)
+
+	require.Contains(t, description, "crush://skills/git-workflow/SKILL.md")
+	for _, gone := range []string{
+		"<git_message_quality>",
+		"<commit_messages>",
+		"<git_commits>",
+		"<pull_requests>",
+		"<pr_analysis>",
+	} {
+		require.NotContains(t, description, gone)
+	}
+	require.Contains(t, description, "Never update git config")
+	require.Contains(t, description, "never use interactive flags")
+}
+
+// Opting into attribution must still reach the model, now from the short
+// block rather than from the full procedure.
+func TestBashDescription_AttributionLinesWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name        string
+		attribution config.Attribution
+		want        []string
+	}{
+		{
+			name:        "generated with",
+			attribution: config.Attribution{GeneratedWith: true},
+			want:        []string{"End every pull request body with: 💘 Generated with Crush"},
+		},
+		{
+			name:        "assisted by",
+			attribution: config.Attribution{TrailerStyle: config.TrailerStyleAssistedBy},
+			want:        []string{"Assisted-by: Crush:" + modelIDPlaceholder},
+		},
+		{
+			name:        "co-authored by",
+			attribution: config.Attribution{TrailerStyle: config.TrailerStyleCoAuthoredBy},
+			want:        []string{"Co-Authored-By: Crush <crush@charm.land>"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			description := bashDescription(&test.attribution, nil)
+			require.Contains(t, description, "End every commit message with these lines")
+			for _, want := range test.want {
+				require.Contains(t, description, want)
+			}
+		})
+	}
+}
+
+// The gh hint is only useful when the command exists, so it stays behind the
+// same check it had when the whole procedure lived here.
+func TestBashDescription_GhLineOnlyWhenAvailable(t *testing.T) {
+	original := ghAvailable
+	t.Cleanup(func() { ghAvailable = original })
+
+	ghAvailable = true
+	require.Contains(t, bashDescription(&config.Attribution{}, nil), "Use the `gh` command for ALL GitHub tasks.")
+
+	ghAvailable = false
+	require.NotContains(t, bashDescription(&config.Attribution{}, nil), "Use the `gh` command")
+}
+
 func TestBashTool_ExpandsModelIDPlaceholder(t *testing.T) {
 	tool := newBashToolForTest(t.TempDir())
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")

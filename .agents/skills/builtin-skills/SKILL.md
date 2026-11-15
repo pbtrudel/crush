@@ -35,8 +35,9 @@ These are always available without user configuration.
 
 ## Existing Builtin Skills
 
-| Skill          | Directory               | Description                                |
-| -------------- | ----------------------- | ------------------------------------------ |
-| `crush-config` | `builtin/crush-config/` | Crush configuration help                   |
-| `crush-hooks`  | `builtin/crush-hooks/`  | Authoring, configuring and debugging hooks |
-| `jq`           | `builtin/jq/`           | jq JSON processor usage guide              |
+| Skill          | Directory                | Description                                |
+| -------------- | ------------------------ | ------------------------------------------ |
+| `crush-config` | `builtin/crush-config/`  | Crush configuration help                   |
+| `crush-hooks`  | `builtin/crush-hooks/`   | Authoring, configuring and debugging hooks |
+| `git-workflow` | `builtin/git-workflow/`  | Commit and pull request procedure          |
+| `jq`           | `builtin/jq/`            | jq JSON processor usage guide              |
