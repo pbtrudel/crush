@@ -1258,7 +1258,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false); err != nil {
+		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -1914,7 +1914,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false)
+		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, shouldSummarize)
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
@@ -2093,13 +2093,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false)
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false, false)
 }
 
 // summarize runs one compaction request. active reports that the caller
 // already owns the session's active-run registration (the model-switch path
-// runs inside Run), so this call must not replace or clear it.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned bool) error {
+// runs inside Run), so this call must not replace or clear it. atLimit
+// reports that the window, not the threshold, forced this compaction, which
+// is the only case that has to rewrite history the provider already cached.
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned, atLimit bool) error {
 	if !active && a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -2151,17 +2153,21 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		tailTokens += messageTokens(msg)
 	}
 
-	// The summarizer sees the head that is about to be replaced, so
-	// oversized tool results can be trimmed in memory without touching
-	// the durable log. This keeps a single huge command output from
-	// overflowing the summary request itself.
-	if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
-		slog.Debug(
-			"Pruned tool results before compaction",
-			"session_id", sessionID,
-			"results", pruned,
-			"saved_chars", saved,
-		)
+	// Pruning rewrites tool results the provider has already cached, so the
+	// compaction request stops matching the conversation from the first
+	// pruned result on and is billed in full, and the summarizer sees less.
+	// Keep the history byte-identical unless the request cannot fit
+	// otherwise. A compaction forced by the window always prunes: the
+	// session's token count predates the tool results that filled it.
+	if atLimit || !compactionFits(effectiveContextWindow(largeModel), tokensBefore, compactionMaxOutputTokens(largeModel)) {
+		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
+			slog.Debug(
+				"Pruned tool results before compaction",
+				"session_id", sessionID,
+				"results", pruned,
+				"saved_chars", saved,
+			)
+		}
 	}
 
 	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger}); pre.Blocked() {
@@ -2442,7 +2448,7 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true); err != nil {
+	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true, false); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2465,6 +2471,20 @@ func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message,
 		}
 	}
 	return max(estimate, assembled)
+}
+
+// compactionRequestReserve covers the compaction instruction and the error
+// of counting tokens, on top of the summary's own output budget.
+const compactionRequestReserve = 8_192
+
+// compactionFits reports whether a compaction request can carry the whole
+// history unpruned: the context the last request reported, the summary the
+// model may write, and the instruction. Unknown sizes do not fit.
+func compactionFits(window, contextTokens, maxOutputTokens int64) bool {
+	if window <= 0 || contextTokens <= 0 {
+		return false
+	}
+	return contextTokens+maxOutputTokens+compactionRequestReserve <= window
 }
 
 // compactionPruneChars returns the per-tool-result character budget applied
@@ -2522,7 +2542,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
