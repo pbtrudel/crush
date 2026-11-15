@@ -184,7 +184,7 @@ func TestMidTurnMessagesStayInLaterSteps(t *testing.T) {
 	require.Equal(t, third[1:], promptShape(replay), "the replayed session must match the last request of the turn")
 }
 
-func TestQueuedPromptFollowsReminderInStorageOrder(t *testing.T) {
+func TestNoticeGroupsKeepArrivalOrderAcrossSteps(t *testing.T) {
 	env := testEnv(t)
 	model := &stepRecordingModel{toolSteps: 2}
 	const first = "<background_job_notice>Background job 001 finished.</background_job_notice>"

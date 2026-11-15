@@ -636,6 +636,14 @@ message.
   `400000`), because every request re-reads the whole context: a session
   compacts at whichever comes first, the window fraction or this ceiling.
   `0` disables the ceiling.
+- `option history-slim-idle-minutes` (default `60`) lightens a session that
+  has sat idle longer than that: on the next prompt, a file read that a
+  later edit in the same session made stale is replaced by a one-line note
+  telling the model to read the file again. The provider's cache has expired
+  by then, so nothing cached is lost, and the session log is never changed.
+  `option history-slim-reasoning` (off by default) also drops plain
+  reasoning text from that older history; signed or encrypted reasoning is
+  always kept.
 - `option compact-tail-tokens` tunes how many tokens of recent conversation
   are kept verbatim (default `24576`; `0` keeps only the summary).
 - `option auto-summarize false` disables automatic compaction entirely;

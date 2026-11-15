@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
@@ -426,6 +427,8 @@ func writeOptions(b *strings.Builder, cfg *config.ConfigStore) {
 	opts = append(opts, kv{"auto_compact_threshold", fmt.Sprintf("%g", c.Options.GetAutoCompactThreshold())})
 	opts = append(opts, kv{"auto_compact_max_tokens", fmt.Sprintf("%d", c.Options.GetAutoCompactMaxTokens())})
 	opts = append(opts, kv{"compact_tail_tokens", fmt.Sprintf("%d", c.Options.GetCompactTailTokens())})
+	opts = append(opts, kv{"history_slim_idle_minutes", fmt.Sprintf("%d", int(c.Options.GetHistorySlimIdle()/time.Minute))})
+	opts = append(opts, kv{"history_slim_reasoning", fmt.Sprintf("%v", c.Options.HistorySlimReasoning)})
 
 	if c.Options.TUI != nil {
 		opts = append(opts, kv{"compact_mode", fmt.Sprintf("%v", c.Options.TUI.CompactMode)})

@@ -631,6 +631,19 @@
             250000
           ]
         },
+        "history_slim_idle_minutes": {
+          "type": "integer",
+          "description": "Minutes a session must be idle before older history is slimmed on the next prompt: file reads made stale by a later edit are replaced by a short note. The provider cache has expired by then, so nothing cached is lost. 0 disables slimming.",
+          "default": 60,
+          "examples": [
+            30
+          ]
+        },
+        "history_slim_reasoning": {
+          "type": "boolean",
+          "description": "When slimming older history, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.",
+          "default": false
+        },
         "compact_tail_tokens": {
           "type": "integer",
           "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",

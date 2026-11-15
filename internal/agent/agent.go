@@ -42,6 +42,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/hooks"
@@ -1306,7 +1307,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// Add the user message to the session. The context sent ahead of the
 	// prompt is stored with it so later requests replay the same text.
 	modelContext := hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
-	_, err = a.createUserMessage(ctx, call, modelContext)
+	userMsg, err := a.createUserMessage(ctx, call, modelContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,6 +1319,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// mutex above for both the accepted and in-process paths.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 
+	// The prompt just stored is what marks the end of any idle gap: a
+	// session picked up after a long pause has no warm cache to lose.
+	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	startTime := time.Now()
@@ -2119,6 +2123,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		// Nothing to summarize.
 		return nil
 	}
+	// The compaction request must send the bytes the turn sent, or it
+	// misses the cache it exists to preserve.
+	a.slimHistory(largeModel, msgs, 0)
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
@@ -2485,6 +2492,35 @@ func compactionFits(window, contextTokens, maxOutputTokens int64) bool {
 		return false
 	}
 	return contextTokens+maxOutputTokens+compactionRequestReserve <= window
+}
+
+// slimHistory applies slimColdHistory when the option is on. The Claude
+// Agent provider keeps the conversation in its own session and treats a
+// changed history as a rewrite, replaying all of it as text, so its
+// history is left alone.
+func (a *sessionAgent) slimHistory(model Model, msgs []message.Message, next int64) {
+	idle, dropReasoning := a.historySlimConfig()
+	if idle <= 0 || (model.Model != nil && model.Model.Provider() == claudeagent.Name) {
+		return
+	}
+	if cut := slimColdHistory(msgs, next, idle, dropReasoning); cut > 0 {
+		slog.Debug("Slimmed history before the last idle gap", "messages", cut)
+	}
+}
+
+// historySlimConfig returns the idle duration and the reasoning switch, with
+// the defaults when there is no config store (tests, sub-agents). A config
+// without options is possible (see config.NewTestStore), and only the
+// duration getter tolerates a nil receiver, so both are guarded here.
+func (a *sessionAgent) historySlimConfig() (time.Duration, bool) {
+	if a.cfg == nil {
+		return config.DefaultHistorySlimIdleMinutes * time.Minute, false
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil || cfg.Options == nil {
+		return config.DefaultHistorySlimIdleMinutes * time.Minute, false
+	}
+	return cfg.Options.GetHistorySlimIdle(), cfg.Options.HistorySlimReasoning
 }
 
 // compactionPruneChars returns the per-tool-result character budget applied
