@@ -376,10 +376,19 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 	}
 
 	var (
-		output  strings.Builder
-		notRead []string
+		output    strings.Builder
+		notRead   []string
+		imageData []byte
+		imageType string
 	)
 	for i, path := range params.FilePaths {
+		// Size the file before reading it: a file that will not be shown must
+		// not ask for permission, load an image, or be recorded as read.
+		if i > 0 && v.skipsForBudget(output.Len(), path) {
+			notRead = params.FilePaths[i:]
+			break
+		}
+
 		one := params
 		one.FilePath = path
 		one.FilePaths = nil
@@ -390,11 +399,21 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 
 		text := resp.Content
 		if len(resp.Data) > 0 {
-			// Only the first file of a call may carry media, so the others
-			// say where the image is instead of dropping it silently.
-			text = "(image: view this file on its own)"
+			if len(imageData) == 0 {
+				// One media payload fits in a tool result, so the first image
+				// stays attached and the header already names its file; the
+				// text only carries the caption alongside it.
+				imageData, imageType = resp.Data, resp.MediaType
+				if text == "" {
+					text = fmt.Sprintf("(image: %s)", resp.MediaType)
+				}
+			} else {
+				text = "(image: view this file on its own)"
+			}
 		}
 		block := fmt.Sprintf("==> %s <==\n%s", path, text)
+		// A file that grew between the sizing and the read can still land
+		// here; the block is what the budget is measured on, so it wins.
 		if i > 0 && output.Len()+len("\n\n")+len(block) > maxMultiViewChars {
 			notRead = params.FilePaths[i:]
 			break
@@ -410,7 +429,26 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 			strings.Join(notRead, ", "))
 	}
 
-	return fantasy.NewTextResponse(output.String()), nil
+	response := fantasy.NewTextResponse(output.String())
+	if len(imageData) > 0 {
+		response = fantasy.NewImageResponse(imageData, imageType)
+		response.Content = output.String()
+	}
+	return response, nil
+}
+
+// skipsForBudget reports whether reading path would push the combined text
+// past the multi-file budget. It sizes the file instead of reading it, so a
+// file that will not be shown costs nothing: no permission request, no image
+// loaded, no record that it was read. A path that cannot be sized, such as a
+// builtin skill file, is read: losing a file to a failed stat would cost more
+// than one oversized block.
+func (v viewReader) skipsForBudget(soFar int, path string) bool {
+	info, err := os.Stat(filepathext.SmartJoin(v.workingDir, home.Long(path)))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return soFar+len("\n\n")+int(info.Size()) > maxMultiViewChars
 }
 
 func addLineNumbers(content string, startLine int) string {
