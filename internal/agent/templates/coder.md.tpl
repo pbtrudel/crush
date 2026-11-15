@@ -399,7 +399,7 @@ Platform: {{.Platform}}
 
 {{if gt (len .Config.LSP) 0}}
 <lsp>
-Diagnostics (lint/typecheck) included in tool output.
+Tool output includes errors and warnings for the file you read or changed, and errors elsewhere in the project. `lsp_diagnostics` lists everything, hints included.
 - Fix issues in files you changed
 - Ignore issues in files you didn't touch (unless user asks)
 </lsp>

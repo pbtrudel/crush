@@ -111,7 +111,7 @@ func NewRenameTool(
 
 			text := b.String()
 			if len(affectedFiles) > 0 {
-				text += "\n" + getDiagnostics(affectedFiles[0], lspManager)
+				text += "\n" + getActionableDiagnostics(affectedFiles[0], lspManager)
 			}
 
 			return fantasy.NewTextResponse(text), nil

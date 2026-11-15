@@ -285,7 +285,7 @@ func newViewLikeTool(
 					params.Offset+len(strings.Split(content, "\n")))
 			}
 			output += "\n</file>\n"
-			output += getDiagnostics(filePath, lspManager)
+			output += getActionableDiagnostics(filePath, lspManager)
 			filetracker.RecordRead(ctx, sessionID, filePath)
 
 			meta := ViewResponseMetadata{
