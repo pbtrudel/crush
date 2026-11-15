@@ -869,7 +869,7 @@ func (s *Service) writeReport(name, text string) string {
 		slog.Warn("Could not create the teammate report directory", "dir", dir, "error", err)
 		return ""
 	}
-	sweepReports(dir)
+	sweepReports(dir, s.now())
 
 	file, err := os.CreateTemp(dir, name+"-*.md")
 	if err != nil {
@@ -893,14 +893,16 @@ func (s *Service) writeReport(name, text string) string {
 
 // sweepReports deletes reports older than reportRetention. It is best effort:
 // a file that cannot be swept is not worth failing a report over.
-func sweepReports(dir string) {
+func sweepReports(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-reportRetention)
+	cutoff := now.Add(-reportRetention)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			// Only files this package writes are swept; anything else in the
+			// directory is not ours to delete.
 			continue
 		}
 		info, err := entry.Info()
