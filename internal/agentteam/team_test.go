@@ -824,8 +824,8 @@ func TestSettledTeammateReportSpillsLongOutput(t *testing.T) {
 	require.Contains(t, report, "Report cut: 2000 of 5000 bytes shown")
 
 	path := reportPathIn(t, report)
-	require.True(t, strings.HasPrefix(path, filepath.Dir(service.path)),
-		"the file belongs next to the team state, %q", path)
+	require.Equal(t, filepath.Join(filepath.Dir(service.path), "reports"), filepath.Dir(path),
+		"the file belongs in the report directory next to the team state")
 	full, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, long, string(full))
@@ -841,7 +841,7 @@ func TestSettledTeammateReportKeepsShortOutputInline(t *testing.T) {
 	report := settleTeammate(t, service, runner, short)
 
 	require.Equal(t, "reviewer finished its turn.\n\n"+short, report)
-	_, statErr := os.Stat(filepath.Join(filepath.Dir(service.path), "shell-output"))
+	_, statErr := os.Stat(filepath.Join(filepath.Dir(service.path), "reports"))
 	require.True(t, os.IsNotExist(statErr), "a report under the cap must not write a file")
 }
 
@@ -855,4 +855,91 @@ func TestRunReportWithoutFullReportCutsWithEllipsis(t *testing.T) {
 	report := runReport("reviewer", long, nil, nil, "")
 
 	require.Equal(t, "reviewer finished its turn.\n\n"+long[:2000]+"…", report)
+}
+
+// TestSettledTeammateReportCountsTheBytesItActuallyKeeps pins the cut size on
+// a multibyte report: the cut backs off to a rune boundary, so a note that
+// printed the cap would overstate what the Lead can read inline.
+func TestSettledTeammateReportCountsTheBytesItActuallyKeeps(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	// One ASCII byte then 3-byte runes puts a rune boundary at 1,999, so a
+	// cut at the 2,000-byte cap keeps 1,999 bytes.
+	long := "a" + strings.Repeat("€", 1000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.Contains(t, report, "Report cut: 1999 of 3001 bytes shown")
+
+	path := reportPathIn(t, report)
+	full, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, long, string(full))
+}
+
+// TestSettledTeammateReportFallsBackWithoutATeamPath pins the in-memory Team:
+// with no team path there is nowhere to write the full report, and the
+// process's working directory is not ours to use, so the report is cut as
+// before.
+func TestSettledTeammateReportFallsBackWithoutATeamPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	runner := newFakeRunner()
+	service, err := New("", Config{}, runner)
+	require.NoError(t, err)
+
+	long := strings.Repeat("r", 5000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.True(t, strings.HasSuffix(report, "…"), "the report is cut as before")
+	require.NotContains(t, report, "Full report")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "nothing may be written when the Team has no path")
+}
+
+// TestSettledTeammateReportFallsBackWhenTheDirectoryIsUnusable pins the other
+// half of the fallback: a write that fails still delivers the head of the
+// report, with no note pointing at a file that is not there.
+func TestSettledTeammateReportFallsBackWhenTheDirectoryIsUnusable(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	// A regular file where the report directory belongs makes every write
+	// under it fail.
+	blocked := filepath.Join(filepath.Dir(service.path), "reports")
+	require.NoError(t, os.WriteFile(blocked, []byte("in the way"), 0o600))
+
+	long := strings.Repeat("r", 5000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.Contains(t, report, long[:2000])
+	require.True(t, strings.HasSuffix(report, "…"), "the cut must survive a failed write")
+	require.NotContains(t, report, "Full report")
+}
+
+// TestWriteReportSweepsOldReports pins the age sweep: a report outlives the
+// turn that wrote it so the Lead can read it later, which leaves age as the
+// only bound on what accumulates.
+func TestWriteReportSweepsOldReports(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+
+	dir := filepath.Join(filepath.Dir(service.path), "reports")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	stale := filepath.Join(dir, "reviewer-stale.md")
+	require.NoError(t, os.WriteFile(stale, []byte("old"), 0o600))
+	expired := time.Now().Add(-reportRetention - time.Hour)
+	require.NoError(t, os.Chtimes(stale, expired, expired))
+	fresh := filepath.Join(dir, "reviewer-fresh.md")
+	require.NoError(t, os.WriteFile(fresh, []byte("new"), 0o600))
+
+	require.NotEmpty(t, service.writeReport("reviewer", strings.Repeat("x", 3000)))
+
+	_, err := os.Stat(stale)
+	require.True(t, os.IsNotExist(err), "a report past the retention window is swept")
+	_, err = os.Stat(fresh)
+	require.NoError(t, err, "a report inside the window is kept")
 }

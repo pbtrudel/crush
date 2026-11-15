@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,8 +18,6 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
-
-	"github.com/charmbracelet/crush/internal/shell"
 )
 
 // Defaults mirror the experimental DSH Agent Teams bundle.
@@ -740,20 +739,13 @@ func (s *Service) stateMemberLocked(name string) Member {
 func (s *Service) watch(name string, run Run) {
 	<-run.Done()
 
-	// Spill the full deliverable before taking the service lock: writing the
-	// file is the only slow part of settling, and every other member's tool
-	// call waits on that lock.
+	// Write the full deliverable before taking the service lock: writing
+	// the file is the only slow part of settling, and every other member's
+	// tool call waits on that lock.
 	output := run.Output()
 	fullReport := ""
 	if text := strings.TrimSpace(output); len(text) > maxReportInline {
-		path, err := shell.SpillOutput(text, filepath.Dir(s.path))
-		if err != nil {
-			// Losing the file must not lose the report: the inline text
-			// still carries the head, as it did before spilling existed.
-			slog.Warn("Could not write the full teammate report", "path", s.path, "error", err)
-		} else {
-			fullReport = path
-		}
+		fullReport = s.writeReport(name, text)
 	}
 
 	s.mu.Lock()
@@ -853,13 +845,87 @@ func (s *Service) enqueueLocked(from, to, text string) {
 // past this cap is written to a file instead of being dropped.
 const maxReportInline = 2000
 
+const (
+	// reportSubdir is where full reports are written, next to the team
+	// state so the Lead can read one with the view tool.
+	reportSubdir = "reports"
+	// reportRetention is how long a written report outlives its turn. The
+	// Lead may read a report later in the same session, so files are swept
+	// by age instead of being deleted when the turn that wrote them ends.
+	reportRetention = 7 * 24 * time.Hour
+)
+
+// writeReport writes the full report next to the team state and returns its
+// path, or "" when it could not be written. The caller then falls back to the
+// cut inline text: delivery must never depend on the file.
+func (s *Service) writeReport(name, text string) string {
+	if s.path == "" {
+		// An in-memory Team has nowhere to put a file, and the process's
+		// working directory is not ours to write to.
+		return ""
+	}
+	dir := filepath.Join(filepath.Dir(s.path), reportSubdir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Warn("Could not create the teammate report directory", "dir", dir, "error", err)
+		return ""
+	}
+	sweepReports(dir)
+
+	file, err := os.CreateTemp(dir, name+"-*.md")
+	if err != nil {
+		slog.Warn("Could not create a teammate report file", "dir", dir, "error", err)
+		return ""
+	}
+	path := file.Name()
+	if _, err := file.WriteString(text); err != nil {
+		file.Close()    //nolint:errcheck
+		os.Remove(path) //nolint:errcheck
+		slog.Warn("Could not write a teammate report file", "path", path, "error", err)
+		return ""
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path) //nolint:errcheck
+		slog.Warn("Could not close a teammate report file", "path", path, "error", err)
+		return ""
+	}
+	return path
+}
+
+// sweepReports deletes reports older than reportRetention. It is best effort:
+// a file that cannot be swept is not worth failing a report over.
+func sweepReports(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-reportRetention)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			slog.Debug("Could not delete an old teammate report", "path", path, "error", err)
+		}
+	}
+}
+
 // runReport renders the automatic progress report a settled teammate sends
 // the Lead. fullReport is the file holding the whole output when it did not
-// fit, or empty when nothing was spilled.
+// fit, or empty when nothing was written.
 //
-// It stays pure so it can be tested on its own: spilling happens in the
+// It stays pure so it can be tested on its own: the file is written by the
 // caller, which reads the output anyway.
-func runReport(name, output string, settled []string, runErr error, fullReport string) string {
+func runReport(
+	name, output string,
+	settled []string,
+	runErr error,
+	fullReport string,
+) string {
 	var sb strings.Builder
 	if runErr != nil {
 		fmt.Fprintf(&sb, "%s failed: %s.", name, runErr.Error())
