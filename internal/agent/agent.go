@@ -1355,6 +1355,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	lastRepeatSignature := ""
 	pendingRepeatReminder := ""
 	pendingTodoReminder := ""
+	var injections []stepInjection
 	todoRemindersSent := 0
 	lastTodoReminderStep := -todoReminderMinGap
 	// todoStaleItem is the item the reminders have been about, so the
@@ -1376,11 +1377,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
-			prepared.Messages = options.Messages
-			for i := range prepared.Messages {
-				prepared.Messages[i].ProviderOptions = nil
+			base := options.Messages
+			for i := range base {
+				base[i].ProviderOptions = nil
 			}
-			a.normalizePromptMessages(prepared.Messages)
+			a.normalizePromptMessages(base)
 
 			// Reuse the turn's tool list, adopting anything registered since
 			// the turn began (a lazy MCP server the model just activated, a
@@ -1407,20 +1408,25 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// RunComplete) via the recursive run path below.
 			fold, canceled := a.drainQueueForStep(call.SessionID)
 			a.settleDroppedCalls(canceled)
+			// Add the messages in the order the session log stores them,
+			// because that is the order the next turn replays: reminders
+			// were persisted when the previous step finished, queued
+			// prompts and notices are persisted here.
+			var added []fantasy.Message
+			if pendingRepeatReminder != "" {
+				added = append(added, fantasy.NewUserMessage(pendingRepeatReminder))
+				pendingRepeatReminder = ""
+			}
+			if pendingTodoReminder != "" {
+				added = append(added, fantasy.NewUserMessage(pendingTodoReminder))
+				pendingTodoReminder = ""
+			}
 			for _, queued := range fold {
 				userMessage, createErr := a.createUserMessage(callContext, queued, "")
 				if createErr != nil {
 					return callContext, prepared, createErr
 				}
-				prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
-			}
-			if pendingRepeatReminder != "" {
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingRepeatReminder))
-				pendingRepeatReminder = ""
-			}
-			if pendingTodoReminder != "" {
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingTodoReminder))
-				pendingTodoReminder = ""
+				added = append(added, userMessage.ToAIMessage()...)
 			}
 			for _, notice := range a.drainNotices(call.SessionID) {
 				if _, createErr := a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
@@ -1429,8 +1435,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}); createErr != nil {
 					slog.Warn("Failed to persist background notice", "error", createErr)
 				}
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(notice))
+				added = append(added, fantasy.NewUserMessage(notice))
 			}
+			if len(added) > 0 {
+				injections = append(injections, stepInjection{at: len(base), messages: added})
+			}
+			prepared.Messages = withInjections(base, injections)
 
 			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
