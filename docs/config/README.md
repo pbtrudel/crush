@@ -522,6 +522,12 @@ Number Keys:
   auto-compact-threshold float     fraction of the context window at which a
                                    finished turn compacts automatically;
                                    0 disables it (default 0.5)
+  auto-compact-max-tokens int      absolute context size in tokens at which
+                                   a finished turn compacts automatically,
+                                   whatever the window; a session compacts at
+                                   whichever limit comes first, this ceiling
+                                   or the threshold fraction; 0 disables the
+                                   ceiling (default 400000)
 
 List Keys:
   context-path string             append a project context path
@@ -535,6 +541,7 @@ option progress false
 option skill-path ./skills
 option attribution-trailer-style none
 option auto-compact-threshold 0.5
+option auto-compact-max-tokens 250000
 option compact-tail-tokens 16384
 ```
 

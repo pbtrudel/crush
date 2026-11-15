@@ -632,6 +632,10 @@ message.
 - Auto-compaction runs after a finished turn once the context reaches
   `option auto-compact-threshold` (default `0.5`). Set `0.85` to keep more
   verbatim history, or `0` to disable.
+- `option auto-compact-max-tokens` caps that at an absolute size (default
+  `400000`), because every request re-reads the whole context: a session
+  compacts at whichever comes first, the window fraction or this ceiling.
+  `0` disables the ceiling.
 - `option compact-tail-tokens` tunes how many tokens of recent conversation
   are kept verbatim (default `24576`; `0` keeps only the summary).
 - `option auto-summarize false` disables automatic compaction entirely;

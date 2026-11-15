@@ -481,6 +481,9 @@ type Options struct {
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
 	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`
+	// AutoCompactMaxTokens is the context size at which a finished turn
+	// triggers automatic compaction whatever the model's window.
+	AutoCompactMaxTokens *int `json:"auto_compact_max_tokens,omitempty" jsonschema:"description=Context size in tokens at which auto-compaction triggers after a finished turn\\, even when the window fraction has not been reached. Every request re-reads the whole context\\, so very large windows are compacted here. 0 disables the ceiling.,default=400000,example=250000"`
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
@@ -578,6 +581,11 @@ func (o *Options) GetRequestTimeout() time.Duration {
 // full half-window of headroom for the work that follows.
 const DefaultAutoCompactThreshold = 0.5
 
+// DefaultAutoCompactMaxTokens is the context size at which a finished turn
+// compacts when the user has not configured a ceiling. A 1M-token window
+// would otherwise run to 500k tokens, re-read on every request.
+const DefaultAutoCompactMaxTokens = 400_000
+
 // DefaultCompactTailTokens is the verbatim tail budget used when the user
 // has not configured one.
 const DefaultCompactTailTokens = 24576
@@ -617,6 +625,16 @@ func (o *Options) GetAutoCompactThreshold() float64 {
 		return 0
 	}
 	return min(threshold, 1)
+}
+
+// GetAutoCompactMaxTokens returns the auto-compaction ceiling in tokens.
+// The nil receiver and the unset field both mean
+// DefaultAutoCompactMaxTokens; 0 or a negative value disables the ceiling.
+func (o *Options) GetAutoCompactMaxTokens() int64 {
+	if o == nil || o.AutoCompactMaxTokens == nil {
+		return DefaultAutoCompactMaxTokens
+	}
+	return max(0, int64(*o.AutoCompactMaxTokens))
 }
 
 // GetCompactTailTokens returns the verbatim tail budget in tokens. The nil

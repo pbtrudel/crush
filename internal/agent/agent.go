@@ -2564,6 +2564,29 @@ func needsModelSwitchCompaction(previous, next Model, tokens int64, threshold fl
 	return float64(tokens) >= threshold*float64(nextWindow)
 }
 
+// autoCompactLimit is the context size at which a finished turn compacts:
+// the configured fraction of the window, capped by the absolute ceiling.
+func autoCompactLimit(window int64, threshold float64, ceiling int64) int64 {
+	limit := int64(threshold * float64(window))
+	if ceiling > 0 && ceiling < limit {
+		limit = ceiling
+	}
+	return limit
+}
+
+// autoCompactMaxTokens returns the absolute auto-compaction ceiling, or zero
+// when the user disabled it.
+func (a *sessionAgent) autoCompactMaxTokens() int64 {
+	if a.cfg == nil {
+		return config.DefaultAutoCompactMaxTokens
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultAutoCompactMaxTokens
+	}
+	return cfg.Options.GetAutoCompactMaxTokens()
+}
+
 // shouldAutoCompact reports whether a finished turn left the session at or
 // above the configured compaction threshold. Unlike the mid-turn guard,
 // this runs between turns, so crossing it never interrupts work in flight.
@@ -2579,7 +2602,7 @@ func (a *sessionAgent) shouldAutoCompact(model Model, sess session.Session) bool
 	if threshold <= 0 {
 		return false
 	}
-	return float64(sess.PromptTokens+sess.CompletionTokens) >= threshold*float64(cw)
+	return sess.PromptTokens+sess.CompletionTokens >= autoCompactLimit(cw, threshold, a.autoCompactMaxTokens())
 }
 
 // compactionTailBudget resolves the verbatim tail budget for a compaction:

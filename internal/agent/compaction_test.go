@@ -279,6 +279,52 @@ func TestShouldAutoCompact(t *testing.T) {
 		model := Model{CatwalkCfg: catwalk.Model{}}
 		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 1_000_000}))
 	})
+
+	t.Run("the ceiling compacts a huge window early", func(t *testing.T) {
+		agent := newCompactionAgent(env, nil, nil, false)
+		// Half of a million-token window is 500,000, but every request
+		// re-reads the whole context, so the absolute ceiling wins.
+		model := Model{CatwalkCfg: catwalk.Model{ContextWindow: 1_000_000}}
+		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 399_999}))
+		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 400_000}))
+	})
+
+	t.Run("a configured ceiling of zero is ignored", func(t *testing.T) {
+		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
+		require.NoError(t, err)
+		off := 0
+		cfg.Config().Options.AutoCompactMaxTokens = &off
+
+		agent := newCompactionAgent(env, nil, cfg, false)
+		model := Model{CatwalkCfg: catwalk.Model{ContextWindow: 1_000_000}}
+		require.False(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 450_000}))
+		require.True(t, agent.shouldAutoCompact(model, session.Session{PromptTokens: 500_000}))
+	})
+}
+
+// TestAutoCompactLimit pins where a finished turn compacts: the configured
+// fraction of the window, capped by the absolute ceiling.
+func TestAutoCompactLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		window    int64
+		threshold float64
+		ceiling   int64
+		expected  int64
+	}{
+		{name: "ceiling caps a huge window", window: 1_000_000, threshold: 0.5, ceiling: 400_000, expected: 400_000},
+		{name: "fraction below the ceiling wins", window: 200_000, threshold: 0.5, ceiling: 400_000, expected: 100_000},
+		{name: "zero ceiling leaves the fraction alone", window: 1_000_000, threshold: 0.5, ceiling: 0, expected: 500_000},
+		{name: "ceiling above the fraction is ignored", window: 1_000_000, threshold: 0.2, ceiling: 400_000, expected: 200_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.expected, autoCompactLimit(tt.window, tt.threshold, tt.ceiling))
+		})
+	}
 }
 
 // TestAutoCompact_DefaultThresholdAfterTurn is the end-to-end counterpart of

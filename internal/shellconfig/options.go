@@ -236,13 +236,14 @@ var optionSpecs = map[string]optionSpec{
 	"pinentry-cache-timeout": {jsonKey: "pinentry_cache_timeout", kind: optInt},
 
 	// Compaction tuning.
-	"auto-compact-threshold": {jsonKey: "auto_compact_threshold", kind: optFloat},
-	"compact-tail-tokens":    {jsonKey: "compact_tail_tokens", kind: optInt},
-	"compaction-prune-chars": {jsonKey: "compaction_prune_chars", kind: optInt},
-	"context-max-bytes":      {jsonKey: "context_max_bytes", kind: optInt},
-	"max-images":             {jsonKey: "max_images", kind: optInt},
-	"tool-output-max-tokens": {jsonKey: "tool_output_max_tokens", kind: optInt},
-	"max-consecutive-wakes":  {jsonKey: "max_consecutive_wakes", kind: optInt},
+	"auto-compact-threshold":  {jsonKey: "auto_compact_threshold", kind: optFloat},
+	"auto-compact-max-tokens": {jsonKey: "auto_compact_max_tokens", kind: optInt},
+	"compact-tail-tokens":     {jsonKey: "compact_tail_tokens", kind: optInt},
+	"compaction-prune-chars":  {jsonKey: "compaction_prune_chars", kind: optInt},
+	"context-max-bytes":       {jsonKey: "context_max_bytes", kind: optInt},
+	"max-images":              {jsonKey: "max_images", kind: optInt},
+	"tool-output-max-tokens":  {jsonKey: "tool_output_max_tokens", kind: optInt},
+	"max-consecutive-wakes":   {jsonKey: "max_consecutive_wakes", kind: optInt},
 
 	// List fields. Keys are singular because each call appends one value.
 	"context-path":        {jsonKey: "context_paths", kind: optList},

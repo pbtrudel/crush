@@ -623,6 +623,14 @@
             0.85
           ]
         },
+        "auto_compact_max_tokens": {
+          "type": "integer",
+          "description": "Context size in tokens at which auto-compaction triggers after a finished turn, even when the window fraction has not been reached. Every request re-reads the whole context, so very large windows are compacted here. 0 disables the ceiling.",
+          "default": 400000,
+          "examples": [
+            250000
+          ]
+        },
         "compact_tail_tokens": {
           "type": "integer",
           "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",

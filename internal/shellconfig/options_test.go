@@ -280,6 +280,7 @@ func TestOption_CompactionTuning(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "crushrc")
 	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option auto-compact-threshold 0.5
+option auto-compact-max-tokens 250000
 option compact-tail-tokens 16384`))
 	require.NoError(t, err)
 
@@ -288,6 +289,7 @@ option compact-tail-tokens 16384`))
 
 	opts := result["options"].(map[string]any)
 	require.Equal(t, float64(0.5), opts["auto_compact_threshold"])
+	require.Equal(t, float64(250000), opts["auto_compact_max_tokens"])
 	require.Equal(t, float64(16384), opts["compact_tail_tokens"])
 }
 
