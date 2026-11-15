@@ -415,6 +415,43 @@ func TestViewToolMultiFileDoesNotReadFilesItSkips(t *testing.T) {
 	require.Equal(t, paths[0], permissions.requests[0].Path)
 }
 
+// Only the first DefaultReadLimit lines come back, so a long file whose raw
+// size is large must not be skipped on that basis: the estimate is of the
+// rendered section, not of the whole file.
+func TestViewToolMultiFileReadsShortLineFileWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	outside := t.TempDir()
+	first := filepath.Join(outside, "small.txt")
+	require.NoError(t, os.WriteFile(first, []byte("small"), 0o644))
+
+	manyShortLines := filepath.Join(outside, "many.txt")
+	lines := make([]string, 4000)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	require.NoError(t, os.WriteFile(manyShortLines, []byte(strings.Join(lines, "\n")), 0o644))
+
+	permissions := &countingPermissionService{
+		mockViewPermissionService: mockViewPermissionService{
+			Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		},
+	}
+	tracker := &recordingFileTracker{}
+	tool := NewViewTool(nil, permissions, tracker, nil, workingDir)
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first, manyShortLines}})
+
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "==> "+first+" <==\n")
+	require.Contains(t, resp.Content, "==> "+manyShortLines+" <==\n")
+	require.NotContains(t, resp.Content, "Not read, output budget reached")
+	require.Equal(t, []string{first, manyShortLines}, tracker.recorded())
+	require.Len(t, permissions.requests, 2)
+}
+
 type mockViewPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
 }

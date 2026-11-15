@@ -137,7 +137,7 @@ func stubStaleReads(msgs []message.Message) {
 	for i := range msgs {
 		for j, part := range msgs[i].Parts {
 			tr, ok := part.(message.ToolResult)
-			if !ok || tr.IsError || tr.Data != "" {
+			if !ok || tr.IsError {
 				continue
 			}
 			call, ok := calls[tr.ToolCallID]
@@ -153,6 +153,11 @@ func stubStaleReads(msgs []message.Message) {
 				}
 			}
 			if len(stale) == 0 {
+				continue
+			}
+			if tr.Data != "" && len(call.paths) == 1 {
+				// A single image has no text to stub, and its payload is
+				// budgeted separately.
 				continue
 			}
 			if len(call.paths) > 1 {
@@ -190,8 +195,9 @@ func stubStaleBlocks(content string, stale map[string]bool) string {
 			end++
 		}
 		out = append(out, lines[i])
-		if stale[path] {
-			out = append(out, fmt.Sprintf(staleReadStub, path))
+		cleaned := filepath.Clean(path)
+		if stale[cleaned] {
+			out = append(out, fmt.Sprintf(staleReadStub, cleaned))
 		} else {
 			out = append(out, lines[i+1:end]...)
 		}

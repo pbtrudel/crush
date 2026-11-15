@@ -398,25 +398,25 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 		}
 
 		text := resp.Content
-		if len(resp.Data) > 0 {
-			if len(imageData) == 0 {
-				// One media payload fits in a tool result, so the first image
-				// stays attached and the header already names its file; the
-				// text only carries the caption alongside it.
-				imageData, imageType = resp.Data, resp.MediaType
-				if text == "" {
-					text = fmt.Sprintf("(image: %s)", resp.MediaType)
-				}
-			} else {
-				text = "(image: view this file on its own)"
-			}
-		}
 		block := fmt.Sprintf("==> %s <==\n%s", path, text)
 		// A file that grew between the sizing and the read can still land
 		// here; the block is what the budget is measured on, so it wins.
 		if i > 0 && output.Len()+len("\n\n")+len(block) > maxMultiViewChars {
 			notRead = params.FilePaths[i:]
 			break
+		}
+		if len(resp.Data) > 0 {
+			if len(imageData) == 0 {
+				// One media payload fits in a tool result, so the first
+				// image stays attached, and only because its block is
+				// actually included in the combined text.
+				imageData, imageType = resp.Data, resp.MediaType
+				if text == "" {
+					block = fmt.Sprintf("==> %s <==\n(image: %s)", path, resp.MediaType)
+				}
+			} else {
+				block = fmt.Sprintf("==> %s <==\n(image: view this file on its own)", path)
+			}
 		}
 		if output.Len() > 0 {
 			output.WriteString("\n\n")
@@ -438,17 +438,55 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 }
 
 // skipsForBudget reports whether reading path would push the combined text
-// past the multi-file budget. It sizes the file instead of reading it, so a
-// file that will not be shown costs nothing: no permission request, no image
-// loaded, no record that it was read. A path that cannot be sized, such as a
-// builtin skill file, is read: losing a file to a failed stat would cost more
-// than one oversized block.
+// past the multi-file budget. It estimates the rendered block (only the first
+// DefaultReadLimit lines come back, with line numbers on top), not the file's
+// raw size, so a long file that returns a small section is not skipped by
+// mistake and a short-line file is not read just to be dropped. Sizing reads
+// at most a small prefix: no permission request, no image load, no record
+// that the file was read. A path that cannot be sized, such as a builtin
+// skill file, is read: losing a file to a failed stat would cost more than
+// one oversized block.
 func (v viewReader) skipsForBudget(soFar int, path string) bool {
-	info, err := os.Stat(filepathext.SmartJoin(v.workingDir, home.Long(path)))
+	full := filepathext.SmartJoin(v.workingDir, home.Long(path))
+	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
 		return false
 	}
-	return soFar+len("\n\n")+int(info.Size()) > maxMultiViewChars
+	if isImage, _ := getImageMimeType(path); isImage {
+		// An image contributes only a caption to the text budget.
+		return false
+	}
+	estimated, ok := estimateTextBlock(full, info.Size())
+	if !ok {
+		return false
+	}
+	return soFar+len("\n\n")+estimated > maxMultiViewChars
+}
+
+// estimateTextBlock estimates how many bytes of rendered text a file will
+// contribute: the first DefaultReadLimit lines, plus the line-number gutter.
+// The average line length is measured on a small prefix, which is what the
+// returned section is read from anyway.
+func estimateTextBlock(path string, size int64) (int, bool) {
+	const prefixBytes = 8192
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer file.Close() //nolint:errcheck
+	prefix := make([]byte, min(int64(prefixBytes), size))
+	read, err := file.Read(prefix)
+	if err != nil && read == 0 {
+		return 0, false
+	}
+	prefix = prefix[:read]
+	lines := max(1, strings.Count(string(prefix), "\n"))
+	average := max(1, len(prefix)/lines)
+	linesReturned := int64(DefaultReadLimit)
+	if total := size / int64(average); total < linesReturned {
+		linesReturned = max(total, 1)
+	}
+	return int(min(int64(average+7)*linesReturned, size)), true
 }
 
 func addLineNumbers(content string, startLine int) string {

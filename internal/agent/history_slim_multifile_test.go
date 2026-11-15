@@ -64,6 +64,45 @@ func TestStubStaleReadsMultiFile(t *testing.T) {
 	require.Contains(t, got, strings.Repeat("b", 500), "the fresh file's contents must survive")
 }
 
+func TestStubStaleReadsMultiFileCleansHeaderPaths(t *testing.T) {
+	t.Parallel()
+
+	combined := "==> ./a.go <==\n" + strings.Repeat("a", 400) + "\n\n==> b.go <==\n" + strings.Repeat("b", 400)
+	msgs := []message.Message{
+		callAt(100, "read-1", "view", `{"file_paths":["./a.go","b.go"]}`),
+		resultAt(101, "read-1", "view", combined),
+		callAt(200, "edit-1", "edit", `{"file_path":"a.go","old_string":"a","new_string":"c"}`),
+		resultAt(201, "edit-1", "edit", "ok"),
+	}
+
+	stubStaleReads(msgs)
+	got := msgs[1].ToolResults()[0].Content
+	require.Contains(t, got, "[Earlier contents of a.go omitted", "a cleaned header must match the cleaned edit path")
+	require.NotContains(t, got, strings.Repeat("a", 400))
+	require.Contains(t, got, strings.Repeat("b", 400))
+}
+
+func TestStubStaleReadsMultiFileKeepsImagePayload(t *testing.T) {
+	t.Parallel()
+
+	combined := "==> a.go <==\n" + strings.Repeat("a", 400) + "\n\n==> b.png <==\n(image: image/png)"
+	msgs := []message.Message{
+		callAt(100, "read-1", "view", `{"file_paths":["a.go","b.png"]}`),
+		resultAt(101, "read-1", "view", combined),
+		callAt(200, "edit-1", "edit", `{"file_path":"a.go","old_string":"a","new_string":"c"}`),
+		resultAt(201, "edit-1", "edit", "ok"),
+	}
+	msgs[1].Parts[0] = message.ToolResult{
+		ToolCallID: "read-1", Name: "view", Content: combined, Data: "image-bytes", MIMEType: "image/png",
+	}
+
+	stubStaleReads(msgs)
+	result := msgs[1].ToolResults()[0]
+	require.NotContains(t, result.Content, strings.Repeat("a", 400), "the stale text block must be stubbed")
+	require.Contains(t, result.Content, "==> b.png <==")
+	require.Equal(t, "image-bytes", result.Data, "an attached image must survive text slimming")
+}
+
 func TestStubStaleReadsMultiFileEditOfOtherFileKeepsEverything(t *testing.T) {
 	t.Parallel()
 
