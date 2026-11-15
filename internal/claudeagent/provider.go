@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 )
@@ -50,13 +51,16 @@ type Provider struct {
 	dir        string
 	effort     string
 	connection Connection
+	// now supplies the date line of the chat system prompt. It is a field so
+	// tests can pin it.
+	now func() time.Time
 }
 
 // NewProvider creates a provider. dir is the working directory Claude runs in,
 // effort is the reasoning effort to pass to the CLI, and connection carries the
 // user's provider settings.
 func NewProvider(manager *Manager, dir, effort string, connection Connection) *Provider {
-	return &Provider{manager: manager, dir: dir, effort: effort, connection: connection}
+	return &Provider{manager: manager, dir: dir, effort: effort, connection: connection, now: time.Now}
 }
 
 // Name implements fantasy.Provider.
@@ -171,11 +175,19 @@ func (m *Model) buildRequest(call fantasy.Call) (turnRequest, error) {
 	}
 
 	req.SessionKey = call.Headers[sessionHeader]
-	// Claude Code writes its own date and environment, so Crush's would only
-	// duplicate them and, worse, change the cached prompt every day.
-	req.AppendPrompt = stripEnvironment(system)
+	req.SystemPrompt = chatSystemPrompt(system, m.provider.now())
 	req.Tools, req.ToolNames = toolDefs(tools)
 	return req, nil
+}
+
+// chatSystemPrompt builds the system prompt of a chat turn. It replaces
+// Claude Code's own prompt, so today's date has to come from here: the date
+// changes the prompt once a day, exactly as Claude Code's own prompt did. The
+// model name is deliberately absent, because the process switches models in
+// place (restartKey excludes the model) and a model name in the prompt would
+// force a restart on every switch.
+func chatSystemPrompt(system string, now time.Time) string {
+	return system + "\n\nToday's date: " + now.Format("2006-01-02")
 }
 
 // systemPrompt joins every system message in a prompt.
@@ -192,19 +204,6 @@ func systemPrompt(prompt fantasy.Prompt) string {
 		}
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-// stripEnvironment removes Crush's <env> block from a system prompt.
-func stripEnvironment(prompt string) string {
-	start := strings.Index(prompt, "<env>")
-	if start < 0 {
-		return prompt
-	}
-	end := strings.Index(prompt[start:], "</env>")
-	if end < 0 {
-		return prompt
-	}
-	return strings.TrimSpace(prompt[:start] + prompt[start+end+len("</env>"):])
 }
 
 // toolDefs converts fantasy tools into MCP tool definitions. The result is

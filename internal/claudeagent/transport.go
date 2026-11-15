@@ -80,7 +80,6 @@ type launchConfig struct {
 	Model           string
 	Effort          string
 	SystemPrompt    string
-	AppendPrompt    string
 	Tools           []toolDef
 	SessionID       string
 	Resume          string
@@ -254,9 +253,6 @@ func buildArgs(cfg launchConfig) []string {
 	if thinking != "disabled" {
 		// Crush shows reasoning, so ask for summarized thinking.
 		args = append(args, "--thinking-display", "summarized")
-	}
-	if cfg.AppendPrompt != "" {
-		args = append(args, "--append-system-prompt", cfg.AppendPrompt)
 	}
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)

@@ -238,7 +238,7 @@ func fakeToolSession(t *testing.T, logPath string) (*Manager, turnRequest, []fan
 		SessionKey:   "fake-tool-session",
 		Dir:          t.TempDir(),
 		Model:        "fake-opus",
-		AppendPrompt: "You are a test agent.",
+		SystemPrompt: "You are a test agent.",
 		Tools:        defs,
 		ToolNames:    names,
 		Prompt: fantasy.Prompt{
