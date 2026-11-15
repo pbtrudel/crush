@@ -311,7 +311,14 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errCoderAgentNotConfigured
 	}
 
-	coderPrompt, err := coderPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	// The prompt has to know the palette the coder is really given: it is what
+	// decides whether the Agent Teams policy applies, and tools can be cut
+	// with disabled_tools. effectiveToolNames is the same list buildTools
+	// filters the palette by, so the prompt and the tool block agree.
+	coderPrompt, err := coderPrompt(
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
+	)
 	if err != nil {
 		return nil, err
 	}

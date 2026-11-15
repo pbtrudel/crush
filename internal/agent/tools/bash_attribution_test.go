@@ -79,6 +79,8 @@ func TestBashDescription_AttributionLinesWhenConfigured(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			description := bashDescription(&test.attribution, nil)
 			require.Contains(t, description, "End every commit message with these lines")
+			require.Contains(t, description, "one blank line between them when more than one is listed",
+				"a literal-minded model must be told not to stack the trailers")
 			for _, want := range test.want {
 				require.Contains(t, description, want)
 			}

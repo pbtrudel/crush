@@ -45,7 +45,7 @@ Common shell builtins and core utils available on Windows.
 - Use the `gh` command for ALL GitHub tasks.
 {{- end }}
 {{- if or .Attribution.GeneratedWith (eq .Attribution.TrailerStyle "assisted-by") (eq .Attribution.TrailerStyle "co-authored-by") }}
-- End every commit message with these lines, after a blank line:
+- End every commit message with these lines, after a blank line (one blank line between them when more than one is listed):
 {{- if .Attribution.GeneratedWith }}
   💘 Generated with Crush
 {{- end }}
