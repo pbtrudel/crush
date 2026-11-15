@@ -9,6 +9,7 @@ import (
 	"charm.land/fantasy/providers/openai"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/claudeagent"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -410,6 +411,23 @@ func TestSlimHistory_ProviderGuard(t *testing.T) {
 	otherMsgs := coldHistory()
 	agent.slimHistory(other, otherMsgs, 0)
 	require.Equal(t, stubText("/w/a.go"), otherMsgs[2].Parts[0].(message.ToolResult).Content)
+}
+
+// TestHistorySlimConfig_WithoutOptions covers a config store whose Config
+// has no options block, which is how the pricing test stores are built: the
+// duration getter tolerates a nil receiver, but the reasoning field read
+// does not.
+func TestHistorySlimConfig_WithoutOptions(t *testing.T) {
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
+	agent.cfg = config.NewTestStore(&config.Config{})
+
+	idle, dropReasoning := agent.historySlimConfig()
+	require.Equal(t, time.Duration(config.DefaultHistorySlimIdleMinutes)*time.Minute, idle)
+	require.False(t, dropReasoning)
+
+	// The same store must not panic through the request path either.
+	agent.slimHistory(Model{Model: &stubProviderModel{provider: "other"}}, coldHistory(), 0)
 }
 
 // stubProviderModel is a fantasy.LanguageModel that only reports a provider
