@@ -2145,7 +2145,10 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	}
 	// The compaction request must send the bytes the turn sent, or it
 	// misses the cache it exists to preserve.
-	a.slimHistory(largeModel, msgs, 0)
+	// Slim with "now" as the trailing message's time, not zero: a preflight
+	// compaction runs before the prompt that triggered it is stored, and the
+	// request that follows measures the same trailing idle gap.
+	a.slimHistory(largeModel, msgs, a.now().Unix())
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
@@ -2194,7 +2197,19 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// Keep the history byte-identical unless the request cannot fit
 	// otherwise. A compaction forced by the window always prunes: the
 	// session's token count predates the tool results that filled it.
-	if atLimit || !compactionFits(effectiveContextWindow(largeModel), tokensBefore, compactionMaxOutputTokens(largeModel)) {
+	// Decide from the larger of the reported context and an estimate of what
+	// this request will actually carry. The reported count is exact for the
+	// request it came from but predates anything stored afterwards, such as a
+	// large tool result, and preflight compaction decided to run from the
+	// assembled prompt, not from that count. Zero reported usage still means
+	// the size is unknown, and an unknown size never fits.
+	contextTokens := tokensBefore
+	if contextTokens > 0 {
+		if estimate := a.fusionPromptEstimate(largeModel, msgs, systemPrompt, "", compactionTools, nil); estimate > contextTokens {
+			contextTokens = estimate
+		}
+	}
+	if atLimit || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
 		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
 			slog.Debug(
 				"Pruned tool results before compaction",
@@ -2250,6 +2265,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		return err
 	}
 
+	var (
+		previousMessages int
+		sharedMessages   int
+		toolsChanged     bool
+		promptMessages   int
+	)
 	instruction := buildCompactionPrompt(currentSession, len(msgs)-cutIndex, len(msgs))
 
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
@@ -2282,7 +2303,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			// The compaction prompt is what the provider cached last, so the
 			// next turn's shared-prefix count has to be measured against it,
 			// not against the turn that came before the compaction.
-			a.recordPromptFingerprint(sessionID, prepared.Messages)
+			previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
+			toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			promptMessages = len(prepared.Messages)
 			return callContext, prepared, nil
 		},
 		OnReasoningDelta: func(id string, text string) error {
@@ -2386,10 +2409,11 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		CacheReadTokens:  resp.TotalUsage.CacheReadTokens,
 		CacheWriteTokens: resp.TotalUsage.CacheCreationTokens,
 		OutputTokens:     resp.TotalUsage.OutputTokens,
-		// The system message and the instruction are messages of the
-		// request too, and a turn counts them the same way.
-		PromptMessages: len(aiMsgs) + 2,
-		Estimated:      usageIsZero(resp.TotalUsage),
+		PromptMessages:   promptMessages,
+		PreviousMessages: previousMessages,
+		SharedMessages:   sharedMessages,
+		ToolsChanged:     toolsChanged,
+		Estimated:        usageIsZero(resp.TotalUsage),
 	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {

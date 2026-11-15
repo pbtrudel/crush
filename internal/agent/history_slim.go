@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
@@ -62,14 +63,14 @@ func coldCut(msgs []message.Message, next int64, idle time.Duration) int {
 		}
 		return 0, false
 	}
-	if before, ok := previous(len(msgs)); ok && next > 0 && next-before >= gap {
+	if before, ok := previous(len(msgs)); ok && before > 0 && next > 0 && next-before >= gap {
 		return len(msgs)
 	}
 	for i := len(msgs) - 1; i > 0; i-- {
 		if msgs[i].Role != message.User || msgs[i].IsSummaryMessage {
 			continue
 		}
-		if before, ok := previous(i); ok && msgs[i].CreatedAt-before >= gap {
+		if before, ok := previous(i); ok && before > 0 && msgs[i].CreatedAt > 0 && msgs[i].CreatedAt-before >= gap {
 			return i
 		}
 	}
@@ -81,9 +82,9 @@ func coldCut(msgs []message.Message, next int64, idle time.Duration) int {
 // are stale by then, and the note tells the model to read the file again.
 func stubStaleReads(msgs []message.Message) {
 	type fileCall struct {
-		name string
-		path string
-		at   int
+		name  string
+		paths []string
+		at    int
 	}
 	calls := make(map[string]fileCall)
 	for i, msg := range msgs {
@@ -95,12 +96,26 @@ func stubStaleReads(msgs []message.Message) {
 				continue
 			}
 			var input struct {
-				FilePath string `json:"file_path"`
+				FilePath  string   `json:"file_path"`
+				FilePaths []string `json:"file_paths"`
 			}
-			if err := json.Unmarshal([]byte(tc.Input), &input); err != nil || input.FilePath == "" {
+			if err := json.Unmarshal([]byte(tc.Input), &input); err != nil {
 				continue
 			}
-			calls[tc.ID] = fileCall{name: tc.Name, path: filepath.Clean(input.FilePath), at: i}
+			paths := input.FilePaths
+			if len(paths) == 0 && input.FilePath != "" {
+				paths = []string{input.FilePath}
+			}
+			cleaned := make([]string, 0, len(paths))
+			for _, path := range paths {
+				if path != "" {
+					cleaned = append(cleaned, filepath.Clean(path))
+				}
+			}
+			if len(cleaned) == 0 {
+				continue
+			}
+			calls[tc.ID] = fileCall{name: tc.Name, paths: cleaned, at: i}
 		}
 	}
 
@@ -111,8 +126,10 @@ func stubStaleReads(msgs []message.Message) {
 			if !ok || tr.IsError || !slices.Contains(fileEditTools, call.name) {
 				continue
 			}
-			if at, seen := lastEdit[call.path]; !seen || call.at > at {
-				lastEdit[call.path] = call.at
+			for _, path := range call.paths {
+				if at, seen := lastEdit[path]; !seen || call.at > at {
+					lastEdit[path] = call.at
+				}
 			}
 		}
 	}
@@ -129,11 +146,21 @@ func stubStaleReads(msgs []message.Message) {
 			}
 			// A read and an edit issued in the same step have no known
 			// order, so only a strictly later edit makes the read stale.
-			edited, ok := lastEdit[call.path]
-			if !ok || edited <= call.at {
+			stale := make(map[string]bool)
+			for _, path := range call.paths {
+				if edited, ok := lastEdit[path]; ok && edited > call.at {
+					stale[path] = true
+				}
+			}
+			if len(stale) == 0 {
 				continue
 			}
-			stub := fmt.Sprintf(staleReadStub, call.path)
+			if len(call.paths) > 1 {
+				tr.Content = stubStaleBlocks(tr.Content, stale)
+				msgs[i].Parts[j] = tr
+				continue
+			}
+			stub := fmt.Sprintf(staleReadStub, call.paths[0])
 			if len(tr.Content) <= len(stub) {
 				continue
 			}
@@ -141,6 +168,45 @@ func stubStaleReads(msgs []message.Message) {
 			msgs[i].Parts[j] = tr
 		}
 	}
+}
+
+// stubStaleBlocks replaces only the stale files' blocks of a combined
+// multi-file read, leaving the other files' contents alone.
+func stubStaleBlocks(content string, stale map[string]bool) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		path, isHeader := multiFileHeader(lines[i])
+		if !isHeader {
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+		end := i + 1
+		for end < len(lines) {
+			if _, isHeader := multiFileHeader(lines[end]); isHeader {
+				break
+			}
+			end++
+		}
+		out = append(out, lines[i])
+		if stale[path] {
+			out = append(out, fmt.Sprintf(staleReadStub, path))
+		} else {
+			out = append(out, lines[i+1:end]...)
+		}
+		i = end
+	}
+	return strings.Join(out, "\n")
+}
+
+// multiFileHeader parses the "==> path <==" line the view tool writes ahead
+// of each file in a multi-file read.
+func multiFileHeader(line string) (string, bool) {
+	if !strings.HasPrefix(line, "==> ") || !strings.HasSuffix(line, " <==") {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(line, "==> "), " <=="), true
 }
 
 // dropPlainReasoning removes reasoning text the provider does not need
