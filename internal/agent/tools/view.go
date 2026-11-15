@@ -515,7 +515,9 @@ func estimateTextBlock(path string, size int64) (int, bool) {
 	}
 	prefix = prefix[:read]
 	lines := max(1, strings.Count(string(prefix), "\n"))
-	average := max(1, len(prefix)/lines)
+	// Very short lines make the line-number gutter a much larger fraction
+	// of the rendered block, so never estimate below eight bytes per line.
+	average := max(8, len(prefix)/lines)
 	linesReturned := int64(DefaultReadLimit)
 	if total := size / int64(average); total < linesReturned {
 		linesReturned = max(total, 1)
