@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const (
@@ -317,23 +318,39 @@ func originalToolName(mcpName string, names []string) (string, bool) {
 	return "", false
 }
 
-// truncateDescription cuts a description where Claude Code would. A subagent
-// tool's description ends with its agent list, so that list is moved to the
-// front to survive the cut.
-func truncateDescription(name, description string) string {
+// truncateDescription cuts a description where Claude Code would, and reports
+// the text that did not fit so the caller can deliver it another way. A
+// subagent tool's description ends with its agent list, so that list is moved
+// to the front to survive the cut.
+func truncateDescription(name, description string) (string, string) {
 	if len(description) <= mcpDescriptionLimit {
-		return description
+		return description, ""
 	}
 	if name == "agent" || name == "task" {
 		if at := strings.Index(description, "Available subagents:"); at >= 0 {
-			rotated := description[at:] + "\n\n" + description[:at]
-			if len(rotated) > mcpDescriptionLimit {
-				return rotated[:mcpDescriptionLimit]
+			description = description[at:] + "\n\n" + description[:at]
+			if len(description) <= mcpDescriptionLimit {
+				return description, ""
 			}
-			return rotated
 		}
 	}
-	return description[:mcpDescriptionLimit]
+	cut := descriptionCut(description)
+	return description[:cut], description[cut:]
+}
+
+// descriptionCut returns how much of a long description fits. The cut moves
+// back to the last line break when one sits in the second half of the allowed
+// text, so it lands between rules instead of inside one; otherwise it stops at
+// the limit without splitting a UTF-8 character.
+func descriptionCut(description string) int {
+	if at := strings.LastIndexByte(description[:mcpDescriptionLimit], '\n'); at >= mcpDescriptionLimit/2 {
+		return at + 1
+	}
+	cut := mcpDescriptionLimit
+	for cut > 0 && !utf8.RuneStart(description[cut]) {
+		cut--
+	}
+	return cut
 }
 
 // mcpContent converts a Crush tool response into MCP content blocks. data is

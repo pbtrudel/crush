@@ -189,9 +189,18 @@ option reset <list-key>    # clear a list option back to empty
 - **String keys**: `data-directory`, `initialize-as`, `notifications`.
 - **Compaction tuning**: `auto-compact-threshold FLOAT` (fraction of the
   context window at which a finished turn compacts automatically; `0`
-  disables; default `0.5`) and `compact-tail-tokens INT` (tokens of recent
-  conversation kept verbatim next to the summary; `0` keeps only the summary;
-  default `24576`).
+  disables; default `0.5`), `auto-compact-max-tokens INT` (absolute context
+  size at which a finished turn compacts whatever the window, since every
+  request re-reads the whole context; the session compacts at whichever
+  limit comes first; `0` disables the ceiling; default `400000`),
+  `history-slim-idle-minutes INT` (minutes a session must sit idle before
+  the history ahead of the next prompt is slimmed: file reads a later edit
+  made stale become a short note, the session log is never changed; `0`
+  disables; default `60`), the boolean `history-slim-reasoning` (also drop
+  plain reasoning text from that older history; signed or encrypted
+  reasoning is always kept; default off) and `compact-tail-tokens INT`
+  (tokens of recent conversation kept verbatim next to the summary; `0`
+  keeps only the summary; default `24576`).
 - **Attribution keys**: `attribution-trailer-style` (`none`, `co-authored-by`,
   `assisted-by`) and `attribution-generated-with` (boolean).
 - **UI settings**: `option ui compact BOOL`, `option ui diff unified|split`,

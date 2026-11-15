@@ -9,6 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -45,6 +48,21 @@ Keep the shared task board current at every step, because the user watches it. C
 Report progress to the Lead as you work. Send a one-line message when you start a task, when you finish it, and when you are blocked; never end a turn silently. A settled turn also sends the Lead an automatic report, and wait_agent returns the current roster and live task board, so the Lead always knows where things stand. Finish your tasks before ending a turn: the service completes the tasks you leave in progress when your turn succeeds, and releases them when it fails.
 
 Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change; it also returns the current roster and live task board, so re-list only when you need the full task details. The Lead must wait for required teammates before giving the final answer.`
+
+// ToolNames are the tool names that make the Policy apply. A prompt package
+// cannot import the agent package that declares them, so they are repeated
+// here for the prompt builder to check a palette against.
+var ToolNames = []string{
+	"spawn_teammate",
+	"send_message",
+	"list_agents",
+	"wait_agent",
+	"interrupt_agent",
+	"team_task_create",
+	"team_task_list",
+	"team_task_get",
+	"team_task_update",
+}
 
 // Role is a Team member role.
 type Role string
@@ -735,6 +753,16 @@ func (s *Service) stateMemberLocked(name string) Member {
 // watch settles one run and resumes the member when messages are queued.
 func (s *Service) watch(name string, run Run) {
 	<-run.Done()
+
+	// Write the full deliverable before taking the service lock: writing
+	// the file is the only slow part of settling, and every other member's
+	// tool call waits on that lock.
+	output := run.Output()
+	fullReport := ""
+	if text := strings.TrimSpace(output); len(text) > maxReportInline {
+		fullReport = s.writeReport(name, text)
+	}
+
 	s.mu.Lock()
 	if s.runs[name] == run {
 		delete(s.runs, name)
@@ -757,7 +785,7 @@ func (s *Service) watch(name string, run Run) {
 	}
 	member := s.stateMemberLocked(name)
 	settled, completed := s.settleTasksLocked(member.ID, runErr)
-	s.enqueueLocked(name, leadName, runReport(name, run.Output(), settled, runErr))
+	s.enqueueLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 	s.saveLocked()
 	s.notifyLocked()
 	pending := s.drainLocked(name)
@@ -827,9 +855,94 @@ func (s *Service) enqueueLocked(from, to, text string) {
 	})
 }
 
+// maxReportInline is how much of a teammate's final message the automatic
+// report carries. A teammate's final message is its deliverable, so anything
+// past this cap is written to a file instead of being dropped.
+const maxReportInline = 2000
+
+const (
+	// reportSubdir is where full reports are written, next to the team
+	// state so the Lead can read one with the view tool.
+	reportSubdir = "reports"
+	// reportRetention is how long a written report outlives its turn. The
+	// Lead may read a report later in the same session, so files are swept
+	// by age instead of being deleted when the turn that wrote them ends.
+	reportRetention = 7 * 24 * time.Hour
+)
+
+// writeReport writes the full report next to the team state and returns its
+// path, or "" when it could not be written. The caller then falls back to the
+// cut inline text: delivery must never depend on the file.
+func (s *Service) writeReport(name, text string) string {
+	if s.path == "" {
+		// An in-memory Team has nowhere to put a file, and the process's
+		// working directory is not ours to write to.
+		return ""
+	}
+	dir := filepath.Join(filepath.Dir(s.path), reportSubdir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Warn("Could not create the teammate report directory", "dir", dir, "error", err)
+		return ""
+	}
+	sweepReports(dir, s.now())
+
+	file, err := os.CreateTemp(dir, name+"-*.md")
+	if err != nil {
+		slog.Warn("Could not create a teammate report file", "dir", dir, "error", err)
+		return ""
+	}
+	path := file.Name()
+	if _, err := file.WriteString(text); err != nil {
+		file.Close()    //nolint:errcheck
+		os.Remove(path) //nolint:errcheck
+		slog.Warn("Could not write a teammate report file", "path", path, "error", err)
+		return ""
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path) //nolint:errcheck
+		slog.Warn("Could not close a teammate report file", "path", path, "error", err)
+		return ""
+	}
+	return path
+}
+
+// sweepReports deletes reports older than reportRetention. It is best effort:
+// a file that cannot be swept is not worth failing a report over.
+func sweepReports(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := now.Add(-reportRetention)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			// Only files this package writes are swept; anything else in the
+			// directory is not ours to delete.
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			slog.Debug("Could not delete an old teammate report", "path", path, "error", err)
+		}
+	}
+}
+
 // runReport renders the automatic progress report a settled teammate sends
-// the Lead.
-func runReport(name, output string, settled []string, runErr error) string {
+// the Lead. fullReport is the file holding the whole output when it did not
+// fit, or empty when nothing was written.
+//
+// It stays pure so it can be tested on its own: the file is written by the
+// caller, which reads the output anyway.
+func runReport(
+	name, output string,
+	settled []string,
+	runErr error,
+	fullReport string,
+) string {
 	var sb strings.Builder
 	if runErr != nil {
 		fmt.Fprintf(&sb, "%s failed: %s.", name, runErr.Error())
@@ -840,9 +953,18 @@ func runReport(name, output string, settled []string, runErr error) string {
 		fmt.Fprintf(&sb, " Tasks: %s.", strings.Join(settled, ", "))
 	}
 	if text := strings.TrimSpace(output); text != "" {
-		const maxReport = 2000
-		if len(text) > maxReport {
-			text = truncateText(text, maxReport) + "…"
+		if len(text) > maxReportInline {
+			head := truncateText(text, maxReportInline)
+			note := ""
+			if fullReport != "" {
+				// The head is measured, not assumed: a cut that lands
+				// mid-rune keeps fewer bytes than the cap.
+				note = fmt.Sprintf(
+					"\n\n[Report cut: %d of %d bytes shown. Full report: %s]",
+					len(head), len(text), fullReport,
+				)
+			}
+			text = head + "…" + note
 		}
 		sb.WriteString("\n\n")
 		sb.WriteString(text)

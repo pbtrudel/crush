@@ -106,7 +106,7 @@ func NewMultiEditTool(
 
 			// Wait for LSP diagnostics and add them to the response
 			text := fmt.Sprintf("<result>\n%s\n</result>\n", response.Content)
-			text += getDiagnostics(params.FilePath, lspManager)
+			text += getActionableDiagnostics(params.FilePath, lspManager)
 			response.Content = text
 			return response, nil
 		},

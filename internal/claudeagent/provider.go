@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 )
@@ -50,13 +51,16 @@ type Provider struct {
 	dir        string
 	effort     string
 	connection Connection
+	// now supplies the date line of the chat system prompt. It is a field so
+	// tests can pin it.
+	now func() time.Time
 }
 
 // NewProvider creates a provider. dir is the working directory Claude runs in,
 // effort is the reasoning effort to pass to the CLI, and connection carries the
 // user's provider settings.
 func NewProvider(manager *Manager, dir, effort string, connection Connection) *Provider {
-	return &Provider{manager: manager, dir: dir, effort: effort, connection: connection}
+	return &Provider{manager: manager, dir: dir, effort: effort, connection: connection, now: time.Now}
 }
 
 // Name implements fantasy.Provider.
@@ -171,11 +175,46 @@ func (m *Model) buildRequest(call fantasy.Call) (turnRequest, error) {
 	}
 
 	req.SessionKey = call.Headers[sessionHeader]
-	// Claude Code writes its own date and environment, so Crush's would only
-	// duplicate them and, worse, change the cached prompt every day.
-	req.AppendPrompt = stripEnvironment(system)
-	req.Tools, req.ToolNames = toolDefs(tools)
+	defs, names, notes := toolDefs(tools)
+	req.Tools, req.ToolNames = defs, names
+	req.SystemPrompt = chatSystemPrompt(system, notes, m.provider.now())
 	return req, nil
+}
+
+// chatSystemPrompt builds the system prompt of a chat turn. It replaces
+// Claude Code's own prompt, so today's date has to come from here: the date
+// changes the prompt once a day, exactly as Claude Code's own prompt did. The
+// layout must match the one in the session environment snapshot, because a
+// session carries both dates in the same context. The model name is
+// deliberately absent, because the process switches models in place
+// (restartKey excludes the model); a model name in the prompt would force a
+// restart on every switch.
+func chatSystemPrompt(system string, notes []toolNote, now time.Time) string {
+	parts := []string{system}
+	if block := toolNotesBlock(notes); block != "" {
+		parts = append(parts, block)
+	}
+	parts = append(parts, "Today's date: "+now.Format("1/2/2006"))
+	return strings.Join(parts, "\n\n")
+}
+
+// toolNotesBlock renders the tool guidance the tool list had to cut. The list
+// cuts every description at 2,048 bytes, which used to lose the tail of the
+// long ones, so the tail travels in the system prompt instead. Trailing line
+// breaks are trimmed only here, so the block does not end with a blank line;
+// the stored remainder still reassembles the description with the part that
+// fits.
+func toolNotesBlock(notes []toolNote) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	text.WriteString("<tool_notes>\nThe descriptions of these tools continue here because the tool list cuts them short.\n")
+	for _, note := range notes {
+		text.WriteString("\n## " + note.Name + "\n" + strings.TrimRight(note.Text, "\n") + "\n")
+	}
+	text.WriteString("</tool_notes>")
+	return text.String()
 }
 
 // systemPrompt joins every system message in a prompt.
@@ -194,38 +233,40 @@ func systemPrompt(prompt fantasy.Prompt) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// stripEnvironment removes Crush's <env> block from a system prompt.
-func stripEnvironment(prompt string) string {
-	start := strings.Index(prompt, "<env>")
-	if start < 0 {
-		return prompt
-	}
-	end := strings.Index(prompt[start:], "</env>")
-	if end < 0 {
-		return prompt
-	}
-	return strings.TrimSpace(prompt[:start] + prompt[start+end+len("</env>"):])
+// toolNote is the part of a tool description the tool list could not carry,
+// under the name the model sees for that tool.
+type toolNote struct {
+	Name string
+	Text string
 }
 
 // toolDefs converts fantasy tools into MCP tool definitions. The result is
 // sorted by name so the tool list is byte-identical between runs, which is what
-// keeps Claude's prompt cache warm.
-func toolDefs(tools []fantasy.Tool) ([]toolDef, []string) {
+// keeps Claude's prompt cache warm. Cut tool guidance comes back as notes, also
+// sorted, for the caller to deliver in the system prompt.
+func toolDefs(tools []fantasy.Tool) ([]toolDef, []string, []toolNote) {
 	defs := make([]toolDef, 0, len(tools))
 	names := make([]string, 0, len(tools))
+	notes := make([]toolNote, 0, len(tools))
 	for _, tool := range tools {
 		function, ok := tool.(fantasy.FunctionTool)
 		if !ok {
 			continue
 		}
+		short := shortToolName(function.Name)
+		description, rest := truncateDescription(function.Name, function.Description)
 		names = append(names, function.Name)
 		defs = append(defs, toolDef{
-			Name:        shortToolName(function.Name),
-			Description: truncateDescription(function.Name, function.Description),
+			Name:        short,
+			Description: description,
 			InputSchema: function.InputSchema,
 		})
+		if rest != "" {
+			notes = append(notes, toolNote{Name: mcpToolPrefix + short, Text: rest})
+		}
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(names)
-	return defs, names
+	sort.Slice(notes, func(i, j int) bool { return notes[i].Name < notes[j].Name })
+	return defs, names, notes
 }

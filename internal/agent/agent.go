@@ -42,6 +42,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/hooks"
@@ -1168,6 +1169,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
+	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
 
 	a.applyToolCacheBreakpoint(agentTools)
@@ -1257,7 +1259,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false); err != nil {
+		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -1305,7 +1307,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// Add the user message to the session. The context sent ahead of the
 	// prompt is stored with it so later requests replay the same text.
 	modelContext := hostContextPrompt(call.HostContext) + notesPrompt(pendingNotes)
-	_, err = a.createUserMessage(ctx, call, modelContext)
+	userMsg, err := a.createUserMessage(ctx, call, modelContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1317,6 +1319,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// mutex above for both the accepted and in-process paths.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 
+	// The prompt just stored is what marks the end of any idle gap: a
+	// session picked up after a long pause has no warm cache to lose.
+	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	startTime := time.Now()
@@ -1324,6 +1329,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
 
 	var stepMessages []fantasy.Message
+	// What the request being sent carried, and how much of it the session
+	// had already sent. Recorded with the step's usage, see OnStepFinish.
+	var (
+		promptMessages   int
+		previousMessages int
+		sharedMessages   int
+		toolsChanged     bool
+	)
 	var shouldSummarize bool
 	// Written from OnToolCall and read from OnToolResult, which fantasy
 	// invokes concurrently for parallel tool calls.
@@ -1355,6 +1368,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	lastRepeatSignature := ""
 	pendingRepeatReminder := ""
 	pendingTodoReminder := ""
+	var injections []stepInjection
 	todoRemindersSent := 0
 	lastTodoReminderStep := -todoReminderMinGap
 	// todoStaleItem is the item the reminders have been about, so the
@@ -1376,11 +1390,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
-			prepared.Messages = options.Messages
-			for i := range prepared.Messages {
-				prepared.Messages[i].ProviderOptions = nil
+			base := options.Messages
+			for i := range base {
+				base[i].ProviderOptions = nil
 			}
-			a.normalizePromptMessages(prepared.Messages)
+			a.normalizePromptMessages(base)
 
 			// Reuse the turn's tool list, adopting anything registered since
 			// the turn began (a lazy MCP server the model just activated, a
@@ -1392,7 +1406,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
-			a.recordToolsFingerprint(call.SessionID, stepTools)
+			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1407,20 +1421,25 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// RunComplete) via the recursive run path below.
 			fold, canceled := a.drainQueueForStep(call.SessionID)
 			a.settleDroppedCalls(canceled)
+			// Add the messages in the order the session log stores them,
+			// because that is the order the next turn replays: reminders
+			// were persisted when the previous step finished, queued
+			// prompts and notices are persisted here.
+			var added []fantasy.Message
+			if pendingRepeatReminder != "" {
+				added = append(added, fantasy.NewUserMessage(pendingRepeatReminder))
+				pendingRepeatReminder = ""
+			}
+			if pendingTodoReminder != "" {
+				added = append(added, fantasy.NewUserMessage(pendingTodoReminder))
+				pendingTodoReminder = ""
+			}
 			for _, queued := range fold {
 				userMessage, createErr := a.createUserMessage(callContext, queued, "")
 				if createErr != nil {
 					return callContext, prepared, createErr
 				}
-				prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
-			}
-			if pendingRepeatReminder != "" {
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingRepeatReminder))
-				pendingRepeatReminder = ""
-			}
-			if pendingTodoReminder != "" {
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(pendingTodoReminder))
-				pendingTodoReminder = ""
+				added = append(added, userMessage.ToAIMessage()...)
 			}
 			for _, notice := range a.drainNotices(call.SessionID) {
 				if _, createErr := a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
@@ -1429,8 +1448,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}); createErr != nil {
 					slog.Warn("Failed to persist background notice", "error", createErr)
 				}
-				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(notice))
+				added = append(added, fantasy.NewUserMessage(notice))
 			}
+			if len(added) > 0 {
+				injections = append(injections, stepInjection{at: len(base), messages: added})
+			}
+			prepared.Messages = withInjections(base, injections)
 
 			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
@@ -1442,7 +1465,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
 
-			a.recordPromptFingerprint(call.SessionID, prepared.Messages)
+			previousMessages, sharedMessages = a.recordPromptFingerprint(call.SessionID, prepared.Messages)
+			promptMessages = len(prepared.Messages)
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
@@ -1641,6 +1665,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// todo, title, or sub-agent rollup written between the read and
 			// the write.
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
+			currentAssistant.SetRequestUsage(message.RequestUsage{
+				InputTokens:      usage.InputTokens,
+				CacheReadTokens:  usage.CacheReadTokens,
+				CacheWriteTokens: usage.CacheCreationTokens,
+				OutputTokens:     usage.OutputTokens,
+				PromptMessages:   promptMessages,
+				PreviousMessages: previousMessages,
+				SharedMessages:   sharedMessages,
+				ToolsChanged:     toolsChanged,
+				Estimated:        estimated,
+			})
 			pricingModel := a.modelForStepCost(largeModel, stepResult.ProviderMetadata)
 			updatedSession, sessionErr := a.sessions.AddStepUsage(
 				ctx,
@@ -1903,7 +1938,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false)
+		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, shouldSummarize)
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
@@ -2082,13 +2117,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false)
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false, false)
 }
 
 // summarize runs one compaction request. active reports that the caller
 // already owns the session's active-run registration (the model-switch path
-// runs inside Run), so this call must not replace or clear it.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned bool) error {
+// runs inside Run), so this call must not replace or clear it. atLimit
+// reports that the window, not the threshold, forced this compaction, which
+// is the only case that has to rewrite history the provider already cached.
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned, atLimit bool) error {
 	if !active && a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -2106,6 +2143,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		// Nothing to summarize.
 		return nil
 	}
+	// The compaction request must send the bytes the turn sent, or it
+	// misses the cache it exists to preserve.
+	// Slim with "now" as the trailing message's time, not zero: a preflight
+	// compaction runs before the prompt that triggered it is stored, and the
+	// request that follows measures the same trailing idle gap.
+	a.slimHistory(largeModel, msgs, a.now().Unix())
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
@@ -2117,8 +2160,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	systemPrompt := a.systemPromptForSession(sessionID)
 	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
 	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	// Both wrappers apply: the guard refuses to execute, and the bound
+	// keeps any text a tool did produce within the same budget the session
+	// log uses. Composing them means neither layer can be lost by editing
+	// the other, and both delegate Info and the provider options, so the
+	// tool block still serializes exactly as the live turn's did.
 	for i, tool := range compactionTools {
-		compactionTools[i] = compactionGuardTool{inner: tool}
+		compactionTools[i] = boundedOutputTool{
+			inner: compactionGuardTool{inner: tool},
+			bound: a.truncateToolOutput,
+		}
 	}
 	a.applyToolCacheBreakpoint(compactionTools)
 
@@ -2140,17 +2191,33 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		tailTokens += messageTokens(msg)
 	}
 
-	// The summarizer sees the head that is about to be replaced, so
-	// oversized tool results can be trimmed in memory without touching
-	// the durable log. This keeps a single huge command output from
-	// overflowing the summary request itself.
-	if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
-		slog.Debug(
-			"Pruned tool results before compaction",
-			"session_id", sessionID,
-			"results", pruned,
-			"saved_chars", saved,
-		)
+	// Pruning rewrites tool results the provider has already cached, so the
+	// compaction request stops matching the conversation from the first
+	// pruned result on and is billed in full, and the summarizer sees less.
+	// Keep the history byte-identical unless the request cannot fit
+	// otherwise. A compaction forced by the window always prunes: the
+	// session's token count predates the tool results that filled it.
+	// Decide from the larger of the reported context and an estimate of what
+	// this request will actually carry. The reported count is exact for the
+	// request it came from but predates anything stored afterwards, such as a
+	// large tool result, and preflight compaction decided to run from the
+	// assembled prompt, not from that count. Zero reported usage still means
+	// the size is unknown, and an unknown size never fits.
+	contextTokens := tokensBefore
+	if contextTokens > 0 {
+		if estimate := a.fusionPromptEstimate(largeModel, msgs, systemPrompt, "", compactionTools, nil); estimate > contextTokens {
+			contextTokens = estimate
+		}
+	}
+	if atLimit || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
+		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
+			slog.Debug(
+				"Pruned tool results before compaction",
+				"session_id", sessionID,
+				"results", pruned,
+				"saved_chars", saved,
+			)
+		}
 	}
 
 	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger}); pre.Blocked() {
@@ -2198,6 +2265,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		return err
 	}
 
+	var (
+		previousMessages int
+		sharedMessages   int
+		toolsChanged     bool
+		promptMessages   int
+	)
 	instruction := buildCompactionPrompt(currentSession, len(msgs)-cutIndex, len(msgs))
 
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
@@ -2227,6 +2300,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
+			// The compaction prompt is what the provider cached last, so the
+			// next turn's shared-prefix count has to be measured against it,
+			// not against the turn that came before the compaction.
+			previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
+			toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			promptMessages = len(prepared.Messages)
 			return callContext, prepared, nil
 		},
 		OnReasoningDelta: func(id string, text string) error {
@@ -2323,6 +2402,19 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		finishReason = message.FinishReasonEndTurn
 	}
 	summaryMessage.AddFinish(finishReason, finishMessage, finishDetails)
+	// A compaction is a model request like any other, and the most
+	// expensive one of a session: record what it consumed with it.
+	summaryMessage.SetRequestUsage(message.RequestUsage{
+		InputTokens:      resp.TotalUsage.InputTokens,
+		CacheReadTokens:  resp.TotalUsage.CacheReadTokens,
+		CacheWriteTokens: resp.TotalUsage.CacheCreationTokens,
+		OutputTokens:     resp.TotalUsage.OutputTokens,
+		PromptMessages:   promptMessages,
+		PreviousMessages: previousMessages,
+		SharedMessages:   sharedMessages,
+		ToolsChanged:     toolsChanged,
+		Estimated:        usageIsZero(resp.TotalUsage),
+	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
 		return err
@@ -2334,7 +2426,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	currentSession.SummaryCutMessageID = cutID
 	currentSession.CompletionTokens = summaryTokens
 	currentSession.PromptTokens = 0
-	currentSession.EstimatedUsage = usageIsZero(usage)
+	currentSession.EstimatedUsage = usageIsZero(resp.TotalUsage)
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
 		return err
@@ -2431,7 +2523,7 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true); err != nil {
+	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true, false); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2454,6 +2546,49 @@ func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message,
 		}
 	}
 	return max(estimate, assembled)
+}
+
+// compactionRequestReserve covers the compaction instruction and the error
+// of counting tokens, on top of the summary's own output budget.
+const compactionRequestReserve = 8_192
+
+// compactionFits reports whether a compaction request can carry the whole
+// history unpruned: the context the last request reported, the summary the
+// model may write, and the instruction. Unknown sizes do not fit.
+func compactionFits(window, contextTokens, maxOutputTokens int64) bool {
+	if window <= 0 || contextTokens <= 0 {
+		return false
+	}
+	return contextTokens+maxOutputTokens+compactionRequestReserve <= window
+}
+
+// slimHistory applies slimColdHistory when the option is on. The Claude
+// Agent provider keeps the conversation in its own session and treats a
+// changed history as a rewrite, replaying all of it as text, so its
+// history is left alone.
+func (a *sessionAgent) slimHistory(model Model, msgs []message.Message, next int64) {
+	idle, dropReasoning := a.historySlimConfig()
+	if idle <= 0 || (model.Model != nil && model.Model.Provider() == claudeagent.Name) {
+		return
+	}
+	if cut := slimColdHistory(msgs, next, idle, dropReasoning); cut > 0 {
+		slog.Debug("Slimmed history before the last idle gap", "messages", cut)
+	}
+}
+
+// historySlimConfig returns the idle duration and the reasoning switch, with
+// the defaults when there is no config store (tests, sub-agents). A config
+// without options is possible (see config.NewTestStore), and only the
+// duration getter tolerates a nil receiver, so both are guarded here.
+func (a *sessionAgent) historySlimConfig() (time.Duration, bool) {
+	if a.cfg == nil {
+		return config.DefaultHistorySlimIdleMinutes * time.Minute, false
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil || cfg.Options == nil {
+		return config.DefaultHistorySlimIdleMinutes * time.Minute, false
+	}
+	return cfg.Options.GetHistorySlimIdle(), cfg.Options.HistorySlimReasoning
 }
 
 // compactionPruneChars returns the per-tool-result character budget applied
@@ -2511,7 +2646,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
@@ -2533,6 +2668,29 @@ func needsModelSwitchCompaction(previous, next Model, tokens int64, threshold fl
 	return float64(tokens) >= threshold*float64(nextWindow)
 }
 
+// autoCompactLimit is the context size at which a finished turn compacts:
+// the configured fraction of the window, capped by the absolute ceiling.
+func autoCompactLimit(window int64, threshold float64, ceiling int64) int64 {
+	limit := int64(threshold * float64(window))
+	if ceiling > 0 && ceiling < limit {
+		limit = ceiling
+	}
+	return limit
+}
+
+// autoCompactMaxTokens returns the absolute auto-compaction ceiling, or zero
+// when the user disabled it.
+func (a *sessionAgent) autoCompactMaxTokens() int64 {
+	if a.cfg == nil {
+		return config.DefaultAutoCompactMaxTokens
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultAutoCompactMaxTokens
+	}
+	return cfg.Options.GetAutoCompactMaxTokens()
+}
+
 // shouldAutoCompact reports whether a finished turn left the session at or
 // above the configured compaction threshold. Unlike the mid-turn guard,
 // this runs between turns, so crossing it never interrupts work in flight.
@@ -2548,7 +2706,7 @@ func (a *sessionAgent) shouldAutoCompact(model Model, sess session.Session) bool
 	if threshold <= 0 {
 		return false
 	}
-	return float64(sess.PromptTokens+sess.CompletionTokens) >= threshold*float64(cw)
+	return sess.PromptTokens+sess.CompletionTokens >= autoCompactLimit(cw, threshold, a.autoCompactMaxTokens())
 }
 
 // compactionTailBudget resolves the verbatim tail budget for a compaction:
@@ -2746,22 +2904,29 @@ func buildMCPInstructions(pairs []namedInstruction) string {
 	return "\n\n<mcp-instructions>\n" + instructions.String() + "\n</mcp-instructions>"
 }
 
-// recordPromptFingerprint hashes the prompt about to be sent and compares it
-// with the previous request of the same session, logging the first message
-// that changed.
+// recordPromptFingerprint hashes the prompt about to be sent, compares it
+// with the previous request of the same session, and reports how many
+// messages that request carried and how many leading ones this request
+// shares with it. The first message that changed is logged.
 //
 // Providers cache a request prefix only while it stays byte-identical between
 // turns, so a cache that stops paying off always means "some message changed".
-// This points at that message directly, which is otherwise hard to see: the
-// provider reports a low cache-read count, but not what caused it. The cost is
-// one hash per message and only while debug logging is on.
-func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fantasy.Message) {
-	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return
-	}
+// Reporting the shared count next to the usage stored on the message is what
+// makes a miss attributable after the fact: the provider reports a low
+// cache-read count, not what caused it. The cost is one hash per message on
+// every request, which is a few milliseconds of JSON on a large prompt and is
+// paid to answer the only question a cache miss raises.
+//
+// Cache breakpoints are excluded: applyCacheBreakpoints moves them to the
+// last two messages of every request by design, so hashing them would report
+// a divergence on every request. The parts' own provider options stay, since
+// signed reasoning is content the provider matches on.
+func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fantasy.Message) (previousCount, shared int) {
 	hashes := make([]string, len(messages))
 	for i := range messages {
-		data, err := json.Marshal(messages[i])
+		hashed := messages[i]
+		hashed.ProviderOptions = nil
+		data, err := json.Marshal(hashed)
 		if err != nil {
 			continue
 		}
@@ -2771,12 +2936,10 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 	previous, hadPrevious := a.promptHashes.Get(sessionID)
 	a.promptHashes.Set(sessionID, hashes)
 	if !hadPrevious {
-		return
+		return 0, 0
 	}
-	for i := range hashes {
-		if i >= len(previous) {
-			break
-		}
+	common := min(len(hashes), len(previous))
+	for i := range common {
 		if hashes[i] != previous[i] {
 			slog.Debug(
 				"Prompt prefix diverged from the previous request",
@@ -2786,9 +2949,10 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 				"previous_messages", len(previous),
 				"current_messages", len(hashes),
 			)
-			return
+			return len(previous), i
 		}
 	}
+	return len(previous), common
 }
 
 // recordToolsFingerprint hashes the tools about to be sent and compares them
@@ -2800,12 +2964,13 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 // between requests (a dynamic description, an unsorted insertion, an MCP
 // server re-listing with different schema bytes) rewrites the tools prefix
 // and invalidates the cache for everything after it. The provider reports
-// that only as a low cache-read count; this names the tool. The cost is one
-// hash per tool and only while debug logging is on.
-func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) {
-	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return
-	}
+// that only as a low cache-read count; this names the tool, and its result is
+// stored with the request's usage so the miss can be explained later. The
+// cost is one hash per tool on every request.
+//
+// It reports whether the block changed, which also covers a request that adds
+// or drops a tool.
+func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) (changed bool) {
 	hashes := make([]string, len(tools))
 	for i, tool := range tools {
 		data, err := json.Marshal(tool.Info())
@@ -2818,7 +2983,7 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 	previous, hadPrevious := a.toolsHashes.Get(sessionID)
 	a.toolsHashes.Set(sessionID, hashes)
 	if !hadPrevious {
-		return
+		return false
 	}
 	common := min(len(hashes), len(previous))
 	for i := range common {
@@ -2831,7 +2996,7 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 				"previous_tools", len(previous),
 				"current_tools", len(hashes),
 			)
-			return
+			return true
 		}
 	}
 	if len(hashes) != len(previous) {
@@ -2841,7 +3006,9 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 			"previous_tools", len(previous),
 			"current_tools", len(hashes),
 		)
+		return true
 	}
+	return false
 }
 
 // applyToolCacheBreakpoint puts the cache breakpoint on the last tool
@@ -2884,7 +3051,7 @@ func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel stri
 	var added []fantasy.AgentTool
 	for _, tool := range current {
 		if _, ok := known[tool.Info().Name]; !ok {
-			added = append(added, tool)
+			added = append(added, boundedOutputTool{inner: tool, bound: a.truncateToolOutput})
 		}
 	}
 	if len(added) == 0 {
@@ -3070,7 +3237,10 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 			Parts: []message.ContentPart{*call.Report},
 		})
 	}
-	parts := []message.ContentPart{message.TextContent{Text: call.Prompt, Hidden: call.HiddenUserMessage, Context: modelContext}}
+	// Run sends the trimmed prompt, so the stored text has to be trimmed
+	// too, or the next turn replays different bytes than this turn sent
+	// and misses the provider's prefix cache.
+	parts := []message.ContentPart{message.TextContent{Text: strings.TrimSpace(call.Prompt), Hidden: call.HiddenUserMessage, Context: modelContext}}
 	var attachmentParts []message.ContentPart
 	for _, attachment := range call.Attachments {
 		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.Ref(), MIMEType: attachment.MimeType, Data: attachment.Content})

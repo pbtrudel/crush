@@ -446,6 +446,47 @@ func TestDiscoverBuiltin(t *testing.T) {
 		}
 	}
 	require.True(t, foundHooks, "crush-hooks builtin skill not found")
+
+	var foundGitWorkflow bool
+	for _, s := range discovered {
+		if s.Name == "git-workflow" {
+			foundGitWorkflow = true
+			require.Equal(t, "crush://skills/git-workflow/SKILL.md", s.SkillFilePath)
+			require.Equal(t, "crush://skills/git-workflow", s.Path)
+			require.NotEmpty(t, s.Description)
+			require.NotEmpty(t, s.Instructions)
+			require.True(t, s.Builtin)
+		}
+	}
+	require.True(t, foundGitWorkflow, "git-workflow builtin skill not found")
+}
+
+// The commit and pull request procedure moved out of the bash tool
+// description into a skill, so the skill has to carry the whole procedure:
+// the commands the model has to run and how it builds the message.
+func TestBuiltinGitWorkflowSkillCoversTheProcedure(t *testing.T) {
+	t.Parallel()
+
+	var skill *Skill
+	for _, s := range DiscoverBuiltin() {
+		if s.Name == "git-workflow" {
+			skill = s
+		}
+	}
+	require.NotNil(t, skill, "git-workflow builtin skill not found")
+
+	for _, want := range []string{
+		"git status",
+		"git diff",
+		"git log",
+		"HEREDOC",
+		"git commit",
+		"gh pr create",
+		"pull request",
+		"72 characters",
+	} {
+		require.Contains(t, skill.Instructions, want)
+	}
 }
 
 func TestDeduplicate(t *testing.T) {

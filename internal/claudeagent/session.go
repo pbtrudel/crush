@@ -42,9 +42,8 @@ type turnRequest struct {
 	Dir        string
 	Model      string
 	Effort     string
-	// AppendPrompt is added to Claude Code's own system prompt.
-	AppendPrompt string
-	// SystemPrompt replaces Claude Code's system prompt. Used by utility calls.
+	// SystemPrompt replaces Claude Code's system prompt. A chat turn passes
+	// Crush's own agent prompt; a utility call passes its small task prompt.
 	SystemPrompt    string
 	Tools           []toolDef
 	ToolNames       []string
@@ -598,7 +597,6 @@ func (m *Manager) runUtility(ctx context.Context, req turnRequest, emit emitter)
 	}
 	cfg := launchFor(req, executable)
 	cfg.SystemPrompt = req.SystemPrompt
-	cfg.AppendPrompt = ""
 	cfg.SessionID = newUUID()
 	cfg.Persist = false
 	cfg.Tools = nil
@@ -644,7 +642,6 @@ func launchFor(req turnRequest, executable string) launchConfig {
 		Dir:             req.Dir,
 		Model:           req.Model,
 		Effort:          req.Effort,
-		AppendPrompt:    req.AppendPrompt,
 		SystemPrompt:    req.SystemPrompt,
 		Tools:           req.Tools,
 		Persist:         req.SessionKey != "",

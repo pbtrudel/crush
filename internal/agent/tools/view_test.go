@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,6 +212,246 @@ func TestReadTextFileAllowsExactMaxContentSize(t *testing.T) {
 	require.False(t, hasMore)
 }
 
+func TestViewToolSingleFilePathResponseShape(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	filePath := filepath.Join(workingDir, "single.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("hello\nworld"), 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePath: filePath})
+
+	require.False(t, resp.IsError)
+	require.Equal(t, "<file>\n     1|hello\n     2|world\n</file>\n", resp.Content)
+
+	var meta ViewResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, filePath, meta.FilePath)
+	require.Equal(t, "hello\nworld", meta.Content)
+}
+
+func TestViewToolReadsSeveralFilesInOneCall(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	first := filepath.Join(workingDir, "first.txt")
+	second := filepath.Join(workingDir, "second.txt")
+	missing := filepath.Join(workingDir, "absent.txt")
+	require.NoError(t, os.WriteFile(first, []byte("alpha"), 0o644))
+	require.NoError(t, os.WriteFile(second, []byte("beta"), 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first, second}})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "==> "+first+" <==\n")
+	require.Contains(t, resp.Content, "==> "+second+" <==\n")
+	require.Less(t,
+		strings.Index(resp.Content, "alpha"),
+		strings.Index(resp.Content, "beta"),
+		"files must come back in the order they were asked for",
+	)
+	require.Empty(t, resp.Metadata, "a multi-file result describes no single file")
+
+	resp = runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first, missing, second}})
+	require.False(t, resp.IsError, "one unreadable file must not fail the whole call")
+	require.Contains(t, resp.Content, "==> "+missing+" <==\n")
+	require.Contains(t, resp.Content, "File not found")
+	require.Contains(t, resp.Content, "alpha")
+	require.Contains(t, resp.Content, "beta")
+}
+
+func TestViewToolRejectsInvalidMultiFileCalls(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	first := filepath.Join(workingDir, "first.txt")
+	require.NoError(t, os.WriteFile(first, []byte("alpha"), 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	eleven := make([]string, 0, 11)
+	for i := range 11 {
+		eleven = append(eleven, filepath.Join(workingDir, fmt.Sprintf("f%d.txt", i)))
+	}
+
+	t.Run("too many files", func(t *testing.T) {
+		t.Parallel()
+		resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: eleven})
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "10")
+	})
+
+	t.Run("file_path with file_paths", func(t *testing.T) {
+		t.Parallel()
+		resp := runViewTool(t, tool, ctx, ViewParams{
+			FilePath:  first,
+			FilePaths: []string{first},
+		})
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "file_path")
+	})
+
+	t.Run("offset with file_paths", func(t *testing.T) {
+		t.Parallel()
+		resp := runViewTool(t, tool, ctx, ViewParams{
+			FilePaths: []string{first},
+			Offset:    1,
+		})
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "offset")
+	})
+}
+
+func TestViewToolMultiFileStopsAtOutputBudget(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	paths := make([]string, 0, 3)
+	for _, name := range []string{"one.txt", "two.txt", "three.txt"} {
+		path := filepath.Join(workingDir, name)
+		lines := make([]string, DefaultReadLimit)
+		for i := range lines {
+			lines[i] = strings.Repeat("a", 100)
+		}
+		require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644))
+		paths = append(paths, path)
+	}
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: paths})
+
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "==> "+paths[0]+" <==\n", "the first file is always read")
+	require.NotContains(t, resp.Content, "==> "+paths[1]+" <==\n")
+	require.Contains(t, resp.Content, "Not read, output budget reached: ")
+	require.Contains(t, resp.Content, paths[1])
+	require.Contains(t, resp.Content, paths[2])
+	require.Contains(t, resp.Content, "Read them in another call.")
+}
+
+// A single-image call inside file_paths must behave like a single-image
+// file_path call: the image itself travels with the response.
+func TestViewToolMultiFilePreservesFirstImage(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	first := filepath.Join(workingDir, "shot.png")
+	second := filepath.Join(workingDir, "later.png")
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d}
+	require.NoError(t, os.WriteFile(first, png, 0o644))
+	require.NoError(t, os.WriteFile(second, png, 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	ctx = context.WithValue(ctx, SupportsImagesContextKey, true)
+
+	t.Run("one image", func(t *testing.T) {
+		t.Parallel()
+
+		resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first}})
+		require.False(t, resp.IsError)
+		require.Equal(t, "image/png", resp.MediaType)
+		require.NotEmpty(t, resp.Data, "the image must stay attached")
+		require.Contains(t, resp.Content, "==> "+first+" <==")
+		require.Contains(t, resp.Content, "(image: image/png)")
+		require.NotContains(t, resp.Content, "view this file on its own")
+	})
+
+	t.Run("later image becomes a note", func(t *testing.T) {
+		t.Parallel()
+
+		resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first, second}})
+		require.False(t, resp.IsError)
+		require.Equal(t, "image/png", resp.MediaType)
+		require.NotEmpty(t, resp.Data, "the first image must stay attached")
+		require.Contains(t, resp.Content, "==> "+second+" <==\n(image: view this file on its own)")
+	})
+}
+
+// A file the budget will push out must not be read at all: reading it would
+// ask for permission, record it as read and load content nobody sees.
+func TestViewToolMultiFileDoesNotReadFilesItSkips(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	outside := t.TempDir()
+	paths := make([]string, 0, 3)
+	for _, name := range []string{"one.txt", "two.txt", "three.txt"} {
+		path := filepath.Join(outside, name)
+		lines := make([]string, 300)
+		for i := range lines {
+			lines[i] = strings.Repeat("a", 100)
+		}
+		require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644))
+		paths = append(paths, path)
+	}
+
+	permissions := &countingPermissionService{
+		mockViewPermissionService: mockViewPermissionService{
+			Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		},
+	}
+	tracker := &recordingFileTracker{}
+	tool := NewViewTool(nil, permissions, tracker, nil, workingDir)
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: paths})
+
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "==> "+paths[0]+" <==\n")
+	require.NotContains(t, resp.Content, "==> "+paths[1]+" <==\n")
+	require.Contains(t, resp.Content, "Not read, output budget reached: "+paths[1]+", "+paths[2]+".")
+
+	require.Equal(t, []string{paths[0]}, tracker.recorded(),
+		"only files that came back may be recorded as read")
+	require.Len(t, permissions.requests, 2,
+		"outside files are permission-checked before any sizing, but only until the budget stops the call")
+	require.Equal(t, paths[0], permissions.requests[0].Path)
+}
+
+// Only the first DefaultReadLimit lines come back, so a long file whose raw
+// size is large must not be skipped on that basis: the estimate is of the
+// rendered section, not of the whole file.
+func TestViewToolMultiFileReadsShortLineFileWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	outside := t.TempDir()
+	first := filepath.Join(outside, "small.txt")
+	require.NoError(t, os.WriteFile(first, []byte("small"), 0o644))
+
+	manyShortLines := filepath.Join(outside, "many.txt")
+	lines := make([]string, 4000)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	require.NoError(t, os.WriteFile(manyShortLines, []byte(strings.Join(lines, "\n")), 0o644))
+
+	permissions := &countingPermissionService{
+		mockViewPermissionService: mockViewPermissionService{
+			Broker: pubsub.NewBroker[permission.PermissionRequest](),
+		},
+	}
+	tracker := &recordingFileTracker{}
+	tool := NewViewTool(nil, permissions, tracker, nil, workingDir)
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePaths: []string{first, manyShortLines}})
+
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "==> "+first+" <==\n")
+	require.Contains(t, resp.Content, "==> "+manyShortLines+" <==\n")
+	require.NotContains(t, resp.Content, "Not read, output budget reached")
+	require.Equal(t, []string{first, manyShortLines}, tracker.recorded())
+	require.Len(t, permissions.requests, 2)
+}
+
 type mockViewPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
 }
@@ -251,6 +493,49 @@ func (m *mockViewPermissionService) SubscribeNotifications(ctx context.Context) 
 func (m *mockViewPermissionService) SubscribeModeChanges(ctx context.Context) <-chan pubsub.Event[permission.ModeChangedEvent] {
 	return make(<-chan pubsub.Event[permission.ModeChangedEvent])
 }
+
+// countingPermissionService records the permission requests a test made.
+type countingPermissionService struct {
+	mockViewPermissionService
+
+	mu       sync.Mutex
+	requests []permission.CreatePermissionRequest
+}
+
+func (c *countingPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requests = append(c.requests, req)
+	return true, nil
+}
+
+// recordingFileTracker records the paths a test marked as read.
+type recordingFileTracker struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (r *recordingFileTracker) RecordRead(ctx context.Context, sessionID, path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.paths = append(r.paths, path)
+}
+
+func (r *recordingFileTracker) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.paths)
+}
+
+func (r *recordingFileTracker) LastReadTime(ctx context.Context, sessionID, path string) time.Time {
+	return time.Time{}
+}
+
+func (r *recordingFileTracker) ListReadFiles(ctx context.Context, sessionID string) ([]string, error) {
+	return nil, nil
+}
+
+var _ filetracker.Service = (*recordingFileTracker)(nil)
 
 type mockFileTracker struct{}
 

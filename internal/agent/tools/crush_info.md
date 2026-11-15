@@ -11,6 +11,9 @@ Get Crush's current runtime state: active model, provider, LSP/MCP status, skill
 <tips>
 - Check [lsp] and [mcp] sections for service health
 - Check [providers] to see which providers are enabled and available
+- Check [models] before choosing a model for a subagent or teammate: it lists
+  every provider you can use, the models each can serve, and in brackets the
+  reasoning values each model accepts
 - Check [skills] to see which skills are available and whether they have been
   loaded this session
 - Check [hooks] to see which hook events are configured and whether the

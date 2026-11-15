@@ -39,7 +39,7 @@ type spawnTeammateParams struct {
 	// the subagent model with its configured settings.
 	Model     string `json:"model,omitempty" description:"The model ID for this teammate, as used by the provider API. Omit provider to use the parent agent's provider. Other settings default to the model's own"`
 	Provider  string `json:"provider,omitempty" description:"The provider ID for the overridden model; requires model. Defaults to the parent agent's provider when only model is given"`
-	Reasoning string `json:"reasoning,omitempty" description:"How hard the teammate reasons: one of the values listed in brackets after its model. Defaults to the model's own"`
+	Reasoning string `json:"reasoning,omitempty" description:"How hard the teammate reasons: one of the values the [models] section of crush_info lists in brackets for its model. Defaults to the model's own"`
 }
 
 type sendMessageParams struct {
@@ -133,7 +133,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 	return fantasy.NewAgentTool(
 		SpawnTeammateToolName,
 		"Create one named, durable teammate. Only the Team Lead may call this tool."+
-			dispatchModelCatalog(c.cfg.Config(), parentModel()),
+			" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve.",
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {

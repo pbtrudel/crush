@@ -579,7 +579,7 @@ func TestRehydrateDispatchPropagatesTranscriptReadError(t *testing.T) {
 }
 
 // A disabled provider is refused even when the model it names exists, and
-// it drops out of the catalog the tool description lists.
+// it drops out of the catalog crush_info prints.
 func TestModelOverrideSkipsDisabledProvider(t *testing.T) {
 	t.Parallel()
 	c, _ := newOverrideTestCoordinator(t)
@@ -593,29 +593,46 @@ func TestModelOverrideSkipsDisabledProvider(t *testing.T) {
 	_, _, refusal := c.resolveModelOverride(AgentDispatchParams{Model: "other-model", Provider: "other"}, Model{})
 	require.Equal(t, `provider "other" is not available; use one of: mock`, refusal)
 
-	catalog := dispatchModelCatalog(cfg, Model{})
+	catalog := modelCatalog(cfg)
 	require.NotContains(t, catalog, "other")
 	require.Contains(t, catalog, "- `mock`: mock-model, mock-reasoner [low|high], mock-thinker [on|off]")
 }
 
-// The catalog names the parent's model, lists every usable provider in a
-// stable order, and is what an unknown model's refusal points back to.
-func TestDispatchModelCatalog(t *testing.T) {
+// The catalog lists every usable provider in a stable order, and is what
+// an unknown model's refusal points back to.
+func TestModelCatalog(t *testing.T) {
 	t.Parallel()
 	c, _ := newOverrideTestCoordinator(t)
 	cfg := c.cfg.Config()
 
-	catalog := dispatchModelCatalog(cfg, c.mainModels().Large)
-	require.Equal(t, "\n\nModels available to `model`, by `provider` (you are running on `mock/mock-reasoner`):\n"+
-		"\n- `mock`: mock-model, mock-reasoner [low|high], mock-thinker [on|off]"+
-		"\n- `other`: other-model", catalog)
+	catalog := modelCatalog(cfg)
+	require.Equal(t, "- `mock`: mock-model, mock-reasoner [low|high], mock-thinker [on|off]\n"+
+		"- `other`: other-model", catalog)
 
 	_, _, refusal := c.resolveModelOverride(AgentDispatchParams{Model: "gone-model", Provider: "mock"}, Model{})
 	require.Equal(t, `model "gone-model" is not available from provider "mock"; use one of: mock-model, mock-reasoner [low|high], mock-thinker [on|off]`, refusal)
 }
 
+// The dispatch description carries no model list: the catalog lives in
+// crush_info, which is read on demand instead of on every request.
+func TestDispatchDescriptionLeavesModelsToCrushInfo(t *testing.T) {
+	t.Parallel()
+	c, _ := newOverrideTestCoordinator(t)
+	ctx := t.Context()
+
+	agents, err := c.taskAgents(ctx, false)
+	require.NoError(t, err)
+	tool, err := c.agentDispatchTool(ctx, config.AgentCoder, agents[accessRead].Model)
+	require.NoError(t, err)
+
+	description := tool.Info().Description
+	require.NotContains(t, description, "mock-model")
+	require.NotContains(t, description, "mock-reasoner")
+	require.Contains(t, description, "crush_info")
+}
+
 // Nothing usable means no catalog at all, rather than an empty heading.
-func TestDispatchModelCatalogEmpty(t *testing.T) {
+func TestModelCatalogEmpty(t *testing.T) {
 	t.Parallel()
 	c, _ := newOverrideTestCoordinator(t)
 	cfg := c.cfg.Config()
@@ -625,7 +642,7 @@ func TestDispatchModelCatalogEmpty(t *testing.T) {
 		p.Disable = true
 		cfg.Providers.Set(id, p)
 	}
-	require.Empty(t, dispatchModelCatalog(cfg, Model{}))
+	require.Empty(t, modelCatalog(cfg))
 }
 
 func TestModelIDListCapsLongCatalogs(t *testing.T) {

@@ -231,14 +231,15 @@ func fakeToolSession(t *testing.T, logPath string) (*Manager, turnRequest, []fan
 	manager := NewManager(t.TempDir())
 	t.Cleanup(manager.Close)
 
-	defs, names := toolDefs([]fantasy.Tool{fakeEchoTool()})
+	defs, names, notes := toolDefs([]fantasy.Tool{fakeEchoTool()})
 	require.Equal(t, []string{"echo"}, names)
+	require.Empty(t, notes, "a short description leaves nothing to carry")
 
 	req := turnRequest{
 		SessionKey:   "fake-tool-session",
 		Dir:          t.TempDir(),
 		Model:        "fake-opus",
-		AppendPrompt: "You are a test agent.",
+		SystemPrompt: "You are a test agent.",
 		Tools:        defs,
 		ToolNames:    names,
 		Prompt: fantasy.Prompt{

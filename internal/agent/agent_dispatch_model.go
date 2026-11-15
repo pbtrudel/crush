@@ -139,22 +139,21 @@ func modelIDList(models []catwalk.Model) string {
 	return list
 }
 
-// dispatchModelCatalog is appended to the dispatch tool's description; empty when nothing is usable.
-func dispatchModelCatalog(cfg *config.Config, parent Model) string {
-	var b strings.Builder
-	for _, p := range usableProviders(cfg) {
+// modelCatalog renders the provider and model catalog, one line per usable
+// provider, for the [models] section of crush_info. It used to sit in the
+// descriptions of agent_dispatch and spawn_teammate, which sent it twice with
+// every request and rewrote the cached tool definitions whenever provider
+// metadata changed; read through crush_info it costs nothing until asked for.
+// Empty when no provider is usable.
+func modelCatalog(cfg *config.Config) string {
+	providers := usableProviders(cfg)
+	lines := make([]string, 0, len(providers))
+	for _, p := range providers {
 		if models := p.UsableModels(); len(models) > 0 {
-			fmt.Fprintf(&b, "\n- `%s`: %s", p.ID, modelIDList(models))
+			lines = append(lines, fmt.Sprintf("- `%s`: %s", p.ID, modelIDList(models)))
 		}
 	}
-	if b.Len() == 0 {
-		return ""
-	}
-	header := "\n\nModels available to `model`, by `provider`"
-	if parent.Model != nil {
-		header += fmt.Sprintf(" (you are running on `%s`)", modelDisplayName(parent))
-	}
-	return header + ":\n" + b.String()
+	return strings.Join(lines, "\n")
 }
 
 // modelDisplayName names a model as provider/model.

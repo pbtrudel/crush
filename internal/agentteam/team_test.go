@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 type fakeRun struct {
 	done   chan struct{}
+	output string
 	err    error
 	cancel func()
 }
@@ -22,7 +24,7 @@ func (r *fakeRun) SessionID() string { return "session-fake" }
 func (r *fakeRun) Done() <-chan struct{} {
 	return r.done
 }
-func (r *fakeRun) Output() string { return "" }
+func (r *fakeRun) Output() string { return r.output }
 func (r *fakeRun) Err() error     { return r.err }
 func (r *fakeRun) Cancel()        { r.cancel() }
 
@@ -59,6 +61,14 @@ func (r *fakeRunner) finishWithErr(name string, err error) {
 	r.mu.Lock()
 	run := r.runs[name]
 	run.err = err
+	r.mu.Unlock()
+	run.cancel()
+}
+
+func (r *fakeRunner) finishWithOutput(name, output string) {
+	r.mu.Lock()
+	run := r.runs[name]
+	run.output = output
 	r.mu.Unlock()
 	run.cancel()
 }
@@ -765,4 +775,171 @@ func TestLegacyTasksStayHidden(t *testing.T) {
 
 	_, err = service.GetTask("lead", "session-a", "task-1")
 	require.Equal(t, CodeTaskNotFound, ErrorCode(err))
+}
+
+// reportPathIn returns the file a cut report names, so a test can read the
+// rest of the text back.
+func reportPathIn(t *testing.T, report string) string {
+	t.Helper()
+	const marker = "Full report: "
+	start := strings.Index(report, marker)
+	require.GreaterOrEqual(t, start, 0, "a cut report must name the file holding the rest")
+	rest := report[start+len(marker):]
+	end := strings.Index(rest, "]")
+	require.GreaterOrEqual(t, end, 0, "the cut note must close its bracket")
+	return rest[:end]
+}
+
+// settleTeammate runs one teammate turn that finishes with output and returns
+// the report the Lead's inbox received.
+func settleTeammate(t *testing.T, service *Service, runner *fakeRunner, output string) string {
+	t.Helper()
+	_, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	runner.finishWithOutput("reviewer", output)
+
+	var pending []Message
+	require.Eventually(t, func() bool {
+		pending = service.DrainInbox("lead")
+		return len(pending) == 1
+	}, time.Second, 10*time.Millisecond)
+	return pending[0].Text
+}
+
+// TestSettledTeammateReportSpillsLongOutput pins that a report past the
+// inline cap keeps the whole deliverable reachable: a teammate's final
+// message is its work product, and cutting it with an ellipsis loses
+// everything past 2,000 bytes.
+func TestSettledTeammateReportSpillsLongOutput(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	long := strings.Repeat("r", 5000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.Contains(t, report, "reviewer finished its turn.")
+	require.Contains(t, report, long[:2000])
+	require.Contains(t, report, "Report cut: 2000 of 5000 bytes shown")
+
+	path := reportPathIn(t, report)
+	require.Equal(t, filepath.Join(filepath.Dir(service.path), "reports"), filepath.Dir(path),
+		"the file belongs in the report directory next to the team state")
+	full, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, long, string(full))
+}
+
+// TestSettledTeammateReportKeepsShortOutputInline pins that the normal case is
+// unchanged and writes nothing to disk.
+func TestSettledTeammateReportKeepsShortOutputInline(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	short := strings.Repeat("s", 100)
+	report := settleTeammate(t, service, runner, short)
+
+	require.Equal(t, "reviewer finished its turn.\n\n"+short, report)
+	_, statErr := os.Stat(filepath.Join(filepath.Dir(service.path), "reports"))
+	require.True(t, os.IsNotExist(statErr), "a report under the cap must not write a file")
+}
+
+// TestRunReportWithoutFullReportCutsWithEllipsis pins the fallback: with no
+// file to point at, a long report is cut exactly as it was before spilling
+// existed, so a failed write never hides the head of the text.
+func TestRunReportWithoutFullReportCutsWithEllipsis(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("b", 3000)
+
+	report := runReport("reviewer", long, nil, nil, "")
+
+	require.Equal(t, "reviewer finished its turn.\n\n"+long[:2000]+"…", report)
+}
+
+// TestSettledTeammateReportCountsTheBytesItActuallyKeeps pins the cut size on
+// a multibyte report: the cut backs off to a rune boundary, so a note that
+// printed the cap would overstate what the Lead can read inline.
+func TestSettledTeammateReportCountsTheBytesItActuallyKeeps(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	// One ASCII byte then 3-byte runes puts a rune boundary at 1,999, so a
+	// cut at the 2,000-byte cap keeps 1,999 bytes.
+	long := "a" + strings.Repeat("€", 1000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.Contains(t, report, "Report cut: 1999 of 3001 bytes shown")
+
+	path := reportPathIn(t, report)
+	full, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, long, string(full))
+}
+
+// TestSettledTeammateReportFallsBackWithoutATeamPath pins the in-memory Team:
+// with no team path there is nowhere to write the full report, and the
+// process's working directory is not ours to use, so the report is cut as
+// before.
+func TestSettledTeammateReportFallsBackWithoutATeamPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	runner := newFakeRunner()
+	service, err := New("", Config{}, runner)
+	require.NoError(t, err)
+
+	long := strings.Repeat("r", 5000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.True(t, strings.HasSuffix(report, "…"), "the report is cut as before")
+	require.NotContains(t, report, "Full report")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "nothing may be written when the Team has no path")
+}
+
+// TestSettledTeammateReportFallsBackWhenTheDirectoryIsUnusable pins the other
+// half of the fallback: a write that fails still delivers the head of the
+// report, with no note pointing at a file that is not there.
+func TestSettledTeammateReportFallsBackWhenTheDirectoryIsUnusable(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+
+	// A regular file where the report directory belongs makes every write
+	// under it fail.
+	blocked := filepath.Join(filepath.Dir(service.path), "reports")
+	require.NoError(t, os.WriteFile(blocked, []byte("in the way"), 0o600))
+
+	long := strings.Repeat("r", 5000)
+	report := settleTeammate(t, service, runner, long)
+
+	require.Contains(t, report, long[:2000])
+	require.True(t, strings.HasSuffix(report, "…"), "the cut must survive a failed write")
+	require.NotContains(t, report, "Full report")
+}
+
+// TestWriteReportSweepsOldReports pins the age sweep: a report outlives the
+// turn that wrote it so the Lead can read it later, which leaves age as the
+// only bound on what accumulates.
+func TestWriteReportSweepsOldReports(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+
+	dir := filepath.Join(filepath.Dir(service.path), "reports")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	stale := filepath.Join(dir, "reviewer-stale.md")
+	require.NoError(t, os.WriteFile(stale, []byte("old"), 0o600))
+	expired := time.Now().Add(-reportRetention - time.Hour)
+	require.NoError(t, os.Chtimes(stale, expired, expired))
+	fresh := filepath.Join(dir, "reviewer-fresh.md")
+	require.NoError(t, os.WriteFile(fresh, []byte("new"), 0o600))
+
+	require.NotEmpty(t, service.writeReport("reviewer", strings.Repeat("x", 3000)))
+
+	_, err := os.Stat(stale)
+	require.True(t, os.IsNotExist(err), "a report past the retention window is swept")
+	_, err = os.Stat(fresh)
+	require.NoError(t, err, "a report inside the window is kept")
 }

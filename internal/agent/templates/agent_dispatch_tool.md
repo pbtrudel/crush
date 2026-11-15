@@ -8,7 +8,7 @@ Use it to fan work out (a review, a search, an investigation across several scop
 
 `access` is `read` (default) for a subagent that inspects and runs things but cannot edit, or `write` for one that makes a change. Give parallel `write` subagents scopes that do not overlap.
 
-`model` runs this subagent on a different model than the session default. Name one from the list at the end of this description; it holds every provider you can use and the models each can serve. Omit `provider` to use the parent agent's provider; `provider` requires `model`. `reasoning` sets how hard the subagent thinks, using one of the values in brackets after its model in that list; when omitted the model's default applies. Without any of these the subagent runs on the session's model. The override is remembered: `agent_send` follow-ups and later resumes of the subagent keep running on it.
+`model` runs this subagent on a different model than the session default. Name a model ID from the `[models]` section of `crush_info`, which lists every provider you can use, the models each can serve, and in brackets the reasoning values each model accepts. Omit `provider` to use the parent agent's provider; `provider` requires `model`. `reasoning` sets how hard the subagent thinks, using one of the values listed for its model there; when omitted the model's default applies. Without any of these the subagent runs on the session's model. The override is remembered: `agent_send` follow-ups and later resumes of the subagent keep running on it.
 
 The prompt is all the subagent sees. It cannot see this conversation or other subagents. Say what to examine, what to do, and what shape the answer should take.
 

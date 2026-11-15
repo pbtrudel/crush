@@ -138,13 +138,39 @@ func notifyLSPs(
 	wg.Wait()
 }
 
-func getDiagnostics(filePath string, manager *lsp.Manager) string {
-	if manager == nil {
-		return ""
-	}
+// diagnosticLine is one formatted diagnostic and the severity it was
+// reported at.
+type diagnosticLine struct {
+	severity protocol.DiagnosticSeverity
+	text     string
+}
 
-	var fileDiagnostics []string
-	var projectDiagnostics []string
+func getDiagnostics(filePath string, manager *lsp.Manager) string {
+	file, project := collectDiagnostics(filePath, manager)
+	out := renderDiagnostics(file, project, file, project)
+	slog.Debug("Diagnostics", "output", out)
+	return out
+}
+
+// getActionableDiagnostics renders what a tool result carries after a file
+// was read or changed: its errors and warnings, and errors anywhere else in
+// the project (a changed signature breaks callers in other files).
+//
+// Hints, information and other files' warnings are left to lsp_diagnostics.
+// A tool result is re-read on every later request, and on a real session
+// log those lines were most of what edits and views returned.
+func getActionableDiagnostics(filePath string, manager *lsp.Manager) string {
+	file, project := collectDiagnostics(filePath, manager)
+	shownFile, shownProject := actionableDiagnostics(file, project)
+	return renderDiagnostics(shownFile, shownProject, file, project)
+}
+
+// collectDiagnostics gathers the formatted diagnostics of the given file and
+// of every other file a running server reported, sorting both.
+func collectDiagnostics(filePath string, manager *lsp.Manager) (file, project []diagnosticLine) {
+	if manager == nil {
+		return nil, nil
+	}
 
 	for lspName, client := range manager.Clients().Seq2() {
 		for location, diags := range client.GetDiagnostics() {
@@ -155,63 +181,101 @@ func getDiagnostics(filePath string, manager *lsp.Manager) string {
 			}
 			isCurrentFile := path == filePath
 			for _, diag := range diags {
-				formattedDiag := formatDiagnostic(path, diag, lspName)
+				line := diagnosticLine{
+					severity: diag.Severity,
+					text:     formatDiagnostic(path, diag, lspName),
+				}
 				if isCurrentFile {
-					fileDiagnostics = append(fileDiagnostics, formattedDiag)
+					file = append(file, line)
 				} else {
-					projectDiagnostics = append(projectDiagnostics, formattedDiag)
+					project = append(project, line)
 				}
 			}
 		}
 	}
 
-	sortDiagnostics(fileDiagnostics)
-	sortDiagnostics(projectDiagnostics)
-
-	var output strings.Builder
-	writeDiagnostics(&output, "file_diagnostics", fileDiagnostics)
-	writeDiagnostics(&output, "project_diagnostics", projectDiagnostics)
-
-	if len(fileDiagnostics) > 0 || len(projectDiagnostics) > 0 {
-		fileErrors := countSeverity(fileDiagnostics, "Error")
-		fileWarnings := countSeverity(fileDiagnostics, "Warn")
-		projectErrors := countSeverity(projectDiagnostics, "Error")
-		projectWarnings := countSeverity(projectDiagnostics, "Warn")
-		output.WriteString("\n<diagnostic_summary>\n")
-		fmt.Fprintf(&output, "Current file: %d errors, %d warnings\n", fileErrors, fileWarnings)
-		fmt.Fprintf(&output, "Project: %d errors, %d warnings\n", projectErrors, projectWarnings)
-		output.WriteString("</diagnostic_summary>\n")
-	}
-
-	out := output.String()
-	slog.Debug("Diagnostics", "output", out)
-	return out
+	sortDiagnostics(file)
+	sortDiagnostics(project)
+	return file, project
 }
 
-func writeDiagnostics(output *strings.Builder, tag string, in []string) {
+// actionableDiagnostics selects the lines a tool result keeps: errors and
+// warnings in the file itself, and errors elsewhere in the project.
+func actionableDiagnostics(file, project []diagnosticLine) (shownFile, shownProject []diagnosticLine) {
+	for _, line := range file {
+		if actionableError(line.severity) || line.severity == protocol.SeverityWarning {
+			shownFile = append(shownFile, line)
+		}
+	}
+	for _, line := range project {
+		if actionableError(line.severity) {
+			shownProject = append(shownProject, line)
+		}
+	}
+	return shownFile, shownProject
+}
+
+// actionableError reports whether a severity is one a change can break. The
+// protocol leaves an omitted severity to the client, so severity 0 is read as
+// an error: showing a line that turned out to be prose costs less than hiding
+// a real failure. The full rendering keeps counting it as it always has.
+func actionableError(severity protocol.DiagnosticSeverity) bool {
+	return severity == protocol.SeverityError || severity == 0
+}
+
+// renderDiagnostics writes the blocks from shown and the summary counts from
+// all, so a caller that hides lines still reports the real totals. It returns
+// "" when nothing is shown, leaving a tool result without an empty block.
+func renderDiagnostics(shownFile, shownProject, allFile, allProject []diagnosticLine) string {
+	if len(shownFile) == 0 && len(shownProject) == 0 {
+		return ""
+	}
+
+	var output strings.Builder
+	writeDiagnostics(&output, "file_diagnostics", shownFile)
+	writeDiagnostics(&output, "project_diagnostics", shownProject)
+
+	output.WriteString("\n<diagnostic_summary>\n")
+	fmt.Fprintf(&output, "Current file: %d errors, %d warnings\n",
+		countSeverity(allFile, protocol.SeverityError),
+		countSeverity(allFile, protocol.SeverityWarning),
+	)
+	fmt.Fprintf(&output, "Project: %d errors, %d warnings\n",
+		countSeverity(allProject, protocol.SeverityError),
+		countSeverity(allProject, protocol.SeverityWarning),
+	)
+	output.WriteString("</diagnostic_summary>\n")
+
+	return output.String()
+}
+
+func writeDiagnostics(output *strings.Builder, tag string, in []diagnosticLine) {
 	if len(in) == 0 {
 		return
 	}
+	lines := make([]string, len(in))
+	for i, line := range in {
+		lines[i] = line.text
+	}
 	output.WriteString("\n<" + tag + ">\n")
-	if len(in) > 10 {
-		output.WriteString(strings.Join(in[:10], "\n"))
-		fmt.Fprintf(output, "\n... and %d more diagnostics", len(in)-10)
+	if len(lines) > 10 {
+		output.WriteString(strings.Join(lines[:10], "\n"))
+		fmt.Fprintf(output, "\n... and %d more diagnostics", len(lines)-10)
 	} else {
-		output.WriteString(strings.Join(in, "\n"))
+		output.WriteString(strings.Join(lines, "\n"))
 	}
 	output.WriteString("\n</" + tag + ">\n")
 }
 
-func sortDiagnostics(in []string) []string {
+func sortDiagnostics(in []diagnosticLine) {
 	sort.Slice(in, func(i, j int) bool {
-		iIsError := strings.HasPrefix(in[i], "Error")
-		jIsError := strings.HasPrefix(in[j], "Error")
+		iIsError := in[i].severity == protocol.SeverityError
+		jIsError := in[j].severity == protocol.SeverityError
 		if iIsError != jIsError {
 			return iIsError // Errors come first
 		}
-		return in[i] < in[j] // Then alphabetically
+		return in[i].text < in[j].text // Then alphabetically
 	})
-	return in
 }
 
 func formatDiagnostic(pth string, diagnostic protocol.Diagnostic, source string) string {
@@ -262,10 +326,10 @@ func formatDiagnostic(pth string, diagnostic protocol.Diagnostic, source string)
 		diagnostic.Message)
 }
 
-func countSeverity(diagnostics []string, severity string) int {
+func countSeverity(diagnostics []diagnosticLine, severity protocol.DiagnosticSeverity) int {
 	count := 0
 	for _, diag := range diagnostics {
-		if strings.HasPrefix(diag, severity) {
+		if diag.severity == severity {
 			count++
 		}
 	}
