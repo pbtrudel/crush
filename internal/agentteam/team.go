@@ -9,12 +9,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/crush/internal/shell"
 )
 
 // Defaults mirror the experimental DSH Agent Teams bundle.
@@ -735,6 +739,23 @@ func (s *Service) stateMemberLocked(name string) Member {
 // watch settles one run and resumes the member when messages are queued.
 func (s *Service) watch(name string, run Run) {
 	<-run.Done()
+
+	// Spill the full deliverable before taking the service lock: writing the
+	// file is the only slow part of settling, and every other member's tool
+	// call waits on that lock.
+	output := run.Output()
+	fullReport := ""
+	if text := strings.TrimSpace(output); len(text) > maxReportInline {
+		path, err := shell.SpillOutput(text, filepath.Dir(s.path))
+		if err != nil {
+			// Losing the file must not lose the report: the inline text
+			// still carries the head, as it did before spilling existed.
+			slog.Warn("Could not write the full teammate report", "path", s.path, "error", err)
+		} else {
+			fullReport = path
+		}
+	}
+
 	s.mu.Lock()
 	if s.runs[name] == run {
 		delete(s.runs, name)
@@ -757,7 +778,7 @@ func (s *Service) watch(name string, run Run) {
 	}
 	member := s.stateMemberLocked(name)
 	settled, completed := s.settleTasksLocked(member.ID, runErr)
-	s.enqueueLocked(name, leadName, runReport(name, run.Output(), settled, runErr))
+	s.enqueueLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 	s.saveLocked()
 	s.notifyLocked()
 	pending := s.drainLocked(name)
@@ -827,9 +848,18 @@ func (s *Service) enqueueLocked(from, to, text string) {
 	})
 }
 
+// maxReportInline is how much of a teammate's final message the automatic
+// report carries. A teammate's final message is its deliverable, so anything
+// past this cap is written to a file instead of being dropped.
+const maxReportInline = 2000
+
 // runReport renders the automatic progress report a settled teammate sends
-// the Lead.
-func runReport(name, output string, settled []string, runErr error) string {
+// the Lead. fullReport is the file holding the whole output when it did not
+// fit, or empty when nothing was spilled.
+//
+// It stays pure so it can be tested on its own: spilling happens in the
+// caller, which reads the output anyway.
+func runReport(name, output string, settled []string, runErr error, fullReport string) string {
 	var sb strings.Builder
 	if runErr != nil {
 		fmt.Fprintf(&sb, "%s failed: %s.", name, runErr.Error())
@@ -840,9 +870,15 @@ func runReport(name, output string, settled []string, runErr error) string {
 		fmt.Fprintf(&sb, " Tasks: %s.", strings.Join(settled, ", "))
 	}
 	if text := strings.TrimSpace(output); text != "" {
-		const maxReport = 2000
-		if len(text) > maxReport {
-			text = truncateText(text, maxReport) + "…"
+		if len(text) > maxReportInline {
+			head := truncateText(text, maxReportInline) + "…"
+			if fullReport != "" {
+				head += fmt.Sprintf(
+					"\n\n[Report cut: %d of %d bytes shown. Full report: %s]",
+					maxReportInline, len(text), fullReport,
+				)
+			}
+			text = head
 		}
 		sb.WriteString("\n\n")
 		sb.WriteString(text)
