@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
@@ -162,4 +163,67 @@ func TestSummarize_PrunesWhenTheContextSizeIsUnknown(t *testing.T) {
 	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
 	require.Len(t, stub.calls, 1)
 	require.True(t, tools.HasSpillNotice(toolResultTextIn(t, stub.calls[0].Prompt)))
+}
+
+// newWindowAgent builds a compaction agent whose model has the given context
+// window, so a test can cross the compaction threshold with a small history.
+func newWindowAgent(env fakeEnv, model fantasy.LanguageModel, window int64, tools ...fantasy.AgentTool) *sessionAgent {
+	m := Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: window, DefaultMaxTokens: 32_000}}
+	return NewSessionAgent(SessionAgentOptions{
+		Models:       func() ModelSet { return ModelSet{Large: m, Small: m} },
+		SystemPrompt: "SYSTEM PROMPT",
+		Sessions:     env.sessions,
+		Messages:     env.messages,
+		Tools:        tools,
+	}).(*sessionAgent)
+}
+
+// TestSummarizePrunesWhenTheStoredHistoryIsBiggerThanTheReportedUsage is the
+// guard for a preflight compaction that decided to run from the assembled
+// prompt: the session's reported usage predates the tool result that filled
+// the window, so a fits check made from that number alone would skip the
+// prune and overflow.
+func TestSummarizePrunesWhenTheStoredHistoryIsBiggerThanTheReportedUsage(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+	stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
+
+	// A 20,000 token window leaves about 6,800 tokens for the history once
+	// the summary budget and the instruction are reserved.
+	agent := newWindowAgent(env, stub, 20_000)
+
+	sess, err := env.sessions.Create(ctx, "preflight")
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "run the suite"}},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{message.ToolCall{
+			ID: "c1", Name: "bash", Input: "{}", Finished: true,
+		}},
+	})
+	require.NoError(t, err)
+	// 40,000 characters is about 10,000 tokens: stored after the last
+	// reported usage, so the session's own count does not include it.
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{
+			ToolCallID: "c1", Name: "bash", Content: strings.Repeat("r", 40_000),
+		}},
+	})
+	require.NoError(t, err)
+
+	// The reported usage is tiny compared with what the request will carry.
+	sess.PromptTokens = 1_000
+	_, err = env.sessions.Save(ctx, sess)
+	require.NoError(t, err)
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.Len(t, stub.calls, 1)
+
+	require.True(t, tools.HasSpillNotice(toolResultTextIn(t, stub.calls[0].Prompt)),
+		"the oversized result must be pruned so the request fits")
 }

@@ -226,6 +226,14 @@ func (m *twoStepSummaryModel) Stream(_ context.Context, call fantasy.Call) (fant
 	}, nil
 }
 
+// resetSteps restarts the scripted sequence, so a test that runs a turn
+// before the compaction does not spend the refused-step script on it.
+func (m *twoStepSummaryModel) resetSteps() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = 0
+}
+
 func (m *twoStepSummaryModel) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
 	return nil, errors.New("not implemented")
 }
