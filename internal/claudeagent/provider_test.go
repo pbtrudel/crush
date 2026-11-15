@@ -1,9 +1,11 @@
 package claudeagent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
@@ -95,4 +97,101 @@ func TestUtilityTurnSendsItsOwnSystemPrompt(t *testing.T) {
 
 	require.Equal(t, "You write short titles.", req.SystemPrompt)
 	require.Empty(t, req.SessionKey, "a utility call must not join the chat transcript")
+	require.NotContains(t, req.SystemPrompt, "<tool_notes>")
+}
+
+// longDescription returns a tool description longer than the MCP limit, made
+// of whole lines so a cut can be checked against a line break.
+func longDescription(name string) string {
+	var text strings.Builder
+	for line := 1; text.Len() < mcpDescriptionLimit+500; line++ {
+		fmt.Fprintf(&text, "Rules for %s, line %d.\n", name, line)
+	}
+	return text.String()
+}
+
+// TestTruncateDescriptionKeepsTheTail checks that a cut description reports
+// the text it lost, cut on a line break so neither half ends mid-sentence.
+func TestTruncateDescriptionKeepsTheTail(t *testing.T) {
+	t.Parallel()
+
+	short := "Echo the given text back to the caller."
+	fit, rest := truncateDescription("echo", short)
+	require.Equal(t, short, fit)
+	require.Empty(t, rest)
+
+	long := longDescription("bash")
+	fit, rest = truncateDescription("bash", long)
+	require.NotEmpty(t, rest)
+	require.Equal(t, long, fit+rest, "the two parts must reassemble the description")
+	require.LessOrEqual(t, len(fit), mcpDescriptionLimit)
+	require.GreaterOrEqual(t, len(fit), mcpDescriptionLimit/2, "the cut only moves back to a line break in the second half")
+	require.True(t, strings.HasSuffix(fit, "\n"), "the cut should land on a line break")
+}
+
+// TestTruncateDescriptionKeepsRunesWhole checks a description with no line
+// break is cut at the limit without splitting a character.
+func TestTruncateDescriptionKeepsRunesWhole(t *testing.T) {
+	t.Parallel()
+
+	// A leading byte shifts every two-byte character, so a plain cut at the
+	// limit lands inside one.
+	long := "a" + strings.Repeat("é", mcpDescriptionLimit)
+	fit, rest := truncateDescription("bash", long)
+	require.NotEmpty(t, rest)
+	require.LessOrEqual(t, len(fit), mcpDescriptionLimit)
+	require.True(t, utf8.ValidString(fit), "the cut must not split a character")
+	require.Equal(t, long, fit+rest)
+}
+
+// TestTruncateDescriptionMovesSubagentListToTheFront checks that the agent
+// list of a subagent tool survives the cut, as it did before.
+func TestTruncateDescriptionMovesSubagentListToTheFront(t *testing.T) {
+	t.Parallel()
+
+	list := "Available subagents:\n- coder: writes code\n- task: runs one task\n"
+	description := longDescription("agent") + list
+	at := strings.Index(description, list)
+	rotated := description[at:] + "\n\n" + description[:at]
+	fit, rest := truncateDescription("agent", description)
+	require.True(t, strings.HasPrefix(fit, "Available subagents:"), "the agent list should come first")
+	require.Equal(t, rotated, fit+rest, "the rotated description must be cut in two, not dropped")
+
+	short := list + "Nothing else."
+	fit, rest = truncateDescription("agent", short)
+	require.Equal(t, short, fit)
+	require.Empty(t, rest)
+}
+
+// TestChatPromptCarriesCutToolGuidance checks that chat turns deliver the tool
+// descriptions the tool list cuts, in the system prompt, before the date line
+// and sorted by name.
+func TestChatPromptCarriesCutToolGuidance(t *testing.T) {
+	t.Parallel()
+
+	bash := longDescription("bash")
+	question := longDescription("question")
+	call := chatCall()
+	call.Tools = []fantasy.Tool{
+		fantasy.FunctionTool{Name: "question", Description: question, InputSchema: toolSchema()},
+		fantasy.FunctionTool{Name: "bash", Description: bash, InputSchema: toolSchema()},
+	}
+	req := buildTestRequest(t, call)
+
+	require.Contains(t, req.SystemPrompt, "<tool_notes>")
+	require.Contains(t, req.SystemPrompt, "</tool_notes>")
+
+	bashAt := strings.Index(req.SystemPrompt, "## mcp__crush__bash")
+	questionAt := strings.Index(req.SystemPrompt, "## mcp__crush__question")
+	require.GreaterOrEqual(t, bashAt, 0, "the bash notes should be present")
+	require.Greater(t, questionAt, bashAt, "the notes should be sorted by tool name")
+	require.Less(t, bashAt, strings.Index(req.SystemPrompt, "Today's date:"), "the notes come before the date line")
+
+	_, bashRest := truncateDescription("bash", bash)
+	require.Contains(t, req.SystemPrompt, bashRest, "the notes should carry the cut text")
+}
+
+// toolSchema is the smallest input schema a tool can carry.
+func toolSchema() map[string]any {
+	return map[string]any{"type": "object"}
 }

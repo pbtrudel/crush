@@ -175,8 +175,9 @@ func (m *Model) buildRequest(call fantasy.Call) (turnRequest, error) {
 	}
 
 	req.SessionKey = call.Headers[sessionHeader]
-	req.SystemPrompt = chatSystemPrompt(system, m.provider.now())
-	req.Tools, req.ToolNames = toolDefs(tools)
+	defs, names, notes := toolDefs(tools)
+	req.Tools, req.ToolNames = defs, names
+	req.SystemPrompt = chatSystemPrompt(system, notes, m.provider.now())
 	return req, nil
 }
 
@@ -186,8 +187,29 @@ func (m *Model) buildRequest(call fantasy.Call) (turnRequest, error) {
 // model name is deliberately absent, because the process switches models in
 // place (restartKey excludes the model) and a model name in the prompt would
 // force a restart on every switch.
-func chatSystemPrompt(system string, now time.Time) string {
-	return system + "\n\nToday's date: " + now.Format("2006-01-02")
+func chatSystemPrompt(system string, notes []toolNote, now time.Time) string {
+	parts := []string{system}
+	if block := toolNotesBlock(notes); block != "" {
+		parts = append(parts, block)
+	}
+	parts = append(parts, "Today's date: "+now.Format("2006-01-02"))
+	return strings.Join(parts, "\n\n")
+}
+
+// toolNotesBlock renders the tool guidance the tool list had to cut. The list
+// cuts every description at 2,048 bytes, which used to lose the tail of the
+// long ones, so the tail travels in the system prompt instead.
+func toolNotesBlock(notes []toolNote) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	text.WriteString("<tool_notes>\nThe descriptions of these tools continue here because the tool list cuts them short.\n")
+	for _, note := range notes {
+		text.WriteString("\n## " + note.Name + "\n" + note.Text)
+	}
+	text.WriteString("\n</tool_notes>")
+	return text.String()
 }
 
 // systemPrompt joins every system message in a prompt.
@@ -206,25 +228,40 @@ func systemPrompt(prompt fantasy.Prompt) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// toolNote is the part of a tool description the tool list could not carry,
+// under the name the model sees for that tool.
+type toolNote struct {
+	Name string
+	Text string
+}
+
 // toolDefs converts fantasy tools into MCP tool definitions. The result is
 // sorted by name so the tool list is byte-identical between runs, which is what
-// keeps Claude's prompt cache warm.
-func toolDefs(tools []fantasy.Tool) ([]toolDef, []string) {
+// keeps Claude's prompt cache warm. Cut tool guidance comes back as notes, also
+// sorted, for the caller to deliver in the system prompt.
+func toolDefs(tools []fantasy.Tool) ([]toolDef, []string, []toolNote) {
 	defs := make([]toolDef, 0, len(tools))
 	names := make([]string, 0, len(tools))
+	notes := make([]toolNote, 0, len(tools))
 	for _, tool := range tools {
 		function, ok := tool.(fantasy.FunctionTool)
 		if !ok {
 			continue
 		}
+		short := shortToolName(function.Name)
+		description, rest := truncateDescription(function.Name, function.Description)
 		names = append(names, function.Name)
 		defs = append(defs, toolDef{
-			Name:        shortToolName(function.Name),
-			Description: truncateDescription(function.Name, function.Description),
+			Name:        short,
+			Description: description,
 			InputSchema: function.InputSchema,
 		})
+		if rest != "" {
+			notes = append(notes, toolNote{Name: mcpToolPrefix + short, Text: rest})
+		}
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(names)
-	return defs, names
+	sort.Slice(notes, func(i, j int) bool { return notes[i].Name < notes[j].Name })
+	return defs, names, notes
 }
