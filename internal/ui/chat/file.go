@@ -47,7 +47,16 @@ func (v *ViewToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
 	}
 
+	// A multi-file call has no single path and no metadata, so the header
+	// names the first file and how many others followed it.
+	multiFile := params.FilePath == "" && len(params.FilePaths) > 0
 	file := fsext.PrettyPath(params.FilePath)
+	if multiFile {
+		file = fsext.PrettyPath(params.FilePaths[0])
+		if extra := len(params.FilePaths) - 1; extra > 0 {
+			file = fmt.Sprintf("%s +%d more", file, extra)
+		}
+	}
 	toolParams := []string{file}
 	if params.Limit != 0 {
 		toolParams = append(toolParams, "limit", fmt.Sprintf("%d", params.Limit))
@@ -90,6 +99,13 @@ func (v *ViewToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 
 	if content == "" {
 		return header
+	}
+
+	// Several files in one block have no single syntax, so the text is shown
+	// as it came back rather than highlighted as one file's code.
+	if multiFile {
+		body := toolOutputPlainContent(sty, content, cappedWidth, opts.ExpandedContent)
+		return joinToolParts(header, body)
 	}
 
 	// Render code content with syntax highlighting.
