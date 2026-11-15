@@ -429,7 +429,7 @@ func (c *coordinator) Ask(ctx context.Context, sessionID, question string) (stri
 		Prompt:           question,
 		Ephemeral:        true,
 		MaxOutputTokens:  maxTokens,
-		ProviderOptions:  c.withPromptCacheKey(mergedOptions, providerCfg),
+		ProviderOptions:  c.withPromptCacheKey(mergedOptions, providerCfg, sessionID),
 		Temperature:      temp,
 		TopP:             topP,
 		TopK:             callTopK(providerCfg, topK),
@@ -572,7 +572,7 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, r
 			Report:            report,
 			Attachments:       attachments,
 			MaxOutputTokens:   maxTokens,
-			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg),
+			ProviderOptions:   c.withPromptCacheKey(mergedOptions, providerCfg, sessionID),
 			Temperature:       temp,
 			TopP:              topP,
 			TopK:              callTopK(providerCfg, topK),
@@ -1533,18 +1533,25 @@ func (c *coordinator) hyperAPIKey() string {
 }
 
 // withPromptCacheKey adds the provider's prompt-cache routing hint to the
-// per-call provider options. The hint is derived from the workspace's
-// working directory so every request from this workspace - sessions,
-// sub-agents, and compaction - routes to the same cache shard, which is
-// what makes provider-side prefix caching reliable across sessions: they
-// all share the same tool and system-prompt prefixes. It has to be applied
-// per call (not per provider) because the value depends on the workspace
-// while the rest of the provider options come from static config.
+// per-call provider options. It has to be applied per call (not per
+// provider) because the value depends on the caller, while the rest of the
+// provider options come from static config.
+//
+// The two providers documented here want different scopes, and the reason is
+// what each one caches. OpenAI matches a prefix across conversations, so the
+// hint is derived from the workspace: every session, sub-agent, and
+// compaction run in this workspace shares the same tool and system-prompt
+// prefixes and routes to one cache shard. Mistral matches per conversation
+// and asks for a conversation or session ID; a single workspace key was in
+// practice shared by the Lead and every concurrent sub-agent and teammate,
+// and far more requests missed than with one key per session. The session
+// hash used here is the same value sent as the x-session-affinity header, so
+// routing and caching agree.
 //
 // Only providers with documented support get the hint here. For other
 // OpenAI-compatible providers (Hyper, Command Code, custom endpoints) a static
 // key can be set through the provider's extra_body config instead.
-func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
+func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig, sessionID string) fantasy.ProviderOptions {
 	workingDir := c.cfg.WorkingDir()
 	if workingDir == "" {
 		return options
@@ -1583,7 +1590,11 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		if opts.ExtraBody == nil {
 			opts.ExtraBody = map[string]any{}
 		}
-		opts.ExtraBody["prompt_cache_key"] = key
+		cacheKey := key
+		if sessionID != "" {
+			cacheKey = session.HashID(sessionID)
+		}
+		opts.ExtraBody["prompt_cache_key"] = cacheKey
 		options[openaicompat.Name] = opts
 	}
 	return options
@@ -2187,7 +2198,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 	// the same path used by regular turns.
 	opts := getProviderOptions(agent.Model(), providerCfg)
 	injectOpenrouterSessionID(opts, sessionID)
-	return agent.Summarize(ctx, sessionID, c.withPromptCacheKey(opts, providerCfg), c.makeAuthRefreshCallback(providerCfg))
+	return agent.Summarize(ctx, sessionID, c.withPromptCacheKey(opts, providerCfg, sessionID), c.makeAuthRefreshCallback(providerCfg))
 }
 
 // GenerateTitle generates a session title using the current agent.
@@ -2397,7 +2408,7 @@ func (c *coordinator) subAgentCall(agent SessionAgent, sessionID, prompt string,
 		Channel:          params.Channel,
 		Prompt:           prompt,
 		MaxOutputTokens:  maxTokens,
-		ProviderOptions:  c.withPromptCacheKey(opts, providerCfg),
+		ProviderOptions:  c.withPromptCacheKey(opts, providerCfg, sessionID),
 		Temperature:      model.ModelCfg.Temperature,
 		TopP:             model.ModelCfg.TopP,
 		TopK:             callTopK(providerCfg, model.ModelCfg.TopK),

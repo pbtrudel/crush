@@ -438,48 +438,61 @@ func TestRunSubAgent(t *testing.T) {
 	})
 }
 
-// TestWithPromptCacheKeyWorkspaceScoped pins the routing key scope: it must
-// be derived from the workspace, not the session, so that separate sessions,
+// TestWithPromptCacheKeyWorkspaceScoped pins the OpenAI key scope: it must be
+// derived from the workspace, not the session, so that separate sessions,
 // sub-agents, and compaction calls in one workspace all route to the same
 // provider cache shard and reuse the shared tool and system-prompt prefixes.
 func TestWithPromptCacheKeyWorkspaceScoped(t *testing.T) {
 	env := testEnv(t)
 
-	t.Run("openai uses the workspace hash", func(t *testing.T) {
-		providerCfg := config.ProviderConfig{
-			ID:   string(catwalk.InferenceProviderOpenAI),
-			Type: openai.Name,
-		}
-		coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+	providerCfg := config.ProviderConfig{
+		ID:   string(catwalk.InferenceProviderOpenAI),
+		Type: openai.Name,
+	}
+	coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
 
-		opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
-		o, ok := opts[openai.Name].(*openai.ProviderOptions)
-		require.True(t, ok)
-		require.NotNil(t, o.PromptCacheKey)
-		assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), *o.PromptCacheKey)
+	opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg, "session-a")
+	o, ok := opts[openai.Name].(*openai.ProviderOptions)
+	require.True(t, ok)
+	require.NotNil(t, o.PromptCacheKey)
+	assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), *o.PromptCacheKey)
 
-		// Repeated calls - as any other session in this workspace would
-		// make - derive the same key.
-		again := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
-		againOpts, ok := again[openai.Name].(*openai.ProviderOptions)
-		require.True(t, ok)
-		require.NotNil(t, againOpts.PromptCacheKey)
-		assert.Equal(t, *o.PromptCacheKey, *againOpts.PromptCacheKey)
-	})
+	// Repeated calls - as any other session in this workspace would
+	// make - derive the same key.
+	again := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg, "session-b")
+	againOpts, ok := again[openai.Name].(*openai.ProviderOptions)
+	require.True(t, ok)
+	require.NotNil(t, againOpts.PromptCacheKey)
+	assert.Equal(t, *o.PromptCacheKey, *againOpts.PromptCacheKey)
+}
 
-	t.Run("mistral carries the key in the extra body", func(t *testing.T) {
-		providerCfg := config.ProviderConfig{
-			ID:      "mistral",
-			BaseURL: "https://api.mistral.ai",
-		}
-		coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+// TestWithPromptCacheKeySessionScoped pins the Mistral key scope: one key per
+// conversation, because its cache is matched per conversation and a single
+// workspace key was shared by the Lead and every concurrent sub-agent.
+func TestWithPromptCacheKeySessionScoped(t *testing.T) {
+	env := testEnv(t)
 
-		opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg)
+	providerCfg := config.ProviderConfig{
+		ID:      "mistral",
+		BaseURL: "https://api.mistral.ai",
+	}
+	coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+
+	keyFor := func(t *testing.T, sessionID string) any {
+		t.Helper()
+		opts := coord.withPromptCacheKey(fantasy.ProviderOptions{}, providerCfg, sessionID)
 		o, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
 		require.True(t, ok)
 		require.NotNil(t, o.ExtraBody)
-		assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), o.ExtraBody["prompt_cache_key"])
-	})
+		return o.ExtraBody["prompt_cache_key"]
+	}
+
+	first, second := keyFor(t, "session-a"), keyFor(t, "session-b")
+	require.NotEqual(t, first, second, "two conversations must not share a cache key")
+	assert.Equal(t, session.HashID("session-a"), first)
+	assert.Equal(t, session.HashID("session-a"), keyFor(t, "session-a"), "one conversation keeps one key")
+	assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), keyFor(t, ""),
+		"an unknown conversation falls back to the workspace key")
 }
 
 func TestGetProviderOptionsReasoningEffort(t *testing.T) {
