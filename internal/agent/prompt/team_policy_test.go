@@ -48,6 +48,7 @@ func TestTeamPolicyRenderedOnlyWithTeamTools(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			p, err := NewPrompt("test", template, WithToolNames(test.toolNames))
 			require.NoError(t, err)
 
