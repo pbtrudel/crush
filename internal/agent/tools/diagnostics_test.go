@@ -126,3 +126,48 @@ func TestRenderDiagnosticsCapsAtTenPerBlock(t *testing.T) {
 	require.Contains(t, out, "... and 2 more diagnostics")
 	require.Equal(t, 10, strings.Count(out, "Error pe"))
 }
+
+// A server that omits the severity leaves the choice to the client, and the
+// safe reading is that the line matters, so an unset severity is shown.
+func TestActionableDiagnosticsTreatsUnsetSeverityAsError(t *testing.T) {
+	t.Parallel()
+
+	file := []diagnosticLine{testDiagnostic(0, "Info uf")}
+	project := []diagnosticLine{testDiagnostic(0, "Info up")}
+
+	shownFile, shownProject := actionableDiagnostics(file, project)
+	require.Len(t, shownFile, 1)
+	require.Len(t, shownProject, 1)
+
+	out := renderDiagnostics(shownFile, shownProject, file, project)
+	require.Contains(t, out, "Info uf")
+	require.Contains(t, out, "Info up")
+}
+
+// The full rendering is what the diagnostics tool returns, so its exact bytes
+// are pinned here: two blocks, then the summary, each on its own line.
+func TestRenderDiagnosticsFullOutputFormat(t *testing.T) {
+	t.Parallel()
+
+	file := []diagnosticLine{
+		testDiagnostic(protocol.SeverityError, "Error e1"),
+		testDiagnostic(protocol.SeverityHint, "Hint h1"),
+	}
+	project := []diagnosticLine{
+		testDiagnostic(protocol.SeverityError, "Error pe"),
+	}
+
+	want := "\n<file_diagnostics>\n" +
+		"Error e1\n" +
+		"Hint h1\n" +
+		"</file_diagnostics>\n" +
+		"\n<project_diagnostics>\n" +
+		"Error pe\n" +
+		"</project_diagnostics>\n" +
+		"\n<diagnostic_summary>\n" +
+		"Current file: 1 errors, 0 warnings\n" +
+		"Project: 1 errors, 0 warnings\n" +
+		"</diagnostic_summary>\n"
+
+	require.Equal(t, want, renderDiagnostics(file, project, file, project))
+}

@@ -203,16 +203,24 @@ func collectDiagnostics(filePath string, manager *lsp.Manager) (file, project []
 // warnings in the file itself, and errors elsewhere in the project.
 func actionableDiagnostics(file, project []diagnosticLine) (shownFile, shownProject []diagnosticLine) {
 	for _, line := range file {
-		if line.severity == protocol.SeverityError || line.severity == protocol.SeverityWarning {
+		if actionableError(line.severity) || line.severity == protocol.SeverityWarning {
 			shownFile = append(shownFile, line)
 		}
 	}
 	for _, line := range project {
-		if line.severity == protocol.SeverityError {
+		if actionableError(line.severity) {
 			shownProject = append(shownProject, line)
 		}
 	}
 	return shownFile, shownProject
+}
+
+// actionableError reports whether a severity is one a change can break. The
+// protocol leaves an omitted severity to the client, so severity 0 is read as
+// an error: showing a line that turned out to be prose costs less than hiding
+// a real failure. The full rendering keeps counting it as it always has.
+func actionableError(severity protocol.DiagnosticSeverity) bool {
+	return severity == protocol.SeverityError || severity == 0
 }
 
 // renderDiagnostics writes the blocks from shown and the summary counts from
