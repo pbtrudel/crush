@@ -65,7 +65,7 @@ func TestChatTurnSendsOneSystemPrompt(t *testing.T) {
 	require.Contains(t, req.SystemPrompt, "</env>")
 	require.True(
 		t,
-		strings.HasSuffix(req.SystemPrompt, "\n\nToday's date: 2026-11-14"),
+		strings.HasSuffix(req.SystemPrompt, "\n\nToday's date: 11/14/2026"),
 		"the prompt should end with the date line, got %q",
 		req.SystemPrompt,
 	)
@@ -178,7 +178,8 @@ func TestChatPromptCarriesCutToolGuidance(t *testing.T) {
 	}
 	req := buildTestRequest(t, call)
 
-	require.Contains(t, req.SystemPrompt, "<tool_notes>")
+	intro := "The descriptions of these tools continue here because the tool list cuts them short."
+	require.Contains(t, req.SystemPrompt, "<tool_notes>\n"+intro+"\n\n## mcp__crush__bash")
 	require.Contains(t, req.SystemPrompt, "</tool_notes>")
 
 	bashAt := strings.Index(req.SystemPrompt, "## mcp__crush__bash")
@@ -189,6 +190,52 @@ func TestChatPromptCarriesCutToolGuidance(t *testing.T) {
 
 	_, bashRest := truncateDescription("bash", bash)
 	require.Contains(t, req.SystemPrompt, bashRest, "the notes should carry the cut text")
+	_, questionRest := truncateDescription("question", question)
+	require.Contains(t, req.SystemPrompt, strings.TrimRight(questionRest, "\n"), "the last note should carry its cut text")
+
+	require.NotContains(t, req.SystemPrompt, "\n\n</tool_notes>", "the block should not end with a blank line")
+	require.True(
+		t,
+		strings.HasSuffix(req.SystemPrompt, "</tool_notes>\n\nToday's date: 11/14/2026"),
+		"the block should end right before the blank line that precedes the date line, got %q",
+		req.SystemPrompt,
+	)
+}
+
+// TestChatPromptBytesAreStable checks that the same turn builds the same
+// system prompt twice, whatever order the tools arrive in: the prefix stays
+// byte-identical, which is what keeps the provider's cache warm.
+func TestChatPromptBytesAreStable(t *testing.T) {
+	t.Parallel()
+
+	call := chatCall()
+	call.Tools = []fantasy.Tool{
+		fantasy.FunctionTool{Name: "question", Description: longDescription("question"), InputSchema: toolSchema()},
+		fantasy.FunctionTool{Name: "bash", Description: longDescription("bash"), InputSchema: toolSchema()},
+	}
+	first := buildTestRequest(t, call).SystemPrompt
+	require.Equal(t, first, buildTestRequest(t, call).SystemPrompt, "the same turn must build the same prompt")
+
+	reversed := call
+	reversed.Tools = []fantasy.Tool{call.Tools[1], call.Tools[0]}
+	require.Equal(t, first, buildTestRequest(t, reversed).SystemPrompt, "tool order must not change the prompt")
+}
+
+// TestTruncateDescriptionCutPoints checks the two edges of the cut: a
+// description that exactly fits loses nothing, and a line break in the first
+// half of the allowed text does not pull the cut back to it.
+func TestTruncateDescriptionCutPoints(t *testing.T) {
+	t.Parallel()
+
+	exact := strings.Repeat("x", mcpDescriptionLimit)
+	fit, rest := truncateDescription("bash", exact)
+	require.Equal(t, exact, fit)
+	require.Empty(t, rest, "a description that fits leaves nothing to carry")
+
+	early := strings.Repeat("x", 10) + "\n" + strings.Repeat("y", mcpDescriptionLimit)
+	fit, rest = truncateDescription("bash", early)
+	require.Len(t, fit, mcpDescriptionLimit, "a line break in the first half must not move the cut")
+	require.Equal(t, early, fit+rest)
 }
 
 // toolSchema is the smallest input schema a tool can carry.

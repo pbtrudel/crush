@@ -184,21 +184,26 @@ func (m *Model) buildRequest(call fantasy.Call) (turnRequest, error) {
 // chatSystemPrompt builds the system prompt of a chat turn. It replaces
 // Claude Code's own prompt, so today's date has to come from here: the date
 // changes the prompt once a day, exactly as Claude Code's own prompt did. The
-// model name is deliberately absent, because the process switches models in
-// place (restartKey excludes the model) and a model name in the prompt would
-// force a restart on every switch.
+// layout must match the one in the session environment snapshot, because a
+// session carries both dates in the same context. The model name is
+// deliberately absent, because the process switches models in place
+// (restartKey excludes the model); a model name in the prompt would force a
+// restart on every switch.
 func chatSystemPrompt(system string, notes []toolNote, now time.Time) string {
 	parts := []string{system}
 	if block := toolNotesBlock(notes); block != "" {
 		parts = append(parts, block)
 	}
-	parts = append(parts, "Today's date: "+now.Format("2006-01-02"))
+	parts = append(parts, "Today's date: "+now.Format("1/2/2006"))
 	return strings.Join(parts, "\n\n")
 }
 
 // toolNotesBlock renders the tool guidance the tool list had to cut. The list
 // cuts every description at 2,048 bytes, which used to lose the tail of the
-// long ones, so the tail travels in the system prompt instead.
+// long ones, so the tail travels in the system prompt instead. Trailing line
+// breaks are trimmed only here, so the block does not end with a blank line;
+// the stored remainder still reassembles the description with the part that
+// fits.
 func toolNotesBlock(notes []toolNote) string {
 	if len(notes) == 0 {
 		return ""
@@ -206,9 +211,9 @@ func toolNotesBlock(notes []toolNote) string {
 	var text strings.Builder
 	text.WriteString("<tool_notes>\nThe descriptions of these tools continue here because the tool list cuts them short.\n")
 	for _, note := range notes {
-		text.WriteString("\n## " + note.Name + "\n" + note.Text)
+		text.WriteString("\n## " + note.Name + "\n" + strings.TrimRight(note.Text, "\n") + "\n")
 	}
-	text.WriteString("\n</tool_notes>")
+	text.WriteString("</tool_notes>")
 	return text.String()
 }
 
