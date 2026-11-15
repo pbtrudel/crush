@@ -1168,6 +1168,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
+	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
 
 	a.applyToolCacheBreakpoint(agentTools)
@@ -2894,7 +2895,7 @@ func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel stri
 	var added []fantasy.AgentTool
 	for _, tool := range current {
 		if _, ok := known[tool.Info().Name]; !ok {
-			added = append(added, tool)
+			added = append(added, boundedOutputTool{inner: tool, bound: a.truncateToolOutput})
 		}
 	}
 	if len(added) == 0 {
