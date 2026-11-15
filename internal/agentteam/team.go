@@ -49,6 +49,21 @@ Report progress to the Lead as you work. Send a one-line message when you start 
 
 Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change; it also returns the current roster and live task board, so re-list only when you need the full task details. The Lead must wait for required teammates before giving the final answer.`
 
+// ToolNames are the tool names that make the Policy apply. A prompt package
+// cannot import the agent package that declares them, so they are repeated
+// here for the prompt builder to check a palette against.
+var ToolNames = []string{
+	"spawn_teammate",
+	"send_message",
+	"list_agents",
+	"wait_agent",
+	"interrupt_agent",
+	"team_task_create",
+	"team_task_list",
+	"team_task_get",
+	"team_task_update",
+}
+
 // Role is a Team member role.
 type Role string
 

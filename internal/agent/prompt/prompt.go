@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"text/template"
@@ -429,7 +430,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		CanWrite:      p.canWrite,
 		ToolNames:     p.toolNames,
 	}
-	if cfg.Options.GetAgentTeams() {
+	if cfg.Options.GetAgentTeams() && hasTeamTools(p.toolNames) {
 		data.TeamPolicy = agentteam.Policy
 	}
 
@@ -438,6 +439,22 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	data.ContextBudget = contextBudget
 	data.GlobalContextBudget = globalContextBudget
 	return data, nil
+}
+
+// hasTeamTools reports whether the palette holds at least one Team tool. An
+// empty list means the caller did not say which tools the agent has, so the
+// policy is kept: dropping it on a missing hint would silently remove rules
+// the agent needs.
+func hasTeamTools(toolNames []string) bool {
+	if len(toolNames) == 0 {
+		return true
+	}
+	for _, name := range toolNames {
+		if slices.Contains(agentteam.ToolNames, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func isGitRepo(dir string) bool {
