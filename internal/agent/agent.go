@@ -2157,8 +2157,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	systemPrompt := a.systemPromptForSession(sessionID)
 	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
 	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	// Both wrappers apply: the guard refuses to execute, and the bound
+	// keeps any text a tool did produce within the same budget the session
+	// log uses. Composing them means neither layer can be lost by editing
+	// the other, and both delegate Info and the provider options, so the
+	// tool block still serializes exactly as the live turn's did.
 	for i, tool := range compactionTools {
-		compactionTools[i] = compactionGuardTool{inner: tool}
+		compactionTools[i] = boundedOutputTool{
+			inner: compactionGuardTool{inner: tool},
+			bound: a.truncateToolOutput,
+		}
 	}
 	a.applyToolCacheBreakpoint(compactionTools)
 
@@ -2271,6 +2279,10 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
+			// The compaction prompt is what the provider cached last, so the
+			// next turn's shared-prefix count has to be measured against it,
+			// not against the turn that came before the compaction.
+			a.recordPromptFingerprint(sessionID, prepared.Messages)
 			return callContext, prepared, nil
 		},
 		OnReasoningDelta: func(id string, text string) error {
@@ -2377,7 +2389,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		// The system message and the instruction are messages of the
 		// request too, and a turn counts them the same way.
 		PromptMessages: len(aiMsgs) + 2,
-		Estimated:      usageIsZero(usage),
+		Estimated:      usageIsZero(resp.TotalUsage),
 	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
@@ -2390,7 +2402,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	currentSession.SummaryCutMessageID = cutID
 	currentSession.CompletionTokens = summaryTokens
 	currentSession.PromptTokens = 0
-	currentSession.EstimatedUsage = usageIsZero(usage)
+	currentSession.EstimatedUsage = usageIsZero(resp.TotalUsage)
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
 		return err
