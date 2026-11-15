@@ -292,3 +292,68 @@ func TestAppendContentKeepsContext(t *testing.T) {
 	msg.AppendContent("b")
 	require.Equal(t, TextContent{Text: "ab", Hidden: true, Context: "ctx"}, msg.Content())
 }
+
+// requestUsage builds a fully populated usage record, so a round trip that
+// drops any one field fails.
+func requestUsage() RequestUsage {
+	return RequestUsage{
+		InputTokens:      1_200,
+		CacheReadTokens:  9_000,
+		CacheWriteTokens: 3_000,
+		OutputTokens:     450,
+		PromptMessages:   12,
+		PreviousMessages: 10,
+		SharedMessages:   10,
+		ToolsChanged:     true,
+		Estimated:        true,
+	}
+}
+
+func TestFinishRequestUsageRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	usage := requestUsage()
+	encoded, err := marshalParts([]ContentPart{Finish{Reason: FinishReasonEndTurn, Time: 7, Usage: &usage}})
+	require.NoError(t, err)
+
+	decoded, err := unmarshalParts(encoded)
+	require.NoError(t, err)
+	require.Len(t, decoded, 1)
+	finish, ok := decoded[0].(Finish)
+	require.True(t, ok)
+	require.NotNil(t, finish.Usage)
+	require.Equal(t, usage, *finish.Usage)
+}
+
+func TestFinishWithoutUsageHasNoUsageKey(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := marshalParts([]ContentPart{Finish{Reason: FinishReasonEndTurn, Time: 7}})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "usage")
+}
+
+func TestSetRequestUsage(t *testing.T) {
+	t.Parallel()
+
+	usage := requestUsage()
+
+	t.Run("records on the finish part", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant}
+		msg.AddFinish(FinishReasonEndTurn, "", "")
+		msg.SetRequestUsage(usage)
+
+		finish, ok := msg.Parts[len(msg.Parts)-1].(Finish)
+		require.True(t, ok)
+		require.NotNil(t, finish.Usage)
+		require.Equal(t, usage, *finish.Usage)
+	})
+
+	t.Run("is a no-op without a finish part", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant, Parts: []ContentPart{TextContent{Text: "hi"}}}
+		msg.SetRequestUsage(usage)
+		require.Equal(t, []ContentPart{TextContent{Text: "hi"}}, msg.Parts)
+	})
+}

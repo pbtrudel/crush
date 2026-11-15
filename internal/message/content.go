@@ -141,6 +141,36 @@ type ToolResult struct {
 
 func (ToolResult) isPart() {}
 
+// RequestUsage is what one model request consumed and how its prompt
+// compared with the previous request of the same session.
+//
+// Providers cache a request prefix only while it stays byte-identical, and
+// they report a miss only as a low cache-read count. Storing the comparison
+// next to the counts is what lets a miss be attributed afterwards: a fully
+// shared prefix with a low cache read is the provider's doing, a short
+// shared prefix names the message that changed.
+type RequestUsage struct {
+	InputTokens      int64 `json:"input_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	// PromptMessages is how many messages the request carried.
+	PromptMessages int `json:"prompt_messages,omitempty"`
+	// PreviousMessages is how many the session's previous request carried.
+	// Zero means this process had not seen an earlier request.
+	PreviousMessages int `json:"previous_messages,omitempty"`
+	// SharedMessages is how many leading messages both requests had in
+	// common. A request that only extends the conversation shares all of
+	// PreviousMessages.
+	SharedMessages int `json:"shared_messages,omitempty"`
+	// ToolsChanged reports that the tool definitions differed from the
+	// previous request, which invalidates the cache from the start.
+	ToolsChanged bool `json:"tools_changed,omitempty"`
+	// Estimated reports that the provider gave no usage and the counts are
+	// Crush's own estimate.
+	Estimated bool `json:"estimated,omitempty"`
+}
+
 type Finish struct {
 	Reason  FinishReason `json:"reason"`
 	Time    int64        `json:"time"`
@@ -152,6 +182,10 @@ type Finish struct {
 	// denominator for generation speed (tokens per second). Zero when the
 	// step never streamed an output token or predates this measurement.
 	DecodeMs int64 `json:"decode_ms,omitempty"`
+	// Usage is what the request that produced this message consumed, with
+	// the prefix comparison that explains its cache read. Nil on messages
+	// that were never a request of their own.
+	Usage *RequestUsage `json:"usage,omitempty"`
 }
 
 func (Finish) isPart() {}
@@ -684,6 +718,20 @@ func (m *Message) addFinish(reason FinishReason, message, details string, at, de
 		}
 	}
 	m.Parts = append(m.Parts, Finish{Reason: reason, Time: at, Message: message, Details: details, DecodeMs: decodeMs})
+}
+
+// SetRequestUsage records the request's usage on the finish part. It is a
+// no-op until the message has one.
+func (m *Message) SetRequestUsage(usage RequestUsage) {
+	for i, part := range m.Parts {
+		finish, ok := part.(Finish)
+		if !ok {
+			continue
+		}
+		finish.Usage = &usage
+		m.Parts[i] = finish
+		return
+	}
 }
 
 // SetFirstTokenAt records when the step's first output token arrived. It is

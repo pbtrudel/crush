@@ -1329,6 +1329,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
 
 	var stepMessages []fantasy.Message
+	// What the request being sent carried, and how much of it the session
+	// had already sent. Recorded with the step's usage, see OnStepFinish.
+	var (
+		promptMessages   int
+		previousMessages int
+		sharedMessages   int
+		toolsChanged     bool
+	)
 	var shouldSummarize bool
 	// Written from OnToolCall and read from OnToolResult, which fantasy
 	// invokes concurrently for parallel tool calls.
@@ -1398,7 +1406,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
-			a.recordToolsFingerprint(call.SessionID, stepTools)
+			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1457,7 +1465,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
 
-			a.recordPromptFingerprint(call.SessionID, prepared.Messages)
+			previousMessages, sharedMessages = a.recordPromptFingerprint(call.SessionID, prepared.Messages)
+			promptMessages = len(prepared.Messages)
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
@@ -1656,6 +1665,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// todo, title, or sub-agent rollup written between the read and
 			// the write.
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
+			currentAssistant.SetRequestUsage(message.RequestUsage{
+				InputTokens:      usage.InputTokens,
+				CacheReadTokens:  usage.CacheReadTokens,
+				CacheWriteTokens: usage.CacheCreationTokens,
+				OutputTokens:     usage.OutputTokens,
+				PromptMessages:   promptMessages,
+				PreviousMessages: previousMessages,
+				SharedMessages:   sharedMessages,
+				ToolsChanged:     toolsChanged,
+				Estimated:        estimated,
+			})
 			pricingModel := a.modelForStepCost(largeModel, stepResult.ProviderMetadata)
 			updatedSession, sessionErr := a.sessions.AddStepUsage(
 				ctx,
@@ -2347,6 +2367,18 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		finishReason = message.FinishReasonEndTurn
 	}
 	summaryMessage.AddFinish(finishReason, finishMessage, finishDetails)
+	// A compaction is a model request like any other, and the most
+	// expensive one of a session: record what it consumed with it.
+	summaryMessage.SetRequestUsage(message.RequestUsage{
+		InputTokens:      resp.TotalUsage.InputTokens,
+		CacheReadTokens:  resp.TotalUsage.CacheReadTokens,
+		CacheWriteTokens: resp.TotalUsage.CacheCreationTokens,
+		OutputTokens:     resp.TotalUsage.OutputTokens,
+		// The system message and the instruction are messages of the
+		// request too, and a turn counts them the same way.
+		PromptMessages: len(aiMsgs) + 2,
+		Estimated:      usageIsZero(usage),
+	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
 		return err
@@ -2836,22 +2868,29 @@ func buildMCPInstructions(pairs []namedInstruction) string {
 	return "\n\n<mcp-instructions>\n" + instructions.String() + "\n</mcp-instructions>"
 }
 
-// recordPromptFingerprint hashes the prompt about to be sent and compares it
-// with the previous request of the same session, logging the first message
-// that changed.
+// recordPromptFingerprint hashes the prompt about to be sent, compares it
+// with the previous request of the same session, and reports how many
+// messages that request carried and how many leading ones this request
+// shares with it. The first message that changed is logged.
 //
 // Providers cache a request prefix only while it stays byte-identical between
 // turns, so a cache that stops paying off always means "some message changed".
-// This points at that message directly, which is otherwise hard to see: the
-// provider reports a low cache-read count, but not what caused it. The cost is
-// one hash per message and only while debug logging is on.
-func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fantasy.Message) {
-	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return
-	}
+// Reporting the shared count next to the usage stored on the message is what
+// makes a miss attributable after the fact: the provider reports a low
+// cache-read count, not what caused it. The cost is one hash per message on
+// every request, which is a few milliseconds of JSON on a large prompt and is
+// paid to answer the only question a cache miss raises.
+//
+// Cache breakpoints are excluded: applyCacheBreakpoints moves them to the
+// last two messages of every request by design, so hashing them would report
+// a divergence on every request. The parts' own provider options stay, since
+// signed reasoning is content the provider matches on.
+func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fantasy.Message) (previousCount, shared int) {
 	hashes := make([]string, len(messages))
 	for i := range messages {
-		data, err := json.Marshal(messages[i])
+		hashed := messages[i]
+		hashed.ProviderOptions = nil
+		data, err := json.Marshal(hashed)
 		if err != nil {
 			continue
 		}
@@ -2861,12 +2900,10 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 	previous, hadPrevious := a.promptHashes.Get(sessionID)
 	a.promptHashes.Set(sessionID, hashes)
 	if !hadPrevious {
-		return
+		return 0, 0
 	}
-	for i := range hashes {
-		if i >= len(previous) {
-			break
-		}
+	common := min(len(hashes), len(previous))
+	for i := range common {
 		if hashes[i] != previous[i] {
 			slog.Debug(
 				"Prompt prefix diverged from the previous request",
@@ -2876,9 +2913,10 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 				"previous_messages", len(previous),
 				"current_messages", len(hashes),
 			)
-			return
+			return len(previous), i
 		}
 	}
+	return len(previous), common
 }
 
 // recordToolsFingerprint hashes the tools about to be sent and compares them
@@ -2890,12 +2928,13 @@ func (a *sessionAgent) recordPromptFingerprint(sessionID string, messages []fant
 // between requests (a dynamic description, an unsorted insertion, an MCP
 // server re-listing with different schema bytes) rewrites the tools prefix
 // and invalidates the cache for everything after it. The provider reports
-// that only as a low cache-read count; this names the tool. The cost is one
-// hash per tool and only while debug logging is on.
-func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) {
-	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return
-	}
+// that only as a low cache-read count; this names the tool, and its result is
+// stored with the request's usage so the miss can be explained later. The
+// cost is one hash per tool on every request.
+//
+// It reports whether the block changed, which also covers a request that adds
+// or drops a tool.
+func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.AgentTool) (changed bool) {
 	hashes := make([]string, len(tools))
 	for i, tool := range tools {
 		data, err := json.Marshal(tool.Info())
@@ -2908,7 +2947,7 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 	previous, hadPrevious := a.toolsHashes.Get(sessionID)
 	a.toolsHashes.Set(sessionID, hashes)
 	if !hadPrevious {
-		return
+		return false
 	}
 	common := min(len(hashes), len(previous))
 	for i := range common {
@@ -2921,7 +2960,7 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 				"previous_tools", len(previous),
 				"current_tools", len(hashes),
 			)
-			return
+			return true
 		}
 	}
 	if len(hashes) != len(previous) {
@@ -2931,7 +2970,9 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 			"previous_tools", len(previous),
 			"current_tools", len(hashes),
 		)
+		return true
 	}
+	return false
 }
 
 // applyToolCacheBreakpoint puts the cache breakpoint on the last tool
