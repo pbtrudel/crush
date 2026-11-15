@@ -410,8 +410,8 @@ func TestViewToolMultiFileDoesNotReadFilesItSkips(t *testing.T) {
 
 	require.Equal(t, []string{paths[0]}, tracker.recorded(),
 		"only files that came back may be recorded as read")
-	require.Len(t, permissions.requests, 1,
-		"only files that came back may ask for permission")
+	require.Len(t, permissions.requests, 2,
+		"outside files are permission-checked before any sizing, but only until the budget stops the call")
 	require.Equal(t, paths[0], permissions.requests[0].Path)
 }
 

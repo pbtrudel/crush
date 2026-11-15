@@ -170,31 +170,20 @@ func newViewLikeTool(
 	)
 }
 
-// readFile reads one file exactly as a single-file call always has:
-// permission outside the workspace, file tracking, diagnostics and the
-// response metadata that describes the file.
-func (v viewReader) readFile(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	if params.FilePath == "" {
-		return fantasy.NewTextErrorResponse("file_path is required"), nil
-	}
+// checkReadAccess resolves a file path and confirms it may be read, asking
+// for permission when it lies outside the working directory. Every
+// filesystem touch in this package goes through it first, including the
+// sizing pass a multi-file call does before reading.
+func (v viewReader) checkReadAccess(ctx context.Context, params ViewParams, call fantasy.ToolCall) (string, bool, fantasy.ToolResponse, error) {
+	filePath := filepath.Clean(filepathext.SmartJoin(v.workingDir, home.Long(params.FilePath)))
 
-	// Handle builtin skill files (crush: prefix).
-	if strings.HasPrefix(params.FilePath, skills.BuiltinPrefix) {
-		return readBuiltinFile(params, v.skillTracker)
-	}
-
-	// Handle relative paths
-	filePath := filepathext.SmartJoin(v.workingDir, home.Long(params.FilePath))
-
-	// Check if file is outside working directory and request permission if needed
 	absWorkingDir, err := filepath.Abs(v.workingDir)
 	if err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
+		return "", false, fantasy.ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
 	}
-
 	absFilePath, err := filepath.Abs(filePath)
 	if err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
+		return "", false, fantasy.ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
 	}
 
 	relPath, err := filepath.Rel(absWorkingDir, absFilePath)
@@ -203,10 +192,9 @@ func (v viewReader) readFile(ctx context.Context, params ViewParams, call fantas
 
 	sessionID := GetSessionFromContext(ctx)
 	if sessionID == "" {
-		return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for accessing files outside working directory")
+		return "", false, fantasy.ToolResponse{}, fmt.Errorf("session ID is required for accessing files outside working directory")
 	}
 
-	// Request permission for files outside working directory, unless it's a skill file.
 	if isOutsideWorkDir && !isSkillFile {
 		granted, permReqErr := v.permissions.Request(
 			ctx,
@@ -225,12 +213,44 @@ func (v viewReader) readFile(ctx context.Context, params ViewParams, call fantas
 			},
 		)
 		if permReqErr != nil {
-			return fantasy.ToolResponse{}, permReqErr
+			return "", false, fantasy.ToolResponse{}, permReqErr
 		}
 		if !granted {
-			return NewPermissionDeniedResponse(), nil
+			return "", false, NewPermissionDeniedResponse(), nil
 		}
 	}
+	return absFilePath, true, fantasy.ToolResponse{}, nil
+}
+
+// readFile reads one file exactly as a single-file call always has:
+// permission outside the workspace, file tracking, diagnostics and the
+// response metadata that describes the file.
+func (v viewReader) readFile(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	if params.FilePath == "" {
+		return fantasy.NewTextErrorResponse("file_path is required"), nil
+	}
+
+	// Handle builtin skill files (crush: prefix).
+	if strings.HasPrefix(params.FilePath, skills.BuiltinPrefix) {
+		return readBuiltinFile(params, v.skillTracker)
+	}
+
+	// Handle relative paths
+	filePath, allowed, resp, err := v.checkReadAccess(ctx, params, call)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	if !allowed {
+		return resp, nil
+	}
+	return v.readFileAuthorized(ctx, params, call, filePath)
+}
+
+// readFileAuthorized does the read after checkReadAccess has granted it, so a
+// multi-file call asks for permission once per file, not twice.
+func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, call fantasy.ToolCall, filePath string) (fantasy.ToolResponse, error) {
+	isSkillFile := isInSkillsPath(filePath, v.skillsPaths)
+	sessionID := GetSessionFromContext(ctx)
 
 	// Check if file exists
 	fileInfo, err := os.Stat(filePath)
@@ -382,17 +402,32 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 		imageType string
 	)
 	for i, path := range params.FilePaths {
+		one := params
+		one.FilePath = path
+		one.FilePaths = nil
+
+		// Permission comes before any filesystem touch, sizing included.
+		absPath, allowed, denied, err := v.checkReadAccess(ctx, one, call)
+		if err != nil {
+			return denied, err
+		}
+		if !allowed {
+			block := fmt.Sprintf("==> %s <==\n%s", path, denied.Content)
+			if output.Len() > 0 {
+				output.WriteString("\n\n")
+			}
+			output.WriteString(block)
+			continue
+		}
+
 		// Size the file before reading it: a file that will not be shown must
-		// not ask for permission, load an image, or be recorded as read.
-		if i > 0 && v.skipsForBudget(output.Len(), path) {
+		// not load an image or be recorded as read.
+		if i > 0 && v.skipsForBudget(output.Len(), absPath) {
 			notRead = params.FilePaths[i:]
 			break
 		}
 
-		one := params
-		one.FilePath = path
-		one.FilePaths = nil
-		resp, err := v.readFile(ctx, one, call)
+		resp, err := v.readFileAuthorized(ctx, one, call, absPath)
 		if err != nil {
 			return resp, err
 		}
@@ -446,17 +481,16 @@ func (v viewReader) readFiles(ctx context.Context, params ViewParams, call fanta
 // that the file was read. A path that cannot be sized, such as a builtin
 // skill file, is read: losing a file to a failed stat would cost more than
 // one oversized block.
-func (v viewReader) skipsForBudget(soFar int, path string) bool {
-	full := filepathext.SmartJoin(v.workingDir, home.Long(path))
-	info, err := os.Stat(full)
+func (v viewReader) skipsForBudget(soFar int, absPath string) bool {
+	info, err := os.Stat(absPath)
 	if err != nil || info.IsDir() {
 		return false
 	}
-	if isImage, _ := getImageMimeType(path); isImage {
+	if isImage, _ := getImageMimeType(absPath); isImage {
 		// An image contributes only a caption to the text budget.
 		return false
 	}
-	estimated, ok := estimateTextBlock(full, info.Size())
+	estimated, ok := estimateTextBlock(absPath, info.Size())
 	if !ok {
 		return false
 	}
