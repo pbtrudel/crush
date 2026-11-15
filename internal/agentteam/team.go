@@ -871,14 +871,17 @@ func runReport(name, output string, settled []string, runErr error, fullReport s
 	}
 	if text := strings.TrimSpace(output); text != "" {
 		if len(text) > maxReportInline {
-			head := truncateText(text, maxReportInline) + "…"
+			head := truncateText(text, maxReportInline)
+			note := ""
 			if fullReport != "" {
-				head += fmt.Sprintf(
+				// The head is measured, not assumed: a cut that lands
+				// mid-rune keeps fewer bytes than the cap.
+				note = fmt.Sprintf(
 					"\n\n[Report cut: %d of %d bytes shown. Full report: %s]",
-					maxReportInline, len(text), fullReport,
+					len(head), len(text), fullReport,
 				)
 			}
-			text = head
+			text = head + "…" + note
 		}
 		sb.WriteString("\n\n")
 		sb.WriteString(text)
