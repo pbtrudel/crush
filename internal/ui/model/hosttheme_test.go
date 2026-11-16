@@ -474,11 +474,17 @@ func transparencyLabel(t *testing.T, m *UI) string {
 	defer m.dialog.CloseDialog(dialog.CommandsID)
 	d := m.dialog.Dialog(dialog.CommandsID)
 	require.NotNil(t, d)
+	const w, h = 100, 30
+	// The first draw sizes the palette and rebuilds its width-dependent
+	// items, which clears the search. Draw before typing so the filter
+	// below survives, instead of relying on the toggle already being on
+	// screen.
+	scr := uv.NewScreenBuffer(w, h)
+	d.Draw(scr, image.Rect(0, 0, w, h))
 	for _, r := range "background color" {
 		d.HandleMsg(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	const w, h = 100, 30
-	scr := uv.NewScreenBuffer(w, h)
+	scr = uv.NewScreenBuffer(w, h)
 	d.Draw(scr, image.Rect(0, 0, w, h))
 	out := ansi.Strip(scr.Render())
 	for _, label := range []string{"Enable Background Color", "Disable Background Color"} {

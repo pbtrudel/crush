@@ -523,9 +523,14 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		commands = append(commands, NewCommandItem(c.com.Styles, "compact", "Compact Session", "", ActionSummarize{SessionID: c.sessionID}).WithAliases("summarize").WithIcon("⊟"))
 		commands = append(commands, NewCommandItem(c.com.Styles, "export_session", "Export Session as Markdown", "", ActionExportSession{SessionID: c.sessionID}).WithAliases("export", "markdown").WithIcon("↧"))
 		commands = append(commands, NewCommandItem(c.com.Styles, "ask_side_question", "Ask Side Question", "", ActionAskSideQuestion{SessionID: c.sessionID}).WithAliases("btw", "side").WithIcon("?"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "goal", "Set Goal", "", ActionGoal{}).WithAliases("goals", "objective").WithIcon("◎"))
-		commands = append(commands, NewCommandItem(c.com.Styles, "loop", "Start Loop", "", ActionLoop{}).WithAliases("loops", "schedule").WithIcon("↻"))
 	}
+
+	// Goals and loops create a session on demand, so they stay listed
+	// before one exists.
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "goal", "Set Goal", "", ActionGoal{}).WithAliases("goals", "objective").WithIcon("◎"),
+		NewCommandItem(c.com.Styles, "loop", "Start Loop", "", ActionLoop{}).WithAliases("loops", "schedule").WithIcon("↻"),
+	)
 
 	commands = append(commands,
 		NewCommandItem(c.com.Styles, "reload_config", "Reload Configuration", "", ActionReloadConfig{}).WithAliases("reload", "reload-config").WithIcon("⟳"),
