@@ -407,6 +407,17 @@ func (m *Models) isSelectedConfigured() bool {
 	return isConfigured
 }
 
+// withConfiguredReasoning returns the picker's model with the reasoning
+// config Crush actually uses for it. A configured model can carry effort
+// levels the catalog lacks, or drop levels it no longer supports, and Select
+// Reasoning Effort lists the configured levels.
+func (m *Models) withConfiguredReasoning(providerID string, model catwalk.Model) catwalk.Model {
+	if effective := m.com.Config().GetModel(providerID, model.ID); effective != nil {
+		model.Reasoning = effective.Reasoning
+	}
+	return model
+}
+
 // setProviderItems sets the provider items in the list.
 func (m *Models) setProviderItems() error {
 	t := m.com.Styles
@@ -452,7 +463,7 @@ func (m *Models) setProviderItems() error {
 
 			group := NewModelGroup(t, name, true)
 			for _, model := range p.Models {
-				item := NewModelItem(t, provider, model, m.modelType, false)
+				item := NewModelItem(t, provider, m.withConfiguredReasoning(id, model), m.modelType, false)
 				group.AppendItems(item)
 				itemsMap[item.ID()] = item
 				if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
@@ -511,7 +522,7 @@ func (m *Models) setProviderItems() error {
 		if subscriptionModels, _ := providerConfig.SubscriptionModels(); subscriptionModels != nil {
 			group := NewModelGroup(t, name, true)
 			for _, model := range subscriptionModels {
-				item := NewModelItem(t, provider, model, m.modelType, false)
+				item := NewModelItem(t, provider, m.withConfiguredReasoning(providerID, model), m.modelType, false)
 				group.AppendItems(item)
 				itemsMap[item.ID()] = item
 				if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
@@ -526,7 +537,7 @@ func (m *Models) setProviderItems() error {
 
 		group := NewModelGroup(t, name, providerConfigured)
 		for _, model := range displayProvider.Models {
-			item := NewModelItem(t, provider, model, m.modelType, false)
+			item := NewModelItem(t, provider, m.withConfiguredReasoning(providerID, model), m.modelType, false)
 			group.AppendItems(item)
 			itemsMap[item.ID()] = item
 			if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {

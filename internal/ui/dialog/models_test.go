@@ -118,6 +118,64 @@ func TestModelsToggleIgnoredDuringOnboarding(t *testing.T) {
 	require.Equal(t, []string{"OpenAI", "Anthropic"}, modelGroupTitles(m))
 }
 
+func TestModelsUsesConfiguredReasoningLevels(t *testing.T) {
+	t.Parallel()
+
+	const (
+		providerID = "openai"
+		modelID    = "gpt-5.3"
+	)
+
+	// The catalog lags behind the user's provider model override.
+	catalog := []catwalk.Provider{{
+		ID:   providerID,
+		Name: "OpenAI",
+		Models: []catwalk.Model{{
+			ID:   modelID,
+			Name: "GPT-5.3",
+			Reasoning: catwalk.Reasoning{
+				EffortLevels:       catwalk.NewEffortLevels("low", "medium", "high"),
+				DefaultEffortLevel: "medium",
+			},
+		}},
+	}}
+
+	cfg := testModelsConfig(t, nil, providerID)
+	cfg.Providers.Set(providerID, config.ProviderConfig{
+		ID: providerID,
+		Models: []catwalk.Model{{
+			ID:   modelID,
+			Name: "GPT-5.3",
+			Reasoning: catwalk.Reasoning{
+				EffortLevels:       catwalk.NewEffortLevels("low", "high", "max"),
+				DefaultEffortLevel: "max",
+			},
+		}},
+	})
+
+	m := newModelsForTest(t, cfg, catalog, false)
+
+	var item *ModelItem
+	for _, g := range m.list.groups {
+		for _, candidate := range g.Items {
+			if candidate.ID() == modelKey(providerID, modelID) {
+				item = candidate
+			}
+		}
+	}
+	require.NotNil(t, item, "model picker should list %s", modelID)
+
+	// What Crush actually uses for the configured provider model.
+	configured := cfg.GetModel(providerID, modelID)
+	require.NotNil(t, configured)
+	require.Equal(t, []string{"low", "high", "max"}, configured.ReasoningEffortLevels())
+	require.Equal(t, "max", configured.Reasoning.DefaultEffortLevel)
+
+	// The picker must offer the same levels and default the config uses.
+	require.Equal(t, configured.ReasoningEffortLevels(), item.ReasoningEfforts())
+	require.Equal(t, "max", item.SelectedModel().ReasoningEffort)
+}
+
 func TestModelItemCyclesReasoningEffort(t *testing.T) {
 	t.Parallel()
 
