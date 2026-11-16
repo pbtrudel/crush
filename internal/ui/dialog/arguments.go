@@ -7,7 +7,7 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -25,10 +25,12 @@ const ArgumentsID = "arguments"
 
 // Dialog sizing for arguments.
 const (
-	maxInputWidth        = 120
-	minInputWidth        = 30
-	maxViewportHeight    = 20
-	argumentsFieldHeight = 3 // label + input + spacing per field
+	maxInputWidth         = 120
+	minInputWidth         = 30
+	minReadableInputWidth = 60
+	maxInputHeight        = 8
+	maxViewportHeight     = 20
+	argumentsLabelHeight  = 1
 )
 
 // Arguments represents a dialog for collecting command arguments.
@@ -36,10 +38,18 @@ type Arguments struct {
 	com       *common.Common
 	title     string
 	arguments []commands.Argument
-	inputs    []textinput.Model
+	inputs    []textarea.Model
 	focused   int
 	spinner   spinner.Model
 	loading   bool
+
+	// fieldOffsets and fieldHeights describe the rendered field layout in
+	// rows from the top of the scrollable fields content.
+	fieldOffsets []int
+	fieldHeights []int
+	// inputWidths caches the width applied to each textarea so a resize can
+	// rebuild its wrapped content before the cursor is positioned.
+	inputWidths []int
 
 	description  string
 	resultAction Action
@@ -49,6 +59,7 @@ type Arguments struct {
 		Confirm,
 		Next,
 		Previous,
+		UpDown,
 		ScrollUp,
 		ScrollDown,
 		Close key.Binding
@@ -84,15 +95,29 @@ func NewArguments(com *common.Common, title, description string, arguments []com
 		key.WithKeys("up", "shift+tab"),
 		key.WithHelp("↑/shift+tab", "previous"),
 	)
+	a.keyMap.UpDown = key.NewBinding(key.WithKeys("up", "down"))
 	a.keyMap.Close = CloseKey
 
-	// Create input fields for each argument.
-	a.inputs = make([]textinput.Model, len(arguments))
+	// Create input fields for each argument. Arguments can be long-form
+	// text, so they wrap and scroll instead of scrolling horizontally.
+	a.inputs = make([]textarea.Model, len(arguments))
+	a.inputWidths = make([]int, len(arguments))
 	for i, arg := range arguments {
-		input := textinput.New()
+		input := textarea.New()
 		input.SetVirtualCursor(false)
-		input.SetStyles(com.Styles.TextInput)
-		input.Prompt = "> "
+		input.SetStyles(questionTextareaStyles(com.Styles))
+		input.ShowLineNumbers = false
+		input.DynamicHeight = true
+		input.MinHeight = 1
+		input.MaxHeight = maxInputHeight
+		input.SetHeight(1)
+		input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+			if info.LineNumber == 0 {
+				return "> "
+			}
+			return "  "
+		})
+		input.KeyMap.InsertNewline = key.NewBinding(key.WithDisabled())
 		// Use description as placeholder if available, otherwise title
 		if arg.Description != "" {
 			input.Placeholder = arg.Description
@@ -137,8 +162,11 @@ func (a *Arguments) focusInput(newIndex int) {
 
 // isFieldVisible checks if a field at the given index is visible in the viewport.
 func (a *Arguments) isFieldVisible(fieldIndex int) bool {
-	fieldStart := fieldIndex * argumentsFieldHeight
-	fieldEnd := fieldStart + argumentsFieldHeight - 1
+	if fieldIndex < 0 || fieldIndex >= len(a.fieldHeights) {
+		return true
+	}
+	fieldStart := a.fieldOffsets[fieldIndex]
+	fieldEnd := fieldStart + a.fieldHeights[fieldIndex] - 1
 	viewportTop := a.viewport.YOffset()
 	viewportBottom := viewportTop + a.viewport.Height() - 1
 
@@ -147,14 +175,34 @@ func (a *Arguments) isFieldVisible(fieldIndex int) bool {
 
 // ensureFieldVisible scrolls the viewport to make the field visible.
 func (a *Arguments) ensureFieldVisible(fieldIndex int) {
-	if a.isFieldVisible(fieldIndex) {
+	if fieldIndex < 0 || fieldIndex >= len(a.fieldHeights) {
+		return
+	}
+	viewportHeight := a.viewport.Height()
+	if viewportHeight <= 0 {
 		return
 	}
 
-	fieldStart := fieldIndex * argumentsFieldHeight
-	fieldEnd := fieldStart + argumentsFieldHeight - 1
+	fieldStart := a.fieldOffsets[fieldIndex]
+	fieldEnd := fieldStart + a.fieldHeights[fieldIndex] - 1
 	viewportTop := a.viewport.YOffset()
-	viewportHeight := a.viewport.Height()
+	viewportBottom := viewportTop + viewportHeight - 1
+
+	// A field can be taller than the viewport. Align on the textarea caret
+	// instead of the field's top or bottom so the cursor stays visible while
+	// typing and after a resize.
+	if a.fieldHeights[fieldIndex] > viewportHeight {
+		caretRow := fieldStart + argumentsLabelHeight
+		if cur := a.inputs[fieldIndex].Cursor(); cur != nil {
+			caretRow += cur.Y
+		}
+		if caretRow < viewportTop {
+			a.viewport.SetYOffset(caretRow)
+		} else if caretRow > viewportBottom {
+			a.viewport.SetYOffset(caretRow - viewportHeight + 1)
+		}
+		return
+	}
 
 	// If field is above viewport, scroll up to show it at top
 	if fieldStart < viewportTop {
@@ -163,7 +211,7 @@ func (a *Arguments) ensureFieldVisible(fieldIndex int) {
 	}
 
 	// If field is below viewport, scroll down to show it at bottom
-	if fieldEnd > viewportTop+viewportHeight-1 {
+	if fieldEnd > viewportBottom {
 		a.viewport.SetYOffset(fieldEnd - viewportHeight + 1)
 	}
 }
@@ -172,14 +220,15 @@ func (a *Arguments) ensureFieldVisible(fieldIndex int) {
 func (a *Arguments) findVisibleFieldByOffset(fromTop bool) int {
 	offset := a.viewport.YOffset()
 	if !fromTop {
-		offset += a.viewport.Height() - 1
+		offset += max(0, a.viewport.Height()-1)
 	}
 
-	fieldIndex := offset / argumentsFieldHeight
-	if fieldIndex >= len(a.inputs) {
-		return len(a.inputs) - 1
+	for i := len(a.fieldOffsets) - 1; i >= 0; i-- {
+		if a.fieldOffsets[i] <= offset {
+			return i
+		}
 	}
-	return fieldIndex
+	return 0
 }
 
 // HandleMsg implements Dialog.
@@ -230,6 +279,12 @@ func (a *Arguments) HandleMsg(msg tea.Msg) Action {
 				}
 			}
 			a.focusInput(a.focused + 1)
+		case len(a.inputs) == 1 && key.Matches(msg, a.keyMap.UpDown):
+			// With a single field there is nowhere to move focus, so the
+			// arrows move the cursor through the wrapped text instead.
+			var cmd tea.Cmd
+			a.inputs[a.focused], cmd = a.inputs[a.focused].Update(msg)
+			return ActionCmd{Cmd: cmd}
 		case key.Matches(msg, a.keyMap.Next):
 			a.focusInput(a.focused + 1)
 		case key.Matches(msg, a.keyMap.Previous):
@@ -254,13 +309,28 @@ func (a *Arguments) HandleMsg(msg tea.Msg) Action {
 }
 
 // Cursor returns the cursor position relative to the dialog.
-// we pass the description height to offset the cursor correctly.
-func (a *Arguments) Cursor(descriptionHeight int) *tea.Cursor {
-	cursor := InputCursor(a.com.Styles, a.inputs[a.focused].Cursor())
+func (a *Arguments) Cursor(contentStyle lipgloss.Style, titleHeight, descriptionHeight int) *tea.Cursor {
+	if a.focused < 0 || a.focused >= len(a.inputs) || a.focused >= len(a.fieldOffsets) {
+		return nil
+	}
+	// A zero-height field viewport renders no input rows, so there is no
+	// visible position for the cursor.
+	if a.viewport.Height() <= 0 {
+		return nil
+	}
+	cursor := a.inputs[a.focused].Cursor()
 	if cursor == nil {
 		return nil
 	}
-	cursor.Y += descriptionHeight + a.focused*argumentsFieldHeight - a.viewport.YOffset() + 1
+
+	dialogStyle := a.com.Styles.Dialog.View
+	cursor.X += dialogStyle.GetBorderLeftSize() + contentStyle.GetPaddingLeft()
+	cursor.Y += dialogStyle.GetBorderTopSize() +
+		titleHeight +
+		contentStyle.GetPaddingTop() +
+		descriptionHeight +
+		a.fieldOffsets[a.focused] - a.viewport.YOffset() +
+		argumentsLabelHeight
 	return cursor
 }
 
@@ -269,10 +339,13 @@ func (a *Arguments) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	s := a.com.Styles
 
 	dialogContentStyle := s.Dialog.Arguments.Content
-	possibleWidth := area.Dx() - s.Dialog.View.GetHorizontalFrameSize() - dialogContentStyle.GetHorizontalFrameSize()
+	possibleWidth := max(0, area.Dx()-s.Dialog.View.GetHorizontalFrameSize()-dialogContentStyle.GetHorizontalFrameSize())
 	// Build fields with label and input.
 	caser := cases.Title(language.English)
 
+	a.fieldOffsets = a.fieldOffsets[:0]
+	a.fieldHeights = a.fieldHeights[:0]
+	fieldOffset := 0
 	var fields []string
 	for i, arg := range a.arguments {
 		isFocused := i == a.focused
@@ -301,11 +374,29 @@ func (a *Arguments) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		labelWidth := lipgloss.Width(labelText)
 		placeholderWidth := lipgloss.Width(a.inputs[i].Placeholder)
 
+		maxWidth := max(0, min(possibleWidth, maxInputWidth))
 		inputWidth := max(placeholderWidth, labelWidth, minInputWidth)
-		inputWidth = min(inputWidth, min(possibleWidth, maxInputWidth))
-		a.inputs[i].SetWidth(inputWidth)
+		inputWidth = min(inputWidth, maxWidth)
+		// Long-form arguments need room to wrap; a dialog as narrow as
+		// the placeholder makes a goal or task hard to read.
+		inputWidth = max(inputWidth, min(minReadableInputWidth, maxWidth))
+		if a.inputWidths[i] != inputWidth {
+			a.inputWidths[i] = inputWidth
+			a.inputs[i].SetWidth(inputWidth)
+			// SetWidth re-wraps the textarea, but its viewport keeps the
+			// previous scroll offset until the view is rebuilt. Refresh the
+			// content, then reposition so the cursor stays inside the field
+			// after a terminal resize.
+			_ = a.inputs[i].View()
+			a.inputs[i].SetHeight(a.inputs[i].Height())
+		}
 
 		inputLine := a.inputs[i].View()
+		labelHeight := lipgloss.Height(label)
+		fieldHeight := labelHeight + lipgloss.Height(inputLine) + 1
+		a.fieldOffsets = append(a.fieldOffsets, fieldOffset)
+		a.fieldHeights = append(a.fieldHeights, fieldHeight)
+		fieldOffset += fieldHeight
 
 		field := lipgloss.JoinVertical(lipgloss.Left, label, inputLine, "")
 		fields = append(fields, field)
@@ -337,12 +428,15 @@ func (a *Arguments) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		helpView = s.Dialog.HelpView.Width(width).Render(a.spinner.View() + " Generating Prompt...")
 	}
 
-	availableHeight := area.Dy() - s.Dialog.View.GetVerticalFrameSize() - dialogContentStyle.GetVerticalFrameSize() - lipgloss.Height(header) - lipgloss.Height(description) - lipgloss.Height(helpView) - 2 // extra spacing
-	viewportHeight := min(height, maxViewportHeight, availableHeight)
+	availableHeight := max(0, area.Dy()-s.Dialog.View.GetVerticalFrameSize()-dialogContentStyle.GetVerticalFrameSize()-lipgloss.Height(header)-lipgloss.Height(description)-lipgloss.Height(helpView)-2) // extra spacing
+	viewportHeight := max(0, min(height, maxViewportHeight, availableHeight))
 
 	a.viewport.SetWidth(width) // -1 for scrollbar
 	a.viewport.SetHeight(viewportHeight)
 	a.viewport.SetContent(renderedFields)
+	// A field grows as the user types; keep the focused one visible when
+	// the dialog is too short to show the whole form.
+	a.ensureFieldVisible(a.focused)
 
 	content := joinScrollbar(s, a.viewport.View(), viewportHeight, a.viewport.TotalLineCount(), viewportHeight, a.viewport.YOffset())
 	var contentParts []string
@@ -360,11 +454,12 @@ func (a *Arguments) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	dialog := s.Dialog.View.Render(view)
 
+	titleHeight := lipgloss.Height(titleStyle.Render(header))
 	descriptionHeight := 0
 	if a.description != "" {
 		descriptionHeight = lipgloss.Height(description)
 	}
-	cur := a.Cursor(descriptionHeight)
+	cur := a.Cursor(dialogContentStyle, titleHeight, descriptionHeight)
 
 	DrawCenterCursor(scr, area, dialog, cur)
 	return cur
@@ -386,11 +481,11 @@ func (a *Arguments) StopLoading() {
 
 // ShortHelp implements help.KeyMap.
 func (a *Arguments) ShortHelp() []key.Binding {
-	return []key.Binding{
-		a.keyMap.Confirm,
-		a.keyMap.Next,
-		a.keyMap.Close,
+	bindings := []key.Binding{a.keyMap.Confirm}
+	if len(a.inputs) > 1 {
+		bindings = append(bindings, a.keyMap.Next)
 	}
+	return append(bindings, a.keyMap.Close)
 }
 
 // FullHelp implements help.KeyMap.

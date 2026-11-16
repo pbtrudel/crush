@@ -81,7 +81,7 @@ func (n *Notifications) RefreshStyles() {
 func (a *Arguments) RefreshStyles() {
 	a.help.Styles = a.com.Styles.DialogHelpStyles()
 	for i := range a.inputs {
-		a.inputs[i].SetStyles(a.com.Styles.TextInput)
+		a.inputs[i].SetStyles(questionTextareaStyles(a.com.Styles))
 	}
 	a.spinner.Style = a.com.Styles.Dialog.Spinner
 }
