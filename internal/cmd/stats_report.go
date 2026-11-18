@@ -51,7 +51,15 @@ row; one written before compactions carried statistics counts under
 
 Injections are the hidden user rows that open with a tag the report knows,
 and subagent reports. Any other hidden user row is a hidden turn: a goal,
-a loop iteration, a plan handoff.`,
+a loop iteration, a plan handoff.
+
+A prompt is a visible user row in a top-level session; in a child session
+such a row is its brief, or a message sent to it. A row that follows a
+step stamped context_guard, context_overflow or compaction_blocked
+continues that prompt; when a cancel dropped the queued prompt, the next
+prompt is counted as a continuation. Without the stamp a continuation
+counts as a prompt, and runs by turn end read "unstamped", counted per
+prompt.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }

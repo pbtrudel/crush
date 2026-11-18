@@ -35,6 +35,7 @@ type Report struct {
 	Edits  Edits  `json:"edits"`
 	Reads  Reads  `json:"reads"`
 
+	Turns       Turns       `json:"turns"`
 	Sessions    Sessions    `json:"sessions"`
 	Injections  Injections  `json:"injections"`
 	Compactions Compactions `json:"compactions"`
@@ -59,6 +60,7 @@ func newSections() []section {
 		&shellSection{bare: map[string]int{}},
 		newEditsSection(),
 		&readsSection{seen: map[string]bool{}},
+		newTurnsSection(),
 		&sessionsSection{spawners: map[string]string{}},
 		newInjectionsSection(),
 		&compactionsSection{before: map[string][]int{}},

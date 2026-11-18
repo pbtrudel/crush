@@ -85,6 +85,18 @@ func (l *testLog) step(sessionID, build string, calls ...message.ToolCall) {
 	l.add(sessionID, message.Assistant, parts...)
 }
 
+// lastStep writes the last step of a run, stamped with how the run
+// ended.
+func (l *testLog) lastStep(sessionID, build string, end message.TurnEnd, calls ...message.ToolCall) {
+	l.t.Helper()
+	parts := []message.ContentPart{message.TextContent{Text: "done"}}
+	for _, c := range calls {
+		parts = append(parts, c)
+	}
+	parts = append(parts, message.Finish{Reason: message.FinishReasonEndTurn, Build: build, TurnEnd: end})
+	l.add(sessionID, message.Assistant, parts...)
+}
+
 // result writes a tool message carrying one result.
 func (l *testLog) result(sessionID string, tr message.ToolResult) {
 	l.t.Helper()
