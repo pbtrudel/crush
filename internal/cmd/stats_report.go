@@ -26,6 +26,11 @@ local time) or an age such as 7d or 12h. --since is included and --until
 is excluded: --since 2026-10-21 --until 2026-11-17 ends at midnight before
 November 17.
 
+Foreground shell commands are the shell results that carry an exit code or
+the interrupted mark, including a background command that finished before
+it was moved. A command moved to the background carries neither and is not
+counted.
+
 An error result without a kind reads "other" when the build that made the
 call stamps kinds, which the report learns from that build's stamped
 results in the window, and "unstamped" otherwise.
