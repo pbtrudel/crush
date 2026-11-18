@@ -127,3 +127,56 @@ func TestEditsFailureRuns(t *testing.T) {
 	require.Equal(t, map[string]int{"unstamped": 11}, edits.Kinds, "no stamps from the old build")
 	require.Zero(t, edits.AfterRefusal.Refusals, "a refusal is only known by its stamp")
 }
+
+func TestEditsUntestedPaths(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	// A batch failure without a kind reads "unstamped" from a build that
+	// never stamps its results.
+	log.session("s1", "title")
+	log.step("s1", oldBuild, editCallPart(t, "a1", "a.go", "one", "two"))
+	log.result("s1", editResult("a1", "multiedit", `{"edits_applied":1,"edits_failed":[{"index":2}]}`, false))
+	// The same shape reads "other" from a build the pass has seen stamp a
+	// result in the window.
+	log.session("s2", "title")
+	log.step("s2", newBuild,
+		editCallPart(t, "b1", "b.go", "one"),
+		editCallPart(t, "b2", "b.go", "one", "two"),
+	)
+	log.result("s2", editResult("b1", "edit", `{"error_kind":"text_not_found"}`, true))
+	log.result("s2", editResult("b2", "multiedit", `{"edits_applied":1,"edits_failed":[{"index":2}]}`, false))
+	// A multiedit that succeeded but failed one edit closes a run.
+	log.session("s3", "title")
+	log.step("s3", oldBuild, editCallPart(t, "c1", "c.go", "one"))
+	log.result("s3", editResult("c1", "edit", "", true))
+	log.step("s3", oldBuild, editCallPart(t, "c2", "c.go", "one", "two"))
+	log.result("s3", editResult("c2", "multiedit", `{"edits_applied":1,"edits_failed":[{"index":3}]}`, false))
+	log.step("s3", oldBuild, editCallPart(t, "c3", "c.go", "one"))
+	log.result("s3", editResult("c3", "edit", "", true))
+	// A write result does not break a run.
+	log.session("s4", "title")
+	log.step("s4", oldBuild, editCallPart(t, "d1", "d.go", "one"))
+	log.result("s4", editResult("d1", "edit", "", true))
+	log.step("s4", oldBuild, message.ToolCall{ID: "d2", Name: "write", Input: `{"file_path":"d.go","content":"x"}`})
+	log.result("s4", message.ToolResult{ToolCallID: "d2", Name: "write"})
+	log.step("s4", oldBuild, editCallPart(t, "d3", "d.go", "one"))
+	log.result("s4", editResult("d3", "edit", "", true))
+	// A refused multiedit is a refusal, and the next multiedit of the same
+	// file with the same texts retries with the same text.
+	log.session("s5", "title")
+	log.step("s5", newBuild, editCallPart(t, "e1", "e.go", "one", "two"))
+	log.result("s5", editResult("e1", "multiedit", `{"error_kind":"not_read"}`, true))
+	log.step("s5", newBuild, editCallPart(t, "e2", "e.go", "one", "two"))
+	log.result("s5", editResult("e2", "multiedit", "", false))
+
+	// By hand: 1+2+3+2+2 calls, 1+2+2+1 failures, and the batch failures
+	// of s1, s2 and s3.
+	edits := log.report(Options{}).Edits
+	require.Equal(t, 10, edits.Calls)
+	require.Equal(t, 6, edits.Failed)
+	require.Equal(t, 3, edits.BatchFailures)
+	require.Equal(t, map[string]int{"unstamped": 2, "other": 1}, edits.BatchFailureKinds)
+	require.Equal(t, AfterRefusal{Refusals: 1, RetrySameText: 1}, edits.AfterRefusal)
+	require.Equal(t, FailureRuns{Runs: 5, Failed: 6, ByLength: [5]int{4, 1, 0, 0, 0}, Max: 2}, edits.Runs)
+}
