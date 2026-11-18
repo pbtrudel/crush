@@ -70,11 +70,14 @@ func (c *coordinator) LimitSessionTree(sessionID string, limits RunLimits) {
 func (c *coordinator) stopSessionTree(sessionID string) {
 	slog.Info("Session tree passed its deadline", "session_id", sessionID)
 	c.Cancel(sessionID)
-	if c.team == nil {
+	// Read the service once, so the nil check and the calls come from the
+	// same one.
+	team := c.team
+	if team == nil {
 		return
 	}
-	c.team.CancelTree(sessionID)
-	for _, id := range c.team.Tree(sessionID).Sessions {
+	team.CancelTree(sessionID)
+	for _, id := range team.Tree(sessionID).Sessions {
 		c.Cancel(id)
 	}
 }
