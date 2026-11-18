@@ -19,5 +19,7 @@ func (r *Report) WriteText(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	r.Window.writeText(tw)
 	r.Tools.writeText(tw)
+	r.Shell.writeText(tw)
+	r.Reads.writeText(tw)
 	return tw.Flush()
 }
