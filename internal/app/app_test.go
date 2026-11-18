@@ -266,3 +266,17 @@ func TestStaleWatcherReportsMissingFiles(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, missing.Missing, notice.Missing)
 }
+
+// A coordinator that is replaced must stop: its background-job watcher
+// would otherwise keep waking sessions the new one does not see.
+func TestReplacingTheCoordinatorStopsThePreviousOne(t *testing.T) {
+	t.Parallel()
+
+	app := &App{}
+	first := app.coordinatorContext(t.Context())
+	require.NoError(t, first.Err())
+
+	second := app.coordinatorContext(t.Context())
+	require.ErrorIs(t, first.Err(), context.Canceled, "the replaced coordinator's context ends")
+	require.NoError(t, second.Err(), "the new coordinator's context is live")
+}
