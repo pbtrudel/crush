@@ -67,6 +67,11 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
+	// stopCoordinator ends the context the current coordinator was built
+	// with, which stops its background-job watcher and any wake-up run it
+	// started. A replaced coordinator must not keep waking sessions.
+	stopCoordinator context.CancelFunc
+
 	LSPManager *lsp.Manager
 
 	Skills *skills.Manager
@@ -961,13 +966,26 @@ func (app *App) InitCoderAgentNonInteractive(ctx context.Context) error {
 	return app.initCoderAgent(ctx, false)
 }
 
+// coordinatorContext returns the context for a new coordinator and ends
+// the one the previous coordinator was built with. It derives from the
+// app's context, not the caller's: a server request or a UI operation that
+// initializes the agent ends long before the coordinator should.
+func (app *App) coordinatorContext() context.Context {
+	if app.stopCoordinator != nil {
+		app.stopCoordinator()
+	}
+	coordinatorCtx, cancel := context.WithCancel(app.globalCtx)
+	app.stopCoordinator = cancel
+	return coordinatorCtx
+}
+
 func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
 	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(ctx, agent.CoordinatorOptions{
+	app.AgentCoordinator, err = agent.NewCoordinator(app.coordinatorContext(), agent.CoordinatorOptions{
 		Config:      app.config,
 		Sessions:    app.Sessions,
 		Messages:    app.Messages,
@@ -1036,8 +1054,13 @@ func (app *App) Shutdown() {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
 
-	// First, cancel all agents and wait for them to finish. This must complete
-	// before closing the DB so agents can finish writing their state.
+	// Stop the coordinator first, so no wake-up run starts after CancelAll
+	// collected the active ones, then cancel all agents and wait for them to
+	// finish. This must complete before closing the DB so agents can finish
+	// writing their state.
+	if app.stopCoordinator != nil {
+		app.stopCoordinator()
+	}
 	if app.AgentCoordinator != nil {
 		app.AgentCoordinator.CancelAll()
 	}
