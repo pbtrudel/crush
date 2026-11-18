@@ -33,7 +33,9 @@ counted.
 
 An error result without a kind reads "other" when the build that made the
 call stamps kinds, which the report learns from that build's stamped
-results in the window, and "unstamped" otherwise.
+results in the window, and "unstamped" otherwise. A refusal by the read
+guard is known by its kind alone, so rows written before the kinds existed
+show none.
 
 Tools whose calls never ran under a known name are listed as
 "unrecognized". Errors are counted per result in the window and calls
