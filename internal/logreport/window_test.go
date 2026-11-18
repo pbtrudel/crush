@@ -33,6 +33,28 @@ func TestWindowCountsMessagesAndSessions(t *testing.T) {
 	require.Nil(t, w.Until)
 }
 
+func TestWindowListsBuilds(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	log.session("s1", "first")
+	log.session("s2", "second")
+	log.add("s1", message.User, message.TextContent{Text: "hello"})
+	log.add("s1", message.Assistant, message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.101"})
+	log.add("s2", message.Assistant, message.Finish{Reason: message.FinishReasonEndTurn})
+	log.add("s2", message.Assistant, message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.101"})
+	log.add("s2", message.Assistant, message.Finish{Reason: message.FinishReasonEndTurn, Build: "v0.100.0-fork.102+dirty.abc"})
+
+	builds := log.report(Options{}).Window.Builds
+	require.Len(t, builds, 3, "the user message carries no build and is not listed")
+	require.Equal(t, "0.100.0-fork.101", builds[0].Build, "builds are listed by their first message")
+	require.Equal(t, 2, builds[0].Messages)
+	require.Equal(t, 2*time.Second, builds[0].Last.Sub(builds[0].First), "first and last span both sessions")
+	require.Equal(t, "unstamped", builds[1].Build)
+	require.Equal(t, 1, builds[1].Messages)
+	require.Equal(t, "v0.100.0-fork.102+dirty.abc", builds[2].Build)
+}
+
 func TestWindowBounds(t *testing.T) {
 	t.Parallel()
 

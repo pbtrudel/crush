@@ -24,12 +24,48 @@ type Window struct {
 	Sessions int            `json:"sessions"`
 	// Skipped counts the messages whose parts do not decode. They count
 	// as messages and are left out of every other figure.
-	Skipped int `json:"skipped_rows"`
+	Skipped int     `json:"skipped_rows"`
+	Builds  []Build `json:"builds"`
 }
 
-type windowSection struct{}
+// Build is one build seen on the messages' finish parts, or "unstamped"
+// for the assistant messages that carry none.
+type Build struct {
+	Build    string    `json:"build"`
+	Messages int       `json:"messages"`
+	First    time.Time `json:"first"`
+	Last     time.Time `json:"last"`
+}
 
-func (s *windowSection) message(*pass, *message.Message) {}
+type windowSection struct {
+	builds map[string]*Build
+}
+
+func (s *windowSection) message(_ *pass, m *message.Message) {
+	build := ""
+	if f := m.FinishPart(); f != nil {
+		build = f.Build
+	}
+	if build == "" && m.Role != message.Assistant {
+		return
+	}
+	if build == "" {
+		build = "unstamped"
+	}
+	at := time.Unix(m.CreatedAt, 0)
+	b, ok := s.builds[build]
+	if !ok {
+		b = &Build{Build: build, First: at, Last: at}
+		s.builds[build] = b
+	}
+	b.Messages++
+	if at.Before(b.First) {
+		b.First = at
+	}
+	if at.After(b.Last) {
+		b.Last = at
+	}
+}
 
 func (s *windowSection) endSession(*pass) {}
 
@@ -48,6 +84,13 @@ func (s *windowSection) finish(p *pass, r *Report) {
 		first, last := time.Unix(p.first, 0), time.Unix(p.last, 0)
 		w.First, w.Last = &first, &last
 	}
+	w.Builds = []Build{}
+	for _, b := range s.builds {
+		w.Builds = append(w.Builds, *b)
+	}
+	slices.SortFunc(w.Builds, func(a, b Build) int {
+		return cmp.Or(a.First.Compare(b.First), cmp.Compare(a.Build, b.Build))
+	})
 	r.Window = w
 }
 
@@ -58,6 +101,10 @@ func (w Window) writeText(out io.Writer) {
 	fmt.Fprintf(out, "  messages\t%d\t%s\n", w.Messages, formatCounts(w.ByRole))
 	fmt.Fprintf(out, "  sessions\t%d\n", w.Sessions)
 	fmt.Fprintf(out, "  skipped rows\t%d\n", w.Skipped)
+	for _, b := range w.Builds {
+		fmt.Fprintf(out, "  build %s\t%d\t%s to %s\n", b.Build, b.Messages,
+			b.First.Format(time.DateOnly), b.Last.Format(time.DateOnly))
+	}
 	fmt.Fprintln(out)
 }
 

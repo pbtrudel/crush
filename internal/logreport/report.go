@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/tidwall/gjson"
 )
 
 // Schema is the version of the JSON output. Within one schema number
@@ -29,13 +30,14 @@ type Options struct {
 type Report struct {
 	Schema int    `json:"schema"`
 	Window Window `json:"window"`
+	Tools  Tools  `json:"tools"`
 }
 
 // section is one part of the report. The pass shows it every message it
 // could decode, in session_id, created_at, rowid order, and tells it when
 // a session ends. Besides its counters a section keeps state for the
 // current session only. finish writes its figures into the report once
-// the pass is over.
+// the pass is over, when the pass knows which builds stamp their results.
 type section interface {
 	message(p *pass, m *message.Message)
 	endSession(p *pass)
@@ -44,7 +46,10 @@ type section interface {
 
 // newSections returns the report's sections in the order they print.
 func newSections() []section {
-	return []section{&windowSection{}}
+	return []section{
+		&windowSection{builds: map[string]*Build{}},
+		newToolsSection(),
+	}
 }
 
 // pass holds what the sections share.
@@ -55,6 +60,18 @@ type pass struct {
 	skipped  int
 	first    int64
 	last     int64
+	// calls holds the current session's tool calls by id.
+	calls map[string]call
+	// stamping holds the builds whose tool results carry a stamp:
+	// exit_code or interrupted on a shell result, error_kind on any.
+	stamping map[string]bool
+}
+
+// call is what the pass keeps of a tool call until its session ends.
+type call struct {
+	name string
+	// build is the build stamp of the step that made the call.
+	build string
 }
 
 const messagesQuery = `SELECT session_id, role, parts, COALESCE(model, ''),
@@ -105,6 +122,7 @@ func Run(ctx context.Context, conn *sql.DB, opts Options) (*Report, error) {
 			p.skipped++
 			continue
 		}
+		p.observe(&m)
 		for _, s := range sections {
 			s.message(p, &m)
 		}
@@ -124,7 +142,12 @@ func Run(ctx context.Context, conn *sql.DB, opts Options) (*Report, error) {
 }
 
 func newPass(opts Options) *pass {
-	return &pass{opts: opts, roles: map[string]int{}}
+	return &pass{
+		opts:     opts,
+		roles:    map[string]int{},
+		calls:    map[string]call{},
+		stamping: map[string]bool{},
+	}
 }
 
 // count records every message, whether its parts decode or not.
@@ -140,4 +163,63 @@ func (p *pass) endSession(sections []section) {
 	for _, s := range sections {
 		s.endSession(p)
 	}
+	clear(p.calls)
+}
+
+// observe records the message's tool calls, and which builds stamp their
+// results.
+func (p *pass) observe(m *message.Message) {
+	switch m.Role {
+	case message.Assistant:
+		build := ""
+		if f := m.FinishPart(); f != nil {
+			build = f.Build
+		}
+		for _, tc := range m.ToolCalls() {
+			p.calls[tc.ID] = call{name: tc.Name, build: build}
+		}
+	case message.Tool:
+		for _, tr := range m.ToolResults() {
+			c, ok := p.calls[tr.ToolCallID]
+			if ok && c.build != "" && hasStamp(tr) {
+				p.stamping[c.build] = true
+			}
+		}
+	}
+}
+
+func hasStamp(tr message.ToolResult) bool {
+	if gjson.Get(tr.Metadata, "error_kind").Exists() {
+		return true
+	}
+	return tr.Name == bashTool && (gjson.Get(tr.Metadata, "exit_code").Exists() ||
+		gjson.Get(tr.Metadata, "interrupted").Exists())
+}
+
+// kindName names a failure's kind for the report. A failure without one
+// reads "other" when the build that made the call stamps kinds, and
+// "unstamped" when it does not or is unknown.
+func (p *pass) kindName(kind, build string) string {
+	switch {
+	case kind != "":
+		return kind
+	case build != "" && p.stamping[build]:
+		return "other"
+	default:
+		return "unstamped"
+	}
+}
+
+// Tool names the report reads: the names models call.
+const (
+	bashTool = "bash"
+	viewTool = "view"
+	readTool = "read"
+)
+
+func ratio(n, of int) float64 {
+	if of == 0 {
+		return 0
+	}
+	return float64(n) / float64(of)
 }

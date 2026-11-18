@@ -24,7 +24,16 @@ or a session id.
 --since and --until take a date such as 2026-11-09 (the start of that day,
 local time) or an age such as 7d or 12h. --since is included and --until
 is excluded: --since 2026-10-21 --until 2026-11-17 ends at midnight before
-November 17.`,
+November 17.
+
+An error result without a kind reads "other" when the build that made the
+call stamps kinds, which the report learns from that build's stamped
+results in the window, and "unstamped" otherwise.
+
+Tools whose calls never ran under a known name are listed as
+"unrecognized". Errors are counted per result in the window and calls
+per call in the window, so when --since cuts a session a tool can show
+more errors than calls.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }
