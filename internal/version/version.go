@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 )
 
 // Build-time parameters set via -ldflags.
@@ -50,4 +51,19 @@ func deriveBuildID() string {
 		return "unknown"
 	}
 	return strconv.FormatInt(fi.ModTime().UnixNano(), 36)
+}
+
+// BuildStamp names the running build for the session log. A release
+// version is also a git tag, which names its commit. A modified checkout
+// or an unversioned build is not, so the build fingerprint is appended to
+// tell two such builds apart.
+func BuildStamp() string {
+	return buildStamp(Version, BuildID)
+}
+
+func buildStamp(version, buildID string) string {
+	if version == "devel" || strings.HasSuffix(version, "+dirty") {
+		return version + "." + buildID
+	}
+	return version
 }
