@@ -2,6 +2,7 @@ package agentteam
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -131,4 +132,52 @@ func TestTreeIgnoresMessagesAnEarlierProcessLeft(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return earlier.Tree("session-a").Active == 0
 	}, time.Second, 10*time.Millisecond)
+}
+
+// failingStartRunner blocks in Start until the test releases it, then fails,
+// so a test can queue a message inside the member's starting window.
+type failingStartRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *failingStartRunner) Start(context.Context, Member, string) (Run, error) {
+	close(r.started)
+	<-r.release
+	return nil, errors.New("runner failed")
+}
+
+// A message queued while a teammate is starting stays undelivered when that
+// start fails. Nothing here would ever deliver it, so it must not hold the
+// tree busy for a teammate that will never read it.
+func TestTreeDoesNotCountAMessageToAFailedTeammate(t *testing.T) {
+	t.Parallel()
+	runner := &failingStartRunner{started: make(chan struct{}), release: make(chan struct{})}
+	service, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, runner)
+	require.NoError(t, err)
+
+	type spawnResult struct {
+		view MemberView
+		err  error
+	}
+	spawned := make(chan spawnResult, 1)
+	go func() {
+		view, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+			Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a",
+		})
+		spawned <- spawnResult{view: view, err: err}
+	}()
+	<-runner.started
+	require.NoError(t, service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
+		Target: "reviewer", Message: "Also check the docs.",
+	}))
+	require.Equal(t, 1, service.Tree("session-a").UnreadByTeammates, "the message waits for the teammate")
+	close(runner.release)
+
+	result := <-spawned
+	require.NoError(t, result.err)
+	require.Equal(t, StatusFailed, result.view.Status)
+	tree := service.Tree("session-a")
+	require.Zero(t, tree.Active)
+	require.Zero(t, tree.UnreadByTeammates)
 }

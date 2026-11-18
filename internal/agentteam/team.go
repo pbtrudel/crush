@@ -391,6 +391,9 @@ type Service struct {
 	now      func() time.Time
 	// loaded is how many messages the Team held when this process opened
 	// it. An earlier process wrote those, and only it could deliver them.
+	// It only works as an index because state.Messages is append-only, so
+	// a future pruning has to replace it with the highest message id
+	// loaded.
 	loaded int
 	// taskCompletedHook is called after a task settles as completed. It
 	// runs without the service lock and is best-effort.
@@ -738,8 +741,6 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 	s.mu.Lock()
 	delete(s.starting, member.Name)
 	if err != nil {
-		// The member is no longer starting; wake whoever reads it as busy.
-		s.notifyLocked()
 		s.mu.Unlock()
 		return MemberView{}, err
 	}
@@ -1070,8 +1071,15 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	if len(pending) == 0 {
 		return nil
 	}
-	_, err := s.startRun(ctx, target, resumePrompt(pending))
-	return err
+	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+		// The member is no longer starting, so wake whoever reads it as
+		// busy.
+		s.mu.Lock()
+		s.notifyLocked()
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // DrainInbox returns and marks delivered every pending message for name.
@@ -1242,7 +1250,12 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 	for i, msg := range s.state.Messages {
 		switch {
 		case msg.Delivered:
-		case members[msg.To] && i >= s.loaded:
+		// A failed member never drains its inbox on its own, so its
+		// waiting messages would hold the tree busy for good. Sending to
+		// it restarts it and drains the inbox, and that sender's own turn
+		// is counted while it runs. It stays in members so a report it
+		// already wrote still counts below.
+		case members[msg.To] && i >= s.loaded && s.statusLocked(msg.To) != StatusFailed:
 			tree.UnreadByTeammates++
 		case msg.To == leadName && members[msg.From]:
 			tree.UnreadByLead++
@@ -1252,8 +1265,9 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 }
 
 // Changed returns a channel that is closed at the next change to the
-// roster, an inbox or the task board. Take it before reading the state it
-// guards, so a change made after the read cannot be missed.
+// roster, a member's status, a queued message or the task board. Draining
+// an inbox does not close it. Take it before reading the state it guards,
+// so a change made after the read cannot be missed.
 func (s *Service) Changed() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
