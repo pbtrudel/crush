@@ -34,6 +34,20 @@ type ToolStats struct {
 // calls never ran under a known name: an invented name is model text.
 const unrecognizedTool = "unrecognized"
 
+// foundToolKinds are the error kinds written only after the tool was
+// found and ran under its name. invalid_arguments and interrupted are
+// written for a call before or without a lookup, and unknown_tool for a
+// call whose lookup failed, so none of the three shows the tool exists.
+// A kind added later does not count until it is added here.
+var foundToolKinds = map[string]bool{
+	"not_read":           true,
+	"changed_since_read": true,
+	"text_not_found":     true,
+	"multiple_matches":   true,
+	"permission_denied":  true,
+	"hook_denied":        true,
+}
+
 // kindKey is a failure's kind, or its call's build when it has no kind:
 // whether that reads "other" or "unstamped" is known after the pass.
 type kindKey struct {
@@ -88,7 +102,7 @@ func (s *toolsSection) message(p *pass, m *message.Message) {
 	case message.Tool:
 		for _, tr := range m.ToolResults() {
 			kind := gjson.Get(tr.Metadata, "error_kind").String()
-			if !tr.IsError || (kind != "" && kind != "unknown_tool") {
+			if !tr.IsError || foundToolKinds[kind] {
 				s.recognized[tr.Name] = true
 			}
 			if !tr.IsError {

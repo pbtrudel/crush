@@ -31,7 +31,9 @@ call stamps kinds, which the report learns from that build's stamped
 results in the window, and "unstamped" otherwise.
 
 Tools whose calls never ran under a known name are listed as
-"unrecognized".`,
+"unrecognized". Errors are counted per result in the window and calls
+per call in the window, so when --since cuts a session a tool can show
+more errors than calls.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }

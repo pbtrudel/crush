@@ -32,6 +32,9 @@ func TestToolsCountsCallsErrorsAndKinds(t *testing.T) {
 	log.result("s1", message.ToolResult{ToolCallID: "c1", Name: "edit", IsError: true, Metadata: `{"error_kind":"not_read"}`})
 	log.result("s1", message.ToolResult{ToolCallID: "c2", Name: "edit"})
 	log.result("s1", message.ToolResult{ToolCallID: "c3", Name: "view", IsError: true, Metadata: `{"error_kind":"a_kind_from_a_later_build"}`})
+	// A kind the report does not know is no proof view was found, so
+	// view needs a result it succeeded for.
+	log.result("s1", message.ToolResult{ToolCallID: "c7", Name: "view"})
 	log.result("s1", message.ToolResult{ToolCallID: "c4", Name: "read", IsError: true})
 	log.result("s1", message.ToolResult{ToolCallID: "c5", Name: "read"})
 	// fetch's call has no result, so nothing shows it ran under that
@@ -131,29 +134,39 @@ func TestInventedToolNamesAreNotPrinted(t *testing.T) {
 		message.ToolCall{ID: "b1", Name: "bash"},
 		message.ToolCall{ID: "i1", Name: invented},
 		message.ToolCall{ID: "i2", Name: invented},
+		message.ToolCall{ID: "i3", Name: invented},
+		message.ToolCall{ID: "i4", Name: invented},
 		message.ToolCall{ID: "g1", Name: "glob"},
 	)
 	log.result("s1", message.ToolResult{ToolCallID: "b1", Name: "bash", Metadata: `{"exit_code":0}`})
 	log.result("s1", message.ToolResult{ToolCallID: "i1", Name: invented, IsError: true, Content: "no such tool", Metadata: `{"error_kind":"unknown_tool"}`})
 	log.result("s1", message.ToolResult{ToolCallID: "i2", Name: invented, IsError: true, Content: "no such tool"})
-	// A real name whose only result carries a kind is recognized.
+	// Crush writes invalid_arguments before it looks the tool up, and
+	// interrupted for a call it never answered, so neither kind shows
+	// that the tool exists.
+	log.result("s1", message.ToolResult{ToolCallID: "i3", Name: invented, IsError: true, Content: "no such tool", Metadata: `{"error_kind":"invalid_arguments"}`})
+	log.result("s1", message.ToolResult{ToolCallID: "i4", Name: invented, IsError: true, Content: "no such tool", Metadata: `{"error_kind":"interrupted"}`})
+	// glob is a real tool, but invalid_arguments is written before the
+	// library looks a tool up, so the result it succeeded for is what
+	// shows it exists.
 	log.result("s1", message.ToolResult{ToolCallID: "g1", Name: "glob", IsError: true, Metadata: `{"error_kind":"invalid_arguments"}`})
+	log.result("s1", message.ToolResult{ToolCallID: "g0", Name: "glob"})
 
 	r := log.report(Options{})
 	tools := r.Tools
-	require.Equal(t, 4, tools.Calls)
-	require.Equal(t, 3, tools.Errors)
+	require.Equal(t, 6, tools.Calls)
+	require.Equal(t, 5, tools.Errors)
 	require.Equal(t, []string{unrecognizedTool, "bash", "glob"}, toolNames(tools.ByTool), "most calls first, ties by name")
 	byName := map[string]ToolStats{}
 	for _, s := range tools.ByTool {
 		byName[s.Name] = s
 	}
-	require.Equal(t, 2, byName[unrecognizedTool].Calls)
-	require.Equal(t, 2, byName[unrecognizedTool].Errors)
+	require.Equal(t, 4, byName[unrecognizedTool].Calls)
+	require.Equal(t, 4, byName[unrecognizedTool].Errors)
 	require.InDelta(t, 1.0, byName[unrecognizedTool].Rate, 1e-9)
-	// The stamped failure keeps its kind; the failure without metadata
+	// Every stamped failure keeps its kind; the failure without metadata
 	// reads "other" because the build that made the call stamps kinds.
-	require.Equal(t, map[string]int{"unknown_tool": 1, "other": 1}, byName[unrecognizedTool].Kinds)
+	require.Equal(t, map[string]int{"unknown_tool": 1, "invalid_arguments": 1, "interrupted": 1, "other": 1}, byName[unrecognizedTool].Kinds)
 	require.Equal(t, 1, byName["bash"].Calls)
 	require.Zero(t, byName["bash"].Errors)
 	require.Equal(t, 1, byName["glob"].Calls)
