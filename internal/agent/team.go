@@ -134,6 +134,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 	if err != nil {
 		return nil, err
 	}
+	r.c.approveForHeadlessRun(sess.ID)
 
 	agent, err := r.teammateAgent(memberCtx, member)
 	if err != nil {
@@ -184,6 +185,17 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		r.c.finishAgentRun(sess.ID, runErr)
 	}()
 	return run, nil
+}
+
+// approveForHeadlessRun auto-approves a teammate session started by a run
+// that has no user. The run command approves its own session; a teammate it
+// starts would otherwise wait on a prompt nobody can answer, and the command
+// waits for its teammates.
+func (c *coordinator) approveForHeadlessRun(sessionID string) {
+	if c.interactive || c.permissions == nil {
+		return
+	}
+	c.permissions.AutoApproveSession(sessionID)
 }
 
 // leadSession returns the session a teammate runs on behalf of. Its channel
