@@ -40,6 +40,24 @@ func TestReads(t *testing.T) {
 	require.Equal(t, 2, reads.Paging)
 }
 
+func TestAPathRepeatedInsideOneCallIsNotAReRead(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	log.session("s1", "title")
+	view := func(session, id, name, input string) {
+		log.step(session, newBuild, message.ToolCall{ID: id, Name: name, Input: input})
+	}
+	// The same path twice in one call names no earlier call's path, so
+	// only the later call is a re-read.
+	view("s1", "v1", "view", `{"file_paths":["a.go","a.go"]}`)
+	view("s1", "v2", "view", `{"file_path":"a.go"}`)
+
+	reads := log.report(Options{}).Reads
+	require.Equal(t, 2, reads.Calls)
+	require.Equal(t, 1, reads.ReReads)
+}
+
 func TestPercentileIsNearestRank(t *testing.T) {
 	t.Parallel()
 

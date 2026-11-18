@@ -51,3 +51,17 @@ func TestShellResultsFromBuildsThatDoNotStampAreUnstamped(t *testing.T) {
 
 	require.Equal(t, Shell{Unstamped: 3}, log.report(Options{}).Shell)
 }
+
+func TestShellResultsWithAnErrorKindAreNotUnstamped(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	log.session("s1", "title")
+	// A crash repair and a refusal add an error kind to the result, on a
+	// step with no build stamp: neither a command nor an old build's
+	// bare result.
+	log.step("s1", "", message.ToolCall{ID: "e1", Name: "bash"})
+	log.result("s1", message.ToolResult{ToolCallID: "e1", Name: "bash", Metadata: `{"error_kind":"interrupted"}`, IsError: true})
+
+	require.Equal(t, Shell{}, log.report(Options{}).Shell)
+}

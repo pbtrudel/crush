@@ -47,6 +47,11 @@ func (s *shellSection) message(p *pass, m *message.Message) {
 				s.shell.NonZero++
 			}
 		default:
+			// An error kind comes from a build that stamps: not a bare
+			// result, and not a foreground command either.
+			if gjson.Get(tr.Metadata, "error_kind").Exists() {
+				continue
+			}
 			s.bare[p.calls[tr.ToolCallID].build]++
 		}
 	}

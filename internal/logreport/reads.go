@@ -70,10 +70,14 @@ func (s *readsSection) read(input string) {
 	if len(paths) == 0 {
 		return
 	}
+	// Decide over every path before marking any seen: a path repeated
+	// inside one call names no earlier call.
 	reread, paging := false, false
 	for _, p := range paths {
 		reread = reread || s.seen[p]
 		paging = paging || slices.Contains(s.prev, p)
+	}
+	for _, p := range paths {
 		s.seen[p] = true
 	}
 	if reread {
