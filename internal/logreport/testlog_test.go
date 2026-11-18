@@ -65,6 +65,24 @@ func (l *testLog) raw(sessionID string, role message.MessageRole, parts string) 
 	l.at = l.at.Add(time.Second)
 }
 
+// step writes an assistant message that makes the given calls, stamped
+// with build when it is not empty.
+func (l *testLog) step(sessionID, build string, calls ...message.ToolCall) {
+	l.t.Helper()
+	parts := []message.ContentPart{}
+	for _, c := range calls {
+		parts = append(parts, c)
+	}
+	parts = append(parts, message.Finish{Reason: message.FinishReasonToolUse, Build: build})
+	l.add(sessionID, message.Assistant, parts...)
+}
+
+// result writes a tool message carrying one result.
+func (l *testLog) result(sessionID string, tr message.ToolResult) {
+	l.t.Helper()
+	l.add(sessionID, message.Tool, tr)
+}
+
 // report opens the log read-only, as the command does, and runs the
 // report on it while the writer stays open.
 func (l *testLog) report(opts Options) *Report {
