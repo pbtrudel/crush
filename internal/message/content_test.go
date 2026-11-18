@@ -357,3 +357,47 @@ func TestSetRequestUsage(t *testing.T) {
 		require.Equal(t, []ContentPart{TextContent{Text: "hi"}}, msg.Parts)
 	})
 }
+
+func TestSetBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("records on the finish part and keeps the usage", func(t *testing.T) {
+		t.Parallel()
+		usage := requestUsage()
+		msg := &Message{Role: Assistant}
+		msg.AddFinish(FinishReasonEndTurn, "", "")
+		msg.SetRequestUsage(usage)
+		msg.SetBuild("0.100.0-fork.100")
+
+		finish := msg.FinishPart()
+		require.NotNil(t, finish)
+		require.Equal(t, "0.100.0-fork.100", finish.Build)
+		require.NotNil(t, finish.Usage)
+		require.Equal(t, usage, *finish.Usage)
+	})
+
+	t.Run("is a no-op without a finish part", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant, Parts: []ContentPart{TextContent{Text: "hi"}}}
+		msg.SetBuild("0.100.0-fork.100")
+		require.Equal(t, []ContentPart{TextContent{Text: "hi"}}, msg.Parts)
+	})
+
+	t.Run("a later finish drops the stamp", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant}
+		msg.AddFinish(FinishReasonEndTurn, "", "")
+		msg.SetBuild("0.100.0-fork.100")
+		msg.AddFinish(FinishReasonError, "Provider Error", "boom")
+		require.Empty(t, msg.FinishPart().Build, "callers stamp after the last AddFinish")
+	})
+}
+
+func TestFinishWithoutBuildHasNoBuildKey(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := marshalParts([]ContentPart{Finish{Reason: FinishReasonEndTurn, Time: 7}, CompactionStats{TokensBefore: 1}})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), `"build"`)
+	require.NotContains(t, string(encoded), `"trigger"`)
+}
