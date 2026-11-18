@@ -243,6 +243,10 @@ type coordinator struct {
 	// that have not returned. A run reads idle to the agent for part of its
 	// life, so the tree counts these as well.
 	inFlight runCounter
+
+	// limits are the limits callers set on session trees, shared by every
+	// agent this coordinator builds.
+	limits runLimits
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -1192,6 +1196,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		RunComplete:          c.runComplete,
 		Hooks:                c.hookRunner,
 		titles:               &c.titles,
+		limits:               &c.limits,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the

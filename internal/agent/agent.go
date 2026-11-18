@@ -179,6 +179,9 @@ type SessionAgentCall struct {
 	// recursion drains, so falling back to the default broker
 	// publish keeps the event visible to subscribers.
 	OnComplete func(notify.RunComplete)
+	// limits are the step budget and the deadline of the session tree the
+	// call runs in, found when the run starts. Nil has no limit.
+	limits *treeLimits
 	// Accepted, when non-nil, is the accept reservation taken by
 	// BeginAccepted before the call was dispatched onto a goroutine
 	// (the client/server fire-and-forget path). Run consumes it under
@@ -373,6 +376,8 @@ type sessionAgent struct {
 	adoptedTools *csync.Map[string, []string]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
+	// limits are the limits callers set on session trees. Nil holds none.
+	limits *runLimits
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -448,6 +453,9 @@ type SessionAgentOptions struct {
 	Hooks *hooks.Runner
 	// titles is shared by a coordinator's agents so one drain covers all.
 	titles *titleTracker
+	// limits is shared by a coordinator's agents, so every run in a session
+	// tree draws on the limits set on it.
+	limits *runLimits
 }
 
 func NewSessionAgent(
@@ -483,6 +491,7 @@ func NewSessionAgent(
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
+		limits:                 opts.limits,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:           csync.NewMap[string, int](),
 		cancelMark:             csync.NewMap[string, uint64](),
@@ -751,6 +760,16 @@ func (a *sessionAgent) canceledBySeq(sessionID string, seq uint64) bool {
 	return seq == 0 || seq <= mark
 }
 
+// canceledFinishTitle is the finish title of a run a cancel stopped. When
+// the cancel is the tree's deadline arriving, the row names the deadline
+// instead of the user.
+func canceledFinishTitle(deadlinePassed bool) string {
+	if deadlinePassed {
+		return "Time limit reached"
+	}
+	return "User canceled request"
+}
+
 // persistCanceledTurn writes the user/assistant records for a turn that
 // was canceled before (or just as) streaming would have produced them.
 // It creates the user message only when it was not already created by an
@@ -776,9 +795,9 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 	if err != nil {
 		return err
 	}
-	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	assistant.AddFinish(message.FinishReasonCanceled, canceledFinishTitle(call.limits.deadlinePassed()), "")
 	assistant.SetBuild(version.BuildStamp())
-	assistant.SetTurnEnd(message.TurnEndCanceled)
+	assistant.SetTurnEnd(turnEndForError(context.Canceled, call.limits.deadlinePassed()))
 	return a.messages.Update(writeCtx, assistant)
 }
 
@@ -986,6 +1005,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	if call.Ephemeral {
 		return a.runEphemeral(ctx, call)
+	}
+
+	// Once its session tree has spent its step budget or passed its
+	// deadline, no run in the tree starts, a teammate's included.
+	if call.limits == nil {
+		call.limits = a.limits.forSession(ctx, a.sessions, call.SessionID)
+	}
+	if call.limits.reached() {
+		slog.Info("Run refused: its session tree reached a limit", "session_id", call.SessionID)
+		call.Accepted.Close()
+		if call.Report != nil {
+			call.RunID = ""
+			a.settleDroppedCalls([]SessionAgentCall{call})
+		}
+		return nil, errTreeLimitReached
 	}
 
 	if call.Channel != "" && call.channelMeta == nil {
@@ -1392,6 +1426,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
+			call.limits.takeStep()
 			base := options.Messages
 			for i := range base {
 				base[i].ProviderOptions = nil
@@ -1767,6 +1802,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			func(steps []fantasy.StepResult) bool {
 				return hasRepeatedToolCalls(steps, loopDetectionWindowSize, loopDetectionMaxRepeats)
 			},
+			// Once the tree's step budget is spent or its deadline passed,
+			// every run in the tree stops after its current step.
+			func(_ []fantasy.StepResult) bool {
+				return call.limits.reached()
+			},
 		},
 	})
 
@@ -1867,7 +1907,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					"The model started repeating the same text, so the response was stopped. Retry to get a fresh answer.",
 				)
 			} else if isCancelErr {
-				currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+				currentAssistant.AddFinish(message.FinishReasonCanceled, canceledFinishTitle(call.limits.deadlinePassed()), "")
 			} else if errors.As(err, &requestTimedOutErr) {
 				// Checked before the provider branches so a deadline our own
 				// request timeout imposed is never reported as a provider error.
@@ -1901,7 +1941,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			currentAssistant.SetBuild(version.BuildStamp())
 			// A recovered overflow is stamped again once its compaction
 			// has run, since a blocked or failed one changes the ending.
-			currentAssistant.SetTurnEnd(turnEndForError(err))
+			currentAssistant.SetTurnEnd(turnEndForError(err, call.limits.deadlinePassed()))
 			// Note: we use the cleanup context here because the genCtx has been
 			// cancelled.
 			updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
@@ -1935,7 +1975,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if overflowRecovery {
 		turnEnd = message.TurnEndContextOverflow
 	} else if currentAssistant != nil {
-		turnEnd = turnEndForStep(lastStepEnding(currentAssistant, stepResults, shouldSummarize))
+		ending := lastStepEnding(currentAssistant, stepResults, shouldSummarize)
+		ending.stepsSpent = call.limits.stepsSpent()
+		ending.deadlinePassed = call.limits.deadlinePassed()
+		turnEnd = turnEndForStep(ending)
 	}
 	recordTurnEnd := func() {
 		if currentAssistant == nil || turnEnd == "" {
@@ -1975,7 +2018,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
 		// Recorded before the returns below, which a failed compaction
 		// takes, and before a blocked one is cleared.
-		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr)
+		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
 		recordTurnEnd()
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
@@ -1998,8 +2041,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 			return nil, summarizeErr
 		}
-		// If the agent wasn't done...
-		if shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
+		// A limit that refuses the continuation ends the work here, so it is
+		// what the turn reads as its ending. The local flag keeps the rest of
+		// Run's reading of shouldSummarize and overflowRecovery unchanged.
+		limitStopped := false
+		if call.limits.reached() && (turnEnd == message.TurnEndContextGuard || turnEnd == message.TurnEndContextOverflow) {
+			turnEnd = message.TurnEndStepLimit
+			if call.limits.deadlinePassed() {
+				turnEnd = message.TurnEndTimeLimit
+			}
+			recordTurnEnd()
+			limitStopped = true
+		}
+		// If the agent wasn't done, and no limit refuses the continuation,
+		// resume the prompt.
+		if !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}
@@ -2089,6 +2145,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		queuedMessages = kept
 		a.messageQueue.Set(call.SessionID, kept)
 		a.settleDroppedCalls(dropped)
+	}
+	if len(queuedMessages) > 0 && call.limits.reached() {
+		// The tree's limit refuses every run, so queued work would only
+		// be refused one call at a time. Settle it now: reports are
+		// recorded and waiters released. A continuation of this call
+		// carries its RunID, which this turn's own completion covers.
+		for i := range queuedMessages {
+			if queuedMessages[i].RunID == call.RunID {
+				queuedMessages[i].RunID = ""
+			}
+		}
+		a.settleDroppedCalls(queuedMessages)
+		queuedMessages = nil
 	}
 	if len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
