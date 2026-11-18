@@ -22,6 +22,8 @@ func (r *Report) WriteText(w io.Writer) error {
 	r.Shell.writeText(tw)
 	r.Edits.writeText(tw)
 	r.Reads.writeText(tw)
+	r.Sessions.writeText(tw)
 	r.Injections.writeText(tw)
+	r.Compactions.writeText(tw)
 	return tw.Flush()
 }
