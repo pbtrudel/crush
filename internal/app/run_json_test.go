@@ -45,6 +45,7 @@ func TestSummarizeRunReadsThePromptsLastRun(t *testing.T) {
 	rows := []message.Message{
 		userRow("root", "Fix the bug.", false),
 		stepRow("root", "", 1, "", &message.RequestUsage{InputTokens: 100, CacheReadTokens: 50, CacheWriteTokens: 20, OutputTokens: 10}),
+		userRow("root", "<system_reminder>Keep going.</system_reminder>", true),
 		{SessionID: "root", Role: message.Tool},
 		stepRow("root", "\nDone.\n", 0, message.TurnEndCompleted, &message.RequestUsage{InputTokens: 10, CacheReadTokens: 150, OutputTokens: 5}),
 		userRow("root", "<background_job_notice>job 1 ended</background_job_notice>", true),
@@ -76,7 +77,10 @@ func TestSummarizeRunFollowsAContinuation(t *testing.T) {
 	rows := []message.Message{
 		userRow("root", "Refactor it.", false),
 		stepRow("root", "", 1, message.TurnEndContextGuard, nil),
-		{SessionID: "root", Role: message.Assistant, IsSummaryMessage: true, Parts: []message.ContentPart{message.TextContent{Text: "Summary."}}},
+		{SessionID: "root", Role: message.Assistant, IsSummaryMessage: true, Parts: []message.ContentPart{
+			message.TextContent{Text: "Summary."},
+			message.Finish{Reason: message.FinishReasonEndTurn, Usage: &message.RequestUsage{InputTokens: 7}},
+		}},
 		userRow("root", "The previous session was interrupted because it got too long, the initial user request was: `Refactor it.`", false),
 		stepRow("root", "Refactored.", 0, message.TurnEndCompleted, nil),
 	}
@@ -85,18 +89,20 @@ func TestSummarizeRunFollowsAContinuation(t *testing.T) {
 
 	require.Equal(t, message.TurnEndCompleted, result.Reason)
 	require.Equal(t, "Refactored.", result.Text)
-	require.Equal(t, 3, result.Session.Steps, "the summary is a model request too")
+	require.Equal(t, 2, result.Session.Steps, "a summary is not a step")
+	require.Equal(t, int64(7), result.Session.Tokens.Input, "the summary's usage still counts")
 	require.Equal(t, map[message.TurnEnd]int{message.TurnEndContextGuard: 1, message.TurnEndCompleted: 1}, result.Tree.TurnEnds)
 	require.False(t, result.Estimated)
 }
 
-// A subagent report folded back into the session opens a run where the
-// Lead writes its answer. A hidden background notice still never opens one.
-func TestSummarizeRunFollowsASubagentReport(t *testing.T) {
+// A subagent report folded back into the session opens no run, so the
+// prompt's run still decides the reason; a hidden background notice opens
+// none either.
+func TestSummarizeRunIgnoresASubagentReport(t *testing.T) {
 	t.Parallel()
 	rows := []message.Message{
 		userRow("root", "Fix the bug.", false),
-		stepRow("root", "", 0, message.TurnEndCompleted, nil),
+		stepRow("root", "Dispatched.", 0, message.TurnEndCompleted, nil),
 		{SessionID: "root", Role: message.User, Parts: []message.ContentPart{message.SubAgentReport{Label: "worker", Output: "done"}}},
 		stepRow("root", "Final answer.", 0, message.TurnEndMaxTokens, nil),
 		userRow("root", "<background_job_notice>job 1 ended</background_job_notice>", true),
@@ -105,8 +111,8 @@ func TestSummarizeRunFollowsASubagentReport(t *testing.T) {
 
 	result := summarizeRun("root", rows)
 
-	require.Equal(t, message.TurnEndMaxTokens, result.Reason)
-	require.Equal(t, "Final answer.", result.Text)
+	require.Equal(t, message.TurnEndCompleted, result.Reason)
+	require.Equal(t, "Dispatched.", result.Text)
 }
 
 func TestSummarizeRunWithoutAStampedRun(t *testing.T) {

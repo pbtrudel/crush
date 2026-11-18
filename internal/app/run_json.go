@@ -28,10 +28,13 @@ type runCounts struct {
 	Tokens    runTokens `json:"tokens"`
 }
 
-// add counts one assistant row, which is one step, and reports whether
-// Crush estimated its usage.
+// add counts one assistant row and reports whether Crush estimated its
+// usage. A summary row is not a step, but the tool calls and the tokens
+// it recorded were spent, so they count.
 func (c *runCounts) add(m message.Message) bool {
-	c.Steps++
+	if !m.IsSummaryMessage {
+		c.Steps++
+	}
 	c.ToolCalls += len(m.ToolCalls())
 	finish := m.FinishPart()
 	if finish == nil || finish.Usage == nil {
@@ -76,12 +79,13 @@ type runResult struct {
 // sets them.
 //
 // The reason and the text are those of the session's last run that a
-// user row opened: the prompt, its continuation after a compaction, or a
-// subagent report folded back into the session. A run the harness opened
-// with hidden rows only, such as a wake-up by a background job during the
-// wait, counts in the tree but never decides the reason, so whether such a
-// run happened to start before the command ended cannot change how the
-// command ends. Without a stamped run of the prompt the reason is error.
+// user row opened: the prompt, or its continuation after a compaction.
+// A run the harness opened with hidden rows only, such as a wake-up by a
+// background job during the wait, counts in the tree but never decides
+// the reason, so whether such a run happened to start before the command
+// ended cannot change how the command ends. Subagent reports open no run
+// either, like hidden rows. Without a stamped run of the prompt the
+// reason is error.
 func summarizeRun(sessionID string, rows []message.Message) runResult {
 	result := runResult{
 		Schema:    runSchema,
@@ -91,7 +95,7 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		Tree:      runTree{TurnEnds: map[message.TurnEnd]int{}},
 	}
 	sessions := map[string]bool{sessionID: true}
-	// opened is true once a visible user row of the session started the
+	// opened is true once a user row that opensRun accepts started the
 	// run that the next stamp ends.
 	opened := false
 	for _, m := range rows {
@@ -133,14 +137,13 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 }
 
 // opensRun reports whether a user row of the session starts a run that can
-// decide the command's reason: the visible prompt, its continuation after
-// a compaction, or a subagent report folded back into the session. A
-// report's run is part of the tree the command waits for, so it always
-// ends before the command does; hidden rows the harness writes do not
-// open such a run.
+// decide the command's reason: the visible prompt, or its continuation
+// after a compaction. Rows the harness writes do not: hidden notices and
+// reminders, and subagent reports, which a non-interactive run cannot
+// produce and which may be recorded without starting a run.
 func opensRun(m message.Message) bool {
 	if len(m.SubAgentReports()) > 0 {
-		return true
+		return false
 	}
 	return !m.Content().Hidden
 }
