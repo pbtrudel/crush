@@ -44,7 +44,7 @@ type section interface {
 
 // newSections returns the report's sections in the order they print.
 func newSections() []section {
-	return []section{&windowSection{}}
+	return []section{&windowSection{builds: map[string]*Build{}}}
 }
 
 // pass holds what the sections share.
