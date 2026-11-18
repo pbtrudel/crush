@@ -76,12 +76,12 @@ type runResult struct {
 // sets them.
 //
 // The reason and the text are those of the session's last run that a
-// visible user row opened: the prompt, or its continuation after a
-// compaction. A run the harness opened with hidden rows only, such as a
-// wake-up by a background job during the wait, counts in the tree but
-// never decides the reason, so whether such a run happened to start before
-// the command ended cannot change how the command ends. Without a stamped
-// run of the prompt the reason is error.
+// user row opened: the prompt, its continuation after a compaction, or a
+// subagent report folded back into the session. A run the harness opened
+// with hidden rows only, such as a wake-up by a background job during the
+// wait, counts in the tree but never decides the reason, so whether such a
+// run happened to start before the command ended cannot change how the
+// command ends. Without a stamped run of the prompt the reason is error.
 func summarizeRun(sessionID string, rows []message.Message) runResult {
 	result := runResult{
 		Schema:    runSchema,
@@ -99,7 +99,7 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		root := m.SessionID == sessionID
 		switch m.Role {
 		case message.User:
-			if root && !m.Content().Hidden {
+			if root && opensRun(m) {
 				opened = true
 			}
 			continue
@@ -130,6 +130,19 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 	}
 	result.Tree.Sessions = len(sessions)
 	return result
+}
+
+// opensRun reports whether a user row of the session starts a run that can
+// decide the command's reason: the visible prompt, its continuation after
+// a compaction, or a subagent report folded back into the session. A
+// report's run is part of the tree the command waits for, so it always
+// ends before the command does; hidden rows the harness writes do not
+// open such a run.
+func opensRun(m message.Message) bool {
+	if len(m.SubAgentReports()) > 0 {
+		return true
+	}
+	return !m.Content().Hidden
 }
 
 // treeSessionsQuery lists a session and every session started from it.

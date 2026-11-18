@@ -90,6 +90,25 @@ func TestSummarizeRunFollowsAContinuation(t *testing.T) {
 	require.False(t, result.Estimated)
 }
 
+// A subagent report folded back into the session opens a run where the
+// Lead writes its answer. A hidden background notice still never opens one.
+func TestSummarizeRunFollowsASubagentReport(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix the bug.", false),
+		stepRow("root", "", 0, message.TurnEndCompleted, nil),
+		{SessionID: "root", Role: message.User, Parts: []message.ContentPart{message.SubAgentReport{Label: "worker", Output: "done"}}},
+		stepRow("root", "Final answer.", 0, message.TurnEndMaxTokens, nil),
+		userRow("root", "<background_job_notice>job 1 ended</background_job_notice>", true),
+		stepRow("root", "", 0, message.TurnEndEmpty, nil),
+	}
+
+	result := summarizeRun("root", rows)
+
+	require.Equal(t, message.TurnEndMaxTokens, result.Reason)
+	require.Equal(t, "Final answer.", result.Text)
+}
+
 func TestSummarizeRunWithoutAStampedRun(t *testing.T) {
 	t.Parallel()
 	rows := []message.Message{
