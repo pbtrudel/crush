@@ -401,3 +401,35 @@ func TestFinishWithoutBuildHasNoBuildKey(t *testing.T) {
 	require.NotContains(t, string(encoded), `"build"`)
 	require.NotContains(t, string(encoded), `"trigger"`)
 }
+
+func TestSetTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("records on the finish part and keeps the build", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant}
+		msg.AddFinish(FinishReasonEndTurn, "", "")
+		msg.SetBuild("0.100.0-fork.100")
+		msg.SetTurnEnd(TurnEndCompleted)
+
+		finish := msg.FinishPart()
+		require.NotNil(t, finish)
+		require.Equal(t, TurnEndCompleted, finish.TurnEnd)
+		require.Equal(t, "0.100.0-fork.100", finish.Build)
+	})
+
+	t.Run("is a no-op without a finish part", func(t *testing.T) {
+		t.Parallel()
+		msg := &Message{Role: Assistant, Parts: []ContentPart{TextContent{Text: "hi"}}}
+		msg.SetTurnEnd(TurnEndCompleted)
+		require.Equal(t, []ContentPart{TextContent{Text: "hi"}}, msg.Parts)
+	})
+}
+
+func TestFinishWithoutTurnEndHasNoTurnEndKey(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := marshalParts([]ContentPart{Finish{Reason: FinishReasonEndTurn, Time: 7}})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), `"turn_end"`)
+}
