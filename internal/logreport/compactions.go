@@ -9,8 +9,9 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 )
 
-// Compactions is the Compactions section: the summaries that carry
-// compaction statistics, in every session.
+// Compactions is the Compactions section: every finished summary that
+// compacted a session, in every session. The medians cover the summaries
+// that carry statistics.
 type Compactions struct {
 	Count              int `json:"count"`
 	MedianTokensBefore int `json:"median_tokens_before"`
@@ -32,7 +33,10 @@ type Compaction struct {
 type compactionsSection struct {
 	// before holds the tokens before each compaction, by trigger.
 	before map[string][]int
-	failed int
+	// unmeasured counts, by trigger, the compactions written before
+	// statistics were recorded; they count but have no tokens before.
+	unmeasured map[string]int
+	failed     int
 }
 
 func (s *compactionsSection) message(_ *pass, m *message.Message) {
@@ -43,7 +47,16 @@ func (s *compactionsSection) message(_ *pass, m *message.Message) {
 	if !ok {
 		if m.FinishReason() == message.FinishReasonError {
 			s.failed++
+			return
 		}
+		// A summary with no finish at all is still being written.
+		if m.FinishPart() == nil {
+			return
+		}
+		if s.unmeasured == nil {
+			s.unmeasured = map[string]int{}
+		}
+		s.unmeasured["unstamped"]++
 		return
 	}
 	trigger := cmp.Or(stats.Trigger, "unstamped")
@@ -54,16 +67,25 @@ func (s *compactionsSection) endSession(*pass) {}
 
 func (s *compactionsSection) finish(_ *pass, r *Report) {
 	c := Compactions{ByTrigger: []Compaction{}, Failed: s.failed}
+	triggers := map[string]bool{}
+	for trigger := range s.before {
+		triggers[trigger] = true
+	}
+	for trigger := range s.unmeasured {
+		triggers[trigger] = true
+	}
 	var all []int
-	for trigger, before := range s.before {
+	for trigger := range triggers {
+		before := s.before[trigger]
+		count := len(before) + s.unmeasured[trigger]
 		all = append(all, before...)
+		c.Count += count
 		c.ByTrigger = append(c.ByTrigger, Compaction{
 			Trigger:            trigger,
-			Count:              len(before),
+			Count:              count,
 			MedianTokensBefore: percentile(before, 50),
 		})
 	}
-	c.Count = len(all)
 	c.MedianTokensBefore = percentile(all, 50)
 	slices.SortFunc(c.ByTrigger, func(a, b Compaction) int {
 		return cmp.Or(cmp.Compare(b.Count, a.Count), cmp.Compare(a.Trigger, b.Trigger))

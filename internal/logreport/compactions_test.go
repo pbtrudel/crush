@@ -24,6 +24,10 @@ func TestCompactionsByTrigger(t *testing.T) {
 	compacted("s2", "guard", 160_000)
 	// Written before triggers were recorded.
 	compacted("s2", "", 90_000)
+	// Written before compactions recorded statistics: it counts, without
+	// tokens before.
+	log.summary("s2", message.TextContent{Text: "summary"},
+		message.Finish{Reason: message.FinishReasonEndTurn})
 	// A failed compaction keeps its summary row, with an error and no
 	// statistics; one still being written has neither.
 	log.summary("s2", message.Finish{Reason: message.FinishReasonError, Message: "Summarization Error"})
@@ -32,12 +36,12 @@ func TestCompactionsByTrigger(t *testing.T) {
 	log.add("s2", message.Assistant, message.CompactionStats{TokensBefore: 1})
 
 	require.Equal(t, Compactions{
-		Count:              5,
+		Count:              6,
 		MedianTokensBefore: 120_000,
 		ByTrigger: []Compaction{
 			{Trigger: "guard", Count: 3, MedianTokensBefore: 140_000},
+			{Trigger: "unstamped", Count: 2, MedianTokensBefore: 90_000},
 			{Trigger: "threshold", Count: 1, MedianTokensBefore: 120_000},
-			{Trigger: "unstamped", Count: 1, MedianTokensBefore: 90_000},
 		},
 		Failed: 1,
 	}, log.report(Options{}).Compactions)
