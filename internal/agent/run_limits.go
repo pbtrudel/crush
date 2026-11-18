@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,10 @@ type RunLimits struct {
 	MaxSteps int
 	Timeout  time.Duration
 }
+
+// errTreeLimitReached refuses a run whose session tree has spent its step
+// budget or passed its deadline.
+var errTreeLimitReached = errors.New("the session tree reached its step or time limit")
 
 // treeLimits is one session tree's limits and the steps its runs took.
 // Every method is safe on a nil receiver, which has no limit.

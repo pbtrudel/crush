@@ -376,6 +376,8 @@ type sessionAgent struct {
 	adoptedTools *csync.Map[string, []string]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
+	// limits are the limits callers set on session trees. Nil holds none.
+	limits *runLimits
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -451,6 +453,9 @@ type SessionAgentOptions struct {
 	Hooks *hooks.Runner
 	// titles is shared by a coordinator's agents so one drain covers all.
 	titles *titleTracker
+	// limits is shared by a coordinator's agents, so every run in a session
+	// tree draws on the limits set on it.
+	limits *runLimits
 }
 
 func NewSessionAgent(
@@ -486,6 +491,7 @@ func NewSessionAgent(
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
+		limits:                 opts.limits,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:           csync.NewMap[string, int](),
 		cancelMark:             csync.NewMap[string, uint64](),
@@ -991,6 +997,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return a.runEphemeral(ctx, call)
 	}
 
+	// Once its session tree has spent its step budget or passed its
+	// deadline, no run in the tree starts, a teammate's included.
+	if call.limits == nil {
+		call.limits = a.limits.forSession(ctx, a.sessions, call.SessionID)
+	}
+	if call.limits.reached() {
+		slog.Info("Run refused: its session tree reached a limit", "session_id", call.SessionID)
+		return nil, errTreeLimitReached
+	}
+
 	if call.Channel != "" && call.channelMeta == nil {
 		call.channelMeta, _ = parseChannelMeta(call.Prompt)
 	}
@@ -1395,6 +1411,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
+			call.limits.takeStep()
 			base := options.Messages
 			for i := range base {
 				base[i].ProviderOptions = nil
@@ -1769,6 +1786,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			},
 			func(steps []fantasy.StepResult) bool {
 				return hasRepeatedToolCalls(steps, loopDetectionWindowSize, loopDetectionMaxRepeats)
+			},
+			// Once the tree's step budget is spent, every run in the
+			// tree stops after its current step.
+			func(_ []fantasy.StepResult) bool {
+				return call.limits.stepsSpent()
 			},
 		},
 	})
