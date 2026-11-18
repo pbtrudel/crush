@@ -190,3 +190,25 @@ func TestTreeRowsListsTheSessionsTree(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{root.ID, child.ID, grandchild.ID}, got)
 }
+
+// A limit that stopped a teammate after the session completed is the
+// reason; the text stays the session's own.
+func TestSummarizeRunReportsALimitInTheTree(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix the bug.", false),
+		stepRow("root", "Started the worker.", 0, message.TurnEndCompleted, nil),
+		userRow("team-1", "Do the work.", false),
+		stepRow("team-1", "", 1, message.TurnEndStepLimit, nil),
+	}
+
+	result := summarizeRun("root", rows)
+	require.Equal(t, message.TurnEndStepLimit, result.Reason)
+	require.Equal(t, "Started the worker.", result.Text)
+
+	rows = append(rows,
+		userRow("team-2", "Review it.", false),
+		stepRow("team-2", "", 1, message.TurnEndTimeLimit, nil),
+	)
+	require.Equal(t, message.TurnEndTimeLimit, summarizeRun("root", rows).Reason, "the deadline is read first")
+}

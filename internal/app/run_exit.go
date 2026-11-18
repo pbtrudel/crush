@@ -29,7 +29,8 @@ func runExitCode(reason message.TurnEnd) int {
 	case message.TurnEndEmpty, message.TurnEndMaxTokens, message.TurnEndContentFilter,
 		message.TurnEndToolStop, message.TurnEndLoopGuard, message.TurnEndRepetitionGuard,
 		message.TurnEndContextGuard, message.TurnEndContextOverflow,
-		message.TurnEndCompactionBlocked:
+		message.TurnEndCompactionBlocked, message.TurnEndStepLimit,
+		message.TurnEndTimeLimit:
 		return 2
 	default:
 		return 3

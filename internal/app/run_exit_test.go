@@ -26,6 +26,8 @@ func TestRunExitCode(t *testing.T) {
 		{message.TurnEndContextGuard, 2},
 		{message.TurnEndContextOverflow, 2},
 		{message.TurnEndCompactionBlocked, 2},
+		{message.TurnEndStepLimit, 2},
+		{message.TurnEndTimeLimit, 2},
 		{message.TurnEndCanceled, 3},
 		{message.TurnEndRequestTimeout, 3},
 		{message.TurnEndProviderError, 3},

@@ -132,6 +132,15 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		}
 		opened = false
 	}
+	// A limit that stopped any run in the tree is the reason, so a turn
+	// it cut short in a child session is not reported as completed. The
+	// deadline is read first, as in the turn-end rules.
+	for _, limit := range []message.TurnEnd{message.TurnEndTimeLimit, message.TurnEndStepLimit} {
+		if result.Tree.TurnEnds[limit] > 0 {
+			result.Reason = limit
+			break
+		}
+	}
 	result.Tree.Sessions = len(sessions)
 	return result
 }
