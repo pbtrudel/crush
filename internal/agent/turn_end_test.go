@@ -79,6 +79,10 @@ func TestTurnEndForStep(t *testing.T) {
 		{name: "provider ended a step that called tools", step: stepEnding{finish: message.FinishReasonEndTurn, hasToolCalls: true, hasText: true}, want: message.TurnEndCompleted},
 		{name: "tool call cut short by the provider", step: stepEnding{finish: message.FinishReasonError, hasToolCalls: true}, want: message.TurnEndProviderError},
 		{name: "step budget spent", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, stepsSpent: true}, want: message.TurnEndStepLimit},
+		// The loop would have gone on past the tree's deadline.
+		{name: "step past the tree's deadline", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, deadlinePassed: true}, want: message.TurnEndTimeLimit},
+		// The guard stopped the step first, so it is the stronger reason.
+		{name: "guard on the step past the deadline", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, guardTripped: true, deadlinePassed: true}, want: message.TurnEndContextGuard},
 		// The model had already stopped on the step that spent the budget.
 		{name: "final answer on the step that spends the budget", step: stepEnding{finish: message.FinishReasonEndTurn, hasText: true, stepsSpent: true}, want: message.TurnEndCompleted},
 		{name: "provider ended the step that spends the budget", step: stepEnding{finish: message.FinishReasonEndTurn, hasToolCalls: true, hasText: true, stepsSpent: true}, want: message.TurnEndCompleted},

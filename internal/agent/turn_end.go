@@ -22,6 +22,9 @@ type stepEnding struct {
 	toolStopped  bool
 	loopRepeated bool
 	stepsSpent   bool
+	// deadlinePassed reports that the tree's deadline passed during the
+	// step, whether or not a cancel reached the run.
+	deadlinePassed bool
 }
 
 // turnEndForError decides how a run ended when its step loop returned an
@@ -90,6 +93,9 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 		return message.TurnEndContentFilter
 	case step.finish == message.FinishReasonError:
 		return message.TurnEndProviderError
+	case step.deadlinePassed && step.finish == message.FinishReasonToolUse:
+		// The loop would have gone on past the tree's deadline.
+		return message.TurnEndTimeLimit
 	case step.stepsSpent && step.finish == message.FinishReasonToolUse:
 		// The loop would have gone on to run the next step.
 		return message.TurnEndStepLimit

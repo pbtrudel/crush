@@ -94,9 +94,31 @@ func TestTimeLimitOutranksTheCancel(t *testing.T) {
 		t.Fatal("the run did not stop when it was cancelled")
 	}
 	require.Equal(t, []message.TurnEnd{message.TurnEndTimeLimit}, turnEnds(t, env, sess.ID))
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	require.Equal(t, "Time limit reached", msgs[1].FinishPart().Message,
+		"the row names the deadline, not a user cancel")
 
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "again"})
 	require.ErrorIs(t, err, errTreeLimitReached)
+}
+
+// A step that outlasts the tree's deadline ends the run that took it, even
+// when no cancel reached the run.
+func TestTimeLimitStopsAStepWithoutACancel(t *testing.T) {
+	env := testEnv(t)
+	model := &scriptedModel{script: []scriptedCall{callTool("sleeper", 1_000), answer("done", fantasy.FinishReasonStop, 1_000)}}
+	agent := newCompactionAgent(env, model, nil, false, &slowTool{delay: 150 * time.Millisecond})
+	agent.limits = &runLimits{}
+	sess, err := env.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	agent.limits.set(sess.ID, RunLimits{Timeout: 50 * time.Millisecond})
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+	require.Equal(t, []message.TurnEnd{message.TurnEndTimeLimit}, turnEnds(t, env, sess.ID))
+	require.Equal(t, 1, stepCount(t, env, sess.ID), "the run stops after the step the deadline passed in")
 }
 
 // A queued prompt and a queued report are settled when the tree's limit

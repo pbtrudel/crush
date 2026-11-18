@@ -760,6 +760,16 @@ func (a *sessionAgent) canceledBySeq(sessionID string, seq uint64) bool {
 	return seq == 0 || seq <= mark
 }
 
+// canceledFinishTitle is the finish title of a run a cancel stopped. When
+// the cancel is the tree's deadline arriving, the row names the deadline
+// instead of the user.
+func canceledFinishTitle(deadlinePassed bool) string {
+	if deadlinePassed {
+		return "Time limit reached"
+	}
+	return "User canceled request"
+}
+
 // persistCanceledTurn writes the user/assistant records for a turn that
 // was canceled before (or just as) streaming would have produced them.
 // It creates the user message only when it was not already created by an
@@ -785,7 +795,7 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 	if err != nil {
 		return err
 	}
-	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	assistant.AddFinish(message.FinishReasonCanceled, canceledFinishTitle(call.limits.deadlinePassed()), "")
 	assistant.SetBuild(version.BuildStamp())
 	assistant.SetTurnEnd(turnEndForError(context.Canceled, call.limits.deadlinePassed()))
 	return a.messages.Update(writeCtx, assistant)
@@ -1792,10 +1802,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			func(steps []fantasy.StepResult) bool {
 				return hasRepeatedToolCalls(steps, loopDetectionWindowSize, loopDetectionMaxRepeats)
 			},
-			// Once the tree's step budget is spent, every run in the
-			// tree stops after its current step.
+			// Once the tree's step budget is spent or its deadline passed,
+			// every run in the tree stops after its current step.
 			func(_ []fantasy.StepResult) bool {
-				return call.limits.stepsSpent()
+				return call.limits.reached()
 			},
 		},
 	})
@@ -1897,7 +1907,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					"The model started repeating the same text, so the response was stopped. Retry to get a fresh answer.",
 				)
 			} else if isCancelErr {
-				currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+				currentAssistant.AddFinish(message.FinishReasonCanceled, canceledFinishTitle(call.limits.deadlinePassed()), "")
 			} else if errors.As(err, &requestTimedOutErr) {
 				// Checked before the provider branches so a deadline our own
 				// request timeout imposed is never reported as a provider error.
@@ -1967,6 +1977,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	} else if currentAssistant != nil {
 		ending := lastStepEnding(currentAssistant, stepResults, shouldSummarize)
 		ending.stepsSpent = call.limits.stepsSpent()
+		ending.deadlinePassed = call.limits.deadlinePassed()
 		turnEnd = turnEndForStep(ending)
 	}
 	recordTurnEnd := func() {
