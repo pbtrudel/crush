@@ -99,6 +99,72 @@ func TestTimeLimitOutranksTheCancel(t *testing.T) {
 	require.ErrorIs(t, err, errTreeLimitReached)
 }
 
+// A queued prompt and a queued report are settled when the tree's limit
+// stops the run they were queued behind, instead of being refused one call
+// at a time.
+func TestStepLimitSettlesQueuedWork(t *testing.T) {
+	env := testEnv(t)
+	agent := newCompactionAgent(env, &scriptedModel{script: []scriptedCall{callTool("alpha", 1_000)}}, nil, false, &recordingTool{name: "alpha"})
+	agent.limits = &runLimits{}
+	sess, err := env.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	agent.limits.set(sess.ID, RunLimits{MaxSteps: 1})
+
+	// Queued ahead of the run: a budget of one is spent when the first step
+	// starts, so a call made while that step runs is refused at entry and
+	// never reaches the queue.
+	report := message.SubAgentReport{Label: "akiko-bugs", Output: "all good"}
+	agent.enqueueCall(SessionAgentCall{SessionID: sess.ID, Prompt: "follow-up", RunID: "run-2"})
+	agent.enqueueCall(SessionAgentCall{SessionID: sess.ID, Prompt: report.PromptText(), Report: &report, RunID: "run-3"})
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err, "the run that ran returns its own outcome")
+	require.Zero(t, agent.QueuedPrompts(sess.ID), "the queue is not left stranded")
+	require.Zero(t, agent.acceptedCount(sess.ID), "no accept reservation is left behind")
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, []message.SubAgentReport{report}, reportsIn(t, msgs))
+}
+
+// A report that meets the tree's limit is still recorded, and the accept
+// reservation it arrived with is released.
+func TestTreeLimitRecordsARefusedReport(t *testing.T) {
+	env := testEnv(t)
+	agent := newCompactionAgent(env, &scriptedModel{script: []scriptedCall{callTool("alpha", 1_000)}}, nil, false, &recordingTool{name: "alpha"})
+	agent.limits = &runLimits{}
+	sess, err := env.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	agent.limits.set(sess.ID, RunLimits{MaxSteps: 1})
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	report := message.SubAgentReport{Label: "akiko-bugs", Output: "all good"}
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID: sess.ID,
+		Prompt:    report.PromptText(),
+		Report:    &report,
+		RunID:     "run-2",
+		Accepted:  agent.BeginAccepted(sess.ID),
+	})
+	require.ErrorIs(t, err, errTreeLimitReached)
+	require.Zero(t, agent.acceptedCount(sess.ID), "the refused call releases its accept")
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, []message.SubAgentReport{report}, reportsIn(t, msgs), "the refused report is recorded")
+}
+
+// reportsIn lists every subagent report recorded in the messages.
+func reportsIn(t *testing.T, msgs []message.Message) []message.SubAgentReport {
+	t.Helper()
+	var reports []message.SubAgentReport
+	for _, msg := range msgs {
+		reports = append(reports, msg.SubAgentReports()...)
+	}
+	return reports
+}
+
 // A model that answers on the step that spends the budget had already
 // stopped: the run is completed, not cut short.
 func TestStepLimitLeavesAFinalAnswer(t *testing.T) {

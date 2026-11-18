@@ -1004,6 +1004,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}
 	if call.limits.reached() {
 		slog.Info("Run refused: its session tree reached a limit", "session_id", call.SessionID)
+		call.Accepted.Close()
+		if call.Report != nil {
+			call.RunID = ""
+			a.settleDroppedCalls([]SessionAgentCall{call})
+		}
 		return nil, errTreeLimitReached
 	}
 
@@ -2116,6 +2121,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		queuedMessages = kept
 		a.messageQueue.Set(call.SessionID, kept)
 		a.settleDroppedCalls(dropped)
+	}
+	if len(queuedMessages) > 0 && call.limits.reached() {
+		// The tree's limit refuses every run, so queued work would only
+		// be refused one call at a time. Settle it now: reports are
+		// recorded and waiters released. A continuation of this call
+		// carries its RunID, which this turn's own completion covers.
+		for i := range queuedMessages {
+			if queuedMessages[i].RunID == call.RunID {
+				queuedMessages[i].RunID = ""
+			}
+		}
+		a.settleDroppedCalls(queuedMessages)
+		queuedMessages = nil
 	}
 	if len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
