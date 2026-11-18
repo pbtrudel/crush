@@ -35,6 +35,7 @@ type Report struct {
 	Edits  Edits  `json:"edits"`
 	Reads  Reads  `json:"reads"`
 
+	Sessions   Sessions   `json:"sessions"`
 	Injections Injections `json:"injections"`
 }
 
@@ -57,6 +58,7 @@ func newSections() []section {
 		&shellSection{bare: map[string]int{}},
 		newEditsSection(),
 		&readsSection{seen: map[string]bool{}},
+		&sessionsSection{spawners: map[string]string{}},
 		newInjectionsSection(),
 	}
 }
@@ -74,6 +76,9 @@ type pass struct {
 	// stamping holds the builds whose tool results carry a stamp:
 	// exit_code or interrupted on a shell result, error_kind on any.
 	stamping map[string]bool
+	// session and parent are the current session's id and its parent's,
+	// empty for a session without one. Neither is ever printed.
+	session, parent string
 }
 
 // call is what the pass keeps of a tool call until its session ends.
@@ -83,11 +88,12 @@ type call struct {
 	build string
 }
 
-const messagesQuery = `SELECT session_id, role, parts, COALESCE(model, ''),
-	COALESCE(provider, ''), created_at, is_summary_message
-FROM messages
-WHERE created_at >= ? AND created_at < ?
-ORDER BY session_id, created_at, rowid`
+const messagesQuery = `SELECT m.session_id, COALESCE(s.parent_session_id, ''),
+	m.role, m.parts, COALESCE(m.model, ''), COALESCE(m.provider, ''),
+	m.created_at, m.is_summary_message
+FROM messages m LEFT JOIN sessions s ON s.id = m.session_id
+WHERE m.created_at >= ? AND m.created_at < ?
+ORDER BY m.session_id, m.created_at, m.rowid`
 
 // Run makes one pass over the messages in the window and returns the
 // report. It reads row by row, because a single parts value can exceed
@@ -111,11 +117,12 @@ func Run(ctx context.Context, conn *sql.DB, opts Options) (*Report, error) {
 	current := ""
 	for rows.Next() {
 		var (
-			m     message.Message
-			role  string
-			parts []byte
+			m      message.Message
+			parent string
+			role   string
+			parts  []byte
 		)
-		if err := rows.Scan(&m.SessionID, &role, &parts, &m.Model, &m.Provider, &m.CreatedAt, &m.IsSummaryMessage); err != nil {
+		if err := rows.Scan(&m.SessionID, &parent, &role, &parts, &m.Model, &m.Provider, &m.CreatedAt, &m.IsSummaryMessage); err != nil {
 			return nil, fmt.Errorf("read message: %w", err)
 		}
 		if p.sessions == 0 || m.SessionID != current {
@@ -123,6 +130,7 @@ func Run(ctx context.Context, conn *sql.DB, opts Options) (*Report, error) {
 				p.endSession(sections)
 			}
 			current = m.SessionID
+			p.session, p.parent = m.SessionID, parent
 			p.sessions++
 		}
 		m.Role = message.MessageRole(role)
