@@ -97,6 +97,7 @@ func TestRepairInterruptedToolCalls_BackdatesTheFinish(t *testing.T) {
 	finish := reloaded.FinishPart()
 	require.NotNil(t, finish)
 	require.Equal(t, before.UpdatedAt, finish.Time, "the finish is stamped with when the turn stopped")
+	require.Empty(t, finish.Build, "the repairing build did not write the turn")
 }
 
 // A turn can end cleanly and still lose a tool result, so a present finish

@@ -777,6 +777,7 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 		return err
 	}
 	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
+	assistant.SetBuild(version.BuildStamp())
 	return a.messages.Update(writeCtx, assistant)
 }
 
@@ -1655,6 +1656,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 			}
 			currentAssistant.AddFinish(finishReason, finishMessage, finishDetails)
+			currentAssistant.SetBuild(version.BuildStamp())
 			currentAssistant.PrismModelID, currentAssistant.PrismModelName = extractPrismModel(stepResult.ProviderMetadata)
 			currentAssistant.PrismHypercreditSavings, currentAssistant.PrismDollarSavings = extractPrismSavings(stepResult.ProviderMetadata)
 			sessionLock.Lock()
@@ -1891,6 +1893,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			} else {
 				currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, err.Error())
 			}
+			// Every branch above replaced the finish part, and with it any
+			// stamp the step had already written.
+			currentAssistant.SetBuild(version.BuildStamp())
 			// Note: we use the cleanup context here because the genCtx has been
 			// cancelled.
 			updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
@@ -2337,6 +2342,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		// Mark the summary message as finished with an error so the UI
 		// stops spinning.
 		summaryMessage.AddFinish(message.FinishReasonError, "Summarization Error", err.Error())
+		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(ctx, summaryMessage); updateErr != nil {
 			return updateErr
 		}
@@ -2349,6 +2355,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		// pointer untouched so the conversation survives intact.
 		emptyErr := errors.New("compaction produced an empty summary")
 		summaryMessage.AddFinish(message.FinishReasonError, "Compaction Error", emptyErr.Error())
+		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(genCtx, summaryMessage); updateErr != nil {
 			return updateErr
 		}
@@ -2402,6 +2409,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		finishReason = message.FinishReasonEndTurn
 	}
 	summaryMessage.AddFinish(finishReason, finishMessage, finishDetails)
+	summaryMessage.SetBuild(version.BuildStamp())
 	// A compaction is a model request like any other, and the most
 	// expensive one of a session: record what it consumed with it.
 	summaryMessage.SetRequestUsage(message.RequestUsage{
