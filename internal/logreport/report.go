@@ -32,6 +32,7 @@ type Report struct {
 	Window Window `json:"window"`
 	Tools  Tools  `json:"tools"`
 	Shell  Shell  `json:"shell"`
+	Edits  Edits  `json:"edits"`
 	Reads  Reads  `json:"reads"`
 }
 
@@ -52,6 +53,7 @@ func newSections() []section {
 		&windowSection{builds: map[string]*Build{}},
 		newToolsSection(),
 		&shellSection{bare: map[string]int{}},
+		newEditsSection(),
 		&readsSection{seen: map[string]bool{}},
 	}
 }
@@ -216,9 +218,12 @@ func (p *pass) kindName(kind, build string) string {
 
 // Tool names the report reads: the names models call.
 const (
-	bashTool = "bash"
-	viewTool = "view"
-	readTool = "read"
+	bashTool      = "bash"
+	editTool      = "edit"
+	multiEditTool = "multiedit"
+	writeTool     = "write"
+	viewTool      = "view"
+	readTool      = "read"
 )
 
 func ratio(n, of int) float64 {
