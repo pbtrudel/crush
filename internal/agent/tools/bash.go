@@ -437,7 +437,15 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 		// Incoming context was cancelled before we moved to background
 		// Kill the shell and return error
 		bgManager.Kill(bgShell.ID)
-		return fantasy.ToolResponse{}, ctx.Err()
+		// The result is still stored, from this metadata and the error,
+		// so the stamp says the command was aborted.
+		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{
+			StartTime:        startTime.UnixMilli(),
+			EndTime:          time.Now().UnixMilli(),
+			Description:      params.Description,
+			WorkingDirectory: bgShell.WorkingDir,
+			Interrupted:      true,
+		}), ctx.Err()
 	}
 	if !bgShell.IsDone() {
 		// It outlived the foreground window, so it is a background job now

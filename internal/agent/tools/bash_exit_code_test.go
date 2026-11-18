@@ -2,10 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -85,4 +88,20 @@ func TestBashTool_MovedToBackgroundHasNoExitCode(t *testing.T) {
 	require.False(t, gjson.Get(resp.Metadata, "exit_code").Exists(), "a background job reports through its notice")
 	require.False(t, gjson.Get(resp.Metadata, "interrupted").Exists())
 	require.NoError(t, shell.GetBackgroundShellManager().Kill(gjson.Get(resp.Metadata, "shell_id").String()))
+}
+
+func TestBashTool_CancelledCommandIsInterrupted(t *testing.T) {
+	workingDir := t.TempDir()
+	tool := newBashToolForTest(workingDir)
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), SessionIDContextKey, "test-session"))
+	time.AfterFunc(300*time.Millisecond, cancel)
+
+	input, err := json.Marshal(BashParams{Description: "cancelled", Command: "sleep 5"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: BashToolName, Input: string(input)})
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, resp.Content, "the model reads the error, as before")
+	require.True(t, gjson.Get(resp.Metadata, "interrupted").Bool(), "a cancelled command is recorded as aborted: %s", resp.Metadata)
+	require.False(t, gjson.Get(resp.Metadata, "exit_code").Exists())
 }
