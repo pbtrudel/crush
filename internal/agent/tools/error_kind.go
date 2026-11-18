@@ -25,14 +25,27 @@ const (
 	// ErrorKindMultipleMatches is a find-and-replace whose text appears more
 	// than once while replace_all is off.
 	ErrorKindMultipleMatches ErrorKind = "multiple_matches"
+	// ErrorKindPermissionDenied is a call the user refused permission for.
+	ErrorKindPermissionDenied ErrorKind = "permission_denied"
+	// ErrorKindHookDenied is a call a PreToolUse hook blocked or halted
+	// before it ran.
+	ErrorKindHookDenied ErrorKind = "hook_denied"
+	// ErrorKindInvalidArguments is a call whose arguments are not valid
+	// JSON, miss a required parameter or do not fit the tool's parameters.
+	ErrorKindInvalidArguments ErrorKind = "invalid_arguments"
+	// ErrorKindUnknownTool is a call to a tool that does not exist.
+	ErrorKindUnknownTool ErrorKind = "unknown_tool"
+	// ErrorKindInterrupted is the result Crush writes for a call its run
+	// never answered.
+	ErrorKindInterrupted ErrorKind = "interrupted"
 )
 
 const errorKindKey = "error_kind"
 
-// setErrorKind returns metadata with kind stored under "error_kind",
+// SetErrorKind returns metadata with kind stored under "error_kind",
 // keeping every other key. Metadata that is not a JSON object is returned
 // unchanged, because a stamp must never alter or break a result.
-func setErrorKind(metadata string, kind ErrorKind) string {
+func SetErrorKind(metadata string, kind ErrorKind) string {
 	if metadata == "" {
 		metadata = "{}"
 	}
@@ -46,9 +59,15 @@ func setErrorKind(metadata string, kind ErrorKind) string {
 	return updated
 }
 
+// MetadataErrorKind returns the kind stored in metadata, or "" when it
+// has none.
+func MetadataErrorKind(metadata string) ErrorKind {
+	return ErrorKind(gjson.Get(metadata, errorKindKey).String())
+}
+
 // withErrorKind records kind in a tool response's metadata. Call it after
 // any fantasy.WithResponseMetadata, which replaces the metadata whole.
 func withErrorKind(resp fantasy.ToolResponse, kind ErrorKind) fantasy.ToolResponse {
-	resp.Metadata = setErrorKind(resp.Metadata, kind)
+	resp.Metadata = SetErrorKind(resp.Metadata, kind)
 	return resp
 }

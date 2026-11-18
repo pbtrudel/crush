@@ -1620,9 +1620,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		OnToolResult: func(result fantasy.ToolResultContent) error {
 			toolResult := a.convertToToolResult(result)
 			if _, ok := sanitizedToolCalls.Get(result.ToolCallID); ok {
-				toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
+				toolResult.Content = sanitizedToolCallResult
 				toolResult.IsError = true
+				toolResult.Metadata = tools.SetErrorKind(toolResult.Metadata, tools.ErrorKindInvalidArguments)
 			}
+			toolResult = stampLibraryErrorKind(toolResult)
 			if !toolResult.IsError && toolResult.Name != "" {
 				completedToolCalls.Set(toolResult.Name, struct{}{})
 			}

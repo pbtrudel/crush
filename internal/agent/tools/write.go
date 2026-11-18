@@ -128,13 +128,11 @@ func NewWriteTool(
 				return fantasy.ToolResponse{}, err
 			}
 			if !p {
-				resp := NewPermissionDeniedResponse()
-				resp = fantasy.WithResponseMetadata(resp, WriteResponseMetadata{
+				return permissionDeniedWithMetadata(WriteResponseMetadata{
 					Diff:      diff,
 					Additions: additions,
 					Removals:  removals,
-				})
-				return resp, nil
+				}), nil
 			}
 
 			if err = writeFileWithParents(filePath, []byte(params.Content)); err != nil {

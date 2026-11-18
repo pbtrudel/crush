@@ -73,8 +73,9 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 			headerText = ratio + sty.Tool.TodoStatusNote.Render(" · "+inProgressTask)
 		}
 
-		// If we have metadata, use it for richer display.
-		if opts.HasResult() && opts.Result.Metadata != "" {
+		// If we have metadata, use it for richer display. A failed call
+		// has no todo metadata, only stamps such as its error kind.
+		if opts.HasResult() && !opts.Result.IsError && opts.Result.Metadata != "" {
 			if err := json.Unmarshal([]byte(opts.Result.Metadata), &meta); err == nil {
 				if meta.IsNew {
 					if meta.JustStarted != "" {

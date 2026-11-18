@@ -94,7 +94,15 @@ func UnsupportedMediaResponse(modelName string) fantasy.ToolResponse {
 func NewPermissionDeniedResponse() fantasy.ToolResponse {
 	resp := fantasy.NewTextErrorResponse("User denied permission")
 	resp.StopTurn = true
-	return resp
+	return withErrorKind(resp, ErrorKindPermissionDenied)
+}
+
+// permissionDeniedWithMetadata is NewPermissionDeniedResponse carrying a
+// tool's own metadata. The kind is set again after the metadata, which
+// fantasy.WithResponseMetadata replaces whole.
+func permissionDeniedWithMetadata(metadata any) fantasy.ToolResponse {
+	resp := fantasy.WithResponseMetadata(NewPermissionDeniedResponse(), metadata)
+	return withErrorKind(resp, ErrorKindPermissionDenied)
 }
 
 // ghAvailable indicates whether the `gh` CLI is available on PATH.

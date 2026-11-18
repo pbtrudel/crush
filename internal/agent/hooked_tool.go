@@ -68,7 +68,9 @@ func (h *hookedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 		// Halt ends the whole turn; a plain deny only blocks this tool
 		// call so the model can see the error and try something else.
 		resp.StopTurn = pre.Halt
-		resp.Metadata = mergeHookMetadata("", pre)
+		// The call never ran, so the hook's metadata is all it carries,
+		// with the kind added after it.
+		resp.Metadata = tools.SetErrorKind(mergeHookMetadata("", pre), tools.ErrorKindHookDenied)
 		return resp, nil
 	}
 	if pre.UpdatedInput != "" {

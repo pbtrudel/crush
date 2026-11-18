@@ -196,16 +196,14 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		return fantasy.ToolResponse{}, err
 	}
 	if !p {
-		resp := NewPermissionDeniedResponse()
-		resp = fantasy.WithResponseMetadata(resp, MultiEditResponseMetadata{
+		return permissionDeniedWithMetadata(MultiEditResponseMetadata{
 			OldContent:   "",
 			NewContent:   currentContent,
 			Additions:    additions,
 			Removals:     removals,
 			EditsApplied: editsApplied,
 			EditsFailed:  failedEdits,
-		})
-		return resp, nil
+		}), nil
 	}
 
 	if err = writeFileWithParents(params.FilePath, []byte(currentContent)); err != nil {
@@ -306,16 +304,14 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		return fantasy.ToolResponse{}, err
 	}
 	if !p {
-		resp := NewPermissionDeniedResponse()
-		resp = fantasy.WithResponseMetadata(resp, MultiEditResponseMetadata{
+		return permissionDeniedWithMetadata(MultiEditResponseMetadata{
 			OldContent:   oldContent,
 			NewContent:   currentContent,
 			Additions:    additions,
 			Removals:     removals,
 			EditsApplied: editsApplied,
 			EditsFailed:  failedEdits,
-		})
-		return resp, nil
+		}), nil
 	}
 
 	writeContent := currentContent
