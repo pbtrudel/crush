@@ -18,6 +18,56 @@ const (
 	compactTriggerManual = "manual"
 )
 
+// compactionTrigger names what started a compaction. It is recorded on the
+// summary's statistics; hooks receive only its auto or manual form, which
+// is the payload documented for users.
+type compactionTrigger string
+
+const (
+	// A finished turn left the session over the window fraction.
+	compactionTriggerThreshold compactionTrigger = "threshold"
+	// A finished turn left the session over the absolute ceiling, which
+	// was the lower of the two limits.
+	compactionTriggerCeiling compactionTrigger = "ceiling"
+	// The mid-turn guard found too little room for the next step.
+	compactionTriggerGuard compactionTrigger = "guard"
+	// The provider rejected the request as too long.
+	compactionTriggerOverflow compactionTrigger = "overflow"
+	// The user switched to a model with a smaller window.
+	compactionTriggerModelSwitch compactionTrigger = "model_switch"
+	// The prompt would not fit the Fusion budget.
+	compactionTriggerFusionPreflight compactionTrigger = "fusion_preflight"
+	// Fusion routed the turn to a model with a smaller budget.
+	compactionTriggerFusionRoute compactionTrigger = "fusion_route"
+	// The user asked for the compaction.
+	compactionTriggerManual compactionTrigger = "manual"
+)
+
+// hookTrigger is the trigger as PreCompact and PostCompact hooks receive it.
+func (t compactionTrigger) hookTrigger() string {
+	if t == compactionTriggerManual {
+		return compactTriggerManual
+	}
+	return compactTriggerAuto
+}
+
+// turnCompactionTrigger names which of the four causes that share the
+// end-of-turn compaction applied. Overflow recovery also trips the guard
+// flag, so it is tested first. The ceiling test is the rule
+// autoCompactLimit applies.
+func turnCompactionTrigger(overflowRecovery, guardTripped bool, window int64, threshold float64, ceiling int64) compactionTrigger {
+	switch {
+	case overflowRecovery:
+		return compactionTriggerOverflow
+	case guardTripped:
+		return compactionTriggerGuard
+	case ceiling > 0 && ceiling < int64(threshold*float64(window)):
+		return compactionTriggerCeiling
+	default:
+		return compactionTriggerThreshold
+	}
+}
+
 // fireTurnHook runs one hook for a top-level turn. Subagent turns (the
 // task tool, agentic_fetch, etc.) are skipped so a delegated turn does
 // not fire the user's hook N times, matching the subagent exclusion

@@ -1260,7 +1260,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
+		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactionTriggerFusionPreflight, false, false); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -1943,7 +1943,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactTriggerAuto, false, shouldSummarize)
+		threshold, _ := a.compactionConfig()
+		trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
+		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
@@ -2122,7 +2124,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactTriggerManual, false, false)
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactionTriggerManual, false, false)
 }
 
 // summarize runs one compaction request. active reports that the caller
@@ -2130,7 +2132,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 // runs inside Run), so this call must not replace or clear it. atLimit
 // reports that the window, not the threshold, forced this compaction, which
 // is the only case that has to rewrite history the provider already cached.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger string, pinned, atLimit bool) error {
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger compactionTrigger, pinned, atLimit bool) error {
 	if !active && a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -2225,7 +2227,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		}
 	}
 
-	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger}); pre.Blocked() {
+	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()}); pre.Blocked() {
 		return fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
@@ -2376,6 +2378,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		TailTokens:    tailTokens,
 		SavedTokens:   savedTokens,
 		KeptMessages:  keptMessages,
+		Trigger:       string(trigger),
 	})
 
 	for _, step := range resp.Steps {
@@ -2439,7 +2442,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	if err != nil {
 		return err
 	}
-	a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPostCompact, SessionID: sessionID, Trigger: trigger})
+	a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPostCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()})
 
 	slog.Info(
 		"Context compacted",
@@ -2531,7 +2534,7 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactTriggerAuto, true, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactionTriggerFusionRoute, true, false); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2654,7 +2657,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactTriggerAuto, false, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactionTriggerModelSwitch, false, false); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)

@@ -128,7 +128,7 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, agent.summarize(
-			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, compactTriggerManual, false, atLimit,
+			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, compactionTriggerManual, false, atLimit,
 		))
 		require.Len(t, stub.calls, 1)
 		return toolResultTextIn(t, stub.calls[0].Prompt)

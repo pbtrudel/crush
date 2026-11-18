@@ -135,6 +135,7 @@ func TestFusionRouteCompactsAssembledPromptWithPreviousModel(t *testing.T) {
 			updated, err := env.sessions.Get(t.Context(), sess.ID)
 			require.NoError(t, err)
 			require.NotEmpty(t, updated.SummaryMessageID)
+			require.Equal(t, "fusion_route", summaryTrigger(t, env, sess.ID))
 		})
 	}
 }
@@ -182,6 +183,7 @@ func TestNonFusionModelSwitchCompactsWhenAutoSummarizeDisabled(t *testing.T) {
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID)
+	require.Equal(t, "model_switch", summaryTrigger(t, env, sess.ID))
 }
 
 func TestFusionPreflightRejectsOversizePromptAfterCompaction(t *testing.T) {

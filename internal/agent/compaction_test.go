@@ -350,6 +350,7 @@ func TestAutoCompact_DefaultThresholdAfterTurn(t *testing.T) {
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID, "a turn at 75%% of the window should auto-compact")
+	require.Equal(t, "threshold", summaryTrigger(t, env, sess.ID))
 }
 
 func TestCompactionTailBudget(t *testing.T) {
@@ -606,5 +607,6 @@ func TestSummarize_AttachesCompactionStats(t *testing.T) {
 	require.Equal(t, int64(200), stats.TailTokens)
 	require.Equal(t, int64(100), stats.SavedTokens)
 	require.Equal(t, 2, stats.KeptMessages)
+	require.Equal(t, "manual", stats.Trigger)
 	require.Equal(t, version.BuildStamp(), summary.FinishPart().Build)
 }
