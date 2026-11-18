@@ -84,6 +84,9 @@ type turnsSection struct {
 	// lastEnd is the turn end on the session's last step, consumed by
 	// the next user row that is not an injection.
 	lastEnd message.TurnEnd
+	// summarized is set when a summary row followed the last step, the
+	// trace of a compaction that ran.
+	summarized bool
 }
 
 func newTurnsSection() *turnsSection {
@@ -105,18 +108,24 @@ func (s *turnsSection) message(p *pass, m *message.Message) {
 	switch {
 	case m.Role == message.User:
 		s.user(p, m)
-	case m.Role == message.Assistant && !m.IsSummaryMessage:
+	case m.Role == message.Assistant && m.IsSummaryMessage:
+		s.summarized = true
+	case m.Role == message.Assistant:
 		s.step(p, m)
 	}
 }
 
 // continues reports whether a run that ended so is continued by a new
-// run: the context was compacted, or a hook blocked the compaction, and
-// the prompt was queued again.
-func continues(end message.TurnEnd) bool {
+// run: the context was compacted, which leaves a summary row, or a hook
+// blocked the compaction and the prompt was queued again. A guard or
+// overflow with no summary after it was not recovered, so nothing
+// continues it.
+func continues(end message.TurnEnd, summarized bool) bool {
 	switch end {
-	case message.TurnEndContextGuard, message.TurnEndContextOverflow, message.TurnEndCompactionBlocked:
+	case message.TurnEndCompactionBlocked:
 		return true
+	case message.TurnEndContextGuard, message.TurnEndContextOverflow:
+		return summarized
 	}
 	return false
 }
@@ -126,8 +135,8 @@ func (s *turnsSection) user(p *pass, m *message.Message) {
 	if row == injectionRow || row == otherRow {
 		return
 	}
-	continued := continues(s.lastEnd)
-	s.lastEnd = ""
+	continued := continues(s.lastEnd, s.summarized)
+	s.lastEnd, s.summarized = "", false
 	switch {
 	case !s.top:
 		if row == visibleRow {
@@ -151,7 +160,7 @@ func (s *turnsSection) step(p *pass, m *message.Message) {
 	if f := m.FinishPart(); f != nil {
 		end, build = f.TurnEnd, f.Build
 	}
-	s.lastEnd = end
+	s.lastEnd, s.summarized = end, false
 	if end != "" && build != "" {
 		s.turnStamping[build] = true
 	}
@@ -176,7 +185,7 @@ func (s *turnsSection) step(p *pass, m *message.Message) {
 }
 
 func (s *turnsSection) endSession(*pass) {
-	s.started, s.open, s.lastEnd = false, -1, ""
+	s.started, s.open, s.lastEnd, s.summarized = false, -1, "", false
 }
 
 // root returns the top-most session above id that the pass read, or id.

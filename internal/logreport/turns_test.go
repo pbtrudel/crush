@@ -71,6 +71,89 @@ func TestTurnsPromptsHiddenTurnsAndContinuations(t *testing.T) {
 	}, turns.RunEnds)
 }
 
+// TestTurnsContinuationFollowsTheCompaction pins when a guard or overflow
+// stamp continues the prompt: only a compaction that ran leaves a summary
+// row before the requeued row.
+func TestTurnsContinuationFollowsTheCompaction(t *testing.T) {
+	t.Parallel()
+
+	call := message.ToolCall{ID: "c", Name: "glob"}
+	prompt := func(log *testLog, text string) {
+		log.add("lead", message.User, message.TextContent{Text: text})
+	}
+
+	t.Run("an overflow the compaction did not recover", func(t *testing.T) {
+		t.Parallel()
+
+		log := newTestLog(t)
+		log.session("lead", "title")
+		prompt(log, "one")
+		log.step("lead", newBuild, call)
+		// Recovery runs once per call: the requeued run overflowed
+		// again and nothing follows the stamp, so nothing continues it.
+		log.lastStep("lead", newBuild, message.TurnEndContextOverflow, call)
+		prompt(log, "two")
+		log.lastStep("lead", newBuild, message.TurnEndCompleted)
+
+		turns := log.report(Options{}).Turns
+		require.Equal(t, 2, turns.Prompts)
+		require.Zero(t, turns.Continuations)
+		// Steps per prompt: 2, 1. Tool calls: 2, 0.
+		require.Equal(t, Spread{Median: 1, P90: 2, Max: 2}, turns.Steps)
+		require.Equal(t, Spread{Median: 0, P90: 2, Max: 2}, turns.ToolCalls)
+		require.Equal(t, map[string]int{
+			"context_overflow": 1,
+			"completed":        1,
+		}, turns.RunEnds)
+	})
+
+	t.Run("an overflow the compaction recovered", func(t *testing.T) {
+		t.Parallel()
+
+		log := newTestLog(t)
+		log.session("lead", "title")
+		prompt(log, "one")
+		log.step("lead", newBuild, call)
+		log.lastStep("lead", newBuild, message.TurnEndContextOverflow, call)
+		// The compaction ran and left a summary before the requeued row.
+		log.summary("lead", message.TextContent{Text: "summary"})
+		prompt(log, "two")
+		log.lastStep("lead", newBuild, message.TurnEndCompleted)
+
+		turns := log.report(Options{}).Turns
+		require.Equal(t, 1, turns.Prompts)
+		require.Equal(t, 1, turns.Continuations)
+		// The requeued run stays in the prompt: 3 steps, 2 calls.
+		require.Equal(t, Spread{Median: 3, P90: 3, Max: 3}, turns.Steps)
+		require.Equal(t, Spread{Median: 2, P90: 2, Max: 2}, turns.ToolCalls)
+		require.Equal(t, map[string]int{
+			"context_overflow": 1,
+			"completed":        1,
+		}, turns.RunEnds)
+	})
+
+	t.Run("a guard the compaction did not recover", func(t *testing.T) {
+		t.Parallel()
+
+		log := newTestLog(t)
+		log.session("lead", "title")
+		prompt(log, "one")
+		log.lastStep("lead", newBuild, message.TurnEndContextGuard, call)
+		prompt(log, "two")
+		log.lastStep("lead", newBuild, message.TurnEndCompleted)
+
+		turns := log.report(Options{}).Turns
+		require.Equal(t, 2, turns.Prompts)
+		require.Zero(t, turns.Continuations)
+		// Steps per prompt: 1, 1.
+		require.Equal(t, Spread{Median: 1, P90: 1, Max: 1}, turns.Steps)
+		require.Equal(t, map[string]int{
+			"context_guard": 1,
+			"completed":     1,
+		}, turns.RunEnds)
+	})
+}
+
 func TestTurnsWithoutStamps(t *testing.T) {
 	t.Parallel()
 
