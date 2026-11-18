@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -64,6 +65,9 @@ crush run --session {session-id} "Follow up on your last response"
 # Continue the most recent session
 crush run --continue "Follow up on your last response"
 
+# Print the outcome as one JSON object; exit 0, 2 or 3 by how it ended
+crush run --json "Fix the failing test"
+
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
@@ -74,10 +78,18 @@ crush run --continue "Follow up on your last response"
 			reasoningEffort, _ = cmd.Flags().GetString("reasoning-effort")
 			sessionID, _       = cmd.Flags().GetString("session")
 			useLast, _         = cmd.Flags().GetBool("continue")
+			jsonOutput, _      = cmd.Flags().GetBool("json")
 		)
+		if err := refuseOnServer(jsonOutput); err != nil {
+			return err
+		}
 
-		// Cancel on SIGINT or SIGTERM.
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+		// Cancel on the signals Execute treats as a request to stop.
+		parent := cmd.Context()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := signal.NotifyContext(parent, terminationSignals()...)
 		defer cancel()
 
 		prompt := strings.Join(args, " ")
@@ -160,7 +172,7 @@ crush run --continue "Follow up on your last response"
 			sessionID = sess.ID
 		}
 
-		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast)
+		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast, jsonOutput)
 	},
 }
 
@@ -172,7 +184,17 @@ func init() {
 	runCmd.Flags().String("reasoning-effort", "", "Reasoning effort for the model (e.g. low, medium, high). Levels depend on the model; unsupported values are rejected with the accepted values listed")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	runCmd.Flags().Bool("json", false, "Print one JSON object describing the run instead of its text, and exit 0 when it completed, 2 when the model stopped short, 3 when the run should be repeated")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
+}
+
+// refuseOnServer refuses the flags that only the in-process command
+// implements, before anything is read or started.
+func refuseOnServer(jsonOutput bool) error {
+	if jsonOutput && useClientServer() {
+		return errors.New("the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+	}
+	return nil
 }
 
 // runNonInteractive executes the agent via the server and streams output
