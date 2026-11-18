@@ -134,6 +134,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 	if err != nil {
 		return nil, err
 	}
+	r.c.approveForHeadlessRun(sess.ID, member.ParentID)
 
 	agent, err := r.teammateAgent(memberCtx, member)
 	if err != nil {
@@ -184,6 +185,21 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		r.c.finishAgentRun(sess.ID, runErr)
 	}()
 	return run, nil
+}
+
+// approveForHeadlessRun gives a teammate of a run with no user the approval
+// its Lead has. The run command approves its own session; a teammate it
+// starts would otherwise wait on a prompt nobody can answer. A Lead that is
+// not approved, such as a client of the server, passes nothing on, and a
+// nested teammate inherits from its parent teammate.
+func (c *coordinator) approveForHeadlessRun(sessionID, leadSessionID string) {
+	if c.interactive || c.permissions == nil || leadSessionID == "" {
+		return
+	}
+	if !c.permissions.IsSessionAutoApproved(leadSessionID) {
+		return
+	}
+	c.permissions.AutoApproveSession(sessionID)
 }
 
 // leadSession returns the session a teammate runs on behalf of. Its channel
