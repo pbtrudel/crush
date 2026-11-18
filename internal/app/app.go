@@ -78,6 +78,10 @@ type App struct {
 
 	config *config.ConfigStore
 
+	// conn is the session log. `crush run --json` reads what its run wrote
+	// from it.
+	conn *sql.DB
+
 	serviceEventsWG *sync.WaitGroup
 	eventsCtx       context.Context
 	events          *pubsub.Broker[tea.Msg]
@@ -137,6 +141,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Messages:    messages,
 		History:     files,
 		Permissions: permSvc,
+		conn:        conn,
 		Questions:   question.NewService(),
 		FileTracker: filetracker.NewService(q),
 		Pinentry:    pinentry.DefaultService(),
@@ -340,8 +345,10 @@ func (app *App) ReportCurrentSession(sessionID string) {
 }
 
 // RunNonInteractive runs the application in non-interactive mode with the
-// given prompt, printing to stdout.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast bool) error {
+// given prompt, printing to stdout. With asJSON it prints one JSON object
+// that describes the run instead of its text, and returns an [ExitError]
+// when the run did not complete.
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast, asJSON bool) error {
 	slog.Info("Running in non-interactive mode")
 
 	// No dialog can answer an integrated pinentry prompt here, so GPG
@@ -460,6 +467,15 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	// Report session identity to herdr.
 	app.ReportCurrentSession(sess.ID)
 
+	// With --json the object counts only the rows this command writes, so
+	// the rows already in the session's tree are noted first.
+	var start runStart
+	if asJSON {
+		if start, err = app.startRun(ctx, sess); err != nil {
+			return fmt.Errorf("failed to read the session log: %w", err)
+		}
+	}
+
 	// The command ends with its session tree, not with this first turn: a
 	// teammate the turn started may still be working. The loop below keeps
 	// printing the session's output meanwhile.
@@ -467,6 +483,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	go func() {
 		done <- runAndWait(ctx, app.AgentCoordinator, sess.ID, prompt)
 	}()
+	if asJSON {
+		// Nothing is streamed: the object is all that goes to output.
+		return app.finishRunJSON(ctx, output, sess.ID, start, done)
+	}
 
 	messageEvents := app.Messages.Subscribe(ctx)
 	messageReadBytes := make(map[string]int)
