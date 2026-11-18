@@ -17,7 +17,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
@@ -456,24 +455,13 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	// Report session identity to herdr.
 	app.ReportCurrentSession(sess.ID)
 
-	type response struct {
-		result *fantasy.AgentResult
-		err    error
-	}
-	done := make(chan response, 1)
-
-	go func(ctx context.Context, sessionID, prompt string) {
-		result, err := app.AgentCoordinator.Run(ctx, sess.ID, prompt)
-		if err != nil {
-			done <- response{
-				err: fmt.Errorf("failed to start agent processing stream: %w", err),
-			}
-			return
-		}
-		done <- response{
-			result: result,
-		}
-	}(ctx, sess.ID, prompt)
+	// The command ends with its session tree, not with this first turn: a
+	// teammate the turn started may still be working. The loop below keeps
+	// printing the session's output meanwhile.
+	done := make(chan runResponse, 1)
+	go func() {
+		done <- runAndWait(ctx, app.AgentCoordinator, sess.ID, prompt)
+	}()
 
 	messageEvents := app.Messages.Subscribe(ctx)
 	messageReadBytes := make(map[string]int)
