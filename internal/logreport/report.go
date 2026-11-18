@@ -32,6 +32,7 @@ type Report struct {
 	Window Window `json:"window"`
 	Tools  Tools  `json:"tools"`
 	Shell  Shell  `json:"shell"`
+	Reads  Reads  `json:"reads"`
 }
 
 // section is one part of the report. The pass shows it every message it
@@ -51,6 +52,7 @@ func newSections() []section {
 		&windowSection{builds: map[string]*Build{}},
 		newToolsSection(),
 		&shellSection{bare: map[string]int{}},
+		&readsSection{seen: map[string]bool{}},
 	}
 }
 

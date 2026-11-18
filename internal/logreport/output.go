@@ -20,5 +20,6 @@ func (r *Report) WriteText(w io.Writer) error {
 	r.Window.writeText(tw)
 	r.Tools.writeText(tw)
 	r.Shell.writeText(tw)
+	r.Reads.writeText(tw)
 	return tw.Flush()
 }
