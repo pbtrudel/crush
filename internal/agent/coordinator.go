@@ -234,6 +234,10 @@ type coordinator struct {
 	// titles is shared by every agent built here, sub-agents included, so
 	// CancelAll on the current agent drains all title generation.
 	titles titleTracker
+
+	// runEnded signals every return of a run started here, so a wait for a
+	// session tree reads the tree again after a run that woke the session.
+	runEnded treeSignal
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -471,6 +475,9 @@ type runOptions struct {
 }
 
 func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, report *message.SubAgentReport, sessionID string, prompt string, opts runOptions, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// Deferred, so it fires after the session agent released the session,
+	// on every return, an early failure included.
+	defer c.runEnded.notify()
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
