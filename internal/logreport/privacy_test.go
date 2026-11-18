@@ -53,9 +53,21 @@ func TestReportNeverPrintsPrivateText(t *testing.T) {
 	})
 	log.add(session, message.Assistant, message.SubAgentReport{Label: marker, Output: marker},
 		message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.120"})
+	// A hidden row with a tag the report does not know, a subagent
+	// report, a compaction summary and a child session.
+	log.add(session, message.User, message.TextContent{Text: "<" + marker + ">", Hidden: true})
+	log.add(session, message.User, message.SubAgentReport{Label: marker, Output: marker, Model: marker})
+	log.summary(session, message.TextContent{Text: marker},
+		message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.120"},
+		message.CompactionStats{TokensBefore: 10, Trigger: "guard"})
+	child := "team-" + marker
+	log.child(child, session)
+	log.add(child, message.User, message.TextContent{Text: "brief " + marker})
+	log.add(child, message.Assistant, message.TextContent{Text: marker},
+		message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.120", TurnEnd: message.TurnEndCompleted})
 
 	r := log.report(Options{})
-	require.Equal(t, 9, r.Window.Messages, "the fixture is read")
+	require.Equal(t, 14, r.Window.Messages, "the fixture is read")
 	require.Zero(t, r.Window.Skipped, "every part of the fixture decodes")
 	var text, js bytes.Buffer
 	require.NoError(t, r.WriteText(&text))

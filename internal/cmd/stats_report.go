@@ -42,7 +42,11 @@ no retry.
 Tools whose calls never ran under a known name are listed as
 "unrecognized". Errors are counted per result in the window and calls
 per call in the window, so when --since cuts a session a tool can show
-more errors than calls.`,
+more errors than calls.
+
+Injections are the hidden user rows that open with a tag the report knows,
+and subagent reports. Any other hidden user row is a hidden turn: a goal,
+a loop iteration, a plan handoff.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }

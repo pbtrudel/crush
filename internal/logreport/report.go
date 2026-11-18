@@ -34,6 +34,8 @@ type Report struct {
 	Shell  Shell  `json:"shell"`
 	Edits  Edits  `json:"edits"`
 	Reads  Reads  `json:"reads"`
+
+	Injections Injections `json:"injections"`
 }
 
 // section is one part of the report. The pass shows it every message it
@@ -55,6 +57,7 @@ func newSections() []section {
 		&shellSection{bare: map[string]int{}},
 		newEditsSection(),
 		&readsSection{seen: map[string]bool{}},
+		newInjectionsSection(),
 	}
 }
 

@@ -44,6 +44,14 @@ func (l *testLog) session(id, title string) {
 	require.NoError(l.t, err)
 }
 
+// child creates a session started from parent.
+func (l *testLog) child(id, parent string) {
+	l.t.Helper()
+	_, err := l.conn.ExecContext(l.t.Context(),
+		`INSERT INTO sessions (id, parent_session_id, title, created_at, updated_at) VALUES (?, ?, 'child', 0, 0)`, id, parent)
+	require.NoError(l.t, err)
+}
+
 // add writes a message with the given parts at the log's clock and moves
 // the clock one second on.
 func (l *testLog) add(sessionID string, role message.MessageRole, parts ...message.ContentPart) {
@@ -81,6 +89,16 @@ func (l *testLog) step(sessionID, build string, calls ...message.ToolCall) {
 func (l *testLog) result(sessionID string, tr message.ToolResult) {
 	l.t.Helper()
 	l.add(sessionID, message.Tool, tr)
+}
+
+// summary writes a compaction summary: an assistant message marked as
+// one.
+func (l *testLog) summary(sessionID string, parts ...message.ContentPart) {
+	l.t.Helper()
+	l.add(sessionID, message.Assistant, parts...)
+	_, err := l.conn.ExecContext(l.t.Context(),
+		`UPDATE messages SET is_summary_message = 1 WHERE id = ?`, fmt.Sprintf("msg-%d", l.n))
+	require.NoError(l.t, err)
 }
 
 // report opens the log read-only, as the command does, and runs the
