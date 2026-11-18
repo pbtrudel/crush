@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
 )
 
@@ -123,6 +124,7 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
 				Content:    reason,
+				Metadata:   tools.SetErrorKind("", tools.ErrorKindInterrupted),
 				IsError:    true,
 			}},
 		})

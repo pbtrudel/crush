@@ -32,7 +32,7 @@ func TestSetErrorKind(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.Equal(t, tt.want, setErrorKind(tt.metadata, ErrorKindNotRead))
+			require.Equal(t, tt.want, SetErrorKind(tt.metadata, ErrorKindNotRead))
 		})
 	}
 }
