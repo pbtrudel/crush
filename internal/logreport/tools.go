@@ -30,6 +30,10 @@ type ToolStats struct {
 	Kinds  map[string]int `json:"error_kinds,omitempty"`
 }
 
+// unrecognizedTool is the only name the report prints for a tool whose
+// calls never ran under a known name: an invented name is model text.
+const unrecognizedTool = "unrecognized"
+
 // kindKey is a failure's kind, or its call's build when it has no kind:
 // whether that reads "other" or "unstamped" is known after the pass.
 type kindKey struct {
@@ -61,10 +65,18 @@ type toolsSection struct {
 	calls  map[string]int
 	errors map[string]int
 	kinds  map[string]kindCounts
+	// recognized holds the names whose results show a tool ran under
+	// that name: anything else is folded into unrecognizedTool.
+	recognized map[string]bool
 }
 
 func newToolsSection() *toolsSection {
-	return &toolsSection{calls: map[string]int{}, errors: map[string]int{}, kinds: map[string]kindCounts{}}
+	return &toolsSection{
+		calls:      map[string]int{},
+		errors:     map[string]int{},
+		kinds:      map[string]kindCounts{},
+		recognized: map[string]bool{},
+	}
 }
 
 func (s *toolsSection) message(p *pass, m *message.Message) {
@@ -75,6 +87,10 @@ func (s *toolsSection) message(p *pass, m *message.Message) {
 		}
 	case message.Tool:
 		for _, tr := range m.ToolResults() {
+			kind := gjson.Get(tr.Metadata, "error_kind").String()
+			if !tr.IsError || (kind != "" && kind != "unknown_tool") {
+				s.recognized[tr.Name] = true
+			}
 			if !tr.IsError {
 				continue
 			}
@@ -82,7 +98,7 @@ func (s *toolsSection) message(p *pass, m *message.Message) {
 			if s.kinds[tr.Name] == nil {
 				s.kinds[tr.Name] = kindCounts{}
 			}
-			s.kinds[tr.Name].add(gjson.Get(tr.Metadata, "error_kind").String(), p.calls[tr.ToolCallID].build)
+			s.kinds[tr.Name].add(kind, p.calls[tr.ToolCallID].build)
 		}
 	}
 }
@@ -98,18 +114,34 @@ func (s *toolsSection) finish(p *pass, r *Report) {
 	for name := range s.errors {
 		names[name] = true
 	}
+	// A name that is not recognized is counted under unrecognizedTool, so
+	// several invented names share one line.
+	folded := map[string]*ToolStats{}
 	for name := range names {
-		stats := ToolStats{
-			Name:   name,
-			Calls:  s.calls[name],
-			Errors: s.errors[name],
-			Rate:   ratio(s.errors[name], s.calls[name]),
-			Kinds:  s.kinds[name].resolve(p),
+		printed := name
+		if !s.recognized[name] {
+			printed = unrecognizedTool
 		}
-		t.ByTool = append(t.ByTool, stats)
+		stats, ok := folded[printed]
+		if !ok {
+			stats = &ToolStats{Name: printed}
+			folded[printed] = stats
+		}
+		stats.Calls += s.calls[name]
+		stats.Errors += s.errors[name]
+		for kind, n := range s.kinds[name].resolve(p) {
+			if stats.Kinds == nil {
+				stats.Kinds = map[string]int{}
+			}
+			stats.Kinds[kind] += n
+		}
+	}
+	for _, stats := range folded {
+		stats.Rate = ratio(stats.Errors, stats.Calls)
+		t.ByTool = append(t.ByTool, *stats)
 		t.Calls += stats.Calls
 		t.Errors += stats.Errors
-		if name == viewTool || name == readTool {
+		if stats.Name == viewTool || stats.Name == readTool {
 			t.ViewRead.Calls += stats.Calls
 			t.ViewRead.Errors += stats.Errors
 			for kind, n := range stats.Kinds {

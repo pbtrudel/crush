@@ -28,6 +28,7 @@ func TestReportNeverPrintsPrivateText(t *testing.T) {
 		message.ToolCall{ID: "call-" + marker + "-1", Name: "bash", Input: `{"command":"echo ` + marker + `"}`},
 		message.ToolCall{ID: "call-" + marker + "-2", Name: "edit", Input: `{"file_path":"` + path + `","old_string":"` + marker + `"}`},
 		message.ToolCall{ID: "call-" + marker + "-3", Name: "view", Input: `{"file_path":"` + path + `","limit":5}`},
+		message.ToolCall{ID: "call-" + marker + "-4", Name: "invented_" + marker, Input: `{}`},
 		message.Finish{Reason: message.FinishReasonToolUse, Message: marker, Details: marker, Build: "0.100.0-fork.120"},
 	)
 	log.add(session, message.Tool, message.ToolResult{
@@ -39,11 +40,15 @@ func TestReportNeverPrintsPrivateText(t *testing.T) {
 		Metadata: `{"error_kind":"not_read"}`,
 	})
 	log.add(session, message.Tool, message.ToolResult{ToolCallID: "call-" + marker + "-3", Name: "view", Content: marker})
+	log.add(session, message.Tool, message.ToolResult{
+		ToolCallID: "call-" + marker + "-4", Name: "invented_" + marker, Content: "no such tool", IsError: true,
+		Metadata: `{"error_kind":"unknown_tool"}`,
+	})
 	log.add(session, message.Assistant, message.SubAgentReport{Label: marker, Output: marker},
 		message.Finish{Reason: message.FinishReasonEndTurn, Build: "0.100.0-fork.120"})
 
 	r := log.report(Options{})
-	require.Equal(t, 7, r.Window.Messages, "the fixture is read")
+	require.Equal(t, 8, r.Window.Messages, "the fixture is read")
 	require.Zero(t, r.Window.Skipped, "every part of the fixture decodes")
 	var text, js bytes.Buffer
 	require.NoError(t, r.WriteText(&text))

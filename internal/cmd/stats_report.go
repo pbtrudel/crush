@@ -28,7 +28,10 @@ November 17.
 
 An error result without a kind reads "other" when the build that made the
 call stamps kinds, which the report learns from that build's stamped
-results in the window, and "unstamped" otherwise.`,
+results in the window, and "unstamped" otherwise.
+
+Tools whose calls never ran under a known name are listed as
+"unrecognized".`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }
