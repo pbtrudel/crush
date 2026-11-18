@@ -19,9 +19,9 @@ func TestPartsRoundTrip(t *testing.T) {
 		BinaryContent{Path: "/tmp/a.bin", MIMEType: "application/octet-stream", Data: []byte{0, 1, 2}},
 		ToolCall{ID: "c1", Name: "bash", Input: `{"cmd":"ls"}`, ProviderExecuted: true, Finished: true},
 		ToolResult{ToolCallID: "c1", Name: "bash", Content: "out", MIMEType: "text/plain", IsError: true},
-		Finish{Reason: FinishReasonEndTurn, Time: 42, Message: "done"},
+		Finish{Reason: FinishReasonEndTurn, Time: 42, Message: "done", Build: "v0.100.0-fork.100+dirty.mx7k2"},
 		ShellCommand{Command: "ls -la", Output: "total 0", ExitCode: 0},
-		CompactionStats{TokensBefore: 397088, SummaryTokens: 8192, TailTokens: 22179, SavedTokens: 366717, KeptMessages: 60},
+		CompactionStats{TokensBefore: 397088, SummaryTokens: 8192, TailTokens: 22179, SavedTokens: 366717, KeptMessages: 60, Trigger: "guard"},
 		SubAgentReport{Label: "auth-review", Output: "two findings", Failed: true},
 	}
 
@@ -65,6 +65,17 @@ func TestUnmarshalPartsEdgeCases(t *testing.T) {
 
 		_, err := unmarshalParts([]byte(`{`))
 		require.Error(t, err)
+	})
+
+	t.Run("parts stored before builds and triggers were recorded", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := unmarshalParts([]byte(`[{"type":"finish","data":{"reason":"end_turn","time":7}},{"type":"compaction_stats","data":{"tokens_before":10,"summary_tokens":2,"tail_tokens":3,"saved_tokens":5,"kept_messages":1}}]`))
+		require.NoError(t, err)
+		require.Equal(t, []ContentPart{
+			Finish{Reason: FinishReasonEndTurn, Time: 7},
+			CompactionStats{TokensBefore: 10, SummaryTokens: 2, TailTokens: 3, SavedTokens: 5, KeptMessages: 1},
+		}, got)
 	})
 }
 

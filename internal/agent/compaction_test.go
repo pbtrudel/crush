@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/version"
 	"github.com/stretchr/testify/require"
 )
 
@@ -349,6 +350,7 @@ func TestAutoCompact_DefaultThresholdAfterTurn(t *testing.T) {
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID, "a turn at 75%% of the window should auto-compact")
+	require.Equal(t, "threshold", summaryTrigger(t, env, sess.ID))
 }
 
 func TestCompactionTailBudget(t *testing.T) {
@@ -490,6 +492,17 @@ func TestSummarize_EmptySummaryLeavesSessionIntact(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, unchanged.SummaryMessageID)
 	require.Empty(t, unchanged.SummaryCutMessageID)
+
+	msgs, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var failed *message.Finish
+	for _, msg := range msgs {
+		if finish := msg.FinishPart(); finish != nil && finish.Message == "Compaction Error" {
+			failed = finish
+		}
+	}
+	require.NotNil(t, failed, "the failed summary keeps its error finish")
+	require.Equal(t, version.BuildStamp(), failed.Build)
 }
 
 // TestGetSessionMessages_TailReconstruction covers the read path: a compacted
@@ -594,4 +607,6 @@ func TestSummarize_AttachesCompactionStats(t *testing.T) {
 	require.Equal(t, int64(200), stats.TailTokens)
 	require.Equal(t, int64(100), stats.SavedTokens)
 	require.Equal(t, 2, stats.KeptMessages)
+	require.Equal(t, "manual", stats.Trigger)
+	require.Equal(t, version.BuildStamp(), summary.FinishPart().Build)
 }

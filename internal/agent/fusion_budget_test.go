@@ -173,6 +173,7 @@ func TestFusionPreflightCompactsWithPreparedPrimary(t *testing.T) {
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID)
+	require.Equal(t, "fusion_preflight", summaryTrigger(t, env, sess.ID))
 	require.Len(t, router.prompts, 1)
 	require.GreaterOrEqual(t, len(primary.calls), 2)
 }

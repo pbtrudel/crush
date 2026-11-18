@@ -186,6 +186,11 @@ type Finish struct {
 	// the prefix comparison that explains its cache read. Nil on messages
 	// that were never a request of their own.
 	Usage *RequestUsage `json:"usage,omitempty"`
+	// Build names the Crush build that wrote this message, as
+	// version.BuildStamp reports it. Empty on messages written before
+	// builds were recorded and on turns repaired after a crash, since the
+	// repairing build did not write them.
+	Build string `json:"build,omitempty"`
 }
 
 func (Finish) isPart() {}
@@ -211,6 +216,10 @@ type CompactionStats struct {
 	TailTokens    int64 `json:"tail_tokens"`
 	SavedTokens   int64 `json:"saved_tokens"`
 	KeptMessages  int   `json:"kept_messages"`
+	// Trigger names what started the compaction: threshold, ceiling,
+	// guard, overflow, model_switch, fusion_preflight, fusion_route or
+	// manual. Empty on compactions recorded before triggers were.
+	Trigger string `json:"trigger,omitempty"`
 }
 
 func (CompactionStats) isPart() {}
@@ -729,6 +738,21 @@ func (m *Message) SetRequestUsage(usage RequestUsage) {
 			continue
 		}
 		finish.Usage = &usage
+		m.Parts[i] = finish
+		return
+	}
+}
+
+// SetBuild records the build that wrote the message on its finish part.
+// It is a no-op until the message has one. AddFinish replaces the finish
+// part, so call this after the last AddFinish.
+func (m *Message) SetBuild(build string) {
+	for i, part := range m.Parts {
+		finish, ok := part.(Finish)
+		if !ok {
+			continue
+		}
+		finish.Build = build
 		m.Parts[i] = finish
 		return
 	}
