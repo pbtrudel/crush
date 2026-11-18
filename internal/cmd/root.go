@@ -235,19 +235,34 @@ func Execute() {
 		rootCmd,
 		fang.WithVersion(version.Version),
 		fang.WithErrorHandler(func(w io.Writer, styles fang.Styles, err error) {
-			if ctx.Err() == nil {
+			// A code the command chose is explained by what it printed.
+			var exitErr *app.ExitError
+			if ctx.Err() == nil && !errors.As(err, &exitErr) {
 				fang.DefaultErrorHandler(w, styles, err)
 			}
 		}),
 	)
 	interrupted := ctx.Err() != nil
 	stop()
+	if code := exitCode(err, interrupted); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// exitCode is the code the process ends with. A signal wins; a command that
+// chose its code, as `crush run --json` does, gets it; any other error is 1.
+func exitCode(err error, interrupted bool) int {
+	var exitErr *app.ExitError
 	switch {
 	case interrupted:
 		// An interrupt is not a failure worth printing; exit like a shell would.
-		os.Exit(130)
+		return 130
+	case errors.As(err, &exitErr):
+		return exitErr.Code
 	case err != nil:
-		os.Exit(1)
+		return 1
+	default:
+		return 0
 	}
 }
 
