@@ -26,5 +26,7 @@ func (r *Report) WriteText(w io.Writer) error {
 	r.Sessions.writeText(tw)
 	r.Injections.writeText(tw)
 	r.Compactions.writeText(tw)
+	writeGroups(tw, "By model", r.ByModel, false)
+	writeGroups(tw, "By build", r.ByBuild, true)
 	return tw.Flush()
 }

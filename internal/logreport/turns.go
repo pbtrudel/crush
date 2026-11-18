@@ -49,8 +49,8 @@ func spread(values []int) Spread {
 type segment struct {
 	steps, calls         int
 	treeSteps, treeCalls int
-	// build is the build stamp of the segment's first step.
-	build string
+	// model, provider and build are those of the segment's first step.
+	model, provider, build string
 	// stamped is set when a step of the segment carries a turn end.
 	stamped bool
 }
@@ -177,7 +177,7 @@ func (s *turnsSection) step(p *pass, m *message.Message) {
 	}
 	seg := &s.segments[s.open]
 	if seg.steps == 0 {
-		seg.build = build
+		seg.model, seg.provider, seg.build = m.Model, m.Provider, build
 	}
 	seg.steps++
 	seg.calls += calls

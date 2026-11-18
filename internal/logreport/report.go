@@ -39,6 +39,8 @@ type Report struct {
 	Sessions    Sessions    `json:"sessions"`
 	Injections  Injections  `json:"injections"`
 	Compactions Compactions `json:"compactions"`
+	ByModel     []Group     `json:"by_model"`
+	ByBuild     []Group     `json:"by_build"`
 }
 
 // section is one part of the report. The pass shows it every message it
@@ -54,16 +56,18 @@ type section interface {
 
 // newSections returns the report's sections in the order they print.
 func newSections() []section {
+	turns := newTurnsSection()
 	return []section{
 		&windowSection{builds: map[string]*Build{}},
 		newToolsSection(),
 		&shellSection{bare: map[string]int{}},
 		newEditsSection(),
 		&readsSection{seen: map[string]bool{}},
-		newTurnsSection(),
+		turns,
 		&sessionsSection{spawners: map[string]string{}},
 		newInjectionsSection(),
 		&compactionsSection{before: map[string][]int{}},
+		&groupsSection{turns: turns, groups: map[groupKey]*groupCounts{}},
 	}
 }
 
@@ -88,8 +92,9 @@ type pass struct {
 // call is what the pass keeps of a tool call until its session ends.
 type call struct {
 	name string
-	// build is the build stamp of the step that made the call.
-	build string
+	// build is the build stamp of the step that made the call, and model
+	// and provider the step's.
+	build, model, provider string
 }
 
 const messagesQuery = `SELECT m.session_id, COALESCE(s.parent_session_id, ''),
@@ -197,7 +202,7 @@ func (p *pass) observe(m *message.Message) {
 			build = f.Build
 		}
 		for _, tc := range m.ToolCalls() {
-			p.calls[tc.ID] = call{name: tc.Name, build: build}
+			p.calls[tc.ID] = call{name: tc.Name, build: build, model: m.Model, provider: m.Provider}
 		}
 	case message.Tool:
 		for _, tr := range m.ToolResults() {

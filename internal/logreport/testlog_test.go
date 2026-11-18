@@ -21,6 +21,8 @@ type testLog struct {
 	n    int
 	// at is the time of the next message; each message advances it.
 	at time.Time
+	// model and provider are those of the next message.
+	model, provider string
 }
 
 func newTestLog(t *testing.T) *testLog {
@@ -34,6 +36,9 @@ func newTestLog(t *testing.T) *testLog {
 		conn: conn,
 		path: filepath.Join(dir, "crush.db"),
 		at:   time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local),
+
+		model:    "model-a",
+		provider: "provider-a",
 	}
 }
 
@@ -67,8 +72,8 @@ func (l *testLog) raw(sessionID string, role message.MessageRole, parts string) 
 	l.n++
 	_, err := l.conn.ExecContext(l.t.Context(),
 		`INSERT INTO messages (id, session_id, role, parts, model, provider, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'model-a', 'provider-a', ?, ?)`,
-		fmt.Sprintf("msg-%d", l.n), sessionID, string(role), parts, l.at.Unix(), l.at.Unix())
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		fmt.Sprintf("msg-%d", l.n), sessionID, string(role), parts, l.model, l.provider, l.at.Unix(), l.at.Unix())
 	require.NoError(l.t, err)
 	l.at = l.at.Add(time.Second)
 }
