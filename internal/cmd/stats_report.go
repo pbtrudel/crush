@@ -44,6 +44,11 @@ Tools whose calls never ran under a known name are listed as
 per call in the window, so when --since cuts a session a tool can show
 more errors than calls.
 
+A child session whose creating call falls before --since reads
+"unknown". A compaction a hook blocked or the user cancelled leaves no
+row; one written before compactions carried statistics counts under
+"unstamped" but not in the medians.
+
 Injections are the hidden user rows that open with a tag the report knows,
 and subagent reports. Any other hidden user row is a hidden turn: a goal,
 a loop iteration, a plan handoff.`,

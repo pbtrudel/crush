@@ -32,6 +32,10 @@ func TestCompactionsByTrigger(t *testing.T) {
 	// statistics; one still being written has neither.
 	log.summary("s2", message.Finish{Reason: message.FinishReasonError, Message: "Summarization Error"})
 	log.summary("s2", message.TextContent{Text: "partial"})
+	// A failed compaction in a child session counts too.
+	log.child("s2$$call-compact", "s2")
+	log.summary("s2$$call-compact",
+		message.Finish{Reason: message.FinishReasonError, Message: "Compaction Error"})
 	// Statistics on a message that is not a summary are not a compaction.
 	log.add("s2", message.Assistant, message.CompactionStats{TokensBefore: 1})
 
@@ -43,6 +47,6 @@ func TestCompactionsByTrigger(t *testing.T) {
 			{Trigger: "unstamped", Count: 2, MedianTokensBefore: 90_000},
 			{Trigger: "threshold", Count: 1, MedianTokensBefore: 120_000},
 		},
-		Failed: 1,
+		Failed: 2,
 	}, log.report(Options{}).Compactions)
 }

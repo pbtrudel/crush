@@ -20,6 +20,8 @@ func TestSessionsByKind(t *testing.T) {
 	// The call that created it is not in the window.
 	log.child("a4$$call-gone", "lead")
 	log.child("team-reviewer", "lead")
+	// A child of a child, also read before its parent.
+	log.child("b1$$call-sub", "team-reviewer")
 	log.child("title-lead", "lead")
 	// A child whose id has none of the known forms.
 	log.child("other", "lead")
@@ -41,15 +43,18 @@ func TestSessionsByKind(t *testing.T) {
 	log.step("team-reviewer", newBuild)
 	log.step("team-reviewer", newBuild)
 	log.step("team-reviewer", newBuild)
+	// The step that started the child of a child.
+	log.step("team-reviewer", newBuild, message.ToolCall{ID: "call-sub", Name: "agent"})
+	log.step("b1$$call-sub", newBuild)
 	log.step("title-lead", newBuild)
 	log.add("other", message.User, message.TextContent{Text: "brief"})
 
 	require.Equal(t, []SessionKind{
-		{Kind: "subagent", Sessions: 2, Steps: 3, StepShare: 0.3},
+		{Kind: "subagent", Sessions: 3, Steps: 4, StepShare: 4.0 / 12},
 		{Kind: "unknown", Sessions: 2},
-		{Kind: "agentic_fetch", Sessions: 1, Steps: 1, StepShare: 0.1},
-		{Kind: "teammate", Sessions: 1, Steps: 3, StepShare: 0.3},
-		{Kind: "title", Sessions: 1, Steps: 1, StepShare: 0.1},
-		{Kind: "top_level", Sessions: 1, Steps: 2, StepShare: 0.2},
+		{Kind: "agentic_fetch", Sessions: 1, Steps: 1, StepShare: 1.0 / 12},
+		{Kind: "teammate", Sessions: 1, Steps: 4, StepShare: 4.0 / 12},
+		{Kind: "title", Sessions: 1, Steps: 1, StepShare: 1.0 / 12},
+		{Kind: "top_level", Sessions: 1, Steps: 2, StepShare: 2.0 / 12},
 	}, log.report(Options{}).Sessions.ByKind)
 }
