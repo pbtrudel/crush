@@ -967,12 +967,14 @@ func (app *App) InitCoderAgentNonInteractive(ctx context.Context) error {
 }
 
 // coordinatorContext returns the context for a new coordinator and ends
-// the one the previous coordinator was built with.
-func (app *App) coordinatorContext(ctx context.Context) context.Context {
+// the one the previous coordinator was built with. It derives from the
+// app's context, not the caller's: a server request or a UI operation that
+// initializes the agent ends long before the coordinator should.
+func (app *App) coordinatorContext() context.Context {
 	if app.stopCoordinator != nil {
 		app.stopCoordinator()
 	}
-	coordinatorCtx, cancel := context.WithCancel(ctx)
+	coordinatorCtx, cancel := context.WithCancel(app.globalCtx)
 	app.stopCoordinator = cancel
 	return coordinatorCtx
 }
@@ -983,7 +985,7 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
 	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(app.coordinatorContext(ctx), agent.CoordinatorOptions{
+	app.AgentCoordinator, err = agent.NewCoordinator(app.coordinatorContext(), agent.CoordinatorOptions{
 		Config:      app.config,
 		Sessions:    app.Sessions,
 		Messages:    app.Messages,
@@ -1052,13 +1054,15 @@ func (app *App) Shutdown() {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
 
-	// First, cancel all agents and wait for them to finish. This must complete
-	// before closing the DB so agents can finish writing their state.
-	if app.AgentCoordinator != nil {
-		app.AgentCoordinator.CancelAll()
-	}
+	// Stop the coordinator first, so no wake-up run starts after CancelAll
+	// collected the active ones, then cancel all agents and wait for them to
+	// finish. This must complete before closing the DB so agents can finish
+	// writing their state.
 	if app.stopCoordinator != nil {
 		app.stopCoordinator()
+	}
+	if app.AgentCoordinator != nil {
+		app.AgentCoordinator.CancelAll()
 	}
 	app.fireSessionEnd()
 

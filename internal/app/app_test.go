@@ -267,16 +267,30 @@ func TestStaleWatcherReportsMissingFiles(t *testing.T) {
 	require.Equal(t, missing.Missing, notice.Missing)
 }
 
-// A coordinator that is replaced must stop: its background-job watcher
-// would otherwise keep waking sessions the new one does not see.
-func TestReplacingTheCoordinatorStopsThePreviousOne(t *testing.T) {
+// A coordinator that is replaced must stop, and a coordinator outlives the
+// caller that built it: the server initializes the agent from a request
+// context that ends when the request returns.
+func TestCoordinatorContextLivesWithTheApp(t *testing.T) {
 	t.Parallel()
 
-	app := &App{}
-	first := app.coordinatorContext(t.Context())
+	app := &App{globalCtx: t.Context()}
+	first := app.coordinatorContext()
 	require.NoError(t, first.Err())
 
-	second := app.coordinatorContext(t.Context())
+	second := app.coordinatorContext()
 	require.ErrorIs(t, first.Err(), context.Canceled, "the replaced coordinator's context ends")
 	require.NoError(t, second.Err(), "the new coordinator's context is live")
+}
+
+// The app's lifetime bounds a coordinator as well: once the app's context
+// ends, a coordinator built from it ends too.
+func TestCoordinatorContextEndsWithTheApp(t *testing.T) {
+	t.Parallel()
+
+	globalCtx, cancel := context.WithCancel(t.Context())
+	app := &App{globalCtx: globalCtx}
+	cancel()
+
+	coordinatorCtx := app.coordinatorContext()
+	require.ErrorIs(t, coordinatorCtx.Err(), context.Canceled)
 }
