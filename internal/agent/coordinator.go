@@ -238,6 +238,11 @@ type coordinator struct {
 	// runEnded signals every return of a run started here, so a wait for a
 	// session tree reads the tree again after a run that woke the session.
 	runEnded treeSignal
+
+	// inFlight counts the runs of each session this coordinator started and
+	// that have not returned. A run reads idle to the agent for part of its
+	// life, so the tree counts these as well.
+	inFlight runCounter
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -475,9 +480,12 @@ type runOptions struct {
 }
 
 func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, report *message.SubAgentReport, sessionID string, prompt string, opts runOptions, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	// Deferred, so it fires after the session agent released the session,
-	// on every return, an early failure included.
-	defer c.runEnded.notify()
+	// Counted before the first await, so a wait for the session tree sees
+	// this run from the moment it exists. Deferred, so it fires after the
+	// session agent released the session, on every return, an early failure
+	// included.
+	c.runStarted(sessionID)
+	defer c.runFinished(sessionID)
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -657,7 +665,12 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 		agent.EnqueueNotice(sessionID, notice)
 		return
 	}
+	// Counted from here, so the tree is busy before the goroutine runs.
+	// runWithOptions counts this run again: both counts end, and each end
+	// wakes the tree's waiters.
+	c.runStarted(sessionID)
 	go func() {
+		defer c.runFinished(sessionID)
 		if _, err := c.runWithOptions(ctx, nil, nil, sessionID, notice, runOptions{hidden: true, wakeup: true}); err != nil {
 			slog.Warn("Failed to wake session for background completion", "session_id", sessionID, "error", err)
 			agent.EnqueueNotice(sessionID, notice)

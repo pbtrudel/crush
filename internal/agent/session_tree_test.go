@@ -19,11 +19,12 @@ import (
 // embedded interface is nil, so any other call panics.
 type busySessionAgent struct {
 	SessionAgent
-	busy atomic.Bool
+	busy   atomic.Bool
+	queued atomic.Int64
 }
 
 func (a *busySessionAgent) IsSessionBusy(string) bool { return a.busy.Load() }
-func (a *busySessionAgent) QueuedPrompts(string) int  { return 0 }
+func (a *busySessionAgent) QueuedPrompts(string) int  { return int(a.queued.Load()) }
 
 type treeWait struct {
 	tree SessionTree
@@ -77,6 +78,40 @@ func TestWaitForSessionTreeFollowsTheSessionsRuns(t *testing.T) {
 	require.False(t, tree.Busy)
 }
 
+// A run counts from the moment the coordinator starts it, before the agent
+// reports the session busy. A teammate settling in that window must not end
+// the wait.
+func TestWaitForSessionTreeCountsARunInFlight(t *testing.T) {
+	t.Parallel()
+	agent := &busySessionAgent{}
+	c := &coordinator{mainAgent: agent}
+
+	c.runStarted("session-root")
+	waited := waitForTree(t, c, "session-root")
+	requireStillWaiting(t, waited)
+
+	c.runFinished("session-root")
+	tree := requireTreeIdle(t, waited)
+	require.False(t, tree.Busy)
+}
+
+// A prompt queued behind a turn the agent has not picked up yet holds the
+// wait, though the agent reads the session as not busy.
+func TestWaitForSessionTreeCountsAQueuedPrompt(t *testing.T) {
+	t.Parallel()
+	agent := &busySessionAgent{}
+	agent.queued.Store(1)
+	c := &coordinator{mainAgent: agent}
+
+	waited := waitForTree(t, c, "session-root")
+	requireStillWaiting(t, waited)
+
+	agent.queued.Store(0)
+	c.runEnded.notify()
+	tree := requireTreeIdle(t, waited)
+	require.False(t, tree.Busy)
+}
+
 // A signal cancels the command's context; the wait returns at once with
 // what it last read.
 func TestWaitForSessionTreeStopsWithItsContext(t *testing.T) {
@@ -105,7 +140,7 @@ func TestRunSignalsTheSessionTreeWhenItEnds(t *testing.T) {
 	}
 	changed := coord.runEnded.changed()
 
-	// The outcome does not matter: an early failure signals too.
+	// The run answers without calling a tool; it signals when it returns.
 	_, _ = coord.run(t.Context(), nil, nil, "test-session", "hello")
 
 	select {
