@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/agentteam"
 )
@@ -35,6 +37,43 @@ type TreeWatcher interface {
 }
 
 var _ TreeWatcher = (*coordinator)(nil)
+
+// TreeLimiter is implemented by coordinators that can bound the work of a
+// session tree.
+type TreeLimiter interface {
+	// LimitSessionTree sets the limits that every run in the tree of
+	// sessionID draws on from now. When the timeout passes, every run in
+	// the tree is cancelled, its teammates' included.
+	LimitSessionTree(sessionID string, limits RunLimits)
+}
+
+var _ TreeLimiter = (*coordinator)(nil)
+
+// LimitSessionTree implements TreeLimiter. The deadline is counted from
+// now. A run of the tree that would start once a limit is reached is
+// refused, so a stopped tree goes idle and a wait for it ends.
+func (c *coordinator) LimitSessionTree(sessionID string, limits RunLimits) {
+	c.limits.set(sessionID, limits)
+	if limits.Timeout > 0 {
+		time.AfterFunc(limits.Timeout, func() { c.stopSessionTree(sessionID) })
+	}
+}
+
+// stopSessionTree cancels every run in the tree of sessionID: the
+// session's own with its subagents, its teammates' through the Team
+// service, which is the only way to reach their detached contexts, and a
+// run a background job woke on a teammate's session.
+func (c *coordinator) stopSessionTree(sessionID string) {
+	slog.Info("Session tree passed its deadline", "session_id", sessionID)
+	c.Cancel(sessionID)
+	if c.team == nil {
+		return
+	}
+	c.team.CancelTree(sessionID)
+	for _, id := range c.team.Tree(sessionID).Sessions {
+		c.Cancel(id)
+	}
+}
 
 // treeSignal wakes the callers waiting for a session tree to change. Each
 // change closes the current channel and drops it, so a caller that took the

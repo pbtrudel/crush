@@ -1264,6 +1264,22 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 	return tree
 }
 
+// CancelTree cancels the running turns of the team that sessionID leads.
+// The members stay on the roster; each turn settles and reports as usual.
+func (s *Service) CancelTree(sessionID string) {
+	s.mu.Lock()
+	var runs []Run
+	for _, member := range s.visibleMembersLocked(s.scopeLocked(leadName, sessionID)) {
+		if run, ok := s.runs[member.Name]; ok {
+			runs = append(runs, run)
+		}
+	}
+	s.mu.Unlock()
+	for _, run := range runs {
+		run.Cancel()
+	}
+}
+
 // Changed returns a channel that is closed at the next change to the
 // roster, a member's status, a queued message or the task board. Draining
 // an inbox does not close it. Take it before reading the state it guards,
