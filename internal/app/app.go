@@ -347,8 +347,9 @@ func (app *App) ReportCurrentSession(sessionID string) {
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout. With asJSON it prints one JSON object
 // that describes the run instead of its text, and returns an [ExitError]
-// when the run did not complete.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast, asJSON bool) error {
+// when the run did not complete. Limits bound the steps and the time of the
+// session's tree.
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast, asJSON bool, limits agent.RunLimits) error {
 	slog.Info("Running in non-interactive mode")
 
 	// No dialog can answer an integrated pinentry prompt here, so GPG
@@ -484,7 +485,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	// printing the session's output meanwhile.
 	done := make(chan runResponse, 1)
 	go func() {
-		done <- runAndWait(ctx, app.AgentCoordinator, sess.ID, prompt)
+		done <- runAndWait(ctx, app.AgentCoordinator, sess.ID, prompt, limits)
 	}()
 	if asJSON {
 		// Nothing is streamed: the object is all that goes to output.

@@ -23,7 +23,14 @@ type runResponse struct {
 // still working. The response carries the first run's outcome: a teammate's
 // report does not wake the session. The wait ends early only when ctx is
 // done, which is how a signal still stops the command at once.
-func runAndWait(ctx context.Context, coordinator agent.Coordinator, sessionID, prompt string) runResponse {
+//
+// Limits are set on the tree before the prompt runs, so the timeout counts
+// from here. A tree stopped by a limit refuses new runs and goes idle, so
+// the same wait ends it.
+func runAndWait(ctx context.Context, coordinator agent.Coordinator, sessionID, prompt string, limits agent.RunLimits) runResponse {
+	if limiter, ok := coordinator.(agent.TreeLimiter); ok && limits != (agent.RunLimits{}) {
+		limiter.LimitSessionTree(sessionID, limits)
+	}
 	var response runResponse
 	response.result, response.err = coordinator.Run(ctx, sessionID, prompt)
 	if response.err != nil {
