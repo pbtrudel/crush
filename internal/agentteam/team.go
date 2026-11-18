@@ -389,6 +389,9 @@ type Service struct {
 	starting map[string]bool
 	changes  chan struct{}
 	now      func() time.Time
+	// loaded is how many messages the Team held when this process opened
+	// it. An earlier process wrote those, and only it could deliver them.
+	loaded int
 	// taskCompletedHook is called after a task settles as completed. It
 	// runs without the service lock and is best-effort.
 	taskCompletedHook func(sessionID, subject string)
@@ -425,6 +428,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		starting: make(map[string]bool),
 		changes:  make(chan struct{}),
 		now:      time.Now,
+		loaded:   len(state.Messages),
 	}, nil
 }
 
@@ -703,13 +707,15 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 	return view, nil
 }
 
+var errNoRunner = errors.New("no teammate runner is configured")
+
 // startRun starts one turn and records the live run.
 func (s *Service) startRun(ctx context.Context, member Member, prompt string) (MemberView, error) {
 	s.mu.Lock()
 	runner := s.runner
 	if runner == nil {
 		s.mu.Unlock()
-		return MemberView{}, errors.New("no teammate runner is configured")
+		return MemberView{}, errNoRunner
 	}
 	if s.starting[member.Name] {
 		view := s.viewLocked(s.stateMemberLocked(member.Name))
@@ -718,10 +724,22 @@ func (s *Service) startRun(ctx context.Context, member Member, prompt string) (M
 	}
 	s.starting[member.Name] = true
 	s.mu.Unlock()
-	run, err := runner.Start(ctx, member, prompt)
+	return s.launch(ctx, runner, member, prompt)
+}
+
+// launch runs one turn for a member the caller already marked as starting,
+// so the member reads as running from that mark until the run settles.
+func (s *Service) launch(ctx context.Context, runner Runner, member Member, prompt string) (MemberView, error) {
+	var run Run
+	err := errNoRunner
+	if runner != nil {
+		run, err = runner.Start(ctx, member, prompt)
+	}
 	s.mu.Lock()
 	delete(s.starting, member.Name)
 	if err != nil {
+		// The member is no longer starting; wake whoever reads it as busy.
+		s.notifyLocked()
 		s.mu.Unlock()
 		return MemberView{}, err
 	}
@@ -789,6 +807,12 @@ func (s *Service) watch(name string, run Run) {
 	s.saveLocked()
 	s.notifyLocked()
 	pending := s.drainLocked(name)
+	runner := s.runner
+	if len(pending) > 0 {
+		// Marked under the lock that took the messages, so the member never
+		// reads as idle between losing its inbox and starting its next turn.
+		s.starting[name] = true
+	}
 	hook := s.taskCompletedHook
 	s.mu.Unlock()
 	if hook != nil {
@@ -799,7 +823,7 @@ func (s *Service) watch(name string, run Run) {
 	if len(pending) == 0 {
 		return
 	}
-	if _, err := s.startRun(context.WithoutCancel(context.Background()), member, resumePrompt(pending)); err != nil {
+	if _, err := s.launch(context.WithoutCancel(context.Background()), runner, member, resumePrompt(pending)); err != nil {
 		s.mu.Lock()
 		s.enqueueLocked(name, leadName, fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending)))
 		s.saveLocked()
@@ -1180,6 +1204,60 @@ func (s *Service) HasActivePeer(caller, sessionID string) bool {
 		}
 	}
 	return false
+}
+
+// TreeStatus is what the Team service knows about the team one Lead
+// session started.
+type TreeStatus struct {
+	// Sessions are the sessions of the tree's teammates that have run.
+	Sessions []string
+	// Active counts the teammates running, being started or about to be
+	// started again.
+	Active int
+	// UnreadByTeammates counts messages written by this process to the
+	// tree's teammates that they have not received yet.
+	UnreadByTeammates int
+	// UnreadByLead counts messages from the tree's teammates, their reports
+	// included, that the Lead has not read.
+	UnreadByLead int
+}
+
+// Tree reports the state of the team that sessionID leads. The run command
+// reads it to decide whether delegated work is still in flight.
+func (s *Service) Tree(sessionID string) TreeStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var tree TreeStatus
+	members := make(map[string]bool)
+	for _, member := range s.visibleMembersLocked(s.scopeLocked(leadName, sessionID)) {
+		members[member.Name] = true
+		if member.SessionID != "" {
+			tree.Sessions = append(tree.Sessions, member.SessionID)
+		}
+		switch s.statusLocked(member.Name) {
+		case StatusRunning, StatusProvisioning:
+			tree.Active++
+		}
+	}
+	for i, msg := range s.state.Messages {
+		switch {
+		case msg.Delivered:
+		case members[msg.To] && i >= s.loaded:
+			tree.UnreadByTeammates++
+		case msg.To == leadName && members[msg.From]:
+			tree.UnreadByLead++
+		}
+	}
+	return tree
+}
+
+// Changed returns a channel that is closed at the next change to the
+// roster, an inbox or the task board. Take it before reading the state it
+// guards, so a change made after the read cannot be missed.
+func (s *Service) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changes
 }
 
 // Shutdown cancels every live teammate run and marks the roster inactive.
