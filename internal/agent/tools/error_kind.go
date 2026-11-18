@@ -30,6 +30,11 @@ const (
 	// ErrorKindHookDenied is a call a PreToolUse hook blocked or halted
 	// before it ran.
 	ErrorKindHookDenied ErrorKind = "hook_denied"
+	// ErrorKindInvalidArguments is a call whose arguments are not valid
+	// JSON, miss a required parameter or do not fit the tool's parameters.
+	ErrorKindInvalidArguments ErrorKind = "invalid_arguments"
+	// ErrorKindUnknownTool is a call to a tool that does not exist.
+	ErrorKindUnknownTool ErrorKind = "unknown_tool"
 	// ErrorKindInterrupted is the result Crush writes for a call its run
 	// never answered.
 	ErrorKindInterrupted ErrorKind = "interrupted"
