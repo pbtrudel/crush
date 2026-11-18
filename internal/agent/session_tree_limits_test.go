@@ -65,6 +65,35 @@ func startLimitedTeam(t *testing.T, limits RunLimits, teammateModel fantasy.Lang
 	return coord, sess.ID, teammates[0]
 }
 
+// A run refused because the tree reached a limit writes nothing, so the
+// wait reports the limit that refused it rather than nothing at all.
+func TestWaitForSessionTreeReportsTheLimitThatRefusedARun(t *testing.T) {
+	coord := newGateTestCoordinator(t, false)
+	require.NoError(t, coord.readyWg.Wait())
+	sess, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	coord.LimitSessionTree(sess.ID, RunLimits{MaxSteps: 1})
+	coord.limits.forSession(t.Context(), coord.sessions, sess.ID).takeStep()
+
+	_, err = coord.mainAgent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "Go."})
+	require.ErrorIs(t, err, errTreeLimitReached)
+
+	tree := requireTreeIdle(t, waitForTree(t, coord, sess.ID))
+	require.Equal(t, message.TurnEndStepLimit, tree.Limit)
+}
+
+// A tree with limits that refused no run leaves the reason to the rows.
+func TestWaitForSessionTreeReportsNoLimitWithoutARefusal(t *testing.T) {
+	coord := newGateTestCoordinator(t, false)
+	require.NoError(t, coord.readyWg.Wait())
+	sess, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	coord.LimitSessionTree(sess.ID, RunLimits{MaxSteps: 2})
+
+	tree := requireTreeIdle(t, waitForTree(t, coord, sess.ID))
+	require.Empty(t, tree.Limit)
+}
+
 // The deadline passes while the command waits for a teammate. The
 // teammate's detached turn is cancelled through the Team service, reads
 // time_limit, and the wait ends.

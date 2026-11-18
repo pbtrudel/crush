@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/message"
 )
 
 // SessionTree is what a session and the runs started from it had in flight
@@ -19,6 +20,9 @@ type SessionTree struct {
 	// Team is what the Team service reports for the tree. It is zero when
 	// Agent Teams is off.
 	Team agentteam.TreeStatus
+	// Limit is the limit that refused a run of the tree, empty when none
+	// did; a refused run writes nothing to the log.
+	Limit message.TurnEnd
 }
 
 // Idle reports whether nothing in the tree is running or about to run. It
@@ -194,12 +198,16 @@ func (c *coordinator) WaitForSessionTree(ctx context.Context, sessionID string) 
 		}
 		tree := c.sessionTree(team, sessionID)
 		if tree.Idle() {
+			tree.Limit = c.limits.forSession(ctx, c.sessions, sessionID).refusedBy()
 			return tree, nil
 		}
 		select {
 		case <-runEnded:
 		case <-teamChanged:
 		case <-ctx.Done():
+			// The root is a key of the registry, so reading the
+			// limit after a cancel reads no session.
+			tree.Limit = c.limits.forSession(context.WithoutCancel(ctx), c.sessions, sessionID).refusedBy()
 			return tree, ctx.Err()
 		}
 	}

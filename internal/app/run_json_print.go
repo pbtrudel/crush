@@ -100,6 +100,10 @@ func (app *App) printRunJSON(ctx context.Context, output io.Writer, sessionID st
 		return cmp.Or(response.err, errors.New("the run wrote nothing to the session log"))
 	}
 	result := summarizeRun(sessionID, written)
+	// A run a limit refused wrote nothing, so the rows cannot show it.
+	if result.Reason != message.TurnEndTimeLimit && result.Reason != message.TurnEndStepLimit && response.tree.Limit != "" {
+		result.Reason = response.tree.Limit
+	}
 	result.DurationMs = time.Since(start.at).Milliseconds()
 	result.Tree.UndeliveredReports = response.tree.Team.UnreadByLead
 	// The session's cost already includes what its child sessions cost.
