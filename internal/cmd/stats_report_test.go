@@ -58,6 +58,27 @@ func TestStatsReportReadsTheProjectLog(t *testing.T) {
 	require.Contains(t, out, "Window")
 }
 
+func TestStatsReportResolvesDataDirAgainstCwd(t *testing.T) {
+	project := t.TempDir()
+	dataDir := filepath.Join(project, ".crush")
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	_, err = conn.ExecContext(t.Context(), `INSERT INTO sessions (id, title, created_at, updated_at) VALUES ('s1', 't', 0, 0)`)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(t.Context(), `INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)
+		VALUES ('m1', 's1', 'user', '[]', 0, 0)`)
+	require.NoError(t, err)
+
+	// Run from elsewhere, so a relative --data-dir finds this project's
+	// log only when it is resolved against --cwd.
+	t.Chdir(t.TempDir())
+
+	out, err := runStatsReportForTest(t, "--cwd", project, "--data-dir", ".crush")
+	require.NoError(t, err)
+	require.Contains(t, out, "Window")
+}
+
 func TestStatsReportRefusesBadInput(t *testing.T) {
 	dir := t.TempDir()
 

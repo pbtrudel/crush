@@ -60,6 +60,32 @@ func TestWindowBounds(t *testing.T) {
 	require.Contains(t, js.String(), `"schema": 1`)
 }
 
+func TestParseBoundAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Skip("the zone database has no America/Santiago")
+	}
+	now := time.Date(2026, 11, 17, 15, 30, 0, 0, loc)
+
+	// Daylight saving starts at midnight on 2026-09-06 in Santiago, so
+	// that midnight does not exist. The bound is still the first
+	// instant of the day.
+	got, err := ParseBound("2026-09-06", now)
+	require.NoError(t, err)
+	require.True(t, time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC).Equal(got), "got %s", got)
+	require.Equal(t, "2026-09-06", got.In(loc).Format(time.DateOnly))
+
+	got, err = ParseBound("2026-09-05", now)
+	require.NoError(t, err)
+	require.True(t, time.Date(2026, 9, 5, 4, 0, 0, 0, time.UTC).Equal(got), "got %s", got)
+
+	// A date is read in now's location, not the process's, so a summer
+	// day, when Santiago is at UTC-3, starts at 03:00 UTC.
+	got, err = ParseBound("2026-01-15", now)
+	require.NoError(t, err)
+	require.True(t, time.Date(2026, 1, 15, 3, 0, 0, 0, time.UTC).Equal(got), "got %s", got)
+}
+
 func TestParseBound(t *testing.T) {
 	t.Parallel()
 

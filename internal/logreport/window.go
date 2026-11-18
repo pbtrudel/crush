@@ -81,13 +81,18 @@ func formatCounts(counts map[string]int) string {
 }
 
 // ParseBound reads a --since or --until value: a date such as 2026-11-09,
-// meaning the start of that day in local time, or an age such as 7d or
-// 12h, meaning that long before now. An empty value is an open bound.
+// meaning the start of that day in now's location, or an age such as 7d
+// or 12h, meaning that long before now. An empty value is an open bound.
 func ParseBound(value string, now time.Time) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, nil
 	}
-	if t, err := time.ParseInLocation(time.DateOnly, value, time.Local); err == nil {
+	if t, err := time.ParseInLocation(time.DateOnly, value, now.Location()); err == nil {
+		// A day whose midnight a daylight saving change skips parses as
+		// the hour before, so take the start of the next zone period.
+		if t.Format(time.DateOnly) != value {
+			_, t = t.ZoneBounds()
+		}
 		return t, nil
 	}
 	if days, ok := strings.CutSuffix(value, "d"); ok {

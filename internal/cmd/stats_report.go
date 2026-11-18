@@ -57,12 +57,12 @@ func runStatsReport(cmd *cobra.Command, _ []string) error {
 		return errors.New("--since must be before --until")
 	}
 
+	cwd, err := ResolveCwd(cmd)
+	if err != nil {
+		return err
+	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	if dataDir == "" {
-		cwd, err := ResolveCwd(cmd)
-		if err != nil {
-			return err
-		}
 		cfg, err := config.Init(ctx, cwd, "", false)
 		if err != nil {
 			return fmt.Errorf("failed to initialize config: %w", err)
@@ -78,6 +78,11 @@ func runStatsReport(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer conn.Close()
+	// A reader can meet SQLITE_BUSY while another connection recovers or
+	// closes the WAL; wait for it instead of failing at once.
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
 
 	report, err := logreport.Run(ctx, conn, opts)
 	if err != nil {
