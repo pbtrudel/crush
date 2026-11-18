@@ -3,6 +3,7 @@ package logreport
 import (
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/charmbracelet/crush/internal/message"
 )
@@ -18,6 +19,10 @@ type Turns struct {
 	ChildRows int    `json:"child_session_rows"`
 	Steps     Spread `json:"steps_per_prompt"`
 	ToolCalls Spread `json:"tool_calls_per_prompt"`
+	// TreeSteps and TreeToolCalls add each child session's steps to the
+	// prompt that was open in its top-level session when it was written.
+	TreeSteps     Spread `json:"steps_per_prompt_with_children"`
+	TreeToolCalls Spread `json:"tool_calls_per_prompt_with_children"`
 	// RunEnds counts runs by the turn_end stamp on their last step. Its
 	// "unstamped" entry counts prompts instead: those whose steps carry
 	// no stamp and come from a build that never stamps one.
@@ -42,11 +47,25 @@ func spread(values []int) Spread {
 // segment is what one prompt caused in its session: the steps from the
 // prompt to the next prompt, summaries aside.
 type segment struct {
-	steps, calls int
+	steps, calls         int
+	treeSteps, treeCalls int
 	// build is the build stamp of the segment's first step.
 	build string
 	// stamped is set when a step of the segment carries a turn end.
 	stamped bool
+}
+
+// opening is when a prompt opened a segment of a top-level session.
+type opening struct {
+	at      int64
+	segment int
+}
+
+// childStep is a step of a child session, kept until the pass is over,
+// when the top-level session it belongs to is known.
+type childStep struct {
+	at    int64
+	calls int
 }
 
 type turnsSection struct {
@@ -54,6 +73,11 @@ type turnsSection struct {
 	segments []segment
 	// turnStamping holds the builds that stamp turn ends.
 	turnStamping map[string]bool
+	// parents, openings and children are kept until the pass is over:
+	// a child session can be read before its top-level session.
+	parents  map[string]string
+	openings map[string][]opening
+	children map[string][]childStep
 	// Per session.
 	started, top bool
 	open         int
@@ -66,6 +90,9 @@ func newTurnsSection() *turnsSection {
 	return &turnsSection{
 		turns:        Turns{RunEnds: map[string]int{}},
 		turnStamping: map[string]bool{},
+		parents:      map[string]string{},
+		openings:     map[string][]opening{},
+		children:     map[string][]childStep{},
 	}
 }
 
@@ -73,12 +100,13 @@ func (s *turnsSection) message(p *pass, m *message.Message) {
 	if !s.started {
 		s.started, s.open = true, -1
 		s.top = sessionKind(p.session, p.parent, "") == topLevelKind
+		s.parents[p.session] = p.parent
 	}
 	switch {
 	case m.Role == message.User:
-		s.user(m)
+		s.user(p, m)
 	case m.Role == message.Assistant && !m.IsSummaryMessage:
-		s.step(m)
+		s.step(p, m)
 	}
 }
 
@@ -93,7 +121,7 @@ func continues(end message.TurnEnd) bool {
 	return false
 }
 
-func (s *turnsSection) user(m *message.Message) {
+func (s *turnsSection) user(p *pass, m *message.Message) {
 	row, _, _ := classifyUser(m)
 	if row == injectionRow || row == otherRow {
 		return
@@ -113,10 +141,11 @@ func (s *turnsSection) user(m *message.Message) {
 		s.turns.Prompts++
 		s.open = len(s.segments)
 		s.segments = append(s.segments, segment{})
+		s.openings[p.session] = append(s.openings[p.session], opening{at: m.CreatedAt, segment: s.open})
 	}
 }
 
-func (s *turnsSection) step(m *message.Message) {
+func (s *turnsSection) step(p *pass, m *message.Message) {
 	var end message.TurnEnd
 	build := ""
 	if f := m.FinishPart(); f != nil {
@@ -126,7 +155,9 @@ func (s *turnsSection) step(m *message.Message) {
 	if end != "" && build != "" {
 		s.turnStamping[build] = true
 	}
+	calls := len(m.ToolCalls())
 	if !s.top {
+		s.children[p.session] = append(s.children[p.session], childStep{at: m.CreatedAt, calls: calls})
 		return
 	}
 	if end != "" {
@@ -140,7 +171,7 @@ func (s *turnsSection) step(m *message.Message) {
 		seg.build = build
 	}
 	seg.steps++
-	seg.calls += len(m.ToolCalls())
+	seg.calls += calls
 	seg.stamped = seg.stamped || end != ""
 }
 
@@ -148,16 +179,48 @@ func (s *turnsSection) endSession(*pass) {
 	s.started, s.open, s.lastEnd = false, -1, ""
 }
 
+// root returns the top-most session above id that the pass read, or id.
+func (s *turnsSection) root(id string) string {
+	// The bound guards against a cycle in the parent links.
+	for range 32 {
+		parent := s.parents[id]
+		if parent == "" {
+			break
+		}
+		id = parent
+	}
+	return id
+}
+
 func (s *turnsSection) finish(_ *pass, r *Report) {
-	var steps, calls []int
+	for i := range s.segments {
+		s.segments[i].treeSteps = s.segments[i].steps
+		s.segments[i].treeCalls = s.segments[i].calls
+	}
+	for child, steps := range s.children {
+		openings := s.openings[s.root(child)]
+		for _, step := range steps {
+			i := sort.Search(len(openings), func(i int) bool { return openings[i].at > step.at }) - 1
+			if i < 0 {
+				continue
+			}
+			seg := &s.segments[openings[i].segment]
+			seg.treeSteps++
+			seg.treeCalls += step.calls
+		}
+	}
+	var steps, calls, treeSteps, treeCalls []int
 	for _, seg := range s.segments {
 		steps = append(steps, seg.steps)
 		calls = append(calls, seg.calls)
+		treeSteps = append(treeSteps, seg.treeSteps)
+		treeCalls = append(treeCalls, seg.treeCalls)
 		if seg.steps > 0 && !seg.stamped && !s.turnStamping[seg.build] {
 			s.turns.RunEnds["unstamped"]++
 		}
 	}
 	s.turns.Steps, s.turns.ToolCalls = spread(steps), spread(calls)
+	s.turns.TreeSteps, s.turns.TreeToolCalls = spread(treeSteps), spread(treeCalls)
 	r.Turns = s.turns
 }
 
@@ -174,6 +237,8 @@ func (t Turns) writeText(out io.Writer) {
 	}{
 		{"steps", t.Steps},
 		{"tool calls", t.ToolCalls},
+		{"steps with child sessions", t.TreeSteps},
+		{"tool calls with child sessions", t.TreeToolCalls},
 	} {
 		fmt.Fprintf(out, "  %s\t%d\t%d\t%d\n", row.name, row.s.Median, row.s.P90, row.s.Max)
 	}
