@@ -1014,6 +1014,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}
 	if call.limits.reached() {
 		slog.Info("Run refused: its session tree reached a limit", "session_id", call.SessionID)
+		call.limits.refuse()
 		call.Accepted.Close()
 		if call.Report != nil {
 			call.RunID = ""

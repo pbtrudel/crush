@@ -141,6 +141,53 @@ func TestRunJSONExitsByTheReason(t *testing.T) {
 	}
 }
 
+// A run a limit refused wrote nothing, so the rows read completed and only
+// the tree can say why the run stopped.
+func TestRunJSONExitsByTheLimitThatRefusedARun(t *testing.T) {
+	t.Parallel()
+	app, sess := newRunLogApp(t)
+	start, err := app.startRun(t.Context(), sess)
+	require.NoError(t, err)
+	writeRows(t, app,
+		userRow(sess.ID, "Go.", false),
+		stepRow(sess.ID, "Done.", 0, message.TurnEndCompleted, nil),
+	)
+	done := make(chan runResponse, 1)
+	done <- runResponse{tree: agent.SessionTree{Limit: message.TurnEndStepLimit}}
+
+	var output bytes.Buffer
+	err = app.finishRunJSON(t.Context(), &output, sess.ID, start, done)
+
+	result := decodeRun(t, &output)
+	require.Equal(t, message.TurnEndStepLimit, result.Reason)
+	var exitErr *ExitError
+	require.ErrorAs(t, err, &exitErr)
+	require.Equal(t, 2, exitErr.Code)
+}
+
+// A limit a row already carries is the reason, whatever the tree reports.
+func TestRunJSONKeepsAStampedLimitOverTheTrees(t *testing.T) {
+	t.Parallel()
+	app, sess := newRunLogApp(t)
+	start, err := app.startRun(t.Context(), sess)
+	require.NoError(t, err)
+	writeRows(t, app,
+		userRow(sess.ID, "Go.", false),
+		stepRow(sess.ID, "", 0, message.TurnEndTimeLimit, nil),
+	)
+	done := make(chan runResponse, 1)
+	done <- runResponse{tree: agent.SessionTree{Limit: message.TurnEndStepLimit}}
+
+	var output bytes.Buffer
+	err = app.finishRunJSON(t.Context(), &output, sess.ID, start, done)
+
+	result := decodeRun(t, &output)
+	require.Equal(t, message.TurnEndTimeLimit, result.Reason)
+	var exitErr *ExitError
+	require.ErrorAs(t, err, &exitErr)
+	require.Equal(t, 2, exitErr.Code)
+}
+
 // When the prompt never reached the log no run started: nothing is printed
 // and the run's own error is returned, which exits 1.
 func TestRunJSONPrintsNothingWithoutARun(t *testing.T) {

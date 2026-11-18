@@ -181,3 +181,30 @@ func TestTreeDoesNotCountAMessageToAFailedTeammate(t *testing.T) {
 	require.Zero(t, tree.Active)
 	require.Zero(t, tree.UnreadByTeammates)
 }
+
+// CancelTree stops the turns of one Lead session's team and leaves another
+// session's teammates running.
+func TestCancelTreeStopsTheSessionsTeam(t *testing.T) {
+	t.Parallel()
+	service, runner := newTestService(t)
+	for _, req := range []SpawnRequest{
+		{Name: "reviewer", Description: "d", Prompt: "p", ParentID: "session-a"},
+		{Name: "writer", Description: "d", Prompt: "p", ParentID: "session-a"},
+		{Name: "other", Description: "d", Prompt: "p", ParentID: "session-b"},
+	} {
+		_, err := service.SpawnTeammate(context.Background(), "lead", req)
+		require.NoError(t, err)
+	}
+
+	service.CancelTree("session-a")
+	require.Eventually(t, func() bool {
+		return service.Tree("session-a").Active == 0
+	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, 2, service.Tree("session-a").UnreadByLead, "each cancelled turn reports")
+	require.Equal(t, 1, service.Tree("session-b").Active)
+
+	runner.finish("other")
+	require.Eventually(t, func() bool {
+		return service.Tree("session-b").Active == 0
+	}, time.Second, 10*time.Millisecond)
+}

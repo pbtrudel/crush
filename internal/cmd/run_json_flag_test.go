@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/charmbracelet/crush/internal/agent"
 )
 
 // The client/server path does not implement --json, so the flag is refused
@@ -15,9 +17,9 @@ func TestRunRefusesJSONAgainstAServer(t *testing.T) {
 	require.Equal(t, "bool", flag.Value.Type())
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "1")
-	require.EqualError(t, refuseOnServer(true), "the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
-	require.NoError(t, refuseOnServer(false))
+	require.EqualError(t, refuseOnServer(true, agent.RunLimits{}), "the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+	require.NoError(t, refuseOnServer(false, agent.RunLimits{}))
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "0")
-	require.NoError(t, refuseOnServer(true))
+	require.NoError(t, refuseOnServer(true, agent.RunLimits{}))
 }

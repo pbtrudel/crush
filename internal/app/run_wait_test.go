@@ -41,7 +41,7 @@ func (c *treeCoordinator) WaitForSessionTree(ctx context.Context, _ string) (age
 
 func startRunAndWait(ctx context.Context, coordinator agent.Coordinator) <-chan runResponse {
 	done := make(chan runResponse, 1)
-	go func() { done <- runAndWait(ctx, coordinator, "session-root", "go") }()
+	go func() { done <- runAndWait(ctx, coordinator, "session-root", "go", agent.RunLimits{}) }()
 	return done
 }
 
@@ -109,7 +109,42 @@ func (plainCoordinator) Run(context.Context, string, string, ...message.Attachme
 
 func TestRunAndWaitWithoutATreeWatcher(t *testing.T) {
 	t.Parallel()
-	response := runAndWait(t.Context(), plainCoordinator{}, "session-root", "go")
+	response := runAndWait(t.Context(), plainCoordinator{}, "session-root", "go", agent.RunLimits{})
 	require.NoError(t, response.err)
 	require.Equal(t, agent.SessionTree{}, response.tree)
+}
+
+// limitCoordinator records the limits the command set on the tree and how
+// many prompts had run by then.
+type limitCoordinator struct {
+	plainCoordinator
+	runs      int
+	limits    []agent.RunLimits
+	runsFirst int
+}
+
+func (c *limitCoordinator) Run(context.Context, string, string, ...message.Attachment) (*fantasy.AgentResult, error) {
+	c.runs++
+	return &fantasy.AgentResult{}, nil
+}
+
+func (c *limitCoordinator) LimitSessionTree(_ string, limits agent.RunLimits) {
+	c.limits = append(c.limits, limits)
+	c.runsFirst = c.runs
+}
+
+// The limits are on the tree before the prompt runs, so the timeout counts
+// from the prompt and the first step already draws on the budget.
+func TestRunAndWaitLimitsTheTreeFirst(t *testing.T) {
+	t.Parallel()
+	limits := agent.RunLimits{MaxSteps: 5, Timeout: time.Minute}
+	limited := &limitCoordinator{}
+	runAndWait(t.Context(), limited, "session-root", "go", limits)
+	require.Equal(t, []agent.RunLimits{limits}, limited.limits)
+	require.Zero(t, limited.runsFirst, "the limits were set before the prompt ran")
+	require.Equal(t, 1, limited.runs)
+
+	unlimited := &limitCoordinator{}
+	runAndWait(t.Context(), unlimited, "session-root", "go", agent.RunLimits{})
+	require.Empty(t, unlimited.limits, "no limit, nothing to set")
 }

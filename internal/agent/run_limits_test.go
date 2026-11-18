@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/charmbracelet/crush/internal/message"
 )
 
 func TestTreeLimits(t *testing.T) {
@@ -32,6 +34,31 @@ func TestTreeLimits(t *testing.T) {
 	require.True(t, past.deadlinePassed())
 	require.False(t, past.stepsSpent())
 	require.True(t, past.reached())
+}
+
+// A run refused because its tree reached a limit writes nothing, so the
+// refusal itself says which limit it was. The deadline is read first.
+func TestTreeLimitsRefusedBy(t *testing.T) {
+	t.Parallel()
+
+	var none *treeLimits
+	none.refuse()
+	require.Empty(t, none.refusedBy(), "a tree without limits refuses nothing")
+
+	unrefused := newTreeLimits(RunLimits{MaxSteps: 1}, time.Now())
+	unrefused.takeStep()
+	require.True(t, unrefused.stepsSpent())
+	require.Empty(t, unrefused.refusedBy(), "a spent budget that refused no run reads empty")
+
+	budget := newTreeLimits(RunLimits{MaxSteps: 1}, time.Now())
+	budget.takeStep()
+	budget.refuse()
+	require.Equal(t, message.TurnEndStepLimit, budget.refusedBy())
+
+	past := newTreeLimits(RunLimits{Timeout: time.Nanosecond}, time.Now().Add(-time.Minute))
+	require.True(t, past.deadlinePassed())
+	past.refuse()
+	require.Equal(t, message.TurnEndTimeLimit, past.refusedBy(), "the deadline is read first")
 }
 
 // A run finds its tree's limits through its session's parent chain, so a

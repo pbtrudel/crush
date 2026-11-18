@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
@@ -28,6 +29,9 @@ type treeLimits struct {
 	maxSteps int64
 	deadline time.Time
 	steps    atomic.Int64
+	// refused is set once a run of the tree was refused because a limit
+	// was reached.
+	refused atomic.Bool
 }
 
 // newTreeLimits starts the limits at now: the deadline is now plus the
@@ -60,6 +64,27 @@ func (l *treeLimits) deadlinePassed() bool {
 // reached reports whether a limit stops the tree's runs.
 func (l *treeLimits) reached() bool {
 	return l.stepsSpent() || l.deadlinePassed()
+}
+
+// refuse records that a run of the tree was refused because a limit was
+// reached.
+func (l *treeLimits) refuse() {
+	if l != nil {
+		l.refused.Store(true)
+	}
+}
+
+// refusedBy reports the limit that refused a run of the tree, or empty
+// when none was refused. The deadline is read first, as in the turn-end
+// rules.
+func (l *treeLimits) refusedBy() message.TurnEnd {
+	if l == nil || !l.refused.Load() {
+		return ""
+	}
+	if l.deadlinePassed() {
+		return message.TurnEndTimeLimit
+	}
+	return message.TurnEndStepLimit
 }
 
 // maxTreeDepth bounds the walk up a parent chain, so a cycle in the session

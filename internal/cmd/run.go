@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/log/v2"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/event"
@@ -68,6 +69,9 @@ crush run --continue "Follow up on your last response"
 # Print the outcome as one JSON object; exit 0, 2 or 3 by how it ended
 crush run --json "Fix the failing test"
 
+# Stop after 40 steps or 20 minutes, whichever comes first
+crush run --json --max-steps 40 --timeout 20m "Fix the failing test"
+
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
@@ -79,8 +83,14 @@ crush run --json "Fix the failing test"
 			sessionID, _       = cmd.Flags().GetString("session")
 			useLast, _         = cmd.Flags().GetBool("continue")
 			jsonOutput, _      = cmd.Flags().GetBool("json")
+			maxSteps, _        = cmd.Flags().GetInt("max-steps")
+			timeout, _         = cmd.Flags().GetDuration("timeout")
 		)
-		if err := refuseOnServer(jsonOutput); err != nil {
+		limits := agent.RunLimits{MaxSteps: maxSteps, Timeout: timeout}
+		if err := refuseOnServer(jsonOutput, limits); err != nil {
+			return err
+		}
+		if err := checkRunLimits(limits); err != nil {
 			return err
 		}
 
@@ -172,7 +182,7 @@ crush run --json "Fix the failing test"
 			sessionID = sess.ID
 		}
 
-		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast, jsonOutput)
+		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast, jsonOutput, limits)
 	},
 }
 
@@ -185,14 +195,39 @@ func init() {
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.Flags().Bool("json", false, "Print one JSON object describing the run instead of its text, and exit 0 when it completed, 2 when the model stopped short, 3 when the run should be repeated")
+	runCmd.Flags().Int("max-steps", 0, "Stop the session and every session it starts once they took this many steps in all; zero means no limit")
+	runCmd.Flags().Duration("timeout", 0, "Cancel the session and every session it starts this long after the prompt is sent, for example 20m; zero means no limit")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 }
 
 // refuseOnServer refuses the flags that only the in-process command
 // implements, before anything is read or started.
-func refuseOnServer(jsonOutput bool) error {
-	if jsonOutput && useClientServer() {
-		return errors.New("the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+func refuseOnServer(jsonOutput bool, limits agent.RunLimits) error {
+	if !useClientServer() {
+		return nil
+	}
+	for _, flag := range []struct {
+		name string
+		set  bool
+	}{
+		{name: "--json", set: jsonOutput},
+		{name: "--max-steps", set: limits.MaxSteps != 0},
+		{name: "--timeout", set: limits.Timeout != 0},
+	} {
+		if flag.set {
+			return fmt.Errorf("the %s flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag", flag.name)
+		}
+	}
+	return nil
+}
+
+// checkRunLimits refuses a limit that no run could meet.
+func checkRunLimits(limits agent.RunLimits) error {
+	switch {
+	case limits.MaxSteps < 0:
+		return errors.New("the --max-steps value must be zero or more")
+	case limits.Timeout < 0:
+		return errors.New("the --timeout value must be zero or more")
 	}
 	return nil
 }
