@@ -470,6 +470,8 @@ func (m *mockViewPermissionService) GrantPersistent(req permission.PermissionReq
 
 func (m *mockViewPermissionService) AutoApproveSession(sessionID string) {}
 
+func (m *mockViewPermissionService) IsSessionAutoApproved(sessionID string) bool { return false }
+
 func (m *mockViewPermissionService) ActiveRequest() (permission.PermissionRequest, bool) {
 	return permission.PermissionRequest{}, false
 }

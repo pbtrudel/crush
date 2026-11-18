@@ -954,3 +954,15 @@ func TestPermissionService_AutoReview(t *testing.T) {
 		require.False(t, called)
 	})
 }
+
+// A teammate inherits the approval of its Lead, so the service has to report
+// which sessions were approved, and only those.
+func TestPermissionService_IsSessionAutoApproved(t *testing.T) {
+	t.Parallel()
+	service := NewPermissionService(t.TempDir(), nil, nil)
+	require.False(t, service.IsSessionAutoApproved("session-a"))
+
+	service.AutoApproveSession("session-a")
+	require.True(t, service.IsSessionAutoApproved("session-a"))
+	require.False(t, service.IsSessionAutoApproved("session-b"))
+}
