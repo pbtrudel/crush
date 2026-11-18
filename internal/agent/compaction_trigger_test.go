@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"charm.land/fantasy"
@@ -106,4 +107,38 @@ func TestCompactionTrigger_HooksStillReceiveAuto(t *testing.T) {
 
 	require.Equal(t, "threshold", summaryTrigger(t, env, sess.ID))
 	require.Equal(t, []string{"PreCompact auto", "PostCompact auto"}, read())
+}
+
+// overflowOnceModel rejects the first tool-bearing Stream call with a
+// provider context overflow and answers every other call like
+// stubSummaryModel. The title request carries no tools, so it is skipped.
+type overflowOnceModel struct {
+	stubSummaryModel
+	rejected bool
+}
+
+func (m *overflowOnceModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	m.mu.Lock()
+	reject := len(call.Tools) > 0 && !m.rejected
+	m.rejected = m.rejected || reject
+	m.mu.Unlock()
+	if reject {
+		return nil, &fantasy.ProviderError{StatusCode: 400, ContextTooLargeErr: true}
+	}
+	return m.stubSummaryModel.Stream(ctx, call)
+}
+
+// A provider overflow is recovered by a compaction labelled overflow, which
+// pins the wiring of the overflow and guard flags at the call site.
+func TestCompactionTrigger_Overflow(t *testing.T) {
+	env := testEnv(t)
+	model := &overflowOnceModel{stubSummaryModel: stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"})
+	sess, err := env.sessions.Create(t.Context(), "overflow")
+	require.NoError(t, err)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "hello"})
+	require.NoError(t, err)
+
+	require.Equal(t, "overflow", summaryTrigger(t, env, sess.ID))
 }

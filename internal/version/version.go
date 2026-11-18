@@ -56,12 +56,16 @@ func deriveBuildID() string {
 // BuildStamp names the running build for the session log. A release
 // version is also a git tag, which names its commit. A modified checkout
 // or an unversioned build is not, so the build fingerprint is appended to
-// tell two such builds apart.
+// tell two such builds apart. When no fingerprint could be read, the bare
+// version is returned rather than a made-up one.
 func BuildStamp() string {
 	return buildStamp(Version, BuildID)
 }
 
 func buildStamp(version, buildID string) string {
+	if buildID == "" || buildID == "unknown" {
+		return version
+	}
 	if version == "devel" || strings.HasSuffix(version, "+dirty") {
 		return version + "." + buildID
 	}

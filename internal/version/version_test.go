@@ -19,6 +19,8 @@ func TestBuildStamp(t *testing.T) {
 		{name: "modified checkout", version: "v0.100.0-fork.100+dirty", buildID: "mx7k2", want: "v0.100.0-fork.100+dirty.mx7k2"},
 		{name: "unversioned", version: "devel", buildID: "mx7k2", want: "devel.mx7k2"},
 		{name: "clean pseudo-version", version: "v0.100.1-0.20261117120000-c71dec5e1234", buildID: "mx7k2", want: "v0.100.1-0.20261117120000-c71dec5e1234"},
+		{name: "fingerprint unreadable on unversioned", version: "devel", buildID: "unknown", want: "devel"},
+		{name: "fingerprint missing on modified checkout", version: "v0.100.0-fork.100+dirty", buildID: "", want: "v0.100.0-fork.100+dirty"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

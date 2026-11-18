@@ -53,15 +53,15 @@ func (t compactionTrigger) hookTrigger() string {
 
 // turnCompactionTrigger names which of the four causes that share the
 // end-of-turn compaction applied. Overflow recovery also trips the guard
-// flag, so it is tested first. The ceiling test is the rule
-// autoCompactLimit applies.
+// flag, so it is tested first. The ceiling case asks autoCompactLimit which
+// limit applied, so the two cannot drift.
 func turnCompactionTrigger(overflowRecovery, guardTripped bool, window int64, threshold float64, ceiling int64) compactionTrigger {
 	switch {
 	case overflowRecovery:
 		return compactionTriggerOverflow
 	case guardTripped:
 		return compactionTriggerGuard
-	case ceiling > 0 && ceiling < int64(threshold*float64(window)):
+	case autoCompactLimit(window, threshold, ceiling) < int64(threshold*float64(window)):
 		return compactionTriggerCeiling
 	default:
 		return compactionTriggerThreshold
