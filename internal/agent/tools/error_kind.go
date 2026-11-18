@@ -25,6 +25,8 @@ const (
 	// ErrorKindMultipleMatches is a find-and-replace whose text appears more
 	// than once while replace_all is off.
 	ErrorKindMultipleMatches ErrorKind = "multiple_matches"
+	// ErrorKindPermissionDenied is a call the user refused permission for.
+	ErrorKindPermissionDenied ErrorKind = "permission_denied"
 )
 
 const errorKindKey = "error_kind"
