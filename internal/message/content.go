@@ -191,9 +191,51 @@ type Finish struct {
 	// builds were recorded and on turns repaired after a crash, since the
 	// repairing build did not write them.
 	Build string `json:"build,omitempty"`
+	// TurnEnd says why the run of the agent loop ended. It is set only on
+	// the last step of a run, never on a compaction summary.
+	TurnEnd TurnEnd `json:"turn_end,omitempty"`
 }
 
 func (Finish) isPart() {}
+
+// TurnEnd names why a run of the agent loop ended. The values and the order
+// in which they win when several apply are defined in the measurement
+// design (docs/superpowers/specs/2026-11-17-measurement-design.md, 1.2).
+type TurnEnd string
+
+const (
+	// The model stopped calling tools.
+	TurnEndCompleted TurnEnd = "completed"
+	// The last step had neither text nor a tool call.
+	TurnEndEmpty TurnEnd = "empty"
+	// The last step was cut at the output limit.
+	TurnEndMaxTokens TurnEnd = "max_tokens"
+	// The provider refused to continue.
+	TurnEndContentFilter TurnEnd = "content_filter"
+	// A tool result halted the turn: a denied permission, a hook halt, a
+	// cancelled question.
+	TurnEndToolStop TurnEnd = "tool_stop"
+	// The same tool call kept repeating.
+	TurnEndLoopGuard TurnEnd = "loop_guard"
+	// The output kept repeating.
+	TurnEndRepetitionGuard TurnEnd = "repetition_guard"
+	// The context was nearly full; the run is compacted and continued.
+	TurnEndContextGuard TurnEnd = "context_guard"
+	// The provider rejected the request as too long.
+	TurnEndContextOverflow TurnEnd = "context_overflow"
+	// A hook blocked the compaction the run required.
+	TurnEndCompactionBlocked TurnEnd = "compaction_blocked"
+	// The compaction the run required failed.
+	TurnEndCompactionFailed TurnEnd = "compaction_failed"
+	// The user or a caller cancelled.
+	TurnEndCanceled TurnEnd = "canceled"
+	// Crush's own request or stream timeout fired.
+	TurnEndRequestTimeout TurnEnd = "request_timeout"
+	// The provider or the network failed after retries.
+	TurnEndProviderError TurnEnd = "provider_error"
+	// Anything else.
+	TurnEndError TurnEnd = "error"
+)
 
 // ShellCommand stores a bang-mode shell command and its output as a
 // distinct content part so it can be reconstructed on session restore.
@@ -753,6 +795,21 @@ func (m *Message) SetBuild(build string) {
 			continue
 		}
 		finish.Build = build
+		m.Parts[i] = finish
+		return
+	}
+}
+
+// SetTurnEnd records on the finish part why the run ended. It is a no-op
+// until the message has one. AddFinish replaces the finish part, so call
+// this after the last AddFinish.
+func (m *Message) SetTurnEnd(end TurnEnd) {
+	for i, part := range m.Parts {
+		finish, ok := part.(Finish)
+		if !ok {
+			continue
+		}
+		finish.TurnEnd = end
 		m.Parts[i] = finish
 		return
 	}

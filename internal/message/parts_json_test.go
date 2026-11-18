@@ -19,7 +19,7 @@ func TestPartsRoundTrip(t *testing.T) {
 		BinaryContent{Path: "/tmp/a.bin", MIMEType: "application/octet-stream", Data: []byte{0, 1, 2}},
 		ToolCall{ID: "c1", Name: "bash", Input: `{"cmd":"ls"}`, ProviderExecuted: true, Finished: true},
 		ToolResult{ToolCallID: "c1", Name: "bash", Content: "out", MIMEType: "text/plain", IsError: true},
-		Finish{Reason: FinishReasonEndTurn, Time: 42, Message: "done", Build: "v0.100.0-fork.100+dirty.mx7k2"},
+		Finish{Reason: FinishReasonEndTurn, Time: 42, Message: "done", Build: "v0.100.0-fork.100+dirty.mx7k2", TurnEnd: TurnEndContextGuard},
 		ShellCommand{Command: "ls -la", Output: "total 0", ExitCode: 0},
 		CompactionStats{TokensBefore: 397088, SummaryTokens: 8192, TailTokens: 22179, SavedTokens: 366717, KeptMessages: 60, Trigger: "guard"},
 		SubAgentReport{Label: "auth-review", Output: "two findings", Failed: true},
