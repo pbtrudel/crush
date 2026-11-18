@@ -1,0 +1,78 @@
+package logreport
+
+import (
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/crush/internal/db"
+	"github.com/charmbracelet/crush/internal/message"
+	"github.com/stretchr/testify/require"
+)
+
+// testLog is a session log built inside a test, with the schema the
+// migrations create.
+type testLog struct {
+	t    *testing.T
+	conn *sql.DB
+	path string
+	n    int
+	// at is the time of the next message; each message advances it.
+	at time.Time
+}
+
+func newTestLog(t *testing.T) *testLog {
+	t.Helper()
+	dir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dir) })
+	return &testLog{
+		t:    t,
+		conn: conn,
+		path: filepath.Join(dir, "crush.db"),
+		at:   time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local),
+	}
+}
+
+func (l *testLog) session(id, title string) {
+	l.t.Helper()
+	_, err := l.conn.ExecContext(l.t.Context(),
+		`INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, 0, 0)`, id, title)
+	require.NoError(l.t, err)
+}
+
+// add writes a message with the given parts at the log's clock and moves
+// the clock one second on.
+func (l *testLog) add(sessionID string, role message.MessageRole, parts ...message.ContentPart) {
+	l.t.Helper()
+	data, err := message.EncodeParts(parts)
+	require.NoError(l.t, err)
+	l.raw(sessionID, role, string(data))
+}
+
+// raw writes a message whose parts column is stored as given.
+func (l *testLog) raw(sessionID string, role message.MessageRole, parts string) {
+	l.t.Helper()
+	l.n++
+	_, err := l.conn.ExecContext(l.t.Context(),
+		`INSERT INTO messages (id, session_id, role, parts, model, provider, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'model-a', 'provider-a', ?, ?)`,
+		fmt.Sprintf("msg-%d", l.n), sessionID, string(role), parts, l.at.Unix(), l.at.Unix())
+	require.NoError(l.t, err)
+	l.at = l.at.Add(time.Second)
+}
+
+// report opens the log read-only, as the command does, and runs the
+// report on it while the writer stays open.
+func (l *testLog) report(opts Options) *Report {
+	l.t.Helper()
+	conn, err := db.ConnectReadOnly(l.t.Context(), l.path)
+	require.NoError(l.t, err)
+	defer conn.Close()
+	r, err := Run(l.t.Context(), conn, opts)
+	require.NoError(l.t, err)
+	return r
+}
