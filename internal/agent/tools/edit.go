@@ -202,7 +202,7 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, bool, er
 		case index == -1:
 			// Fall through to the fuzzy fallback below.
 		case index != strings.LastIndex(content, old):
-			return "", false, fmt.Errorf("old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true")
+			return "", false, &editMatchError{kind: ErrorKindMultipleMatches, msg: "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true"}
 		default:
 			return content[:index] + new + content[index+len(old):], false, nil
 		}
@@ -230,7 +230,36 @@ func notFoundError(content, old string) error {
 	if hint := diagnoseMismatch(content, old); hint != "" {
 		msg += "\n\n" + hint
 	}
-	return errors.New(msg)
+	return &editMatchError{kind: ErrorKindTextNotFound, msg: msg}
+}
+
+// editMatchError is a find-and-replace that could not be applied. The
+// message is what the model reads; the kind is what the session log
+// records, so a report never has to match the wording.
+type editMatchError struct {
+	kind ErrorKind
+	msg  string
+}
+
+func (e *editMatchError) Error() string { return e.msg }
+
+// errorKindOf returns the kind of a failed edit, or "" for a failure the
+// session log does not classify.
+func errorKindOf(err error) ErrorKind {
+	if matchErr, ok := errors.AsType[*editMatchError](err); ok {
+		return matchErr.kind
+	}
+	return ""
+}
+
+// editErrorResponse turns a failed edit into its response, recording the
+// failure's kind when it has one.
+func editErrorResponse(err error) fantasy.ToolResponse {
+	resp := fantasy.NewTextErrorResponse(err.Error())
+	if kind := errorKindOf(err); kind != "" {
+		resp = withErrorKind(resp, kind)
+	}
+	return resp
 }
 
 // commitFileChange writes newContent to filePath, updates the file history,
@@ -315,7 +344,7 @@ func deleteContent(edit editContext, filePath, oldString string, replaceAll bool
 
 	newContent, whitespaceCorrected, err := findAndReplace(oldContent, oldString, "", replaceAll)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
+		return editErrorResponse(err), nil
 	}
 
 	_, additions, removals := diff.GenerateDiff(
@@ -385,7 +414,7 @@ func replaceContent(edit editContext, filePath, oldString, newString string, rep
 
 	result, whitespaceCorrected, err := findAndReplace(oldContent, oldString, newString, replaceAll)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
+		return editErrorResponse(err), nil
 	}
 	if result == oldContent {
 		return fantasy.NewTextErrorResponse("new content is the same as old content. No changes made."), nil

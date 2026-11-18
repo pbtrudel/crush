@@ -19,6 +19,12 @@ const (
 	// ErrorKindChangedSinceRead is an edit or write refused because the
 	// file changed after it was last read.
 	ErrorKindChangedSinceRead ErrorKind = "changed_since_read"
+	// ErrorKindTextNotFound is a find-and-replace whose text is not in the
+	// file.
+	ErrorKindTextNotFound ErrorKind = "text_not_found"
+	// ErrorKindMultipleMatches is a find-and-replace whose text appears more
+	// than once while replace_all is off.
+	ErrorKindMultipleMatches ErrorKind = "multiple_matches"
 )
 
 const errorKindKey = "error_kind"

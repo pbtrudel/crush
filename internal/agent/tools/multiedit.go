@@ -39,6 +39,7 @@ type MultiEditPermissionsParams struct {
 type FailedEdit struct {
 	Index int                `json:"index"`
 	Error string             `json:"error"`
+	Kind  ErrorKind          `json:"error_kind,omitempty"`
 	Edit  MultiEditOperation `json:"edit"`
 }
 
@@ -135,6 +136,7 @@ func applyEditsToContent(currentContent string, edits []MultiEditOperation, star
 			failedEdits = append(failedEdits, FailedEdit{
 				Index: startIndex + i + 1,
 				Error: err.Error(),
+				Kind:  errorKindOf(err),
 				Edit:  edit,
 			})
 			continue
@@ -259,13 +261,20 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 	if oldContent == currentContent {
 		// If we have failed edits, report them
 		if len(failedEdits) > 0 {
-			return fantasy.WithResponseMetadata(
+			resp := fantasy.WithResponseMetadata(
 				fantasy.NewTextErrorResponse(fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))),
 				MultiEditResponseMetadata{
 					EditsApplied: 0,
 					EditsFailed:  failedEdits,
 				},
-			), nil
+			)
+			// The call failed because its edits did, so it takes the first
+			// failed edit's kind. It is set after the metadata, which would
+			// otherwise replace it.
+			if kind := failedEdits[0].Kind; kind != "" {
+				resp = withErrorKind(resp, kind)
+			}
+			return resp, nil
 		}
 		return fantasy.NewTextErrorResponse("no changes made - all edits resulted in identical content"), nil
 	}
