@@ -390,6 +390,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		progress  bool
 	)
 
+	// The object is the whole output, and a spinner in raw mode would turn
+	// Ctrl-C into a key press that the signal handling never sees.
+	hideSpinner = hideSpinner || asJSON
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
 	progress = app.config.Config().Options.Progress == nil || *app.config.Config().Options.Progress
 

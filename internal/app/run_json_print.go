@@ -67,6 +67,8 @@ func (app *App) finishRunJSON(ctx context.Context, output io.Writer, sessionID s
 		select {
 		case response = <-done:
 		case <-time.After(runSettleGrace):
+			// The wait never ended, so undelivered_reports is not
+			// measured and reads 0.
 			response.err = ctx.Err()
 		}
 	}
@@ -101,7 +103,9 @@ func (app *App) printRunJSON(ctx context.Context, output io.Writer, sessionID st
 	result.DurationMs = time.Since(start.at).Milliseconds()
 	result.Tree.UndeliveredReports = response.tree.Team.UnreadByLead
 	// The session's cost already includes what its child sessions cost.
-	if sess, err := app.Sessions.Get(ctx, sessionID); err == nil {
+	if sess, err := app.Sessions.Get(ctx, sessionID); err != nil {
+		slog.Warn("Failed to read the session's cost", "error", err)
+	} else {
 		result.Cost = sess.Cost - start.cost
 	}
 	if response.err != nil {
