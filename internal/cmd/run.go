@@ -84,8 +84,12 @@ crush run --json "Fix the failing test"
 			return err
 		}
 
-		// Cancel on SIGINT or SIGTERM.
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+		// Cancel on the signals Execute treats as a request to stop.
+		parent := cmd.Context()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := signal.NotifyContext(parent, terminationSignals()...)
 		defer cancel()
 
 		prompt := strings.Join(args, " ")
