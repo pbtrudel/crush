@@ -75,8 +75,15 @@ func NewWriteTool(
 				modTime := fileInfo.ModTime().Truncate(time.Second)
 				lastRead := filetracker.LastReadTime(ctx, sessionID, filePath)
 				if modTime.After(lastRead) {
-					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
-						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), nil
+					// A file that was never read gets the same message, which
+					// is wrong for it; the wording stays, and the kind tells
+					// the two cases apart in the session log.
+					kind := ErrorKindChangedSinceRead
+					if lastRead.IsZero() {
+						kind = ErrorKindNotRead
+					}
+					return withErrorKind(fantasy.NewTextErrorResponse(fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
+						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), kind), nil
 				}
 
 				oldContent, readErr := os.ReadFile(filePath)
