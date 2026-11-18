@@ -47,6 +47,11 @@ type BashResponseMetadata struct {
 	WorkingDirectory string `json:"working_directory"`
 	Background       bool   `json:"background,omitempty"`
 	ShellID          string `json:"shell_id,omitempty"`
+	// ExitCode is set for every command the tool waited for and that
+	// finished, zero included. Interrupted marks one that was aborted,
+	// which has no exit code.
+	ExitCode    *int `json:"exit_code,omitempty"`
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 const (
@@ -385,6 +390,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 				WorkingDirectory: bgShell.WorkingDir,
 				ShellID:          bgShell.ID,
 			}
+			metadata.ExitCode, metadata.Interrupted = commandOutcome(execErr)
 			if stdout == "" {
 				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
 			}
@@ -462,6 +468,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 			Background:       params.RunInBackground,
 			WorkingDirectory: bgShell.WorkingDir,
 		}
+		metadata.ExitCode, metadata.Interrupted = commandOutcome(execErr)
 		if stdout == "" {
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
 		}
@@ -518,6 +525,15 @@ func formatOutput(stdout, stderr string, execErr error, spillDir string) string 
 	}
 
 	return stdout
+}
+
+// commandOutcome reports how a finished command ended, for the result
+// metadata: its exit status, or that it was aborted, which has none.
+func commandOutcome(execErr error) (exitCode *int, interrupted bool) {
+	if shell.IsInterrupt(execErr) {
+		return nil, true
+	}
+	return new(shell.ExitCode(execErr)), false
 }
 
 // TruncateOutput keeps the head and tail of oversized tool output. The
