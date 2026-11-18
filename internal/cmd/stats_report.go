@@ -55,11 +55,17 @@ a loop iteration, a plan handoff.
 
 A prompt is a visible user row in a top-level session; in a child session
 such a row is its brief, or a message sent to it. A row that follows a
-step stamped context_guard, context_overflow or compaction_blocked
-continues that prompt; when a cancel dropped the queued prompt, the next
-prompt is counted as a continuation. Without the stamp a continuation
-counts as a prompt, and runs by turn end read "unstamped", counted per
-prompt.`,
+compaction of a step stamped context_guard or context_overflow, or a step
+stamped compaction_blocked, continues that prompt; when a cancel dropped
+the queued prompt, the next prompt is counted as a continuation. Without
+the stamp a continuation counts as a prompt, and runs by turn end read
+"unstamped", counted per prompt.
+
+Child sessions' steps, teammates' included, count toward the prompt open
+in their top-level session when they were written. Steps before a
+session's first prompt in the window, and child steps whose prompt falls
+before --since, belong to no prompt; a continuation whose stamped step
+falls before --since counts as a prompt.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }
