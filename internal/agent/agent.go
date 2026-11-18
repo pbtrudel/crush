@@ -2030,8 +2030,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 			return nil, summarizeErr
 		}
-		// If the agent wasn't done...
-		if shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
+		// A limit that refuses the continuation ends the work here, so it is
+		// what the turn reads as its ending. The local flag keeps the rest of
+		// Run's reading of shouldSummarize and overflowRecovery unchanged.
+		limitStopped := false
+		if call.limits.reached() && (turnEnd == message.TurnEndContextGuard || turnEnd == message.TurnEndContextOverflow) {
+			turnEnd = message.TurnEndStepLimit
+			if call.limits.deadlinePassed() {
+				turnEnd = message.TurnEndTimeLimit
+			}
+			recordTurnEnd()
+			limitStopped = true
+		}
+		// If the agent wasn't done, and no limit refuses the continuation,
+		// resume the prompt.
+		if !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}

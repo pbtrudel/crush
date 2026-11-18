@@ -155,6 +155,24 @@ func TestTreeLimitRecordsARefusedReport(t *testing.T) {
 	require.Equal(t, []message.SubAgentReport{report}, reportsIn(t, msgs), "the refused report is recorded")
 }
 
+// A compaction the context guard required cannot continue a turn the tree's
+// limit refuses, so the limit is what ended the turn.
+func TestStepLimitEndsACompactedTurn(t *testing.T) {
+	env := testEnv(t)
+	summary := answer("# Conversation Summary\n\nAll good.", fantasy.FinishReasonStop, 1_000)
+	model := &scriptedModel{script: []scriptedCall{callTool("alpha", 190_000), summary}}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"})
+	agent.limits = &runLimits{}
+	sess, err := env.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	agent.limits.set(sess.ID, RunLimits{MaxSteps: 1})
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+	require.Equal(t, []message.TurnEnd{message.TurnEndStepLimit}, turnEnds(t, env, sess.ID))
+	require.Zero(t, agent.QueuedPrompts(sess.ID), "the refused continuation is not queued")
+}
+
 // reportsIn lists every subagent report recorded in the messages.
 func reportsIn(t *testing.T, msgs []message.Message) []message.SubAgentReport {
 	t.Helper()
