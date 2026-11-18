@@ -21,18 +21,23 @@ type stepEnding struct {
 	guardTripped bool
 	toolStopped  bool
 	loopRepeated bool
+	stepsSpent   bool
 }
 
 // turnEndForError decides how a run ended when its step loop returned an
-// error. The order matters: the repetition detector stops a run by
-// cancelling it, so it is tested before the cancel.
-func turnEndForError(err error) message.TurnEnd {
+// error. The order matters: once the deadline of the run's session tree
+// has passed, the run was stopped by it, whatever error the cancel left;
+// and the repetition detector stops a run by cancelling it, so it is
+// tested before the cancel.
+func turnEndForError(err error, deadlinePassed bool) message.TurnEnd {
 	var timeoutErr *requestTimeoutError
 	var providerErr *fantasy.ProviderError
 	var fantasyErr *fantasy.Error
 	var retryErr *fantasy.RetryError
 	var netErr net.Error
 	switch {
+	case deadlinePassed:
+		return message.TurnEndTimeLimit
 	case errors.Is(err, errRepetitionDetected):
 		return message.TurnEndRepetitionGuard
 	case errors.Is(err, context.Canceled):
@@ -85,6 +90,9 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 		return message.TurnEndContentFilter
 	case step.finish == message.FinishReasonError:
 		return message.TurnEndProviderError
+	case step.stepsSpent && step.finish == message.FinishReasonToolUse:
+		// The loop would have gone on to run the next step.
+		return message.TurnEndStepLimit
 	default:
 		// The provider ended a step that called tools, and no guard
 		// stopped the loop, so the model is taken at its word.
@@ -93,18 +101,20 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 }
 
 // turnEndAfterCompaction applies the rules that follow the precedence:
-// only a compaction the run required changes how the run ended. A cancel
-// during that compaction reads canceled, since the run was stopped, not
-// failed.
-func turnEndAfterCompaction(end message.TurnEnd, summarizeErr error) message.TurnEnd {
+// only a compaction the run required changes how the run ended. That
+// compaction stopped after the tree's deadline reads time_limit, and a
+// cancel during it reads canceled, since the run was stopped, not failed.
+func turnEndAfterCompaction(end message.TurnEnd, summarizeErr error, deadlinePassed bool) message.TurnEnd {
 	if end != message.TurnEndContextGuard && end != message.TurnEndContextOverflow {
 		return end
 	}
 	switch {
-	case errors.Is(summarizeErr, context.Canceled):
-		return message.TurnEndCanceled
 	case errors.Is(summarizeErr, ErrCompactionBlocked):
 		return message.TurnEndCompactionBlocked
+	case summarizeErr != nil && deadlinePassed:
+		return message.TurnEndTimeLimit
+	case errors.Is(summarizeErr, context.Canceled):
+		return message.TurnEndCanceled
 	case summarizeErr != nil:
 		return message.TurnEndCompactionFailed
 	default:

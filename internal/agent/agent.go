@@ -179,6 +179,9 @@ type SessionAgentCall struct {
 	// recursion drains, so falling back to the default broker
 	// publish keeps the event visible to subscribers.
 	OnComplete func(notify.RunComplete)
+	// limits are the step budget and the deadline of the session tree the
+	// call runs in, found when the run starts. Nil has no limit.
+	limits *treeLimits
 	// Accepted, when non-nil, is the accept reservation taken by
 	// BeginAccepted before the call was dispatched onto a goroutine
 	// (the client/server fire-and-forget path). Run consumes it under
@@ -778,7 +781,7 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 	}
 	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 	assistant.SetBuild(version.BuildStamp())
-	assistant.SetTurnEnd(message.TurnEndCanceled)
+	assistant.SetTurnEnd(turnEndForError(context.Canceled, call.limits.deadlinePassed()))
 	return a.messages.Update(writeCtx, assistant)
 }
 
@@ -1901,7 +1904,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			currentAssistant.SetBuild(version.BuildStamp())
 			// A recovered overflow is stamped again once its compaction
 			// has run, since a blocked or failed one changes the ending.
-			currentAssistant.SetTurnEnd(turnEndForError(err))
+			currentAssistant.SetTurnEnd(turnEndForError(err, call.limits.deadlinePassed()))
 			// Note: we use the cleanup context here because the genCtx has been
 			// cancelled.
 			updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
@@ -1935,7 +1938,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if overflowRecovery {
 		turnEnd = message.TurnEndContextOverflow
 	} else if currentAssistant != nil {
-		turnEnd = turnEndForStep(lastStepEnding(currentAssistant, stepResults, shouldSummarize))
+		ending := lastStepEnding(currentAssistant, stepResults, shouldSummarize)
+		ending.stepsSpent = call.limits.stepsSpent()
+		turnEnd = turnEndForStep(ending)
 	}
 	recordTurnEnd := func() {
 		if currentAssistant == nil || turnEnd == "" {
@@ -1975,7 +1980,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
 		// Recorded before the returns below, which a failed compaction
 		// takes, and before a blocked one is cleared.
-		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr)
+		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
 		recordTurnEnd()
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit

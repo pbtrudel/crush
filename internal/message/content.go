@@ -227,6 +227,10 @@ const (
 	TurnEndCompactionBlocked TurnEnd = "compaction_blocked"
 	// The compaction the run required failed.
 	TurnEndCompactionFailed TurnEnd = "compaction_failed"
+	// The caller's step budget for the session tree was spent.
+	TurnEndStepLimit TurnEnd = "step_limit"
+	// The caller's deadline for the session tree passed.
+	TurnEndTimeLimit TurnEnd = "time_limit"
 	// The user or a caller cancelled.
 	TurnEndCanceled TurnEnd = "canceled"
 	// Crush's own request or stream timeout fired.

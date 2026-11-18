@@ -17,10 +17,17 @@ func TestTurnEndForError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		err  error
-		want message.TurnEnd
+		name           string
+		err            error
+		deadlinePassed bool
+		want           message.TurnEnd
 	}{
+		// The command cancels a tree whose deadline passed; that cancel
+		// carries no cause, so the deadline itself decides.
+		{name: "cancel after the deadline", err: context.Canceled, deadlinePassed: true, want: message.TurnEndTimeLimit},
+		{name: "repetition after the deadline", err: errRepetitionDetected, deadlinePassed: true, want: message.TurnEndTimeLimit},
+		{name: "provider failure after the deadline", err: &fantasy.ProviderError{StatusCode: 500, Message: "boom"}, deadlinePassed: true, want: message.TurnEndTimeLimit},
+		{name: "caller deadline after the tree's deadline", err: fmt.Errorf("teammate turn: %w", context.DeadlineExceeded), deadlinePassed: true, want: message.TurnEndTimeLimit},
 		{name: "repetition", err: errRepetitionDetected, want: message.TurnEndRepetitionGuard},
 		// The repetition detector stops the run by cancelling it.
 		{name: "repetition that also cancelled", err: errors.Join(errRepetitionDetected, context.Canceled), want: message.TurnEndRepetitionGuard},
@@ -39,7 +46,7 @@ func TestTurnEndForError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, turnEndForError(tt.err))
+			require.Equal(t, tt.want, turnEndForError(tt.err, tt.deadlinePassed))
 		})
 	}
 }
@@ -71,6 +78,14 @@ func TestTurnEndForStep(t *testing.T) {
 		{name: "cut short by the provider with no text", step: stepEnding{finish: message.FinishReasonError}, want: message.TurnEndProviderError},
 		{name: "provider ended a step that called tools", step: stepEnding{finish: message.FinishReasonEndTurn, hasToolCalls: true, hasText: true}, want: message.TurnEndCompleted},
 		{name: "tool call cut short by the provider", step: stepEnding{finish: message.FinishReasonError, hasToolCalls: true}, want: message.TurnEndProviderError},
+		{name: "step budget spent", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, stepsSpent: true}, want: message.TurnEndStepLimit},
+		// The model had already stopped on the step that spent the budget.
+		{name: "final answer on the step that spends the budget", step: stepEnding{finish: message.FinishReasonEndTurn, hasText: true, stepsSpent: true}, want: message.TurnEndCompleted},
+		{name: "provider ended the step that spends the budget", step: stepEnding{finish: message.FinishReasonEndTurn, hasToolCalls: true, hasText: true, stepsSpent: true}, want: message.TurnEndCompleted},
+		{name: "halting tool on the step that spends the budget", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, toolStopped: true, stepsSpent: true}, want: message.TurnEndToolStop},
+		{name: "loop on the step that spends the budget", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, loopRepeated: true, stepsSpent: true}, want: message.TurnEndLoopGuard},
+		{name: "guard on the step that spends the budget", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, guardTripped: true, stepsSpent: true}, want: message.TurnEndContextGuard},
+		{name: "tool call cut at the output limit as the budget is spent", step: stepEnding{finish: message.FinishReasonMaxTokens, hasToolCalls: true, stepsSpent: true}, want: message.TurnEndMaxTokens},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,11 +101,18 @@ func TestTurnEndAfterCompaction(t *testing.T) {
 	blocked := fmt.Errorf("%w: not now", ErrCompactionBlocked)
 	failed := errors.New("summary failed")
 	tests := []struct {
-		name         string
-		end          message.TurnEnd
-		summarizeErr error
-		want         message.TurnEnd
+		name           string
+		end            message.TurnEnd
+		summarizeErr   error
+		deadlinePassed bool
+		want           message.TurnEnd
 	}{
+		{name: "guard compaction stopped by the deadline", end: message.TurnEndContextGuard, summarizeErr: context.Canceled, deadlinePassed: true, want: message.TurnEndTimeLimit},
+		{name: "overflow compaction failed after the deadline", end: message.TurnEndContextOverflow, summarizeErr: failed, deadlinePassed: true, want: message.TurnEndTimeLimit},
+		// A hook's decision is not the deadline's.
+		{name: "guard compaction blocked after the deadline", end: message.TurnEndContextGuard, summarizeErr: blocked, deadlinePassed: true, want: message.TurnEndCompactionBlocked},
+		{name: "compaction after a completed turn stopped by the deadline", end: message.TurnEndCompleted, summarizeErr: context.Canceled, deadlinePassed: true, want: message.TurnEndCompleted},
+		{name: "compaction after a step limit failed", end: message.TurnEndStepLimit, summarizeErr: failed, want: message.TurnEndStepLimit},
 		{name: "guard compacted", end: message.TurnEndContextGuard, want: message.TurnEndContextGuard},
 		{name: "guard compaction blocked", end: message.TurnEndContextGuard, summarizeErr: blocked, want: message.TurnEndCompactionBlocked},
 		{name: "guard compaction failed", end: message.TurnEndContextGuard, summarizeErr: failed, want: message.TurnEndCompactionFailed},
@@ -106,7 +128,7 @@ func TestTurnEndAfterCompaction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, turnEndAfterCompaction(tt.end, tt.summarizeErr))
+			require.Equal(t, tt.want, turnEndAfterCompaction(tt.end, tt.summarizeErr, tt.deadlinePassed))
 		})
 	}
 }
