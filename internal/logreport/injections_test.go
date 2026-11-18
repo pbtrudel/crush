@@ -49,20 +49,26 @@ func TestClassifyUser(t *testing.T) {
 		parts []message.ContentPart
 		row   userRow
 		kind  string
+		chars int
 	}{
-		{"typed", []message.ContentPart{message.TextContent{Text: "fix it"}}, visibleRow, ""},
-		{"attachment only", []message.ContentPart{message.TextContent{}, message.BinaryContent{Path: "a.png"}}, visibleRow, ""},
-		{"visible beside hidden", []message.ContentPart{message.TextContent{Text: "<system_reminder>x", Hidden: true}, message.TextContent{Text: "fix it"}}, visibleRow, ""},
-		{"reminder", []message.ContentPart{message.TextContent{Text: "<system_reminder>x", Hidden: true}}, injectionRow, "system_reminder"},
-		{"retired notice", []message.ContentPart{message.TextContent{Text: "<background_subagent_notice>x", Hidden: true}}, injectionRow, "background_subagent_notice"},
-		{"report", []message.ContentPart{message.SubAgentReport{Label: "l"}}, injectionRow, "subagent_report"},
-		{"plan handoff", []message.ContentPart{message.TextContent{Text: "Implement the plan.", Hidden: true}}, hiddenTurnRow, ""},
-		{"tag not at the start", []message.ContentPart{message.TextContent{Text: "see <system_reminder>", Hidden: true}}, hiddenTurnRow, ""},
-		{"bang-mode shell", []message.ContentPart{message.ShellCommand{Command: "ls"}}, otherRow, ""},
+		{"typed", []message.ContentPart{message.TextContent{Text: "fix it"}}, visibleRow, "", 0},
+		{"attachment only", []message.ContentPart{message.TextContent{}, message.BinaryContent{Path: "a.png"}}, visibleRow, "", 0},
+		{"visible beside hidden", []message.ContentPart{message.TextContent{Text: "<system_reminder>x", Hidden: true}, message.TextContent{Text: "fix it"}}, visibleRow, "", 0},
+		// A report makes the row an injection whatever else it carries.
+		{"report beside visible text", []message.ContentPart{message.SubAgentReport{Label: "l"}, message.TextContent{Text: "fix it"}}, injectionRow, "subagent_report", 47},
+		{"reminder", []message.ContentPart{message.TextContent{Text: "<system_reminder>x", Hidden: true}}, injectionRow, "system_reminder", 18},
+		{"retired notice", []message.ContentPart{message.TextContent{Text: "<background_subagent_notice>x", Hidden: true}}, injectionRow, "background_subagent_notice", 29},
+		{"report", []message.ContentPart{message.SubAgentReport{Label: "l"}}, injectionRow, "subagent_report", 47},
+		{"plan handoff", []message.ContentPart{message.TextContent{Text: "Implement the plan.", Hidden: true}}, hiddenTurnRow, "", 0},
+		{"tag not at the start", []message.ContentPart{message.TextContent{Text: "see <system_reminder>", Hidden: true}}, hiddenTurnRow, "", 0},
+		// The first hidden part decides the kind, not the last one.
+		{"first hidden part decides", []message.ContentPart{message.TextContent{Text: "Implement the plan.", Hidden: true}, message.TextContent{Text: "<system_reminder>x", Hidden: true}}, hiddenTurnRow, "", 0},
+		{"bang-mode shell", []message.ContentPart{message.ShellCommand{Command: "ls"}}, otherRow, "", 0},
 	}
 	for _, tt := range tests {
-		row, kind, _ := classifyUser(&message.Message{Role: message.User, Parts: tt.parts})
+		row, kind, chars := classifyUser(&message.Message{Role: message.User, Parts: tt.parts})
 		require.Equal(t, tt.row, row, tt.name)
 		require.Equal(t, tt.kind, kind, tt.name)
+		require.Equal(t, tt.chars, chars, tt.name)
 	}
 }

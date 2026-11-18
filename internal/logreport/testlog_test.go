@@ -96,9 +96,12 @@ func (l *testLog) result(sessionID string, tr message.ToolResult) {
 func (l *testLog) summary(sessionID string, parts ...message.ContentPart) {
 	l.t.Helper()
 	l.add(sessionID, message.Assistant, parts...)
-	_, err := l.conn.ExecContext(l.t.Context(),
+	res, err := l.conn.ExecContext(l.t.Context(),
 		`UPDATE messages SET is_summary_message = 1 WHERE id = ?`, fmt.Sprintf("msg-%d", l.n))
 	require.NoError(l.t, err)
+	n, err := res.RowsAffected()
+	require.NoError(l.t, err)
+	require.EqualValues(l.t, 1, n, "the summary row is marked")
 }
 
 // report opens the log read-only, as the command does, and runs the
