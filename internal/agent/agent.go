@@ -1927,13 +1927,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 
-	// Compact when the mid-turn overflow guard tripped, when a provider
-	// context overflow is being recovered, or when the finished turn left
-	// the session at or above the configured threshold. The guard and
-	// recovery paths requeue the prompt: there the turn was cut short or
-	// rejected mid-work and has to resume, while the threshold path
-	// compacted a turn that already completed, and re-running the prompt
-	// would repeat finished work.
 	// turnEnd is how this run ended, as known before any compaction. The
 	// error path above already stamped a run that will not continue.
 	var turnEnd message.TurnEnd
@@ -1947,10 +1940,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return
 		}
 		currentAssistant.SetTurnEnd(turnEnd)
-		if updateErr := a.messages.Update(cleanupCtx, *currentAssistant); updateErr != nil {
+		// A compaction can outlast cleanupCtx, so the write gets its own
+		// short deadline, detached from the run like the other final writes.
+		writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelWrite()
+		if updateErr := a.messages.Update(writeCtx, *currentAssistant); updateErr != nil {
 			slog.Warn("Failed to record how the turn ended", "session_id", call.SessionID, "error", updateErr)
 		}
 	}
+	// Compact when the mid-turn overflow guard tripped, when a provider
+	// context overflow is being recovered, or when the finished turn left
+	// the session at or above the configured threshold. The guard and
+	// recovery paths requeue the prompt: there the turn was cut short or
+	// rejected mid-work and has to resume, while the threshold path
+	// compacted a turn that already completed, and re-running the prompt
+	// would repeat finished work.
 	continued := false
 	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
 		a.activeRequests.Del(call.SessionID)

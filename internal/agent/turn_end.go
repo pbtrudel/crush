@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 
 	"charm.land/fantasy"
@@ -29,6 +30,8 @@ func turnEndForError(err error) message.TurnEnd {
 	var timeoutErr *requestTimeoutError
 	var providerErr *fantasy.ProviderError
 	var fantasyErr *fantasy.Error
+	var retryErr *fantasy.RetryError
+	var netErr net.Error
 	switch {
 	case errors.Is(err, errRepetitionDetected):
 		return message.TurnEndRepetitionGuard
@@ -36,9 +39,13 @@ func turnEndForError(err error) message.TurnEnd {
 		return message.TurnEndCanceled
 	case errors.As(err, &timeoutErr):
 		return message.TurnEndRequestTimeout
+	case errors.Is(err, context.DeadlineExceeded):
+		// A deadline set by a caller, not by Crush's own request timeout.
+		return message.TurnEndCanceled
 	case isContextOverflowError(err):
 		return message.TurnEndContextOverflow
-	case errors.As(err, &providerErr), errors.As(err, &fantasyErr), fantasy.IsTransportError(err):
+	case errors.As(err, &providerErr), errors.As(err, &fantasyErr), fantasy.IsTransportError(err),
+		errors.As(err, &retryErr), errors.As(err, &netErr):
 		return message.TurnEndProviderError
 	default:
 		return message.TurnEndError
@@ -47,8 +54,9 @@ func turnEndForError(err error) message.TurnEnd {
 
 // turnEndForStep decides how a run ended without an error, from its last
 // step. A step that called no tools means the model had stopped, whatever
-// limit was reached on the same step. A step that called tools means
-// something stopped the loop.
+// limit was reached on the same step; a response the provider cut short
+// counts as a provider error. A step that called tools means something
+// stopped the loop.
 func turnEndForStep(step stepEnding) message.TurnEnd {
 	if !step.hasToolCalls {
 		switch {
@@ -56,6 +64,8 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 			return message.TurnEndMaxTokens
 		case step.finish == message.FinishReasonContentFilter:
 			return message.TurnEndContentFilter
+		case step.finish == message.FinishReasonError:
+			return message.TurnEndProviderError
 		case !step.hasText:
 			return message.TurnEndEmpty
 		default:
@@ -73,6 +83,8 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 		return message.TurnEndMaxTokens
 	case step.finish == message.FinishReasonContentFilter:
 		return message.TurnEndContentFilter
+	case step.finish == message.FinishReasonError:
+		return message.TurnEndProviderError
 	default:
 		// The provider ended a step that called tools, and no guard
 		// stopped the loop, so the model is taken at its word.
@@ -81,12 +93,16 @@ func turnEndForStep(step stepEnding) message.TurnEnd {
 }
 
 // turnEndAfterCompaction applies the rules that follow the precedence:
-// only a compaction the run required changes how the run ended.
+// only a compaction the run required changes how the run ended. A cancel
+// during that compaction reads canceled, since the run was stopped, not
+// failed.
 func turnEndAfterCompaction(end message.TurnEnd, summarizeErr error) message.TurnEnd {
 	if end != message.TurnEndContextGuard && end != message.TurnEndContextOverflow {
 		return end
 	}
 	switch {
+	case errors.Is(summarizeErr, context.Canceled):
+		return message.TurnEndCanceled
 	case errors.Is(summarizeErr, ErrCompactionBlocked):
 		return message.TurnEndCompactionBlocked
 	case summarizeErr != nil:

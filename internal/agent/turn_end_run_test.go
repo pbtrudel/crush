@@ -132,6 +132,7 @@ func TestTurnEnd_Runs(t *testing.T) {
 		{name: "empty", script: []scriptedCall{answer("", fantasy.FinishReasonStop, small)}, want: []message.TurnEnd{message.TurnEndEmpty}},
 		{name: "max tokens", script: []scriptedCall{answer("partial", fantasy.FinishReasonLength, small)}, want: []message.TurnEnd{message.TurnEndMaxTokens}},
 		{name: "content filter", script: []scriptedCall{answer("", fantasy.FinishReasonContentFilter, small)}, want: []message.TurnEnd{message.TurnEndContentFilter}},
+		{name: "cut short by the provider", script: []scriptedCall{answer("partial", fantasy.FinishReasonError, small)}, want: []message.TurnEnd{message.TurnEndProviderError}},
 		{name: "repetition", script: []scriptedCall{answer(strings.Repeat("a", 600), fantasy.FinishReasonStop, small)}, wantErr: true, want: []message.TurnEnd{message.TurnEndRepetitionGuard}},
 		{name: "canceled", script: []scriptedCall{failWith(context.Canceled)}, wantErr: true, want: []message.TurnEnd{message.TurnEndCanceled}},
 		{name: "request timeout", script: []scriptedCall{failWith(&requestTimeoutError{timeout: time.Second, cause: context.DeadlineExceeded})}, wantErr: true, want: []message.TurnEnd{message.TurnEndRequestTimeout}},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ func TestTurnEndForError(t *testing.T) {
 		{name: "provider failure", err: &fantasy.ProviderError{StatusCode: 500, Message: "boom"}, want: message.TurnEndProviderError},
 		{name: "sign-in failure", err: &fantasy.ProviderError{StatusCode: 401, Message: "unauthorized"}, want: message.TurnEndProviderError},
 		{name: "fantasy error", err: &fantasy.Error{Title: "bad response", Message: "cut short"}, want: message.TurnEndProviderError},
+		{name: "network failure after retries", err: &fantasy.RetryError{Errors: []error{errors.New("connection reset")}}, want: message.TurnEndProviderError},
+		{name: "network failure", err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, want: message.TurnEndProviderError},
+		{name: "caller deadline", err: fmt.Errorf("teammate turn: %w", context.DeadlineExceeded), want: message.TurnEndCanceled},
 		{name: "anything else", err: errors.New("boom"), want: message.TurnEndError},
 	}
 	for _, tt := range tests {
@@ -63,7 +67,10 @@ func TestTurnEndForStep(t *testing.T) {
 		{name: "loop", step: stepEnding{finish: message.FinishReasonToolUse, hasToolCalls: true, loopRepeated: true}, want: message.TurnEndLoopGuard},
 		{name: "tool call cut at the output limit", step: stepEnding{finish: message.FinishReasonMaxTokens, hasToolCalls: true}, want: message.TurnEndMaxTokens},
 		{name: "tool call refused", step: stepEnding{finish: message.FinishReasonContentFilter, hasToolCalls: true}, want: message.TurnEndContentFilter},
+		{name: "cut short by the provider", step: stepEnding{finish: message.FinishReasonError, hasText: true}, want: message.TurnEndProviderError},
+		{name: "cut short by the provider with no text", step: stepEnding{finish: message.FinishReasonError}, want: message.TurnEndProviderError},
 		{name: "provider ended a step that called tools", step: stepEnding{finish: message.FinishReasonEndTurn, hasToolCalls: true, hasText: true}, want: message.TurnEndCompleted},
+		{name: "tool call cut short by the provider", step: stepEnding{finish: message.FinishReasonError, hasToolCalls: true}, want: message.TurnEndProviderError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -87,11 +94,14 @@ func TestTurnEndAfterCompaction(t *testing.T) {
 		{name: "guard compacted", end: message.TurnEndContextGuard, want: message.TurnEndContextGuard},
 		{name: "guard compaction blocked", end: message.TurnEndContextGuard, summarizeErr: blocked, want: message.TurnEndCompactionBlocked},
 		{name: "guard compaction failed", end: message.TurnEndContextGuard, summarizeErr: failed, want: message.TurnEndCompactionFailed},
+		{name: "guard compaction cancelled", end: message.TurnEndContextGuard, summarizeErr: fmt.Errorf("get session: %w", context.Canceled), want: message.TurnEndCanceled},
 		{name: "overflow compaction blocked", end: message.TurnEndContextOverflow, summarizeErr: blocked, want: message.TurnEndCompactionBlocked},
 		{name: "overflow compaction failed", end: message.TurnEndContextOverflow, summarizeErr: failed, want: message.TurnEndCompactionFailed},
+		{name: "overflow compaction cancelled", end: message.TurnEndContextOverflow, summarizeErr: context.Canceled, want: message.TurnEndCanceled},
 		// The model finished; the compaction afterwards is housekeeping.
 		{name: "compaction after a completed turn failed", end: message.TurnEndCompleted, summarizeErr: failed, want: message.TurnEndCompleted},
 		{name: "compaction after a completed turn blocked", end: message.TurnEndCompleted, summarizeErr: blocked, want: message.TurnEndCompleted},
+		{name: "unrelated ending is left alone", end: message.TurnEndCanceled, summarizeErr: errors.New("summary failed"), want: message.TurnEndCanceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
