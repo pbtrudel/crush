@@ -54,6 +54,7 @@ func TestBuildStamp_CanceledBeforeTheModelAnswered(t *testing.T) {
 	finish := lastAssistantFinish(t, env, sess.ID)
 	require.Equal(t, message.FinishReasonCanceled, finish.Reason)
 	require.Equal(t, version.BuildStamp(), finish.Build)
+	require.Equal(t, message.TurnEndCanceled, finish.TurnEnd)
 }
 
 // The stamps are log metadata: a session that carries them must produce

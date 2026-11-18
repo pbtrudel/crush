@@ -778,6 +778,7 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 	}
 	assistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 	assistant.SetBuild(version.BuildStamp())
+	assistant.SetTurnEnd(message.TurnEndCanceled)
 	return a.messages.Update(writeCtx, assistant)
 }
 
@@ -1896,6 +1897,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// Every branch above replaced the finish part, and with it any
 			// stamp the step had already written.
 			currentAssistant.SetBuild(version.BuildStamp())
+			// A recovered overflow is stamped again once its compaction
+			// has run, since a blocked or failed one changes the ending.
+			currentAssistant.SetTurnEnd(turnEndForError(err))
 			// Note: we use the cleanup context here because the genCtx has been
 			// cancelled.
 			updateErr := a.messages.Update(cleanupCtx, *currentAssistant)
@@ -1930,6 +1934,23 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// rejected mid-work and has to resume, while the threshold path
 	// compacted a turn that already completed, and re-running the prompt
 	// would repeat finished work.
+	// turnEnd is how this run ended, as known before any compaction. The
+	// error path above already stamped a run that will not continue.
+	var turnEnd message.TurnEnd
+	if overflowRecovery {
+		turnEnd = message.TurnEndContextOverflow
+	} else if currentAssistant != nil {
+		turnEnd = turnEndForStep(lastStepEnding(currentAssistant, stepResults, shouldSummarize))
+	}
+	recordTurnEnd := func() {
+		if currentAssistant == nil || turnEnd == "" {
+			return
+		}
+		currentAssistant.SetTurnEnd(turnEnd)
+		if updateErr := a.messages.Update(cleanupCtx, *currentAssistant); updateErr != nil {
+			slog.Warn("Failed to record how the turn ended", "session_id", call.SessionID, "error", updateErr)
+		}
+	}
 	continued := false
 	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
 		a.activeRequests.Del(call.SessionID)
@@ -1946,6 +1967,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		threshold, _ := a.compactionConfig()
 		trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
 		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
+		// Recorded before the returns below, which a failed compaction
+		// takes, and before a blocked one is cleared.
+		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr)
+		recordTurnEnd()
 		if errors.Is(summarizeErr, ErrCompactionBlocked) {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
@@ -1979,6 +2004,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			a.messageQueue.Set(call.SessionID, append(existing, call))
 			continued = true
 		}
+	} else {
+		recordTurnEnd()
 	}
 	finished := currentAssistant != nil && !continued
 
