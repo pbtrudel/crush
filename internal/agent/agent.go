@@ -2021,7 +2021,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// takes, and before a blocked one is cleared.
 		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
 		recordTurnEnd()
-		if errors.Is(summarizeErr, ErrCompactionBlocked) {
+		compactionBlocked := errors.Is(summarizeErr, ErrCompactionBlocked)
+		if compactionBlocked {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
 			slog.Info("PreCompact hook blocked compaction", "session_id", call.SessionID)
@@ -2054,9 +2055,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			recordTurnEnd()
 			limitStopped = true
 		}
-		// If the agent wasn't done, and no limit refuses the continuation,
-		// resume the prompt.
-		if !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
+		// If the agent wasn't done, no compaction was blocked and no limit
+		// refuses the continuation, resume the prompt.
+		if !compactionBlocked && !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}

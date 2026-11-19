@@ -33,6 +33,13 @@ type scriptedModel struct {
 	calls  int
 }
 
+// callCount reports how many of the agent's calls used the script.
+func (m *scriptedModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
 func (m *scriptedModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	if len(call.Tools) == 0 {
 		return replayStreamParts(fusionTextParts("Title")), nil
@@ -77,6 +84,11 @@ func callTool(name string, inputTokens int64) scriptedCall {
 
 func failWith(err error) scriptedCall { return scriptedCall{err: err} }
 
+// blockingPreCompact refuses every compaction, like a hook that exits 2.
+var blockingPreCompact = map[string][]config.HookConfig{
+	hooks.EventPreCompact: {{Command: `echo "not now" >&2; exit 2`}},
+}
+
 // haltTool answers like a denied permission: the result ends the turn.
 type haltTool struct{ recordingTool }
 
@@ -115,15 +127,11 @@ func TestTurnEnd_Runs(t *testing.T) {
 		atGuard  = 190_000
 		overHalf = 150_000
 	)
-	blockCompaction := map[string][]config.HookConfig{
-		hooks.EventPreCompact: {{Command: `echo "not now" >&2; exit 2`}},
-	}
 	summary := answer("# Conversation Summary\n\nAll good.", fantasy.FinishReasonStop, small)
 	tests := []struct {
 		name        string
 		script      []scriptedCall
 		tool        fantasy.AgentTool
-		hooks       map[string][]config.HookConfig
 		wantErr     bool
 		want        []message.TurnEnd
 		wantTrigger string
@@ -152,14 +160,6 @@ func TestTurnEnd_Runs(t *testing.T) {
 			wantTrigger: "overflow",
 		},
 		{
-			// A blocked compaction still requeues the prompt today; the
-			// continuation starts from a small context and completes.
-			name:   "required compaction blocked",
-			script: []scriptedCall{callTool("alpha", atGuard), answer("done", fantasy.FinishReasonStop, small)},
-			hooks:  blockCompaction,
-			want:   []message.TurnEnd{message.TurnEndCompactionBlocked, message.TurnEndCompleted},
-		},
-		{
 			name:    "required compaction failed",
 			script:  []scriptedCall{callTool("alpha", atGuard), failWith(errors.New("summary failed"))},
 			wantErr: true,
@@ -182,10 +182,6 @@ func TestTurnEnd_Runs(t *testing.T) {
 				tool = &recordingTool{name: "alpha"}
 			}
 			agent := newCompactionAgent(env, &scriptedModel{script: tt.script}, nil, false, tool)
-			if tt.hooks != nil {
-				dir := t.TempDir()
-				agent.hooks = hooks.NewRunner(hooks.Static(tt.hooks), dir, dir)
-			}
 			sess, err := env.sessions.Create(t.Context(), tt.name)
 			require.NoError(t, err)
 
@@ -202,6 +198,27 @@ func TestTurnEnd_Runs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A compaction the PreCompact hook blocks ends the turn. The call is not
+// requeued, so a guard-tripping step costs one provider request instead of
+// looping on a context that never shrank.
+func TestBlockedCompactionEndsTheTurn(t *testing.T) {
+	env := testEnv(t)
+	model := &scriptedModel{script: []scriptedCall{callTool("alpha", 190_000)}}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"})
+	dir := t.TempDir()
+	agent.hooks = hooks.NewRunner(hooks.Static(blockingPreCompact), dir, dir)
+	sess, err := env.sessions.Create(t.Context(), "blocked compaction")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, model.callCount(), "the run must not be requeued after a blocked compaction")
+	require.Equal(t, []message.TurnEnd{message.TurnEndCompactionBlocked}, turnEnds(t, env, sess.ID))
 }
 
 // Twenty identical tool interactions trip the loop guard.
