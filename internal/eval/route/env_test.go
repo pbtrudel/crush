@@ -31,7 +31,7 @@ func TestChildEnv(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "deepseek-flash", Provider: "commandcode", Env: []string{"DEEPSEEK_API_KEY"}}
 
-	env, err := r.ChildEnv(h, parentEnv)
+	env, err := r.ChildEnv(h, h.ConfigDir(), parentEnv)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"PATH":                  "/usr/local/bin:/usr/bin:/bin",
@@ -61,7 +61,7 @@ func TestChildEnvClaudeAgent(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "claude-sonnet", Provider: "claude-agent", Env: []string{"CLAUDE_TOKEN"}}
 
-	env, err := r.ChildEnv(h, parentEnv)
+	env, err := r.ChildEnv(h, h.ConfigDir(), parentEnv)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(h.Dir(), "claude"), envMap(env)["CLAUDE_CONFIG_DIR"])
 	require.Equal(t, h.Dir(), filepath.Dir(envMap(env)["CLAUDE_CONFIG_DIR"]))
@@ -123,7 +123,7 @@ func TestChildEnvRejects(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), tt.parent)
+			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), "/state/crush-eval/config/crush", tt.parent)
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}

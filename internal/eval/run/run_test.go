@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestMain(m *testing.M) {
 // fakeVars are the variables the fake binary reads. The route names them, so
 // the scrubbed child environment carries them through.
 var fakeVars = []string{
-	"FAKE_ARGV", "FAKE_PROMPT", "FAKE_OUTPUT", "FAKE_EXIT", "FAKE_SLEEP_MS",
+	"FAKE_ARGV", "FAKE_PROMPT", "FAKE_ENV", "FAKE_OUTPUT", "FAKE_EXIT", "FAKE_SLEEP_MS",
 	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_DB_SQL", "FAKE_DB_PART",
 }
 
@@ -354,6 +355,63 @@ func TestRunContamination(t *testing.T) {
 	require.True(t, line.Contaminated)
 	require.Equal(t, 1, line.ContaminatedMatches)
 	require.True(t, line.Pass)
+}
+
+// TestRunWritesItsOwnConfigPerRun prepares two runs with different overlays
+// at once: each child must read the global config its own run wrote.
+func TestRunWritesItsOwnConfigPerRun(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	overlays := []map[string]any{{"agent_teams": true}, {"agent_teams": false}}
+	variants := []string{"alpha@abc12345", "beta@abc12345"}
+
+	var wg sync.WaitGroup
+	lines := make([]result.Result, len(variants))
+	errs := make([]error, len(variants))
+	envFiles := make([]string, len(variants))
+	for i, variant := range variants {
+		envFiles[i] = filepath.Join(t.TempDir(), "env")
+		opts := f.options()
+		opts.Variant = variant
+		opts.Overlay = overlays[i]
+		opts.ParentEnv = append(opts.ParentEnv, "FAKE_ENV="+envFiles[i])
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lines[i], errs[i] = Run(context.Background(), opts)
+		}()
+	}
+	wg.Wait()
+
+	for i, variant := range variants {
+		require.NoError(t, errs[i])
+		require.Equal(t, variant, lines[i].Variant)
+
+		configDir := childEnv(t, envFiles[i])["CRUSH_GLOBAL_CONFIG"]
+		runDir := "pr-0010-" + strings.ReplaceAll(variant, "@", "-") + "-fake-r1"
+		require.Equal(t, filepath.Join(f.home.BatchDir("b1"), "runs", runDir, "config", "crush"), configDir)
+
+		var doc struct {
+			Options map[string]any `json:"options"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(read(t, filepath.Join(configDir, "crush.json"))), &doc))
+		require.Equal(t, overlays[i]["agent_teams"], doc.Options["agent_teams"])
+	}
+}
+
+// childEnv reads the environment a run's child saw from the file the fake
+// binary dumped it into.
+func childEnv(t *testing.T, path string) map[string]string {
+	t.Helper()
+	env := map[string]string{}
+	for _, line := range strings.Split(read(t, path), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			env[key] = value
+		}
+	}
+	return env
 }
 
 // outputLine is the object `crush run --json` prints, with the error on a

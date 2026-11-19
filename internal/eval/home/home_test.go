@@ -48,7 +48,6 @@ func TestPaths(t *testing.T) {
 	require.Equal(t, filepath.Join(dir, "routes"), h.RoutesDir())
 	require.Equal(t, filepath.Join(dir, "data"), h.DataDir())
 	require.Equal(t, filepath.Join(dir, "config", "crush"), h.ConfigDir())
-	require.Equal(t, filepath.Join(dir, "config", "crush", "crush.json"), h.ConfigFile())
 	require.Equal(t, filepath.Join(dir, "skills"), h.SkillsDir())
 	require.Equal(t, filepath.Join(dir, "gh"), h.GHDir())
 	require.Equal(t, filepath.Join(dir, "claude"), h.ClaudeDir())

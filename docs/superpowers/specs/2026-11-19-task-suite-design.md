@@ -237,12 +237,12 @@ The eval home is `$XDG_STATE_HOME/crush-eval` (default `~/.local/state/crush-eva
 crush-eval/
   routes/<name>.yaml        written by the user, never in the repository
   data/                     CRUSH_GLOBAL_DATA: tokens from `crush-eval login`
-  config/crush/crush.json   generated per batch (CRUSH_GLOBAL_CONFIG)
+  config/crush/             CRUSH_GLOBAL_CONFIG of `crush-eval login` alone
   skills/                   empty (CRUSH_SKILLS_DIR)
   gh/                       empty (GH_CONFIG_DIR)
   bin/<sha>/crush           built variants
   batches/<id>/results.jsonl
-  batches/<id>/runs/<run>/{src,data,stdout.json,stderr.log,grade.json}
+  batches/<id>/runs/<run>/{src,data,config/crush,stdout.json,stderr.log,grade.json}
 ```
 
 A route file:

@@ -12,7 +12,7 @@ import (
 // the eval home, so the token lands there and never in the user's own
 // data directory. The caller runs it.
 func (r *Route) LoginCommand(ctx context.Context, h *home.Home, crushBin string, parent []string) (*exec.Cmd, error) {
-	env, err := r.ChildEnv(h, parent)
+	env, err := r.ChildEnv(h, h.ConfigDir(), parent)
 	if err != nil {
 		return nil, err
 	}

@@ -35,6 +35,9 @@ func main() {
 		data, _ := io.ReadAll(os.Stdin)
 		write(path, string(data))
 	}
+	if path := os.Getenv("FAKE_ENV"); path != "" {
+		write(path, strings.Join(os.Environ(), "\n")+"\n")
+	}
 	if rel := os.Getenv("FAKE_WRITE"); rel != "" {
 		path := filepath.Join(cwd, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {

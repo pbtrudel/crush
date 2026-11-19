@@ -49,9 +49,6 @@ func (h *Home) DataDir() string { return filepath.Join(h.dir, "data") }
 // ConfigDir is CRUSH_GLOBAL_CONFIG. Crush reads crush.json from it.
 func (h *Home) ConfigDir() string { return filepath.Join(h.dir, "config", "crush") }
 
-// ConfigFile is the generated global config of one batch.
-func (h *Home) ConfigFile() string { return filepath.Join(h.ConfigDir(), "crush.json") }
-
 // SkillsDir is CRUSH_SKILLS_DIR, kept empty so the user's skills never
 // reach a run.
 func (h *Home) SkillsDir() string { return filepath.Join(h.dir, "skills") }
