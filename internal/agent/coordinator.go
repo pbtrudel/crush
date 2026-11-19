@@ -1669,6 +1669,26 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 	return anthropic.New(opts...)
 }
 
+// openaiOAuthClient returns client with the Codex transport installed for a
+// ChatGPT OAuth token. The recorder sits directly above the network, under
+// the Codex transport, so the capture shows the request the backend receives
+// after that transport added the account headers and dropped the fields it
+// rejects. The caller's client is copied, never changed in place.
+func openaiOAuthClient(client *http.Client, token *oauth.Token) *http.Client {
+	out := &http.Client{}
+	var base http.RoundTripper
+	if client != nil {
+		copied := *client
+		out = &copied
+		base = copied.Transport
+	}
+	out.Transport = &openaioauth.Transport{
+		Base:  captureTransportIfEnabled(base),
+		Token: token,
+	}
+	return out
+}
+
 func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token, wireType catwalk.Type) (fantasy.Provider, error) {
 	opts := []openai.Option{
 		openai.WithAPIKey(apiKey),
@@ -1687,15 +1707,8 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 		// ChatGPT OAuth: requests go through the Codex backend, which
 		// expects account headers and rejects some request fields, so
 		// they pass through the Codex transport.
-		if httpClient == nil {
-			httpClient = &http.Client{}
-		}
-		httpClient.Transport = &openaioauth.Transport{
-			Base:  httpClient.Transport,
-			Token: token,
-		}
-	}
-	if httpClient = captureClient(httpClient); httpClient != nil {
+		opts = append(opts, openai.WithHTTPClient(openaiOAuthClient(httpClient, token)))
+	} else if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, openai.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -1812,11 +1825,8 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		if httpClient != nil && httpClient.Transport != nil {
 			baseTransport = httpClient.Transport
 		}
-		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
-	}
-	// The recorder sits above Crush's own transports: it sees the body the
-	// provider library built and the stream the caller reads.
-	if httpClient = captureClient(httpClient); httpClient != nil {
+		opts = append(opts, openaicompat.WithHTTPClient(mistralVibeClient(baseTransport)))
+	} else if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, openaicompat.WithHTTPClient(httpClient))
 	}
 
@@ -1829,6 +1839,14 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	}
 
 	return openaicompat.New(opts...)
+}
+
+// mistralVibeClient returns a client whose transport chain signs and rewrites
+// the request on the way out. The recorder sits above base and below both
+// transports, so the capture shows the signed request that reaches the
+// network rather than the body before it was rewritten.
+func mistralVibeClient(base http.RoundTripper) *http.Client {
+	return &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(captureTransportIfEnabled(base)))}
 }
 
 func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string) (fantasy.Provider, error) {

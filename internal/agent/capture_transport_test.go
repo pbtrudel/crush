@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -367,4 +368,82 @@ func TestRedactTextCredentialShapes(t *testing.T) {
 		require.Contains(t, got, "REDACTED")
 		require.NotContains(t, got, "AKIAIOSFODNN7EXAMPLE")
 	}
+}
+
+// wireTransport is a base transport that keeps the request it is handed and
+// answers with a fixed response.
+type wireTransport struct {
+	body string
+	host string
+}
+
+func (t *wireTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	t.body = string(data)
+	t.host = req.URL.Host
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		Request:    req,
+	}, nil
+}
+
+// TestCaptureStacksUnderOpenAIOAuthTransport pins that the recorder sits
+// under the Codex transport: the capture must show the request as it goes on
+// the wire, not the body before that transport dropped the fields the
+// backend rejects.
+func TestCaptureStacksUnderOpenAIOAuthTransport(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	base := &wireTransport{}
+	client := openaiOAuthClient(
+		&http.Client{Transport: base},
+		&oauth.Token{AccessToken: "token-abc", AccountID: "acct_1"},
+	)
+
+	body := `{"model":"gpt-5.6-sol","max_output_tokens":42,"input":"hi"}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Equal(t, "chatgpt.com", base.host)
+	require.NotContains(t, base.body, "max_output_tokens")
+	require.Equal(t, base.body, readCapture(t, dir).RequestBody)
+}
+
+// TestCaptureStacksUnderMistralVibeTransport pins the same rule for the Vibe
+// and content-block transports, which sign and rewrite the body on the way
+// out.
+func TestCaptureStacksUnderMistralVibeTransport(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	base := &wireTransport{}
+	client := mistralVibeClient(base)
+
+	body := `{"model":"mistral-large","metadata":{"existing":"kept"},"messages":[]}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.mistral.ai/v1/chat/completions", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-session-affinity", "sess_1")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Contains(t, base.body, "vibe_code")
+	require.Equal(t, base.body, readCapture(t, dir).RequestBody)
 }

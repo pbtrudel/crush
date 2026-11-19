@@ -218,24 +218,25 @@ func (b *captureBody) finish() {
 }
 
 // captureRequestBody returns the whole request body for recording and restores
-// it for the real request. The caller caps the stored copy, and it caps it
-// after redaction rather than here: a body cut in this function no longer
-// parses as JSON, which would skip the field-by-field redaction.
+// it for the real request. It reads req.Body and not GetBody: a transport
+// above the recorder may have rewritten the body and left GetBody pointing at
+// the copy taken before that rewrite. The caller caps the stored copy, and it
+// caps it after redaction rather than here: a body cut in this function no
+// longer parses as JSON, which would skip the field-by-field redaction.
 func captureRequestBody(req *http.Request) []byte {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil
 	}
-	if req.GetBody != nil {
-		if rc, err := req.GetBody(); err == nil {
-			data, _ := io.ReadAll(rc)
-			_ = rc.Close()
-			return data
-		}
-	}
+	hadGetBody := req.GetBody != nil
 	data, err := io.ReadAll(req.Body)
 	_ = req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewReader(data))
 	req.ContentLength = int64(len(data))
+	if hadGetBody {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(data)), nil
+		}
+	}
 	if err != nil {
 		return nil
 	}
