@@ -87,12 +87,18 @@ func vcrModelBuilder(model string) builderFunc {
 	}
 }
 
+// testEnv builds a fakeEnv on a working directory of its own, so concurrent
+// test processes never share mutable state.
 func testEnv(t *testing.T) fakeEnv {
-	workingDir := filepath.Join("/tmp/crush-test/", t.Name())
-	os.RemoveAll(workingDir)
+	t.Helper()
+	return testEnvAt(t, t.TempDir())
+}
 
-	err := os.MkdirAll(workingDir, 0o755)
-	require.NoError(t, err)
+// testEnvAt builds a fakeEnv on the given working directory. Only the
+// cassette-backed coder tests pin it: the recorded requests embed the path,
+// and the VCR matcher compares the whole request body.
+func testEnvAt(t *testing.T, workingDir string) fakeEnv {
+	t.Helper()
 
 	conn, err := db.Connect(t.Context(), t.TempDir())
 	require.NoError(t, err)
@@ -115,7 +121,6 @@ func testEnv(t *testing.T) fakeEnv {
 		// wait for it before closing the database it writes to.
 		require.True(t, titles.wait(5*time.Second), "session title generation still running at teardown")
 		conn.Close()
-		os.RemoveAll(workingDir)
 	})
 
 	return fakeEnv{

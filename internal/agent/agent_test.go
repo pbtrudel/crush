@@ -44,7 +44,9 @@ func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageM
 func setupAgent(t *testing.T, pair modelPair) (SessionAgent, fakeEnv) {
 	r := vcr.NewRecorder(t)
 	large, small := getModels(t, r, pair)
-	env := testEnv(t)
+	// The recorded requests embed this path, so the replay only matches when
+	// the working directory is the one they were recorded with.
+	env := testEnvAt(t, filepath.Join("/tmp/crush-test/", t.Name()))
 
 	createSimpleGoProject(t, env.workingDir)
 	agent, err := coderAgent(r, env, large, small)
