@@ -96,9 +96,21 @@ func TestWriteReadGuardKinds(t *testing.T) {
 		name     string
 		lastRead time.Time
 		want     ErrorKind
+		message  string
+		absent   string
 	}{
-		{name: "never read", want: ErrorKindNotRead},
-		{name: "changed since read", lastRead: time.Now().Add(-time.Hour), want: ErrorKindChangedSinceRead},
+		{
+			name:    "never read",
+			want:    ErrorKindNotRead,
+			message: "exists but has not been read in this session. Read it with view before overwriting it",
+			absent:  "0001-01-01",
+		},
+		{
+			name:     "changed since read",
+			lastRead: time.Now().Add(-time.Hour),
+			want:     ErrorKindChangedSinceRead,
+			message:  "has been modified since it was last read",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,8 +130,12 @@ func TestWriteReadGuardKinds(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.True(t, resp.IsError)
-			// The wording is kept for both cases; only the kind tells them apart.
-			require.Contains(t, resp.Content, "has been modified since it was last read")
+			// Each case gets wording that matches what happened: a file with
+			// no read in this session was not modified since a read.
+			require.Contains(t, resp.Content, tt.message)
+			if tt.absent != "" {
+				require.NotContains(t, resp.Content, tt.absent)
+			}
 			require.Equal(t, string(tt.want), gjson.Get(resp.Metadata, "error_kind").String())
 
 			content, err := os.ReadFile(filePath)
