@@ -69,6 +69,39 @@ func TestClassify(t *testing.T) {
 	require.False(t, gpg)
 }
 
+func TestClassifyRequiresOwnTerminal(t *testing.T) {
+	t.Parallel()
+
+	curses := []Proc{{PID: 1, Name: "pinentry-curses"}}
+	ours := func(int) bool { return true }
+	foreign := func(int) bool { return false }
+
+	handover, ctrlL, _ := classify(curses, ours)
+	require.True(t, handover, "a dialog holding our terminal takes it")
+	require.True(t, ctrlL)
+
+	handover, ctrlL, _ = classify(curses, foreign)
+	require.False(t, handover, "a dialog on another terminal must not take ours")
+	require.False(t, ctrlL)
+
+	// Only a hold of our own terminal counts among several dialogs.
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "pinentry-tty"}}, func(pid int) bool {
+		return pid == 2
+	})
+	require.True(t, handover)
+	require.False(t, ctrlL, "only the pinentry-tty holds our terminal")
+
+	// GUI flavors never take the terminal, whatever they hold.
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry-mac"}}, ours)
+	require.False(t, handover)
+	require.False(t, ctrlL)
+
+	// An unidentifiable terminal keeps the name-only match.
+	handover, ctrlL, _ = classify(curses, nil)
+	require.True(t, handover)
+	require.True(t, ctrlL)
+}
+
 func TestResolveFlavor(t *testing.T) {
 	t.Parallel()
 
@@ -377,6 +410,101 @@ func TestServiceSleepsWithoutTrackedCommands(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for pinentry event")
 	}
+}
+
+// waitUntil polls cond for up to five seconds.
+func waitUntil(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
+}
+
+// startFakeHolding starts a fake process holding path open for the rest of
+// the test and returns its PID.
+func startFakeHolding(t *testing.T, path string) int {
+	t.Helper()
+	exe := buildFakeProc(t, "fakeproc.go", "fakeproc")
+	cmd := exec.CommandContext(t.Context(), exe, "30", path)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+func TestWatcherRequiresOwnTerminal(t *testing.T) {
+	t.Parallel()
+
+	ttyPath := standinTerminal(t)
+	otherPath := standinTerminal(t)
+	owns := pathOwns(t, ttyPath)
+	foreignOwnsOther := pathOwns(t, otherPath)
+
+	// A dialog on another terminal must not take ours.
+	foreign := startFakeHolding(t, otherPath)
+	require.True(t, waitUntil(t, func() bool { return foreignOwnsOther(foreign) }), "the fake holds the other terminal")
+	s := newTestService()
+	s.owns = owns
+	s.tick(time.Now(), []Proc{{PID: foreign, Name: "pinentry-curses"}})
+	require.Equal(t, Event{}, s.last)
+	require.Equal(t, stateIdle, s.state)
+
+	// The same dialog holding our terminal is a handover.
+	pid := startFakeHolding(t, ttyPath)
+	require.True(t, waitUntil(t, func() bool { return owns(pid) }), "the fake holds our terminal")
+	s = newTestService()
+	s.owns = owns
+	s.tick(time.Now(), []Proc{{PID: pid, Name: "pinentry-curses"}})
+	require.Equal(t, Event{Active: true, CtrlLRedraw: true}, s.last)
+}
+
+// devZero and devFull stand in for two different terminals. They are
+// character devices, as a terminal is, and neither is stdin of the fakes.
+const (
+	devZero = "/dev/zero"
+	devFull = "/dev/full"
+)
+
+func TestOwnsTerminalUsesOpenDescriptors(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("descriptor ownership is read through /proc/<pid>/fd")
+	}
+	for _, dev := range []string{devZero, devFull} {
+		if _, err := os.Stat(dev); err != nil {
+			t.Skipf("%s stands in for a terminal device", dev)
+		}
+	}
+
+	ref, ok := terminalRefAt(devZero)
+	require.True(t, ok, "%s is a character device", devZero)
+	fullRef, ok := terminalRefAt(devFull)
+	require.True(t, ok, "%s is a character device", devFull)
+
+	ours := startFakeHolding(t, devZero)
+	require.True(t, waitUntil(t, func() bool { return ownsTerminal(ours, ref) }), "a process holding the device owns it")
+
+	foreign := startFakeHolding(t, devFull)
+	require.True(t, waitUntil(t, func() bool { return ownsTerminal(foreign, fullRef) }), "the fake holds the other device")
+	require.False(t, ownsTerminal(foreign, ref), "another device is not our terminal")
+
+	// Descriptors that cannot be read are never ours.
+	require.False(t, ownsTerminal(1<<30, ref))
+}
+
+func TestDefaultOwnsFallsBackWithoutTerminal(t *testing.T) {
+	t.Parallel()
+	if _, ok := ownTerminalRef(); ok {
+		t.Skip("stdin is a terminal here; the fallback cannot be exercised")
+	}
+	require.Nil(t, defaultOwns(), "an unidentifiable terminal keeps the name-only match")
 }
 
 // buildFakeProc builds the given helper source from testdata under the
