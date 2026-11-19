@@ -1,0 +1,50 @@
+schema: 1
+id: pr-0055
+source:
+  repo: pbtrudel/crush
+  pr: 55
+  merge: a0f6465f906f2769c4d5e11e32b10fe8a7c48d21
+  base: 5444c830fc7e9fa679121eb1074017e711232d4c
+kind: plain
+why: |
+  Switching models mid-session left the sidebar (and the landing view, and
+  remote clients' agent info) showing the previously selected model, even
+  though new requests were already going to the new one. The only way to see
+  the real selection was to restart Crush.
+
+  Root cause: agents read models lazily from the coordinator's shared model set
+  at request time, but `UpdateModels` only rebuilt that set; it never pushed
+  the rebuilt pair into the live agent. `Coordinator.Model()` reports the
+  agent's own copy, which was seeded once at construction, and that is what the
+  UI renders.
+prompt: |
+  Switching models mid-session left the sidebar (and the landing view, and
+  remote clients' agent info) showing the previously selected model, even
+  though new requests were already going to the new one. The only way to see
+  the real selection was to restart Crush.
+
+  Root cause: agents read models lazily from the coordinator's shared model set
+  at request time, but `UpdateModels` only rebuilt that set; it never pushed
+  the rebuilt pair into the live agent. `Coordinator.Model()` reports the
+  agent's own copy, which was seeded once at construction, and that is what the
+  UI renders.
+grade:
+  packages: [./internal/agent]
+  tests: [TestUpdateModelsRefreshesAgentModel]
+  exclude: []
+  hidden:
+    - {path: internal/agent/update_models_test.go, blob: c9a387711804b718c254e48d67c30f21f52f343c}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: none; the test drives `Coordinator.UpdateModels` and reads `Coordinator.Model`, the entry point and accessor the Why names."
+  - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 11, packages: 8}
