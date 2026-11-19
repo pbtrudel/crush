@@ -7,7 +7,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestJQ_CtxCancel verifies that handleJQ polls ctx during iteration and
@@ -36,117 +35,158 @@ func TestJQ_CtxCancel(t *testing.T) {
 	}
 }
 
+// errWriteLimit is returned by cancelAfterWriter once too many writes have
+// happened. It only fires when the ctx poll in handleJQ's value loop is
+// gone, and it turns a multi-second drain of range(100000000) into an
+// immediate failure.
+var errWriteLimit = errors.New("write limit exceeded")
+
+// cancelAfterWriter counts Write calls and cancels ctx once a fixed number
+// of them have happened, i.e. only after jq has already produced output.
+// Cancellation is requested by write progress rather than by a deadline, so
+// the test never depends on how long the process gets to run.
+type cancelAfterWriter struct {
+	cancel context.CancelFunc
+	after  int
+	limit  int
+	writes int
+}
+
+func (w *cancelAfterWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.after {
+		w.cancel()
+	}
+	if w.writes > w.limit {
+		return 0, errWriteLimit
+	}
+	return len(p), nil
+}
+
 // TestJQ_CtxCancel_DuringFilter verifies cancellation mid-stream: ctx is
 // cancelled after jq has started producing output, and the loop must
 // observe the cancel on the next iteration rather than running to
-// completion.
+// completion. The cancel comes from the writer, so the invariant is the
+// number of writes that follow it, not elapsed wall-clock time.
 func TestJQ_CtxCancel_DuringFilter(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-
-	// 100M values; without ctx polling this would take many seconds to
-	// fully emit. With ctx polling the loop exits shortly after the
-	// deadline.
-	stdin := strings.NewReader("null\n")
-	var stdout, stderr bytes.Buffer
-
-	start := time.Now()
-	err := handleJQ(ctx, []string{"jq", "-c", "range(100000000)"}, stdin, &stdout, &stderr)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected ctx timeout error, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
-	}
-	// Allow generous slack for slow CI; the important invariant is that we
-	// don't run all 100M iterations (which would take orders of magnitude
-	// longer than 1s).
-	if elapsed > time.Second {
-		t.Fatalf("handleJQ took %v after 50ms timeout; ctx polling is not tight enough", elapsed)
-	}
-}
-
-// slowReader serves bytes in small chunks with a fixed delay between
-// Read calls. It never blocks indefinitely — each Read returns after
-// chunkDelay — so cancellation must be observed via ctxReader's ctx
-// check, not by the underlying reader itself. That isolates the
-// behavior we want to test: the wrapper polling ctx between chunks.
-type slowReader struct {
-	remaining  []byte
-	chunk      int
-	chunkDelay time.Duration
-}
-
-func (s *slowReader) Read(p []byte) (int, error) {
-	if len(s.remaining) == 0 {
-		return 0, io.EOF
-	}
-	time.Sleep(s.chunkDelay)
-	n := min(len(p), min(s.chunk, len(s.remaining)))
-	copy(p, s.remaining[:n])
-	s.remaining = s.remaining[n:]
-	return n, nil
-}
-
-// TestJQ_CtxCancel_MidReadAll verifies that ctx cancellation observed
-// *during* io.ReadAll — after several chunks have already been consumed
-// — short-circuits the read via ctxReader, rather than draining the
-// whole source. This is the guarantee the hook runner relies on when
-// it feeds a large bytes.Reader payload.
-//
-// The reader serves bytes in 512-byte chunks with a 5ms gap between
-// reads. ctx is cancelled after ~50ms, so several chunks have already
-// been read when ctxReader first observes the cancellation. The test
-// asserts that (a) we got a context.Canceled error and (b) the call
-// returned well before the reader would have been fully drained.
-func TestJQ_CtxCancel_MidReadAll(t *testing.T) {
-	t.Parallel()
-
 	const (
-		size       = 64 * 1024 * 1024 // 64 MiB
-		chunk      = 512
-		chunkDelay = 5 * time.Millisecond
+		// writeValue emits two Writes per value with -c (the marshalled
+		// bytes, then "\n"), so cancelling on the 100th write lands after
+		// jq has emitted 50 values.
+		cancelAfter = 100
+		writeLimit  = cancelAfter + 1000
 	)
-	// At 512 bytes / 5ms, draining 64 MiB would take ~11 minutes. Any
-	// return within a second proves cancel was observed mid-stream, not
-	// after EOF.
-	reader := &slowReader{
-		remaining:  bytes.Repeat([]byte("a"), size),
-		chunk:      chunk,
-		chunkDelay: chunkDelay,
-	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	// Cancel after enough time that several Read calls have completed
-	// and io.ReadAll is actively consuming the source.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
-
-	start := time.Now()
-	err := handleJQ(ctx, []string{"jq", "-R", "."}, reader, io.Discard, io.Discard)
-	elapsed := time.Since(start)
+	w := &cancelAfterWriter{
+		cancel: cancel,
+		after:  cancelAfter,
+		limit:  writeLimit,
+	}
+	err := handleJQ(
+		ctx, []string{"jq", "-c", "range(100000000)"},
+		strings.NewReader("null\n"), w, io.Discard,
+	)
 
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+		t.Fatalf("expected context.Canceled, got %v after %d writes", err, w.writes)
 	}
-	// Generous slack for slow CI; the invariant is orders-of-magnitude
-	// faster than draining the full source.
-	if elapsed > time.Second {
-		t.Fatalf("mid-ReadAll cancel took %v; ctxReader is not polling between chunks", elapsed)
+	// The loop polls ctx at the top of every iteration, so at most the
+	// in-flight value (two Writes) is written after the cancelling one.
+	if w.writes > cancelAfter+2 {
+		t.Fatalf("loop kept writing after cancel: %d writes (cancel at %d)", w.writes, cancelAfter)
 	}
-	// Sanity check: we should have been cancelled mid-stream, not
-	// before any reads happened. If remaining == size, cancel fired so
-	// early nothing was consumed — that's a fast-fail path, not the
-	// mid-read guarantee we want to verify.
-	consumed := size - len(reader.remaining)
+}
+
+// errReadLimit is returned by cancelAfterReader once too many Read calls
+// have happened. Like errWriteLimit it only fires when the ctx poll that
+// should stop the read is gone, which keeps that failure fast.
+var errReadLimit = errors.New("read limit exceeded")
+
+// cancelAfterReader serves fixed-size chunks from a source of a given size
+// and cancels ctx once a fixed number of Read calls have happened.
+// Cancellation is triggered by read progress, so io.ReadAll has already
+// consumed part of the source when it is requested, and the assertion does
+// not depend on scheduling. The source is never materialized, so the test
+// costs nothing in proportion to its size.
+type cancelAfterReader struct {
+	remaining int
+	chunk     int
+	cancel    context.CancelFunc
+	after     int
+	limit     int
+	reads     int
+}
+
+func (r *cancelAfterReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == r.after {
+		r.cancel()
+	}
+	if r.reads > r.limit {
+		return 0, errReadLimit
+	}
+	n := min(len(p), min(r.chunk, r.remaining))
+	if n == 0 {
+		return 0, io.EOF
+	}
+	for i := range p[:n] {
+		p[i] = 'a'
+	}
+	r.remaining -= n
+	return n, nil
+}
+
+// TestJQ_CtxCancel_MidReadAll verifies that ctx cancellation observed
+// *during* io.ReadAll, after several chunks have already been consumed,
+// short-circuits the read via ctxReader, rather than draining the whole
+// source. This is the guarantee the hook runner relies on when it feeds a
+// large bytes.Reader payload.
+//
+// The reader requests cancellation after a fixed number of Read calls, so
+// the test asserts on read progress instead of elapsed time: a regression
+// that stops polling ctx shows up as reads continuing past the cancel
+// point, not as a slow return.
+func TestJQ_CtxCancel_MidReadAll(t *testing.T) {
+	t.Parallel()
+
+	const (
+		size        = 64 * 1024 * 1024 // 64 MiB
+		chunk       = 512
+		cancelAfter = 5
+	)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	reader := &cancelAfterReader{
+		remaining: size,
+		chunk:     chunk,
+		cancel:    cancel,
+		after:     cancelAfter,
+		limit:     cancelAfter + 1000,
+	}
+
+	err := handleJQ(ctx, []string{"jq", "-R", "."}, reader, io.Discard, io.Discard)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v after %d reads", err, reader.reads)
+	}
+	// ctxReader polls before every Read, so the first Read attempted after
+	// the cancelling one returns ctx.Err() and the source is not read
+	// again. Allow one Read of slack for io.ReadAll's own bookkeeping.
+	if reader.reads > cancelAfter+1 {
+		t.Fatalf("kept reading after cancel: %d reads (cancel at %d)", reader.reads, cancelAfter)
+	}
+	// Sanity check: we should have been cancelled mid-stream, not before
+	// any reads happened. If remaining == size, cancel fired so early that
+	// nothing was consumed: that's a fast-fail path, not the mid-read
+	// guarantee we want to verify.
+	consumed := size - reader.remaining
 	if consumed == 0 {
 		t.Fatal("reader was never read from; test did not exercise mid-ReadAll cancel")
 	}
