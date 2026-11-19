@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 // the scrubbed child environment carries them through.
 var fakeVars = []string{
 	"FAKE_ARGV", "FAKE_PROMPT", "FAKE_ENV", "FAKE_OUTPUT", "FAKE_EXIT", "FAKE_SLEEP_MS",
-	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_DB_SQL", "FAKE_DB_PART",
+	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_DB_SQL", "FAKE_DB_PART", "FAKE_PID", "FAKE_CHILD_OUT",
 }
 
 const (

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/home"
@@ -38,6 +40,10 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, batchUsage)
 		return 2
 	}
+
+	// Ctrl-C stops the batch and every live run's process group with it.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Record and load the absolute path, so compare finds the experiment
 	// from any directory.
@@ -100,7 +106,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 	if batchID == "" {
 		batchID = exp.Date + "-" + exp.Name
 	}
-	sum, err := batch.Run(context.Background(), batch.Options{
+	sum, err := batch.Run(ctx, batch.Options{
 		ID:         batchID,
 		Experiment: exp,
 		Path:       path,

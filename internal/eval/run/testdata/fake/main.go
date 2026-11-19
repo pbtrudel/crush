@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,6 +47,19 @@ func main() {
 	}
 	if schema := os.Getenv("FAKE_DB_SQL"); schema != "" {
 		createDatabase(dataDir, schema, os.Getenv("FAKE_DB_PART"))
+	}
+	if path := os.Getenv("FAKE_PID"); path != "" {
+		write(path, strconv.Itoa(os.Getpid()))
+	}
+	if path := os.Getenv("FAKE_CHILD_OUT"); path != "" {
+		// A child of this process, in the same process group, so a test can
+		// check that the whole group dies with it.
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(),
+			"FAKE_CHILD_OUT=", "FAKE_PID="+path, "FAKE_OUTPUT=", "FAKE_SLEEP_MS=600000")
+		if err := child.Start(); err == nil {
+			go child.Wait() //nolint:errcheck // The test kills the group.
+		}
 	}
 	if ms, _ := strconv.Atoi(os.Getenv("FAKE_SLEEP_MS")); ms > 0 {
 		time.Sleep(time.Duration(ms) * time.Millisecond)

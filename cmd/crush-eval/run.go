@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/home"
@@ -59,7 +61,9 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx := context.Background()
+	// Ctrl-C has to stop the child's process group, not just the runner.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	bin, err := route.Build(ctx, h, ".", *ref)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

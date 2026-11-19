@@ -148,6 +148,11 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err != nil {
 		return line, err
 	}
+	if err := ctx.Err(); err != nil {
+		// A cancelled run stops here: nothing after the child is worth
+		// recording, and the batch is stopping too.
+		return line, err
+	}
 
 	out, ok := parseOutput(stdoutPath)
 	switch {
@@ -246,16 +251,24 @@ func execute(ctx context.Context, bin string, args, env []string, prompt, stdout
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	kill := processGroup(cmd)
+	var killed atomic.Bool
+	// A cancelled context kills the whole process group, tools included,
+	// instead of leaving crush and its children running.
+	cmd.Cancel = func() error {
+		killed.Store(true)
+		return kill()
+	}
 	if err := cmd.Start(); err != nil {
 		return 0, false, fmt.Errorf("start %s: %w", bin, err)
 	}
-	var killed atomic.Bool
 	timer := time.AfterFunc(limit, func() {
 		killed.Store(true)
 		_ = kill()
 	})
 	_ = cmd.Wait()
 	timer.Stop()
+	// The child is gone but its own children may still hold the group.
+	_ = kill()
 
 	if stdout.Close() != nil || stderr.Close() != nil {
 		return 0, false, errors.New("close the run's output files")
@@ -325,8 +338,12 @@ func usageLimited(message string) bool {
 // grade semaphore.
 func gradeWithSlot(ctx context.Context, opts Options, src, runDir string) (grade.Result, error) {
 	if opts.GradeSem != nil {
-		opts.GradeSem <- struct{}{}
-		defer func() { <-opts.GradeSem }()
+		select {
+		case opts.GradeSem <- struct{}{}:
+			defer func() { <-opts.GradeSem }()
+		case <-ctx.Done():
+			return grade.Result{}, ctx.Err()
+		}
 	}
 	return gradeRun(ctx, opts, src, runDir)
 }
