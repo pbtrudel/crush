@@ -1142,15 +1142,6 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 	return settled, completed
 }
 
-// enqueueLocked appends one inbox message without waking the target. Callers
-// must hold s.mu.
-func (s *Service) enqueueLocked(from, to, text string) {
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	s.appendMessageLocked(from, to, text)
-}
-
 // appendMessageLocked adds one durable inbox message and records it as this
 // process's, so only this process delivers it. Callers must hold s.mu.
 func (s *Service) appendMessageLocked(from, to, text string) Message {
