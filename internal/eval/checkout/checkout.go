@@ -53,6 +53,12 @@ func Prepare(ctx context.Context, repoDir, base, dest string) (string, error) {
 	return crushJSONBlob(ctx, src, env)
 }
 
+// Head is the commit Prepare wrote into src, which is the base a grade of
+// that checkout starts from.
+func Head(ctx context.Context, src string) (string, error) {
+	return gitx.Output(ctx, src, "rev-parse", "HEAD")
+}
+
 // extract streams the tar archive of base from git into dest. It never runs a
 // tar program.
 func extract(ctx context.Context, repoDir, base, dest string) error {

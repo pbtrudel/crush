@@ -72,7 +72,12 @@ func Run(ctx context.Context, tk *task.Task, repoDir, scratch string, reps int, 
 		if _, err := checkout.Prepare(ctx, repoDir, tk.Source.Merge, mergeDir); err != nil {
 			return res, err
 		}
-		got, err := grade.Grade(ctx, tk, repoDir, filepath.Join(mergeDir, "src"), env)
+		src := filepath.Join(mergeDir, "src")
+		base, err := checkout.Head(ctx, src)
+		if err != nil {
+			return res, err
+		}
+		got, err := grade.Grade(ctx, tk, repoDir, src, base, env)
 		if err != nil {
 			return res, err
 		}

@@ -116,11 +116,12 @@ func TestGrade(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			repo, src, blob := prepare(t, tt.base, tt.hidden)
+			base := git(t, src, "rev-parse", "HEAD")
 			if tt.change != nil {
 				tt.change(t, src)
 			}
 
-			got, err := grade.Grade(context.Background(), newTask(blob, tt.names, tt.exclude), repo, src, goEnv(t))
+			got, err := grade.Grade(context.Background(), newTask(blob, tt.names, tt.exclude), repo, src, base, goEnv(t))
 			require.NoError(t, err)
 			require.Equal(t, tt.want.Touched, got.Touched, "touched")
 			require.Equal(t, tt.want.Packages, got.Packages, "packages")
@@ -137,15 +138,38 @@ func TestGrade(t *testing.T) {
 func TestGradeRecordsWorktreesAndBranches(t *testing.T) {
 	t.Parallel()
 	repo, src, blob := prepare(t, nil, hiddenFix)
+	base := git(t, src, "rev-parse", "HEAD")
 	fix(t, src)
 	git(t, src, "branch", "moved")
 	git(t, src, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"), "moved")
 
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, goEnv(t))
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
 	require.NoError(t, err)
 	require.True(t, got.Pass())
 	require.Equal(t, 1, got.Worktrees)
 	require.Equal(t, 1, got.Branches)
+}
+
+// TestGradeModelOrphanBranch grades a model that committed its work on an
+// orphan branch. The base comes from the run, not from the model's own
+// history, so the test file the model added is still recognised as an
+// addition and removed before the hidden tests are written.
+func TestGradeModelOrphanBranch(t *testing.T) {
+	t.Parallel()
+
+	repo, src, blob := prepare(t, nil, hiddenFix)
+	base := git(t, src, "rev-parse", "HEAD")
+	fix(t, src)
+	git(t, src, "checkout", "-q", "--orphan", "model")
+	write(t, filepath.Join(src, "p", "model_extra_test.go"),
+		"package p\n\nimport \"testing\"\n\nfunc TestModelExtra(t *testing.T) { t.Fatal(\"model test\") }\n")
+	git(t, src, "add", "-A")
+	git(t, src, "commit", "-q", "-m", "orphan")
+
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
+	require.NoError(t, err)
+	require.Equal(t, 1, got.ModelTestsRemoved, "the model's own test file is an addition against the task base")
+	require.True(t, got.Pass())
 }
 
 // TestGradeIgnoresRepositoryHooks grades a checkout whose .git/config makes
@@ -172,10 +196,27 @@ func TestGradeIgnoresRepositoryHooks(t *testing.T) {
 	require.Contains(t, readFile(t, marker), "CRUSH_EVAL_SECRET=sk-eval-must-not-leak")
 	require.NoError(t, os.Remove(marker))
 
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, goEnv(t))
+	base := git(t, src, "rev-parse", "HEAD")
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
 	require.NoError(t, err)
 	require.True(t, got.Pass())
 	require.NoFileExists(t, marker, "grading ran the checkout's fsmonitor")
+}
+
+// TestGradeModelDeletedGit grades a checkout whose .git the model deleted.
+// The grade fails with a reason instead of returning an error.
+func TestGradeModelDeletedGit(t *testing.T) {
+	t.Parallel()
+
+	repo, src, blob := prepare(t, nil, hiddenFix)
+	base := git(t, src, "rev-parse", "HEAD")
+	fix(t, src)
+	require.NoError(t, os.RemoveAll(filepath.Join(src, ".git")))
+
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
+	require.NoError(t, err, "a model that deletes .git is a failed grade, not a runner error")
+	require.False(t, got.Pass())
+	require.Contains(t, got.Reason, "not a git repository")
 }
 
 // prepare builds a throwaway repository with the base module, stores the

@@ -34,6 +34,9 @@ type Result struct {
 	Failed            []string `json:"failed,omitempty"`
 	Worktrees         int      `json:"worktrees"`
 	Branches          int      `json:"branches"`
+	// Reason says why a checkout the model broke could not be graded. It is
+	// empty for a grade that ran.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Pass reports whether the grade passes: the touched tests and every test of
@@ -46,29 +49,35 @@ func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []s
 	if _, err := checkout.Prepare(ctx, repoDir, tk.Source.Merge, dest); err != nil {
 		return Result{}, err
 	}
-	return Grade(ctx, tk, repoDir, filepath.Join(dest, "src"), env)
+	src := filepath.Join(dest, "src")
+	base, err := checkout.Head(ctx, src)
+	if err != nil {
+		return Result{}, err
+	}
+	return Grade(ctx, tk, repoDir, src, base, env)
 }
 
-// Grade grades the working tree of srcDir against tk. It removes the test
-// files the model added to the graded packages, writes the task's hidden
-// files, runs the touched tests and then every test of the graded packages,
-// and counts the worktrees and branches the model created. It reads the
-// hidden blobs from repoDir and runs go with env.
-func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir string, env []string) (Result, error) {
+// Grade grades the working tree of srcDir against tk, from base, the commit
+// the run started at, which the model's own history cannot change. It
+// removes the test files the model added to the graded packages, writes the
+// task's hidden files, runs the touched tests and then every test of the
+// graded packages, and counts the worktrees and branches the model created.
+// It reads the hidden blobs from repoDir and runs go with env.
+//
+// A checkout the model broke, as when it deletes .git or moves its work to
+// an orphan branch, is a failed grade with a reason, not an error: one bad
+// run must not stop the batch.
+func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env []string) (Result, error) {
 	var res Result
 
-	base, err := gitx.Output(ctx, srcDir, "rev-list", "--max-parents=0", "HEAD")
+	removed, err := removeModelTests(ctx, srcDir, base, tk.Grade.Packages)
 	if err != nil {
-		return res, fmt.Errorf("find the task base commit: %w", err)
-	}
-	removed, err := removeModelTests(ctx, srcDir, lastLine(base), tk.Grade.Packages)
-	if err != nil {
-		return res, err
+		return failed(fmt.Errorf("find the test files the model added: %w", err)), nil
 	}
 	res.ModelTestsRemoved = len(removed)
 
 	if err := ApplyHidden(ctx, repoDir, srcDir, tk.Grade.Hidden, tk.Grade.Deleted); err != nil {
-		return res, err
+		return failed(err), nil
 	}
 
 	touched, err := runGoTest(ctx, srcDir, env, testArgs(tk, touchedPattern(tk.Grade.Tests)))
@@ -101,6 +110,10 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir string, env []str
 	res.Worktrees, res.Branches = gitCounts(ctx, srcDir)
 	return res, nil
 }
+
+// failed is the grade of a checkout git could not read. The reason says
+// what the model broke.
+func failed(err error) Result { return Result{Reason: err.Error()} }
 
 // testArgs is the go test command for one grading pass, with the pattern or
 // the skip list and nothing else.
@@ -289,10 +302,4 @@ func gitCounts(ctx context.Context, srcDir string) (worktrees, branches int) {
 		branches = max(0, len(strings.Fields(refs))-1)
 	}
 	return worktrees, branches
-}
-
-// lastLine returns the last non-empty line of s.
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
 }

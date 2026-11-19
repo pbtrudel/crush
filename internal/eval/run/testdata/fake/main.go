@@ -45,6 +45,9 @@ func main() {
 			write(path, os.Getenv("FAKE_CONTENT"))
 		}
 	}
+	if rel := os.Getenv("FAKE_REMOVE"); rel != "" {
+		_ = os.RemoveAll(filepath.Join(cwd, rel))
+	}
 	if schema := os.Getenv("FAKE_DB_SQL"); schema != "" {
 		createDatabase(dataDir, schema, os.Getenv("FAKE_DB_PART"))
 	}

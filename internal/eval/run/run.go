@@ -181,10 +181,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		line.Reason = "bad_output"
 	}
 
-	line.Diff, line.Worktrees, err = treeStats(ctx, src, base)
-	if err != nil {
-		return line, err
-	}
+	line.Diff, line.Worktrees = treeStats(ctx, src, base)
 	line.ContaminatedMatches, err = scanDatabase(
 		filepath.Join(runDir, "data", "crush.db"),
 		contaminationMarkers(opts.Task, opts.SuiteDir, opts.RepoDir),
@@ -195,7 +192,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	line.Contaminated = line.ContaminatedMatches > 0
 
 	if line.Exit == 0 || line.Exit == 2 {
-		graded, err := gradeWithSlot(ctx, opts, src, runDir)
+		graded, err := gradeWithSlot(ctx, opts, src, base, runDir)
 		if err != nil {
 			return line, err
 		}
@@ -204,6 +201,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 			Packages:          graded.Packages,
 			CompileError:      graded.CompileError,
 			ModelTestsRemoved: graded.ModelTestsRemoved,
+			Reason:            graded.Reason,
 		}
 	}
 	line.Pass = (line.Exit == 0 || line.Exit == 2) && line.Grade.Passed()
@@ -336,7 +334,7 @@ func usageLimited(message string) bool {
 
 // gradeWithSlot grades the checkout while holding one slot of the batch's
 // grade semaphore.
-func gradeWithSlot(ctx context.Context, opts Options, src, runDir string) (grade.Result, error) {
+func gradeWithSlot(ctx context.Context, opts Options, src, base, runDir string) (grade.Result, error) {
 	if opts.GradeSem != nil {
 		select {
 		case opts.GradeSem <- struct{}{}:
@@ -345,18 +343,18 @@ func gradeWithSlot(ctx context.Context, opts Options, src, runDir string) (grade
 			return grade.Result{}, ctx.Err()
 		}
 	}
-	return gradeRun(ctx, opts, src, runDir)
+	return gradeRun(ctx, opts, src, base, runDir)
 }
 
 // gradeRun grades the checkout with an empty HOME, so the tests and go
 // never read the user's files.
-func gradeRun(ctx context.Context, opts Options, src, runDir string) (grade.Result, error) {
+func gradeRun(ctx context.Context, opts Options, src, base, runDir string) (grade.Result, error) {
 	emptyHome, err := os.MkdirTemp(runDir, "grade-home-")
 	if err != nil {
 		return grade.Result{}, fmt.Errorf("create grading home: %w", err)
 	}
 	defer os.RemoveAll(emptyHome) //nolint:errcheck // Temporary home.
-	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, gradeEnv(emptyHome))
+	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, base, gradeEnv(emptyHome))
 }
 
 // gradeEnv is the environment grading runs go with.
@@ -389,15 +387,17 @@ func goEnvValue(name string) string {
 }
 
 // treeStats is the size of the change against the task base, untracked
-// files included, and the number of worktrees the model created.
-func treeStats(ctx context.Context, src, base string) (result.Diff, int, error) {
+// files included, and the number of worktrees the model created. A checkout
+// git cannot read leaves both zero: the grade says what the model broke,
+// and a diagnosis of the diff is not worth stopping the batch.
+func treeStats(ctx context.Context, src, base string) (result.Diff, int) {
 	var diff result.Diff
 	if _, err := gitx.Output(ctx, src, "add", "-N", "."); err != nil {
-		return diff, 0, err
+		return diff, 0
 	}
 	numstat, err := gitx.Output(ctx, src, "diff", "--numstat", base)
 	if err != nil {
-		return diff, 0, err
+		return diff, 0
 	}
 	for _, row := range strings.Split(numstat, "\n") {
 		fields := strings.SplitN(row, "\t", 3)
@@ -410,9 +410,9 @@ func treeStats(ctx context.Context, src, base string) (result.Diff, int, error) 
 	}
 	list, err := gitx.Output(ctx, src, "worktree", "list", "--porcelain")
 	if err != nil {
-		return diff, 0, err
+		return diff, 0
 	}
-	return diff, max(0, strings.Count(list, "worktree ")-1), nil
+	return diff, max(0, strings.Count(list, "worktree ")-1)
 }
 
 // number parses a numstat count, where "-" marks a binary file.

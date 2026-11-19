@@ -40,6 +40,8 @@ type Grade struct {
 	Packages          bool `json:"packages"`
 	CompileError      bool `json:"compile_error"`
 	ModelTestsRemoved int  `json:"model_tests_removed"`
+	// Reason says why a checkout the model broke could not be graded.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Passed reports whether both test passes succeeded.

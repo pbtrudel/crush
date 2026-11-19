@@ -42,7 +42,8 @@ func TestMain(m *testing.M) {
 // the scrubbed child environment carries them through.
 var fakeVars = []string{
 	"FAKE_ARGV", "FAKE_PROMPT", "FAKE_ENV", "FAKE_OUTPUT", "FAKE_EXIT", "FAKE_SLEEP_MS",
-	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_DB_SQL", "FAKE_DB_PART", "FAKE_PID", "FAKE_CHILD_OUT",
+	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_REMOVE", "FAKE_DB_SQL", "FAKE_DB_PART", "FAKE_PID",
+	"FAKE_CHILD_OUT",
 }
 
 const (
@@ -399,6 +400,24 @@ func TestRunWritesItsOwnConfigPerRun(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(read(t, filepath.Join(configDir, "crush.json"))), &doc))
 		require.Equal(t, overlays[i]["agent_teams"], doc.Options["agent_teams"])
 	}
+}
+
+// TestRunModelBrokeTheCheckout runs a model that deletes the checkout's
+// .git. The run is a failed grade with a reason, not an error that stops the
+// batch.
+func TestRunModelBrokeTheCheckout(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.env["FAKE_REMOVE"] = ".git"
+
+	line, err := Run(context.Background(), f.options())
+	require.NoError(t, err, "a broken checkout does not stop the runner")
+	require.False(t, line.Pass)
+	require.False(t, line.Grade.Touched)
+	require.False(t, line.Grade.Packages)
+	require.Contains(t, line.Grade.Reason, "not a git repository")
 }
 
 // TestRunGivesTheChildItsOwnHome gives the child an empty HOME inside its

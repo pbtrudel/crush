@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
@@ -204,7 +205,16 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	if *reference {
 		graded, err = grade.Reference(ctx, tk, ".", dir, goEnv(home))
 	} else {
-		graded, err = grade.Grade(ctx, tk, ".", filepath.Join(dir, "src"), goEnv(home))
+		// A prepared checkout's base is its one root commit. A run that
+		// rewrote its history makes this command approximate; the batch
+		// passes the base it recorded before the model ran.
+		src := filepath.Join(dir, "src")
+		base, err := gitx.Output(ctx, src, "rev-list", "--max-parents=0", "HEAD")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		graded, err = grade.Grade(ctx, tk, ".", src, base, goEnv(home))
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
