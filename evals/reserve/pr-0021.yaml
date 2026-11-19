@@ -30,6 +30,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
+  - 'reserve: rule 9 (internal/agent), and the grade encodes a formula the prompt must state'
   - "hidden choice: the image-token rule (750 pixels per token, clamped to 85 and 16000), the unclamped 4-bytes-per-token fallback, base64 decoding of tool-result media, and no byte count in the text overhead."
   - "excluded TestCoderAgent: its recorded VCR cassettes no longer match the prompt text, so the internal/agent package fails at this merge for a reason unrelated to the task; it is skipped by name in the package run."
   - "excluded TestMistralTransportRewritesRequestBody: its two parallel subtests read each other's captured path through the shared http.DefaultTransport, so it fails intermittently in the internal/agent package run for a reason unrelated to the task (vetting caught it here)."

@@ -42,7 +42,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
-  - reserve
+  - 'reserve: rule 9 (internal/agent)'
   - 'hidden choice: the attempt names `small` and `large`, the fields of `titleAttempt`, that a larger declared budget is kept for a reasoning model, and the kept-selection rule'
   - four introduced names, the maximum an interface task may state (design rule 4)
   - 'wide: the config half of the change touches the model resolution path and its existing tests'

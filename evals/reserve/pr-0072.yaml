@@ -40,6 +40,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
+  - 'reserve: rule 9 (internal/agent), three problems in one prompt'
   - 'wide: three problems in one prompt (the sidebar scoping, the spawn cap, the teammate run registry and session id), 8 tests across 3 packages, one of them ./internal/agent'
   - 'hidden choice: the roster fallback, the nested-link rule and the empty-session rule, the run kind and status recorded for a teammate, and the team id in the teammate session id'
   - the touched tests are 8, not the 10 of the design table

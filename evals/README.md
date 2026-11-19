@@ -10,6 +10,10 @@ Layout:
 
 - `tasks/pr-NNNN.yaml`: one task per file, named after its pull request.
 - `footer.md`: the last paragraph of every prompt, the same for all tasks.
+- `reserve/pr-NNNN.yaml`: vetted tasks kept out of the suite, most because
+  more than six tasks would grade `internal/agent` (rule 9 of the design).
+  A reserve replaces a task that stops passing vetting: move its file into
+  `tasks/`, which changes the suite version.
 - `matrix.yaml`, `experiments/` and `baselines/`: added by later pull requests.
 
 Hidden tests are referenced by the blob sha of their contents, not copied, so

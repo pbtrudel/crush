@@ -31,7 +31,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
-  - reserve
+  - 'reserve: too wide (5 packages), and rule 9 (internal/agent)'
   - 'too wide: 10 tests across 5 packages and at least four problems in one prompt (the repetition guard, reasoning truncation, the TPS labels, subagent_output coverage and the harness options)'
   - 'hidden choice: the rendered `TPS:` and `TPS_AVG` labels, the kept length of a truncated reasoning, and the harness option names'
   - the touched tests are 10, not the 11 of the design table

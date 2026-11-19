@@ -34,6 +34,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
+  - 'reserve: rule 9 (internal/agent), correlated with pr-0061 and pr-0080'
   - "hidden choice: an empty answer is an error whose text contains `finish_reason=<reason>` and says there was no answer."
   - "correlated: pr-0061, pr-0075, pr-0080 (the same function changed at three points in time; the three tasks are not independent)."
   - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."

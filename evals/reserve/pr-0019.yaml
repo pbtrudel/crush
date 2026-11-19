@@ -24,6 +24,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
+  - 'reserve: rule 9 (internal/agent), and the interface gives the design away'
   - "interface is close to the change: naming the classifier and the retry predicate points at the design (design table note)."
   - "hidden choice: detection goes through fantasy's ProviderError fields only, with no provider-message matching, and recovery is allowed once."
   - "excluded TestCoderAgent: its recorded VCR cassettes no longer match the prompt text, so the internal/agent package fails at this merge for a reason unrelated to the task; it is skipped by name in the package run."
