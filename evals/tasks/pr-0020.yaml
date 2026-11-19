@@ -1,0 +1,35 @@
+schema: 1
+id: pr-0020
+source:
+  repo: pbtrudel/crush
+  pr: 20
+  merge: c2d3b481b79886fa5433c66cf78bb17f747a1350
+  base: 51fe11f9214795820bb63ca494ce1e847e30edfd
+kind: interface
+why: |
+  UI-initiated workspace operations ran on `context.TODO()` or `context.Background()` with no deadline: session list/delete/save, model switches, MCP toggles, session open, prompt-history and skills loads. Against a stalled backend (especially the client/server mode where these cross a network) the UI simply waited forever — the sessions dialog never rendered, an MCP toggle silently did nothing.
+prompt: |
+  UI-initiated workspace operations ran on `context.TODO()` or `context.Background()` with no deadline: session list/delete/save, model switches, MCP toggles, session open, prompt-history and skills loads. Against a stalled backend (especially the client/server mode where these cross a network) the UI simply waited forever — the sessions dialog never rendered, an MCP toggle silently did nothing.
+interface: |
+  Interface: `internal/ui/common` declares `const WorkspaceOpTimeout = 30 * time.Second`, a `time.Duration`, and `func WorkspaceOpContext() (context.Context, context.CancelFunc)`, which returns a live context whose deadline is that timeout and a cancel function that cancels it.
+grade:
+  packages: [./internal/ui/common]
+  tests: [TestWorkspaceOpContext]
+  exclude: []
+  hidden:
+    - {path: internal/ui/common/context_test.go, blob: 7fa7db57fe92df0c16915cbc8a4c976c51d959bc}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "weak grade: the grade covers the new helper only, not the call sites the problem is about, so a model can pass by writing the helper alone (design table note)."
+  - "the hidden test compares against WorkspaceOpTimeout rather than asserting 30 s, so the timeout's value is stated in the interface paragraph."
+  - "the em dash in the prompt is the pull request's own Why text, kept verbatim."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 15, packages: 3}
