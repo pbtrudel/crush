@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -341,4 +343,57 @@ func TestReopenRestoresPrunedEntry(t *testing.T) {
 	entry.stop("test done")
 	close(release)
 	require.True(t, entry.awaitSettled(5*time.Second))
+}
+
+// A coordinator replaced while subagents run (a config reload does that)
+// leaves them unreachable: the old registry is gone and nothing else holds
+// their stop functions, so they would keep working and writing transcripts
+// forever. Ending the coordinator's context must stop them with it.
+func TestCoordinatorContextCancelStopsDispatchedSubagents(t *testing.T) {
+	env := testEnv(t)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
+	require.NoError(t, err)
+
+	const providerID = "test-openai-compat"
+	cfg.Config().Providers.Set(providerID, config.ProviderConfig{
+		ID:      providerID,
+		Name:    "Test",
+		Type:    catwalk.TypeCompletions,
+		BaseURL: "http://127.0.0.1:0/v1",
+		APIKey:  "test",
+		Models: []catwalk.Model{
+			{ID: "model-a", DefaultMaxTokens: 4096},
+		},
+	})
+	cfg.OverridePreferredModel(config.SelectedModelTypeMain,
+		config.SelectedModel{Provider: providerID, Model: "model-a"})
+	cfg.OverridePreferredModel(config.SelectedModelTypeSmall,
+		config.SelectedModel{Provider: providerID, Model: "model-a"})
+	cfg.SetupAgents()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	coord, err := NewCoordinator(ctx, CoordinatorOptions{
+		Config:      cfg,
+		Sessions:    env.sessions,
+		Messages:    env.messages,
+		Permissions: env.permissions,
+	})
+	require.NoError(t, err)
+	c, ok := coord.(*coordinator)
+	require.True(t, ok, "NewCoordinator must return the concrete coordinator")
+
+	parent, err := env.sessions.Create(t.Context(), "parent")
+	require.NoError(t, err)
+
+	entry := startBlockingDispatch(t, c, parent.ID, "a")
+	require.True(t, entry.running(), "the subagent is running")
+	require.True(t, c.IsSessionBusy(entry.SessionID), "a running subagent's session is busy")
+
+	cancel()
+
+	require.Eventually(t, func() bool { return !entry.running() }, 5*time.Second, 10*time.Millisecond,
+		"ending the coordinator's context must stop its dispatched subagents")
+	require.False(t, c.subSessionBusy(entry.SessionID), "a stopped subagent's session is no longer live")
 }

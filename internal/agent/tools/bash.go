@@ -436,7 +436,10 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-ctx.Done():
 		// Incoming context was cancelled before we moved to background
 		// Kill the shell and return error
-		bgManager.Kill(bgShell.ID)
+		if err := bgManager.Kill(bgShell.ID); err != nil {
+			slog.Warn("Failed to kill interrupted shell",
+				"shell_id", bgShell.ID, "error", err)
+		}
 		// The result is still stored, from this metadata and the error,
 		// so the stamp says the command was aborted.
 		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{
