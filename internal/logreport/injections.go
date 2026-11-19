@@ -20,6 +20,7 @@ var injectionTags = []string{
 	"system_reminder",
 	"background_job_notice",
 	"env_snapshot",
+	"compaction_state",
 	"background_subagent_notice",
 }
 

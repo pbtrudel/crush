@@ -1404,6 +1404,13 @@ func allToolNames() []string {
 	}
 }
 
+// AllToolNames returns the built-in tool names every agent preset starts
+// from, as a copy the caller may keep. It is exported so tests can check a
+// prompt or a palette against the full set instead of a sample.
+func AllToolNames() []string {
+	return slices.Clone(allToolNames())
+}
+
 func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 	if disabledTools == nil {
 		return allTools
@@ -1457,6 +1464,13 @@ var subAgentExcludedTools = []string{
 	"team_task_list",
 	"team_task_get",
 	"team_task_update",
+}
+
+// SubAgentExcludedTools returns the tools a subagent never gets. Both
+// subagent variants filter their copied tool list through it, so they
+// follow one rule.
+func SubAgentExcludedTools() []string {
+	return slices.Clone(subAgentExcludedTools)
 }
 
 // subAgentWriteTools are the tools that change files. Only the read-write

@@ -147,6 +147,28 @@ func applyEditsToContent(currentContent string, edits []MultiEditOperation, star
 	return currentContent, failedEdits, whitespaceCorrected
 }
 
+// failedEditsText renders the edits of a batch that could not be applied, so
+// the model reads which one failed and why. A failure that carries a hint
+// keeps it on lines indented under its bullet.
+func failedEditsText(failed []FailedEdit) string {
+	if len(failed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Failed edits:")
+	for _, edit := range failed {
+		lines := strings.Split(edit.Error, "\n")
+		fmt.Fprintf(&b, "\n- edit %d: %s", edit.Index, lines[0])
+		for _, line := range lines[1:] {
+			b.WriteString("\n")
+			if line != "" {
+				b.WriteString("  " + line)
+			}
+		}
+	}
+	return b.String()
+}
+
 func processMultiEditWithCreation(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	// First edit creates the file
 	firstEdit := params.Edits[0]
@@ -230,6 +252,9 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		message = fmt.Sprintf("File created with %d edits: %s", len(params.Edits), params.FilePath)
 	}
 	message = withWhitespaceNote(message, whitespaceCorrected)
+	if text := failedEditsText(failedEdits); text != "" {
+		message += "\n\n" + text
+	}
 
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(message),
@@ -259,8 +284,12 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 	if oldContent == currentContent {
 		// If we have failed edits, report them
 		if len(failedEdits) > 0 {
+			message := fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))
+			if text := failedEditsText(failedEdits); text != "" {
+				message += "\n\n" + text
+			}
 			resp := fantasy.WithResponseMetadata(
-				fantasy.NewTextErrorResponse(fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))),
+				fantasy.NewTextErrorResponse(message),
 				MultiEditResponseMetadata{
 					EditsApplied: 0,
 					EditsFailed:  failedEdits,
@@ -330,6 +359,9 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		message = fmt.Sprintf("Applied %d edits to file: %s", len(params.Edits), params.FilePath)
 	}
 	message = withWhitespaceNote(message, whitespaceCorrected)
+	if text := failedEditsText(failedEdits); text != "" {
+		message += "\n\n" + text
+	}
 
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(message),

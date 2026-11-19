@@ -75,15 +75,16 @@ func NewWriteTool(
 				modTime := fileInfo.ModTime().Truncate(time.Second)
 				lastRead := filetracker.LastReadTime(ctx, sessionID, filePath)
 				if modTime.After(lastRead) {
-					// A file that was never read gets the same message, which
-					// is wrong for it; the wording stays, and the kind tells
-					// the two cases apart in the session log.
-					kind := ErrorKindChangedSinceRead
+					// A file never read in this session was not modified
+					// since a read, and comparing against the zero time
+					// would blame a change that did not happen. The kinds
+					// stay apart either way, so the session log and the
+					// stats report still classify the two cases.
 					if lastRead.IsZero() {
-						kind = ErrorKindNotRead
+						return withErrorKind(fantasy.NewTextErrorResponse(fmt.Sprintf("File %s exists but has not been read in this session. Read it with view before overwriting it.", filePath)), ErrorKindNotRead), nil
 					}
 					return withErrorKind(fantasy.NewTextErrorResponse(fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
-						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), kind), nil
+						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), ErrorKindChangedSinceRead), nil
 				}
 
 				oldContent, readErr := os.ReadFile(filePath)

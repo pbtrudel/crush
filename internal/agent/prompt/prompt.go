@@ -163,9 +163,69 @@ func processFile(filePath string) *ContextFile {
 	}
 }
 
+// processContextPath loads the context files a context path names. A
+// relative path is resolved in every directory from the project root down to
+// the working directory, broadest first: a session started in a subdirectory
+// still reads the instructions kept at the repository root. An absolute path
+// names one file or directory and is read there only.
 func processContextPath(p string, store *config.ConfigStore) []ContextFile {
 	var contexts []ContextFile
-	fullPath := filepathext.SmartJoin(store.WorkingDir(), p)
+	seen := make(map[string]bool)
+	for _, dir := range contextSearchDirs(store.WorkingDir(), filepathext.SmartIsAbs(p)) {
+		for _, found := range processContextPathAt(filepathext.SmartJoin(dir, p)) {
+			// Two files whose names differ only in case are two files
+			// on a case-sensitive filesystem, so the key keeps the case.
+			key := filepath.Clean(found.Path)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			contexts = append(contexts, found)
+		}
+	}
+	return contexts
+}
+
+// contextSearchDirs returns the directories a relative context path is
+// resolved against, broadest first: the project root, then each directory
+// leading down to the working directory. Outside a repository the project
+// root is the working directory, so nothing above it is read. An absolute
+// path is resolved against the working directory alone.
+func contextSearchDirs(workingDir string, absolute bool) []string {
+	if absolute {
+		return []string{workingDir}
+	}
+	root, inRepo := config.ProjectRoot(workingDir)
+	if !inRepo {
+		return []string{workingDir}
+	}
+	abs, err := filepath.Abs(workingDir)
+	if err != nil {
+		return []string{workingDir}
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || !filepath.IsLocal(rel) {
+		// The root and the working directory do not describe the same
+		// tree, which a case-insensitive filesystem can do. Stay inside
+		// the working directory rather than reading above it.
+		return []string{workingDir}
+	}
+	if rel == "." {
+		return []string{workingDir}
+	}
+	dirs := []string{root}
+	current := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		dirs = append(dirs, current)
+	}
+	return dirs
+}
+
+// processContextPathAt loads one context file, or every file under one
+// directory, at an already resolved path.
+func processContextPathAt(fullPath string) []ContextFile {
+	var contexts []ContextFile
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return contexts
@@ -417,13 +477,15 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		availSkillXML = skills.ToPromptXML(allSkills)
 	}
 
-	isGit := isGitRepo(store.WorkingDir())
+	// A session started in a subdirectory of a repository is still in that
+	// repository; the project root decides, as it does for config loading.
+	inRepo := isGitRepo(store.WorkingDir())
 	data := PromptDat{
 		Provider:      provider,
 		Model:         model,
 		Config:        *cfg,
 		WorkingDir:    filepath.ToSlash(workingDir),
-		IsGitRepo:     isGit,
+		IsGitRepo:     inRepo,
 		Platform:      platform,
 		Date:          p.now().Format("1/2/2006"),
 		AvailSkillXML: availSkillXML,
@@ -457,7 +519,15 @@ func hasTeamTools(toolNames []string) bool {
 	return false
 }
 
+// isGitRepo reports whether dir is inside a working tree. The repository
+// root decides, so a session started in a subdirectory still counts. A
+// directory that holds a .git entry also counts when git cannot read it: a
+// broken or dubious repository is still one, and the git commands report
+// their own failure. Only the root search needs a root git found.
 func isGitRepo(dir string) bool {
+	if _, inRepo := config.ProjectRoot(dir); inRepo {
+		return true
+	}
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
 }

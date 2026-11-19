@@ -1190,6 +1190,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		IsYolo:               c.permissions.PermissionMode().SkipsPrompts(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,
+		History:              c.history,
 		Cfg:                  c.cfg,
 		Tools:                nil,
 		Notify:               c.notify,

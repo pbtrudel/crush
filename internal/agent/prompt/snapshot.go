@@ -26,6 +26,10 @@ func SessionEnvSnapshot(ctx context.Context, workingDir string, now time.Time) s
 	var sb strings.Builder
 	sb.WriteString(EnvSnapshotPrefix + "\n")
 	sb.WriteString("Today's date: " + now.Format("1/2/2006") + "\n")
+	// The project root decides, so a session started in a subdirectory of a
+	// repository still gets its git status. A .git entry counts even when
+	// git cannot read it, so the block still renders and the git commands
+	// report their own failure.
 	if isGitRepo(workingDir) {
 		status, err := getGitStatus(ctx, workingDir)
 		if err != nil {

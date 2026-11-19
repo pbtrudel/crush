@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -13,6 +15,62 @@ import (
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/stretchr/testify/require"
 )
+
+// The grep tool searches file contents, so its description has to say so:
+// it used to promise matching file paths.
+func TestGrepDescriptionDescribesMatchingLines(t *testing.T) {
+	t.Parallel()
+
+	description := grepDescription()
+	require.Contains(t, description, "matching lines with line numbers")
+	require.NotContains(t, description, "file paths")
+}
+
+func TestGrepToolAnswersNoMatchesFound(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644))
+
+	tool := NewGrepTool(dir, config.ToolGrep{})
+	input, err := json.Marshal(GrepParams{Pattern: "absent-pattern"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  GrepToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Equal(t, "No matches found", resp.Content)
+}
+
+// The header used to count the matches left after the cap, so 150 matches
+// read as 100. It has to give the real count and say how many are shown.
+func TestGrepToolReportsTotalMatchesBeforeCap(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var content strings.Builder
+	for i := range 150 {
+		fmt.Fprintf(&content, "match line %d\n", i)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644))
+
+	tool := NewGrepTool(dir, config.ToolGrep{})
+	input, err := json.Marshal(GrepParams{Pattern: "match line"})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  GrepToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "Found 150 matches, showing the first 100")
+}
 
 func TestRegexCache(t *testing.T) {
 	cache := newRegexCache()
