@@ -1577,6 +1577,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if anthropicData, ok := reasoning.ProviderMetadata[anthropic.Name]; ok {
 				if reasoning, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok {
 					currentAssistant.AppendReasoningSignature(reasoning.Signature)
+					currentAssistant.SetReasoningRedactedData(reasoning.RedactedData)
 				}
 			}
 			if googleData, ok := reasoning.ProviderMetadata[google.Name]; ok {
