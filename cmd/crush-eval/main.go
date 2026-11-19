@@ -1,5 +1,6 @@
-// Command crush-eval is the eval task suite runner. This build has three
-// subcommands: validate, prepare and grade.
+// Command crush-eval is the eval task suite runner. It prepares, vets,
+// grades, runs and compares the tasks of the eval suite without importing
+// Crush's agent or config packages.
 package main
 
 import (
@@ -23,6 +24,11 @@ const usage = `usage:
   crush-eval prepare <task-id> <dest>
   crush-eval grade <task-id> <run-dir>
   crush-eval grade --reference <task-id>
+  crush-eval candidates [--repo pbtrudel/crush] [--pr N ...] [--out file]
+  crush-eval vet <task-id> [--reps 5] [--write]
+  crush-eval vet --all
+  crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD]
+  crush-eval batch <experiment.yaml> [--id ID] [--seed N]
   crush-eval compare <batch-id> [--json]
   crush-eval plan <experiment.yaml>
   crush-eval login <route>`
@@ -44,18 +50,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return prepareCmd(args[1:], stdout, stderr)
 	case "grade":
 		return gradeCmd(args[1:], stdout, stderr)
-	case "login":
-		return loginCmd(args[1:], stdout, stderr)
-	case "compare":
-		return compareCmd(args[1:], stdout, stderr)
-	case "plan":
-		return planCmd(args[1:], stdout, stderr)
 	case "candidates":
 		return candidatesCmd(args[1:], stdout, stderr)
 	case "vet":
 		return vetCmd(args[1:], stdout, stderr)
 	case "run":
 		return runCmd(args[1:], stdout, stderr)
+	case "batch":
+		return batchCmd(args[1:], stdout, stderr)
+	case "compare":
+		return compareCmd(args[1:], stdout, stderr)
+	case "plan":
+		return planCmd(args[1:], stdout, stderr)
+	case "login":
+		return loginCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -178,10 +186,6 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		defer os.RemoveAll(dir)
-		if _, err := checkout.Prepare(context.Background(), ".", tk.Source.Merge, dir); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
 	} else {
 		dir = flags.Arg(1)
 	}
@@ -195,7 +199,13 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer os.RemoveAll(home)
 
-	result, err := grade.Grade(context.Background(), tk, ".", filepath.Join(dir, "src"), goEnv(home))
+	ctx := context.Background()
+	var graded grade.Result
+	if *reference {
+		graded, err = grade.Reference(ctx, tk, ".", dir, goEnv(home))
+	} else {
+		graded, err = grade.Grade(ctx, tk, ".", filepath.Join(dir, "src"), goEnv(home))
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -204,11 +214,11 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 		Task  string       `json:"task"`
 		Pass  bool         `json:"pass"`
 		Grade grade.Result `json:"grade"`
-	}{Task: tk.ID, Pass: result.Pass(), Grade: result}
+	}{Task: tk.ID, Pass: graded.Pass(), Grade: graded}
 	if code := print(stdout, stderr, line); code != 0 {
 		return code
 	}
-	if !result.Pass() {
+	if !graded.Pass() {
 		return 1
 	}
 	return 0
