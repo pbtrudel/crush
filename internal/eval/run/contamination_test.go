@@ -35,11 +35,21 @@ func TestContaminatedCallsCommandMarkers(t *testing.T) {
 	}{
 		{name: "inside a word", input: `grep -n "through prefix" pkg.go`, want: 0},
 		{name: "a longer command", input: "gh print", want: 0},
+		{name: "a hyphenated command", input: "gh-pr", want: 0},
 		{name: "after a separator", input: "cd x && gh pr list", want: 1},
 		{name: "in backticks", input: "`gh api repos`", want: 1},
 		{name: "git's object reader", input: "git cat-file -p HEAD", want: 1},
 		{name: "at the start", input: "gh pr view 51", want: 1},
 		{name: "in a JSON command", input: `{"command":"gh pr view 51"}`, want: 1},
+		{name: "ends at the closing quote", input: `{"command":"gh pr"}`, want: 1},
+		{name: "after an escaped newline", input: `{"command":"cd x\ngh pr view 93"}`, want: 1},
+		{name: "before a newline", input: "gh pr\nview", want: 1},
+		{name: "before a separator", input: "gh pr;ls", want: 1},
+		{name: "after a path", input: "/usr/bin/gh pr view", want: 1},
+		{name: "with a double space", input: "gh  pr view", want: 1},
+		{name: "under sudo", input: "sudo gh pr view", want: 1},
+		{name: "in a substitution", input: "$(gh pr view)", want: 1},
+		{name: "in a nested field", input: `{"args":{"command":"gh pr view 51"}}`, want: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -65,6 +75,7 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 		"git show 334c5d791d23",
 		"open xpbtrudel/crush/pully",
 		"ls /suite/evals/tasks",
+		`{"command":"git show 334c5d791d23"}`,
 	} {
 		require.Equal(t, 1, contaminatedCalls(call(t, input), markers), input)
 	}

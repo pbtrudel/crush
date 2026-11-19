@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -19,10 +20,23 @@ import (
 // marker is one string design 3.7 scans tool-call input for.
 type marker struct {
 	text string
-	// command is set on the markers that name a command. They match only
-	// where a command starts, so "gh pr" no longer matches inside
-	// "through prefix".
-	command bool
+	// command is the pattern of a marker that names a command. It matches
+	// only a whole command, so "gh pr" no longer matches inside "through
+	// prefix". A nil command makes the marker a substring.
+	command *regexp.Regexp
+}
+
+// commandPattern compiles the pattern of a command marker: the words of the
+// marker joined by any run of whitespace, at the start of the text or after
+// a separator, and followed by the end of the text or a separator. "/" is a
+// separator, so "/usr/bin/gh pr" matches, while "-" and "_" join the words
+// of a name, so "gh-pr" and "gh_pr" do not match.
+func commandPattern(text string) *regexp.Regexp {
+	words := strings.Fields(text)
+	for i, word := range words {
+		words[i] = regexp.QuoteMeta(word)
+	}
+	return regexp.MustCompile(`(^|[^a-z0-9_.-])` + strings.Join(words, `\s+`) + `($|[^a-z0-9_-])`)
 }
 
 // contaminationMarkers are the strings design 3.7 scans tool calls for: the
@@ -32,9 +46,9 @@ func contaminationMarkers(tk *task.Task, suiteDir, repoDir string) []marker {
 	markers := []marker{
 		{text: "pbtrudel/crush/pull"},
 		{text: "github.com/pbtrudel/crush"},
-		{text: "gh pr", command: true},
-		{text: "gh api", command: true},
-		{text: "git cat-file", command: true},
+		{text: "gh pr", command: commandPattern("gh pr")},
+		{text: "gh api", command: commandPattern("gh api")},
+		{text: "git cat-file", command: commandPattern("git cat-file")},
 	}
 	if tk.Source.Merge != "" {
 		markers = append(markers, marker{text: tk.Source.Merge})
@@ -107,63 +121,65 @@ func contaminatedCalls(parts string, markers []marker) int {
 		if part.Type != "tool_call" || part.Data.Input == "" {
 			continue
 		}
-		input := strings.ToLower(part.Data.Input)
-		for _, m := range markers {
-			if m.text == "" {
-				continue
-			}
-			if m.matches(input) {
-				count++
-				break
-			}
+		if namesMarker(part.Data.Input, markers) {
+			count++
 		}
 	}
 	return count
 }
 
-// matches reports whether input names the marker. A command marker must
-// start a command: at the start of the input or after a separator, and
-// followed by whitespace or the end. Every other marker matches anywhere.
-func (m marker) matches(input string) bool {
-	if !m.command {
-		return strings.Contains(input, m.text)
-	}
-	for start := 0; ; {
-		i := strings.Index(input[start:], m.text)
-		if i < 0 {
-			return false
+// namesMarker reports whether one tool call's input names a marker.
+func namesMarker(input string, markers []marker) bool {
+	texts := inputTexts(input)
+	for _, m := range markers {
+		if m.text == "" {
+			continue
 		}
-		at := start + i
-		if commandStart(input, at) && commandEnd(input, at+len(m.text)) {
-			return true
+		for _, text := range texts {
+			if m.matches(text) {
+				return true
+			}
 		}
-		start = at + 1
-	}
-}
-
-// commandStart reports whether a command may start at index at: the start of
-// the input, or after whitespace, a separator or a quote. "(" also covers
-// "$(", and the quotes cover the JSON object a tool call's input holds.
-func commandStart(input string, at int) bool {
-	if at == 0 {
-		return true
-	}
-	switch input[at-1] {
-	case ' ', '\t', '\n', '\r', ';', '&', '|', '(', '`', '"', '\'':
-		return true
 	}
 	return false
 }
 
-// commandEnd reports whether a command name ends at index end: the end of the
-// input, or before whitespace.
-func commandEnd(input string, end int) bool {
-	if end == len(input) {
-		return true
+// inputTexts is the text a marker is matched against. A tool call's input is
+// the JSON object of its arguments, so its string values are decoded and
+// matched one by one: an escaped newline or the closing quote of the object
+// then reads as the separator it stands for. An input that is not a JSON
+// object is matched as it is.
+func inputTexts(input string) []string {
+	var object map[string]any
+	if json.Unmarshal([]byte(input), &object) != nil {
+		return []string{strings.ToLower(input)}
 	}
-	switch input[end] {
-	case ' ', '\t', '\n', '\r':
-		return true
+	var texts []string
+	collectStrings(object, &texts)
+	return texts
+}
+
+// collectStrings appends every string value of value to texts.
+func collectStrings(value any, texts *[]string) {
+	switch v := value.(type) {
+	case string:
+		*texts = append(*texts, strings.ToLower(v))
+	case map[string]any:
+		for _, child := range v {
+			collectStrings(child, texts)
+		}
+	case []any:
+		for _, child := range v {
+			collectStrings(child, texts)
+		}
 	}
-	return false
+}
+
+// matches reports whether text names the marker. A command marker must name a
+// whole command; every other marker matches anywhere.
+func (m marker) matches(text string) bool {
+	if m.command == nil {
+		return strings.Contains(text, m.text)
+	}
+	return m.command.MatchString(text)
 }
