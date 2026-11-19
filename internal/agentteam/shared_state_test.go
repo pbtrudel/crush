@@ -607,6 +607,23 @@ func TestDrainInboxWithoutMailDoesNotWaitForTheLock(t *testing.T) {
 	require.Less(t, elapsed, service.lockTimeout/2, "an empty drain waited for the state lock")
 }
 
+// The first team tool response can come before anything is saved, so the
+// state file, its directory and its lock file do not exist yet. A drain with
+// no mail is still quiet then, and must not create anything.
+func TestDrainInboxBeforeFirstSaveCreatesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	path := filepath.Join(dir, "team.json")
+	service := openSharedTeam(t, path, nil)
+
+	pending := service.DrainInbox("lead", "session-a")
+
+	require.Empty(t, pending)
+	_, err := os.Stat(dir)
+	require.ErrorIs(t, err, os.ErrNotExist, "an empty drain created the data directory")
+	_, err = os.Stat(lockPath(path))
+	require.ErrorIs(t, err, os.ErrNotExist, "an empty drain created the lock file")
+}
+
 // A drain may still have mail to take when another process wrote it, and the
 // file changing is what says so.
 func TestDrainInboxSeesMailAnotherServiceWrote(t *testing.T) {

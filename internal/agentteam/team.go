@@ -1377,10 +1377,13 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 func (s *Service) DrainInbox(name, sessionID string) []Message {
 	// The team tools drain on every response, read-only ones included. With
 	// an unchanged file and no mail waiting there is nothing to take and no
-	// reason to wait for another process's lock.
+	// reason to wait for another process's lock. A missing state file is
+	// quiet too: nothing has been saved yet, so there is no mail on disk and
+	// no reason to create the directory and the lock file.
 	s.mu.Lock()
 	stamp, statErr := statState(s.path)
-	quiet := statErr == nil && stamp.equal(s.stamp) && !s.hasPendingLocked(name, sessionID)
+	unchanged := (statErr == nil && stamp.equal(s.stamp)) || errors.Is(statErr, fs.ErrNotExist)
+	quiet := unchanged && !s.hasPendingLocked(name, sessionID)
 	s.mu.Unlock()
 	if quiet {
 		return nil
