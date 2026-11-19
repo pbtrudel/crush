@@ -3,22 +3,46 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 )
 
+// fakeFusionLanguageModel records the calls it receives. A turn and a
+// background title generation can stream through the same instance at
+// the same time, so mu guards parts and calls.
 type fakeFusionLanguageModel struct {
-	id    string
+	id string
+
+	mu    sync.Mutex
 	parts []fantasy.StreamPart
 	calls []fantasy.Call
 }
 
 func (f *fakeFusionLanguageModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, call)
-	return replayStreamParts(f.parts), nil
+	parts := f.parts
+	f.mu.Unlock()
+	return replayStreamParts(parts), nil
+}
+
+// recordedCalls returns a copy of the recorded calls.
+func (f *fakeFusionLanguageModel) recordedCalls() []fantasy.Call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
+// setParts replaces the parts the fake replays.
+func (f *fakeFusionLanguageModel) setParts(parts []fantasy.StreamPart) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parts = parts
 }
 
 func (f *fakeFusionLanguageModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
@@ -36,14 +60,27 @@ func (f *fakeFusionLanguageModel) StreamObject(context.Context, fantasy.ObjectCa
 func (f *fakeFusionLanguageModel) Provider() string { return "fake" }
 func (f *fakeFusionLanguageModel) Model() string    { return f.id }
 
+// fakeFusionRouter records the prompts it routed. A shared router can be
+// asked to route the turn and a background title at the same time.
 type fakeFusionRouter struct {
-	plan    *fusionPlan
+	plan *fusionPlan
+
+	mu      sync.Mutex
 	prompts []string
 }
 
 func (f *fakeFusionRouter) route(_ context.Context, _ string, prompt string) (*fusionPlan, error) {
+	f.mu.Lock()
 	f.prompts = append(f.prompts, prompt)
+	f.mu.Unlock()
 	return f.plan, nil
+}
+
+// recordedPrompts returns a copy of the routed prompts.
+func (f *fakeFusionRouter) recordedPrompts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.prompts)
 }
 
 func fusionTextParts(text string) []fantasy.StreamPart {
@@ -95,7 +132,7 @@ func TestFusionModel_Solo(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "solo answer", collectFusionText(t, stream))
-	require.Equal(t, []string{"the original task"}, router.prompts)
+	require.Equal(t, []string{"the original task"}, router.recordedPrompts())
 }
 
 func TestFusionModel_CascadeAcceptsDraft(t *testing.T) {
@@ -120,8 +157,8 @@ func TestFusionModel_CascadeAcceptsDraft(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "draft answer", collectFusionText(t, stream))
-	require.Len(t, judge.calls, 1)
-	require.Empty(t, repair.calls)
+	require.Len(t, judge.recordedCalls(), 1)
+	require.Empty(t, repair.recordedCalls())
 }
 
 func TestFusionModel_CascadeRepairsRejectedDraft(t *testing.T) {
@@ -146,9 +183,9 @@ func TestFusionModel_CascadeRepairsRejectedDraft(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "repair answer", collectFusionText(t, stream))
-	require.Len(t, repair.calls, 1)
+	require.Len(t, repair.recordedCalls(), 1)
 
-	handoff := fusionPromptFromCall(repair.calls[0])
+	handoff := fusionPromptFromCall(repair.recordedCalls()[0])
 	require.Contains(t, handoff, "repair handoff")
 	require.Contains(t, handoff, "draft answer")
 	require.Contains(t, handoff, "wrong fix")
@@ -176,7 +213,7 @@ func TestFusionModel_CritiqueApprovesDraft(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "draft answer", collectFusionText(t, stream))
-	require.Empty(t, revision.calls)
+	require.Empty(t, revision.recordedCalls())
 }
 
 func TestFusionModel_CritiqueRevises(t *testing.T) {
@@ -201,8 +238,8 @@ func TestFusionModel_CritiqueRevises(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "revision answer", collectFusionText(t, stream))
-	require.Len(t, revision.calls, 1)
-	require.Contains(t, fusionPromptFromCall(revision.calls[0]), "missing edge case")
+	require.Len(t, revision.recordedCalls(), 1)
+	require.Contains(t, fusionPromptFromCall(revision.recordedCalls()[0]), "missing edge case")
 }
 
 func TestFusionModel_ToolCallStepIsReplayed(t *testing.T) {
@@ -236,7 +273,7 @@ func TestFusionModel_ToolCallStepIsReplayed(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, toolParts)
-	require.Empty(t, judge.calls, "a tool-call step is not the draft's final answer")
+	require.Empty(t, judge.recordedCalls(), "a tool-call step is not the draft's final answer")
 }
 
 func TestParseJudgeVerdict(t *testing.T) {

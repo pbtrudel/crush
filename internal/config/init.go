@@ -19,8 +19,8 @@ type ProjectInitFlag struct {
 	Initialized bool `json:"initialized"`
 }
 
-func Init(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigStore, error) {
-	store, err := Load(ctx, workingDir, dataDir, debug)
+func Init(ctx context.Context, workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigStore, error) {
+	store, err := Load(ctx, workingDir, dataDir, debug, opts...)
 	if err != nil {
 		return nil, err
 	}

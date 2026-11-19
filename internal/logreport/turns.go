@@ -116,14 +116,11 @@ func (s *turnsSection) message(p *pass, m *message.Message) {
 }
 
 // continues reports whether a run that ended so is continued by a new
-// run: the context was compacted, which leaves a summary row, or a hook
-// blocked the compaction and the prompt was queued again. A guard or
-// overflow with no summary after it was not recovered, so nothing
-// continues it.
+// run: the context was compacted, which leaves a summary row. A guard or
+// overflow with no summary after it was not recovered, and a compaction a
+// hook blocked never ran, so neither is continued.
 func continues(end message.TurnEnd, summarized bool) bool {
 	switch end {
-	case message.TurnEndCompactionBlocked:
-		return true
 	case message.TurnEndContextGuard, message.TurnEndContextOverflow:
 		return summarized
 	}

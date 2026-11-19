@@ -37,7 +37,8 @@ func TestTurnsPromptsHiddenTurnsAndContinuations(t *testing.T) {
 	log.lastStep("lead", newBuild, message.TurnEndCompleted)
 
 	prompt("two")
-	// A blocked compaction still queues the prompt again.
+	// A blocked compaction ends the turn, so the rewritten row below is
+	// a prompt, not a continuation.
 	log.lastStep("lead", newBuild, message.TurnEndCompactionBlocked, call, call, call)
 	prompt("The previous session was interrupted because it got too long")
 	log.lastStep("lead", newBuild, message.TurnEndCompleted)
@@ -56,11 +57,11 @@ func TestTurnsPromptsHiddenTurnsAndContinuations(t *testing.T) {
 	log.lastStep("team-x", newBuild, message.TurnEndLoopGuard)
 
 	turns := log.report(Options{}).Turns
-	require.Equal(t, 5, turns.Prompts)
+	require.Equal(t, 6, turns.Prompts)
 	require.Equal(t, 1, turns.HiddenTurns)
-	require.Equal(t, 2, turns.Continuations)
+	require.Equal(t, 1, turns.Continuations)
 	require.Equal(t, 1, turns.ChildRows)
-	// Steps per prompt: 4, 2, 0, 1, 1. Tool calls: 4, 3, 0, 0, 0.
+	// Steps per prompt: 4, 1, 1, 0, 1, 1. Tool calls: 4, 3, 0, 0, 0, 0.
 	require.Equal(t, Spread{Median: 1, P90: 4, Max: 4}, turns.Steps)
 	require.Equal(t, Spread{Median: 0, P90: 4, Max: 4}, turns.ToolCalls)
 	require.Equal(t, map[string]int{
@@ -150,6 +151,30 @@ func TestTurnsContinuationFollowsTheCompaction(t *testing.T) {
 		require.Equal(t, map[string]int{
 			"context_guard": 1,
 			"completed":     1,
+		}, turns.RunEnds)
+	})
+
+	t.Run("a compaction a hook blocked", func(t *testing.T) {
+		t.Parallel()
+
+		log := newTestLog(t)
+		log.session("lead", "title")
+		prompt(log, "one")
+		log.lastStep("lead", newBuild, message.TurnEndCompactionBlocked, call, call)
+		// The turn ended uncompacted, so nothing follows it in the prompt:
+		// the next row is a prompt of its own.
+		prompt(log, "The previous session was interrupted because it got too long")
+		log.lastStep("lead", newBuild, message.TurnEndCompleted)
+
+		turns := log.report(Options{}).Turns
+		require.Equal(t, 2, turns.Prompts)
+		require.Zero(t, turns.Continuations)
+		// Steps per prompt: 1, 1. Tool calls: 2, 0.
+		require.Equal(t, Spread{Median: 1, P90: 1, Max: 1}, turns.Steps)
+		require.Equal(t, Spread{Median: 0, P90: 2, Max: 2}, turns.ToolCalls)
+		require.Equal(t, map[string]int{
+			"compaction_blocked": 1,
+			"completed":          1,
 		}, turns.RunEnds)
 	})
 }

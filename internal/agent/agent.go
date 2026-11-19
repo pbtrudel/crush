@@ -266,7 +266,12 @@ type SessionAgent interface {
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
-	ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error)
+	// ListSettledMessages reads a session's transcript, first settling any
+	// tool calls a dead process left without a reply. live reports whether
+	// a run this instance cannot see, such as a dispatched subagent on an
+	// agent of its own, is working on the session; nil means this instance
+	// answers for the session alone.
+	ListSettledMessages(ctx context.Context, sessionID string, live func(sessionID string) bool) ([]message.Message, error)
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)
@@ -330,7 +335,11 @@ type sessionAgent struct {
 	// cfg backs channel reply routing (config lookup + MCP tool
 	// invocation). Nil in tests and subagents that never see channel
 	// turns; sendChannelReply treats nil as "routing disabled".
-	cfg                  *config.ConfigStore
+	cfg *config.ConfigStore
+	// replyToolRun invokes the MCP tool that answers a channel turn. It is
+	// a field so a test can watch the reply without an MCP server; nil
+	// means mcp.RunTool.
+	replyToolRun         func(ctx context.Context, cfg *config.ConfigStore, name, tool, input string) (mcp.ToolResult, error)
 	disableAutoSummarize bool
 	isYolo               bool
 	// permissions answers whether the user is being asked about tool
@@ -2021,7 +2030,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// takes, and before a blocked one is cleared.
 		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
 		recordTurnEnd()
-		if errors.Is(summarizeErr, ErrCompactionBlocked) {
+		compactionBlocked := errors.Is(summarizeErr, ErrCompactionBlocked)
+		if compactionBlocked {
 			// Uncompacted, the next step would only hit the limit
 			// again, so the turn ends here.
 			slog.Info("PreCompact hook blocked compaction", "session_id", call.SessionID)
@@ -2054,9 +2064,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			recordTurnEnd()
 			limitStopped = true
 		}
-		// If the agent wasn't done, and no limit refuses the continuation,
-		// resume the prompt.
-		if !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
+		// If the agent wasn't done, no compaction was blocked and no limit
+		// refuses the continuation, resume the prompt.
+		resumable := shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0))
+		if !compactionBlocked && !limitStopped && resumable {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}
@@ -2066,6 +2077,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			call.Report = nil
 			a.messageQueue.Set(call.SessionID, append(existing, call))
 			continued = true
+		}
+		// A blocked compaction ends a run that would have resumed, so the
+		// work stopped with no reply to send: a channel peer gets the same
+		// failure notice a failed turn sends instead of waiting forever.
+		if compactionBlocked && resumable {
+			if channelErrorReplyWanted(call.Channel, ErrCompactionBlocked) {
+				a.sendChannelReply(ctx, call,
+					"Something went wrong while handling your message. Please try again.",
+					completedToolCalls.Copy())
+			}
 		}
 	} else {
 		recordTurnEnd()
@@ -2078,11 +2099,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// a further reminder would not help; the note keeps the user from
 	// discovering the stale list only when they open it.
 	if finished && !a.isSubAgent && todoStaleItem != "" {
-		if latest, getErr := a.sessions.Get(cleanupCtx, call.SessionID); getErr != nil {
+		// A compaction can outlast cleanupCtx, so the note gets its own
+		// short deadline, detached from the run like the other final
+		// writes.
+		noteCtx, cancelNote := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelNote()
+		if latest, getErr := a.sessions.Get(noteCtx, call.SessionID); getErr != nil {
 			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
 		} else if staleTodoAtTurnEnd(todoStaleItem, todoReminderUnanswered, latest.Todos) {
 			currentAssistant.AppendContent(staleTodoNote(todoStaleItem, todoReminderUnanswered+1))
-			if updateErr := a.messages.Update(cleanupCtx, *currentAssistant); updateErr != nil {
+			if updateErr := a.messages.Update(noteCtx, *currentAssistant); updateErr != nil {
 				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
 			}
 		}

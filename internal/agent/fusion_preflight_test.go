@@ -65,7 +65,7 @@ func TestFusionSwitchCompactsWithPreviousModel(t *testing.T) {
 	require.NoError(t, err)
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "hello"})
 	require.NoError(t, err)
-	require.NotEmpty(t, previous.calls)
+	require.NotEmpty(t, previous.recordedCalls())
 }
 
 func TestConsecutiveFusionTurnCompactsBeforeSmallerRoute(t *testing.T) {
@@ -97,9 +97,9 @@ func TestConsecutiveFusionTurnCompactsBeforeSmallerRoute(t *testing.T) {
 	agent.largeModel.Set(Model{Model: smallFusion, Fusion: &smallFusion.cfg, CatwalkCfg: catwalk.Model{ContextWindow: 200000}})
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "second"})
 	require.NoError(t, err)
-	require.Len(t, largePrimary.calls, 2, "previous routed model should summarize before the next primary runs")
-	require.Len(t, smallPrimary.calls, 1)
-	require.Len(t, router.prompts, 1)
+	require.Len(t, largePrimary.recordedCalls(), 2, "previous routed model should summarize before the next primary runs")
+	require.Len(t, smallPrimary.recordedCalls(), 1)
+	require.Len(t, router.recordedPrompts(), 1)
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID)
@@ -131,7 +131,7 @@ func TestFusionRouteCompactsAssembledPromptWithPreviousModel(t *testing.T) {
 			agent.fusionCompactionModels.Set(sess.ID, fusionCompactionModel{model: Model{Model: previous, ModelCfg: config.SelectedModel{Provider: "copilot", Model: "large"}, CatwalkCfg: catwalk.Model{ContextWindow: 300000}}, budget: 300000})
 			_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: bigText(35000)})
 			require.NoError(t, err)
-			require.Len(t, previous.calls, 1, "the previous model must summarize when the assembled request crosses the route budget")
+			require.Len(t, previous.recordedCalls(), 1, "the previous model must summarize when the assembled request crosses the route budget")
 			updated, err := env.sessions.Get(t.Context(), sess.ID)
 			require.NoError(t, err)
 			require.NotEmpty(t, updated.SummaryMessageID)
@@ -160,8 +160,8 @@ func TestFusionRouteSummaryUsesRetainedModelWhenCurrentIdentityMatches(t *testin
 	agent.fusionCompactionModels.Set(sess.ID, fusionCompactionModel{model: Model{Model: previous, ModelCfg: identity, CatwalkCfg: catwalk.Model{ContextWindow: 300000}}, budget: 300000})
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "continue"})
 	require.NoError(t, err)
-	require.Len(t, previous.calls, 1, "summary must use the retained concrete model")
-	require.Len(t, primary.calls, 1, "the new route must only receive the turn")
+	require.Len(t, previous.recordedCalls(), 1, "summary must use the retained concrete model")
+	require.Len(t, primary.recordedCalls(), 1, "the new route must only receive the turn")
 }
 
 func TestNonFusionModelSwitchCompactsWhenAutoSummarizeDisabled(t *testing.T) {
@@ -179,7 +179,7 @@ func TestNonFusionModelSwitchCompactsWhenAutoSummarizeDisabled(t *testing.T) {
 	require.NoError(t, err)
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "continue"})
 	require.NoError(t, err)
-	require.Len(t, previous.calls, 1)
+	require.Len(t, previous.recordedCalls(), 1)
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID)
@@ -204,7 +204,7 @@ func TestFusionPreflightRejectsOversizePromptAfterCompaction(t *testing.T) {
 	prompt := bigText(12000)
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: prompt})
 	require.ErrorContains(t, err, "budget")
-	require.Len(t, primary.calls, 1)
+	require.Len(t, primary.recordedCalls(), 1)
 	msgs, err := env.messages.List(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, prompt, msgs[len(msgs)-1].Content().Text)
@@ -296,7 +296,7 @@ type noteAddingSummaryModel struct {
 }
 
 func (m *noteAddingSummaryModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	if len(m.calls) == 0 {
+	if len(m.recordedCalls()) == 0 {
 		m.addNote()
 	}
 	return m.fakeFusionLanguageModel.Stream(ctx, call)
@@ -410,13 +410,13 @@ func TestFusionRouteRetentionIsSessionScoped(t *testing.T) {
 	require.NoError(t, err)
 	agent.largeModel.Set(Model{Model: smallFusion, Fusion: &smallFusion.cfg, CatwalkCfg: catwalk.Model{ContextWindow: 200000}})
 	require.True(t, agent.titles.wait(5*time.Second))
-	before := len(largePrimary.calls)
+	before := len(largePrimary.recordedCalls())
 	_, _ = agent.Run(t.Context(), SessionAgentCall{SessionID: other.ID, Prompt: "second"})
 	require.True(t, agent.titles.wait(5*time.Second))
-	for _, call := range largePrimary.calls[before:] {
+	for _, call := range largePrimary.recordedCalls()[before:] {
 		require.Contains(t, fmt.Sprint(call.Prompt[0]), "generate a short title", "another session's routed model must not summarize this session")
 	}
-	require.NotEmpty(t, smallPrimary.calls)
+	require.NotEmpty(t, smallPrimary.recordedCalls())
 }
 
 func TestFusionRouteCompactionFailurePreservesHistory(t *testing.T) {
@@ -447,11 +447,11 @@ func TestFusionRouteCompactionFailurePreservesHistory(t *testing.T) {
 	require.NoError(t, err)
 	before, err := env.messages.List(t.Context(), sess.ID)
 	require.NoError(t, err)
-	largePrimary.parts = []fantasy.StreamPart{{Type: fantasy.StreamPartTypeError, Error: errors.New("summary failed")}}
+	largePrimary.setParts([]fantasy.StreamPart{{Type: fantasy.StreamPartTypeError, Error: errors.New("summary failed")}})
 	agent.largeModel.Set(Model{Model: smallFusion, Fusion: &smallFusion.cfg, CatwalkCfg: catwalk.Model{ContextWindow: 200000}})
 	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "second"})
 	require.Error(t, err)
-	require.Empty(t, smallPrimary.calls)
+	require.Empty(t, smallPrimary.recordedCalls())
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, updated.SummaryMessageID)

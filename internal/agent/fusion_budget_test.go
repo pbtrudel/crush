@@ -32,7 +32,7 @@ func TestFusionPrepareBudgetsAndReuse(t *testing.T) {
 	stream, err := model.Stream(context.Background(), fantasy.Call{})
 	require.NoError(t, err)
 	require.Equal(t, "answer", collectFusionText(t, stream))
-	require.Len(t, router.prompts, 1)
+	require.Len(t, router.recordedPrompts(), 1)
 }
 
 func TestFusionReservesRequestedOutput(t *testing.T) {
@@ -123,8 +123,8 @@ func TestFusionRepairHandoffCanExceedBudget(t *testing.T) {
 	require.NoError(t, model.prepare(context.Background()))
 	_, err := model.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("small history")}})
 	require.ErrorIs(t, err, errFusionPhaseBudget)
-	require.Len(t, judge.calls, 1)
-	require.Empty(t, repair.calls)
+	require.Len(t, judge.recordedCalls(), 1)
+	require.Empty(t, repair.recordedCalls())
 }
 
 func TestFusionOverBudgetPhasesFail(t *testing.T) {
@@ -141,11 +141,11 @@ func TestFusionOverBudgetPhasesFail(t *testing.T) {
 			_, err := model.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage(strings.Repeat("history ", 100))}})
 			require.ErrorIs(t, err, errFusionPhaseBudget)
 			require.ErrorContains(t, err, phase)
-			require.Empty(t, repair.calls)
+			require.Empty(t, repair.recordedCalls())
 			if phase == "review" {
-				require.Empty(t, judge.calls)
+				require.Empty(t, judge.recordedCalls())
 			} else {
-				require.Len(t, judge.calls, 1)
+				require.Len(t, judge.recordedCalls(), 1)
 			}
 		})
 	}
@@ -174,8 +174,8 @@ func TestFusionPreflightCompactsWithPreparedPrimary(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, updated.SummaryMessageID)
 	require.Equal(t, "fusion_preflight", summaryTrigger(t, env, sess.ID))
-	require.Len(t, router.prompts, 1)
-	require.GreaterOrEqual(t, len(primary.calls), 2)
+	require.Len(t, router.recordedPrompts(), 1)
+	require.GreaterOrEqual(t, len(primary.recordedCalls()), 2)
 }
 
 type growingFusionReviewer struct {
@@ -183,13 +183,13 @@ type growingFusionReviewer struct {
 }
 
 func (m *growingFusionReviewer) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	if len(m.calls) == 0 {
-		m.parts = []fantasy.StreamPart{
+	if len(m.recordedCalls()) == 0 {
+		m.setParts([]fantasy.StreamPart{
 			{Type: fantasy.StreamPartTypeToolCall, ID: "read", ToolCallName: "view", ToolCallInput: `{"path":"` + strings.Repeat("x", 12000) + `"}`},
 			{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls},
-		}
+		})
 	} else {
-		m.parts = fusionTextParts(`{"score":4}`)
+		m.setParts(fusionTextParts(`{"score":4}`))
 	}
 	return m.fakeFusionLanguageModel.Stream(ctx, call)
 }
@@ -205,7 +205,7 @@ func TestFusionReviewRechecksToolSteps(t *testing.T) {
 	require.NoError(t, model.prepare(t.Context()))
 	_, _, err := model.review(t.Context(), model.plan, "draft")
 	require.ErrorIs(t, err, errFusionPhaseBudget)
-	require.Len(t, judge.calls, 1)
+	require.Len(t, judge.recordedCalls(), 1)
 }
 
 func TestFusionRepairRechecksEachStep(t *testing.T) {
@@ -220,7 +220,7 @@ func TestFusionRepairRechecksEachStep(t *testing.T) {
 	output := int64(1500)
 	_, err := model.Stream(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage(bigText(600))}, MaxOutputTokens: &output})
 	require.ErrorIs(t, err, errFusionPhaseBudget)
-	require.Empty(t, repair.calls)
+	require.Empty(t, repair.recordedCalls())
 }
 
 func TestFusionRepairCountsToolSchema(t *testing.T) {
@@ -235,7 +235,7 @@ func TestFusionRepairCountsToolSchema(t *testing.T) {
 	call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("small")}, Tools: []fantasy.Tool{fantasy.FunctionTool{Name: "tool", Description: strings.Repeat("x", 4000)}}}
 	_, err := model.Stream(context.Background(), call)
 	require.ErrorIs(t, err, errFusionPhaseBudget)
-	require.Empty(t, repair.calls)
+	require.Empty(t, repair.recordedCalls())
 }
 
 func TestFusionDisabledThresholdDoesNotStopMidTurn(t *testing.T) {

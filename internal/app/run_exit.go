@@ -17,6 +17,22 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("the run ended with %s", e.Reason)
 }
 
+// ExitCodeInterrupted is the code a run ends with when it was stopped by a
+// signal. exitCode returns it for a SIGINT, and a run interrupted from the
+// spinner ends the same way.
+const ExitCodeInterrupted = 130
+
+// InterruptedExit ends a run the user stopped from the spinner the way a
+// signal would. While the spinner runs, the terminal is in raw mode, so
+// Ctrl-C reaches the spinner as a key press and the process never receives
+// the SIGINT that makes exitCode return 130 on its own.
+func InterruptedExit(interrupted bool, err error) error {
+	if interrupted {
+		return &ExitError{Code: ExitCodeInterrupted}
+	}
+	return err
+}
+
 // runExitCode maps the reason of the command's run to the exit code of
 // `crush run --json` (measurement design, 3.5): 0 when the model said it
 // was done, 2 when the work can be graded but the model did not complete

@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,11 +110,40 @@ func TestTimeLimitStopsATeammate(t *testing.T) {
 	require.Equal(t, []message.TurnEnd{message.TurnEndTimeLimit}, turnEnds(t, env, teammateID))
 }
 
+// heldModel holds the stream of every agent step of a teammate model until
+// release is closed, then answers from its script. A step that starts
+// before release counts against the tree, but the teammate takes no
+// further step while the Lead sits between two steps.
+type heldModel struct {
+	*scriptedModel
+	release <-chan struct{}
+}
+
+func (m *heldModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if len(call.Tools) > 0 {
+		select {
+		case <-m.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return m.scriptedModel.Stream(ctx, call)
+}
+
 // The budget is the tree's: the teammate draws on what the Lead left of it
-// and stops once it is spent, after the Lead's turn completed.
+// and stops once it is spent, after the Lead's turn completed. The
+// teammate's model is held until the Lead's turn returns, so the teammate
+// cannot spend the rest of the budget while the Lead sits between steps.
 func TestStepLimitSpansATeammate(t *testing.T) {
-	busy := &scriptedModel{script: []scriptedCall{callTool(ListAgentsToolName, 1000)}}
+	release := make(chan struct{})
+	releaseTeammate := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseTeammate)
+	busy := &heldModel{
+		scriptedModel: &scriptedModel{script: []scriptedCall{callTool(ListAgentsToolName, 1000)}},
+		release:       release,
+	}
 	coord, leadID, teammateID := startLimitedTeam(t, RunLimits{MaxSteps: 4}, busy)
+	releaseTeammate()
 	env := fakeEnv{messages: coord.messages}
 
 	requireTreeIdle(t, waitForTree(t, coord, leadID))

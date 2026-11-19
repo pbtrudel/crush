@@ -35,6 +35,11 @@ func toolResultsForCalls(m message.Message, toolResultsByCall map[string][]fanta
 	for _, tc := range m.ToolCalls() {
 		parts := toolResultsByCall[tc.ID]
 		delete(toolResultsByCall, tc.ID)
+		if n := len(parts); n > 1 {
+			// One call gets one answer. A repair can leave a synthetic
+			// result behind a real one; the newest is the real one.
+			parts = parts[n-1:]
+		}
 		if len(parts) > 0 {
 			content = append(content, parts...)
 			continue
@@ -179,8 +184,9 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 // ListSettledMessages returns a session's transcript with calls a dead
 // process left dangling already settled. It holds the session's dispatch
 // lock throughout, so a run cannot start between the busy check and the
-// repair.
-func (a *sessionAgent) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
+// repair. A dispatched subagent runs on an agent instance of its own, so
+// live, when given, is what tells this instance the session is not dead.
+func (a *sessionAgent) ListSettledMessages(ctx context.Context, sessionID string, live func(sessionID string) bool) ([]message.Message, error) {
 	mu := a.sessionMu(sessionID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -189,7 +195,8 @@ func (a *sessionAgent) ListSettledMessages(ctx context.Context, sessionID string
 		return nil, err
 	}
 	msgs, err := a.messages.List(ctx, sessionID)
-	if err != nil || a.IsSessionBusy(sessionID) {
+	busy := a.IsSessionBusy(sessionID) || (live != nil && live(sessionID))
+	if err != nil || busy {
 		return msgs, err
 	}
 	settled, err := repairInterruptedToolCalls(ctx, a.messages, msgs)

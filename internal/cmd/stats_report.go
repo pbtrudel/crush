@@ -55,11 +55,10 @@ a loop iteration, a plan handoff.
 
 A prompt is a visible user row in a top-level session; in a child session
 such a row is its brief, or a message sent to it. A row that follows a
-compaction of a step stamped context_guard or context_overflow, or a step
-stamped compaction_blocked, continues that prompt; when a cancel dropped
-the queued prompt, the next prompt is counted as a continuation. Without
-the stamp a continuation counts as a prompt, and runs by turn end read
-"unstamped", counted per prompt.
+compaction of a step stamped context_guard or context_overflow continues
+that prompt; when a cancel dropped the queued prompt, the next prompt is
+counted as a continuation. Without the stamp a continuation counts as a
+prompt, and runs by turn end read "unstamped", counted per prompt.
 
 Child sessions' steps, teammates' included, count toward the prompt open
 in their top-level session when they were written. Steps before a
@@ -112,7 +111,7 @@ func runStatsReport(cmd *cobra.Command, _ []string) error {
 	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	if dataDir == "" {
-		cfg, err := config.Init(ctx, cwd, "", false)
+		cfg, err := config.Init(ctx, cwd, "", false, config.WithoutProviderUpdate())
 		if err != nil {
 			return fmt.Errorf("failed to initialize config: %w", err)
 		}

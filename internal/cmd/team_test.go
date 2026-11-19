@@ -39,3 +39,21 @@ func TestRenderTeamEmptyBoard(t *testing.T) {
 	output := renderTeam(agentteam.State{TeamID: "team-1"})
 	require.Contains(t, output, "No shared tasks yet.")
 }
+
+func TestTeamUnknownSubcommandIsRejected(t *testing.T) {
+	cmd, args, err := rootCmd.Find([]string{"team", "bogus"})
+	require.NoError(t, err)
+	require.Same(t, teamCmd, cmd)
+	require.Equal(t, []string{"bogus"}, args)
+
+	ran, err := executeStraySubcommand(t, "team", "bogus")
+	require.ErrorContains(t, err, `unknown command "bogus" for "crush team"`)
+	require.False(t, ran, "the roster must not run for an unknown subcommand")
+}
+
+func TestTeamFlagsOnlyInvocationRunsTheRoster(t *testing.T) {
+	t.Cleanup(func() { teamStatusJSON = false })
+	ran, err := executeStraySubcommand(t, "team", "--json")
+	require.NoError(t, err)
+	require.True(t, ran)
+}

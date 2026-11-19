@@ -2087,7 +2087,11 @@ func (c *coordinator) IsSessionBusy(sessionID string) bool {
 }
 
 func (c *coordinator) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	return c.currentAgent().ListSettledMessages(ctx, sessionID)
+	// The agent holding the transcript can differ from the one running it:
+	// a dispatched subagent works on an agent of its own, and only this
+	// coordinator sees that run. Pass its check so a read never settles the
+	// calls of a live subagent.
+	return c.currentAgent().ListSettledMessages(ctx, sessionID, c.IsSessionBusy)
 }
 
 func (c *coordinator) SetHostContext(hc proto.HostContext) { c.hostContext.Set(hc) }
@@ -2540,6 +2544,10 @@ func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgent
 	if err != nil {
 		return session.Session{}, fmt.Errorf("create session: %w", err)
 	}
+	// A subagent runs in a session of its own, so it inherits its Lead's
+	// approval the way a teammate does: in a run with no user, a tool that
+	// needs permission would otherwise wait on a prompt nobody can answer.
+	c.approveForHeadlessRun(sess.ID, params.SessionID)
 	if params.SessionSetup != nil {
 		params.SessionSetup(sess.ID)
 	}

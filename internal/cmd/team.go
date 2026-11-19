@@ -22,6 +22,7 @@ var teamCmd = &cobra.Command{
 	Aliases: []string{"teams"},
 	Short:   "Inspect the Agent Teams roster and shared task board",
 	Long:    "Inspect the Agent Teams roster, member availability, and shared task board. Use --json for machine-readable output.",
+	Args:    cobra.NoArgs,
 	RunE:    runTeamStatus,
 }
 
@@ -62,7 +63,7 @@ func teamStatePath(cmd *cobra.Command) (string, error) {
 		return "", err
 	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
-	cfg, err := config.Init(cmd.Context(), cwd, dataDir, false)
+	cfg, err := config.Init(cmd.Context(), cwd, dataDir, false, config.WithoutProviderUpdate())
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize config: %w", err)
 	}

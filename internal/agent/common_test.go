@@ -38,6 +38,9 @@ type fakeEnv struct {
 	history     history.Service
 	filetracker *filetracker.Service
 	lspClients  *csync.Map[string, *lsp.Client]
+	// titles is shared by every agent this env builds, so the cleanup
+	// below can drain title generation before the database closes.
+	titles *titleTracker
 }
 
 type builderFunc func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, error)
@@ -84,12 +87,18 @@ func vcrModelBuilder(model string) builderFunc {
 	}
 }
 
+// testEnv builds a fakeEnv on a working directory of its own, so concurrent
+// test processes never share mutable state.
 func testEnv(t *testing.T) fakeEnv {
-	workingDir := filepath.Join("/tmp/crush-test/", t.Name())
-	os.RemoveAll(workingDir)
+	t.Helper()
+	return testEnvAt(t, t.TempDir())
+}
 
-	err := os.MkdirAll(workingDir, 0o755)
-	require.NoError(t, err)
+// testEnvAt builds a fakeEnv on the given working directory. Only the
+// cassette-backed coder tests pin it: the recorded requests embed the path,
+// and the VCR matcher compares the whole request body.
+func testEnvAt(t *testing.T, workingDir string) fakeEnv {
+	t.Helper()
 
 	conn, err := db.Connect(t.Context(), t.TempDir())
 	require.NoError(t, err)
@@ -105,10 +114,13 @@ func testEnv(t *testing.T) fakeEnv {
 	history := history.NewService(q, conn)
 	filetrackerService := filetracker.NewService(q)
 	lspClients := csync.NewMap[string, *lsp.Client]()
+	titles := new(titleTracker)
 
 	t.Cleanup(func() {
+		// Title generation outlives the run that started it by design, so
+		// wait for it before closing the database it writes to.
+		require.True(t, titles.wait(5*time.Second), "session title generation still running at teardown")
 		conn.Close()
-		os.RemoveAll(workingDir)
 	})
 
 	return fakeEnv{
@@ -119,6 +131,7 @@ func testEnv(t *testing.T) fakeEnv {
 		history,
 		&filetrackerService,
 		lspClients,
+		titles,
 	}
 }
 
@@ -143,6 +156,7 @@ func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPro
 		Sessions:     env.sessions,
 		Messages:     env.messages,
 		Tools:        tools,
+		titles:       env.titles,
 	})
 	return agent
 }

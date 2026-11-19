@@ -47,6 +47,7 @@ var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show usage statistics",
 	Long:  "Generate and display usage statistics including token usage, costs, and activity patterns",
+	Args:  cobra.NoArgs,
 	RunE:  runStats,
 }
 
@@ -160,7 +161,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("failed to gather stats from projects: %w", err)
 		}
 	default:
-		cfg, err := config.Init(cmd.Context(), cwd, dataDir, false)
+		cfg, err := config.Init(cmd.Context(), cwd, dataDir, false, config.WithoutProviderUpdate())
 		if err != nil {
 			return fmt.Errorf("failed to initialize config: %w", err)
 		}
@@ -220,7 +221,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 
 	outputDataDir := dataDir
 	if outputDataDir == "" {
-		cfg, err := config.Init(cmd.Context(), cwd, "", false)
+		cfg, err := config.Init(cmd.Context(), cwd, "", false, config.WithoutProviderUpdate())
 		if err == nil {
 			outputDataDir = cfg.Config().Options.DataDirectory
 		}

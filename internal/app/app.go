@@ -386,9 +386,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 
 	var (
-		spinner   *format.Spinner
-		stderrTTY bool
-		progress  bool
+		spinner     *format.Spinner
+		stderrTTY   bool
+		progress    bool
+		interrupted bool
 	)
 
 	// The object is the whole output, and a spinner in raw mode would turn
@@ -414,10 +415,13 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		spinner.Start()
 	}
 
-	// Helper function to stop spinner once.
+	// Helper function to stop spinner once. A spinner the user stopped with
+	// Ctrl-C or Esc saw a key press, not a signal, so its interrupt is
+	// recorded here for the exit path.
 	stopSpinner := func() {
 		if !hideSpinner && spinner != nil {
 			spinner.Stop()
+			interrupted = interrupted || spinner.Interrupted()
 			spinner = nil
 		}
 	}
@@ -516,6 +520,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		select {
 		case result := <-done:
 			stopSpinner()
+			if interrupted {
+				return InterruptedExit(interrupted, nil)
+			}
 			if result.err != nil {
 				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled) {
 					slog.Debug("Non-interactive: agent processing cancelled", "session_id", sess.ID)
@@ -557,7 +564,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 
 		case <-ctx.Done():
 			stopSpinner()
-			return ctx.Err()
+			return InterruptedExit(interrupted, ctx.Err())
 		}
 	}
 }
@@ -920,15 +927,17 @@ func eventCoalesceKey(ev pubsub.Event[tea.Msg]) string {
 // exits when ctx is cancelled or the upstream channel closes. It is a free
 // function rather than a method because generic methods are flagged by
 // gopls ("method must have no type parameters"), which broke editor
-// diagnostics for this package.
+// diagnostics for this package. It subscribes before the fan-in
+// goroutine starts, so an event published as soon as it returns is not
+// dropped.
 func subscribe[T any](
 	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
 ) {
+	subCh := subscriber(ctx)
 	app.serviceEventsWG.Go(func() {
-		subCh := subscriber(ctx)
 		for {
 			select {
 			case event, ok := <-subCh:
@@ -955,15 +964,16 @@ func subscribe[T any](
 // this for terminal events that subscribers cannot tolerate losing —
 // notably RunComplete, which is the authoritative end-of-run signal
 // for `crush run`. A lossy fan-in here can drop the only terminal
-// event and hang non-interactive clients waiting on it.
+// event and hang non-interactive clients waiting on it. Like
+// [subscribe], it subscribes before the fan-in goroutine starts.
 func subscribeMustDeliver[T any](
 	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
 ) {
+	subCh := subscriber(ctx)
 	app.serviceEventsWG.Go(func() {
-		subCh := subscriber(ctx)
 		for {
 			select {
 			case event, ok := <-subCh:

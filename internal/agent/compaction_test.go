@@ -77,6 +77,7 @@ func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.Co
 		Cfg:                  cfg,
 		DisableAutoSummarize: disableAutoSummarize,
 		Tools:                tools,
+		titles:               env.titles,
 	}).(*sessionAgent)
 }
 
