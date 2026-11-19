@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	runner "github.com/charmbracelet/crush/internal/eval/run"
@@ -28,7 +29,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	routeName := flags.String("route", "", "route name to run")
 	variant := flags.String("variant", "main", "variant name")
 	ref := flags.String("ref", "HEAD", "git ref to build")
-	batch := flags.String("batch", "adhoc", "batch id")
+	batchID := flags.String("batch", "adhoc", "batch id")
 	rep := flags.Int("rep", 1, "repetition")
 	maxSteps := flags.Int("max-steps", 0, "override the task's step limit")
 	timeout := flags.Duration("timeout", 0, "override the task's time limit")
@@ -77,11 +78,11 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 
 	line, err := runner.Run(ctx, runner.Options{
 		Task:     tk,
-		Variant:  *variant + "@" + shortSHA(bin),
+		Variant:  *variant + "@" + batch.ShortSHA(bin),
 		BinPath:  bin,
 		Route:    rt,
 		Home:     h,
-		Batch:    *batch,
+		Batch:    *batchID,
 		Suite:    suite,
 		SuiteDir: "evals",
 		Rep:      *rep,
@@ -96,14 +97,4 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return print(stdout, stderr, line)
-}
-
-// shortSHA is the abbreviated commit the binary was built from, which names
-// its bin directory.
-func shortSHA(bin string) string {
-	sha := filepath.Base(filepath.Dir(bin))
-	if len(sha) > 8 {
-		return sha[:8]
-	}
-	return sha
 }

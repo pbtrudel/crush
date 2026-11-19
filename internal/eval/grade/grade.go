@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -37,6 +38,15 @@ type Result struct {
 // Pass reports whether the grade passes: the touched tests and every test of
 // the graded packages.
 func (r Result) Pass() bool { return r.Touched && r.Packages }
+
+// Reference prepares the merge commit's tree of tk in dest and grades it,
+// which is what `crush-eval grade --reference` does.
+func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []string) (Result, error) {
+	if _, err := checkout.Prepare(ctx, repoDir, tk.Source.Merge, dest); err != nil {
+		return Result{}, err
+	}
+	return Grade(ctx, tk, repoDir, filepath.Join(dest, "src"), env)
+}
 
 // Grade grades the working tree of srcDir against tk. It removes the test
 // files the model added to the graded packages, writes the task's hidden

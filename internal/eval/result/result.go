@@ -17,9 +17,9 @@ const (
 	KindInterface = "interface"
 )
 
-// maxAttempts is the number of attempts after which a key that never exited
+// MaxAttempts is the number of attempts after which a key that never exited
 // 0 or 2 is final as invalid.
-const maxAttempts = 3
+const MaxAttempts = 3
 
 // Tokens are the token counts of one run, by kind.
 type Tokens struct {
@@ -204,7 +204,7 @@ func Final(lines []Result) map[Key]Result {
 			continue
 		}
 		attempts[key]++
-		if attempts[key] >= maxAttempts {
+		if attempts[key] >= MaxAttempts {
 			final[key] = line
 		}
 	}

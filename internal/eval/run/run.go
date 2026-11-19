@@ -57,6 +57,10 @@ type Options struct {
 	// WatchdogGrace is how long after the timeout the process group is
 	// killed. Zero means DefaultWatchdogGrace.
 	WatchdogGrace time.Duration
+	// GradeSem bounds how many grades run at once. When non-nil, the run
+	// holds one slot while it grades, so a batch can keep the machine's
+	// grade cap across concurrent runs.
+	GradeSem chan struct{}
 	// ParentEnv is the environment the child environment is built from.
 	// Nil means os.Environ().
 	ParentEnv []string
@@ -172,7 +176,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	line.Contaminated = line.ContaminatedMatches > 0
 
 	if line.Exit == 0 || line.Exit == 2 {
-		graded, err := gradeRun(ctx, opts, src, runDir)
+		graded, err := gradeWithSlot(ctx, opts, src, runDir)
 		if err != nil {
 			return line, err
 		}
@@ -301,6 +305,16 @@ func parseOutput(path string) (runOutput, bool) {
 func usageLimited(message string) bool {
 	lower := strings.ToLower(message)
 	return strings.Contains(lower, "you've hit your") || strings.Contains(lower, "usage limit")
+}
+
+// gradeWithSlot grades the checkout while holding one slot of the batch's
+// grade semaphore.
+func gradeWithSlot(ctx context.Context, opts Options, src, runDir string) (grade.Result, error) {
+	if opts.GradeSem != nil {
+		opts.GradeSem <- struct{}{}
+		defer func() { <-opts.GradeSem }()
+	}
+	return gradeRun(ctx, opts, src, runDir)
 }
 
 // gradeRun grades the checkout with an empty HOME, so the tests and go
