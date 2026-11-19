@@ -348,6 +348,54 @@ func TestRunUsageLimitPausesWithoutCounting(t *testing.T) {
 	}
 }
 
+// TestRunWaitsForTheEarliestStart queues two routes whose windows end at
+// different moments. The scheduler must wake for the earlier one: waiting
+// for the latest delays a run that could already start.
+func TestRunWaitsForTheEarliestStart(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	f.opts.Experiment.Routes = []string{"r1", "r2"}
+	f.opts.Routes["r1"].Concurrency = 1
+	f.opts.Routes["r1"].Limits = route.Limits{RunsPerWindow: 1, Window: 10}
+	f.opts.Routes["r2"] = &route.Route{
+		Name: "r2", Provider: "p", Model: "m", SmallModel: "m", Concurrency: 1,
+		Limits: route.Limits{RunsPerWindow: 1, Window: 100},
+	}
+
+	sum := f.batchRun(t)
+
+	require.Equal(t, 4, sum.Ran)
+	require.Equal(t, []time.Duration{10 * time.Second, 90 * time.Second}, f.sleeps,
+		"the first pause ends with r1's window, the second with r2's")
+}
+
+// TestRunUsageLimitPausesWithoutWindow pauses a route that has no window of
+// its own for the default hour: without a pause, an exhausted route is
+// retried in a tight loop of real runs.
+func TestRunUsageLimitPausesWithoutWindow(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	var limited atomic.Int32
+	f.respond = func(opts run.Options) result.Result {
+		if strings.HasPrefix(opts.Variant, "variant") && limited.Add(1) <= 2 {
+			return result.Result{Exit: 3, Reason: "error", UsageLimited: true}
+		}
+		return result.Result{Exit: 0, Reason: "completed", Grade: result.Grade{Touched: true, Packages: true}}
+	}
+
+	sum := f.batchRun(t)
+
+	require.Len(t, f.calls, 4, "two usage-limited attempts and two completed runs, not a tight loop")
+	require.Equal(t, []time.Duration{time.Hour, time.Hour}, f.sleeps, "each usage limit pauses for an hour")
+	require.Zero(t, sum.Invalid)
+
+	lines, _, err := result.ReadFile(f.results)
+	require.NoError(t, err)
+	require.Len(t, result.Final(lines), 2)
+}
+
 func TestRunBoundsRouteConcurrency(t *testing.T) {
 	t.Parallel()
 

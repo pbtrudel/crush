@@ -35,6 +35,9 @@ const (
 	DefaultMaxGrades = 3
 	// DefaultRetryPause is the pause before a retried attempt.
 	DefaultRetryPause = 30 * time.Second
+	// DefaultUsagePause is the pause after a usage-limited attempt on a
+	// route that states no window of its own.
+	DefaultUsagePause = time.Hour
 	// DefaultSeed shuffles the task order when none is given.
 	DefaultSeed uint64 = 1
 )
@@ -125,6 +128,9 @@ type Options struct {
 	// RetryPause is the pause before a retried attempt. Zero means
 	// DefaultRetryPause.
 	RetryPause time.Duration
+	// UsagePause is the pause after a usage-limited attempt on a route
+	// without a window. Zero means DefaultUsagePause.
+	UsagePause time.Duration
 	// Now and Sleep are the clock and the wait of the scheduler. Tests
 	// replace both to keep pauses free.
 	Now   func() time.Time
@@ -162,6 +168,7 @@ type runner struct {
 	bins       map[string]string
 	overlays   map[string]map[string]any
 	retryPause time.Duration
+	usagePause time.Duration
 	gradeSem   chan struct{}
 
 	queue    []*job
@@ -226,6 +233,9 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 	if opts.RetryPause <= 0 {
 		opts.RetryPause = DefaultRetryPause
 	}
+	if opts.UsagePause <= 0 {
+		opts.UsagePause = DefaultUsagePause
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -272,6 +282,7 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		bins:       make(map[string]string),
 		overlays:   make(map[string]map[string]any),
 		retryPause: opts.RetryPause,
+		usagePause: opts.UsagePause,
 		gradeSem:   make(chan struct{}, opts.MaxGrades),
 		routeLive:  make(map[string]int),
 		paused:     make(map[string]time.Time),
@@ -485,10 +496,13 @@ func (r *runner) finish(out outcome, firstErr *error) {
 		}
 		return
 	case line.UsageLimited:
-		// The route pauses for its window and the attempt does not count.
-		if window := r.windowLength(out.job.key.Route); window > 0 {
-			r.paused[out.job.key.Route] = r.opts.Now().Add(window)
+		// The route pauses for its window, or for the default pause when it
+		// states none, and the attempt does not count.
+		pause := r.windowLength(out.job.key.Route)
+		if pause == 0 {
+			pause = r.usagePause
 		}
+		r.paused[out.job.key.Route] = r.opts.Now().Add(pause)
 	case line.Retryable():
 		out.job.counted++
 		if out.job.counted >= result.MaxAttempts {
@@ -515,20 +529,21 @@ func (r *runner) ready(j *job) bool {
 	return r.windowReady(j.key.Route)
 }
 
-// wait sleeps until the earliest moment a queued job may start.
+// wait sleeps until the earliest moment a queued job may start: every
+// queued job's own limits are considered, and the first one to open decides
+// the pause.
 func (r *runner) wait(ctx context.Context, queue []*job) error {
 	now := r.opts.Now()
 	next := now
+	found := false
 	for _, j := range queue {
-		t := j.notBefore
-		if paused := r.paused[j.key.Route]; paused.After(t) {
-			t = paused
-		}
-		if start := r.windowNext(j.key.Route); start.After(t) {
-			t = start
-		}
-		if t.After(next) {
-			next = t
+		for _, t := range []time.Time{j.notBefore, r.paused[j.key.Route], r.windowNext(j.key.Route)} {
+			if !t.After(now) {
+				continue
+			}
+			if !found || t.Before(next) {
+				next, found = t, true
+			}
 		}
 	}
 	d := next.Sub(now)
