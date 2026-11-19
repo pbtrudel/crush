@@ -1,0 +1,49 @@
+schema: 1
+id: pr-0045
+source:
+  repo: pbtrudel/crush
+  pr: 45
+  merge: e1ca96d9a12e3e1c8077137384fd54e704e11f62
+  base: f6d2ba9308ab9838fa1492d9158f7531ab661a64
+kind: plain
+why: |
+  `/compact` in the Discord remote-control thread failed with **"The application
+  did not respond"**. Commit 9fa5f7cb moved every gateway interaction onto a
+  dedicated queue so button presses could be acknowledged inside Discord's
+  3-second window, but the new `interactionLoop` only handled `MESSAGE_COMPONENT`
+  (3) and `MODAL_SUBMIT` (5). Application commands (type 2) — every native slash
+  command, including `/compact`, `/status`, `/model` — were received and
+  silently dropped, so no interaction callback was ever sent.
+prompt: |
+  `/compact` in the Discord remote-control thread failed with **"The application
+  did not respond"**. Commit 9fa5f7cb moved every gateway interaction onto a
+  dedicated queue so button presses could be acknowledged inside Discord's
+  3-second window, but the new `interactionLoop` only handled `MESSAGE_COMPONENT`
+  (3) and `MODAL_SUBMIT` (5). Application commands (type 2) — every native slash
+  command, including `/compact`, `/status`, `/model` — were received and
+  silently dropped, so no interaction callback was ever sent.
+
+  The acknowledgement posted before a command runs reads `Running `/stop``
+  for `/stop`: the word Running, a space, then the command name in backticks.
+grade:
+  packages: [./internal/discord]
+  tests: [TestBridgeInteractionUnauthorized, TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInteractionLoop, TestQuestionSubmitFallsBackToEditWhenCallbackFails]
+  exclude: []
+  hidden:
+    - {path: internal/discord/interactions_test.go, blob: 459657ed7c4c92aaae59b4d1e9792ba97677d347}
+    - {path: internal/discord/question_components_test.go, blob: b2a2c8e3892fd3e14ad417aa61d25f21bc863435}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the acknowledgement text is `Running ` plus the command name in backticks, for example `Running `/stop``."
+  - "the pull request renamed two of the six tests the design table lists, so the grade names the four tests that exist at the merge (TestBridgeInteractionViaInputQueue is now TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInputLoop is now TestQuestionComponentArrivesThroughInteractionLoop)."
+  - "the em dashes in the prompt are the pull request's own Why text, kept verbatim."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 14, packages: 5}
