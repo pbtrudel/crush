@@ -189,8 +189,21 @@ func writeGroups(out io.Writer, title string, groups []Group, byBuild bool) {
 		case g.ShellUnstamped > 0:
 			shell = "unstamped"
 		}
-		fmt.Fprintf(out, "  %s\t%d\t%d\t%s\t%s\t%s\n", name, g.Prompts, g.MedianSteps,
-			percent(g.ToolErrorRate), percent(g.EditFailureRate), shell)
+		// A rate over nothing reads as a dash, not as zero.
+		steps := fmt.Sprint(g.MedianSteps)
+		if g.Prompts == 0 {
+			steps = "-"
+		}
+		toolErrors := percent(g.ToolErrorRate)
+		if g.ToolCalls == 0 {
+			toolErrors = "-"
+		}
+		editFailures := percent(g.EditFailureRate)
+		if g.Edits == 0 {
+			editFailures = "-"
+		}
+		fmt.Fprintf(out, "  %s\t%d\t%s\t%s\t%s\t%s\n", name, g.Prompts, steps,
+			toolErrors, editFailures, shell)
 	}
 	fmt.Fprintln(out)
 }

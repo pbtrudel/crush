@@ -132,3 +132,24 @@ func shellColumn(t *testing.T, text, name string) string {
 	t.Fatalf("no row named %q in:\n%s", name, text)
 	return ""
 }
+
+func TestGroupTextPrintsADashForNothingToMeasure(t *testing.T) {
+	t.Parallel()
+
+	// The second group has prompts but no calls and no edits; the third
+	// has calls and edits but no prompt.
+	var text bytes.Buffer
+	writeGroups(&text, "By build", []Group{
+		{
+			Build: "old", Prompts: 2, MedianSteps: 1, ToolCalls: 2, ToolErrorRate: 0.5,
+			Edits: 1, EditFailureRate: 1, ShellResults: 1, ShellCommands: 1, ShellFailureRate: 0.5,
+		},
+		{Build: "unstamped", Prompts: 1, MedianSteps: 3},
+		{Build: "new", ToolCalls: 1, ToolErrorRate: 1, Edits: 1, EditFailureRate: 1},
+	}, true)
+	require.Contains(t, text.String(), "  old\t2\t1\t50.00%\t100.00%\t50.00%\n")
+	require.Contains(t, text.String(), "  unstamped\t1\t3\t-\t-\t-\n",
+		"no calls, no edits and no shell result")
+	require.Contains(t, text.String(), "  new\t0\t-\t100.00%\t100.00%\t-\n",
+		"no prompt to measure steps over")
+}
