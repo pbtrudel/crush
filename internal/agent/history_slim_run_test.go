@@ -35,7 +35,12 @@ func coldHistoryEnv(t *testing.T) (fakeEnv, *sql.DB) {
 
 	conn, err := db.Connect(t.Context(), t.TempDir())
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	titles := new(titleTracker)
+	t.Cleanup(func() {
+		// Wait for title generation before closing the database it writes to.
+		require.True(t, titles.wait(5*time.Second), "session title generation still running at teardown")
+		conn.Close()
+	})
 
 	q := db.New(conn)
 	workingDir := t.TempDir()
@@ -51,6 +56,7 @@ func coldHistoryEnv(t *testing.T) (fakeEnv, *sql.DB) {
 		history:     history.NewService(q, conn),
 		filetracker: &fileTracker,
 		lspClients:  csync.NewMap[string, *lsp.Client](),
+		titles:      titles,
 	}, conn
 }
 

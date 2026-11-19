@@ -175,6 +175,7 @@ func newWindowAgent(env fakeEnv, model fantasy.LanguageModel, window int64, tool
 		Sessions:     env.sessions,
 		Messages:     env.messages,
 		Tools:        tools,
+		titles:       env.titles,
 	}).(*sessionAgent)
 }
 

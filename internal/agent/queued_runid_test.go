@@ -98,6 +98,7 @@ func TestRun_QueuedRunIDPromptRunsRecursivelyAndPublishesRunComplete(t *testing.
 		Sessions:    env.sessions,
 		Messages:    env.messages,
 		RunComplete: broker,
+		titles:      env.titles,
 	}).(*sessionAgent)
 
 	sess, err := env.sessions.Create(t.Context(), "session")

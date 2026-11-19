@@ -34,6 +34,7 @@ func snapshotAgent(t *testing.T, env fakeEnv) *sessionAgent {
 		Messages: env.messages,
 		Cfg:      cfg,
 		Now:      fixedSnapshotClock(),
+		titles:   env.titles,
 	}).(*sessionAgent)
 }
 

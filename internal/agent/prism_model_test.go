@@ -116,6 +116,7 @@ func newPrismCostTestAgent(env fakeEnv, languageModel fantasy.LanguageModel) *se
 		Sessions:     env.sessions,
 		Messages:     env.messages,
 		Cfg:          store,
+		titles:       env.titles,
 	}).(*sessionAgent)
 }
 
