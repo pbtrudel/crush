@@ -39,7 +39,7 @@ type Limit struct {
 }
 
 // Compute freezes the limits of every task that ran on route in the batch,
-// from the passing runs of every variant. A task with no passing run keeps
+// from the clean passing runs of every variant. A task with no such run keeps
 // the suite defaults.
 func Compute(tasks []*task.Task, runs []result.Result, route string) ([]Limit, error) {
 	byID := make(map[string]*task.Task, len(tasks))
@@ -60,7 +60,9 @@ func Compute(tasks []*task.Task, runs []result.Result, route string) ([]Limit, e
 			return nil, fmt.Errorf("task %q is not in the suite", r.Task)
 		}
 		runCount[r.Task]++
-		if !r.Pass {
+		// A contaminated pass may have copied the answer, so its steps and
+		// time say nothing about how long the task takes.
+		if !r.Pass || r.Contaminated {
 			continue
 		}
 		stepCounts[r.Task] = append(stepCounts[r.Task], int64(r.Steps))

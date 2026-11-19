@@ -73,6 +73,7 @@ func TestComputeUsesPassingRuns(t *testing.T) {
 		{Task: "pr-0001", Variant: "b", Route: "fake", Rep: 1, Pass: true, Steps: 30, DurationMS: 180_000},
 		{Task: "pr-0001", Variant: "a", Route: "fake", Rep: 2, Pass: false, Steps: 500, DurationMS: 3_600_000},
 		{Task: "pr-0001", Variant: "a", Route: "other", Rep: 1, Pass: true, Steps: 500, DurationMS: 3_600_000},
+		{Task: "pr-0001", Variant: "b", Route: "fake", Rep: 2, Pass: true, Contaminated: true, Steps: 500, DurationMS: 3_600_000},
 		{Task: "pr-0002", Variant: "a", Route: "fake", Rep: 1, Pass: false, Steps: 40, DurationMS: 120_000},
 	}
 
@@ -80,7 +81,7 @@ func TestComputeUsesPassingRuns(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []Limit{
 		{
-			Task: "pr-0001", Runs: 3, Passes: 2,
+			Task: "pr-0001", Runs: 4, Passes: 2,
 			Steps: 30, Duration: 3 * time.Minute,
 			MaxSteps: 60, Timeout: 10 * time.Minute,
 		},
