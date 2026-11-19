@@ -129,24 +129,9 @@ func env(home string, parent []string, resolve toolchain.Resolver) []string {
 		"GOTOOLCHAIN=local",
 	}
 	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
-		if value := goValue(name); value != "" {
-			env = append(env, name+"="+value)
-		}
+		env = append(env, name+"="+toolchain.Value(parent, name, resolve))
 	}
 	return env
-}
-
-// goValue reads one go value the process environment does not set, so a
-// crafted environment still finds the caches.
-func goValue(name string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	out, err := exec.CommandContext(context.Background(), "go", "env", name).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // failed is the grade of a checkout git could not read. The reason says

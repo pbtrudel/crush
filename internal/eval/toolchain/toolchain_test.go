@@ -54,6 +54,32 @@ func TestGo(t *testing.T) {
 	require.Equal(t, "go", toolchain.Go(nil), "an environment without PATH leaves the bare name")
 }
 
+// TestValue checks that Value takes a value the parent environment sets and,
+// when it does not set it, asks the go of the selected toolchain for it. That
+// go runs with the parent environment, so a value the user wrote in go's own
+// env file is found even though the child gets an empty HOME.
+func TestValue(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	fakeGo(t, root)
+	resolve := func([]string) (string, error) { return root, nil }
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+
+	require.Equal(t, "/fake/GOCACHE", toolchain.Value(parent, "GOCACHE", resolve))
+	require.Equal(t, "/set/by/parent", toolchain.Value(append(parent, "GOCACHE=/set/by/parent"), "GOCACHE", resolve))
+}
+
+// fakeGo writes a go in root's bin that reports /fake/<name> for the go env
+// name it is asked for.
+func fakeGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	script := "#!/bin/sh\necho \"/fake/$2\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+}
+
 // TestGOROOTAndVersion run the real go command, which every other test of
 // this repository needs anyway.
 func TestGOROOTAndVersion(t *testing.T) {

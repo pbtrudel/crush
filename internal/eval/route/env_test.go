@@ -159,6 +159,35 @@ func TestChildEnvSelectsToolchain(t *testing.T) {
 	require.NotEqual(t, "/usr/local/bin:/usr/bin:/bin", path, "the selected toolchain comes first on PATH")
 }
 
+// TestChildEnvResolvesCaches checks the environment a run really builds when
+// the user set the caches only in go's own env file: the child's HOME is its
+// own empty directory, so go in the child needs both caches from the parent
+// or an offline module lookup fails.
+func TestChildEnvResolvesCaches(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	fakeGo(t, root)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, toolchainAt(root))
+	require.NoError(t, err)
+	require.Equal(t, "/fake/GOCACHE", envMap(env)["GOCACHE"])
+	require.Equal(t, "/fake/GOMODCACHE", envMap(env)["GOMODCACHE"])
+}
+
+// fakeGo writes a go in root's bin that reports /fake/<name> for the go env
+// name it is asked for.
+func fakeGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	script := "#!/bin/sh\necho \"/fake/$2\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+}
+
 // toolchainAt is a toolchain resolver that names root.
 func toolchainAt(root string) toolchain.Resolver {
 	return func([]string) (string, error) { return root, nil }

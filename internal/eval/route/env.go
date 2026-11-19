@@ -48,7 +48,9 @@ type Dirs struct {
 // the user's ~/.config/crush, ~/.config/gh or ~/.claude. Everything else in
 // parent, in particular the user's tokens, stays out. The go toolchain
 // go.mod selects comes first on PATH, so a go the model runs uses the
-// selected version and GOTOOLCHAIN=local does not refuse it.
+// selected version and GOTOOLCHAIN=local does not refuse it. GOCACHE and
+// GOMODCACHE are always set, from the parent or from go's own env file, so
+// the child's empty HOME does not leave it without the user's caches.
 func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, error) {
 	return r.childEnv(h, dirs, parent, toolchain.GOROOT)
 }
@@ -82,11 +84,14 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 		return nil, fmt.Errorf("run has no HOME directory")
 	}
 	add("HOME", dirs.Home)
-	for _, key := range []string{"LANG", "GOCACHE", "GOMODCACHE"} {
-		if value, ok := parentVars[key]; ok {
-			add(key, value)
-		}
+	if lang, ok := parentVars["LANG"]; ok {
+		add("LANG", lang)
 	}
+	// The user's go env file holds the caches, and the child's HOME is its
+	// own empty directory, so go in the child would otherwise build without
+	// a build cache and find no downloaded module.
+	add("GOCACHE", toolchain.Value(parent, "GOCACHE", resolve))
+	add("GOMODCACHE", toolchain.Value(parent, "GOMODCACHE", resolve))
 	for _, name := range r.Env {
 		value, ok := parentVars[name]
 		if !ok {

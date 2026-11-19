@@ -60,6 +60,31 @@ func Path(env []string, resolve Resolver) string {
 	return bin + string(os.PathListSeparator) + path
 }
 
+// Value returns the value name has in env, or the value the toolchain env
+// selects reports for it when env does not set it. That go runs with env and
+// with its own bin directory first on PATH, so it reads the user's go env
+// file: a child whose HOME is its own empty directory would otherwise find
+// neither cache, and an offline module lookup would fail.
+func Value(env []string, name string, resolve Resolver) string {
+	if set := value(env, name); set != "" {
+		return set
+	}
+	cmdEnv := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "PATH=") {
+			cmdEnv = append(cmdEnv, kv)
+		}
+	}
+	cmdEnv = append(cmdEnv, "PATH="+Path(env, resolve))
+	cmd := exec.CommandContext(context.Background(), Go(cmdEnv), "env", name)
+	cmd.Env = cmdEnv
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // Go is the go binary that the PATH of env names first. exec resolves a bare
 // command name with the environment of the calling process, not with the
 // environment the child gets, so a caller that puts the selected toolchain
