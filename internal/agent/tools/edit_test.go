@@ -110,3 +110,26 @@ func TestDeleteContentRejectsMultipleMatchesWithoutReplaceAll(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alpha\nbeta\nalpha\n", string(content))
 }
+
+func TestDeleteContentReportsMatchCountAndLines(t *testing.T) {
+	t.Parallel()
+
+	// The model needs the count and the lines to add enough context on
+	// its next call instead of guessing again.
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\nalpha\ndelta\nzeta\nalpha\n"), 0o644))
+
+	edit := editContext{
+		ctx:         context.WithValue(t.Context(), SessionIDContextKey, "session"),
+		permissions: &mockPermissionService{},
+		files:       &mockHistoryService{},
+		filetracker: &mockEditFileTracker{lastRead: time.Now().Add(time.Second)},
+		workingDir:  dir,
+	}
+
+	resp, err := deleteContent(edit, filePath, "alpha", false, fantasy.ToolCall{ID: "call"})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "It matches 3 times, starting on lines 1, 4 and 7.")
+}

@@ -158,14 +158,16 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 	}
 	tree := createFileTree(files, searchPath)
 
-	var output string
+	// Both notices describe the listing, so neither may replace the other:
+	// a listing cut by the item limit is still cut when a depth is set.
+	var notices strings.Builder
 	if truncated {
-		output = fmt.Sprintf("There are more than %d files in the directory. Use a more specific path or use the Glob tool to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
+		fmt.Fprintf(&notices, "There are more than %d files in the directory. Use a more specific path or use the Glob tool to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
 	}
 	if depth > 0 {
-		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
+		fmt.Fprintf(&notices, "The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
 	}
-	return output + "\n" + printTree(tree, searchPath), metadata, nil
+	return notices.String() + "\n" + printTree(tree, searchPath), metadata, nil
 }
 
 func createFileTree(sortedPaths []string, rootPath string) []*TreeNode {

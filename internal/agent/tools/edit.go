@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,7 +201,7 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, bool, er
 		case index == -1:
 			// Fall through to the fuzzy fallback below.
 		case index != strings.LastIndex(content, old):
-			return "", false, &editMatchError{kind: ErrorKindMultipleMatches, msg: "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true"}
+			return "", false, &editMatchError{kind: ErrorKindMultipleMatches, msg: multipleMatchesMessage(content, old)}
 		default:
 			return content[:index] + new + content[index+len(old):], false, nil
 		}
@@ -210,6 +211,46 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, bool, er
 		return result, true, nil
 	}
 	return "", false, notFoundError(content, old)
+}
+
+// maxListedMatches bounds how many match lines an error message names.
+const maxListedMatches = 10
+
+// multipleMatchesMessage reports the "several matches" failure along with
+// the number of matches and the lines they start on, so the model can add
+// the context it needs on its next call instead of guessing again.
+func multipleMatchesMessage(content, old string) string {
+	msg := "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true"
+	if old == "" {
+		return msg
+	}
+	var lines []string
+	count := 0
+	for offset := 0; offset <= len(content); {
+		index := strings.Index(content[offset:], old)
+		if index == -1 {
+			break
+		}
+		index += offset
+		count++
+		if len(lines) < maxListedMatches {
+			lines = append(lines, strconv.Itoa(1+strings.Count(content[:index], "\n")))
+		}
+		offset = index + len(old)
+	}
+	if count < 2 {
+		return msg
+	}
+	return fmt.Sprintf("%s It matches %d times, starting on lines %s.", msg, count, humanList(lines))
+}
+
+// humanList formats a short list the way the error messages read, as in
+// "12, 40 and 77".
+func humanList(items []string) string {
+	if len(items) <= 2 {
+		return strings.Join(items, " and ")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // withWhitespaceNote appends the whitespace auto-correction note to a tool

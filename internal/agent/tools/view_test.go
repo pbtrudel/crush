@@ -156,6 +156,7 @@ func TestViewToolBlocksOversizedReturnedSections(t *testing.T) {
 
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "Content section is too large")
+	require.Contains(t, resp.Content, "lines fit", "the model needs to know a smaller limit would fit")
 }
 
 func TestViewToolBlocksOversizedImages(t *testing.T) {

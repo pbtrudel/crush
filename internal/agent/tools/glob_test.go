@@ -13,6 +13,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The two glob backends sort differently, so the description must not
+// promise an order at all.
+func TestGlobDescriptionPromisesNoOrder(t *testing.T) {
+	t.Parallel()
+
+	description := globDescription()
+	require.NotContains(t, description, "sorted")
+	require.NotContains(t, description, "modification time")
+}
+
 func TestGlobFilesScopedPrefixMatchesUnscoped(t *testing.T) {
 	t.Parallel()
 

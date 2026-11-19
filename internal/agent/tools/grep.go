@@ -141,16 +141,20 @@ func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
 			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 			defer cancel()
 
-			matches, truncated, err := searchFiles(searchCtx, searchPattern, searchPath, params.Include, 100)
+			matches, total, truncated, err := searchFiles(searchCtx, searchPattern, searchPath, params.Include, 100)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error searching files: %v", err)), nil
 			}
 
 			var output strings.Builder
 			if len(matches) == 0 {
-				output.WriteString("No files found")
+				output.WriteString("No matches found")
 			} else {
-				fmt.Fprintf(&output, "Found %d matches\n", len(matches))
+				if truncated {
+					fmt.Fprintf(&output, "Found %d matches, showing the first %d\n", total, len(matches))
+				} else {
+					fmt.Fprintf(&output, "Found %d matches\n", total)
+				}
 
 				currentFile := ""
 				for _, match := range matches {
@@ -192,12 +196,16 @@ func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
 	)
 }
 
-func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
+// searchFiles returns the matches, the number of matches found before the
+// limit was applied, and whether the limit cut the result. The count before
+// the cap is what the model needs: the capped count reads as if the search
+// found no more.
+func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, int, bool, error) {
 	matches, err := searchWithRipgrep(ctx, pattern, rootPath, include)
 	if err != nil {
 		matches, err = searchFilesWithRegex(pattern, rootPath, include)
 		if err != nil {
-			return nil, false, err
+			return nil, 0, false, err
 		}
 	}
 
@@ -208,12 +216,13 @@ func searchFiles(ctx context.Context, pattern, rootPath, include string, limit i
 		return matches[i].modTime.After(matches[j].modTime)
 	})
 
-	truncated := len(matches) > limit
+	total := len(matches)
+	truncated := total > limit
 	if truncated {
 		matches = matches[:limit]
 	}
 
-	return matches, truncated, nil
+	return matches, total, truncated, nil
 }
 
 func searchWithRipgrep(ctx context.Context, pattern, path, include string) ([]grepMatch, error) {
