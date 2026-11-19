@@ -7,7 +7,40 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+// fileStamp identifies one version of the state file. A write replaces the
+// file, so its inode changes with it: an equal stamp means no other process
+// wrote since this one last read.
+type fileStamp struct {
+	info os.FileInfo
+	size int64
+	mod  time.Time
+}
+
+// equal reports whether two stamps name the same bytes of the same file.
+func (s fileStamp) equal(other fileStamp) bool {
+	if s.info == nil || other.info == nil {
+		return s.info == nil && other.info == nil
+	}
+	return os.SameFile(s.info, other.info) && s.size == other.size && s.mod.Equal(other.mod)
+}
+
+// statState reads the current stamp of the state file.
+func statState(path string) (fileStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, err
+	}
+	return fileStamp{info: info, size: info.Size(), mod: info.ModTime()}, nil
+}
+
+// lockPath is the advisory lock file guarding path. It sits beside the state
+// so every process that can reach the state reaches the same lock.
+func lockPath(path string) string {
+	return path + ".lock"
+}
 
 // loadState reads the durable Team record. A missing file is an empty Team.
 func loadState(path string) (State, error) {
@@ -28,38 +61,43 @@ func loadState(path string) (State, error) {
 	return state, nil
 }
 
-// saveState writes the durable Team record atomically.
-func saveState(path string, state State) error {
+// saveState writes the durable Team record atomically and returns the stamp
+// of the file it wrote.
+func saveState(path string, state State) (fileStamp, error) {
 	if path == "" {
-		return nil
+		return fileStamp{}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create team state directory: %w", err)
+		return fileStamp{}, fmt.Errorf("create team state directory: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode team state: %w", err)
+		return fileStamp{}, fmt.Errorf("encode team state: %w", err)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), ".team-*.json")
 	if err != nil {
-		return fmt.Errorf("create team state temp file: %w", err)
+		return fileStamp{}, fmt.Errorf("create team state temp file: %w", err)
 	}
 	name := temp.Name()
 	defer os.Remove(name)
 	if _, err := temp.Write(data); err != nil {
 		temp.Close()
-		return fmt.Errorf("write team state: %w", err)
+		return fileStamp{}, fmt.Errorf("write team state: %w", err)
 	}
 	if err := temp.Close(); err != nil {
-		return fmt.Errorf("close team state: %w", err)
+		return fileStamp{}, fmt.Errorf("close team state: %w", err)
 	}
 	if err := os.Chmod(name, 0o644); err != nil {
-		return fmt.Errorf("chmod team state: %w", err)
+		return fileStamp{}, fmt.Errorf("chmod team state: %w", err)
 	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("replace team state: %w", err)
+	if err := renameStateFile(name, path); err != nil {
+		return fileStamp{}, fmt.Errorf("replace team state: %w", err)
 	}
-	return nil
+	stamp, err := statState(path)
+	if err != nil {
+		return fileStamp{}, fmt.Errorf("stat team state: %w", err)
+	}
+	return stamp, nil
 }
 
 // LoadState reads a Team record for read-only consumers such as the CLI.

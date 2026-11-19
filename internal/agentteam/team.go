@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/crush/internal/lock"
 )
 
 // Defaults mirror the experimental DSH Agent Teams bundle.
@@ -27,6 +29,10 @@ const (
 	DefaultMaxMessageBytes = 65536
 
 	leadName = "lead"
+
+	// defaultLockTimeout bounds how long a write waits for another
+	// process to finish its own.
+	defaultLockTimeout = 5 * time.Second
 )
 
 // Policy is the shared coordination guidance every Team member receives. It
@@ -125,6 +131,7 @@ const (
 	CodeTaskDependencyCycle   = "TEAM_TASK_DEPENDENCY_CYCLE"
 	CodeInvalidArgument       = "TEAM_INVALID_ARGUMENT"
 	CodeInvalidWriteScope     = "TEAM_INVALID_WRITE_SCOPE"
+	CodeStateBusy             = "TEAM_STATE_BUSY"
 )
 
 // Error is a typed Team failure.
@@ -389,12 +396,22 @@ type Service struct {
 	starting map[string]bool
 	changes  chan struct{}
 	now      func() time.Time
-	// loaded is how many messages the Team held when this process opened
-	// it. An earlier process wrote those, and only it could deliver them.
-	// It only works as an index because state.Messages is append-only, so
-	// a future pruning has to replace it with the highest message id
-	// loaded.
-	loaded int
+	// stamp is the state file this process last read or wrote. A different
+	// stamp means another process wrote since.
+	stamp fileStamp
+	// unsaved is set while a write failed. The in-memory record is the
+	// newest until the next save succeeds, so reloading would drop it.
+	unsaved bool
+	// mine names the members this process spawned or started. Only it may
+	// report their status.
+	mine map[string]bool
+	// wrote names the messages this process appended. Only it may deliver
+	// them.
+	wrote map[string]bool
+	// lockTimeout bounds the wait for the cross-process state lock.
+	lockTimeout time.Duration
+	// lockWarned makes an unexpected lock failure warn once per Service.
+	lockWarned bool
 	// taskCompletedHook is called after a task settles as completed. It
 	// runs without the service lock and is best-effort.
 	taskCompletedHook func(sessionID, subject string)
@@ -403,6 +420,11 @@ type Service struct {
 // New opens (or creates) the Team state at path. A nil runner supports
 // read-only use, such as the CLI status view.
 func New(path string, cfg Config, runner Runner) (*Service, error) {
+	// Stat before loading. A stamp older than the loaded record costs one
+	// extra reload; a stamp newer than it would drop another process's
+	// write on the first save. The load takes no lock, because the file is
+	// replaced by rename and is never read half-written.
+	stamp, _ := statState(path)
 	state, err := loadState(path)
 	if err != nil {
 		return nil, err
@@ -414,24 +436,19 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 	if state.Version == 0 {
 		state.Version = 1
 	}
-	// No run survives a process restart, so a persisted running or
-	// provisioning status is stale.
-	for i := range state.Members {
-		switch state.Members[i].Status {
-		case StatusRunning, StatusProvisioning, "":
-			state.Members[i].Status = StatusInactive
-		}
-	}
 	return &Service{
-		state:    state,
-		path:     path,
-		cfg:      cfg.withDefaults(),
-		runner:   runner,
-		runs:     make(map[string]Run),
-		starting: make(map[string]bool),
-		changes:  make(chan struct{}),
-		now:      time.Now,
-		loaded:   len(state.Messages),
+		state:       state,
+		path:        path,
+		cfg:         cfg.withDefaults(),
+		runner:      runner,
+		runs:        make(map[string]Run),
+		starting:    make(map[string]bool),
+		changes:     make(chan struct{}),
+		now:         time.Now,
+		stamp:       stamp,
+		mine:        make(map[string]bool),
+		wrote:       make(map[string]bool),
+		lockTimeout: defaultLockTimeout,
 	}, nil
 }
 
@@ -464,16 +481,188 @@ func (s *Service) notifyLocked() {
 	s.changes = make(chan struct{})
 }
 
-// saveLocked persists the current state. Callers must hold s.mu.
+// writeMode says what a write does when another process holds the state lock
+// for longer than the timeout.
+type writeMode int
+
+const (
+	// refusable is a tool-facing write. It refuses with TEAM_STATE_BUSY
+	// rather than risk losing another process's update.
+	refusable writeMode = iota
+	// mustApply records work that already happened, such as a settled run.
+	// It falls back to an unlocked write.
+	mustApply
+)
+
+// stateLocks holds one mutex per state file, so Services in this process
+// queue on a Go mutex instead of spinning on the file lock.
+var stateLocks sync.Map
+
+// write runs fn on the freshest durable record. fn runs with s.mu held and
+// reports whether it changed the record; a change is saved before the locks
+// drop.
+//
+// The lock order is always the process mutex, then the file lock, then s.mu.
+// Never call write with s.mu held, and never start a run, call a hook, write
+// a report, or wait on anything else inside fn.
+func (s *Service) write(mode writeMode, fn func() (bool, error)) error {
+	release, err := s.lockState(mode)
+	if err != nil {
+		return err
+	}
+	defer release()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadLocked()
+	changed, err := fn()
+	if err == nil && changed {
+		s.saveLocked()
+	}
+	return err
+}
+
+// lockState takes the process mutex and the cross-process state lock, and
+// returns the release for both. A refusable write whose wait times out fails
+// with TEAM_STATE_BUSY and changes nothing, so a retry is safe. Any other
+// failure warns and continues without the file lock, which is what Crush did
+// before the lock existed.
+func (s *Service) lockState(mode writeMode) (func(), error) {
+	if s.path == "" {
+		return func() {}, nil
+	}
+	key := s.path
+	if abs, err := filepath.Abs(s.path); err == nil {
+		key = abs
+	}
+	value, _ := stateLocks.LoadOrStore(key, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		// The save below reports this too, and it must not be skipped:
+		// the record stays in memory until a later save succeeds.
+		s.warnLockFailed(fmt.Errorf("create team state directory: %w", err))
+		return mutex.Unlock, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.lockTimeout)
+	unlock, err := lock.File(ctx, lockPath(s.path))
+	cancel()
+	if err == nil {
+		return func() {
+			unlock()
+			mutex.Unlock()
+		}, nil
+	}
+	// The mutex still guards the fields read below, so it is dropped when
+	// the failing path returns.
+	defer mutex.Unlock()
+	if errors.Is(err, context.DeadlineExceeded) {
+		if mode == refusable {
+			return nil, newError(CodeStateBusy, "Team state is busy in another Crush process; retry")
+		}
+		slog.Warn("Wrote the Team state without its lock", "path", s.path, "error", err)
+		return func() {}, nil
+	}
+	s.warnLockFailed(err)
+	return func() {}, nil
+}
+
+// warnLockFailed reports an unusable state lock once per Service: a
+// filesystem without advisory locks would otherwise log on every write.
+func (s *Service) warnLockFailed(err error) {
+	if s.lockWarned {
+		return
+	}
+	s.lockWarned = true
+	slog.Warn("Could not lock the shared Team state", "path", s.path, "error", err)
+}
+
+// reloadLocked adopts the record another process wrote since this one last
+// read or wrote it. Callers must hold s.mu.
+func (s *Service) reloadLocked() {
+	if s.path == "" {
+		return
+	}
+	if s.unsaved {
+		// The in-memory record is newer than the file. A reload would drop
+		// it, and the next successful save overwrites the file.
+		return
+	}
+	stamp, statErr := statState(s.path)
+	if statErr == nil && stamp.equal(s.stamp) {
+		return
+	}
+	disk, err := loadState(s.path)
+	if err != nil {
+		slog.Warn("Could not read the shared Team state", "path", s.path, "error", err)
+		return
+	}
+	if statErr == nil {
+		s.stamp = stamp
+	}
+	s.mergeLocked(disk)
+}
+
+// mergeLocked takes disk as the record and puts back what only this process
+// knows: the identity of a Team that was never written, and the members it
+// runs, with their live status. Callers must hold s.mu.
+func (s *Service) mergeLocked(disk State) {
+	prev := s.state
+	if disk.TeamID == "" {
+		disk.TeamID = prev.TeamID
+		disk.CreatedAt = prev.CreatedAt
+		disk.Version = prev.Version
+	}
+	s.state = disk
+	for name, run := range s.runs {
+		for i := range s.state.Members {
+			member := &s.state.Members[i]
+			if member.Name != name {
+				continue
+			}
+			member.SessionID = run.SessionID()
+			member.Status = StatusRunning
+			member.Failed = false
+		}
+	}
+	for _, member := range prev.Members {
+		if s.hasMemberLocked(member.Name) {
+			continue
+		}
+		if s.runs[member.Name] == nil && !s.starting[member.Name] && !s.mine[member.Name] {
+			continue
+		}
+		s.state.Members = append(s.state.Members, member)
+	}
+}
+
+// hasMemberLocked reports whether name is on the durable roster. Callers
+// must hold s.mu.
+func (s *Service) hasMemberLocked(name string) bool {
+	for _, member := range s.state.Members {
+		if member.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// saveLocked persists the current state and records the stamp of the file it
+// wrote. Callers must hold s.mu.
 func (s *Service) saveLocked() {
 	if s.path == "" {
 		return
 	}
-	if err := saveState(s.path, s.state); err != nil {
-		// Persistence is best effort: a failed write must not fail the
-		// tool call that already changed in-memory state.
-		_ = err
+	stamp, err := saveState(s.path, s.state)
+	if err != nil {
+		// Persistence is best effort: a failed write must not fail the tool
+		// call that already changed in-memory state, and the record stays in
+		// memory until a later save succeeds.
+		slog.Warn("Could not save the shared Team state", "path", s.path, "error", err)
+		s.unsaved = true
+		return
 	}
+	s.stamp = stamp
+	s.unsaved = false
 }
 
 func (s *Service) memberLocked(name string) (Member, bool) {
@@ -583,6 +772,15 @@ func (s *Service) statusLocked(name string) Status {
 	if member.Failed {
 		return StatusFailed
 	}
+	if !s.mine[name] {
+		switch member.Status {
+		case StatusRunning, StatusProvisioning, "":
+			// Only the process that runs a member writes its status, and
+			// no run survives a restart, so a busy status this process did
+			// not write is stale.
+			return StatusInactive
+		}
+	}
 	if member.Status != "" {
 		return member.Status
 	}
@@ -664,43 +862,47 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 		return MemberView{}, newError(CodeInvalidArgument, "context must be fresh or fork")
 	}
 
-	s.mu.Lock()
-	if _, exists := s.memberLocked(req.Name); exists {
-		s.mu.Unlock()
-		return MemberView{}, newError(CodeInvalidMemberName, "teammate name %q is already used", req.Name)
-	}
-	// The limit bounds the teammates working at once, not the durable
-	// roster: a workspace keeps every member it ever created, so counting
-	// settled members would lock a new team out of the workspace forever.
-	live := 0
-	for _, existing := range s.state.Members {
-		switch s.statusLocked(existing.Name) {
-		case StatusRunning, StatusProvisioning:
-			live++
+	var member Member
+	err := s.write(refusable, func() (bool, error) {
+		if _, exists := s.memberLocked(req.Name); exists {
+			return false, newError(CodeInvalidMemberName, "teammate name %q is already used", req.Name)
 		}
+		// The limit bounds the teammates working at once, not the durable
+		// roster: a workspace keeps every member it ever created, so
+		// counting settled members would lock a new team out of the
+		// workspace forever.
+		live := 0
+		for _, existing := range s.state.Members {
+			switch s.statusLocked(existing.Name) {
+			case StatusRunning, StatusProvisioning:
+				live++
+			}
+		}
+		if live >= s.cfg.MaxMembers {
+			return false, newError(CodeMemberLimit, "Team member limit %d reached", s.cfg.MaxMembers)
+		}
+		s.state.NextMember++
+		member = Member{
+			ID:            fmt.Sprintf("member-%d", s.state.NextMember),
+			Name:          req.Name,
+			Role:          RoleTeammate,
+			Description:   description,
+			Provider:      req.Provider,
+			Context:       mode,
+			Model:         req.Model,
+			ModelProvider: req.ModelProvider,
+			Reasoning:     req.Reasoning,
+			ParentID:      req.ParentID,
+			Status:        StatusProvisioning,
+		}
+		s.state.Members = append(s.state.Members, member)
+		s.mine[member.Name] = true
+		s.notifyLocked()
+		return true, nil
+	})
+	if err != nil {
+		return MemberView{}, err
 	}
-	if live >= s.cfg.MaxMembers {
-		s.mu.Unlock()
-		return MemberView{}, newError(CodeMemberLimit, "Team member limit %d reached", s.cfg.MaxMembers)
-	}
-	s.state.NextMember++
-	member := Member{
-		ID:            fmt.Sprintf("member-%d", s.state.NextMember),
-		Name:          req.Name,
-		Role:          RoleTeammate,
-		Description:   description,
-		Provider:      req.Provider,
-		Context:       mode,
-		Model:         req.Model,
-		ModelProvider: req.ModelProvider,
-		Reasoning:     req.Reasoning,
-		ParentID:      req.ParentID,
-		Status:        StatusProvisioning,
-	}
-	s.state.Members = append(s.state.Members, member)
-	s.saveLocked()
-	s.notifyLocked()
-	s.mu.Unlock()
 
 	view, err := s.startRun(ctx, member, req.Prompt)
 	if err != nil {
@@ -738,24 +940,31 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 	if runner != nil {
 		run, err = runner.Start(ctx, member, prompt)
 	}
-	s.mu.Lock()
-	delete(s.starting, member.Name)
 	if err != nil {
+		s.mu.Lock()
+		delete(s.starting, member.Name)
 		s.mu.Unlock()
 		return MemberView{}, err
 	}
-	s.runs[member.Name] = run
-	for i := range s.state.Members {
-		if s.state.Members[i].Name == member.Name {
+	var view MemberView
+	// The run already started, so this record must land: the member would
+	// otherwise read as idle and its inbox would never be drained.
+	_ = s.write(mustApply, func() (bool, error) {
+		delete(s.starting, member.Name)
+		s.runs[member.Name] = run
+		s.mine[member.Name] = true
+		for i := range s.state.Members {
+			if s.state.Members[i].Name != member.Name {
+				continue
+			}
 			s.state.Members[i].SessionID = run.SessionID()
 			s.state.Members[i].Failed = false
 			s.state.Members[i].Status = StatusRunning
 		}
-	}
-	s.saveLocked()
-	s.notifyLocked()
-	view := s.viewLocked(s.stateMemberLocked(member.Name))
-	s.mu.Unlock()
+		view = s.viewLocked(s.stateMemberLocked(member.Name))
+		s.notifyLocked()
+		return true, nil
+	})
 	go s.watch(member.Name, run)
 	return view, nil
 }
@@ -782,42 +991,53 @@ func (s *Service) watch(name string, run Run) {
 		fullReport = s.writeReport(name, text)
 	}
 
-	s.mu.Lock()
-	if s.runs[name] == run {
-		delete(s.runs, name)
-	}
 	runErr := run.Err()
-	if runErr != nil {
-		for i := range s.state.Members {
-			if s.state.Members[i].Name == name {
-				s.state.Members[i].Diagnostics = append(
-					s.state.Members[i].Diagnostics,
-					runErr.Error(),
-				)
+	var (
+		member   Member
+		pending  []Message
+		runner   Runner
+		hook     func(sessionID, subject string)
+		complete []string
+	)
+	// The run already happened, so its settlement must land even when
+	// another process keeps the state lock.
+	_ = s.write(mustApply, func() (bool, error) {
+		if s.runs[name] == run {
+			delete(s.runs, name)
+		}
+		if runErr != nil {
+			for i := range s.state.Members {
+				if s.state.Members[i].Name == name {
+					s.state.Members[i].Diagnostics = append(
+						s.state.Members[i].Diagnostics,
+						runErr.Error(),
+					)
+				}
 			}
 		}
-	}
-	for i := range s.state.Members {
-		if s.state.Members[i].Name == name {
-			s.state.Members[i].Status = StatusInactive
+		for i := range s.state.Members {
+			if s.state.Members[i].Name == name {
+				s.state.Members[i].Status = StatusInactive
+			}
 		}
-	}
-	member := s.stateMemberLocked(name)
-	settled, completed := s.settleTasksLocked(member.ID, runErr)
-	s.enqueueLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
-	s.saveLocked()
-	s.notifyLocked()
-	pending := s.drainLocked(name, member.ParentID)
-	runner := s.runner
-	if len(pending) > 0 {
-		// Marked under the lock that took the messages, so the member never
-		// reads as idle between losing its inbox and starting its next turn.
-		s.starting[name] = true
-	}
-	hook := s.taskCompletedHook
-	s.mu.Unlock()
+		member = s.stateMemberLocked(name)
+		settled, completed := s.settleTasksLocked(member.ID, runErr)
+		complete = completed
+		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
+		s.notifyLocked()
+		pending = s.drainLocked(name, member.ParentID)
+		runner = s.runner
+		hook = s.taskCompletedHook
+		if len(pending) > 0 {
+			// Marked under the lock that took the messages, so the member
+			// never reads as idle between losing its inbox and starting its
+			// next turn.
+			s.starting[name] = true
+		}
+		return true, nil
+	})
 	if hook != nil {
-		for _, subject := range completed {
+		for _, subject := range complete {
 			hook(member.ParentID, subject)
 		}
 	}
@@ -825,11 +1045,12 @@ func (s *Service) watch(name string, run Run) {
 		return
 	}
 	if _, err := s.launch(context.WithoutCancel(context.Background()), runner, member, resumePrompt(pending)); err != nil {
-		s.mu.Lock()
-		s.enqueueLocked(name, leadName, fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending)))
-		s.saveLocked()
-		s.notifyLocked()
-		s.mu.Unlock()
+		text := fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending))
+		_ = s.write(mustApply, func() (bool, error) {
+			s.appendMessageLocked(name, leadName, text)
+			s.notifyLocked()
+			return true, nil
+		})
 		s.failMember(name, err)
 	}
 }
@@ -861,23 +1082,33 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 	return settled, completed
 }
 
-// enqueueLocked appends one inbox message without waking the target.
+// enqueueLocked appends one inbox message without waking the target. Callers
+// must hold s.mu.
 func (s *Service) enqueueLocked(from, to, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return
 	}
+	s.appendMessageLocked(from, to, text)
+}
+
+// appendMessageLocked adds one durable inbox message and records it as this
+// process's, so only this process delivers it. Callers must hold s.mu.
+func (s *Service) appendMessageLocked(from, to, text string) Message {
+	text = strings.TrimSpace(text)
 	if len(text) > s.cfg.MaxMessageBytes {
 		text = truncateText(text, s.cfg.MaxMessageBytes)
 	}
 	s.state.NextMessage++
-	s.state.Messages = append(s.state.Messages, Message{
+	message := Message{
 		ID:        fmt.Sprintf("message-%d", s.state.NextMessage),
 		From:      from,
 		To:        to,
 		Text:      text,
 		CreatedAt: s.now(),
-	})
+	}
+	s.state.Messages = append(s.state.Messages, message)
+	s.wrote[message.ID] = true
+	return message
 }
 
 // maxReportInline is how much of a teammate's final message the automatic
@@ -1010,10 +1241,11 @@ func truncateText(s string, n int) string {
 
 // failMember records a creation failure.
 func (s *Service) failMember(name string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.state.Members {
-		if s.state.Members[i].Name == name {
+	_ = s.write(mustApply, func() (bool, error) {
+		for i := range s.state.Members {
+			if s.state.Members[i].Name != name {
+				continue
+			}
 			s.state.Members[i].Failed = true
 			s.state.Members[i].Status = StatusFailed
 			s.state.Members[i].Diagnostics = append(
@@ -1021,9 +1253,9 @@ func (s *Service) failMember(name string, err error) {
 				err.Error(),
 			)
 		}
-	}
-	s.saveLocked()
-	s.notifyLocked()
+		s.notifyLocked()
+		return true, nil
+	})
 }
 
 func (s *Service) viewFor(name string) MemberView {
@@ -1041,28 +1273,26 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	if len(req.Message) > s.cfg.MaxMessageBytes {
 		return newError(CodeMessageTooLarge, "message exceeds %d bytes", s.cfg.MaxMessageBytes)
 	}
-	s.mu.Lock()
-	if _, ok := s.memberLocked(from); !ok {
-		s.mu.Unlock()
-		return newError(CodeNotMember, "agent %q is not a member of an active Agent Team", from)
-	}
-	if !s.memberVisibleLocked(s.scopeLocked(from, sessionID), req.Target) {
-		s.mu.Unlock()
-		return newError(CodeMemberNotFound, "Team member %q not found", req.Target)
-	}
-	target, _ := s.memberLocked(req.Target)
-	s.state.NextMessage++
-	s.state.Messages = append(s.state.Messages, Message{
-		ID:        fmt.Sprintf("message-%d", s.state.NextMessage),
-		From:      from,
-		To:        target.Name,
-		Text:      req.Message,
-		CreatedAt: s.now(),
+	var (
+		target  Member
+		running bool
+	)
+	err := s.write(refusable, func() (bool, error) {
+		if _, ok := s.memberLocked(from); !ok {
+			return false, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", from)
+		}
+		if !s.memberVisibleLocked(s.scopeLocked(from, sessionID), req.Target) {
+			return false, newError(CodeMemberNotFound, "Team member %q not found", req.Target)
+		}
+		target, _ = s.memberLocked(req.Target)
+		s.appendMessageLocked(from, target.Name, req.Message)
+		s.notifyLocked()
+		running = s.statusLocked(target.Name) == StatusRunning
+		return true, nil
 	})
-	s.saveLocked()
-	s.notifyLocked()
-	running := s.statusLocked(target.Name) == StatusRunning
-	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	if running || target.Role == RoleLead {
 		return nil
@@ -1085,12 +1315,13 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 // DrainInbox returns and marks delivered every pending message for name that
 // belongs to the caller's team.
 func (s *Service) DrainInbox(name, sessionID string) []Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	pending := s.drainLocked(name, sessionID)
-	if len(pending) > 0 {
-		s.saveLocked()
-	}
+	var pending []Message
+	// Mail that is read has already been handed over, so it must reach the
+	// file even when another process holds the state lock.
+	_ = s.write(mustApply, func() (bool, error) {
+		pending = s.drainLocked(name, sessionID)
+		return len(pending) > 0, nil
+	})
 	return pending
 }
 
@@ -1281,7 +1512,7 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 		// it restarts it and drains the inbox, and that sender's own turn
 		// is counted while it runs. It stays in members so a report it
 		// already wrote still counts below.
-		case members[msg.To] && i >= s.loaded && s.statusLocked(msg.To) != StatusFailed:
+		case members[msg.To] && s.wrote[msg.ID] && s.statusLocked(msg.To) != StatusFailed:
 			tree.UnreadByTeammates++
 		// Mail counts only when this tree's Lead may drain it, so
 		// another Lead session reading a report cannot make it vanish
@@ -1319,21 +1550,30 @@ func (s *Service) Changed() <-chan struct{} {
 	return s.changes
 }
 
-// Shutdown cancels every live teammate run and marks the roster inactive.
-// The durable state is kept so a later enable resumes the same Team.
+// Shutdown cancels this process's live teammate runs and marks its members
+// inactive. Other processes run their own members and keep doing so, and the
+// durable state is kept so a later enable resumes the same Team.
 func (s *Service) Shutdown() {
-	s.mu.Lock()
-	runs := make([]Run, 0, len(s.runs))
-	for _, run := range s.runs {
-		runs = append(runs, run)
-	}
-	s.runs = make(map[string]Run)
-	for i := range s.state.Members {
-		s.state.Members[i].Status = StatusInactive
-	}
-	s.saveLocked()
-	s.notifyLocked()
-	s.mu.Unlock()
+	var runs []Run
+	_ = s.write(mustApply, func() (bool, error) {
+		changed := false
+		for name, run := range s.runs {
+			runs = append(runs, run)
+			delete(s.runs, name)
+			changed = true
+		}
+		for i := range s.state.Members {
+			if !s.mine[s.state.Members[i].Name] {
+				continue
+			}
+			if s.state.Members[i].Status != StatusInactive {
+				changed = true
+			}
+			s.state.Members[i].Status = StatusInactive
+		}
+		s.notifyLocked()
+		return changed, nil
+	})
 	for _, run := range runs {
 		run.Cancel()
 	}
@@ -1341,68 +1581,73 @@ func (s *Service) Shutdown() {
 
 // CreateTask adds one unowned pending task to the caller's team board.
 func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (TaskView, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.memberLocked(caller); !ok {
-		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
-	}
-	root := s.scopeRootLocked(caller, sessionID)
-	if root == "" {
-		return TaskView{}, newError(CodeNotMember, "agent %q has no session to own a team task", caller)
-	}
-	scope := s.scopeLocked(caller, sessionID)
-	active := 0
-	for _, task := range s.state.Tasks {
-		if task.Status != TaskDeleted && taskVisibleLocked(scope, task) {
-			active++
+	var view TaskView
+	err := s.write(refusable, func() (bool, error) {
+		if _, ok := s.memberLocked(caller); !ok {
+			return false, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 		}
-	}
-	if active >= s.cfg.MaxTasks {
-		return TaskView{}, newError(CodeTaskLimit, "Team task limit %d reached", s.cfg.MaxTasks)
-	}
-	subject, err := requiredText(req.Subject, "subject", 200)
+		root := s.scopeRootLocked(caller, sessionID)
+		if root == "" {
+			return false, newError(CodeNotMember, "agent %q has no session to own a team task", caller)
+		}
+		scope := s.scopeLocked(caller, sessionID)
+		active := 0
+		for _, task := range s.state.Tasks {
+			if task.Status != TaskDeleted && taskVisibleLocked(scope, task) {
+				active++
+			}
+		}
+		if active >= s.cfg.MaxTasks {
+			return false, newError(CodeTaskLimit, "Team task limit %d reached", s.cfg.MaxTasks)
+		}
+		subject, err := requiredText(req.Subject, "subject", 200)
+		if err != nil {
+			return false, err
+		}
+		description, err := requiredText(req.Description, "description", 16384)
+		if err != nil {
+			return false, err
+		}
+		s.state.NextTask++
+		task := Task{
+			ID:          fmt.Sprintf("task-%d", s.state.NextTask),
+			Revision:    1,
+			Subject:     subject,
+			Description: description,
+			Status:      TaskPending,
+			BlockedBy:   []string{},
+			WriteScopes: []string{},
+			SessionID:   root,
+		}
+		if req.BlockedBy != nil {
+			blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, task.ID)
+			if err != nil {
+				s.state.NextTask--
+				return false, err
+			}
+			task.BlockedBy = blockedBy
+		}
+		if req.WriteScopes != nil {
+			scopes, err := normalizeWriteScopes(req.WriteScopes)
+			if err != nil {
+				s.state.NextTask--
+				return false, err
+			}
+			task.WriteScopes = scopes
+		}
+		if err := assertTaskGraph(s.state.Tasks, task); err != nil {
+			s.state.NextTask--
+			return false, err
+		}
+		s.state.Tasks = append(s.state.Tasks, task)
+		view = projectTaskView(s.state, task)
+		s.notifyLocked()
+		return true, nil
+	})
 	if err != nil {
 		return TaskView{}, err
 	}
-	description, err := requiredText(req.Description, "description", 16384)
-	if err != nil {
-		return TaskView{}, err
-	}
-	s.state.NextTask++
-	task := Task{
-		ID:          fmt.Sprintf("task-%d", s.state.NextTask),
-		Revision:    1,
-		Subject:     subject,
-		Description: description,
-		Status:      TaskPending,
-		BlockedBy:   []string{},
-		WriteScopes: []string{},
-		SessionID:   root,
-	}
-	if req.BlockedBy != nil {
-		blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, task.ID)
-		if err != nil {
-			s.state.NextTask--
-			return TaskView{}, err
-		}
-		task.BlockedBy = blockedBy
-	}
-	if req.WriteScopes != nil {
-		scopes, err := normalizeWriteScopes(req.WriteScopes)
-		if err != nil {
-			s.state.NextTask--
-			return TaskView{}, err
-		}
-		task.WriteScopes = scopes
-	}
-	if err := assertTaskGraph(s.state.Tasks, task); err != nil {
-		s.state.NextTask--
-		return TaskView{}, err
-	}
-	s.state.Tasks = append(s.state.Tasks, task)
-	s.saveLocked()
-	s.notifyLocked()
-	return projectTaskView(s.state, task), nil
+	return view, nil
 }
 
 // GetTask returns one task view from the caller's team board.
@@ -1472,20 +1717,49 @@ func (s *Service) ListTasks(caller, sessionID string, filter TaskFilter) (TaskLi
 	return result, nil
 }
 
+// taskUpdate is one applied task transition and what the caller must
+// report once the write lands.
+type taskUpdate struct {
+	view             TaskView
+	parentSessionID  string
+	completedSubject string
+}
+
 // UpdateTask applies one compare-and-set task transition.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
-	s.mu.Lock()
-	var completedSubject, parentSessionID string
-	defer func() {
-		hook := s.taskCompletedHook
-		s.mu.Unlock()
-		if completedSubject != "" && hook != nil {
-			hook(parentSessionID, completedSubject)
+	var (
+		applied taskUpdate
+		hook    func(sessionID, subject string)
+	)
+	err := s.write(refusable, func() (bool, error) {
+		next, err := s.applyTaskUpdateLocked(caller, req)
+		if err != nil {
+			return false, err
 		}
-	}()
+		applied = next
+		hook = s.taskCompletedHook
+		s.notifyLocked()
+		return true, nil
+	})
+	if err != nil {
+		return TaskView{}, err
+	}
+	// The hook runs outside every lock, and only once the record is
+	// durable.
+	if applied.completedSubject != "" && hook != nil {
+		hook(applied.parentSessionID, applied.completedSubject)
+	}
+	return applied.view, nil
+}
+
+// applyTaskUpdateLocked validates and applies one task transition to the
+// in-memory record. Callers must hold s.mu and must save the record when it
+// returns without an error.
+func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (taskUpdate, error) {
+	var completedSubject, parentSessionID string
 	member, ok := s.memberLocked(caller)
 	if !ok {
-		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
+		return taskUpdate{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
 	parentSessionID = member.ParentID
 	if parentSessionID == "" {
@@ -1494,15 +1768,15 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	scope := s.scopeLocked(caller, req.SessionID)
 	current, ok := s.taskLocked(req.TaskID)
 	if !ok || !taskVisibleLocked(scope, current) {
-		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
+		return taskUpdate{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
 	}
 	if current.Revision != req.ExpectedRevision {
-		return TaskView{}, newError(CodeTaskStaleRevision,
+		return taskUpdate{}, newError(CodeTaskStaleRevision,
 			"stale team task %q revision %d; current revision is %d",
 			current.ID, req.ExpectedRevision, current.Revision)
 	}
 	if current.Status == TaskDeleted {
-		return TaskView{}, newError(CodeTaskDeleted, "team task %q is deleted", current.ID)
+		return taskUpdate{}, newError(CodeTaskDeleted, "team task %q is deleted", current.ID)
 	}
 	lead := member.Role == RoleLead
 	owner := current.OwnerID == member.ID
@@ -1517,86 +1791,86 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	switch req.Action {
 	case "claim":
 		if current.OwnerID != "" && current.OwnerID != member.ID {
-			return TaskView{}, newError(CodeTaskAlreadyClaimed, "team task %q is owned by another member", current.ID)
+			return taskUpdate{}, newError(CodeTaskAlreadyClaimed, "team task %q is owned by another member", current.ID)
 		}
 		if current.Status != TaskPending || !taskReady(s.state, current) {
-			return TaskView{}, newError(CodeTaskBlocked, "team task %q is not ready to claim", current.ID)
+			return taskUpdate{}, newError(CodeTaskBlocked, "team task %q is not ready to claim", current.ID)
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = member.ID
 	case "release":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		if current.Status != TaskInProgress {
-			return TaskView{}, newError(CodeTaskInvalidTransition, "only an in-progress task can be released")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress task can be released")
 		}
 		next.Status = TaskPending
 		next.OwnerID = ""
 	case "edit":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil {
-			return TaskView{}, newError(CodeInvalidArgument, "task edit requires subject, description, or write_scopes")
+			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, or write_scopes")
 		}
 		if req.Subject != "" {
 			subject, err := requiredText(req.Subject, "subject", 200)
 			if err != nil {
-				return TaskView{}, err
+				return taskUpdate{}, err
 			}
 			next.Subject = subject
 		}
 		if req.Description != "" {
 			description, err := requiredText(req.Description, "description", 16384)
 			if err != nil {
-				return TaskView{}, err
+				return taskUpdate{}, err
 			}
 			next.Description = description
 		}
 		if req.WriteScopes != nil {
 			scopes, err := normalizeWriteScopes(req.WriteScopes)
 			if err != nil {
-				return TaskView{}, err
+				return taskUpdate{}, err
 			}
 			next.WriteScopes = scopes
 		}
 	case "set_dependencies":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		if req.BlockedBy == nil {
-			return TaskView{}, newError(CodeInvalidArgument, "set_dependencies requires blocked_by")
+			return taskUpdate{}, newError(CodeInvalidArgument, "set_dependencies requires blocked_by")
 		}
 		blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, current.ID)
 		if err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		next.BlockedBy = blockedBy
 	case "complete":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		if current.Status != TaskInProgress {
-			return TaskView{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
 		}
 		next.Status = TaskCompleted
 		completedSubject = next.Subject
 	case "reopen":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		if current.Status != TaskCompleted {
-			return TaskView{}, newError(CodeTaskInvalidTransition, "only a completed task can reopen")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a completed task can reopen")
 		}
 		next.Status = TaskPending
 		next.OwnerID = ""
 	case "reassign":
 		if !lead {
-			return TaskView{}, newError(CodeLeadRequired, "only the Team Lead can reassign tasks")
+			return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can reassign tasks")
 		}
 		if current.Status != TaskPending && current.Status != TaskInProgress {
-			return TaskView{}, newError(CodeTaskInvalidTransition, "only a pending or in-progress task can be reassigned")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a pending or in-progress task can be reassigned")
 		}
 		if strings.TrimSpace(req.Owner) == "" {
 			next.Status = TaskPending
@@ -1604,41 +1878,43 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			break
 		}
 		if !taskReady(s.state, current) {
-			return TaskView{}, newError(CodeTaskBlocked, "team task %q is blocked", current.ID)
+			return taskUpdate{}, newError(CodeTaskBlocked, "team task %q is blocked", current.ID)
 		}
 		assignee, ok := s.memberLocked(req.Owner)
 		if !ok || !s.memberVisibleLocked(scope, req.Owner) {
-			return TaskView{}, newError(CodeMemberNotFound, "Team member %q not found", req.Owner)
+			return taskUpdate{}, newError(CodeMemberNotFound, "Team member %q not found", req.Owner)
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = assignee.ID
 	case "delete":
 		if err := authorizeOwner(); err != nil {
-			return TaskView{}, err
+			return taskUpdate{}, err
 		}
 		for _, task := range s.state.Tasks {
 			if task.Status != TaskDeleted && task.ID != current.ID && slices.Contains(task.BlockedBy, current.ID) {
-				return TaskView{}, newError(CodeTaskHasDependents,
+				return taskUpdate{}, newError(CodeTaskHasDependents,
 					"team task %q still blocks %q", current.ID, task.ID)
 			}
 		}
 		next.Status = TaskDeleted
 	default:
-		return TaskView{}, newError(CodeInvalidArgument, "unsupported task action %q", req.Action)
+		return taskUpdate{}, newError(CodeInvalidArgument, "unsupported task action %q", req.Action)
 	}
 
 	next.Revision = current.Revision + 1
 	if err := assertTaskGraph(s.state.Tasks, next); err != nil {
-		return TaskView{}, err
+		return taskUpdate{}, err
 	}
 	for i := range s.state.Tasks {
 		if s.state.Tasks[i].ID == current.ID {
 			s.state.Tasks[i] = next
 		}
 	}
-	s.saveLocked()
-	s.notifyLocked()
-	return projectTaskView(s.state, next), nil
+	return taskUpdate{
+		view:             projectTaskView(s.state, next),
+		parentSessionID:  parentSessionID,
+		completedSubject: completedSubject,
+	}, nil
 }
 
 func (s *Service) taskLocked(id string) (Task, bool) {
