@@ -370,7 +370,7 @@ Decision 1 names seven families: DeepSeek, GLM, Kimi, GPT, Claude, MiMo and Qwen
 | DeepSeek | `deepseek-flash` | `commandcode` | `deepseek/deepseek-v4.1-flash` |
 | GLM | `glm-5.3` | `hyper` | `glm-5.3` |
 | Kimi | `kimi-3.1-pro` | `neuralwatt` | `kimi-k3.1-pro` |
-| GPT | `gpt-6` | `copilot` | `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` or `gpt-6.2-sol`, the cheapest; pending the user's choice |
+| GPT | `gpt-6-luna` | `copilot` | `gpt-6-luna` |
 | Claude | `claude-sonnet` | `claude-agent` | `sonnet`, the CLI's own alias; `copilot` / `claude-sonnet-5` is the alternative |
 | MiMo | `mimo-2.6-pro` | `neuralwatt` | `mimo-v2.6-pro` |
 | Qwen | `qwen3.8-flash` | `hyper` | `qwen3.8-flash` |
@@ -382,7 +382,7 @@ families:
   deepseek: {route: deepseek-flash, entered: 2026-12-01}
   glm:      {route: glm-5.3, entered: null}
   kimi:     {route: kimi-3.1-pro, entered: null}
-  gpt:      {route: gpt-6, entered: null}
+  gpt:      {route: gpt-6-luna, entered: null}
   claude:   {route: claude-sonnet, entered: null}
   mimo:     {route: mimo-2.6-pro, entered: null}
   qwen:     {route: qwen3.8-flash, entered: null}
@@ -402,7 +402,7 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 2. `crush-eval login` if the route uses OAuth.
 3. Entry checks on two tasks: one run ends `completed`, one with `--max-steps 3` ends `step_limit`, one with `--timeout 1m` ends `time_limit`, and the result line has non-zero tokens. These are the live checks of the measurement design, repeated per route.
 4. Route-specific checks:
-   - **GPT** runs on Copilot, the only provider configured here whose catalog types GPT models as `responses`, once a captured request confirms that API is in use (roadmap W1.2). The route must list no model entry that drops the catalog type (roadmap W1.2, `internal/config/load.go:516-543`). The route uses a GPT 6.1 or 6.2 model, the cheapest one. There is no Luna variant for either: the catalog offers `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` and `gpt-6.2-sol`. The exact model is pending the user's choice (6.3).
+   - **GPT** runs on Copilot, the only provider configured here whose catalog types GPT models as `responses`, once a captured request confirms that API is in use (roadmap W1.2). The route must list no model entry that drops the catalog type (roadmap W1.2, `internal/config/load.go:516-543`). The route is `copilot` / `gpt-6-luna`.
    - **Claude** runs through the Claude Agent provider, model `sonnet`. The CLI owns the turn loop, so the entry check also confirms that the step and time limits stop it, and that `CLAUDE_CONFIG_DIR` keeps the user's `~/.claude` out. W3 and W9 results are reported separately for this route. If the CLI checks fail, the route falls back to `copilot` / `claude-sonnet-5`.
    - **Subscription routes** record their window and cap. A full acceptance batch (162 runs per route) must fit the cap within a stated number of days, or the route runs fewer repetitions and says so.
 5. The family is recorded in `matrix.yaml` with its entry date, and gets a baseline (4.4, step 3) before its first comparison.
@@ -430,10 +430,6 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 - **Provider drift.** Providers change models and quantization without notice. Interleaving (3.6) and re-running the control in every batch keep a pair on the same provider state.
 - **Small suite.** With 27 tasks one model's pass rate moves 3.7 points per task. Single-model decisions under the detectable effect need more repetitions or tasks; `plan` says which.
 - **Project config.** Each checkout loads the tracked `crush.json` of its base commit. It is the same for both variants, and its hash is recorded, so a change in it between tasks is visible.
-
-#### 6.3 Open questions
-
-1. **GPT model.** The route is fixed at Copilot with the Responses API and a GPT 6.1 or 6.2 model, the cheapest. The catalog offers `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` and `gpt-6.2-sol`, and none of them is a Luna variant. Which one runs is pending the user's choice.
 
 ### 7. Implementation
 
