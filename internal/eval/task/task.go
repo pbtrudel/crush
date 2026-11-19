@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 )
 
 // Schema is the only task file schema this package reads.
@@ -336,19 +337,8 @@ func problemsError(problems []string) error {
 	return errors.New(strings.Join(problems, "\n"))
 }
 
-// gitLine runs one git command and returns its trimmed standard output.
+// gitLine runs one git command in the repository and returns its trimmed
+// standard output.
 func gitLine(gitDir string, args ...string) (string, error) {
-	args = append([]string{"-C", gitDir}, args...)
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
-		}
-		return "", err
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return gitx.Output(context.Background(), gitDir, args...)
 }

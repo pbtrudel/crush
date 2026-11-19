@@ -148,6 +148,36 @@ func TestGradeRecordsWorktreesAndBranches(t *testing.T) {
 	require.Equal(t, 1, got.Branches)
 }
 
+// TestGradeIgnoresRepositoryHooks grades a checkout whose .git/config makes
+// git run a fsmonitor script. The script records that it ran and the
+// environment it saw: grading must not run it, because a model can write
+// that config and the runner's environment holds API keys.
+func TestGradeIgnoresRepositoryHooks(t *testing.T) {
+	// The secret must be in the parent environment, so this test cannot run
+	// in parallel with the others of the package.
+	t.Setenv("CRUSH_EVAL_SECRET", "sk-eval-must-not-leak")
+
+	repo, src, blob := prepare(t, nil, hiddenFix)
+	fix(t, src)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	script := filepath.Join(dir, "fsmonitor.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nenv > "+marker+"\n"), 0o700))
+	git(t, src, "config", "core.fsmonitor", script)
+
+	// The control: git on its own runs the script, and the script sees the
+	// runner's environment.
+	git(t, src, "status", "--porcelain")
+	require.FileExists(t, marker, "the control did not run the fsmonitor")
+	require.Contains(t, readFile(t, marker), "CRUSH_EVAL_SECRET=sk-eval-must-not-leak")
+	require.NoError(t, os.Remove(marker))
+
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, goEnv(t))
+	require.NoError(t, err)
+	require.True(t, got.Pass())
+	require.NoFileExists(t, marker, "grading ran the checkout's fsmonitor")
+}
+
 // prepare builds a throwaway repository with the base module, stores the
 // hidden test as a blob in it and writes a checkout of the base into a new
 // directory. It returns the repository, the checkout's src directory and the
@@ -222,6 +252,14 @@ func goEnvValue(t *testing.T, name string) string {
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	return strings.TrimSpace(string(out))
+}
+
+// readFile reads a file of the test.
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(data)
 }
 
 // write writes one file, creating its directory.

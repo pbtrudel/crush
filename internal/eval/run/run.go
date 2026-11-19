@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/result"
@@ -114,7 +115,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	line.ProjectConfig = blob
 
 	src := filepath.Join(runDir, "src")
-	base, err := gitOutput(ctx, src, "rev-parse", "HEAD")
+	base, err := gitx.Output(ctx, src, "rev-parse", "HEAD")
 	if err != nil {
 		return line, err
 	}
@@ -374,10 +375,10 @@ func goEnvValue(name string) string {
 // files included, and the number of worktrees the model created.
 func treeStats(ctx context.Context, src, base string) (result.Diff, int, error) {
 	var diff result.Diff
-	if _, err := gitOutput(ctx, src, "add", "-N", "."); err != nil {
+	if _, err := gitx.Output(ctx, src, "add", "-N", "."); err != nil {
 		return diff, 0, err
 	}
-	numstat, err := gitOutput(ctx, src, "diff", "--numstat", base)
+	numstat, err := gitx.Output(ctx, src, "diff", "--numstat", base)
 	if err != nil {
 		return diff, 0, err
 	}
@@ -390,7 +391,7 @@ func treeStats(ctx context.Context, src, base string) (result.Diff, int, error) 
 		diff.Added += number(fields[0])
 		diff.Deleted += number(fields[1])
 	}
-	list, err := gitOutput(ctx, src, "worktree", "list", "--porcelain")
+	list, err := gitx.Output(ctx, src, "worktree", "list", "--porcelain")
 	if err != nil {
 		return diff, 0, err
 	}
@@ -404,19 +405,6 @@ func number(s string) int {
 		return 0
 	}
 	return n
-}
-
-// gitOutput runs one git command in dir without the user's configuration.
-func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
 }
 
 // runDirName is the run's directory name under runs/. The variant may hold

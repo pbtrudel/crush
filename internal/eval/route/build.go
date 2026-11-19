@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/home"
 )
 
@@ -21,7 +22,7 @@ import (
 // `git archive <sha>`, so the build sees that commit's tree and nothing
 // after it, and the temporary tree lives under the eval home.
 func Build(ctx context.Context, h *home.Home, repoDir, ref string) (string, error) {
-	sha, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", ref+"^{commit}")
+	sha, err := gitx.Output(ctx, repoDir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", ref, err)
 	}
@@ -70,7 +71,7 @@ func Build(ctx context.Context, h *home.Home, repoDir, ref string) (string, erro
 
 // archiveTree writes the tree of sha from repoDir into dst.
 func archiveTree(ctx context.Context, repoDir, sha, dst string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "archive", "--format=tar", sha)
+	cmd := gitx.Command(ctx, repoDir, "archive", "--format=tar", sha)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("archive %s: %w", sha, err)
@@ -138,16 +139,4 @@ func extractTar(r io.Reader, dst string) error {
 			}
 		}
 	}
-}
-
-// gitOutput runs git in repoDir and returns its trimmed standard output.
-func gitOutput(ctx context.Context, repoDir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
 }

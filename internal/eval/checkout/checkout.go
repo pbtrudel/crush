@@ -11,9 +11,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 )
 
 // The fixed identity and date of the "task base" commit. No user identity
@@ -45,7 +46,7 @@ func Prepare(ctx context.Context, repoDir, base, dest string) (string, error) {
 		{"commit", "-q", "-m", "task base"},
 	}
 	for _, args := range steps {
-		if _, err := output(ctx, src, env, "git", args...); err != nil {
+		if _, err := gitx.OutputWith(ctx, src, env, args...); err != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
 	}
@@ -55,7 +56,7 @@ func Prepare(ctx context.Context, repoDir, base, dest string) (string, error) {
 // extract streams the tar archive of base from git into dest. It never runs a
 // tar program.
 func extract(ctx context.Context, repoDir, base, dest string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "archive", "--format=tar", base)
+	cmd := gitx.Command(ctx, repoDir, "archive", "--format=tar", base)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -149,37 +150,19 @@ func crushJSONBlob(ctx context.Context, src string, env []string) (string, error
 		}
 		return "", err
 	}
-	return output(ctx, src, env, "git", "rev-parse", "HEAD:crush.json")
+	return gitx.OutputWith(ctx, src, env, "rev-parse", "HEAD:crush.json")
 }
 
-// gitEnv is the environment of every git command Prepare runs: a fixed
-// identity, no user or system configuration, and nothing else from the
-// caller.
+// gitEnv is the environment of every git command Prepare runs: the runner's
+// hardened environment plus a fixed identity, so the same base always yields
+// the same commit.
 func gitEnv() []string {
-	return []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"GIT_CONFIG_GLOBAL=" + os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_AUTHOR_NAME=" + authorName,
-		"GIT_AUTHOR_EMAIL=" + authorEmail,
-		"GIT_AUTHOR_DATE=" + authorDate,
-		"GIT_COMMITTER_NAME=" + authorName,
-		"GIT_COMMITTER_EMAIL=" + authorEmail,
-		"GIT_COMMITTER_DATE=" + authorDate,
-	}
-}
-
-// output runs one command in dir and returns its trimmed standard output.
-func output(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return append(gitx.Env(),
+		"GIT_AUTHOR_NAME="+authorName,
+		"GIT_AUTHOR_EMAIL="+authorEmail,
+		"GIT_AUTHOR_DATE="+authorDate,
+		"GIT_COMMITTER_NAME="+authorName,
+		"GIT_COMMITTER_EMAIL="+authorEmail,
+		"GIT_COMMITTER_DATE="+authorDate,
+	)
 }

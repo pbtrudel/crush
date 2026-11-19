@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 )
 
 // Classes of a classified pull request.
@@ -184,7 +185,7 @@ func Classify(ctx context.Context, repoDir string, pr PullRequest, scratch strin
 	if cand.Merge == "" {
 		return cand, fmt.Errorf("pr %d: no merge commit", pr.Number)
 	}
-	base, err := gitLine(ctx, repoDir, "rev-parse", pr.Merge()+"^1")
+	base, err := gitx.Output(ctx, repoDir, "rev-parse", pr.Merge()+"^1")
 	if err != nil {
 		return cand, err
 	}
@@ -483,7 +484,7 @@ func overlayTests(ctx context.Context, repoDir, merge, srcDir string, files []Fi
 // fileAt returns the contents of a file at a commit, or false when the file
 // does not exist there.
 func fileAt(ctx context.Context, repoDir, rev, file string) ([]byte, bool, error) {
-	out, err := run(ctx, "git", "-C", repoDir, "cat-file", "-p", rev+":"+file)
+	out, err := gitx.Bytes(ctx, repoDir, "cat-file", "-p", rev+":"+file)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -492,15 +493,6 @@ func fileAt(ctx context.Context, repoDir, rev, file string) ([]byte, bool, error
 		return nil, false, err
 	}
 	return out, true, nil
-}
-
-// gitLine runs one git command and returns its trimmed output.
-func gitLine(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := run(ctx, "git", append([]string{"-C", dir}, args...)...)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // run runs one command and returns its standard output.

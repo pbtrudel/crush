@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -56,7 +57,7 @@ func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []s
 func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir string, env []string) (Result, error) {
 	var res Result
 
-	base, err := gitOutput(ctx, srcDir, "rev-list", "--max-parents=0", "HEAD")
+	base, err := gitx.Output(ctx, srcDir, "rev-list", "--max-parents=0", "HEAD")
 	if err != nil {
 		return res, fmt.Errorf("find the task base commit: %w", err)
 	}
@@ -149,13 +150,13 @@ func removeModelTests(ctx context.Context, srcDir, base string, packages []strin
 		dirs[strings.TrimPrefix(pkg, "./")] = true
 	}
 
-	untracked, err := gitOutput(ctx, srcDir, "ls-files", "--others", "--exclude-standard", "-z")
+	untracked, err := gitx.Output(ctx, srcDir, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
 	// No rename detection, so a model that renames a test file still shows
 	// the new path as added.
-	added, err := gitOutput(ctx, srcDir, "diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", base)
+	added, err := gitx.Output(ctx, srcDir, "diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", base)
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +181,11 @@ func removeModelTests(ctx context.Context, srcDir, base string, packages []strin
 // task says the pull request removed. It checks every blob against its hash.
 func ApplyHidden(ctx context.Context, repoDir, srcDir string, hidden []task.Hidden, deleted []string) error {
 	for _, file := range hidden {
-		data, err := gitBytes(ctx, repoDir, "cat-file", "blob", file.Blob)
+		data, err := gitx.Bytes(ctx, repoDir, "cat-file", "blob", file.Blob)
 		if err != nil {
 			return fmt.Errorf("read hidden %s: %w", file.Path, err)
 		}
-		sha, err := gitStdin(ctx, srcDir, data, "hash-object", "--stdin")
+		sha, err := gitx.Stdin(ctx, srcDir, data, "hash-object", "--stdin")
 		if err != nil {
 			return err
 		}
@@ -279,62 +280,15 @@ func runGoTest(ctx context.Context, srcDir string, env, args []string) (outcome,
 // gitCounts returns how many worktrees and branches beyond the initial one
 // the checkout has.
 func gitCounts(ctx context.Context, srcDir string) (worktrees, branches int) {
-	list, err := gitOutput(ctx, srcDir, "worktree", "list", "--porcelain")
+	list, err := gitx.Output(ctx, srcDir, "worktree", "list", "--porcelain")
 	if err == nil {
 		worktrees = max(0, strings.Count(list, "worktree ")-1)
 	}
-	refs, err := gitOutput(ctx, srcDir, "for-each-ref", "--format=%(refname)", "refs/heads")
+	refs, err := gitx.Output(ctx, srcDir, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err == nil {
 		branches = max(0, len(strings.Fields(refs))-1)
 	}
 	return worktrees, branches
-}
-
-// gitOutput runs one git command in dir and returns its standard output.
-func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := gitCommand(ctx, dir, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
-}
-
-// gitBytes runs one git command in dir and returns its standard output as
-// bytes.
-func gitBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := gitCommand(ctx, dir, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
-}
-
-// gitStdin runs one git command in dir with stdin and returns its trimmed
-// standard output.
-func gitStdin(ctx context.Context, dir string, stdin []byte, args ...string) (string, error) {
-	cmd := gitCommand(ctx, dir, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
-
-// gitCommand builds one git command in dir with the user's config kept out of
-// it.
-func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
-	return cmd
 }
 
 // lastLine returns the last non-empty line of s.
