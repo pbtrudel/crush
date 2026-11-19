@@ -1,0 +1,52 @@
+schema: 1
+id: pr-0072
+source:
+  repo: pbtrudel/crush
+  pr: 72
+  merge: 6de8ed927859fa634fd72931946c1afaf2edf4f7
+  base: 827396defd8cfab9749f48c5ef4b5ed97ad82306
+kind: interface
+why: |
+  The Agent Team sidebar went blank in any session that did not spawn the members. The roster is workspace-wide (one `team.json` per data directory), but #70 scoped the section to `member.ParentID == current session`, so switching sessions hid the whole team, its statuses, and the shared task board.
+
+  The same workspace-wide roster also stopped a session from forming its own team. The 8-member cap counted every member ever created, so four `spawn_teammate` calls in one session were rejected with `Team member limit 8 reached` even though every existing member was inactive.
+prompt: |
+  The Agent Team sidebar went blank in any session that did not spawn the members. The roster is workspace-wide (one `team.json` per data directory), but #70 scoped the section to `member.ParentID == current session`, so switching sessions hid the whole team, its statuses, and the shared task board.
+
+  The same workspace-wide roster also stopped a session from forming its own team. The 8-member cap counted every member ever created, so four `spawn_teammate` calls in one session were rejected with `Team member limit 8 reached` even though every existing member was inactive.
+interface: |
+  Interface: `internal/agent` declares `func (c *coordinator) finishAgentRun(sessionID string, err error)`
+  and `func (c *coordinator) startTeammateRun(sess session.Session, member agentteam.Member)`.
+  A teammate run is registered with `agentrun.KindTeammate`, the member's name, the member's
+  parent session as its parent and the running status, and `finishAgentRun` settles it as done.
+  The sidebar falls back to the whole workspace roster when the current session has no
+  members, an empty session id matches no member and no run, and a member or run is included
+  when a chain of parent to child links reaches it from the session, so nested work counts.
+  The spawn cap counts only the members that are running or provisioning, and a new member
+  starts provisioning.
+  A teammate session id carries the team id after the member id, so a new team never reuses
+  the id an older team's member left behind.
+grade:
+  packages: [./internal/agent, ./internal/agentteam, ./internal/ui/model]
+  tests: [TestSessionAgentRunsIgnoresEmptySession, TestSessionAgentRunsIncludesNestedRuns, TestSessionMembersIgnoresEmptySession, TestSessionMembersIncludesNestedTeammates, TestSpawnTeammateCountsOnlyLiveMembers, TestTeamInfoShowsWorkspaceRosterWhenSessionHasNoMembers, TestTeammateRunRegistersInAgentRunRegistry, TestTeammateSessionIDDoesNotCollideWithAnOlderTeam]
+  exclude: []
+  hidden:
+    - {path: internal/agent/team_run_test.go, blob: 081ac0990c7a0543f908e8c092baf66aa43af6ca}
+    - {path: internal/agentteam/team_test.go, blob: 46fe1cdf451421c90059ad44adf232f0dde9cbdc}
+    - {path: internal/ui/model/team_test.go, blob: 8f0948349a50ea7c789d2929045343d12e3d8a1b}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'wide: three problems in one prompt (the sidebar scoping, the spawn cap, the teammate run registry and session id), 8 tests across 3 packages, one of them ./internal/agent'
+  - 'hidden choice: the roster fallback, the nested-link rule and the empty-session rule, the run kind and status recorded for a teammate, and the team id in the teammate session id'
+  - the touched tests are 8, not the 10 of the design table
+  - 'rendered layout: TestTeamInfoShowsWorkspaceRosterWhenSessionHasNoMembers asserts the sidebar text contains the member names'
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 23, packages: 11}
