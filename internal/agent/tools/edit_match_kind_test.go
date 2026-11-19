@@ -137,7 +137,7 @@ func TestMultiEditAllFailedTakesFirstKind(t *testing.T) {
 	}, fantasy.ToolCall{ID: "call"})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	require.Equal(t, "no changes made - all 2 edit(s) failed", resp.Content)
+	require.True(t, strings.HasPrefix(resp.Content, "no changes made - all 2 edit(s) failed"), resp.Content)
 	require.Equal(t, string(ErrorKindMultipleMatches), gjson.Get(resp.Metadata, "error_kind").String())
 	require.Equal(t, int64(2), gjson.Get(resp.Metadata, "edits_failed.#").Int(), "the kind must not replace the batch's metadata")
 	require.Equal(t, string(ErrorKindTextNotFound), gjson.Get(resp.Metadata, "edits_failed.1.error_kind").String())

@@ -284,6 +284,9 @@ func TestProcessMultiEditExistingFilePartialFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
 	require.Contains(t, resp.Content, "Applied 1 of 2 edits")
+	require.Contains(t, resp.Content, "edit 2:")
+	require.Contains(t, resp.Content, "old_string not found")
+	require.NotContains(t, resp.Content, "edit 1:")
 
 	content, err := os.ReadFile(filePath)
 	require.NoError(t, err)
@@ -296,6 +299,52 @@ func TestProcessMultiEditExistingFilePartialFailure(t *testing.T) {
 	require.Equal(t, 2, meta.EditsFailed[0].Index)
 	require.Equal(t, "one\ntwo\nthree\n", meta.OldContent)
 	require.Equal(t, "one\nTWO\nthree\n", meta.NewContent)
+}
+
+func TestFailedEditsText(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "", failedEditsText(nil), "a batch with no failures adds nothing")
+	require.Equal(t,
+		"Failed edits:\n- edit 2: old_string not found in file. Make sure it matches exactly, including whitespace and line breaks\n\n  The closest text found in the file is:\n  alpha\n- edit 3: old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true",
+		failedEditsText([]FailedEdit{
+			{Index: 2, Error: "old_string not found in file. Make sure it matches exactly, including whitespace and line breaks\n\nThe closest text found in the file is:\nalpha"},
+			{Index: 3, Error: "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true"},
+		}),
+	)
+}
+
+func TestProcessMultiEditAllFailedReportsEdits(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("one\ntwo\n"), 0o644))
+
+	edit := editContext{
+		ctx:         context.WithValue(t.Context(), SessionIDContextKey, "session"),
+		permissions: &mockPermissionService{},
+		files:       &mockHistoryService{},
+		filetracker: &mockEditFileTracker{lastRead: time.Now().Add(time.Second)},
+		workingDir:  dir,
+	}
+	resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+		FilePath: filePath,
+		Edits: []MultiEditOperation{
+			{OldString: "missing", NewString: "MISSING"},
+			{OldString: "absent", NewString: "ABSENT"},
+		},
+	}, fantasy.ToolCall{ID: "call"})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "no changes made - all 2 edit(s) failed")
+	require.Contains(t, resp.Content, "edit 1:")
+	require.Contains(t, resp.Content, "edit 2:")
+	require.Contains(t, resp.Content, "old_string not found")
+
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	require.Equal(t, "one\ntwo\n", string(content))
 }
 
 func TestProcessMultiEditWithCreationPartialFailure(t *testing.T) {
@@ -324,6 +373,8 @@ func TestProcessMultiEditWithCreationPartialFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
 	require.Contains(t, resp.Content, "File created with 2 of 3 edits")
+	require.Contains(t, resp.Content, "edit 3:")
+	require.Contains(t, resp.Content, "old_string not found")
 
 	content, err := os.ReadFile(filePath)
 	require.NoError(t, err)
