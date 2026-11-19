@@ -144,7 +144,7 @@ func TestLoadExperiment(t *testing.T) {
 	require.Equal(t, "w8-delegation", exp.Name)
 	require.Equal(t, []score.Variant{
 		{Name: "main", Ref: "main@3f18401c"},
-		{Name: "w8", Ref: "w8", Overlay: map[string]string{"reasoning_effort": "high"}},
+		{Name: "w8", Ref: "w8", Overlay: map[string]any{"reasoning_effort": "high"}},
 	}, exp.Variants)
 	require.Equal(t, []string{"deepseek-flash", "copilot"}, exp.Routes)
 	require.Equal(t, 3, exp.Repetitions)

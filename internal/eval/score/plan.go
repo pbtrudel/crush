@@ -102,9 +102,12 @@ func (b *Baseline) DetectableEffect(reps int) (se, effect float64, err error) {
 
 // Variant is one build under comparison.
 type Variant struct {
-	Name    string            `yaml:"name"`
-	Ref     string            `yaml:"ref"`
-	Overlay map[string]string `yaml:"overlay,omitempty"`
+	Name string `yaml:"name"`
+	Ref  string `yaml:"ref"`
+	// Overlay is merged into the generated config's options. Values keep
+	// the YAML type they were written with: a field Crush decodes as a bool
+	// must reach it as a JSON bool, not as the string "false".
+	Overlay map[string]any `yaml:"overlay,omitempty"`
 }
 
 // Experiment is the comparison stated before it runs, in
