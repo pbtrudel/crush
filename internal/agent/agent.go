@@ -335,7 +335,11 @@ type sessionAgent struct {
 	// cfg backs channel reply routing (config lookup + MCP tool
 	// invocation). Nil in tests and subagents that never see channel
 	// turns; sendChannelReply treats nil as "routing disabled".
-	cfg                  *config.ConfigStore
+	cfg *config.ConfigStore
+	// replyToolRun invokes the MCP tool that answers a channel turn. It is
+	// a field so a test can watch the reply without an MCP server; nil
+	// means mcp.RunTool.
+	replyToolRun         func(ctx context.Context, cfg *config.ConfigStore, name, tool, input string) (mcp.ToolResult, error)
 	disableAutoSummarize bool
 	isYolo               bool
 	// permissions answers whether the user is being asked about tool
@@ -2062,7 +2066,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 		// If the agent wasn't done, no compaction was blocked and no limit
 		// refuses the continuation, resume the prompt.
-		if !compactionBlocked && !limitStopped && shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0)) {
+		resumable := shouldSummarize && (overflowRecovery || (currentAssistant != nil && len(currentAssistant.ToolCalls()) > 0))
+		if !compactionBlocked && !limitStopped && resumable {
 			existing, ok := a.messageQueue.Get(call.SessionID)
 			if !ok {
 				existing = []SessionAgentCall{}
@@ -2072,6 +2077,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			call.Report = nil
 			a.messageQueue.Set(call.SessionID, append(existing, call))
 			continued = true
+		}
+		// A blocked compaction ends a run that would have resumed, so the
+		// work stopped with no reply to send: a channel peer gets the same
+		// failure notice a failed turn sends instead of waiting forever.
+		if compactionBlocked && resumable {
+			if channelErrorReplyWanted(call.Channel, ErrCompactionBlocked) {
+				a.sendChannelReply(ctx, call,
+					"Something went wrong while handling your message. Please try again.",
+					completedToolCalls.Copy())
+			}
 		}
 	} else {
 		recordTurnEnd()

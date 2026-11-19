@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
@@ -219,6 +220,42 @@ func TestBlockedCompactionEndsTheTurn(t *testing.T) {
 
 	require.Equal(t, 1, model.callCount(), "the run must not be requeued after a blocked compaction")
 	require.Equal(t, []message.TurnEnd{message.TurnEndCompactionBlocked}, turnEnds(t, env, sess.ID))
+}
+
+// A blocked compaction ends the turn with the work unfinished, so a channel
+// peer must be told instead of waiting for a reply that never comes.
+func TestBlockedCompactionAnswersTheChannel(t *testing.T) {
+	env := testEnv(t)
+	model := &scriptedModel{script: []scriptedCall{callTool("alpha", 190_000)}}
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().MCP["signal"] = config.MCPConfig{
+		ChannelReply: &config.MCPChannelReply{
+			User: &config.MCPChannelReplyRoute{Tool: "send_message_to_user", TargetParam: "user_id"},
+		},
+	}
+	agent := newCompactionAgent(env, model, cfg, false, &recordingTool{name: "alpha"})
+	dir := t.TempDir()
+	agent.hooks = hooks.NewRunner(hooks.Static(blockingPreCompact), dir, dir)
+	var replies []string
+	agent.replyToolRun = func(_ context.Context, _ *config.ConfigStore, _, tool, input string) (mcp.ToolResult, error) {
+		replies = append(replies, tool+" "+input)
+		return mcp.ToolResult{Type: "text", Content: "sent"}, nil
+	}
+	sess, err := env.sessions.Create(t.Context(), "blocked compaction channel")
+	require.NoError(t, err)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID:   sess.ID,
+		Prompt:      "go",
+		Channel:     "signal",
+		channelMeta: map[string]string{"sender": "+15551234567"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, replies, 1, "a blocked compaction must answer the channel exactly once")
+	require.Contains(t, replies[0], "send_message_to_user")
+	require.Contains(t, replies[0], "Something went wrong while handling your message")
 }
 
 // Twenty identical tool interactions trip the loop guard.

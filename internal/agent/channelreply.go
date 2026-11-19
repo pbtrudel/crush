@@ -330,7 +330,11 @@ func (a *sessionAgent) sendChannelReply(ctx context.Context, call SessionAgentCa
 	// racing this send must not lose the reply.
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), channelReplyTimeout)
 	defer cancel()
-	if _, err := mcp.RunTool(sendCtx, a.cfg, call.Channel, tool, string(input)); err != nil {
+	runTool := a.replyToolRun
+	if runTool == nil {
+		runTool = mcp.RunTool
+	}
+	if _, err := runTool(sendCtx, a.cfg, call.Channel, tool, string(input)); err != nil {
 		slog.Error("Channel reply failed", "channel", call.Channel, "tool", tool, "error", err)
 		return
 	}
