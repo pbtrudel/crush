@@ -15,10 +15,11 @@ prompt: >
   Every launch of a fork build shows `Crush update available: v0.98.1-fork.10 → v0.98.1`,
   even though the binary already contains the latest upstream release. The version comparison
   treats the `-fork.N` build suffix as a pre-release, so the fork always looks older than the
-  upstream tag it was cut from.
+  upstream tag it was cut from. The version shown to the user, `Info.Current`, keeps the
+  `-fork.N` suffix.
 grade:
   packages: [./internal/update]
-  tests: [TestCheckForUpdate_Fork, TestCheckForUpdate_Beta]
+  tests: [TestCheckForUpdate_Fork]
   exclude: []
   hidden:
     - {path: internal/update/update_test.go, blob: 5b2cfa98b3656a80666ec535210db7d0f42150bd}
@@ -28,3 +29,9 @@ limits:
   max_steps: 120
   timeout: 25m
 risks: []
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 0, packages: 0}

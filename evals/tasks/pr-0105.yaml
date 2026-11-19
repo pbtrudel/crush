@@ -9,10 +9,10 @@ kind: interface
 why: |
   `App.initCoderAgent` replaced `app.AgentCoordinator` without stopping the coordinator it replaced. `agent.NewCoordinator` starts a background-job watcher on the context it is given, so the replaced coordinator kept receiving every background shell completion and could wake a session on its own agent, with a busy state nothing else sees. Every `crush run` hits this: `app.New` builds one coordinator, then `RunNonInteractive` replaces it. The `crush run` session-tree wait (#104) cannot see such a run, and `crush run --json` (next) takes its reason from the session's last run, so a stray run could become that reason. The UI and the server replace coordinators the same way.
 prompt: |
-  `App.initCoderAgent` replaced `app.AgentCoordinator` without stopping the coordinator it replaced. `agent.NewCoordinator` starts a background-job watcher on the context it is given, so the replaced coordinator kept receiving every background shell completion and could wake a session on its own agent, with a busy state nothing else sees. Every `crush run` hits this: `app.New` builds one coordinator, then `RunNonInteractive` replaces it. The `crush run` session-tree wait (#104) cannot see such a run, and `crush run --json` (next) takes its reason from the session's last run, so a stray run could become that reason. The UI and the server replace coordinators the same way.
+  `App.initCoderAgent` replaced `app.AgentCoordinator` without stopping the coordinator it replaced. `agent.NewCoordinator` starts a background-job watcher on the context it is given, so the replaced coordinator kept receiving every background shell completion and could wake a session on its own agent, with a busy state nothing else sees. Every `crush run` hits this: `app.New` builds one coordinator, then `RunNonInteractive` replaces it. The `crush run` session-tree wait (#104) cannot see such a run. The UI and the server replace coordinators the same way.
 interface: |
   Interface: `internal/app` declares `func (app *App) coordinatorContext() context.Context`.
-  The context it returns derives from the app's own lifetime context rather than the caller's,
+  The context it returns derives from the app's `globalCtx` field rather than the caller's,
   and a later call cancels the context a previous call returned.
 grade:
   packages: [./internal/app]

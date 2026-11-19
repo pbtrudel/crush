@@ -45,6 +45,7 @@ risks:
   - three problems in one prompt (the cap, sudo in YOLO mode, package installs); the design table lists two
   - 'hidden choice: the cap is reclaimed in Start, the exact package-install commands that leave the block list, and that go test -exec stays blocked'
   - the touched tests are 4, not the 5 of the design table
+  - "correlated: pr-0044, pr-0051, pr-0076"
 vetted:
   date: "2026-11-19"
   go: go1.27.2

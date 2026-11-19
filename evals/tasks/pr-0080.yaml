@@ -51,8 +51,8 @@ prompt: |
 
   An empty answer is retried exactly once, with the same question plus
   `Do not call any tools.` in the request; an answer still empty after the
-  retry is an error that names the finish reason as `finish_reason=<reason>`
-  and says there was no answer.
+  retry is an error whose text contains `finish_reason=<reason>` and the words
+  `no answer`.
 grade:
   packages: [./internal/agent]
   tests: [TestEphemeralRetriesWhenTheProviderAnswersWithNothing, TestEphemeralReportsWhyAnAnswerIsEmpty, TestEphemeralKeepsConversationHistory]

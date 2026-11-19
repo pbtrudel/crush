@@ -18,7 +18,8 @@ interface: >
   Interface: `internal/shell` declares the package-level variable
   `var ErrBackgroundShellNotFound = errors.New("background shell not found")`, which callers
   test for with `errors.Is`. A kill of a shell that is already gone returns a response that
-  says the shell is not running.
+  says the shell is not running. `BackgroundShellManager.Kill` (and `Remove`) of an unknown id
+  returns an error that wraps it.
 grade:
   packages: [./internal/agent/tools, ./internal/shell]
   tests: [TestJobKillUnknownShellIsNoop, TestBackgroundShellManager_KillNonExistent]
@@ -31,4 +32,5 @@ grade:
 limits:
   max_steps: 120
   timeout: 25m
-risks: []
+risks:
+  - "correlated: pr-0044, pr-0051, pr-0076"

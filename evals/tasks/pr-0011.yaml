@@ -11,7 +11,7 @@ why: |
 prompt: |
   The `/rc` command (Discord remote control, added in #9) never appears in the `/` command palette on a fresh launch. The palette entry is gated on an active session, but Crush creates the session lazily on the first prompt, so before you send any message the command is invisible and cannot be discovered or run.
 interface: |
-  Interface: `internal/ui/model` gains `func (m *UI) toggleRemoteControl() []tea.Cmd`, where `tea` is the existing import alias for `charm.land/bubbletea/v2`. The palette entry keeps its id `remote_control` and is listed by the dialog's default commands whether or not a session exists. With no active session the method creates exactly one session through the workspace and returns the commands that load it and start the bridge.
+  Interface: `internal/ui/model` gains `func (m *UI) toggleRemoteControl() []tea.Cmd`, where `tea` is the existing import alias for `charm.land/bubbletea/v2`. The palette entry keeps its id `remote_control` and is listed by the dialog's default commands whether or not a session exists. With no active session the method creates exactly one session through the workspace and returns the commands that load it and start the bridge. `m.session` already holds the created session when the method returns.
 grade:
   packages: [./internal/ui/dialog, ./internal/ui/model]
   tests: [TestRemoteControlCommandVisibleWithoutSession, TestRemoteControlCreatesSessionWhenNoneActive]
@@ -26,6 +26,7 @@ limits:
   timeout: 25m
 risks:
   - "hidden choice: the palette entry keeps its id `remote_control`, and with no session it creates exactly one session and returns the commands that start the bridge."
+  - "correlated: pr-0011, pr-0065, pr-0094"
 vetted:
   date: "2026-11-19"
   go: go1.27.2

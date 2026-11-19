@@ -57,14 +57,10 @@ prompt: |
   It looked intermittent because it was a race between the palette build and
   the first request: whichever finished first decided whether the teammate
   could act.
-
-  The teammate's identity text keeps `You are teammate "<name>"`, adds
-  `You are not the Lead`, and says the Lead's coordination brief and its
-  instructions `do not apply to you`.
 grade:
   packages: [./internal/agent]
-  tests: [TestTeammateAgentIsReadyWhenBuilt, TestTeammateIdentityOverridesLeadBrief]
-  exclude: []
+  tests: [TestTeammateAgentIsReadyWhenBuilt]
+  exclude: [TestTeammateIdentityOverridesLeadBrief]
   hidden:
     - {path: internal/agent/team_readiness_test.go, blob: e0d3bbf39316511cabb238b1895c0d7d9deebd60}
   deleted: []
@@ -77,9 +73,10 @@ risks:
   - "the prompt drops the last paragraph of the Why, which reports that the pull request's probe test failed before the change (design 1.3, rule 1)."
   - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
   - "the candidates run reported this merge as failing once, when three unrelated internal/agent tests (TestAgentSendMovesSubagentToAnotherModel, TestDispatchModelCatalogEmpty, TestOverrideDispatchAgent) failed under load; vet then passed 5/5, and the pull request does not touch those tests."
+  - "excluded: the identity text change is a second change of the pull request that the Why does not describe; the test is in the hidden file and would fail the package pass."
 vetted:
   date: "2026-11-19"
   go: go1.27.2
   base_fails: 5/5
   merge_passes: 5/5
-  grade_seconds: {touched: 13, packages: 11}
+  grade_seconds: {touched: 10, packages: 7}

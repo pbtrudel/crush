@@ -18,7 +18,9 @@ interface: |
   A replay writes each buffered record to the target logger's handler only when that handler
   is enabled for the record's level, empties the buffer so that a second replay writes
   nothing, and keeps the attributes added before a `WithGroup` call unprefixed while the ones
-  added after it carry the group name, a dot and their key.
+  added after it carry the group name, a dot and their key. Handlers derived with `WithAttrs`
+  or `WithGroup` record into the same buffer as the original, and a replay writes the records
+  in the order they were logged.
 grade:
   packages: [./internal/log]
   tests: [TestBufferHandlerReplayEmptiesBuffer, TestBufferHandlerReplayRespectsTargetLevel, TestBufferHandlerReplaysRecordsInOrder, TestBufferHandlerWithAttrsAndGroup]

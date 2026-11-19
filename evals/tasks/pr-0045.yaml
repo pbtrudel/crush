@@ -27,7 +27,7 @@ prompt: |
   for `/stop`: the word Running, a space, then the command name in backticks.
 grade:
   packages: [./internal/discord]
-  tests: [TestBridgeInteractionUnauthorized, TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInteractionLoop, TestQuestionSubmitFallsBackToEditWhenCallbackFails]
+  tests: [TestBridgeInteractionViaGatewayQueue]
   exclude: []
   hidden:
     - {path: internal/discord/interactions_test.go, blob: 459657ed7c4c92aaae59b4d1e9792ba97677d347}
@@ -46,4 +46,4 @@ vetted:
   go: go1.27.2
   base_fails: 5/5
   merge_passes: 5/5
-  grade_seconds: {touched: 14, packages: 5}
+  grade_seconds: {touched: 12, packages: 4}

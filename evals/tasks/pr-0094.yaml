@@ -34,6 +34,7 @@ risks:
   - "hidden choice: the entries keep the ids `goal` and `loop` and live in the dialog's default command list."
   - "the design table lists TestGoalAndLoopCommandsVisibleWithSession; the pull request renamed it to TestGoalAndLoopCommandsAlwaysVisible, so only the latter exists at the merge and is graded."
   - "rendered state: the hidden hosttheme_test.go draws the palette to check transparency, and its helper changed here for an unrelated reason; no test of that file is graded by name."
+  - "correlated: pr-0011, pr-0065, pr-0094"
 vetted:
   date: "2026-11-19"
   go: go1.27.2

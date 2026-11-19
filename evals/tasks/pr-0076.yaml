@@ -25,8 +25,8 @@ interface: |
   on `*BackgroundShell`, which attaches the owning session to a job that outlived its
   foreground window.
   The bash tool's response metadata carries the job id in a `ShellID` field.
-  `job_output` answers an id the manager no longer tracks with a non-error text that says the
-  shell is no longer tracked and its output is gone.
+  `job_output` answers an id the manager no longer tracks with a non-error text that contains
+  the words `no longer tracked` and says its output is gone.
   A job with no owning session publishes no completion notice, and a job whose session is
   attached before it finishes publishes one for that session.
 grade:
@@ -46,6 +46,7 @@ risks:
   - 'hidden choice: the ShellID field of the bash response metadata, the text that answers an unknown job id, and the no-session rule for notices'
   - the touched tests are 4 and the design table names 6; the grade also runs the rest of both packages
   - TestForegroundJobPublishesNoNotice waits a fixed 200 ms, so it is timing bound on a loaded machine
+  - "correlated: pr-0044, pr-0051, pr-0076"
 vetted:
   date: "2026-11-19"
   go: go1.27.2
