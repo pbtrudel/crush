@@ -1,0 +1,38 @@
+schema: 1
+id: pr-0042
+source:
+  repo: pbtrudel/crush
+  pr: 42
+  merge: 096bca3d8f098e4e66b221695e8da7550d371a47
+  base: d052c46d395854ae9425a1b63b9a359a0b264dda
+kind: plain
+why: |
+  `ctrl+shift+s` did not stash the prompt: most terminals (and tmux) collapse
+  it to plain `ctrl+s`, which Crush already binds to the sessions dialog, so
+  the stash shortcut appeared to do nothing but open sessions.
+prompt: |
+  `ctrl+shift+s` did not stash the prompt: most terminals (and tmux) collapse
+  it to plain `ctrl+s`, which Crush already binds to the sessions dialog, so
+  the stash shortcut appeared to do nothing but open sessions.
+
+  The shortcut that stashes and restores the prompt is `alt+s`.
+grade:
+  packages: [./internal/ui/model]
+  tests: [TestTextareaStashAltS, TestTextareaMouseClickDoesNotCopy]
+  exclude: []
+  hidden:
+    - {path: internal/ui/model/stash_test.go, blob: 0fd3050dce5368c8871c276200f4f64f7a8a39c9}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the stash shortcut is alt+s."
+  - "asserts UI state (the textarea value and the stash buffer), the design's rendered-output risk."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 15, packages: 4}
