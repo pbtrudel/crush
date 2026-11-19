@@ -2,10 +2,12 @@ package pinentry
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,28 +42,28 @@ bad line here
 func TestClassify(t *testing.T) {
 	t.Parallel()
 
-	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "gpg"}})
+	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "gpg"}}, nil)
 	require.True(t, handover)
 	require.True(t, ctrlL)
 	require.True(t, gpg)
 
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-tty"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-tty"}}, nil)
 	require.True(t, handover)
 	require.False(t, ctrlL, "pinentry-tty reads raw bytes; Ctrl-L would corrupt the passphrase")
 	require.False(t, gpg)
 
-	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry"}})
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry"}}, nil)
 	require.True(t, handover)
 	require.True(t, ctrlL, "an unresolvable plain pinentry defaults to the curses behavior")
 
 	// GUI pinentry flavors never need the terminal.
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-mac"}, {PID: 2, Name: "pinentry-qt"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-mac"}, {PID: 2, Name: "pinentry-qt"}}, nil)
 	require.False(t, handover)
 	require.False(t, ctrlL)
 	require.False(t, gpg)
 
 	// gpg-agent is not gpg.
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "gpg-agent"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "gpg-agent"}}, nil)
 	require.False(t, handover)
 	require.False(t, ctrlL)
 	require.False(t, gpg)
@@ -378,8 +380,10 @@ func TestServiceSleepsWithoutTrackedCommands(t *testing.T) {
 }
 
 // buildFakeProc builds the given helper source from testdata under the
-// given binary name so the process table shows it as that name (e.g.
-// "pinentry-curses", "gpg").
+// given binary name. The name must not be one a pinentry watcher reacts to
+// ("pinentry", "pinentry-curses", "gpg", ...): a live Crush on the same
+// machine would act on it. Tests that need such a name report it through
+// [renamedProcs] instead.
 func buildFakeProc(t *testing.T, source, name string) string {
 	t.Helper()
 
@@ -392,17 +396,101 @@ func buildFakeProc(t *testing.T, source, name string) string {
 	return dst
 }
 
+// standinTerminal creates a file that stands in for a terminal. Tests bind
+// the watcher's ownership check to it instead of to the real terminal, so
+// running the tests can never make a live Crush hand its terminal over.
+func standinTerminal(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "standin-terminal")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	return path
+}
+
+// pathOwns returns an ownership check that reports a process as owning the
+// stand-in terminal when it holds path open. It replaces the platform
+// ownership check in tests, which inspect open descriptors through /proc.
+func pathOwns(t *testing.T, path string) func(pid int) bool {
+	t.Helper()
+	want, err := os.Stat(path)
+	require.NoError(t, err)
+	if _, err := os.ReadDir("/proc/self/fd"); err != nil {
+		t.Skip("open descriptors are not inspectable without /proc/<pid>/fd")
+	}
+	return func(pid int) bool {
+		dir := fmt.Sprintf("/proc/%d/fd", pid)
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return false
+		}
+		for _, e := range ents {
+			got, err := os.Stat(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			if os.SameFile(got, want) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// renamedProcs rewrites the names of specific processes in a process table
+// snapshot. Tests use it so the fakes they spawn never appear under a name
+// a live Crush watcher reacts to, while the snapshot the watcher under test
+// sees still carries a pinentry or gpg name.
+type renamedProcs struct {
+	mu    sync.Mutex
+	names map[int]string
+}
+
+// newRenamedProcs returns an empty renaming.
+func newRenamedProcs() *renamedProcs {
+	return &renamedProcs{names: map[int]string{}}
+}
+
+// set reports pid under name in the snapshots the wrapper lister returns.
+func (r *renamedProcs) set(pid int, name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names[pid] = name
+}
+
+// lister wraps a process lister with the renaming.
+func (r *renamedProcs) lister(base Lister) Lister {
+	return func(ctx context.Context) ([]Proc, error) {
+		procs, err := base(ctx)
+		if err != nil {
+			return nil, err
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for i := range procs {
+			if name, ok := r.names[procs[i].PID]; ok {
+				procs[i].Name = name
+			}
+		}
+		return procs, nil
+	}
+}
+
 func TestServiceDetectsRealProcess(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process name emulation relies on ps(1)")
 	}
 
-	fakePinentry := buildFakeProc(t, "fakeproc.go", "pinentry-curses")
-	fakeGPG := buildFakeProc(t, "fakeproc.go", "gpg")
+	// The fakes hold a stand-in terminal open and the watcher's ownership
+	// check is bound to that stand-in, so no test process ever claims the
+	// terminal of the developer running the tests.
+	ttyPath := standinTerminal(t)
+	fakePinentry := buildFakeProc(t, "fakeproc.go", "fakepinentry")
+	fakeGPG := buildFakeProc(t, "fakeproc.go", "fakegpg")
+	names := newRenamedProcs()
 
 	s := newTestService()
-	s.lister = psLister
+	s.lister = names.lister(psLister)
+	s.owns = pathOwns(t, ttyPath)
 	s.pollInterval = 20 * time.Millisecond
 	s.reopenWindow = 50 * time.Millisecond
 	s.touchGrace = 100 * time.Millisecond
@@ -428,12 +516,15 @@ func TestServiceDetectsRealProcess(t *testing.T) {
 	done := s.TrackCommand()
 	defer done()
 
-	// A "pinentry-curses" process appears while gpg runs: handover.
+	// A "pinentry-curses" process holding the terminal appears while gpg
+	// runs: handover.
 	gpgCmd := exec.CommandContext(ctx, fakeGPG, "30")
 	require.NoError(t, gpgCmd.Start())
 	defer func() { _ = gpgCmd.Process.Kill() }()
-	pinCmd := exec.CommandContext(ctx, fakePinentry, "30")
+	names.set(gpgCmd.Process.Pid, "gpg")
+	pinCmd := exec.CommandContext(ctx, fakePinentry, "30", ttyPath)
 	require.NoError(t, pinCmd.Start())
+	names.set(pinCmd.Process.Pid, "pinentry-curses")
 
 	expectEvent(Event{Active: true, CtrlLRedraw: true})
 

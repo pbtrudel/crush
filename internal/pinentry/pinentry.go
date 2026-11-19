@@ -87,7 +87,13 @@ type Service struct {
 	ctrlL bool
 	last  Event
 
-	lister       Lister
+	lister Lister
+	// owns reports whether a candidate pinentry process holds the
+	// terminal Crush runs on. It is nil when the terminal cannot be
+	// identified, which accepts every candidate, and tests inject their
+	// own check so they never match the terminal of the developer
+	// running them.
+	owns         func(pid int) bool
 	pollInterval time.Duration
 	reopenWindow time.Duration
 	touchGrace   time.Duration
@@ -203,7 +209,7 @@ func (s *Service) loop(ctx context.Context) {
 
 // tick advances the watcher state machine with a process table snapshot.
 func (s *Service) tick(now time.Time, procs []Proc) {
-	pin, ctrlL, gpg := classify(procs)
+	pin, ctrlL, gpg := classify(procs, s.owns)
 
 	s.mu.Lock()
 	// justReleased marks the tick in which the handover is released.

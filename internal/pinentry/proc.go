@@ -86,13 +86,24 @@ func parsePS(out []byte) []Proc {
 // and needs exclusive control of the terminal. ctrlL reports that the
 // dialog is an ncurses flavor that redraws on Ctrl-L. gpg reports that a
 // gpg process is running.
-func classify(procs []Proc) (handover, ctrlL, gpg bool) {
+//
+// owns reports whether a candidate process holds the terminal Crush runs
+// on; a nil owns accepts every candidate, because the terminal cannot be
+// identified on this platform or in this environment and the handover
+// degrades to a process-name match.
+func classify(procs []Proc, owns func(pid int) bool) (handover, ctrlL, gpg bool) {
 	for i := range procs {
 		p := procs[i]
 		if _, ok := gpgNames[p.Name]; ok {
 			gpg = true
 		}
 		if _, ok := terminalPinentryNames[p.Name]; !ok {
+			continue
+		}
+		if owns != nil && !owns(p.PID) {
+			// The dialog is not drawing on Crush's terminal: it belongs
+			// to another terminal, another Crush instance or another
+			// user, so this instance must keep its terminal.
 			continue
 		}
 		switch resolveFlavor(p) {
