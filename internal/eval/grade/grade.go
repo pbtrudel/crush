@@ -121,8 +121,9 @@ func Env(home string) []string {
 // env builds Env from parent, with resolve naming the toolchain that goes
 // first on PATH.
 func env(home string, parent []string, resolve toolchain.Resolver) []string {
+	root := toolchain.Root(parent, resolve)
 	env := []string{
-		"PATH=" + toolchain.Path(parent, resolve),
+		"PATH=" + toolchain.PathWithRoot(parent, root),
 		"HOME=" + home,
 		"GOFLAGS=-buildvcs=false",
 		"GOPROXY=off",
@@ -131,7 +132,7 @@ func env(home string, parent []string, resolve toolchain.Resolver) []string {
 	// A cache neither the parent nor the selected go sets is left out: an
 	// empty GOCACHE makes go refuse to build.
 	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
-		if value := toolchain.Value(parent, name, resolve); value != "" {
+		if value := toolchain.ValueWithRoot(parent, name, root); value != "" {
 			env = append(env, name+"="+value)
 		}
 	}

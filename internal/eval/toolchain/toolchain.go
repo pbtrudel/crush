@@ -44,14 +44,32 @@ func Version(env []string) (string, error) {
 	return fields[2], nil
 }
 
+// Root is the GOROOT the resolver names for env, or the empty string when the
+// toolchain does not resolve. One environment resolves its toolchain once and
+// hands the root to PathWithRoot and ValueWithRoot: every value then comes
+// from the same toolchain, and go runs once per value, not once more to
+// resolve the toolchain each time.
+func Root(env []string, resolve Resolver) string {
+	root, err := resolve(env)
+	if err != nil {
+		return ""
+	}
+	return root
+}
+
 // Path returns the PATH of env with the bin directory of the toolchain env
 // selects first, so a child that runs go runs the go the parent runs. A
 // toolchain that does not resolve leaves the PATH alone: the child then runs
 // the go its PATH names, as it did before.
 func Path(env []string, resolve Resolver) string {
+	return PathWithRoot(env, Root(env, resolve))
+}
+
+// PathWithRoot is Path for a GOROOT the caller resolved once. An empty root
+// leaves the PATH alone.
+func PathWithRoot(env []string, root string) string {
 	path := value(env, "PATH")
-	root, err := resolve(env)
-	if err != nil || root == "" {
+	if root == "" {
 		return path
 	}
 	bin := filepath.Join(root, "bin")
@@ -67,6 +85,11 @@ func Path(env []string, resolve Resolver) string {
 // file: a child whose HOME is its own empty directory would otherwise find
 // neither cache, and an offline module lookup would fail.
 func Value(env []string, name string, resolve Resolver) string {
+	return ValueWithRoot(env, name, Root(env, resolve))
+}
+
+// ValueWithRoot is Value for a GOROOT the caller resolved once.
+func ValueWithRoot(env []string, name, root string) string {
 	if set := value(env, name); set != "" {
 		return set
 	}
@@ -76,7 +99,7 @@ func Value(env []string, name string, resolve Resolver) string {
 			cmdEnv = append(cmdEnv, kv)
 		}
 	}
-	cmdEnv = append(cmdEnv, "PATH="+Path(env, resolve))
+	cmdEnv = append(cmdEnv, "PATH="+PathWithRoot(env, root))
 	cmd := exec.CommandContext(context.Background(), Go(cmdEnv), "env", name)
 	cmd.Env = cmdEnv
 	out, err := cmd.Output()

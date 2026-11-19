@@ -49,8 +49,9 @@ type Dirs struct {
 // parent, in particular the user's tokens, stays out. The go toolchain
 // go.mod selects comes first on PATH, so a go the model runs uses the
 // selected version and GOTOOLCHAIN=local does not refuse it. GOCACHE and
-// GOMODCACHE are always set, from the parent or from go's own env file, so
-// the child's empty HOME does not leave it without the user's caches.
+// GOMODCACHE are set from the parent or from go's own env file when either
+// has them, so the child's empty HOME does not leave it without the user's
+// caches.
 func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, error) {
 	return r.childEnv(h, dirs, parent, toolchain.GOROOT)
 }
@@ -58,6 +59,7 @@ func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, er
 // childEnv builds ChildEnv, with resolve naming the toolchain that goes first
 // on the child's PATH.
 func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolchain.Resolver) ([]string, error) {
+	root := toolchain.Root(parent, resolve)
 	parentVars := make(map[string]string, len(parent))
 	for _, kv := range parent {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -86,7 +88,7 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	if _, ok := parentVars["PATH"]; !ok {
 		return nil, fmt.Errorf("parent environment has no PATH")
 	}
-	add("PATH", toolchain.Path(parent, resolve))
+	add("PATH", toolchain.PathWithRoot(parent, root))
 	if dirs.Home == "" {
 		return nil, fmt.Errorf("run has no HOME directory")
 	}
@@ -97,8 +99,8 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	// The user's go env file holds the caches, and the child's HOME is its
 	// own empty directory, so go in the child would otherwise build without
 	// a build cache and find no downloaded module.
-	addIfSet("GOCACHE", toolchain.Value(parent, "GOCACHE", resolve))
-	addIfSet("GOMODCACHE", toolchain.Value(parent, "GOMODCACHE", resolve))
+	addIfSet("GOCACHE", toolchain.ValueWithRoot(parent, "GOCACHE", root))
+	addIfSet("GOMODCACHE", toolchain.ValueWithRoot(parent, "GOMODCACHE", root))
 	for _, name := range r.Env {
 		value, ok := parentVars[name]
 		if !ok {

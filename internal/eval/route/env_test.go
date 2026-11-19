@@ -195,6 +195,46 @@ func TestChildEnvOmitsUnsetCaches(t *testing.T) {
 	require.NotContains(t, env, "GOMODCACHE=")
 }
 
+// TestChildEnvResolvesToolchainOnce checks that a child environment resolves
+// the toolchain once and then runs go once per cache, instead of resolving the
+// toolchain and running go again for every value.
+func TestChildEnvResolvesToolchainOnce(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls")
+	countingGo(t, root, log)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+	calls := 0
+	resolve := func([]string) (string, error) {
+		calls++
+		return root, nil
+	}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, resolve)
+	require.NoError(t, err)
+	require.Equal(t, "/fake/GOCACHE", envMap(env)["GOCACHE"])
+	require.Equal(t, "/fake/GOMODCACHE", envMap(env)["GOMODCACHE"])
+	require.Equal(t, 1, calls, "the toolchain resolves once")
+
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	require.Equal(t, 2, strings.Count(string(data), "\n"),
+		"go runs once per cache")
+}
+
+// countingGo writes a go in root's bin that logs the go env name it is asked
+// for and reports /fake/<name>.
+func countingGo(t *testing.T, root, log string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	script := "#!/bin/sh\necho \"$2\" >> " + log + "\necho \"/fake/$2\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+}
+
 // silentGo writes a go in root's bin that reports no value for any name.
 func silentGo(t *testing.T, root string) {
 	t.Helper()
