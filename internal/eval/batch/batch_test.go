@@ -256,6 +256,39 @@ func TestRunBuildsOnceAndResumesFinalKeys(t *testing.T) {
 	}
 }
 
+func TestRunFullyResumedSkipsBuildsAndReferences(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	require.NoError(t, os.MkdirAll(filepath.Dir(f.results), 0o700))
+	for _, label := range []string{"control@base", "variant@topic"} {
+		f.appendLine(t, result.Result{
+			Schema: 1, Batch: "b1", Task: "pr-0001", Variant: label, Route: "r1", Rep: 1,
+			Attempt: 1, Exit: 0, Reason: "completed", Grade: result.Grade{Touched: true, Packages: true},
+		})
+	}
+
+	sum := f.batchRun(t)
+
+	require.Equal(t, 2, sum.Planned)
+	require.Equal(t, 2, sum.Resumed)
+	require.Zero(t, sum.Ran)
+	require.Empty(t, f.calls)
+	require.Empty(t, f.refCalls)
+}
+
+func TestRunRefusesAnotherSuiteOnResume(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	require.NoError(t, os.MkdirAll(f.opts.Home.BatchDir("b1"), 0o700))
+	require.NoError(t, (&Record{Schema: Schema, ID: "b1", Seed: 7, Suite: "other", Experiment: f.opts.Path}).Write(f.opts.Home))
+
+	_, err := Run(context.Background(), f.opts)
+	require.ErrorContains(t, err, "other")
+	require.Empty(t, f.calls)
+}
+
 func TestRunRetriesThreeAttemptsThenInvalid(t *testing.T) {
 	t.Parallel()
 

@@ -1,7 +1,7 @@
 // Package batch runs an experiment end to end: it builds each variant's
-// binary, grades every task's reference, then schedules the runs of the
-// experiment in the interleaved order of design section 3.6 under the route
-// and machine caps, resuming a batch that was stopped.
+// binary, plans the interleaved order of design section 3.6, grades every
+// task's reference before any run, and schedules the runs under the route and
+// machine caps, resuming a batch that was stopped.
 package batch
 
 import (
@@ -241,6 +241,31 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		return nil, err
 	}
 
+	// A resumed batch keeps the seed, suite and experiment it started with,
+	// and refuses a different suite: its lines would mix two suites.
+	record, err := Load(opts.Home, opts.ID)
+	switch {
+	case err == nil:
+		if record.Suite != opts.Suite {
+			return nil, fmt.Errorf("batch %s ran suite %s, not %s", opts.ID, record.Suite, opts.Suite)
+		}
+		opts.Seed = record.Seed
+	case errors.Is(err, fs.ErrNotExist):
+		record := Record{
+			Schema:     Schema,
+			ID:         opts.ID,
+			Seed:       opts.Seed,
+			Suite:      opts.Suite,
+			Experiment: opts.Path,
+			Started:    opts.Now().UTC(),
+		}
+		if err := record.Write(opts.Home); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+
 	r := &runner{
 		opts:       opts,
 		byID:       make(map[string]*task.Task, len(opts.Tasks)),
@@ -255,19 +280,6 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 	}
 	for _, tk := range opts.Tasks {
 		r.byID[tk.ID] = tk
-	}
-
-	// Record the batch first, so a crash still says what was being run.
-	record := Record{
-		Schema:     Schema,
-		ID:         opts.ID,
-		Seed:       opts.Seed,
-		Suite:      opts.Suite,
-		Experiment: opts.Path,
-		Started:    opts.Now().UTC(),
-	}
-	if err := record.Write(opts.Home); err != nil {
-		return nil, err
 	}
 
 	// (a) Build every variant's binary once.
@@ -294,21 +306,6 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		r.overlays[label] = overlay
 	}
 
-	// (b) Grade every task's reference once, before any run.
-	for _, tk := range opts.Tasks {
-		res, err := r.gradeReference(ctx, tk)
-		if err != nil {
-			return nil, fmt.Errorf("reference of task %s: %w", tk.ID, err)
-		}
-		if !res.Pass() {
-			message := fmt.Sprintf("reference of task %s fails its grade", tk.ID)
-			if len(res.Failed) > 0 {
-				message += ": " + strings.Join(res.Failed, ", ")
-			}
-			return nil, errors.New(message)
-		}
-	}
-
 	// (d) Resume: every key with a final line is done.
 	if err := r.readResults(); err != nil {
 		return nil, err
@@ -330,6 +327,26 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			attempts: r.attempts[key],
 			counted:  r.counted[key],
 		})
+	}
+	if len(r.queue) == 0 {
+		return r, nil
+	}
+
+	// (b) Grade every task's reference once, before any run, so a change in
+	// the machine shows as a failing reference instead of a drop in pass
+	// rate.
+	for _, tk := range opts.Tasks {
+		res, err := r.gradeReference(ctx, tk)
+		if err != nil {
+			return nil, fmt.Errorf("reference of task %s: %w", tk.ID, err)
+		}
+		if !res.Pass() {
+			message := fmt.Sprintf("reference of task %s fails its grade", tk.ID)
+			if len(res.Failed) > 0 {
+				message += ": " + strings.Join(res.Failed, ", ")
+			}
+			return nil, errors.New(message)
+		}
 	}
 	return r, nil
 }
