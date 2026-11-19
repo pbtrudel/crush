@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const specLine = `{"schema":1,"batch":"2026-12-01","suite":"tree1","task":"pr-0051","kind":"plain","variant":"main@3f18401c","route":"deepseek-flash","family":"deepseek","rep":2,"attempt":1,"started":"2026-12-01T10:00:00Z","exit":0,"reason":"completed","build":"3f18401c","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","steps":38,"tool_calls":71,"tokens":{"input":1000,"cache_read":2000,"cache_write":3000,"output":400},"estimated":false,"cost":0.25,"duration_ms":412000,"undelivered_reports":0,"turn_ends":{"completed":2},"usage_limited":false,"grade":{"touched":true,"packages":true,"compile_error":false,"model_tests_removed":0},"pass":true,"false_completion":false,"diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"project_config":"blob1"}`
+const specLine = `{"schema":1,"batch":"2026-12-01","suite":"tree1","task":"pr-0051","kind":"plain","variant":"main@3f18401c","route":"deepseek-flash","family":"deepseek","rep":2,"attempt":1,"started":"2026-12-01T10:00:00Z","exit":0,"reason":"completed","build":"3f18401c","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","steps":38,"tool_calls":71,"tokens":{"input":1000,"cache_read":2000,"cache_write":3000,"output":400},"estimated":false,"cost":0.25,"duration_ms":412000,"text_length":5,"undelivered_reports":0,"turn_ends":{"completed":2},"usage_limited":false,"grade":{"touched":true,"packages":true,"compile_error":false,"model_tests_removed":0},"pass":true,"false_completion":false,"diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"contaminated_matches":0,"project_config":"blob1"}`
 
 func keys(t *testing.T, v any) []string {
 	t.Helper()
@@ -51,6 +51,7 @@ func TestLineShape(t *testing.T) {
 	require.Equal(t, int64(6400), r.Tokens.Total())
 	require.Equal(t, 0.25, r.Cost)
 	require.Equal(t, int64(412000), r.DurationMS)
+	require.Equal(t, 5, r.TextLength)
 	require.Equal(t, map[string]int{"completed": 2}, r.TurnEnds)
 	require.Equal(t, result.Grade{Touched: true, Packages: true}, r.Grade)
 	require.True(t, r.Grade.Passed())
@@ -58,10 +59,10 @@ func TestLineShape(t *testing.T) {
 	require.Equal(t, result.Diff{Files: 3, Added: 41, Deleted: 6}, r.Diff)
 	require.Equal(t, "blob1", r.ProjectConfig)
 
-	require.Equal(t, sorted("attempt", "batch", "build", "contaminated", "cost", "diff",
+	require.Equal(t, sorted("attempt", "batch", "build", "contaminated", "contaminated_matches", "cost", "diff",
 		"duration_ms", "estimated", "exit", "family", "false_completion", "grade", "kind",
 		"model", "pass", "project_config", "provider", "reason", "rep", "route", "schema",
-		"started", "steps", "suite", "task", "tool_calls", "tokens", "turn_ends",
+		"started", "steps", "suite", "task", "text_length", "tool_calls", "tokens", "turn_ends",
 		"undelivered_reports", "usage_limited", "variant", "worktrees"), keys(t, r))
 	require.Equal(t, sorted("cache_read", "cache_write", "input", "output"), keys(t, r.Tokens))
 	require.Equal(t, sorted("compile_error", "model_tests_removed", "packages", "touched"), keys(t, r.Grade))

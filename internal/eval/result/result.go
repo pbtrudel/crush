@@ -57,28 +57,31 @@ type Diff struct {
 // Result is one attempt of one run. It holds no prompt, answer, file content
 // or path from the session.
 type Result struct {
-	Schema             int            `json:"schema"`
-	Batch              string         `json:"batch"`
-	Suite              string         `json:"suite"`
-	Task               string         `json:"task"`
-	Kind               string         `json:"kind"`
-	Variant            string         `json:"variant"`
-	Route              string         `json:"route"`
-	Family             string         `json:"family"`
-	Rep                int            `json:"rep"`
-	Attempt            int            `json:"attempt"`
-	Started            time.Time      `json:"started"`
-	Exit               int            `json:"exit"`
-	Reason             string         `json:"reason"`
-	Build              string         `json:"build"`
-	Model              string         `json:"model"`
-	Provider           string         `json:"provider"`
-	Steps              int            `json:"steps"`
-	ToolCalls          int            `json:"tool_calls"`
-	Tokens             Tokens         `json:"tokens"`
-	Estimated          bool           `json:"estimated"`
-	Cost               float64        `json:"cost"`
-	DurationMS         int64          `json:"duration_ms"`
+	Schema     int       `json:"schema"`
+	Batch      string    `json:"batch"`
+	Suite      string    `json:"suite"`
+	Task       string    `json:"task"`
+	Kind       string    `json:"kind"`
+	Variant    string    `json:"variant"`
+	Route      string    `json:"route"`
+	Family     string    `json:"family"`
+	Rep        int       `json:"rep"`
+	Attempt    int       `json:"attempt"`
+	Started    time.Time `json:"started"`
+	Exit       int       `json:"exit"`
+	Reason     string    `json:"reason"`
+	Build      string    `json:"build"`
+	Model      string    `json:"model"`
+	Provider   string    `json:"provider"`
+	Steps      int       `json:"steps"`
+	ToolCalls  int       `json:"tool_calls"`
+	Tokens     Tokens    `json:"tokens"`
+	Estimated  bool      `json:"estimated"`
+	Cost       float64   `json:"cost"`
+	DurationMS int64     `json:"duration_ms"`
+	// TextLength is the length of the run's answer text. The text itself
+	// never enters the line.
+	TextLength         int            `json:"text_length"`
 	UndeliveredReports int            `json:"undelivered_reports"`
 	TurnEnds           map[string]int `json:"turn_ends"`
 	UsageLimited       bool           `json:"usage_limited"`
@@ -88,7 +91,10 @@ type Result struct {
 	Diff               Diff           `json:"diff"`
 	Worktrees          int            `json:"worktrees"`
 	Contaminated       bool           `json:"contaminated"`
-	ProjectConfig      string         `json:"project_config"`
+	// ContaminatedMatches counts the tool calls whose input named one of
+	// the contamination markers.
+	ContaminatedMatches int    `json:"contaminated_matches"`
+	ProjectConfig       string `json:"project_config"`
 }
 
 // Key identifies a run across its attempts.
