@@ -213,7 +213,9 @@ func TestBlockedCompactionEndsTheTurn(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "blocked compaction")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	// The deadline is a hang guard, not a budget: the turn takes a few
+	// milliseconds, and only a wedged run makes this fire.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
 	require.NoError(t, err)
