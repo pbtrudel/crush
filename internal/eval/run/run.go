@@ -182,9 +182,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 
 	line.Diff, line.Worktrees = treeStats(ctx, src, base)
-	line.ContaminatedMatches, err = scanDatabase(
+	line.ContaminatedMatches, err = Matches(
 		filepath.Join(runDir, "data", "crush.db"),
-		contaminationMarkers(opts.Task, opts.SuiteDir, opts.RepoDir),
+		opts.Task, opts.SuiteDir, opts.RepoDir,
 	)
 	if err != nil {
 		return line, err
@@ -395,10 +395,16 @@ func number(s string) int {
 	return n
 }
 
-// runDirName is the run's directory name under runs/. The variant may hold
-// characters that a path cannot, so every other character becomes a dash.
+// runDirName is the run's directory name under runs/.
 func runDirName(opts Options) string {
-	name := fmt.Sprintf("%s-%s-%s-r%d", opts.Task.ID, opts.Variant, opts.Route.Name, opts.Rep)
+	return DirName(opts.Task.ID, opts.Variant, opts.Route.Name, opts.Rep)
+}
+
+// DirName is the run's directory name under a batch's runs/. The variant may
+// hold characters that a path cannot, so every other character becomes a
+// dash.
+func DirName(taskID, variant, route string, rep int) string {
+	name := fmt.Sprintf("%s-%s-%s-r%d", taskID, variant, route, rep)
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':

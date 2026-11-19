@@ -53,6 +53,12 @@ func contaminationMarkers(tk *task.Task, suiteDir, repoDir string) []marker {
 	return markers
 }
 
+// Matches opens the session database at path and counts the tool calls whose
+// input names one of the task's contamination markers. It keeps no text.
+func Matches(path string, tk *task.Task, suiteDir, repoDir string) (int, error) {
+	return scanDatabase(path, contaminationMarkers(tk, suiteDir, repoDir))
+}
+
 // scanDatabase opens the run's own session database read-only and counts
 // the tool calls whose input names one of the markers. It keeps no text.
 func scanDatabase(path string, markers []marker) (int, error) {
