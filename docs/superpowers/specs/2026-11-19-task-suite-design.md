@@ -4,7 +4,7 @@ Design for item W0.4 of the roadmap (`docs/superpowers/plans/2026-11-17-model-in
 
 ## Goal
 
-Give every behavior change and experiment of the roadmap one number that says whether the same model finishes more tasks correctly inside Crush. The suite is 25 to 30 tasks cut from this repository's merged pull requests. A runner runs each task in a throwaway checkout through `crush run --json`, grades it with the pull request's own tests, and records the result. A comparison step pairs two variants run for run and applies the margin rule of the roadmap.
+Give every behavior change and experiment of the roadmap one number that says whether the same model finishes more tasks correctly inside Crush. The suite is 27 tasks cut from the merged pull requests of this fork. A runner runs each task in a throwaway checkout through `crush run --json`, grades it with the pull request's own tests, and records the result. A comparison step pairs two variants run for run and applies the margin rule of the roadmap.
 
 Nothing in this design changes what a model is sent. The runner only calls the `crush` binary that is under test.
 
@@ -24,7 +24,7 @@ Nothing in this design changes what a model is sent. The runner only calls the `
 Gathered on 2026-11-18 and 2026-11-19 with read-only `gh` queries and with Go builds in a scratch directory. No model was run.
 
 1. **Pull requests.** `pbtrudel/crush` has 116 merged pull requests. 91 were fetched in full, and 90 of those have a body with `## Why`, `## How` and `## Testing` sections, so the prompt source is uniform. The other 25 were not fetched: upstream syncs, dependency bumps, CI and documentation changes, and changes of 1,700 added lines or more.
-2. **Upstream history.** 996 squash commits ending in `(#NNN)` from `charmbracelet/crush` are reachable from `origin/main` (2025-04-30 to 2026-11-05, upstream v0.100.0). They are a second pool; see Decision needed 1.
+2. **Upstream history.** 996 squash commits ending in `(#NNN)` from `charmbracelet/crush` are reachable from `origin/main` (2025-04-30 to 2026-11-05, upstream v0.100.0). They are upstream pull requests, not opened in this fork, and the suite excludes them (1.1).
 3. **Classification.** For each of the 87 fork pull requests that change a `_test.go` file, a script took the parent commit (`merge^1`) with `git archive`, wrote over it the test files of the merge commit, and ran the touched tests (`go test -count=1 -run '^(names)$' <packages>`), then ran the same tests on the merge commit. Results:
 
    | Class | Count | Meaning |
@@ -48,7 +48,7 @@ Gathered on 2026-11-18 and 2026-11-19 with read-only `gh` queries and with Go bu
 
 #### 1.1 Pool
 
-The primary pool is the merged pull requests of `pbtrudel/crush`. Upstream commits reachable from `origin/main` are a reserve pool, used only if the owner accepts them (Decision needed 1) and only if fewer than 20 fork tasks survive vetting.
+The pool is the merged pull requests opened in `pbtrudel/crush`, 116 of them. Pull requests from `charmbracelet/crush` never count as tasks, not even as reserves. The fork pool gives 27 tasks and 3 reserves (1.5), so no second pool is needed.
 
 #### 1.2 Rules
 
@@ -88,7 +88,7 @@ The method is a command of the runner (`crush-eval candidates`, section 7), so t
 
 #### 1.5 First draft
 
-27 tasks and 3 reserves from the survey of 2026-11-19. "Parent" is `merge^1`. "Tests" are the touched tests the grade runs by name; the grade also runs the rest of their packages (3.5). Grade time is the merge-commit run of step 2 above, compile included.
+27 tasks from the survey of 2026-11-19: 13 plain and 14 interface. Every task counts toward the pass rate, plain and interface alike; results are also reported by kind (4.2). There are 3 reserves, all fork pull requests. "Parent" is `merge^1`. "Tests" are the touched tests the grade runs by name; the grade also runs the rest of their packages (3.5). Grade time is the merge-commit run of step 2 above, compile included.
 
 Plain tasks:
 
@@ -127,7 +127,7 @@ Interface tasks (the names the prompt must state come from the compiler output o
 | 81 | Subagents cannot use MCP servers | `83250820` | `func resolveSubAgentTools(tools []string) []string` | `./internal/agent`, `./internal/config`: 7 tests | 31 s | |
 | 105 | A replaced coordinator keeps waking sessions | `326d3b40` | `func (app *App) coordinatorContext() context.Context` | `./internal/app`: `TestCoordinatorContextEndsWithTheApp`, `TestCoordinatorContextLivesWithTheApp` | 11 s | |
 
-Reserves: #50 (repetition guard misses spaced repeats; 5 packages and 11 tests, too wide), #65 (`/goal` missing from the menu; needs `dialog.ActionGoal` and `dialog.ActionLoop`), #78 (title generation budget; four introduced names).
+Reserve tasks, all fork pull requests: #50 (repetition guard misses spaced repeats; 5 packages and 11 tests, too wide), #65 (`/goal` missing from the menu; needs `dialog.ActionGoal` and `dialog.ActionLoop`), #78 (title generation budget; four introduced names). A reserve takes the place of a task that vetting drops, so the suite stays at 27. No upstream pull request is a reserve.
 
 Dropped and why: #16 (its package fails at the merge commit), #23 (the interface is the fix: turning generic methods into functions), and every pull request with more than four introduced names, which includes all of W0.1 to W0.3 (#96 to #116).
 
@@ -250,9 +250,9 @@ A route file:
 ```yaml
 name: deepseek-flash
 family: deepseek
-provider: <provider id as Crush names it>
-model: deepseek-v4.1-flash
-small_model: deepseek-v4.1-flash
+provider: commandcode
+model: deepseek/deepseek-v4.1-flash
+small_model: deepseek/deepseek-v4.1-flash
 reasoning_effort: ""
 provider_config:                 # merged into the generated config
   api_key: "$DEEPSEEK_API_KEY"   # Crush resolves it from the environment
@@ -332,7 +332,7 @@ After each run the runner opens the run's own session database (in `<run>/data`,
 
 #### 4.2 Per variant and route
 
-Pass rate (passes over valid runs), false-completion rate (over valid runs, and over completed runs), stopped-short rate, and the medians and totals of `tree.steps`, `tree.tool_calls`, tokens by kind and duration. Cost is shown only when every run of the route has a non-zero, non-estimated cost; tokens are the figure compared across models (measurement design, 3.2).
+Pass rate (passes over valid runs), false-completion rate (over valid runs, and over completed runs), stopped-short rate, and the medians and totals of `tree.steps`, `tree.tool_calls`, tokens by kind and duration. Cost is shown only when every run of the route has a non-zero, non-estimated cost; tokens are the figure compared across models (measurement design, 3.2). The pass rate counts every task, plain and interface the same. Each figure is also reported by kind.
 
 #### 4.3 Paired comparison and the margin rule
 
@@ -365,11 +365,27 @@ The per-task pass counts are committed in `evals/baselines/` (counts only).
 
 Decision 1 names seven families: DeepSeek, GLM, Kimi, GPT, Claude, MiMo and Qwen. `evals/matrix.yaml` maps each to one route name, with no secrets:
 
+| Family | Route | Provider | Model |
+|---|---|---|---|
+| DeepSeek | `deepseek-flash` | `commandcode` | `deepseek/deepseek-v4.1-flash` |
+| GLM | `glm-5.3` | `hyper` | `glm-5.3` |
+| Kimi | `kimi-3.1-pro` | `neuralwatt` | `kimi-k3.1-pro` |
+| GPT | `gpt-6` | `copilot` | `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` or `gpt-6.2-sol`, the cheapest; pending the user's choice |
+| Claude | `claude-sonnet` | `claude-agent` | `sonnet`, the CLI's own alias; `copilot` / `claude-sonnet-5` is the alternative |
+| MiMo | `mimo-2.6-pro` | `neuralwatt` | `mimo-v2.6-pro` |
+| Qwen | `qwen3.8-flash` | `hyper` | `qwen3.8-flash` |
+
+Model ids are as `crush models` lists them. `commandcode` serves DeepSeek Flash only and is never listed for another family. `commandcode-claude` is not used.
+
 ```yaml
 families:
   deepseek: {route: deepseek-flash, entered: 2026-12-01}
-  glm:      {route: <name>, entered: null}
-  ...
+  glm:      {route: glm-5.3, entered: null}
+  kimi:     {route: kimi-3.1-pro, entered: null}
+  gpt:      {route: gpt-6, entered: null}
+  claude:   {route: claude-sonnet, entered: null}
+  mimo:     {route: mimo-2.6-pro, entered: null}
+  qwen:     {route: qwen3.8-flash, entered: null}
 ```
 
 | When | Routes | Runs at 27 tasks, 3 repetitions |
@@ -382,12 +398,12 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 
 #### 5.2 How a family enters
 
-1. The owner names a route: provider, model id, reasoning effort, and its usage limits from the provider's terms.
+1. The route of 5.1 is checked: provider, model id, reasoning effort, and its usage limits from the provider's terms.
 2. `crush-eval login` if the route uses OAuth.
 3. Entry checks on two tasks: one run ends `completed`, one with `--max-steps 3` ends `step_limit`, one with `--timeout 1m` ends `time_limit`, and the result line has non-zero tokens. These are the live checks of the measurement design, repeated per route.
 4. Route-specific checks:
-   - **GPT** runs on Copilot, the only provider configured here whose catalog types GPT models as `responses`, once a captured request confirms that API is in use (roadmap W1.2). The route must list no model entry that drops the catalog type (roadmap W1.2, `internal/config/load.go:516-543`).
-   - **Claude** runs through the Claude Agent provider. The CLI owns the turn loop, so the entry check also confirms that the step and time limits stop it, and that `CLAUDE_CONFIG_DIR` keeps the user's `~/.claude` out. W3 and W9 results are reported separately for this route.
+   - **GPT** runs on Copilot, the only provider configured here whose catalog types GPT models as `responses`, once a captured request confirms that API is in use (roadmap W1.2). The route must list no model entry that drops the catalog type (roadmap W1.2, `internal/config/load.go:516-543`). The route uses a GPT 6.1 or 6.2 model, the cheapest one. There is no Luna variant for either: the catalog offers `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` and `gpt-6.2-sol`. The exact model is pending the user's choice (6.3).
+   - **Claude** runs through the Claude Agent provider, model `sonnet`. The CLI owns the turn loop, so the entry check also confirms that the step and time limits stop it, and that `CLAUDE_CONFIG_DIR` keeps the user's `~/.claude` out. W3 and W9 results are reported separately for this route. If the CLI checks fail, the route falls back to `copilot` / `claude-sonnet-5`.
    - **Subscription routes** record their window and cap. A full acceptance batch (162 runs per route) must fit the cap within a stated number of days, or the route runs fewer repetitions and says so.
 5. The family is recorded in `matrix.yaml` with its entry date, and gets a baseline (4.4, step 3) before its first comparison.
 
@@ -404,9 +420,9 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 
 #### 6.2 Risks
 
-- **Contamination.** A model may have seen these pull requests: the fork is public. Fork pull requests are from October and November 2026, newer than many training cutoffs; upstream commits are older and public longer, which is one reason they are the reserve pool. Paired comparisons cancel a constant advantage, so the risk is to absolute pass rates, which are not comparable to other benchmarks or across families. The run itself is checked for contact with the answer (3.7).
+- **Contamination.** A model may have seen these pull requests: the fork is public. Fork pull requests are from October and November 2026, newer than many training cutoffs. The suite uses no upstream pull request, which would be older and public longer. Paired comparisons cancel a constant advantage, so the risk is to absolute pass rates, which are not comparable to other benchmarks or across families. The run itself is checked for contact with the answer (3.7).
 - **Bias toward solved tasks.** Every task was solved with this harness and a person steering, most often by the models this harness is tuned for. The suite measures changes, not how capable the harness is in general. Package spread is skewed toward `internal/agent` and the UI, which rule 9 limits.
-- **Interface tasks are easier.** Naming a function tells the model where the change goes. Results are reported for plain and interface tasks separately as well as together.
+- **Interface tasks are easier.** Naming a function tells the model where the change goes. They count in the pass rate the same as the plain tasks. Results are reported for plain and interface tasks separately as well as together, so the effect is visible.
 - **Flaky tests.** Vetting needs 5 of 5 at the parent (failing) and the merge (passing). Every batch grades the references first (3.5). A task whose reference fails twice in different batches is quarantined until fixed.
 - **Grades that test a helper.** A model can pass by writing the named helper without using it (#20). Vetting reads the assertions; weak tasks go first when trimming.
 - **Model-written tests.** Removing the model's new test files in graded packages before grading is necessary for the build, and it hides nothing the grade relies on.
@@ -415,11 +431,9 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 - **Small suite.** With 27 tasks one model's pass rate moves 3.7 points per task. Single-model decisions under the detectable effect need more repetitions or tasks; `plan` says which.
 - **Project config.** Each checkout loads the tracked `crush.json` of its base commit. It is the same for both variants, and its hash is recorded, so a change in it between tasks is visible.
 
-#### 6.3 Decisions needed
+#### 6.3 Open questions
 
-1. **Upstream commits.** Decision 3 says "this repository's pull requests only". Upstream pull requests are in this repository's history but were not opened here. The design uses them only if the fork pool falls below 20 tasks after vetting and the owner agrees.
-2. **Route per family.** Six of the seven routes are not named yet (5.2).
-3. **Interface tasks in the pass rate.** The design counts them, and reports the split. The alternative is to keep only plain tasks, which today gives 13.
+1. **GPT model.** The route is fixed at Copilot with the Responses API and a GPT 6.1 or 6.2 model, the cheapest. The catalog offers `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra` and `gpt-6.2-sol`, and none of them is a Luna variant. Which one runs is pending the user's choice.
 
 ### 7. Implementation
 
@@ -443,9 +457,10 @@ Pull requests 1 to 3 need no model and no money. Pull request 5 is the first tha
 2. **A shallow clone of the base.** Keeps some history. Rejected for now: fetching a commit by sha from a local mirror depends on server settings, and the depth that is useful to a model is unknown. It can be a variant later.
 3. **Hidden tests copied into `evals/`.** Simpler to read. Rejected: they would sit in plain text in every checkout of the repository that a model might search. Blob references keep the suite free of answer code.
 4. **Grade only the touched tests.** Faster. Rejected: a fix that breaks a neighbor in the same package would pass.
-5. **Keep every task that compiles, drop interface tasks.** Cleaner. Rejected as the default: it leaves 13 tasks, below the roadmap's 20; offered as Decision needed 3.
+5. **Keep every task that compiles, drop interface tasks.** Cleaner. Rejected: it leaves 13 tasks, below the roadmap's 20, and interface tasks count in the pass rate.
 6. **A `crush eval` subcommand.** Rejected in 3.1.
 7. **Compare against the stored baseline instead of a fresh control.** Half the runs. Rejected: providers drift between batches, and pairing only holds within one window.
+8. **Use upstream pull requests as a reserve pool.** More tasks to draw on. Rejected: the owner counts fork pull requests only, and upstream pull requests never enter the suite.
 
 ## Noticed, not changed here
 
