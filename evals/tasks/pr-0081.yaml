@@ -36,8 +36,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 70
+  timeout: 10m
 risks:
   - 'hidden choice: the exact task preset tool list and its order, and that the MCP allow-list is nil instead of an empty map'
   - the hidden-choice paragraph states most of the excluded tool set, which is the design of the change

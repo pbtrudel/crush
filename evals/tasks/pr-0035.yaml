@@ -31,8 +31,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 62
+  timeout: 10m
 risks:
   - "hidden choice: the frozen duration covers completed, cancelled and failed runs and is measured from the run's start to its terminal state."
   - "asserts rendered footer text, so a harmless formatting choice fails the task."

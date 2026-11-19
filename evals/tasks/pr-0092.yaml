@@ -21,8 +21,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 80
+  timeout: 10m
 risks:
   - "hidden choice: the picker offers the configured model's effort levels in its configured order and selects its configured default effort level."
 vetted:

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
@@ -17,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
 const batchUsage = `usage:
@@ -25,11 +25,7 @@ const batchUsage = `usage:
 // batchCmd runs an experiment: it builds the variants, grades the references
 // and runs the suite on every route under the route and machine caps.
 func batchCmd(args []string, stdout, stderr io.Writer) int {
-	// The experiment comes first in the usage, but the flag package stops at
-	// the first positional argument, so move it behind the flags.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		args = append(args[1:], args[0])
-	}
+	args = moveFirstArg(args)
 	flags := flag.NewFlagSet("batch", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	id := flags.String("id", "", "batch id; defaults to the experiment's date and name")
@@ -76,7 +72,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		}
 		routes[name] = rt
 	}
-	tasks, err := task.LoadDir(filepath.Join("evals", "tasks"))
+	tasks, err := task.LoadDir(filepath.Join(suiteDir, "tasks"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -88,17 +84,17 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
 			return 1
 		}
-		if err := tk.ValidateRepo("."); err != nil {
+		if err := tk.ValidateRepo(repoDir); err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
 			return 1
 		}
 	}
-	footer, err := os.ReadFile(filepath.Join("evals", "footer.md"))
+	footer, err := os.ReadFile(filepath.Join(suiteDir, "footer.md"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	suite, err := task.SuiteVersion("evals")
+	suite, err := task.SuiteVersion(suiteDir)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -119,6 +115,13 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 	if batchID == "" {
 		batchID = exp.Date + "-" + exp.Name
 	}
+	// The record holds the toolchain, so a batch whose references fail under
+	// a different go is not mistaken for a drop in pass rate.
+	version, err := toolchain.Version(os.Environ())
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	sum, err := batch.Run(ctx, batch.Options{
 		ID:         batchID,
 		Experiment: exp,
@@ -126,11 +129,12 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		Seed:       *seed,
 		Tasks:      tasks,
 		Routes:     routes,
-		RepoDir:    ".",
+		RepoDir:    repoDir,
 		Home:       h,
 		Suite:      suite,
-		SuiteDir:   "evals",
+		SuiteDir:   suiteDir,
 		Footer:     string(footer),
+		Toolchain:  version,
 		Env:        grade.Env(gradeHome),
 		Scratch:    scratch,
 	})

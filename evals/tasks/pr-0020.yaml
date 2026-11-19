@@ -22,7 +22,7 @@ grade:
   timeout: 10m
 limits:
   max_steps: 120
-  timeout: 25m
+  timeout: 10m
 risks:
   - "weak grade: the grade covers the new helper only, not the call sites the problem is about, so a model can pass by writing the helper alone (design table note)."
   - "the hidden test compares against WorkspaceOpTimeout rather than asserting 30 s, so the timeout's value is stated in the interface paragraph."

@@ -8,18 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/stretchr/testify/require"
 )
-
-// writeBaseline writes a baseline file as the runner's tooling does.
-func writeBaseline(path string, b *score.Baseline) error {
-	data, err := json.MarshalIndent(b, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
 
 func baseline() *score.Baseline {
 	return &score.Baseline{
@@ -34,6 +26,40 @@ func baseline() *score.Baseline {
 			{Task: "pr-0005", Passes: 2, Runs: 3},
 		},
 	}
+}
+
+// TestNewBaseline counts one route over every variant: invalid and
+// contaminated runs are left out, a task with no valid run is left out, and
+// the tasks come sorted.
+func TestNewBaseline(t *testing.T) {
+	t.Parallel()
+
+	last := run("main@abc12345", "pr-0006", result.KindPlain, 0, true)
+	pass := run("main@abc12345", "pr-0001", result.KindPlain, 0, true)
+	stopped := run("main@abc12345", "pr-0002", result.KindPlain, 2, false)
+	otherVariant := run("w8@abc12345", "pr-0002", result.KindPlain, 0, true)
+	invalid := run("w8@abc12345", "pr-0003", result.KindPlain, 1, true)
+	contaminated := run("main@abc12345", "pr-0004", result.KindPlain, 0, true)
+	contaminated.Contaminated = true
+	otherRoute := run("main@abc12345", "pr-0005", result.KindPlain, 0, true)
+	otherRoute.Route = "glm-5.3"
+
+	got, err := score.NewBaseline("2026-11-20", "deepseek-flash",
+		[]result.Result{last, pass, stopped, otherVariant, invalid, contaminated, otherRoute})
+	require.NoError(t, err)
+	require.Equal(t, &score.Baseline{
+		Schema: 1,
+		Date:   "2026-11-20",
+		Route:  "deepseek-flash",
+		Tasks: []score.TaskPassCount{
+			{Task: "pr-0001", Passes: 1, Runs: 1},
+			{Task: "pr-0002", Passes: 1, Runs: 2},
+			{Task: "pr-0006", Passes: 1, Runs: 1},
+		},
+	}, got)
+
+	_, err = score.NewBaseline("2026-11-20", "glm-5.3", []result.Result{invalid})
+	require.ErrorContains(t, err, "no valid runs")
 }
 
 func TestDetectableEffect(t *testing.T) {
@@ -85,7 +111,7 @@ func TestBaselineRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "2026-11-20-deepseek-flash.json")
 
 	want := baseline()
-	require.NoError(t, writeBaseline(path, want))
+	require.NoError(t, want.WriteFile(path))
 	got, err := score.LoadBaseline(path)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
@@ -105,7 +131,7 @@ func TestLoadBaselineRejectsBadCounts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "b.json")
 	bad := baseline()
 	bad.Tasks[0].Passes = 4
-	require.NoError(t, writeBaseline(path, bad))
+	require.NoError(t, bad.WriteFile(path))
 	_, err := score.LoadBaseline(path)
 	require.ErrorContains(t, err, "passes")
 

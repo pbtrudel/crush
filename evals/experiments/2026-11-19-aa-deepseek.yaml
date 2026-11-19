@@ -1,0 +1,13 @@
+date: 2026-11-19
+name: aa-deepseek
+variants:
+  - name: control
+    ref: 1f8b9899183ea9d794855319fdc35aa803e228a5
+  - name: same
+    ref: 1f8b9899183ea9d794855319fdc35aa803e228a5
+routes: [deepseek-flash]
+repetitions: 3
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0

@@ -11,11 +11,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/task"
+)
+
+// The suite and the repository a batch runs with, relative to the directory
+// crush-eval runs in. rescan rebuilds its contamination markers from the same
+// paths.
+const (
+	suiteDir = "evals"
+	repoDir  = "."
 )
 
 const usage = `usage:
@@ -29,6 +38,9 @@ const usage = `usage:
   crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD]
   crush-eval batch <experiment.yaml> [--id ID] [--seed N]
   crush-eval compare <batch-id> [--json]
+  crush-eval baseline <batch-id> [--route <name>] [--out <file>]
+  crush-eval rescan <batch-id>
+  crush-eval limits <batch-id> [--write]
   crush-eval plan <experiment.yaml>
   crush-eval login <route>`
 
@@ -59,6 +71,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return batchCmd(args[1:], stdout, stderr)
 	case "compare":
 		return compareCmd(args[1:], stdout, stderr)
+	case "baseline":
+		return baselineCmd(args[1:], stdout, stderr)
+	case "rescan":
+		return rescanCmd(args[1:], stdout, stderr)
+	case "limits":
+		return limitsCmd(args[1:], stdout, stderr)
 	case "plan":
 		return planCmd(args[1:], stdout, stderr)
 	case "login":
@@ -261,6 +279,19 @@ func evalTmpDir() (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// moveFirstArg moves a leading positional argument behind the flags: the flag
+// package stops at the first positional argument, so a command states the
+// batch id or the experiment first in its usage but parses it last. It returns
+// a new slice, so the caller's args stay as they were.
+func moveFirstArg(args []string) []string {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return args
+	}
+	moved := make([]string, 0, len(args))
+	moved = append(moved, args[1:]...)
+	return append(moved, args[0])
 }
 
 // print writes one JSON line and returns 0, or 1 when the value does not

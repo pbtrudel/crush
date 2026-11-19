@@ -1,11 +1,13 @@
 package route
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,10 +34,10 @@ func TestChildEnv(t *testing.T) {
 	r := &Route{Name: "deepseek-flash", Provider: "commandcode", Env: []string{"DEEPSEEK_API_KEY"}}
 
 	dirs := Dirs{Home: "/state/crush-eval/runs/r1/home", Config: "/state/crush-eval/runs/r1/config/crush"}
-	env, err := r.ChildEnv(h, dirs, parentEnv)
+	env, err := r.childEnv(h, dirs, parentEnv, toolchainAt("/toolchains/go1.27.2"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
-		"PATH":                  "/usr/local/bin:/usr/bin:/bin",
+		"PATH":                  "/toolchains/go1.27.2/bin:/usr/local/bin:/usr/bin:/bin",
 		"HOME":                  dirs.Home,
 		"LANG":                  "en_US.UTF-8",
 		"GOCACHE":               "/home/someone/.cache/go-build",
@@ -62,7 +64,7 @@ func TestChildEnvClaudeAgent(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "claude-sonnet", Provider: "claude-agent", Env: []string{"CLAUDE_TOKEN"}}
 
-	env, err := r.ChildEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv)
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv, toolchainAt("/toolchains/go1.27.2"))
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(h.Dir(), "claude"), envMap(env)["CLAUDE_CONFIG_DIR"])
 	require.Equal(t, h.Dir(), filepath.Dir(envMap(env)["CLAUDE_CONFIG_DIR"]))
@@ -134,10 +136,126 @@ func TestChildEnvRejects(t *testing.T) {
 			if tt.wantErr == "no HOME directory" {
 				dirs.Home = ""
 			}
-			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), dirs, tt.parent)
+			_, err := tt.route.childEnv(home.At("/state/crush-eval"), dirs, tt.parent, toolchainAt("/toolchains/go1.27.2"))
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+}
+
+// TestChildEnvSelectsToolchain checks the environment a run really builds:
+// the go of the toolchain go.mod selects comes first on PATH, so a go the
+// model runs does not fail on GOTOOLCHAIN=local.
+func TestChildEnvSelectsToolchain(t *testing.T) {
+	t.Parallel()
+
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	env, err := r.ChildEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv)
+	require.NoError(t, err)
+
+	path := envMap(env)["PATH"]
+	require.True(t, strings.HasSuffix(path, string(os.PathListSeparator)+"/usr/local/bin:/usr/bin:/bin"),
+		"PATH %q does not keep the parent's", path)
+	require.NotEqual(t, "/usr/local/bin:/usr/bin:/bin", path, "the selected toolchain comes first on PATH")
+}
+
+// TestChildEnvResolvesCaches checks the environment a run really builds when
+// the user set the caches only in go's own env file: the child's HOME is its
+// own empty directory, so go in the child needs both caches from the parent
+// or an offline module lookup fails.
+func TestChildEnvResolvesCaches(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	fakeGo(t, root)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, toolchainAt(root))
+	require.NoError(t, err)
+	require.Equal(t, "/fake/GOCACHE", envMap(env)["GOCACHE"])
+	require.Equal(t, "/fake/GOMODCACHE", envMap(env)["GOMODCACHE"])
+}
+
+// TestChildEnvOmitsUnsetCaches checks that a cache neither the parent nor
+// the selected go sets is left out rather than set empty, which go rejects.
+func TestChildEnvOmitsUnsetCaches(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	silentGo(t, root)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, toolchainAt(root))
+	require.NoError(t, err)
+	require.NotContains(t, env, "GOCACHE=")
+	require.NotContains(t, env, "GOMODCACHE=")
+}
+
+// TestChildEnvResolvesToolchainOnce checks that a child environment resolves
+// the toolchain once and then runs go once per cache, instead of resolving the
+// toolchain and running go again for every value.
+func TestChildEnvResolvesToolchainOnce(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls")
+	countingGo(t, root, log)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+	calls := 0
+	resolve := func([]string) (string, error) {
+		calls++
+		return root, nil
+	}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, resolve)
+	require.NoError(t, err)
+	require.Equal(t, "/fake/GOCACHE", envMap(env)["GOCACHE"])
+	require.Equal(t, "/fake/GOMODCACHE", envMap(env)["GOMODCACHE"])
+	require.Equal(t, 1, calls, "the toolchain resolves once")
+
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	require.Equal(t, 2, strings.Count(string(data), "\n"),
+		"go runs once per cache")
+}
+
+// countingGo writes a go in root's bin that logs the go env name it is asked
+// for and reports /fake/<name>.
+func countingGo(t *testing.T, root, log string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	script := "#!/bin/sh\necho \"$2\" >> " + log + "\necho \"/fake/$2\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+}
+
+// silentGo writes a go in root's bin that reports no value for any name.
+func silentGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"), 0o700))
+}
+
+// fakeGo writes a go in root's bin that reports /fake/<name> for the go env
+// name it is asked for.
+func fakeGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	script := "#!/bin/sh\necho \"/fake/$2\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+}
+
+// toolchainAt is a toolchain resolver that names root.
+func toolchainAt(root string) toolchain.Resolver {
+	return func([]string) (string, error) { return root, nil }
 }
 
 // envMap turns a KEY=VALUE list into a map for assertions.

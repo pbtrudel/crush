@@ -26,8 +26,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 40
+  timeout: 10m
 risks: []
 vetted:
   date: "2026-11-19"

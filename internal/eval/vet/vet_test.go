@@ -78,6 +78,24 @@ func TestWriteVetted(t *testing.T) {
 		require.Equal(t, v, tk.Vetted)
 	})
 
+	t.Run("keeps a column-0 comment after the block", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "pr-0007.yaml")
+		text := "schema: 1\nid: pr-0007\nvetted: {}\n\n# Why the risks are what they are.\nrisks: []\n"
+		require.NoError(t, os.WriteFile(path, []byte(text), 0o644))
+
+		require.NoError(t, vet.WriteVetted(path, want))
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(string(got), "schema: 1\nid: pr-0007\nvetted:\n"))
+		require.True(t, strings.HasSuffix(string(got), "\n\n# Why the risks are what they are.\nrisks: []\n"),
+			"the blank line and the column-0 comment stay after the block")
+
+		tk, err := task.Load(path)
+		require.NoError(t, err)
+		require.Equal(t, want, tk.Vetted)
+	})
+
 	t.Run("replaces a block in place", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "pr-0007.yaml")

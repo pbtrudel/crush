@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
 // Result is the grade object of a result line plus the timings, the failing
@@ -110,34 +111,32 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env
 
 // Env is the environment grading runs go with: PATH, home as HOME, the go
 // caches, and no network or toolchain download. home is a scratch directory,
-// so the tests and go never read the user's files.
+// so the tests and go never read the user's files. The selected toolchain
+// comes first on PATH, so grading runs the go go.mod asks for even though
+// GOTOOLCHAIN is local.
 func Env(home string) []string {
+	return env(home, os.Environ(), toolchain.GOROOT)
+}
+
+// env builds Env from parent, with resolve naming the toolchain that goes
+// first on PATH.
+func env(home string, parent []string, resolve toolchain.Resolver) []string {
+	root := toolchain.Root(parent, resolve)
 	env := []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + toolchain.PathWithRoot(parent, root),
 		"HOME=" + home,
 		"GOFLAGS=-buildvcs=false",
 		"GOPROXY=off",
 		"GOTOOLCHAIN=local",
 	}
+	// A cache neither the parent nor the selected go sets is left out: an
+	// empty GOCACHE makes go refuse to build.
 	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
-		if value := goValue(name); value != "" {
+		if value := toolchain.ValueWithRoot(parent, name, root); value != "" {
 			env = append(env, name+"="+value)
 		}
 	}
 	return env
-}
-
-// goValue reads one go value the process environment does not set, so a
-// crafted environment still finds the caches.
-func goValue(name string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	out, err := exec.CommandContext(context.Background(), "go", "env", name).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // failed is the grade of a checkout git could not read. The reason says
@@ -281,7 +280,7 @@ type Outcome struct {
 // stream.
 func GoTest(ctx context.Context, dir string, env, args []string) (Outcome, error) {
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := exec.CommandContext(ctx, toolchain.Go(env), args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer

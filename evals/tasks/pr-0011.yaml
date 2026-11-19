@@ -22,8 +22,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 40
+  timeout: 10m
 risks:
   - "hidden choice: the palette entry keeps its id `remote_control`, and with no session it creates exactly one session and returns the commands that start the bridge."
   - "correlated: pr-0011, pr-0065, pr-0094"

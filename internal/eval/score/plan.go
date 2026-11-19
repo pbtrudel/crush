@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/charmbracelet/crush/internal/eval/result"
 )
 
 // powerFactor turns the standard error into the effect detectable at 80%
@@ -59,6 +62,55 @@ func LoadBaseline(path string) (*Baseline, error) {
 		}
 	}
 	return &b, nil
+}
+
+// NewBaseline counts the passes and the valid runs of every task of one
+// route over the final runs of a batch, every variant pooled. Contaminated
+// and invalid runs are left out, and so is a task with no valid run: it has
+// no pass probability to plan from.
+func NewBaseline(date, route string, runs []result.Result) (*Baseline, error) {
+	type counts struct{ passes, runs int }
+	byTask := make(map[string]*counts, len(runs))
+	for _, r := range runs {
+		if r.Route != route || r.Contaminated {
+			continue
+		}
+		outcome := Classify(r)
+		if outcome == Invalid {
+			continue
+		}
+		c := byTask[r.Task]
+		if c == nil {
+			c = &counts{}
+			byTask[r.Task] = c
+		}
+		c.runs++
+		if outcome == Pass {
+			c.passes++
+		}
+	}
+	if len(byTask) == 0 {
+		return nil, fmt.Errorf("route %q: no valid runs", route)
+	}
+	b := &Baseline{Schema: 1, Date: date, Route: route, Tasks: make([]TaskPassCount, 0, len(byTask))}
+	for task, c := range byTask {
+		b.Tasks = append(b.Tasks, TaskPassCount{Task: task, Passes: c.passes, Runs: c.runs})
+	}
+	sort.Slice(b.Tasks, func(i, j int) bool { return b.Tasks[i].Task < b.Tasks[j].Task })
+	return b, nil
+}
+
+// WriteFile writes the baseline as indented JSON.
+func (b *Baseline) WriteFile(path string) error {
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal baseline: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write baseline: %w", err)
+	}
+	return nil
 }
 
 // DetectableEffect returns the standard error of the mean paired pass-rate

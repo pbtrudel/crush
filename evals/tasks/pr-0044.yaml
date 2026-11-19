@@ -39,8 +39,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 78
+  timeout: 22m
 risks:
   - three problems in one prompt (the cap, sudo in YOLO mode, package installs); the design table lists two
   - 'hidden choice: the cap is reclaimed in Start, the exact package-install commands that leave the block list, and that go test -exec stays blocked'

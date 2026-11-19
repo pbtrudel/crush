@@ -49,10 +49,13 @@ const systemConfigPath = "/etc/crush/crush.json"
 // Record is batches/<id>/batch.json: what a batch is, written before it
 // starts so a resumed batch knows its seed, suite and experiment.
 type Record struct {
-	Schema     int       `json:"schema"`
-	ID         string    `json:"id"`
-	Seed       uint64    `json:"seed"`
-	Suite      string    `json:"suite"`
+	Schema int    `json:"schema"`
+	ID     string `json:"id"`
+	Seed   uint64 `json:"seed"`
+	Suite  string `json:"suite"`
+	// Toolchain is the go version the batch runs with, as `go version`
+	// prints it, so a batch under another toolchain is visible.
+	Toolchain  string    `json:"toolchain"`
 	Experiment string    `json:"experiment"`
 	Started    time.Time `json:"started"`
 	// SystemConfig is whether this machine has a /etc/crush config, which
@@ -120,6 +123,9 @@ type Options struct {
 	Suite    string
 	SuiteDir string
 	Footer   string
+	// Toolchain is the go version the batch runs with, as `go version`
+	// prints it. The record holds it.
+	Toolchain string
 	// ParentEnv is the environment a run's child environment is built from.
 	// Nil means os.Environ().
 	ParentEnv []string
@@ -279,6 +285,7 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			ID:           opts.ID,
 			Seed:         opts.Seed,
 			Suite:        opts.Suite,
+			Toolchain:    opts.Toolchain,
 			Experiment:   opts.Path,
 			Started:      opts.Now().UTC(),
 			SystemConfig: systemConfig(),

@@ -37,8 +37,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 84
+  timeout: 10m
 risks:
   - "hidden choice: none; the test drives `Coordinator.UpdateModels` and reads `Coordinator.Model`, the entry point and accessor the Why names."
   - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
