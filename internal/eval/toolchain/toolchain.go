@@ -19,6 +19,11 @@ type Resolver func(env []string) (string, error)
 
 // GOROOT is the GOROOT of the toolchain env selects: go reads the go.mod of
 // the working directory and switches to the toolchain it names.
+//
+// The working directory is the one crush-eval runs in, the suite repository at
+// its main branch, so the suite's own go line decides. That line is the newest
+// any task checkout needs: a task runs on an older base commit whose go line
+// is older, and a newer toolchain builds it.
 func GOROOT(env []string) (string, error) {
 	out, err := output(env, "env", "GOROOT")
 	if err != nil {
