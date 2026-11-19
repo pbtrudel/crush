@@ -28,8 +28,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 56
+  timeout: 10m
 risks:
   - 'hidden choice: the command ids `goal` and `loop` and the argument ids `objective` and `task`'
   - the commands are graded by id and by the dialog-to-handler flow, not by the rendered rows

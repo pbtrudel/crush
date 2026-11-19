@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "date": "2026-11-19",
+  "route": "deepseek-flash",
+  "tasks": [
+    {
+      "task": "pr-0010",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0011",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0018",
+      "passes": 4,
+      "runs": 6
+    },
+    {
+      "task": "pr-0020",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0022",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0027",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0035",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0042",
+      "passes": 0,
+      "runs": 6
+    },
+    {
+      "task": "pr-0044",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0045",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0051",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0055",
+      "passes": 5,
+      "runs": 6
+    },
+    {
+      "task": "pr-0057",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0061",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0065",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0076",
+      "passes": 2,
+      "runs": 6
+    },
+    {
+      "task": "pr-0079",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0080",
+      "passes": 5,
+      "runs": 6
+    },
+    {
+      "task": "pr-0081",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0085",
+      "passes": 5,
+      "runs": 5
+    },
+    {
+      "task": "pr-0092",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0093",
+      "passes": 1,
+      "runs": 4
+    },
+    {
+      "task": "pr-0094",
+      "passes": 6,
+      "runs": 6
+    },
+    {
+      "task": "pr-0105",
+      "passes": 6,
+      "runs": 6
+    }
+  ]
+}

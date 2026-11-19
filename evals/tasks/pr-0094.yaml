@@ -28,8 +28,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 94
+  timeout: 13m
 risks:
   - "hidden choice: the entries keep the ids `goal` and `loop` and live in the dialog's default command list."
   - "the design table lists TestGoalAndLoopCommandsVisibleWithSession; the pull request renamed it to TestGoalAndLoopCommandsAlwaysVisible, so only the latter exists at the merge and is graded."

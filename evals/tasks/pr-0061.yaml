@@ -45,8 +45,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 80
+  timeout: 10m
 risks:
   - "hidden choice: the side-question system prompt names itself a side question and is not the coder prompt, and the request offers no tools."
   - "correlated: pr-0061, pr-0075, pr-0080 (the same function changed at three points in time; the three tasks are not independent)."

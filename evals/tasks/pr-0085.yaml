@@ -59,8 +59,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 56
+  timeout: 10m
 risks:
   - "hidden choices: the window precedence (CLI, then the `[1m]` suffix, then the catalog entry, then 200K), the name source (catalog name without `Claude `, else the CLI name) and the price lookup (`[1m]` suffix and `anthropic.` prefix stripped, empty when no entry matches)."
 vetted:

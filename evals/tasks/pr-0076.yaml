@@ -40,8 +40,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 40
+  timeout: 10m
 risks:
   - 'hidden choice: the ShellID field of the bash response metadata, the text that answers an unknown job id, and the no-session rule for notices'
   - the touched tests are 4 and the design table names 6; the grade also runs the rest of both packages

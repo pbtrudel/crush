@@ -26,8 +26,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 64
+  timeout: 10m
 risks:
   - 'hidden choice: which fields a reset clears, and that the seeded average keeps only the active model''s steps'
   - the touched tests are 2, not the 3 TestReset*TPS* tests of the design table

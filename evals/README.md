@@ -14,7 +14,12 @@ Layout:
   more than six tasks would grade `internal/agent` (rule 9 of the design).
   A reserve replaces a task that stops passing vetting: move its file into
   `tasks/`, which changes the suite version.
-- `matrix.yaml`, `experiments/` and `baselines/`: added by later pull requests.
+- `experiments/<date>-<name>.yaml`: the variants, routes, repetitions and
+  margin of one comparison, committed before its batch starts (design 4.3).
+- `baselines/<date>-<route>.json`: the per-task pass counts of a finished
+  batch, counts only and no text, written by `crush-eval baseline` (4.4).
+- `matrix.yaml`: the families and their route names, added by a later pull
+  request.
 
 Hidden tests are referenced by the blob sha of their contents, not copied, so
 no answer code lives in this directory. The suite version is the git tree hash

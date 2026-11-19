@@ -30,8 +30,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 42
+  timeout: 10m
 risks:
   - 'borderline: the interface names the method set, which points at the shape of the fix (design 1.5)'
   - 'hidden choice: replay filters by the target handler''s level, drains the buffer once, and renders attributes added after WithGroup as group.key'

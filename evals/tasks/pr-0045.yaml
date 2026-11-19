@@ -35,8 +35,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 56
+  timeout: 10m
 risks:
   - "hidden choice: the acknowledgement text is `Running ` plus the command name in backticks, for example `Running `/stop``."
   - "the pull request renamed two of the six tests the design table lists, and the three unchanged ones pass at the base, so the grade names only the renamed failing test; the others run in the package pass (TestBridgeInteractionViaInputQueue is now TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInputLoop is now TestQuestionComponentArrivesThroughInteractionLoop)."

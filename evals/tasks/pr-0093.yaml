@@ -26,8 +26,8 @@ grade:
   deleted: []
   timeout: 10m
 limits:
-  max_steps: 120
-  timeout: 25m
+  max_steps: 98
+  timeout: 10m
 risks:
   - "rendered layout: the grade reads rendered screen rows (label row, `> ` prompt, top border width, cursor row) rather than a golden file."
   - "hidden choice: the label row, the 60-column minimum width and the absent cursor on a collapsed field viewport."

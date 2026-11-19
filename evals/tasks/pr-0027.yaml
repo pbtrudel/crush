@@ -38,7 +38,7 @@ grade:
   timeout: 10m
 limits:
   max_steps: 120
-  timeout: 25m
+  timeout: 19m
 risks:
   - 'hidden choice: the adopted count is subtracted from the input tokens and the standard field wins even at an explicit 0'
   - 'excluded by name: TestCoderAgent fails at the merge commit (and at the base) because its VCR cassettes no longer match the tools'' descriptions; it belongs to no part of this change and the package pass skips it'
