@@ -33,8 +33,6 @@ type Result struct {
 	TouchedMS         int64    `json:"touched_ms"`
 	PackagesMS        int64    `json:"packages_ms"`
 	Failed            []string `json:"failed,omitempty"`
-	Worktrees         int      `json:"worktrees"`
-	Branches          int      `json:"branches"`
 	// Reason says why a checkout the model broke could not be graded. It is
 	// empty for a grade that ran.
 	Reason string `json:"reason,omitempty"`
@@ -61,9 +59,9 @@ func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []s
 // Grade grades the working tree of srcDir against tk, from base, the commit
 // the run started at, which the model's own history cannot change. It
 // removes the test files the model added to the graded packages, writes the
-// task's hidden files, runs the touched tests and then every test of the
-// graded packages, and counts the worktrees and branches the model created.
-// It reads the hidden blobs from repoDir and runs go with env.
+// task's hidden files and runs the touched tests and then every test of the
+// graded packages. It reads the hidden blobs from repoDir and runs go with
+// env.
 //
 // A checkout the model broke, as when it deletes .git or moves its work to
 // an orphan branch, is a failed grade with a reason, not an error: one bad
@@ -81,35 +79,65 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env
 		return failed(err), nil
 	}
 
-	touched, err := runGoTest(ctx, srcDir, env, testArgs(tk, touchedPattern(tk.Grade.Tests)))
+	touched, err := GoTest(ctx, srcDir, env, testArgs(tk, touchedPattern(tk.Grade.Tests)))
 	if err != nil {
 		return res, err
 	}
-	all, err := runGoTest(ctx, srcDir, env, testArgs(tk, skipArgs(tk.Grade.Exclude)))
+	all, err := GoTest(ctx, srcDir, env, testArgs(tk, skipArgs(tk.Grade.Exclude)))
 	if err != nil {
 		return res, err
 	}
 
-	res.TouchedMS = touched.duration.Milliseconds()
-	res.PackagesMS = all.duration.Milliseconds()
-	res.CompileError = touched.compile || all.compile
-	res.Packages = !all.compile && !all.packageFailed && len(all.failed) == 0
+	res.TouchedMS = touched.Duration.Milliseconds()
+	res.PackagesMS = all.Duration.Milliseconds()
+	res.CompileError = touched.Compile || all.Compile
+	res.Packages = !all.Compile && !all.PackageFailed && len(all.Failed) == 0
 
 	// Every named test must report pass. A named test that never ran is a
 	// failure, unless the package did not build.
 	var missing []string
-	if !touched.compile {
+	if !touched.Compile {
 		for _, name := range tk.Grade.Tests {
-			if !touched.passed[name] {
+			if !touched.Passed[name] {
 				missing = append(missing, name)
 			}
 		}
 	}
-	res.Touched = !touched.compile && !touched.packageFailed && len(missing) == 0
-	res.Failed = failedNames(missing, touched.failed, all.failed)
-
-	res.Worktrees, res.Branches = gitCounts(ctx, srcDir)
+	res.Touched = !touched.Compile && !touched.PackageFailed && len(missing) == 0
+	res.Failed = failedNames(missing, touched.Failed, all.Failed)
 	return res, nil
+}
+
+// Env is the environment grading runs go with: PATH, home as HOME, the go
+// caches, and no network or toolchain download. home is a scratch directory,
+// so the tests and go never read the user's files.
+func Env(home string) []string {
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"GOFLAGS=-buildvcs=false",
+		"GOPROXY=off",
+		"GOTOOLCHAIN=local",
+	}
+	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
+		if value := goValue(name); value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
+// goValue reads one go value the process environment does not set, so a
+// crafted environment still finds the caches.
+func goValue(name string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	out, err := exec.CommandContext(context.Background(), "go", "env", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // failed is the grade of a checkout git could not read. The reason says
@@ -234,27 +262,33 @@ func ApplyHidden(ctx context.Context, repoDir, srcDir string, hidden []task.Hidd
 	return nil
 }
 
-// outcome is what one go test run says about its package.
-type outcome struct {
-	compile       bool
-	packageFailed bool
-	passed        map[string]bool
-	failed        []string
-	duration      time.Duration
+// Outcome is what one go test run says about its packages.
+type Outcome struct {
+	// Compile is a package that did not build.
+	Compile bool
+	// PackageFailed is a package whose run failed without naming a test.
+	PackageFailed bool
+	// Passed holds the tests that reported pass.
+	Passed map[string]bool
+	// Failed holds the tests that reported fail.
+	Failed   []string
+	Duration time.Duration
+	// Output is the text the run printed, compiler errors included.
+	Output string
 }
 
-// runGoTest runs one go test command in srcDir and parses its test2json
+// GoTest runs one go command with args in dir and parses its test2json
 // stream.
-func runGoTest(ctx context.Context, srcDir string, env, args []string) (outcome, error) {
+func GoTest(ctx context.Context, dir string, env, args []string) (Outcome, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = srcDir
+	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
-	out := outcome{duration: time.Since(start), passed: map[string]bool{}}
+	out := Outcome{Duration: time.Since(start), Passed: map[string]bool{}}
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}
@@ -272,22 +306,25 @@ func runGoTest(ctx context.Context, srcDir string, env, args []string) (outcome,
 			Action      string
 			Test        string
 			FailedBuild string
+			Output      string
 		}
 		if json.Unmarshal(line, &event) != nil {
 			continue
 		}
 		events++
+		out.Output += event.Output
 		switch {
 		case event.Action == "build-fail", event.Action == "fail" && event.FailedBuild != "":
-			out.compile = true
+			out.Compile = true
 		case event.Action == "pass" && event.Test != "":
-			out.passed[event.Test] = true
+			out.Passed[event.Test] = true
 		case event.Action == "fail" && event.Test != "":
 			failed[event.Test] = true
 		case event.Action == "fail":
-			out.packageFailed = true
+			out.PackageFailed = true
 		}
 	}
+	out.Output += stderr.String()
 	if err := scanner.Err(); err != nil {
 		return out, err
 	}
@@ -297,27 +334,13 @@ func runGoTest(ctx context.Context, srcDir string, env, args []string) (outcome,
 	// still failed its package.
 	switch {
 	case runErr != nil && events == 0:
-		out.compile = true
-	case runErr != nil && !out.packageFailed && len(failed) == 0:
-		out.packageFailed = true
+		out.Compile = true
+	case runErr != nil && !out.PackageFailed && len(failed) == 0:
+		out.PackageFailed = true
 	}
 	for name := range failed {
-		out.failed = append(out.failed, name)
+		out.Failed = append(out.Failed, name)
 	}
-	sort.Strings(out.failed)
+	sort.Strings(out.Failed)
 	return out, nil
-}
-
-// gitCounts returns how many worktrees and branches beyond the initial one
-// the checkout has.
-func gitCounts(ctx context.Context, srcDir string) (worktrees, branches int) {
-	list, err := gitx.Output(ctx, srcDir, "worktree", "list", "--porcelain")
-	if err == nil {
-		worktrees = max(0, strings.Count(list, "worktree ")-1)
-	}
-	refs, err := gitx.Output(ctx, srcDir, "for-each-ref", "--format=%(refname)", "refs/heads")
-	if err == nil {
-		branches = max(0, len(strings.Fields(refs))-1)
-	}
-	return worktrees, branches
 }

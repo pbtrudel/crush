@@ -24,6 +24,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
+	"github.com/charmbracelet/crush/internal/eval/grade"
 )
 
 // Classes of a classified pull request.
@@ -235,7 +236,7 @@ func Classify(ctx context.Context, repoDir string, pr PullRequest, scratch strin
 	if err := overlayTests(ctx, repoDir, pr.Merge(), parentSrc, pr.Files); err != nil {
 		return cand, err
 	}
-	parent, err := runGoTest(ctx, parentSrc, env, append([]string{"-run", pattern(cand.Tests)}, cand.Packages...)...)
+	parent, err := runGoTest(ctx, parentSrc, env, append([]string{"-run", grade.Pattern(cand.Tests)}, cand.Packages...)...)
 	if err != nil {
 		return cand, err
 	}
@@ -389,11 +390,6 @@ func packages(files []string) []string {
 	return pkgs
 }
 
-// pattern selects the named tests the way the grade does.
-func pattern(tests []string) string {
-	return "^(" + strings.Join(tests, "|") + ")$"
-}
-
 // mergeReason is why the merge commit cannot be graded.
 func mergeReason(run testRun) string {
 	switch {
@@ -414,41 +410,20 @@ type testRun struct {
 	output  string
 }
 
-// runGoTest runs go test on the given packages and parses its output. A
-// command that never ran, as when go itself is missing, is an error; a
-// failing test or build is not.
+// runGoTest runs go test on the given packages and reads its test2json
+// stream the way the grade does. A command that never ran, as when go
+// itself is missing, is an error; a failing test or build is not.
 func runGoTest(ctx context.Context, dir string, env []string, args ...string) (testRun, error) {
-	cmd := exec.CommandContext(ctx, "go", append([]string{"test", "-count=1", "-timeout", testTimeout}, args...)...)
-	cmd.Dir = dir
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	run := testRun{output: string(out), passed: err == nil}
-	run.compile = strings.Contains(run.output, "[build failed]") || strings.Contains(run.output, "setup failed")
-	run.failed = failedTests(run.output)
-	if err == nil {
-		return run, nil
+	got, err := grade.GoTest(ctx, dir, env, append([]string{"test", "-count=1", "-json", "-timeout", testTimeout}, args...))
+	if err != nil {
+		return testRun{}, err
 	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		return run, err
-	}
-	return run, nil
-}
-
-var failLine = regexp.MustCompile(`--- FAIL: (\w+)`)
-
-// failedTests returns the sorted top-level names of the tests that failed.
-func failedTests(output string) []string {
-	seen := map[string]bool{}
-	for _, match := range failLine.FindAllStringSubmatch(output, -1) {
-		seen[match[1]] = true
-	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return testRun{
+		passed:  !got.Compile && !got.PackageFailed && len(got.Failed) == 0,
+		compile: got.Compile,
+		failed:  got.Failed,
+		output:  got.Output,
+	}, nil
 }
 
 // overlayTests writes the merge versions of the changed test files over the

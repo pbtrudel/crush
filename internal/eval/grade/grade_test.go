@@ -135,43 +135,6 @@ func TestGrade(t *testing.T) {
 	}
 }
 
-func TestGradeRecordsWorktreesAndBranches(t *testing.T) {
-	t.Parallel()
-	repo, src, blob := prepare(t, nil, hiddenFix)
-	base := git(t, src, "rev-parse", "HEAD")
-	fix(t, src)
-	git(t, src, "branch", "moved")
-	git(t, src, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"), "moved")
-
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
-	require.NoError(t, err)
-	require.True(t, got.Pass())
-	require.Equal(t, 1, got.Worktrees)
-	require.Equal(t, 1, got.Branches)
-}
-
-// TestGradeModelOrphanBranch grades a model that committed its work on an
-// orphan branch. The base comes from the run, not from the model's own
-// history, so the test file the model added is still recognised as an
-// addition and removed before the hidden tests are written.
-func TestGradeModelOrphanBranch(t *testing.T) {
-	t.Parallel()
-
-	repo, src, blob := prepare(t, nil, hiddenFix)
-	base := git(t, src, "rev-parse", "HEAD")
-	fix(t, src)
-	git(t, src, "checkout", "-q", "--orphan", "model")
-	write(t, filepath.Join(src, "p", "model_extra_test.go"),
-		"package p\n\nimport \"testing\"\n\nfunc TestModelExtra(t *testing.T) { t.Fatal(\"model test\") }\n")
-	git(t, src, "add", "-A")
-	git(t, src, "commit", "-q", "-m", "orphan")
-
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
-	require.NoError(t, err)
-	require.Equal(t, 1, got.ModelTestsRemoved, "the model's own test file is an addition against the task base")
-	require.True(t, got.Pass())
-}
-
 // TestGradeIgnoresRepositoryHooks grades a checkout whose .git/config makes
 // git run a fsmonitor script. The script records that it ran and the
 // environment it saw: grading must not run it, because a model can write

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/task"
 	"github.com/charmbracelet/crush/internal/eval/vet"
 )
@@ -85,7 +86,7 @@ func vetCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer os.RemoveAll(home)
 
-	result, vetErr := vet.Run(context.Background(), tk, ".", scratch, *reps, goEnv(home))
+	result, vetErr := vet.Run(context.Background(), tk, ".", scratch, *reps, grade.Env(home))
 	written := ""
 	if vetErr == nil && *write {
 		version, err := goVersion()

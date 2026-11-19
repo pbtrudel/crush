@@ -18,6 +18,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/grade"
+	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -105,8 +106,8 @@ func Run(ctx context.Context, tk *task.Task, repoDir, scratch string, reps int, 
 	}
 	res.MergePasses = fmt.Sprintf("%d/%d", passed, reps)
 	res.GradeSeconds = task.GradeSeconds{
-		Touched:  int(median(touched) / 1000),
-		Packages: int(median(packages) / 1000),
+		Touched:  int(score.Median(touched) / 1000),
+		Packages: int(score.Median(packages) / 1000),
 	}
 	for name := range flaky {
 		res.Flaky = append(res.Flaky, name)
@@ -130,7 +131,7 @@ func baseFails(ctx context.Context, tk *task.Task, repoDir, dir string, env []st
 	}
 	args := []string{
 		"test", "-count=1", "-timeout", tk.Grade.Timeout.String(),
-		"-run", "^(" + strings.Join(tk.Grade.Tests, "|") + ")$",
+		"-run", grade.Pattern(tk.Grade.Tests),
 	}
 	args = append(args, tk.Grade.Packages...)
 	cmd := exec.CommandContext(ctx, "go", args...)
@@ -148,17 +149,6 @@ func baseFails(ctx context.Context, tk *task.Task, repoDir, dir string, env []st
 		return fmt.Errorf("run go test at base: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-// median returns the middle timing, or the upper of the two middle timings
-// for an even count.
-func median(values []int64) int64 {
-	if len(values) == 0 {
-		return 0
-	}
-	sorted := append([]int64(nil), values...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return sorted[len(sorted)/2]
 }
 
 // PackageUse is one package and the tasks that grade it.

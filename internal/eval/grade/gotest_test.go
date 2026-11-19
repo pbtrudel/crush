@@ -12,7 +12,7 @@ import (
 // TestRunGoTest parses the exit status of go test against the events it
 // reported. The fake go binaries are found through PATH, so these tests
 // cannot run in parallel with each other.
-func TestRunGoTest(t *testing.T) {
+func TestGoTest(t *testing.T) {
 	tests := []struct {
 		name         string
 		script       string
@@ -47,14 +47,14 @@ exit 1
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(tt.script), 0o700))
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-			out, err := runGoTest(context.Background(), dir, []string{"PATH=" + dir}, []string{"test", "-json", "./p"})
+			out, err := GoTest(context.Background(), dir, []string{"PATH=" + dir}, []string{"test", "-json", "./p"})
 			require.NoError(t, err)
-			require.Equal(t, tt.wantCompile, out.compile, "compile")
-			require.Equal(t, tt.wantFailed, out.packageFailed, "package failed")
+			require.Equal(t, tt.wantCompile, out.Compile, "compile")
+			require.Equal(t, tt.wantFailed, out.PackageFailed, "package failed")
 			if tt.wantNoFailed {
-				require.False(t, out.compile)
-				require.False(t, out.packageFailed)
-				require.Empty(t, out.failed)
+				require.False(t, out.Compile)
+				require.False(t, out.PackageFailed)
+				require.Empty(t, out.Failed)
 			}
 		})
 	}

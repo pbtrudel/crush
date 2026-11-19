@@ -354,36 +354,7 @@ func gradeRun(ctx context.Context, opts Options, src, base, runDir string) (grad
 		return grade.Result{}, fmt.Errorf("create grading home: %w", err)
 	}
 	defer os.RemoveAll(emptyHome) //nolint:errcheck // Temporary home.
-	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, base, gradeEnv(emptyHome))
-}
-
-// gradeEnv is the environment grading runs go with.
-func gradeEnv(emptyHome string) []string {
-	env := []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + emptyHome,
-		"GOFLAGS=-buildvcs=false",
-		"GOPROXY=off",
-		"GOTOOLCHAIN=local",
-	}
-	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
-		if value := goEnvValue(name); value != "" {
-			env = append(env, name+"="+value)
-		}
-	}
-	return env
-}
-
-// goEnvValue reads one go value the process environment does not set.
-func goEnvValue(name string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	out, err := exec.CommandContext(context.Background(), "go", "env", name).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, base, grade.Env(emptyHome))
 }
 
 // treeStats is the size of the change against the task base, untracked

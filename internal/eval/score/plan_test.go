@@ -12,6 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeBaseline writes a baseline file as the runner's tooling does.
+func writeBaseline(path string, b *score.Baseline) error {
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
 func baseline() *score.Baseline {
 	return &score.Baseline{
 		Schema: 1,
@@ -73,12 +82,10 @@ func TestDetectableEffectRejectsBadInput(t *testing.T) {
 func TestBaselineRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	path := score.BaselinePath(dir, "2026-11-20", "deepseek-flash")
-	require.Equal(t, filepath.Join(dir, "2026-11-20-deepseek-flash.json"), path)
+	path := filepath.Join(t.TempDir(), "2026-11-20-deepseek-flash.json")
 
 	want := baseline()
-	require.NoError(t, want.WriteFile(path))
+	require.NoError(t, writeBaseline(path, want))
 	got, err := score.LoadBaseline(path)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
@@ -98,7 +105,7 @@ func TestLoadBaselineRejectsBadCounts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "b.json")
 	bad := baseline()
 	bad.Tasks[0].Passes = 4
-	require.NoError(t, bad.WriteFile(path))
+	require.NoError(t, writeBaseline(path, bad))
 	_, err := score.LoadBaseline(path)
 	require.ErrorContains(t, err, "passes")
 
@@ -134,9 +141,7 @@ func writeFile(t *testing.T, name, body string) string {
 func TestLoadExperiment(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	path := score.ExperimentPath(dir, "2026-12-01", "w8-delegation")
-	require.Equal(t, filepath.Join(dir, "2026-12-01-w8-delegation.yaml"), path)
+	path := filepath.Join(t.TempDir(), "2026-12-01-w8-delegation.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(experimentYAML), 0o600))
 
 	exp, err := score.LoadExperiment(path)

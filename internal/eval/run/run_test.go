@@ -361,6 +361,21 @@ func TestRunContamination(t *testing.T) {
 	require.True(t, line.Pass)
 }
 
+// TestTreeStats is the diff against the task base and the worktrees the
+// model created, which the result line keeps.
+func TestTreeStats(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	write(t, filepath.Join(f.repo, "pkg", "pkg.go"), fixedSource)
+	git(t, f.repo, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"), "HEAD")
+
+	diff, worktrees := treeStats(context.Background(), f.repo, f.base)
+
+	require.Equal(t, result.Diff{Files: 1, Added: 1, Deleted: 1}, diff)
+	require.Equal(t, 1, worktrees)
+}
+
 // TestRunContaminationCountsToolCalls counts tool calls, not messages: one
 // message that names a marker twice contributes two.
 func TestRunContaminationCountsToolCalls(t *testing.T) {

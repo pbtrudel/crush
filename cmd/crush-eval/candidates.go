@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/charmbracelet/crush/internal/eval/candidates"
+	"github.com/charmbracelet/crush/internal/eval/grade"
 )
 
 const candidatesUsage = `usage:
@@ -78,7 +79,7 @@ func candidatesCmd(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer os.RemoveAll(home)
-	env := goEnv(home)
+	env := grade.Env(home)
 
 	failed := false
 	var lines []byte

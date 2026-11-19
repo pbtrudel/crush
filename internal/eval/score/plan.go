@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -30,11 +29,6 @@ type TaskPassCount struct {
 	Task   string `json:"task"`
 	Passes int    `json:"passes"`
 	Runs   int    `json:"runs"`
-}
-
-// BaselinePath returns the baseline path of a date and route.
-func BaselinePath(dir, date, route string) string {
-	return filepath.Join(dir, date+"-"+route+".json")
 }
 
 // LoadBaseline reads and validates a baseline file.
@@ -65,19 +59,6 @@ func LoadBaseline(path string) (*Baseline, error) {
 		}
 	}
 	return &b, nil
-}
-
-// WriteFile writes the baseline as indented JSON.
-func (b *Baseline) WriteFile(path string) error {
-	data, err := json.MarshalIndent(b, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal baseline: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write baseline: %w", err)
-	}
-	return nil
 }
 
 // DetectableEffect returns the standard error of the mean paired pass-rate
@@ -122,11 +103,6 @@ type Experiment struct {
 	Margin           float64   `yaml:"margin"`
 	Baseline         string    `yaml:"baseline"`
 	DetectableEffect float64   `yaml:"detectable_effect"`
-}
-
-// ExperimentPath returns the experiment path of a date and name.
-func ExperimentPath(dir, date, name string) string {
-	return filepath.Join(dir, date+"-"+name+".yaml")
 }
 
 // LoadExperiment reads and validates an experiment file. Unknown fields are

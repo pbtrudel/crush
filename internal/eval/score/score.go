@@ -208,15 +208,23 @@ func distribution(values []int64) Distribution {
 	if len(values) == 0 {
 		return Distribution{}
 	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 	var total int64
 	for _, v := range values {
 		total += v
 	}
-	n := len(values)
-	median := float64(values[n/2])
-	if n%2 == 0 {
-		median = float64(values[n/2-1]+values[n/2]) / 2
+	return Distribution{Median: Median(values), Total: total}
+}
+
+// Median returns the middle value of values, or the mean of the two middle
+// ones for an even count, and zero for no value. It sorts values.
+func Median(values []int64) float64 {
+	if len(values) == 0 {
+		return 0
 	}
-	return Distribution{Median: median, Total: total}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	n := len(values)
+	if n%2 == 1 {
+		return float64(values[n/2])
+	}
+	return float64(values[n/2-1]+values[n/2]) / 2
 }

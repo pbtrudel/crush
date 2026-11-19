@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
@@ -203,18 +201,17 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	var graded grade.Result
 	if *reference {
-		graded, err = grade.Reference(ctx, tk, ".", dir, goEnv(home))
+		graded, err = grade.Reference(ctx, tk, ".", dir, grade.Env(home))
 	} else {
 		// A prepared checkout's base is its one root commit. A run that
 		// rewrote its history makes this command approximate; the batch
 		// passes the base it recorded before the model ran.
 		src := filepath.Join(dir, "src")
-		base, err := gitx.Output(ctx, src, "rev-list", "--max-parents=0", "HEAD")
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
+		var base string
+		base, err = gitx.Output(ctx, src, "rev-list", "--max-parents=0", "HEAD")
+		if err == nil {
+			graded, err = grade.Grade(ctx, tk, ".", src, base, grade.Env(home))
 		}
-		graded, err = grade.Grade(ctx, tk, ".", src, base, goEnv(home))
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -264,33 +261,6 @@ func evalTmpDir() (string, error) {
 		return "", err
 	}
 	return dir, nil
-}
-
-// goEnv is the environment grading runs go with. The route builds the same
-// one for every run; this is its minimum, with home as the empty HOME.
-func goEnv(home string) []string {
-	return []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + home,
-		"GOCACHE=" + goEnvValue("GOCACHE"),
-		"GOMODCACHE=" + goEnvValue("GOMODCACHE"),
-		"GOFLAGS=-buildvcs=false",
-		"GOPROXY=off",
-		"GOTOOLCHAIN=local",
-	}
-}
-
-// goEnvValue reads one go value the process environment does not set, so a
-// crafted environment still finds the caches.
-func goEnvValue(name string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	out, err := exec.CommandContext(context.Background(), "go", "env", name).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // print writes one JSON line and returns 0, or 1 when the value does not

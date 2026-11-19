@@ -1,6 +1,8 @@
 package checkout_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -113,4 +115,60 @@ func git(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	return strings.TrimSpace(string(out))
+}
+
+// TestExtract checks the one extractor both the task checkout and the
+// variant build use: it writes regular files and symlinks inside dest, and
+// refuses an entry that would land outside it.
+func TestExtract(t *testing.T) {
+	t.Parallel()
+
+	build := func(entries ...*tar.Header) *bytes.Buffer {
+		var buf bytes.Buffer
+		w := tar.NewWriter(&buf)
+		for _, hdr := range entries {
+			require.NoError(t, w.WriteHeader(hdr))
+			if hdr.Typeflag == tar.TypeReg {
+				_, err := w.Write([]byte("content of " + hdr.Name + "\n"))
+				require.NoError(t, err)
+			}
+		}
+		require.NoError(t, w.Close())
+		return &buf
+	}
+	regular := func(name string, mode int64) *tar.Header {
+		return &tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: mode, Size: int64(len("content of " + name + "\n"))}
+	}
+
+	t.Run("writes files and symlinks", func(t *testing.T) {
+		t.Parallel()
+		dest := t.TempDir()
+		archive := build(
+			regular("a.txt", 0o644),
+			regular("sub/run.sh", 0o755),
+			&tar.Header{Name: "link.txt", Typeflag: tar.TypeSymlink, Linkname: "a.txt"},
+			&tar.Header{Name: "sub", Typeflag: tar.TypeDir, Mode: 0o755},
+		)
+		require.NoError(t, checkout.Extract(archive, dest))
+		require.FileExists(t, filepath.Join(dest, "a.txt"))
+		info, err := os.Stat(filepath.Join(dest, "sub", "run.sh"))
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+		target, err := os.Readlink(filepath.Join(dest, "link.txt"))
+		require.NoError(t, err)
+		require.Equal(t, "a.txt", target)
+	})
+
+	t.Run("refuses a path outside the checkout", func(t *testing.T) {
+		t.Parallel()
+		dest := t.TempDir()
+		require.ErrorContains(t, checkout.Extract(build(regular("../escape.txt", 0o644)), dest), "escapes the checkout")
+		require.NoFileExists(t, filepath.Join(filepath.Dir(dest), "escape.txt"))
+	})
+
+	t.Run("refuses a type it cannot write", func(t *testing.T) {
+		t.Parallel()
+		archive := build(&tar.Header{Name: "dev", Typeflag: tar.TypeChar})
+		require.ErrorContains(t, checkout.Extract(archive, t.TempDir()), "unsupported type")
+	})
 }

@@ -1,7 +1,6 @@
 package route
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/home"
 )
@@ -81,7 +81,8 @@ func archiveTree(ctx context.Context, repoDir, sha, dst string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("archive %s: %w", sha, err)
 	}
-	if err := extractTar(stdout, dst); err != nil {
+	if err := checkout.Extract(stdout, dst); err != nil {
+		_, _ = io.Copy(io.Discard, stdout)
 		_ = cmd.Wait()
 		return fmt.Errorf("extract %s: %w", sha, err)
 	}
@@ -89,54 +90,4 @@ func archiveTree(ctx context.Context, repoDir, sha, dst string) error {
 		return fmt.Errorf("archive %s: %w: %s", sha, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
-}
-
-// extractTar unpacks a git archive into dst with tight permissions.
-func extractTar(r io.Reader, dst string) error {
-	tr := tar.NewReader(r)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, filepath.FromSlash(hdr.Name))
-		if target != dst && !strings.HasPrefix(target, dst+string(os.PathSeparator)) {
-			return fmt.Errorf("refuse path %s", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-			mode := os.FileMode(0o600)
-			if hdr.Mode&0o111 != 0 {
-				mode = 0o700
-			}
-			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close() //nolint:errcheck // Copy error wins.
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-		}
-	}
 }

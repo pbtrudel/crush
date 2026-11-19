@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
+	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/score"
@@ -130,7 +131,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		Suite:      suite,
 		SuiteDir:   "evals",
 		Footer:     string(footer),
-		Env:        goEnv(gradeHome),
+		Env:        grade.Env(gradeHome),
 		Scratch:    scratch,
 	})
 	if err != nil {

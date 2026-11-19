@@ -72,7 +72,7 @@ func extract(ctx context.Context, repoDir, base, dest string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	extractErr := untar(stdout, dest)
+	extractErr := Extract(stdout, dest)
 	if extractErr != nil {
 		// Keep git from blocking on a full pipe while the error returns.
 		_, _ = io.Copy(io.Discard, stdout)
@@ -83,9 +83,11 @@ func extract(ctx context.Context, repoDir, base, dest string) error {
 	return extractErr
 }
 
-// untar writes the files of a tar stream into dest with their modes and
-// symlinks.
-func untar(r io.Reader, dest string) error {
+// Extract writes the files of a git archive stream into dest with their
+// modes and symlinks. It is the one extractor of the runner: the task
+// checkout and the variant build both read `git archive` with it, and it
+// refuses any entry that would land outside dest.
+func Extract(r io.Reader, dest string) error {
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
