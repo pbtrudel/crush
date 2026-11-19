@@ -45,6 +45,7 @@ import (
 	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -332,6 +333,10 @@ type sessionAgent struct {
 	isSubAgent bool
 	sessions   session.Service
 	messages   message.Service
+	// history lists the files a session changed, which the state block
+	// repeats after a compaction. Nil in most tests and in agents built
+	// without a history service; the block then leaves the list out.
+	history history.Service
 	// cfg backs channel reply routing (config lookup + MCP tool
 	// invocation). Nil in tests and subagents that never see channel
 	// turns; sendChannelReply treats nil as "routing disabled".
@@ -451,6 +456,9 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// History is optional: it supplies the changed-file list the
+	// post-compaction state block repeats. Nil leaves the list out.
+	History history.Service
 	// Now is the clock used for per-session data (the environment
 	// snapshot). Tests pin it so recorded requests stay reproducible;
 	// production leaves it nil for time.Now.
@@ -483,6 +491,7 @@ func NewSessionAgent(
 		isSubAgent:             opts.IsSubAgent,
 		sessions:               opts.Sessions,
 		messages:               opts.Messages,
+		history:                opts.History,
 		cfg:                    opts.Cfg,
 		disableAutoSummarize:   opts.DisableAutoSummarize,
 		isYolo:                 opts.IsYolo,
@@ -2272,6 +2281,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
+	// The previous summary's stats carry the skills its state block listed;
+	// this compaction must list again whatever nothing has read since.
+	previousSummaryID := currentSession.SummaryMessageID
 	msgs, err := a.getSessionMessages(ctx, currentSession)
 	if err != nil {
 		return err
@@ -2327,6 +2339,15 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	for _, msg := range msgs[cutIndex:] {
 		tailTokens += messageTokens(msg)
 	}
+
+	// The state block repeats what the summary can only describe. Build it
+	// from the messages as they stand before the cut, before pruning
+	// rewrites their contents and before the request runs.
+	carriedSkills := a.compactionStateCarriedSkills(ctx, previousSummaryID)
+	stateText, listedSkills := a.compactionStateText(
+		ctx, sessionID, currentSession.Todos,
+		compactionStateSkills(msgs, cutIndex, carriedSkills),
+	)
 
 	// Pruning rewrites tool results the provider has already cached, so the
 	// compaction request stops matching the conversation from the first
@@ -2509,6 +2530,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		SavedTokens:   savedTokens,
 		KeptMessages:  keptMessages,
 		Trigger:       string(trigger),
+		ReloadSkills:  listedSkills,
 	})
 
 	for _, step := range resp.Steps {
@@ -2571,6 +2593,15 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
 		return err
+	}
+	// The state block lands after the summary and the preserved tail, which
+	// is where it is also true: it describes the session at compaction time.
+	if stateText != "" {
+		if _, err := a.createCompactionStateMessage(genCtx, sessionID, stateText); err != nil {
+			// The compaction itself succeeded, so a missing block costs
+			// the next turn its reminders and nothing more.
+			slog.Warn("Failed to store the compaction state message", "session_id", sessionID, "error", err)
+		}
 	}
 	a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPostCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()})
 
@@ -3607,6 +3638,7 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			out := make([]message.Message, 0, len(cutMsgs))
 			summary := cutMsgs[i]
 			summary.Role = message.User
+			summary = labelCompactedSummary(summary)
 			out = append(out, summary)
 			out = append(out, cutMsgs[:i]...)
 			out = append(out, cutMsgs[i+1:]...)
@@ -3635,9 +3667,33 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 		if summaryMsgIndex != -1 {
 			msgs = msgs[summaryMsgIndex:]
 			msgs[0].Role = message.User
+			msgs[0] = labelCompactedSummary(msgs[0])
 		}
 	}
 	return msgs, nil
+}
+
+// labelCompactedSummary wraps the summary in the label that tells the
+// working model what it is reading: a compacted session replays it as an
+// ordinary user message, and nothing else says so. Only the replayed copy is
+// labelled, so the transcript and the stats report still read the summary as
+// written. The text is fixed, which keeps the replayed bytes stable.
+func labelCompactedSummary(msg message.Message) message.Message {
+	msg.Parts = slices.Clone(msg.Parts)
+	for i, part := range msg.Parts {
+		text, ok := part.(message.TextContent)
+		if !ok {
+			continue
+		}
+		text.Text = "<compacted_history>\n" +
+			"The earlier part of this conversation was compacted. This is its summary. " +
+			"The messages after it are kept verbatim.\n\n" +
+			text.Text +
+			"\n</compacted_history>"
+		msg.Parts[i] = text
+		break
+	}
+	return msg
 }
 
 // hasUserTextMessage reports whether any user message in msgs contains

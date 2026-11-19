@@ -267,6 +267,10 @@ type CompactionStats struct {
 	// guard, overflow, model_switch, fusion_preflight, fusion_route or
 	// manual. Empty on compactions recorded before triggers were.
 	Trigger string `json:"trigger,omitempty"`
+	// ReloadSkills names the skills the state message created after this
+	// compaction listed, so the next compaction can list them again even
+	// though their instructions are no longer in the messages it reads.
+	ReloadSkills []string `json:"reload_skills,omitempty"`
 }
 
 func (CompactionStats) isPart() {}
