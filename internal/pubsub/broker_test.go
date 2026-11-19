@@ -52,17 +52,34 @@ func subscribeStalled(t *testing.T, b *Broker[snap]) (*subscription[snap], <-cha
 	return sub, ch
 }
 
-// drain reads until no event arrives for a short while.
-func drain(t *testing.T, ch <-chan Event[snap]) []Event[snap] {
+// drainN reads exactly n events, or fails the test. Every caller knows how
+// many events the broker was told to deliver, so the end of the stream is
+// never inferred from a quiet period: on a loaded machine the pump can go
+// longer than any such window without a CPU, which truncated the slice.
+func drainN(t *testing.T, ch <-chan Event[snap], n int) []Event[snap] {
 	t.Helper()
-	var got []Event[snap]
-	for {
+	got := make([]Event[snap], 0, n)
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for len(got) < n {
 		select {
-		case ev := <-ch:
+		case ev, ok := <-ch:
+			require.True(t, ok, "channel closed after %d of %d events", len(got), n)
 			got = append(got, ev)
-		case <-time.After(50 * time.Millisecond):
-			return got
+		case <-deadline.C:
+			t.Fatalf("timed out after %d of %d events", len(got), n)
 		}
+	}
+	return got
+}
+
+// requireNoExtraEvent fails if the stream has one more event to hand over.
+func requireNoExtraEvent(t *testing.T, ch <-chan Event[snap]) {
+	t.Helper()
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected extra event %s", describe([]Event[snap]{ev})[0])
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -96,7 +113,8 @@ func TestCoalescingBroker_StalledSubscriberKeepsOnlyNewestUpdate(t *testing.T) {
 	require.Equal(t, []string{
 		"created:blocker:0:false",
 		fmt.Sprintf("updated:a:%d:false", n),
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 2)))
+	requireNoExtraEvent(t, ch)
 
 	sub.mu.Lock()
 	require.Empty(t, sub.open, "delivered slots must not stay pinned")
@@ -126,7 +144,8 @@ func TestCoalescingBroker_Ordering(t *testing.T) {
 		"created:b:0:false",
 		"updated:b:1:false",
 		"deleted:b:0:false",
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 6)))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestCoalescingBroker_MustDeliverNeverCoalesced(t *testing.T) {
@@ -151,7 +170,8 @@ func TestCoalescingBroker_MustDeliverNeverCoalesced(t *testing.T) {
 		"updated:a:4:true",
 		"updated:a:5:true",
 		"updated:a:7:false",
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 5)))
+	requireNoExtraEvent(t, ch)
 	require.Zero(t, b.DropCount())
 	require.Zero(t, b.MustDeliverDropCount())
 }
@@ -185,7 +205,8 @@ func TestCoalescingBroker_MustDeliverTimeoutAndTakeover(t *testing.T) {
 		"created:blocker:0:false",
 		"updated:a:2:true",
 		"created:x:0:false",
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 3)))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestCoalescingBroker_PlainUpdateAfterQueuedMustDeliver(t *testing.T) {
@@ -206,7 +227,8 @@ func TestCoalescingBroker_PlainUpdateAfterQueuedMustDeliver(t *testing.T) {
 		"created:blocker:0:false",
 		"updated:a:2:true",
 		"updated:a:3:false",
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 3)))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestCoalescingBroker_MustDeliverTakesOverPendingInPlace(t *testing.T) {
@@ -229,7 +251,8 @@ func TestCoalescingBroker_MustDeliverTakesOverPendingInPlace(t *testing.T) {
 		"created:blocker:0:false",
 		"updated:a:2:true",
 		"created:x:0:false",
-	}, describe(drain(t, ch)))
+	}, describe(drainN(t, ch, 3)))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestBroker_ShutdownWithStalledReaderStopsPump(t *testing.T) {
@@ -308,7 +331,8 @@ func TestBroker_PlainDeliversEveryEventInOrder(t *testing.T) {
 	sub.mu.Unlock()
 	require.Zero(t, b.DropCount())
 
-	require.Equal(t, append([]string{"created:blocker:0:false"}, want...), describe(drain(t, ch)))
+	require.Equal(t, append([]string{"created:blocker:0:false"}, want...), describe(drainN(t, ch, 1+n+n/100)))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestCoalescingBroker_UnrelatedEventsUnaffected(t *testing.T) {
@@ -332,7 +356,8 @@ func TestCoalescingBroker_UnrelatedEventsUnaffected(t *testing.T) {
 	b.Publish("custom", snap{ID: "a", V: 10})
 	want = append(want, "custom:a:9:false", "custom:a:10:false")
 
-	require.Equal(t, append([]string{"created:blocker:0:false"}, want...), describe(drain(t, ch)))
+	require.Equal(t, append([]string{"created:blocker:0:false"}, want...), describe(drainN(t, ch, 1+len(want))))
+	requireNoExtraEvent(t, ch)
 }
 
 func TestCoalescingBroker_ConcurrentSlowReaderSeesMonotonicSnapshots(t *testing.T) {
