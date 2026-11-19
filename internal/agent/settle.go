@@ -35,6 +35,11 @@ func toolResultsForCalls(m message.Message, toolResultsByCall map[string][]fanta
 	for _, tc := range m.ToolCalls() {
 		parts := toolResultsByCall[tc.ID]
 		delete(toolResultsByCall, tc.ID)
+		if n := len(parts); n > 1 {
+			// One call gets one answer. A repair can leave a synthetic
+			// result behind a real one; the newest is the real one.
+			parts = parts[n-1:]
+		}
 		if len(parts) > 0 {
 			content = append(content, parts...)
 			continue
