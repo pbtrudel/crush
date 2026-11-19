@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"slices"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/agent/prompt"
@@ -41,15 +41,16 @@ func TestLeadPromptMentionsOnlyToolsInItsPalette(t *testing.T) {
 
 	built, palette := leadPrompt(t)
 
-	// The full tool list, plus the names the prompt used to advertise: the
-	// subagent's web_fetch, the coder's own fetch, and a find_references
-	// tool that never existed.
-	candidates := append(slices.Clone(palette), "web_fetch", "web_search", "find_references")
+	// Every tool name the configuration knows, plus the names the prompt
+	// used to advertise: the subagent's web_fetch, the coder's own fetch,
+	// and a find_references tool that never existed. Every name is checked,
+	// so a palette that loses a tool the prompt still names fails here.
+	candidates := append(config.AllToolNames(), "web_fetch", "web_search", "find_references")
 	for _, name := range candidates {
-		if slices.Contains(palette, name) {
+		if !strings.Contains(built, name) {
 			continue
 		}
-		require.NotContains(t, built, name, "the prompt names %q, which the Lead cannot call", name)
+		require.Contains(t, palette, name, "the prompt names %q, which the Lead cannot call", name)
 	}
 }
 

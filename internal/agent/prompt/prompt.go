@@ -173,7 +173,9 @@ func processContextPath(p string, store *config.ConfigStore) []ContextFile {
 	seen := make(map[string]bool)
 	for _, dir := range contextSearchDirs(store.WorkingDir(), filepathext.SmartIsAbs(p)) {
 		for _, found := range processContextPathAt(filepathext.SmartJoin(dir, p)) {
-			key := strings.ToLower(filepath.Clean(found.Path))
+			// Two files whose names differ only in case are two files
+			// on a case-sensitive filesystem, so the key keeps the case.
+			key := filepath.Clean(found.Path)
 			if seen[key] {
 				continue
 			}
@@ -477,7 +479,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 
 	// A session started in a subdirectory of a repository is still in that
 	// repository; the project root decides, as it does for config loading.
-	_, inRepo := config.ProjectRoot(store.WorkingDir())
+	inRepo := isGitRepo(store.WorkingDir())
 	data := PromptDat{
 		Provider:      provider,
 		Model:         model,
@@ -515,6 +517,19 @@ func hasTeamTools(toolNames []string) bool {
 		}
 	}
 	return false
+}
+
+// isGitRepo reports whether dir is inside a working tree. The repository
+// root decides, so a session started in a subdirectory still counts. A
+// directory that holds a .git entry also counts when git cannot read it: a
+// broken or dubious repository is still one, and the git commands report
+// their own failure. Only the root search needs a root git found.
+func isGitRepo(dir string) bool {
+	if _, inRepo := config.ProjectRoot(dir); inRepo {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 func getGitStatus(ctx context.Context, dir string) (string, error) {

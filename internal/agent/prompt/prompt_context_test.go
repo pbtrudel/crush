@@ -67,3 +67,42 @@ func TestPromptOutsideRepositoryIgnoresParentInstructions(t *testing.T) {
 		"nothing above the working directory is read outside a repository")
 	require.Contains(t, out, "git: no")
 }
+
+// A directory with a .git entry that git cannot read is still a repository
+// as far as the agent is concerned: the model was told so before the root
+// search landed, and a broken git must not change that. The root was not
+// found, though, so nothing above the directory is read.
+func TestPromptKeepsADirectoryWithABrokenGit(t *testing.T) {
+	parent := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "AGENTS.md"), []byte("parent-marker"), 0o644))
+	dir := filepath.Join(parent, "project")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+
+	out := buildProbe(t, initIsolatedConfig(t, dir))
+	require.Contains(t, out, "git: yes",
+		"a .git entry marks the directory as a repository even when git cannot read it")
+	require.NotContains(t, out, "parent-marker",
+		"the upward context search still needs a root git found")
+}
+
+// Two context files whose names differ only in case are two files on a
+// case-sensitive filesystem, so the dedupe key must not fold them together.
+func TestProcessContextPathKeepsCaseDifferingFiles(t *testing.T) {
+	dir := t.TempDir()
+	notes := filepath.Join(dir, "notes")
+	require.NoError(t, os.MkdirAll(notes, 0o755))
+	upper := filepath.Join(notes, "AGENTS.md")
+	lower := filepath.Join(notes, "agents.md")
+	require.NoError(t, os.WriteFile(upper, []byte("upper-marker"), 0o644))
+	require.NoError(t, os.WriteFile(lower, []byte("lower-marker"), 0o644))
+	upperInfo, err := os.Stat(upper)
+	require.NoError(t, err)
+	lowerInfo, err := os.Stat(lower)
+	require.NoError(t, err)
+	if os.SameFile(upperInfo, lowerInfo) {
+		t.Skip("this filesystem is case-insensitive")
+	}
+
+	contexts := processContextPath("notes", initIsolatedConfig(t, dir))
+	require.Len(t, contexts, 2, "both files are real and both must be read")
+}

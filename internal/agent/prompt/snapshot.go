@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/crush/internal/config"
 )
 
 // EnvSnapshotPrefix opens the per-session environment snapshot message.
@@ -29,8 +27,10 @@ func SessionEnvSnapshot(ctx context.Context, workingDir string, now time.Time) s
 	sb.WriteString(EnvSnapshotPrefix + "\n")
 	sb.WriteString("Today's date: " + now.Format("1/2/2006") + "\n")
 	// The project root decides, so a session started in a subdirectory of a
-	// repository still gets its git status.
-	if _, inRepo := config.ProjectRoot(workingDir); inRepo {
+	// repository still gets its git status. A .git entry counts even when
+	// git cannot read it, so the block still renders and the git commands
+	// report their own failure.
+	if isGitRepo(workingDir) {
 		status, err := getGitStatus(ctx, workingDir)
 		if err != nil {
 			// The model can run git itself; a broken git must not fail the

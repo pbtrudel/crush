@@ -63,9 +63,12 @@ func TestSessionEnvSnapshotSubdirectory(t *testing.T) {
 	require.Contains(t, got, "Status: clean\n")
 }
 
-// A .git directory that is not a real repository makes every git command
-// fail and is not a working tree either. The snapshot must degrade instead
-// of failing the turn: no git block is rendered at all.
+// A .git directory that is not a real repository satisfies the repository
+// check but makes every git command fail. The snapshot must degrade instead
+// of failing the turn: the branch line is omitted and the status section is
+// best-effort (the status command pipes through head, so a failing git is
+// not reported as an error). The git block is still rendered: a broken .git
+// does not turn the directory into a non-repository.
 func TestSessionEnvSnapshotBrokenGit(t *testing.T) {
 	t.Parallel()
 
@@ -74,5 +77,7 @@ func TestSessionEnvSnapshotBrokenGit(t *testing.T) {
 
 	got := SessionEnvSnapshot(context.Background(), dir, fixedSnapshotTime())
 	require.Contains(t, got, "Today's date: 1/1/2025")
+	require.Contains(t, got, "Git status (snapshot at conversation start",
+		"a .git entry still marks the directory as a repository")
 	require.NotContains(t, got, "Current branch")
 }

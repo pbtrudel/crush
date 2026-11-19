@@ -1404,6 +1404,13 @@ func allToolNames() []string {
 	}
 }
 
+// AllToolNames returns the built-in tool names every agent preset starts
+// from, as a copy the caller may keep. It is exported so tests can check a
+// prompt or a palette against the full set instead of a sample.
+func AllToolNames() []string {
+	return slices.Clone(allToolNames())
+}
+
 func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 	if disabledTools == nil {
 		return allTools
