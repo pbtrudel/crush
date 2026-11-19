@@ -1,0 +1,30 @@
+schema: 1
+id: pr-0010
+source:
+  repo: pbtrudel/crush
+  pr: 10
+  merge: 334c5d791d23786c87c71c175128225e528beaef
+  base: 6dd947b1716d6ac6e61434fa34a48a90c366fd77
+kind: plain
+why: >
+  Every launch of a fork build shows `Crush update available: v0.98.1-fork.10 → v0.98.1`,
+  even though the binary already contains the latest upstream release. The version comparison
+  treats the `-fork.N` build suffix as a pre-release, so the fork always looks older than the
+  upstream tag it was cut from.
+prompt: >
+  Every launch of a fork build shows `Crush update available: v0.98.1-fork.10 → v0.98.1`,
+  even though the binary already contains the latest upstream release. The version comparison
+  treats the `-fork.N` build suffix as a pre-release, so the fork always looks older than the
+  upstream tag it was cut from.
+grade:
+  packages: [./internal/update]
+  tests: [TestCheckForUpdate_Fork, TestCheckForUpdate_Beta]
+  exclude: []
+  hidden:
+    - {path: internal/update/update_test.go, blob: 5b2cfa98b3656a80666ec535210db7d0f42150bd}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks: []
