@@ -1,0 +1,43 @@
+schema: 1
+id: pr-0021
+source:
+  repo: pbtrudel/crush
+  pr: 21
+  merge: 50ccadaddef4eaf03481b5b278c07e93e4f7a373
+  base: c2d3b481b79886fa5433c66cf78bb17f747a1350
+kind: interface
+why: |
+  When a provider reports no token usage, the harness estimates context size from the messages. Image payloads were only measured by their metadata string, so a 1MB screenshot counted as roughly ten tokens. Vision-heavy sessions therefore under-reported context usage and auto-compaction fired far too late — or not at all.
+prompt: |
+  When a provider reports no token usage, the harness estimates context size from the messages. Image payloads were only measured by their metadata string, so a 1MB screenshot counted as roughly ten tokens. Vision-heavy sessions therefore under-reported context usage and auto-compaction fired far too late — or not at all.
+interface: |
+  Interface: `internal/agent` gains `func estimateImageDataTokens(data []byte) int64`. An image costs one token per 750 pixels of its width times its height, rounded down, clamped per image to between 85 and 16000 tokens; data that does not decode as an image costs one token per 4 bytes with no clamp, and tool-result media arrives base64-encoded and has to be decoded before its dimensions are read. The media type and the file name or text keep their separate text estimate, with no byte count added for the payload.
+grade:
+  packages: [./internal/agent]
+  tests:
+    - TestEstimateImageDataTokensFallsBackForLargeUndecodableData
+    - TestEstimateMessagePartTokensClampsImageDimensions
+    - TestEstimateMessagePartTokensCountsImageDimensions
+    - TestEstimateMessagePartTokensFallsBackForUndecodableMedia
+    - TestEstimateMessagePartTokensSupportsJPEGAndGIF
+    - TestEstimateToolResultContentTokensCountsMediaDimensions
+  exclude: [TestCoderAgent, TestMistralTransportRewritesRequestBody]
+  hidden:
+    - {path: internal/agent/usage_fallback_test.go, blob: de93ab797f78306841369f1543c60f665863fcf5}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the image-token rule (750 pixels per token, clamped to 85 and 16000), the unclamped 4-bytes-per-token fallback, base64 decoding of tool-result media, and no byte count in the text overhead."
+  - "excluded TestCoderAgent: its recorded VCR cassettes no longer match the prompt text, so the internal/agent package fails at this merge for a reason unrelated to the task; it is skipped by name in the package run."
+  - "excluded TestMistralTransportRewritesRequestBody: its two parallel subtests read each other's captured path through the shared http.DefaultTransport, so it fails intermittently in the internal/agent package run for a reason unrelated to the task (vetting caught it here)."
+  - "the design table lists TestUpdateSessionUsageAddsProviderCost; its body does not change in this pull request, so it is not graded by name."
+  - "the em dash in the prompt is the pull request's own Why text, kept verbatim."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 11, packages: 6}
