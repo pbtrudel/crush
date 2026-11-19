@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,5 +133,41 @@ func TestDeleteContentReportsMatchCountAndLines(t *testing.T) {
 	resp, err := deleteContent(edit, filePath, "alpha", false, fantasy.ToolCall{ID: "call"})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	require.Contains(t, resp.Content, "It matches 3 times, starting on lines 1, 4 and 7.")
+	require.Equal(t, "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true. It matches 3 times, starting on lines 1, 4 and 7.", resp.Content)
+}
+
+// The line list is capped, so the message has to say it lists only the
+// first matches: a model reading a short list under "starting on lines"
+// would take it for the whole set.
+func TestDeleteContentSaysHowManyMatchesItLists(t *testing.T) {
+	t.Parallel()
+
+	// Twelve matches, each followed by one filler line, so the matches
+	// start on the odd lines 1 to 23.
+	var sb strings.Builder
+	wantLines := make([]string, 0, 12)
+	for i := range 12 {
+		if i > 0 {
+			sb.WriteString("filler\n")
+		}
+		wantLines = append(wantLines, strconv.Itoa(2*i+1))
+		sb.WriteString("alpha\n")
+	}
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte(sb.String()), 0o644))
+
+	edit := editContext{
+		ctx:         context.WithValue(t.Context(), SessionIDContextKey, "session"),
+		permissions: &mockPermissionService{},
+		files:       &mockHistoryService{},
+		filetracker: &mockEditFileTracker{lastRead: time.Now().Add(time.Second)},
+		workingDir:  dir,
+	}
+
+	resp, err := deleteContent(edit, filePath, "alpha", false, fantasy.ToolCall{ID: "call"})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	listed := strings.Join(wantLines[:9], ", ") + " and " + wantLines[9]
+	require.Equal(t, "old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true. It matches 12 times, the first 10 on lines "+listed+".", resp.Content)
 }

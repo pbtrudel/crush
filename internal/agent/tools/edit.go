@@ -241,7 +241,16 @@ func multipleMatchesMessage(content, old string) string {
 	if count < 2 {
 		return msg
 	}
-	return fmt.Sprintf("%s It matches %d times, starting on lines %s.", msg, count, humanList(lines))
+	// The two sentences read as one paragraph, so the first has to end
+	// before the count starts.
+	sep := " "
+	if !strings.HasSuffix(msg, ".") {
+		sep = ". "
+	}
+	if count > len(lines) {
+		return fmt.Sprintf("%s%sIt matches %d times, the first %d on lines %s.", msg, sep, count, len(lines), humanList(lines))
+	}
+	return fmt.Sprintf("%s%sIt matches %d times, starting on lines %s.", msg, sep, count, humanList(lines))
 }
 
 // humanList formats a short list the way the error messages read, as in
