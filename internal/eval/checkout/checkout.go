@@ -88,11 +88,17 @@ func extract(ctx context.Context, repoDir, base, dest string) error {
 // checkout and the variant build both read `git archive` with it, and it
 // refuses any entry that would land outside dest.
 func Extract(r io.Reader, dest string) error {
+	root, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		return err
+	}
+	type link struct{ name, target string }
+	var links []link
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
@@ -101,7 +107,7 @@ func Extract(r io.Reader, dest string) error {
 		if !filepath.IsLocal(name) {
 			return fmt.Errorf("archive entry %q escapes the checkout", hdr.Name)
 		}
-		path := filepath.Join(dest, name)
+		path := filepath.Join(root, name)
 		mode := hdr.FileInfo().Mode().Perm()
 
 		switch hdr.Typeflag {
@@ -120,24 +126,41 @@ func Extract(r io.Reader, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			// A link that points outside dest would let a later entry, or
-			// the model, write through it to the host.
-			target := filepath.FromSlash(hdr.Linkname)
-			if filepath.IsAbs(target) || !filepath.IsLocal(filepath.Join(filepath.Dir(name), target)) {
-				return fmt.Errorf("archive symlink %q points outside the checkout", hdr.Name)
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(target, path); err != nil {
-				return err
-			}
+			// Links are made after every file is written, so each target
+			// can be resolved and no entry is written through a link.
+			links = append(links, link{name: name, target: filepath.FromSlash(hdr.Linkname)})
 		case tar.TypeXHeader, tar.TypeXGlobalHeader:
 			// git archive carries the commit id in a pax header.
 		default:
 			return fmt.Errorf("archive entry %q has unsupported type %q", hdr.Name, hdr.Typeflag)
 		}
 	}
+	for _, l := range links {
+		dir := filepath.Join(root, filepath.Dir(l.name))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		// A link that resolves outside the checkout would let the model
+		// write through it to the host.
+		if filepath.IsAbs(l.target) || !within(root, dir) || !within(root, filepath.Join(dir, l.target)) {
+			return fmt.Errorf("archive symlink %q points outside the checkout", filepath.ToSlash(l.name))
+		}
+		if err := os.Symlink(l.target, filepath.Join(dir, filepath.Base(l.name))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// within reports whether path, with every symlink in it resolved, lies inside
+// root. A path that does not exist is not within root.
+func within(root, path string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, resolved)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // writeFile writes one regular file and sets its mode past the umask.

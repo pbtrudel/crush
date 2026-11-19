@@ -172,8 +172,19 @@ func TestExtract(t *testing.T) {
 			archive := build(&tar.Header{Name: "sub/link", Typeflag: tar.TypeSymlink, Linkname: target})
 			require.ErrorContains(t, checkout.Extract(archive, t.TempDir()), "points outside the checkout", target)
 		}
-		archive := build(&tar.Header{Name: "sub/link", Typeflag: tar.TypeSymlink, Linkname: "../a.txt"})
+		archive := build(
+			&tar.Header{Name: "sub/link", Typeflag: tar.TypeSymlink, Linkname: "../a.txt"},
+			regular("a.txt", 0o644),
+		)
 		require.NoError(t, checkout.Extract(archive, t.TempDir()))
+
+		// A link through an earlier link that leaves the checkout.
+		outside := t.TempDir()
+		archive = build(
+			&tar.Header{Name: "up", Typeflag: tar.TypeSymlink, Linkname: ".."},
+			&tar.Header{Name: "sub/escape", Typeflag: tar.TypeSymlink, Linkname: "../up/" + filepath.Base(outside)},
+		)
+		require.ErrorContains(t, checkout.Extract(archive, t.TempDir()), "points outside the checkout")
 	})
 
 	t.Run("refuses a type it cannot write", func(t *testing.T) {
