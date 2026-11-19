@@ -2,10 +2,12 @@ package pinentry
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,55 +18,89 @@ import (
 func TestParsePS(t *testing.T) {
 	t.Parallel()
 
-	out := []byte(`    1 /sbin/launchd
-  338 /usr/libexec/logd
- 1337 /opt/homebrew/bin/pinentry-curses
- 1442 gpg
- 2499 gpg-agent
- 3000 /usr/bin/Google Chrome Helper
+	out := []byte(`    1     0 /sbin/launchd
+  338     1 /usr/libexec/logd
+ 1337   338 /opt/homebrew/bin/pinentry-curses
+ 1442     1 gpg
+ 2499     1 gpg-agent
+ 3000  1442 /usr/bin/Google Chrome Helper
 bad line here
+ 1443    no gpg
 `)
 
 	procs := parsePS(out)
 	require.Len(t, procs, 6)
-	require.Equal(t, Proc{PID: 1, Name: "launchd", Path: "/sbin/launchd"}, procs[0])
-	require.Equal(t, Proc{PID: 1337, Name: "pinentry-curses", Path: "/opt/homebrew/bin/pinentry-curses"}, procs[2])
+	require.Equal(t, Proc{PID: 1, PPID: 0, Name: "launchd", Path: "/sbin/launchd"}, procs[0])
+	require.Equal(t, Proc{PID: 1337, PPID: 338, Name: "pinentry-curses", Path: "/opt/homebrew/bin/pinentry-curses"}, procs[2])
 	// Bare names (Linux ps style) carry no path.
-	require.Equal(t, Proc{PID: 1442, Name: "gpg"}, procs[3])
+	require.Equal(t, Proc{PID: 1442, PPID: 1, Name: "gpg"}, procs[3])
 	// gpg-agent must not be confused with gpg.
-	require.Equal(t, Proc{PID: 2499, Name: "gpg-agent"}, procs[4])
+	require.Equal(t, Proc{PID: 2499, PPID: 1, Name: "gpg-agent"}, procs[4])
 	// Commands with spaces keep the full remainder as their name.
-	require.Equal(t, Proc{PID: 3000, Name: "Google Chrome Helper", Path: "/usr/bin/Google Chrome Helper"}, procs[5])
+	require.Equal(t, Proc{PID: 3000, PPID: 1442, Name: "Google Chrome Helper", Path: "/usr/bin/Google Chrome Helper"}, procs[5])
 }
 
 func TestClassify(t *testing.T) {
 	t.Parallel()
 
-	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "gpg"}})
+	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, ownProc(2, "gpg")}, nil)
 	require.True(t, handover)
 	require.True(t, ctrlL)
 	require.True(t, gpg)
 
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-tty"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-tty"}}, nil)
 	require.True(t, handover)
 	require.False(t, ctrlL, "pinentry-tty reads raw bytes; Ctrl-L would corrupt the passphrase")
 	require.False(t, gpg)
 
-	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry"}})
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry"}}, nil)
 	require.True(t, handover)
 	require.True(t, ctrlL, "an unresolvable plain pinentry defaults to the curses behavior")
 
 	// GUI pinentry flavors never need the terminal.
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-mac"}, {PID: 2, Name: "pinentry-qt"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "pinentry-mac"}, {PID: 2, Name: "pinentry-qt"}}, nil)
 	require.False(t, handover)
 	require.False(t, ctrlL)
 	require.False(t, gpg)
 
 	// gpg-agent is not gpg.
-	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "gpg-agent"}})
+	handover, ctrlL, gpg = classify([]Proc{{PID: 1, Name: "gpg-agent"}}, nil)
 	require.False(t, handover)
 	require.False(t, ctrlL)
 	require.False(t, gpg)
+}
+
+func TestClassifyRequiresOwnTerminal(t *testing.T) {
+	t.Parallel()
+
+	curses := []Proc{{PID: 1, Name: "pinentry-curses"}}
+	ours := func(int) bool { return true }
+	foreign := func(int) bool { return false }
+
+	handover, ctrlL, _ := classify(curses, ours)
+	require.True(t, handover, "a dialog holding our terminal takes it")
+	require.True(t, ctrlL)
+
+	handover, ctrlL, _ = classify(curses, foreign)
+	require.False(t, handover, "a dialog on another terminal must not take ours")
+	require.False(t, ctrlL)
+
+	// Only a hold of our own terminal counts among several dialogs.
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "pinentry-tty"}}, func(pid int) bool {
+		return pid == 2
+	})
+	require.True(t, handover)
+	require.False(t, ctrlL, "only the pinentry-tty holds our terminal")
+
+	// GUI flavors never take the terminal, whatever they hold.
+	handover, ctrlL, _ = classify([]Proc{{PID: 1, Name: "pinentry-mac"}}, ours)
+	require.False(t, handover)
+	require.False(t, ctrlL)
+
+	// An unidentifiable terminal keeps the name-only match.
+	handover, ctrlL, _ = classify(curses, nil)
+	require.True(t, handover)
+	require.True(t, ctrlL)
 }
 
 func TestResolveFlavor(t *testing.T) {
@@ -115,6 +151,10 @@ func TestResolveFlavor(t *testing.T) {
 
 func newTestService() *Service {
 	s := NewService()
+	// Tests never consult the terminal they run on: the default check is
+	// replaced by one that accepts every candidate. Tests of the filter
+	// set their own.
+	s.owns = func(int) bool { return true }
 	s.reopenWindow = 300 * time.Millisecond
 	s.touchGrace = 800 * time.Millisecond
 	s.touchMax = 3 * time.Minute
@@ -135,7 +175,7 @@ func TestWatcherPassphraseFlow(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	pin := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
+	pin := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
 
 	// Dialog appears: terminal handover requested, dialog redraws on
 	// Ctrl-L.
@@ -195,8 +235,8 @@ func TestWatcherTouchAfterPassphrase(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	// Passphrase dialog with gpg waiting behind it.
 	s.tick(now, pinAndGPG)
@@ -224,7 +264,7 @@ func TestWatcherTouchWithCachedCredentials(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg2"}}
+	gpgOnly := []Proc{ownProc(20, "gpg2")}
 
 	// gpg starts waiting without ever showing a dialog (cached
 	// passphrase). No hint before the grace period.
@@ -243,7 +283,7 @@ func TestWatcherTouchExpiry(t *testing.T) {
 	s.touchGrace = 100 * time.Millisecond
 	s.touchMax = 500 * time.Millisecond
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	now = tickAll(s, now, gpgOnly, 100*time.Millisecond, 2)
 	require.Equal(t, Event{TouchPending: true}, s.last)
@@ -260,8 +300,8 @@ func TestWatcherDialogReappearsDuringTouchWait(t *testing.T) {
 	s := newTestService()
 	s.touchGrace = 100 * time.Millisecond
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-tty"}, {PID: 20, Name: "gpg"}}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-tty"}, ownProc(20, "gpg")}
 
 	// Touch wait detected without a dialog.
 	now = tickAll(s, now, gpgOnly, 100*time.Millisecond, 2)
@@ -281,8 +321,8 @@ func TestWatcherReleasePrecedesTouchHint(t *testing.T) {
 	s.reopenWindow = 100 * time.Millisecond
 	s.touchGrace = 100 * time.Millisecond
 	now := time.Now()
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	s.tick(now, pinAndGPG)
 	require.Equal(t, Event{Active: true, CtrlLRedraw: true}, s.last)
@@ -377,9 +417,171 @@ func TestServiceSleepsWithoutTrackedCommands(t *testing.T) {
 	}
 }
 
+func TestLsofMentions(t *testing.T) {
+	t.Parallel()
+
+	// lsof -Fn prints one line per descriptor: f<fd> then n<path>.
+	out := []byte("p4242\nf5\nn/dev/ttys001\nf6\nn/dev/ttys001\n")
+
+	require.True(t, lsofMentions(out, "/dev/ttys001"))
+	require.False(t, lsofMentions(out, "/dev/ttys002"))
+	require.False(t, lsofMentions(nil, "/dev/ttys001"), "no output is no match")
+	require.False(t, lsofMentions([]byte("p4242\n"), "/dev/ttys001"), "a pid header without descriptors is no match")
+}
+
+// ownProc describes a process this test process started, as a process
+// started by a Crush command is.
+func ownProc(pid int, name string) Proc {
+	return Proc{PID: pid, PPID: os.Getpid(), Name: name}
+}
+
+func TestClassifyCountsOnlyOurGPG(t *testing.T) {
+	t.Parallel()
+	parent := os.Getpid()
+
+	// A gpg started by Crush counts.
+	_, _, gpg := classify([]Proc{ownProc(20, "gpg")}, nil)
+	require.True(t, gpg)
+
+	// A deeper descendant of Crush counts too.
+	_, _, gpg = classify([]Proc{
+		{PID: 30, PPID: parent, Name: "sh"},
+		{PID: 31, PPID: 30, Name: "gpg2"},
+	}, nil)
+	require.True(t, gpg)
+
+	// A gpg belonging to another program or another Crush instance does
+	// not count: it cannot be waiting for our key.
+	_, _, gpg = classify([]Proc{{PID: 40, PPID: parent + 1, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+
+	// A parent missing from the snapshot cannot be attributed to Crush.
+	_, _, gpg = classify([]Proc{{PID: 41, PPID: 999999, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+
+	// A malformed snapshot with a parent cycle terminates.
+	_, _, gpg = classify([]Proc{{PID: 42, PPID: 42, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+}
+
+func TestWatcherTouchRequiresOurGPG(t *testing.T) {
+	t.Parallel()
+
+	s := newTestService()
+	s.touchGrace = 100 * time.Millisecond
+	now := time.Now()
+	foreign := []Proc{{PID: 20, PPID: os.Getpid() + 1, Name: "gpg"}}
+
+	// Another program's gpg is never a security key wait of ours.
+	now = tickAll(s, now, foreign, 100*time.Millisecond, 5)
+	require.Equal(t, Event{}, s.last)
+	require.Equal(t, stateIdle, s.state)
+
+	// A gpg started by Crush still is.
+	tickAll(s, now, []Proc{ownProc(20, "gpg")}, 100*time.Millisecond, 2)
+	require.Equal(t, Event{TouchPending: true}, s.last)
+}
+
+// waitUntil polls cond for up to five seconds.
+func waitUntil(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
+}
+
+// startFakeHolding starts a fake process holding path open for the rest of
+// the test and returns its PID.
+func startFakeHolding(t *testing.T, path string) int {
+	t.Helper()
+	exe := buildFakeProc(t, "fakeproc.go", "fakeproc")
+	cmd := exec.CommandContext(t.Context(), exe, "30", path)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+func TestWatcherRequiresOwnTerminal(t *testing.T) {
+	t.Parallel()
+
+	ttyPath := standinTerminal(t)
+	otherPath := standinTerminal(t)
+	owns := pathOwns(t, ttyPath)
+	foreignOwnsOther := pathOwns(t, otherPath)
+
+	// A dialog on another terminal must not take ours.
+	foreign := startFakeHolding(t, otherPath)
+	require.True(t, waitUntil(t, func() bool { return foreignOwnsOther(foreign) }), "the fake holds the other terminal")
+	s := newTestService()
+	s.owns = owns
+	s.tick(time.Now(), []Proc{{PID: foreign, Name: "pinentry-curses"}})
+	require.Equal(t, Event{}, s.last)
+	require.Equal(t, stateIdle, s.state)
+
+	// The same dialog holding our terminal is a handover.
+	pid := startFakeHolding(t, ttyPath)
+	require.True(t, waitUntil(t, func() bool { return owns(pid) }), "the fake holds our terminal")
+	s = newTestService()
+	s.owns = owns
+	s.tick(time.Now(), []Proc{{PID: pid, Name: "pinentry-curses"}})
+	require.Equal(t, Event{Active: true, CtrlLRedraw: true}, s.last)
+}
+
+// devZero and devFull stand in for two different terminals. They are
+// character devices, as a terminal is, and neither is stdin of the fakes.
+const (
+	devZero = "/dev/zero"
+	devFull = "/dev/full"
+)
+
+func TestOwnsTerminalUsesOpenDescriptors(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("descriptor ownership is read through /proc/<pid>/fd")
+	}
+	for _, dev := range []string{devZero, devFull} {
+		if _, err := os.Stat(dev); err != nil {
+			t.Skipf("%s stands in for a terminal device", dev)
+		}
+	}
+
+	ref, ok := terminalRefAt(devZero)
+	require.True(t, ok, "%s is a character device", devZero)
+	fullRef, ok := terminalRefAt(devFull)
+	require.True(t, ok, "%s is a character device", devFull)
+
+	ours := startFakeHolding(t, devZero)
+	require.True(t, waitUntil(t, func() bool { return ownsTerminal(ours, ref) }), "a process holding the device owns it")
+
+	foreign := startFakeHolding(t, devFull)
+	require.True(t, waitUntil(t, func() bool { return ownsTerminal(foreign, fullRef) }), "the fake holds the other device")
+	require.False(t, ownsTerminal(foreign, ref), "another device is not our terminal")
+
+	// Descriptors that cannot be read are never ours.
+	require.False(t, ownsTerminal(1<<30, ref))
+}
+
+func TestDefaultOwnsFallsBackWithoutTerminal(t *testing.T) {
+	t.Parallel()
+	if _, ok := ownTerminalRef(); ok {
+		t.Skip("stdin is a terminal here; the fallback cannot be exercised")
+	}
+	require.Nil(t, defaultOwns(), "an unidentifiable terminal keeps the name-only match")
+}
+
 // buildFakeProc builds the given helper source from testdata under the
-// given binary name so the process table shows it as that name (e.g.
-// "pinentry-curses", "gpg").
+// given binary name. The name must not be one a pinentry watcher reacts to
+// ("pinentry", "pinentry-curses", "gpg", ...): a live Crush on the same
+// machine would act on it. Tests that need such a name report it through
+// [renamedProcs] instead.
 func buildFakeProc(t *testing.T, source, name string) string {
 	t.Helper()
 
@@ -392,17 +594,101 @@ func buildFakeProc(t *testing.T, source, name string) string {
 	return dst
 }
 
+// standinTerminal creates a file that stands in for a terminal. Tests bind
+// the watcher's ownership check to it instead of to the real terminal, so
+// running the tests can never make a live Crush hand its terminal over.
+func standinTerminal(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "standin-terminal")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	return path
+}
+
+// pathOwns returns an ownership check that reports a process as owning the
+// stand-in terminal when it holds path open. It replaces the platform
+// ownership check in tests, which inspect open descriptors through /proc.
+func pathOwns(t *testing.T, path string) func(pid int) bool {
+	t.Helper()
+	want, err := os.Stat(path)
+	require.NoError(t, err)
+	if _, err := os.ReadDir("/proc/self/fd"); err != nil {
+		t.Skip("open descriptors are not inspectable without /proc/<pid>/fd")
+	}
+	return func(pid int) bool {
+		dir := fmt.Sprintf("/proc/%d/fd", pid)
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return false
+		}
+		for _, e := range ents {
+			got, err := os.Stat(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			if os.SameFile(got, want) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// renamedProcs rewrites the names of specific processes in a process table
+// snapshot. Tests use it so the fakes they spawn never appear under a name
+// a live Crush watcher reacts to, while the snapshot the watcher under test
+// sees still carries a pinentry or gpg name.
+type renamedProcs struct {
+	mu    sync.Mutex
+	names map[int]string
+}
+
+// newRenamedProcs returns an empty renaming.
+func newRenamedProcs() *renamedProcs {
+	return &renamedProcs{names: map[int]string{}}
+}
+
+// set reports pid under name in the snapshots the wrapper lister returns.
+func (r *renamedProcs) set(pid int, name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names[pid] = name
+}
+
+// lister wraps a process lister with the renaming.
+func (r *renamedProcs) lister(base Lister) Lister {
+	return func(ctx context.Context) ([]Proc, error) {
+		procs, err := base(ctx)
+		if err != nil {
+			return nil, err
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for i := range procs {
+			if name, ok := r.names[procs[i].PID]; ok {
+				procs[i].Name = name
+			}
+		}
+		return procs, nil
+	}
+}
+
 func TestServiceDetectsRealProcess(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process name emulation relies on ps(1)")
 	}
 
-	fakePinentry := buildFakeProc(t, "fakeproc.go", "pinentry-curses")
-	fakeGPG := buildFakeProc(t, "fakeproc.go", "gpg")
+	// The fakes hold a stand-in terminal open and the watcher's ownership
+	// check is bound to that stand-in, so no test process ever claims the
+	// terminal of the developer running the tests.
+	ttyPath := standinTerminal(t)
+	fakePinentry := buildFakeProc(t, "fakeproc.go", "fakepinentry")
+	fakeGPG := buildFakeProc(t, "fakeproc.go", "fakegpg")
+	names := newRenamedProcs()
 
 	s := newTestService()
-	s.lister = psLister
+	s.lister = names.lister(psLister)
+	s.owns = pathOwns(t, ttyPath)
 	s.pollInterval = 20 * time.Millisecond
 	s.reopenWindow = 50 * time.Millisecond
 	s.touchGrace = 100 * time.Millisecond
@@ -428,12 +714,15 @@ func TestServiceDetectsRealProcess(t *testing.T) {
 	done := s.TrackCommand()
 	defer done()
 
-	// A "pinentry-curses" process appears while gpg runs: handover.
+	// A "pinentry-curses" process holding the terminal appears while gpg
+	// runs: handover.
 	gpgCmd := exec.CommandContext(ctx, fakeGPG, "30")
 	require.NoError(t, gpgCmd.Start())
 	defer func() { _ = gpgCmd.Process.Kill() }()
-	pinCmd := exec.CommandContext(ctx, fakePinentry, "30")
+	names.set(gpgCmd.Process.Pid, "gpg")
+	pinCmd := exec.CommandContext(ctx, fakePinentry, "30", ttyPath)
 	require.NoError(t, pinCmd.Start())
+	names.set(pinCmd.Process.Pid, "pinentry-curses")
 
 	expectEvent(Event{Active: true, CtrlLRedraw: true})
 

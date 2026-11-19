@@ -87,7 +87,13 @@ type Service struct {
 	ctrlL bool
 	last  Event
 
-	lister       Lister
+	lister Lister
+	// owns reports whether a candidate pinentry process holds the
+	// terminal Crush runs on. It is nil when the terminal cannot be
+	// identified, which accepts every candidate, and tests inject their
+	// own check so they never match the terminal of the developer
+	// running them.
+	owns         func(pid int) bool
 	pollInterval time.Duration
 	reopenWindow time.Duration
 	touchGrace   time.Duration
@@ -108,6 +114,26 @@ func NewService() *Service {
 }
 
 var defaultService = NewService()
+
+// logNoTerminalOnce reports the degraded fallback once per process instead
+// of once per poll.
+var logNoTerminalOnce sync.Once
+
+// defaultOwns returns the check that tells whether a candidate pinentry
+// holds the terminal Crush runs on. A nil result accepts every candidate:
+// when the terminal cannot be identified (no terminal on stdin, restricted
+// /proc, no lsof) losing the handover entirely would be worse than the
+// process-name match it has always used.
+func defaultOwns() func(pid int) bool {
+	ref, ok := ownTerminalRef()
+	if !ok {
+		logNoTerminalOnce.Do(func() {
+			slog.Debug("Pinentry watcher: cannot identify this terminal; not filtering by terminal")
+		})
+		return nil
+	}
+	return func(pid int) bool { return ownsTerminal(pid, ref) }
+}
 
 // DefaultService returns the process-wide pinentry watcher. The shell
 // execution layer reports command lifetimes to it via [TrackCommand], and
@@ -203,7 +229,12 @@ func (s *Service) loop(ctx context.Context) {
 
 // tick advances the watcher state machine with a process table snapshot.
 func (s *Service) tick(now time.Time, procs []Proc) {
-	pin, ctrlL, gpg := classify(procs)
+	owns := s.owns
+	if owns == nil {
+		// Resolve the terminal once per poll, not once per candidate.
+		owns = defaultOwns()
+	}
+	pin, ctrlL, gpg := classify(procs, owns)
 
 	s.mu.Lock()
 	// justReleased marks the tick in which the handover is released.
