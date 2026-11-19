@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
@@ -488,4 +489,84 @@ func TestCaptureBodyReadCloseRace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len("captured-chunk"), n)
 	<-finished
+}
+
+// TestCaptureClientCopiesClient pins that turning capture on does not change
+// the client the caller holds: the recorder belongs to a copy.
+func TestCaptureClientCopiesClient(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	original := &http.Client{Transport: http.DefaultTransport, Timeout: 5 * time.Second}
+	captured := captureClient(original)
+	require.NotSame(t, original, captured)
+	require.Same(t, http.DefaultTransport, original.Transport)
+	require.NotNil(t, captured.Transport)
+	require.Equal(t, 5*time.Second, captured.Timeout)
+}
+
+// TestCaptureTransportTightensDirMode pins that an existing capture
+// directory with a looser mode is tightened, not inherited.
+func TestCaptureTransportTightensDirMode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "captures")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.Chmod(dir, 0o755))
+	t.Setenv(captureDirEnv, dir)
+
+	require.NotNil(t, captureClient(nil))
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+// TestCaptureHeadersKeepsOnlyNamedFields pins that a header survives because
+// it names the model, not because its name happens to contain "model".
+func TestCaptureHeadersKeepsOnlyNamedFields(t *testing.T) {
+	header := http.Header{}
+	header.Set("X-Prism-Model-Id", "prism-1")
+	header.Set("X-Prism-Model-Name", "prism-name")
+	header.Set("X-Model-Cache-Key", "workspace-hash")
+	header.Set("X-Model-Token", "plain-secret")
+
+	got := captureHeaders(header)
+	require.Equal(t, map[string]string{
+		"x-prism-model-id":   "prism-1",
+		"x-prism-model-name": "prism-name",
+	}, got)
+}
+
+// TestCaptureTransportRestoresBodyWithoutGetBody pins that a request built
+// without a rewind function still reaches the server with its body intact,
+// and that the capture stores the same bytes.
+func TestCaptureTransportRestoresBodyWithoutGetBody(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := captureClient(nil)
+	require.NotNil(t, client)
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/v1/chat/completions", io.NopCloser(strings.NewReader(body)))
+	require.NoError(t, err)
+	require.Nil(t, req.GetBody)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Equal(t, body, gotBody)
+	require.Equal(t, body, readCapture(t, dir).RequestBody)
 }

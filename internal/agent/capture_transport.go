@@ -29,22 +29,25 @@ const captureDirEnv = "CRUSH_CAPTURE_DIR"
 // itself truncated.
 const captureBodyLimit = 200 * 1024
 
-// captureClient returns client with the recorder installed under its
-// transport when CRUSH_CAPTURE_DIR is set, and returns client untouched
-// otherwise. A nil client stays nil while capturing is off, so a provider
-// that builds its own client keeps doing so; while capturing is on the
-// returned client only carries the recorder, which is enough to capture a
-// provider that would otherwise use its own transport.
+// captureClient returns a copy of client with the recorder installed under
+// its transport when CRUSH_CAPTURE_DIR is set, and returns client untouched
+// otherwise. The caller's client is copied, never changed in place, so a
+// provider that builds its own client keeps it. A nil client stays nil while
+// capturing is off; while capturing is on the returned client only carries
+// the recorder, which is enough to capture a provider that would otherwise
+// use its own transport.
 func captureClient(client *http.Client) *http.Client {
 	dir := captureDir()
 	if dir == "" {
 		return client
 	}
-	if client == nil {
-		client = &http.Client{}
+	out := &http.Client{}
+	if client != nil {
+		copied := *client
+		out = &copied
 	}
-	client.Transport = captureTransportIfEnabled(client.Transport)
-	return client
+	out.Transport = captureTransportIfEnabled(out.Transport)
+	return out
 }
 
 // captureDir returns the capture directory, or "" when capturing is off.
@@ -59,15 +62,27 @@ func captureTransportIfEnabled(base http.RoundTripper) http.RoundTripper {
 	if dir == "" {
 		return base
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := capturePrepareDir(dir); err != nil {
 		slog.Warn("Provider request capture is disabled", "error", err)
 		return base
 	}
 	return &captureTransport{base: base, dir: dir}
 }
 
+// capturePrepareDir creates the capture directory and tightens its mode, so
+// a directory that already exists cannot keep a looser mode than the files
+// written into it.
+func capturePrepareDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}
+
 // captureTransport records every exchange it forwards and writes one JSON
-// file per exchange into dir. It never changes the request or the response.
+// file per exchange into dir. It restores the request body it reads and
+// wraps the response body to copy it, so either side still sees the same
+// bytes it would have seen without the recorder.
 type captureTransport struct {
 	base http.RoundTripper
 	dir  string
@@ -287,8 +302,20 @@ func cutBodyAtLimit(body string) string {
 	return cut
 }
 
-// captureHeaders keeps only the headers that identify the content type, the
-// client and the model. Everything else, credentials above all, is dropped.
+// captureHeaderAllowlist names the headers a capture keeps: the ones that
+// say what was asked of which model. Everything else, credentials above all,
+// is dropped, and a header has to be named here rather than merely mention
+// the model, so a field such as X-Model-Token cannot slip through.
+var captureHeaderAllowlist = map[string]bool{
+	"content-type":       true,
+	"user-agent":         true,
+	"x-model-id":         true,
+	"x-prism-model-id":   true,
+	"x-prism-model-name": true,
+}
+
+// captureHeaders keeps only the allowlisted headers. Everything else,
+// credentials above all, is dropped.
 func captureHeaders(header http.Header) map[string]string {
 	if len(header) == 0 {
 		return nil
@@ -296,7 +323,7 @@ func captureHeaders(header http.Header) map[string]string {
 	out := make(map[string]string, len(header))
 	for name, values := range header {
 		lower := strings.ToLower(name)
-		if lower != "content-type" && lower != "user-agent" && !strings.Contains(lower, "model") {
+		if !captureHeaderAllowlist[lower] {
 			continue
 		}
 		out[lower] = redactText(strings.Join(values, ", "))
