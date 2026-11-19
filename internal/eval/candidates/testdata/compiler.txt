@@ -1,0 +1,7 @@
+# github.com/charmbracelet/crush/internal/shell [github.com/charmbracelet/crush/internal/shell.test]
+internal/shell/background_test.go:114:26: undefined: ErrBackgroundShellNotFound
+internal/foo/foo_test.go:12:3: x.Bar undefined (type *T has no field or method Bar)
+internal/foo/foo_test.go:20:5: too many arguments in call to New
+internal/foo/foo_test.go:22:5: not enough arguments in call to Old
+internal/foo/foo_test.go:30:5: cannot use "x" (untyped string constant) as int value in argument to Set
+FAIL	github.com/charmbracelet/crush/internal/shell [build failed]
