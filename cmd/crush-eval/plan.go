@@ -38,11 +38,13 @@ func planCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	se, _, err := base.DetectableEffect(exp.Repetitions)
+	se, effect, err := base.DetectableEffect(exp.Repetitions)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	fmt.Fprintf(stdout, "standard error %.4f at %d tasks and %d repetitions\n", se, len(base.Tasks), exp.Repetitions)
+	fmt.Fprintf(stdout, "detectable effect %.4f\nmargin %.4f\n", effect, exp.Margin)
 	if err := exp.FillDetectableEffect(base); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -51,8 +53,6 @@ func planCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "standard error %.4f at %d tasks and %d repetitions\n", se, len(base.Tasks), exp.Repetitions)
-	fmt.Fprintf(stdout, "detectable effect %.4f\nmargin %.4f\n", exp.DetectableEffect, exp.Margin)
 	return 0
 }
 
@@ -64,7 +64,9 @@ func writeDetectableEffect(path string, effect float64) error {
 	if err != nil {
 		return err
 	}
-	line := "detectable_effect: " + strconv.FormatFloat(effect, 'f', 4, 64) + "\n"
+	// Full precision, so a margin set to the written effect is not refused
+	// by a last digit.
+	line := "detectable_effect: " + strconv.FormatFloat(effect, 'g', -1, 64) + "\n"
 	lines := strings.SplitAfter(string(data), "\n")
 	found := false
 	for i, current := range lines {
