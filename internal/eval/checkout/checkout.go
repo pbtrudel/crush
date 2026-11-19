@@ -120,10 +120,16 @@ func Extract(r io.Reader, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink:
+			// A link that points outside dest would let a later entry, or
+			// the model, write through it to the host.
+			target := filepath.FromSlash(hdr.Linkname)
+			if filepath.IsAbs(target) || !filepath.IsLocal(filepath.Join(filepath.Dir(name), target)) {
+				return fmt.Errorf("archive symlink %q points outside the checkout", hdr.Name)
+			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
-			if err := os.Symlink(hdr.Linkname, path); err != nil {
+			if err := os.Symlink(target, path); err != nil {
 				return err
 			}
 		case tar.TypeXHeader, tar.TypeXGlobalHeader:

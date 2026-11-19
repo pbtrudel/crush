@@ -166,6 +166,16 @@ func TestExtract(t *testing.T) {
 		require.NoFileExists(t, filepath.Join(filepath.Dir(dest), "escape.txt"))
 	})
 
+	t.Run("refuses a symlink that points outside the checkout", func(t *testing.T) {
+		t.Parallel()
+		for _, target := range []string{"/etc/passwd", "../../outside", "../sub/../../outside"} {
+			archive := build(&tar.Header{Name: "sub/link", Typeflag: tar.TypeSymlink, Linkname: target})
+			require.ErrorContains(t, checkout.Extract(archive, t.TempDir()), "points outside the checkout", target)
+		}
+		archive := build(&tar.Header{Name: "sub/link", Typeflag: tar.TypeSymlink, Linkname: "../a.txt"})
+		require.NoError(t, checkout.Extract(archive, t.TempDir()))
+	})
+
 	t.Run("refuses a type it cannot write", func(t *testing.T) {
 		t.Parallel()
 		archive := build(&tar.Header{Name: "dev", Typeflag: tar.TypeChar})
