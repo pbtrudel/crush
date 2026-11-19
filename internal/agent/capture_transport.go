@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // captureDirEnv names the environment variable that turns the provider
@@ -96,15 +98,16 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		base = http.DefaultTransport
 	}
 	start := time.Now()
-	body, truncated := captureRequestBody(req)
+	rawBody := captureRequestBody(req)
+	requestBody, truncated := recordBody(rawBody)
 	exchange := captureExchange{
 		StartedAt:        start.UTC().Format(time.RFC3339Nano),
 		Method:           req.Method,
 		URL:              redactURL(req.URL),
 		RequestHeaders:   captureHeaders(req.Header),
-		RequestBody:      redactBody(body),
+		RequestBody:      requestBody,
 		RequestTruncated: truncated,
-		Stream:           requestStreams(body),
+		Stream:           requestStreams(rawBody),
 	}
 
 	resp, err := base.RoundTrip(req)
@@ -124,9 +127,9 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	resp.Body = &captureBody{
 		ReadCloser: resp.Body,
-		done: func(body []byte, truncated bool) {
-			exchange.ResponseBody = redactBody(body)
-			exchange.ResponseTruncated = truncated
+		done: func(body []byte, cutAtCap bool) {
+			exchange.ResponseBody, exchange.ResponseTruncated = recordBody(body)
+			exchange.ResponseTruncated = exchange.ResponseTruncated || cutAtCap
 			t.write(exchange)
 		},
 	}
@@ -214,20 +217,19 @@ func (b *captureBody) finish() {
 	})
 }
 
-// captureRequestBody returns the request body for recording and restores it
-// for the real request. The stored copy is capped; the forwarded body is not.
-func captureRequestBody(req *http.Request) ([]byte, bool) {
+// captureRequestBody returns the whole request body for recording and restores
+// it for the real request. The caller caps the stored copy, and it caps it
+// after redaction rather than here: a body cut in this function no longer
+// parses as JSON, which would skip the field-by-field redaction.
+func captureRequestBody(req *http.Request) []byte {
 	if req.Body == nil || req.Body == http.NoBody {
-		return nil, false
+		return nil
 	}
 	if req.GetBody != nil {
 		if rc, err := req.GetBody(); err == nil {
 			data, _ := io.ReadAll(rc)
 			_ = rc.Close()
-			if len(data) > captureBodyLimit {
-				return data[:captureBodyLimit], true
-			}
-			return data, false
+			return data
 		}
 	}
 	data, err := io.ReadAll(req.Body)
@@ -235,12 +237,38 @@ func captureRequestBody(req *http.Request) ([]byte, bool) {
 	req.Body = io.NopCloser(bytes.NewReader(data))
 	req.ContentLength = int64(len(data))
 	if err != nil {
-		return nil, false
+		return nil
 	}
-	if len(data) > captureBodyLimit {
-		return data[:captureBodyLimit], true
+	return data
+}
+
+// recordBody redacts a body and caps the stored copy at captureBodyLimit,
+// reporting whether the copy was cut. Redaction runs over the whole body
+// first, so a body past the cap still loses its secret fields instead of
+// being stored raw because the cut copy no longer decodes.
+func recordBody(body []byte) (string, bool) {
+	if len(body) == 0 {
+		return "", false
 	}
-	return data, false
+	redacted := redactBody(body)
+	cut := cutBodyAtLimit(redacted)
+	return cut, len(cut) != len(redacted)
+}
+
+// cutBodyAtLimit cuts a body at the size cap without splitting a UTF-8
+// sequence, so the stored string survives JSON re-encoding.
+func cutBodyAtLimit(body string) string {
+	if len(body) <= captureBodyLimit {
+		return body
+	}
+	cut := body[:captureBodyLimit]
+	for len(cut) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // captureHeaders keeps only the headers that identify the content type, the
@@ -314,6 +342,35 @@ var captureSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{12,}`),
 	regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{12,}`),
 	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{20,}`),
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
+	regexp.MustCompile(`\baws_secret_access_key\b\s*[=:]\s*[A-Za-z0-9/+=]{20,}`),
+}
+
+// captureSecretFieldValue matches a secret field in text that does not decode
+// as JSON, which is what a body cut at the size cap looks like. It hides the
+// whole string value so a truncated body cannot store a secret whose key
+// would have hidden it.
+var captureSecretFieldValue = regexp.MustCompile(
+	`(?i)("(?:` + captureSecretKeyAlternation() + `)"\s*:\s*)"(?:[^"\\]|\\.)*"`,
+)
+
+// captureSecretKeyAlternation renders captureSecretKeys as a regexp
+// alternation, longest key first so a short key cannot shadow a longer one.
+func captureSecretKeyAlternation() string {
+	keys := make([]string, 0, len(captureSecretKeys))
+	for key := range captureSecretKeys {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	for i, key := range keys {
+		keys[i] = regexp.QuoteMeta(key)
+	}
+	return strings.Join(keys, "|")
 }
 
 // captureSecretQuery lists the query parameters whose values are redacted.
@@ -370,8 +427,10 @@ func redactBody(body []byte) string {
 }
 
 // redactJSONBytes redacts a JSON document, and each JSON payload of a
-// server-sent event stream. Input that holds nothing to redact is returned
-// byte for byte, so a capture shows the request or event exactly as sent.
+// server-sent event stream. Whatever is left undecoded, a body cut at the
+// size cap above all, then gets a keyed pass so its secret fields still lose
+// their values. Input that holds nothing to redact is returned byte for byte,
+// so a capture shows the request or event exactly as sent.
 func redactJSONBytes(body []byte) string {
 	if redacted, ok := redactJSONDocument(body); ok {
 		return redacted
@@ -394,10 +453,11 @@ func redactJSONBytes(body []byte) string {
 		lines[i] = "data: " + redacted
 		changed = true
 	}
-	if !changed {
-		return string(body)
+	text := string(body)
+	if changed {
+		text = strings.Join(lines, "\n")
 	}
-	return strings.Join(lines, "\n")
+	return captureSecretFieldValue.ReplaceAllString(text, `${1}"REDACTED"`)
 }
 
 // redactJSONDocument redacts a JSON document and reports false when the input

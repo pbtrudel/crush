@@ -278,3 +278,93 @@ func TestRedactBody(t *testing.T) {
 	require.Contains(t, got, `"prompt_cache_key":"workspace-hash"`)
 	require.Contains(t, got, `"reasoning_content":"thinking"`)
 }
+
+// oversizedBody returns a JSON document whose api_key field comes first,
+// followed by enough padding to push it well past the capture size cap.
+func oversizedBody() string {
+	return `{"api_key":"plain-secret","model":"glm-5.3","pad":"` + strings.Repeat("x", captureBodyLimit) + `"}`
+}
+
+// TestCaptureTransportRedactsOversizedRequest pins that a body larger than
+// the size cap is redacted before it is cut. A truncated body does not parse
+// as JSON, so key-based redaction would otherwise be skipped and a plain
+// api_key would reach the disk.
+func TestCaptureTransportRedactsOversizedRequest(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := captureClient(nil)
+	require.NotNil(t, client)
+	reqBody := oversizedBody()
+	require.Greater(t, len(reqBody), captureBodyLimit)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	raw, err := os.ReadFile(captureFiles(t, dir)[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "plain-secret")
+	require.True(t, readCapture(t, dir).RequestTruncated)
+}
+
+// TestCaptureTransportRedactsOversizedResponse pins the same rule for a
+// response: the copy kept is cut at the cap, so it cannot be decoded, and
+// the keyed fallback still has to hide the secret.
+func TestCaptureTransportRedactsOversizedResponse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	response := oversizedBody()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer server.Close()
+
+	client := captureClient(nil)
+	require.NotNil(t, client)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"glm-5.3"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	raw, err := os.ReadFile(captureFiles(t, dir)[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "plain-secret")
+	require.True(t, readCapture(t, dir).ResponseTruncated)
+}
+
+// TestRedactTextCredentialShapes pins that the credential shapes without a
+// distinctive prefix are still caught inside a plain string.
+func TestRedactTextCredentialShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, secret := range []string{
+		"AKIAIOSFODNN7EXAMPLE",
+		"ASIAIOSFODNN7EXAMPLE",
+		"aws_access_key_id=AKIAIOSFODNN7EXAMPLE",
+	} {
+		got := redactText(secret)
+		require.Contains(t, got, "REDACTED")
+		require.NotContains(t, got, "AKIAIOSFODNN7EXAMPLE")
+	}
+}
