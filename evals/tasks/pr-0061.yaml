@@ -1,0 +1,59 @@
+schema: 1
+id: pr-0061
+source:
+  repo: pbtrudel/crush
+  pr: 61
+  merge: 78a2a6f9ac868e254a46a4ffd06bd87c4aa98c98
+  base: b55e91d519f8c9902096810828d6882bace4719a
+kind: plain
+why: |
+  `/btw` (Side Question) stopped producing answers: the dialog showed
+  "(the model returned no answer)" in both the TUI and Discord.
+
+  The ephemeral side-question call reused the coding-agent system prompt but
+  registered no tools. That prompt instructs the model to inspect the
+  workspace, run commands, and keep working until the task is done, so the
+  model answered with a promise to go look at files ("I'll look at the project
+  files to find how to run it.") or with a completely empty message. The empty
+  case is what the UI reports as no answer.
+
+  Reproduced against a live Mistral endpoint with the real coder prompt: 3 of 5
+  runs returned an empty message with `finish_reason: stop`.
+prompt: |
+  `/btw` (Side Question) stopped producing answers: the dialog showed
+  "(the model returned no answer)" in both the TUI and Discord.
+
+  The ephemeral side-question call reused the coding-agent system prompt but
+  registered no tools. That prompt instructs the model to inspect the
+  workspace, run commands, and keep working until the task is done, so the
+  model answered with a promise to go look at files ("I'll look at the project
+  files to find how to run it.") or with a completely empty message. The empty
+  case is what the UI reports as no answer.
+
+  Reproduced against a live Mistral endpoint with the real coder prompt: 3 of 5
+  runs returned an empty message with `finish_reason: stop`.
+
+  A side question's system prompt is not the coder prompt and names itself a
+  side question (the words "side question" appear in it, in any case), and the
+  request offers no tools.
+grade:
+  packages: [./internal/agent]
+  tests: [TestEphemeralAnswersWithSideQuestionPrompt, TestEphemeralKeepsConversationHistory]
+  exclude: []
+  hidden:
+    - {path: internal/agent/ephemeral_test.go, blob: 58d1b22af634a682ddbfd1ecc79084cd9bfe38a3}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the side-question system prompt names itself a side question and is not the coder prompt, and the request offers no tools."
+  - "correlated: pr-0061, pr-0075, pr-0080 (the same function changed at three points in time; the three tasks are not independent)."
+  - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 14, packages: 10}
