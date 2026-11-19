@@ -296,6 +296,35 @@ func TestListMessagesBySessionOrdersSameSecondInserts(t *testing.T) {
 	require.Equal(t, []string{"m-z", "m-a", "m-m"}, ids)
 }
 
+// ListMessagesBySessionFromSummary filters on created_at, which cannot
+// separate same-second inserts, so it must fall back to insertion order
+// too. The ids sort in a different order than they were inserted, so a
+// tie broken by id would fail.
+func TestListMessagesBySessionFromSummaryOrdersSameSecondInserts(t *testing.T) {
+	t.Parallel()
+	q, conn := newTestQueries(t)
+	ctx := t.Context()
+
+	_, err := q.CreateSession(ctx, CreateSessionParams{ID: "s1", Title: "t"})
+	require.NoError(t, err)
+
+	const at = 1700000000
+	for _, id := range []string{"m-z", "m-a", "m-m"} {
+		_, err := conn.ExecContext(ctx, `INSERT INTO messages
+			(id, session_id, role, parts, created_at, updated_at)
+			VALUES (?, 's1', 'user', '[]', ?, ?)`, id, at, at)
+		require.NoError(t, err)
+	}
+
+	rows, err := q.ListMessagesBySessionFromSummary(ctx, ListMessagesBySessionFromSummaryParams{SessionID: "s1", ID: "m-z"})
+	require.NoError(t, err)
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	require.Equal(t, []string{"m-z", "m-a", "m-m"}, ids)
+}
+
 func TestFileCRUD(t *testing.T) {
 	t.Parallel()
 	q, _ := newTestQueries(t)
