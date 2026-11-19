@@ -1,0 +1,39 @@
+schema: 1
+id: pr-0093
+source:
+  repo: pbtrudel/crush
+  pr: 93
+  merge: f40751a79ceb8c4b0f09c80dbb4d8162bad319bf
+  base: 66fd188a7a3a989dababa4b02780ca4222d749a6
+kind: plain
+why: |
+  The `/goal` dialog (and Side Question, Loop, and custom-command/MCP arguments) drew the cursor one row above the typed text, on the label, and long objectives were a single line that scrolled horizontally, so their beginning could not be seen. The dialog also stayed narrow.
+prompt: |
+  The `/goal` dialog (and Side Question, Loop, and custom-command/MCP arguments) drew the cursor one row above the typed text, on the label, and long objectives were a single line that scrolled horizontally, so their beginning could not be seen. The dialog also stayed narrow.
+
+  The field label stays on its own row directly above the input line, whose text starts with `> `; with a 100-column terminal the dialog is at least 60 columns wide; and a terminal too short to show any field row reports no cursor.
+grade:
+  packages: [./internal/ui/dialog]
+  tests:
+    - TestArgumentsCursorOnInputRowWithShortValue
+    - TestArgumentsCursorStaysInsideLongInputAfterResize
+    - TestArgumentsGoalLongTextWrappedAndCursorOnInputRow
+    - TestArgumentsNoCursorWhenFieldViewportCollapses
+    - TestArgumentsSideQuestionCursorOnInputRow
+  exclude: []
+  hidden:
+    - {path: internal/ui/dialog/arguments_test.go, blob: 6ca8be70d99e9003fa726097191a9bcc07828fed}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "rendered layout: the grade reads rendered screen rows (label row, `> ` prompt, top border width, cursor row) rather than a golden file."
+  - "hidden choice: the label row, the 60-column minimum width and the absent cursor on a collapsed field viewport."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 21, packages: 5}
