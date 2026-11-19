@@ -449,3 +449,76 @@ func TestUnrelatedTeamDoesNotWakeOrChangeTree(t *testing.T) {
 		return a.Tree("session-a").Active == 0
 	}, 2*time.Second, 10*time.Millisecond)
 }
+
+// A file written by an older or buggy process can carry ids past its own
+// counters. The next id must not reuse one of them.
+func TestCountersRepairFromOldFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	_, err := saveState(path, State{
+		Version: 1,
+		TeamID:  "team-old",
+		Tasks: []Task{{
+			ID: "task-2", Revision: 1, Subject: "old", Description: "d",
+			Status: TaskPending, BlockedBy: []string{}, WriteScopes: []string{},
+			SessionID: "session-a",
+		}},
+		Messages: []Message{{ID: "message-3", From: "lead", To: "lead", Text: "old"}},
+	})
+	require.NoError(t, err)
+	service := openSharedTeam(t, path, nil)
+
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "new", Description: "d"})
+	require.NoError(t, err)
+	require.Equal(t, "task-3", task.ID)
+	require.NoError(t, service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
+		Target: "lead", Message: "new",
+	}))
+
+	state := sharedState(t, path)
+	require.Len(t, state.Tasks, 2)
+	require.Len(t, state.Messages, 2)
+	require.Equal(t, "message-4", state.Messages[1].ID)
+	require.Equal(t, 3, state.NextTask)
+	require.Equal(t, 4, state.NextMessage)
+}
+
+// An old file can hold one id twice. A lookup must find the copy in the
+// caller's scope, and an edit must write that copy only.
+func TestDuplicateTaskIdsFromOldFileStayScoped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	_, err := saveState(path, State{
+		Version:  1,
+		TeamID:   "team-old",
+		NextTask: 1,
+		Tasks: []Task{
+			{
+				ID: "task-1", Revision: 1, Subject: "b view", Description: "d",
+				Status: TaskPending, BlockedBy: []string{}, WriteScopes: []string{},
+				SessionID: "session-b",
+			},
+			{
+				ID: "task-1", Revision: 1, Subject: "a view", Description: "d",
+				Status: TaskPending, BlockedBy: []string{}, WriteScopes: []string{},
+				SessionID: "session-a",
+			},
+		},
+	})
+	require.NoError(t, err)
+	service := openSharedTeam(t, path, nil)
+
+	task, err := service.GetTask("lead", "session-a", "task-1")
+	require.NoError(t, err)
+	require.Equal(t, "a view", task.Subject, "the copy in the caller's scope")
+
+	edited, err := service.UpdateTask("lead", UpdateTaskRequest{
+		TaskID: "task-1", ExpectedRevision: 1, Action: "edit",
+		Subject: "edited", SessionID: "session-a",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "edited", edited.Subject)
+
+	state := sharedState(t, path)
+	require.Len(t, state.Tasks, 2)
+	require.Equal(t, "b view", state.Tasks[0].Subject, "another session's task with the same id is untouched")
+	require.Equal(t, "edited", state.Tasks[1].Subject)
+}

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -436,6 +437,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 	if state.Version == 0 {
 		state.Version = 1
 	}
+	repairCounters(&state)
 	return &Service{
 		state:       state,
 		path:        path,
@@ -633,6 +635,36 @@ func (s *Service) mergeLocked(disk State) {
 		}
 		s.state.Members = append(s.state.Members, member)
 	}
+	repairCounters(&s.state)
+}
+
+// repairCounters lifts each id counter to the highest suffix its ids already
+// use, so a file an older or buggy writer left behind cannot hand out an id
+// twice. Ids themselves are never renumbered.
+func repairCounters(state *State) {
+	for _, member := range state.Members {
+		state.NextMember = max(state.NextMember, idSuffix(member.ID, "member-"))
+	}
+	for _, task := range state.Tasks {
+		state.NextTask = max(state.NextTask, idSuffix(task.ID, "task-"))
+	}
+	for _, message := range state.Messages {
+		state.NextMessage = max(state.NextMessage, idSuffix(message.ID, "message-"))
+	}
+}
+
+// idSuffix is the number in an id like message-12, or zero when id does not
+// have that shape.
+func idSuffix(id, prefix string) int {
+	rest, ok := strings.CutPrefix(id, prefix)
+	if !ok {
+		return 0
+	}
+	number, err := strconv.Atoi(rest)
+	if err != nil || number < 0 {
+		return 0
+	}
+	return number
 }
 
 // hasMemberLocked reports whether name is on the durable roster. Callers
@@ -1657,8 +1689,8 @@ func (s *Service) GetTask(caller, sessionID, id string) (TaskView, error) {
 	if _, ok := s.memberLocked(caller); !ok {
 		return TaskView{}, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
 	}
-	task, ok := s.taskLocked(id)
-	if !ok || !taskVisibleLocked(s.scopeLocked(caller, sessionID), task) {
+	_, task, ok := s.taskIndexLocked(s.scopeLocked(caller, sessionID), id)
+	if !ok {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", id)
 	}
 	return projectTaskView(s.state, task), nil
@@ -1766,8 +1798,8 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		parentSessionID = req.SessionID
 	}
 	scope := s.scopeLocked(caller, req.SessionID)
-	current, ok := s.taskLocked(req.TaskID)
-	if !ok || !taskVisibleLocked(scope, current) {
+	index, current, ok := s.taskIndexLocked(scope, req.TaskID)
+	if !ok {
 		return taskUpdate{}, newError(CodeTaskNotFound, "team task %q not found", req.TaskID)
 	}
 	if current.Revision != req.ExpectedRevision {
@@ -1905,11 +1937,9 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	if err := assertTaskGraph(s.state.Tasks, next); err != nil {
 		return taskUpdate{}, err
 	}
-	for i := range s.state.Tasks {
-		if s.state.Tasks[i].ID == current.ID {
-			s.state.Tasks[i] = next
-		}
-	}
+	// Written by index: an old file may hold the same id twice, and the
+	// copy the caller acted on is the one in its scope.
+	s.state.Tasks[index] = next
 	return taskUpdate{
 		view:             projectTaskView(s.state, next),
 		parentSessionID:  parentSessionID,
@@ -1917,13 +1947,16 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	}, nil
 }
 
-func (s *Service) taskLocked(id string) (Task, bool) {
-	for _, task := range s.state.Tasks {
-		if task.ID == id {
-			return task, true
+// taskIndexLocked finds id in the caller's scope and returns its index, so a
+// writer can replace that copy. An old file may hold one id twice, and the
+// first copy visible in scope is the caller's. Callers must hold s.mu.
+func (s *Service) taskIndexLocked(scope map[string]bool, id string) (int, Task, bool) {
+	for i, task := range s.state.Tasks {
+		if task.ID == id && taskVisibleLocked(scope, task) {
+			return i, task, true
 		}
 	}
-	return Task{}, false
+	return -1, Task{}, false
 }
 
 func (s *Service) dependenciesLocked(scope map[string]bool, ids []string, self string) ([]string, error) {
@@ -1936,8 +1969,8 @@ func (s *Service) dependenciesLocked(scope map[string]bool, ids []string, self s
 		if seen[id] {
 			return nil, newError(CodeInvalidArgument, "duplicate blocker %q", id)
 		}
-		task, ok := s.taskLocked(id)
-		if !ok || task.Status == TaskDeleted || !taskVisibleLocked(scope, task) {
+		_, task, ok := s.taskIndexLocked(scope, id)
+		if !ok || task.Status == TaskDeleted {
 			return nil, newError(CodeTaskNotFound, "blocker task %q not found", id)
 		}
 		seen[id] = true
