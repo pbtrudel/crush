@@ -364,13 +364,6 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	c.mainAgent = agent
 	c.mainAgentName = config.AgentCoder
 	go c.watchBackgroundJobs(ctx)
-	// A coordinator is replaced by cancelling its context, and the registry
-	// of dispatched subagents goes with it: a run left behind would be
-	// unreachable, unstopped, and still writing its session.
-	go func() {
-		<-ctx.Done()
-		c.stopAllDispatched(stopForShutdown, 5*time.Second)
-	}()
 	return c, nil
 }
 
