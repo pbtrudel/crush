@@ -621,7 +621,13 @@ func (m *Message) SetReasoningResponsesData(data *openai.ResponsesReasoningMetad
 	m.updateReasoning(func(c *ReasoningContent) { c.ResponsesData = data })
 }
 
+// SetReasoningRedactedData stores Anthropic's redacted thinking block. An
+// empty value is not stored: the end of a later reasoning block reports no
+// redacted data, and it must not wipe the block an earlier one carried.
 func (m *Message) SetReasoningRedactedData(data string) {
+	if data == "" {
+		return
+	}
 	m.updateReasoning(func(c *ReasoningContent) { c.RedactedData = data })
 }
 
