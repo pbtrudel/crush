@@ -401,6 +401,34 @@ func TestRunWritesItsOwnConfigPerRun(t *testing.T) {
 	}
 }
 
+// TestRunGivesTheChildItsOwnHome gives the child an empty HOME inside its
+// run directory, so its tools cannot read the user's own configuration.
+func TestRunGivesTheChildItsOwnHome(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.env["FAKE_WRITE"] = "pkg/pkg.go"
+	f.env["FAKE_CONTENT"] = fixedSource
+	envFile := filepath.Join(t.TempDir(), "env")
+	opts := f.options()
+	opts.ParentEnv = append(opts.ParentEnv, "FAKE_ENV="+envFile)
+
+	line, err := Run(context.Background(), opts)
+	require.NoError(t, err)
+	require.True(t, line.Pass)
+
+	homeDir := filepath.Join(f.dir(t), "home")
+	require.Equal(t, homeDir, childEnv(t, envFile)["HOME"], "the child's HOME is its run's home")
+	info, err := os.Stat(homeDir)
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	entries, err := os.ReadDir(homeDir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the child's home starts empty")
+}
+
 // childEnv reads the environment a run's child saw from the file the fake
 // binary dumped it into.
 func childEnv(t *testing.T, path string) map[string]string {

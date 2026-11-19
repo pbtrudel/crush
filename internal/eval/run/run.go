@@ -121,11 +121,20 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	// The generated config belongs to this run alone: two runs of different
 	// variants start within milliseconds of each other, and a shared file
 	// would hand each child the other's provider and overlay.
-	configDir := filepath.Join(runDir, "config", "crush")
-	if err := route.WriteGlobalConfig(filepath.Join(configDir, "crush.json"), opts.Route, opts.Overlay); err != nil {
+	dirs := route.Dirs{
+		Home:   filepath.Join(runDir, "home"),
+		Config: filepath.Join(runDir, "config", "crush"),
+	}
+	if err := os.MkdirAll(dirs.Home, 0o700); err != nil {
+		return line, fmt.Errorf("create the child's home: %w", err)
+	}
+	if err := os.Chmod(dirs.Home, 0o700); err != nil {
+		return line, fmt.Errorf("tighten the child's home: %w", err)
+	}
+	if err := route.WriteGlobalConfig(filepath.Join(dirs.Config, "crush.json"), opts.Route, opts.Overlay); err != nil {
 		return line, err
 	}
-	env, err := opts.Route.ChildEnv(opts.Home, configDir, parentEnv(opts.ParentEnv))
+	env, err := opts.Route.ChildEnv(opts.Home, dirs, parentEnv(opts.ParentEnv))
 	if err != nil {
 		return line, err
 	}

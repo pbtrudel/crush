@@ -31,16 +31,17 @@ func TestChildEnv(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "deepseek-flash", Provider: "commandcode", Env: []string{"DEEPSEEK_API_KEY"}}
 
-	env, err := r.ChildEnv(h, h.ConfigDir(), parentEnv)
+	dirs := Dirs{Home: "/state/crush-eval/runs/r1/home", Config: "/state/crush-eval/runs/r1/config/crush"}
+	env, err := r.ChildEnv(h, dirs, parentEnv)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"PATH":                  "/usr/local/bin:/usr/bin:/bin",
-		"HOME":                  "/home/someone",
+		"HOME":                  dirs.Home,
 		"LANG":                  "en_US.UTF-8",
 		"GOCACHE":               "/home/someone/.cache/go-build",
 		"GOMODCACHE":            "/home/someone/go/pkg/mod",
 		"DEEPSEEK_API_KEY":      "sk-parent-value",
-		"CRUSH_GLOBAL_CONFIG":   h.ConfigDir(),
+		"CRUSH_GLOBAL_CONFIG":   dirs.Config,
 		"CRUSH_GLOBAL_DATA":     h.DataDir(),
 		"CRUSH_SKILLS_DIR":      h.SkillsDir(),
 		"CRUSH_DISABLE_METRICS": "1",
@@ -61,7 +62,7 @@ func TestChildEnvClaudeAgent(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "claude-sonnet", Provider: "claude-agent", Env: []string{"CLAUDE_TOKEN"}}
 
-	env, err := r.ChildEnv(h, h.ConfigDir(), parentEnv)
+	env, err := r.ChildEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(h.Dir(), "claude"), envMap(env)["CLAUDE_CONFIG_DIR"])
 	require.Equal(t, h.Dir(), filepath.Dir(envMap(env)["CLAUDE_CONFIG_DIR"]))
@@ -101,6 +102,12 @@ func TestChildEnvRejects(t *testing.T) {
 			wantErr: "must not set GOPROXY",
 		},
 		{
+			name:    "no HOME directory",
+			route:   &Route{Name: "r"},
+			parent:  parentEnv,
+			wantErr: "no HOME directory",
+		},
+		{
 			name:    "route variable missing from parent",
 			route:   &Route{Name: "r", Env: []string{"ABSENT_KEY"}},
 			parent:  parentEnv,
@@ -113,17 +120,21 @@ func TestChildEnvRejects(t *testing.T) {
 			wantErr: "no PATH",
 		},
 		{
-			name:    "no HOME",
-			route:   &Route{Name: "r"},
-			parent:  []string{"PATH=/bin"},
-			wantErr: "no HOME",
+			name:    "HOME in the route",
+			route:   &Route{Name: "r", Env: []string{"HOME"}},
+			parent:  parentEnv,
+			wantErr: "must not set HOME",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), "/state/crush-eval/config/crush", tt.parent)
+			dirs := Dirs{Home: "/state/crush-eval/runs/r1/home", Config: "/state/crush-eval/runs/r1/config/crush"}
+			if tt.wantErr == "no HOME directory" {
+				dirs.Home = ""
+			}
+			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), dirs, tt.parent)
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}

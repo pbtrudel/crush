@@ -242,7 +242,7 @@ crush-eval/
   gh/                       empty (GH_CONFIG_DIR)
   bin/<sha>/crush           built variants
   batches/<id>/results.jsonl
-  batches/<id>/runs/<run>/{src,data,config/crush,stdout.json,stderr.log,grade.json}
+  batches/<id>/runs/<run>/{src,data,home,config/crush,stdout.json,stderr.log,grade.json}
 ```
 
 A route file:
@@ -267,7 +267,7 @@ How credentials reach the child without being copied:
 - **OAuth routes** (Copilot) sign in once with `crush-eval login <route>`, which runs `crush login` with `CRUSH_GLOBAL_DATA` set to the eval home. The token then lives in the eval home's data file and is never copied from the user's own. Refreshes write there too. Two runs that refresh at once could race on that file; the route's concurrency bounds it, and a failed refresh ends as `provider_error`, which is retried (3.6).
 - **Claude Agent** uses the `claude` CLI's own sign-in. The CLI also reads the user's `~/.claude` settings and instructions, which would leak into the run. The route sets `CLAUDE_CONFIG_DIR` to a directory in the eval home and signs in there once. Whether the CLI honors that variable for every file it reads is checked before Claude enters the matrix (5.2).
 
-The generated global config holds the route's provider block and these options, identical for every variant unless the variant's overlay changes one: `disable_metrics: true`, `disable_provider_auto_update: true`, `disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch]`, no MCP servers, no hooks. The child environment is built from scratch: `PATH`, `HOME`, `LANG`, `GOCACHE`, `GOMODCACHE`, the route's variables, `CRUSH_GLOBAL_CONFIG`, `CRUSH_GLOBAL_DATA`, `CRUSH_SKILLS_DIR`, `CRUSH_DISABLE_METRICS=1`, `GH_CONFIG_DIR`, `GOPROXY=off`, `GOFLAGS=-buildvcs=false`, `GOTOOLCHAIN=local`. `CRUSH_CLIENT_SERVER` is never set, which settles the point the measurement design left open; `GH_TOKEN` and `GITHUB_TOKEN` are never passed.
+The generated global config holds the route's provider block and these options, identical for every variant unless the variant's overlay changes one: `disable_metrics: true`, `disable_provider_auto_update: true`, `disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch]`, no MCP servers, no hooks. It is written per run, into `<run>/config/crush`, because two runs of different variants start within milliseconds of each other. The child environment is built from scratch: `PATH`, `HOME`, `LANG`, `GOCACHE`, `GOMODCACHE`, the route's variables, `CRUSH_GLOBAL_CONFIG`, `CRUSH_GLOBAL_DATA`, `CRUSH_SKILLS_DIR`, `CRUSH_DISABLE_METRICS=1`, `GH_CONFIG_DIR`, `GOPROXY=off`, `GOFLAGS=-buildvcs=false`, `GOTOOLCHAIN=local`. `HOME` is the run's own empty `<run>/home`, not the user's: a shell or build the model starts must not read `~/.config/crush/crushrc` and the API keys in it, `~/.config/gh` or `~/.claude`. `GOCACHE` and `GOMODCACHE` are passed explicitly, Claude reads `CLAUDE_CONFIG_DIR`, and the OAuth tokens of a route live in `CRUSH_GLOBAL_DATA`, so nothing needs the real home. `CRUSH_CLIENT_SERVER` is never set, which settles the point the measurement design left open; `GH_TOKEN` and `GITHUB_TOKEN` are never passed.
 
 Global context files resolve to `crush-eval/config/CRUSH.md` and `crush-eval/AGENTS.md`, which do not exist, so only the checkout's own `AGENTS.md` reaches the model, as it would for a user of this repository. `/etc` system config is read by Crush as always; the runner records whether one exists.
 

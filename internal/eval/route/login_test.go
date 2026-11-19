@@ -19,6 +19,7 @@ func TestLoginCommand(t *testing.T) {
 	require.Equal(t, []string{"/usr/local/bin/crush", "login", "copilot"}, cmd.Args)
 
 	env := envMap(cmd.Env)
+	require.Equal(t, h.Dir(), env["HOME"])
 	require.Equal(t, h.DataDir(), env["CRUSH_GLOBAL_DATA"])
 	require.Equal(t, h.ConfigDir(), env["CRUSH_GLOBAL_CONFIG"])
 	require.Equal(t, "sk-parent-value", env["DEEPSEEK_API_KEY"])

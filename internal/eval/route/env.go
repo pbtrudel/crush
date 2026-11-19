@@ -32,13 +32,21 @@ var runnerEnv = []string{
 	"CLAUDE_CONFIG_DIR",
 }
 
+// Dirs are the per-run directories a child gets: its own empty HOME and the
+// directory that holds its generated global config.
+type Dirs struct {
+	Home string
+	// Config is CRUSH_GLOBAL_CONFIG, which holds the run's own crush.json.
+	Config string
+}
+
 // ChildEnv builds the environment of one run from scratch. Only the
-// variables the run needs are passed: the process variables it builds and
-// tests with, the route's own variables, and the paths the run reads from.
-// configDir is CRUSH_GLOBAL_CONFIG, which holds the run's own generated
-// config, so two runs with different overlays never read each other's file.
-// Everything else in parent, in particular the user's tokens, stays out.
-func (r *Route) ChildEnv(h *home.Home, configDir string, parent []string) ([]string, error) {
+// variables the run needs are passed: PATH and the toolchain settings, the
+// route's own variables, and the paths of dirs and the eval home. The
+// child's HOME is its run's own directory, so a tool it starts cannot read
+// the user's ~/.config/crush, ~/.config/gh or ~/.claude. Everything else in
+// parent, in particular the user's tokens, stays out.
+func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, error) {
 	parentVars := make(map[string]string, len(parent))
 	for _, kv := range parent {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -57,13 +65,15 @@ func (r *Route) ChildEnv(h *home.Home, configDir string, parent []string) ([]str
 		env = append(env, key+"="+value)
 	}
 
-	for _, key := range []string{"PATH", "HOME"} {
-		value, ok := parentVars[key]
-		if !ok {
-			return nil, fmt.Errorf("parent environment has no %s", key)
-		}
-		add(key, value)
+	path, ok := parentVars["PATH"]
+	if !ok {
+		return nil, fmt.Errorf("parent environment has no PATH")
 	}
+	add("PATH", path)
+	if dirs.Home == "" {
+		return nil, fmt.Errorf("run has no HOME directory")
+	}
+	add("HOME", dirs.Home)
 	for _, key := range []string{"LANG", "GOCACHE", "GOMODCACHE"} {
 		if value, ok := parentVars[key]; ok {
 			add(key, value)
@@ -77,7 +87,7 @@ func (r *Route) ChildEnv(h *home.Home, configDir string, parent []string) ([]str
 		add(name, value)
 	}
 
-	add("CRUSH_GLOBAL_CONFIG", configDir)
+	add("CRUSH_GLOBAL_CONFIG", dirs.Config)
 	add("CRUSH_GLOBAL_DATA", h.DataDir())
 	add("CRUSH_SKILLS_DIR", h.SkillsDir())
 	add("CRUSH_DISABLE_METRICS", "1")
