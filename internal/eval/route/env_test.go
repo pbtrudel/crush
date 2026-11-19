@@ -1,11 +1,13 @@
 package route
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,10 +34,10 @@ func TestChildEnv(t *testing.T) {
 	r := &Route{Name: "deepseek-flash", Provider: "commandcode", Env: []string{"DEEPSEEK_API_KEY"}}
 
 	dirs := Dirs{Home: "/state/crush-eval/runs/r1/home", Config: "/state/crush-eval/runs/r1/config/crush"}
-	env, err := r.ChildEnv(h, dirs, parentEnv)
+	env, err := r.childEnv(h, dirs, parentEnv, toolchainAt("/toolchains/go1.27.2"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
-		"PATH":                  "/usr/local/bin:/usr/bin:/bin",
+		"PATH":                  "/toolchains/go1.27.2/bin:/usr/local/bin:/usr/bin:/bin",
 		"HOME":                  dirs.Home,
 		"LANG":                  "en_US.UTF-8",
 		"GOCACHE":               "/home/someone/.cache/go-build",
@@ -62,7 +64,7 @@ func TestChildEnvClaudeAgent(t *testing.T) {
 	h := home.At("/state/crush-eval")
 	r := &Route{Name: "claude-sonnet", Provider: "claude-agent", Env: []string{"CLAUDE_TOKEN"}}
 
-	env, err := r.ChildEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv)
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv, toolchainAt("/toolchains/go1.27.2"))
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(h.Dir(), "claude"), envMap(env)["CLAUDE_CONFIG_DIR"])
 	require.Equal(t, h.Dir(), filepath.Dir(envMap(env)["CLAUDE_CONFIG_DIR"]))
@@ -134,10 +136,32 @@ func TestChildEnvRejects(t *testing.T) {
 			if tt.wantErr == "no HOME directory" {
 				dirs.Home = ""
 			}
-			_, err := tt.route.ChildEnv(home.At("/state/crush-eval"), dirs, tt.parent)
+			_, err := tt.route.childEnv(home.At("/state/crush-eval"), dirs, tt.parent, toolchainAt("/toolchains/go1.27.2"))
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+}
+
+// TestChildEnvSelectsToolchain checks the environment a run really builds:
+// the go of the toolchain go.mod selects comes first on PATH, so a go the
+// model runs does not fail on GOTOOLCHAIN=local.
+func TestChildEnvSelectsToolchain(t *testing.T) {
+	t.Parallel()
+
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	env, err := r.ChildEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parentEnv)
+	require.NoError(t, err)
+
+	path := envMap(env)["PATH"]
+	require.True(t, strings.HasSuffix(path, string(os.PathListSeparator)+"/usr/local/bin:/usr/bin:/bin"),
+		"PATH %q does not keep the parent's", path)
+	require.NotEqual(t, "/usr/local/bin:/usr/bin:/bin", path, "the selected toolchain comes first on PATH")
+}
+
+// toolchainAt is a toolchain resolver that names root.
+func toolchainAt(root string) toolchain.Resolver {
+	return func([]string) (string, error) { return root, nil }
 }
 
 // envMap turns a KEY=VALUE list into a map for assertions.

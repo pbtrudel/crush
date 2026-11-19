@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
 // runnerEnv are the variables the runner sets itself. A route may not
@@ -45,8 +46,16 @@ type Dirs struct {
 // route's own variables, and the paths of dirs and the eval home. The
 // child's HOME is its run's own directory, so a tool it starts cannot read
 // the user's ~/.config/crush, ~/.config/gh or ~/.claude. Everything else in
-// parent, in particular the user's tokens, stays out.
+// parent, in particular the user's tokens, stays out. The go toolchain
+// go.mod selects comes first on PATH, so a go the model runs uses the
+// selected version and GOTOOLCHAIN=local does not refuse it.
 func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, error) {
+	return r.childEnv(h, dirs, parent, toolchain.GOROOT)
+}
+
+// childEnv builds ChildEnv, with resolve naming the toolchain that goes first
+// on the child's PATH.
+func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolchain.Resolver) ([]string, error) {
 	parentVars := make(map[string]string, len(parent))
 	for _, kv := range parent {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -65,11 +74,10 @@ func (r *Route) ChildEnv(h *home.Home, dirs Dirs, parent []string) ([]string, er
 		env = append(env, key+"="+value)
 	}
 
-	path, ok := parentVars["PATH"]
-	if !ok {
+	if _, ok := parentVars["PATH"]; !ok {
 		return nil, fmt.Errorf("parent environment has no PATH")
 	}
-	add("PATH", path)
+	add("PATH", toolchain.Path(parent, resolve))
 	if dirs.Home == "" {
 		return nil, fmt.Errorf("run has no HOME directory")
 	}

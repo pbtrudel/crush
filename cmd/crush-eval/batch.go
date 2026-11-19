@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
 const batchUsage = `usage:
@@ -119,6 +120,13 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 	if batchID == "" {
 		batchID = exp.Date + "-" + exp.Name
 	}
+	// The record holds the toolchain, so a batch whose references fail under
+	// a different go is not mistaken for a drop in pass rate.
+	version, err := toolchain.Version(os.Environ())
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	sum, err := batch.Run(ctx, batch.Options{
 		ID:         batchID,
 		Experiment: exp,
@@ -131,6 +139,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		Suite:      suite,
 		SuiteDir:   "evals",
 		Footer:     string(footer),
+		Toolchain:  version,
 		Env:        grade.Env(gradeHome),
 		Scratch:    scratch,
 	})

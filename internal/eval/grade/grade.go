@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
 // Result is the grade object of a result line plus the timings, the failing
@@ -110,10 +111,18 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env
 
 // Env is the environment grading runs go with: PATH, home as HOME, the go
 // caches, and no network or toolchain download. home is a scratch directory,
-// so the tests and go never read the user's files.
+// so the tests and go never read the user's files. The selected toolchain
+// comes first on PATH, so grading runs the go go.mod asks for even though
+// GOTOOLCHAIN is local.
 func Env(home string) []string {
+	return env(home, os.Environ(), toolchain.GOROOT)
+}
+
+// env builds Env from parent, with resolve naming the toolchain that goes
+// first on PATH.
+func env(home string, parent []string, resolve toolchain.Resolver) []string {
 	env := []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + toolchain.Path(parent, resolve),
 		"HOME=" + home,
 		"GOFLAGS=-buildvcs=false",
 		"GOPROXY=off",
@@ -281,7 +290,7 @@ type Outcome struct {
 // stream.
 func GoTest(ctx context.Context, dir string, env, args []string) (Outcome, error) {
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := exec.CommandContext(ctx, toolchain.Go(env), args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer

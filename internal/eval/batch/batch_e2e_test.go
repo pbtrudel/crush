@@ -109,6 +109,7 @@ func TestRunEndToEnd(t *testing.T) {
 		Home:       h,
 		Suite:      "tree1",
 		SuiteDir:   filepath.Join(repo, "evals"),
+		Toolchain:  "go1.27.2",
 		Footer:     "Make this change in the working tree.",
 		ParentEnv:  parent,
 		Env:        goTestEnv(t),
@@ -136,6 +137,7 @@ func TestRunEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(3), record.Seed)
 	require.Equal(t, "tree1", record.Suite)
+	require.Equal(t, "go1.27.2", record.Toolchain, "the record holds the toolchain the batch ran with")
 	require.Equal(t, "evals/experiments/2026-11-19-test.yaml", record.Experiment)
 
 	// A batch that is run again resumes every key.

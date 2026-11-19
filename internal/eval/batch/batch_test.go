@@ -86,10 +86,11 @@ func newFixture(t *testing.T, tasks, reps int) *fixture {
 		Routes: map[string]*route.Route{
 			"r1": {Name: "r1", Provider: "p", Model: "m", SmallModel: "m", Concurrency: 2},
 		},
-		Home:     h,
-		Suite:    "tree1",
-		SuiteDir: filepath.Join(t.TempDir(), "evals"),
-		Footer:   "footer",
+		Home:      h,
+		Suite:     "tree1",
+		SuiteDir:  filepath.Join(t.TempDir(), "evals"),
+		Toolchain: "go1.27.2",
+		Footer:    "footer",
 		Build: func(_ context.Context, ref string) (string, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
