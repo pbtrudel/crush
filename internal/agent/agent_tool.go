@@ -38,12 +38,16 @@ const (
 )
 
 // writeAgentConfig derives the read-write variant of the task agent: the same
-// agent, given the coder's tools and MCP servers. Subagents never get the
-// delegation tools; effectiveToolNames strips them.
+// agent, given the coder's tools and MCP servers. The copied list drops the
+// tools a subagent never gets, so the write variant keeps the edit tools and
+// the Team tools stay out of it.
 func writeAgentConfig(cfg *config.Config) config.Agent {
 	task := cfg.Agents[config.AgentTask]
 	if coder, ok := cfg.Agents[config.AgentCoder]; ok {
-		task.AllowedTools = slices.Clone(coder.AllowedTools)
+		excluded := config.SubAgentExcludedTools()
+		task.AllowedTools = slices.DeleteFunc(slices.Clone(coder.AllowedTools), func(name string) bool {
+			return slices.Contains(excluded, name)
+		})
 		task.AllowedMCP = coder.AllowedMCP
 	}
 	return task

@@ -118,6 +118,29 @@ func TestTeammateSystemPromptExtendsLead(t *testing.T) {
 		"the identity must land after the per-session MCP instructions")
 }
 
+// TestWriteSubAgentHasNoTeamTools pins that a write subagent is not offered
+// the Lead's coordination tools. They are bound to the member name on the
+// build context, which for a subagent of the Lead is the Lead, so a write
+// subagent holding them would act on the Lead's roster instead of doing the
+// task it was given. agentic_fetch goes with them: subagents never get it.
+func TestWriteSubAgentHasNoTeamTools(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+
+	agents, err := coord.taskAgents(t.Context(), false)
+	require.NoError(t, err)
+	write, ok := agents[accessWrite]
+	require.True(t, ok, "the write variant must be built")
+
+	names := agentToolNames(t, write)
+	for _, name := range agentteam.ToolNames {
+		require.NotContains(t, names, name, "a write subagent must not be offered %q", name)
+	}
+	require.NotContains(t, names, tools.AgenticFetchToolName,
+		"agentic_fetch is one of the tools a subagent never gets")
+	require.Contains(t, names, tools.EditToolName, "a write subagent keeps the edit tools")
+	require.Contains(t, names, "write", "a write subagent keeps the write tool")
+}
+
 // TestAgentToolRefusesInsideTeammate pins the runtime half of tool parity: the
 // agent tool stays in a teammate's palette for cache parity but must not let a
 // teammate delegate further.

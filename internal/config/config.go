@@ -1459,6 +1459,13 @@ var subAgentExcludedTools = []string{
 	"team_task_update",
 }
 
+// SubAgentExcludedTools returns the tools a subagent never gets. Both
+// subagent variants filter their copied tool list through it, so they
+// follow one rule.
+func SubAgentExcludedTools() []string {
+	return slices.Clone(subAgentExcludedTools)
+}
+
 // subAgentWriteTools are the tools that change files. Only the read-write
 // subagent variant gets them.
 var subAgentWriteTools = []string{
