@@ -22,7 +22,8 @@ const usage = `usage:
   crush-eval validate [dir]
   crush-eval prepare <task-id> <dest>
   crush-eval grade <task-id> <run-dir>
-  crush-eval grade --reference <task-id>`
+  crush-eval grade --reference <task-id>
+  crush-eval login <route>`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -41,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return prepareCmd(args[1:], stdout, stderr)
 	case "grade":
 		return gradeCmd(args[1:], stdout, stderr)
+	case "login":
+		return loginCmd(args[1:], stdout, stderr)
 	case "candidates":
 		return candidatesCmd(args[1:], stdout, stderr)
 	case "vet":
