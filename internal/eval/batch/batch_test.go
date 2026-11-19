@@ -277,6 +277,26 @@ func TestRunFullyResumedSkipsBuildsAndReferences(t *testing.T) {
 	require.Empty(t, f.refCalls)
 }
 
+// TestRecordNotesTheSystemConfig checks that a batch records whether the
+// machine has a /etc/crush config, which every run reads.
+func TestRecordNotesTheSystemConfig(t *testing.T) {
+	t.Parallel()
+
+	h := home.At(filepath.Join(t.TempDir(), "state"))
+	f := newFixture(t, 1, 1)
+	record := Record{
+		Schema: Schema, ID: "b1", Seed: 7, Suite: "tree1",
+		Experiment: f.opts.Path, SystemConfig: systemConfig(),
+	}
+	require.NoError(t, record.Write(h))
+
+	data, err := os.ReadFile(filepath.Join(h.BatchDir("b1"), "batch.json"))
+	require.NoError(t, err)
+	_, err = os.Stat(systemConfigPath)
+	require.Equal(t, err == nil, strings.Contains(string(data), `"system_config": true`))
+	require.Contains(t, string(data), `"system_config"`)
+}
+
 func TestRunRefusesAnotherSuiteOnResume(t *testing.T) {
 	t.Parallel()
 

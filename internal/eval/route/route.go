@@ -61,6 +61,11 @@ func Load(dir, name string) (*Route, error) {
 	if r.Concurrency == 0 {
 		r.Concurrency = 1
 	}
+	// A route that names no small model runs its small tasks on the model
+	// itself; `--small-model provider/` would name no model at all.
+	if r.SmallModel == "" {
+		r.SmallModel = r.Model
+	}
 	if err := r.validate(name); err != nil {
 		return nil, fmt.Errorf("route %s: %w", path, err)
 	}

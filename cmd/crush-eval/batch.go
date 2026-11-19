@@ -80,6 +80,18 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	// A broken task file must cost a batch nothing: the format and the
+	// repository are both checked before anything is built or run.
+	for _, tk := range tasks {
+		if err := tk.Validate(); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
+			return 1
+		}
+		if err := tk.ValidateRepo("."); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
+			return 1
+		}
+	}
 	footer, err := os.ReadFile(filepath.Join("evals", "footer.md"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)

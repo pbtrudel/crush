@@ -71,7 +71,10 @@ func TestAdd(t *testing.T) {
     finished_at INTEGER,
     FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
 );`
-	contaminatedPart = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
+	// twoContaminatedCalls is one message with three tool calls, two of them
+	// naming a marker: design 3.7 counts tool calls.
+	twoContaminatedCalls = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}"}},{"type":"tool_call","data":{"id":"t2","name":"bash","input":"{\"command\":\"gh api repos/x\"}"}},{"type":"tool_call","data":{"id":"t3","name":"bash","input":"{\"command\":\"ls\"}"}}]`
+	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
 )
 
 // fixture is a throwaway repository with one buggy package and the hidden
@@ -356,6 +359,22 @@ func TestRunContamination(t *testing.T) {
 	require.True(t, line.Contaminated)
 	require.Equal(t, 1, line.ContaminatedMatches)
 	require.True(t, line.Pass)
+}
+
+// TestRunContaminationCountsToolCalls counts tool calls, not messages: one
+// message that names a marker twice contributes two.
+func TestRunContaminationCountsToolCalls(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.env["FAKE_DB_SQL"] = messagesSchema
+	f.env["FAKE_DB_PART"] = twoContaminatedCalls
+
+	line := f.run(t)
+
+	require.Equal(t, 2, line.ContaminatedMatches, "two tool calls in one message count twice")
+	require.True(t, line.Contaminated)
 }
 
 // TestRunWritesItsOwnConfigPerRun prepares two runs with different overlays

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,4 +140,81 @@ func TestCompareRowsGuardIsThePassRate(t *testing.T) {
 		require.InDelta(t, -0.25, rows[0].Guard.Estimate, 1e-9)
 		require.False(t, rows[0].GuardPassed)
 	})
+}
+
+// TestAggregateRowsReportTheFigures checks that the table of 4.2 carries
+// every figure the aggregate computes, and that compare prints them.
+func TestAggregateRowsReportTheFigures(t *testing.T) {
+	t.Parallel()
+
+	runs := []result.Result{
+		passedLine("control", "pr-0001"),
+		passedLine("control", "pr-0002"),
+		falseLine("control", "pr-0003"),
+		shortLine("control", "pr-0004"),
+	}
+	for i := range runs {
+		runs[i].Cost = 0.25
+	}
+
+	rows := aggregateRows(runs)
+	var row aggregateRow
+	for _, candidate := range rows {
+		if candidate.Kind == "" {
+			row = candidate
+		}
+	}
+	require.Equal(t, "control", row.Variant, "the table has an overall row")
+	require.Equal(t, 4, row.Runs)
+	require.Equal(t, 4, row.Valid)
+	require.Equal(t, 3, row.Completed)
+	require.InDelta(t, 0.25, row.FalseCompletion, 1e-9, "one false completion of four valid runs")
+	require.InDelta(t, 1.0/3.0, row.FalseCompletionCompleted, 1e-9, "one false completion of three completed runs")
+	require.Equal(t, 1, row.Flagged)
+	require.InDelta(t, 0.25, row.StoppedShort, 1e-9)
+	require.InDelta(t, 3, row.ToolCalls, 1e-9)
+	require.InDelta(t, 1000, row.DurationMS, 1e-9)
+	require.InDelta(t, 5, row.TokensInput, 1e-9)
+	require.InDelta(t, 2, row.TokensRead, 1e-9)
+	require.InDelta(t, 3, row.TokensWrite, 1e-9)
+	require.InDelta(t, 7, row.TokensOutput, 1e-9)
+	require.InDelta(t, 68, row.Tokens, 1e-9)
+	require.NotNil(t, row.Cost)
+	require.InDelta(t, 1.0, *row.Cost, 1e-9)
+
+	var printed bytes.Buffer
+	printCompare(&printed, compareReport{Batch: "b1", Suite: "tree1", Control: "control", Aggregates: rows})
+	for _, want := range []string{
+		"false/completed", "flagged", "completed", "tools", "duration_s",
+		"tok_in", "tok_read", "tok_write", "tok_out", "cost",
+	} {
+		require.Contains(t, printed.String(), want)
+	}
+	require.Contains(t, printed.String(), "33%", "the false-completion rate over completed runs")
+	require.Contains(t, printed.String(), "1.00", "the total cost")
+}
+
+// passedLine is a completed run that passed, with the figures the aggregate
+// reports.
+func passedLine(variant, task string) result.Result {
+	line := runLine(variant, task, true)
+	line.Steps, line.ToolCalls, line.DurationMS = 10, 3, 1000
+	line.Tokens = result.Tokens{Input: 5, CacheRead: 2, CacheWrite: 3, Output: 7}
+	return line
+}
+
+// falseLine is a completed run that did not pass and left a report
+// undelivered.
+func falseLine(variant, task string) result.Result {
+	line := passedLine(variant, task)
+	line.Grade = result.Grade{}
+	line.UndeliveredReports = 1
+	return line
+}
+
+// shortLine is a run that stopped short and did not pass.
+func shortLine(variant, task string) result.Result {
+	line := falseLine(variant, task)
+	line.Exit = 2
+	return line
 }

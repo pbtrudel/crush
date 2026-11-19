@@ -55,6 +55,18 @@ model: glm-5.3
 	require.Equal(t, Limits{}, r.Limits)
 }
 
+// TestLoadDefaultsSmallModel runs the small tasks on the route's model when
+// the route names none: `--small-model provider/` names no model at all.
+func TestLoadDefaultsSmallModel(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeRoute(t, dir, "flash", "name: flash\nprovider: hyper\nmodel: glm-5.3\n")
+	r, err := Load(dir, "flash")
+	require.NoError(t, err)
+	require.Equal(t, "glm-5.3", r.SmallModel)
+}
+
 func TestLoadNestedEnvReference(t *testing.T) {
 	t.Parallel()
 

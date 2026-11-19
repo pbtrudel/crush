@@ -218,6 +218,72 @@ func TestValidateHidden(t *testing.T) {
 	require.ErrorContains(t, err, "grade.hidden[0].blob")
 }
 
+// TestValidateTestNames checks the names the grade selects: they are joined
+// into one -run pattern, so a name that is not a plain Test function would
+// change which tests run.
+func TestValidateTestNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		from    string
+		to      string
+		wantErr string
+	}{
+		{
+			name:    "pattern in tests",
+			from:    "tests: [TestCheckForUpdate_Fork]",
+			to:      "tests: ['TestCheck.*']",
+			wantErr: "is not a test name",
+		},
+		{
+			name:    "lowercase test name",
+			from:    "tests: [TestCheckForUpdate_Fork]",
+			to:      "tests: [testCheck]",
+			wantErr: "is not a test name",
+		},
+		{
+			name:    "empty name",
+			from:    "tests: [TestCheckForUpdate_Fork]",
+			to:      "tests: ['']",
+			wantErr: "is not a test name",
+		},
+		{
+			name:    "pattern in exclude",
+			from:    "exclude: []",
+			to:      "exclude: ['TestSkip|TestOther']",
+			wantErr: "grade.exclude[0]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "pr-0007.yaml")
+			writeFile(t, path, strings.Replace(plainFile, tt.from, tt.to, 1))
+
+			tk, err := task.Load(path)
+			require.NoError(t, err)
+			require.ErrorContains(t, tk.Validate(), tt.wantErr)
+		})
+	}
+}
+
+// TestValidateDeleted checks that the files the grade deletes are inside the
+// checkout: the grade removes them from a tree the model wrote.
+func TestValidateDeleted(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "pr-0007.yaml")
+	writeFile(t, path, strings.Replace(plainFile, "  deleted: []", "  deleted: [../../etc/passwd, internal/update/old_test.go]", 1))
+
+	tk, err := task.Load(path)
+	require.NoError(t, err)
+	err = tk.Validate()
+	require.ErrorContains(t, err, "grade.deleted[0]")
+	require.NotContains(t, err.Error(), "grade.deleted[1]")
+}
+
 func TestValidateRepo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -211,7 +211,7 @@ func Classify(ctx context.Context, repoDir string, pr PullRequest, scratch strin
 
 	// Rule 6 is checked first: a package whose tests already fail at the
 	// merge cannot be graded, whatever the touched tests do.
-	mergeSrc, err := plainTree(ctx, repoDir, pr.Merge(), filepath.Join(dir, "merge"))
+	mergeSrc, err := prepare(ctx, repoDir, pr.Merge(), filepath.Join(dir, "merge"))
 	if err != nil {
 		return cand, err
 	}
@@ -228,7 +228,7 @@ func Classify(ctx context.Context, repoDir string, pr PullRequest, scratch strin
 		return cand, nil
 	}
 
-	parentSrc, err := plainTree(ctx, repoDir, base, filepath.Join(dir, "parent"))
+	parentSrc, err := prepare(ctx, repoDir, base, filepath.Join(dir, "parent"))
 	if err != nil {
 		return cand, err
 	}
@@ -360,14 +360,15 @@ func MissingNames(output string) []string {
 	return names
 }
 
-// plainTree writes a commit's tree into dir the way design section 1.4 step 2
-// extracts it: the files alone, with no repository metadata.
-func plainTree(ctx context.Context, repoDir, rev, dir string) (string, error) {
+// prepare writes a commit's tree into dir as the one-commit repository a run
+// starts from, and returns its src directory. The tree keeps its .git, as a
+// graded checkout does: a package whose test reads the repository must be
+// classified the way the grade will see it.
+func prepare(ctx context.Context, repoDir, rev, dir string) (string, error) {
 	if _, err := checkout.Prepare(ctx, repoDir, rev, dir); err != nil {
 		return "", err
 	}
-	src := filepath.Join(dir, "src")
-	return src, os.RemoveAll(filepath.Join(src, ".git"))
+	return filepath.Join(dir, "src"), nil
 }
 
 // packages returns the sorted package paths of the given files.

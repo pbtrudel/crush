@@ -214,6 +214,21 @@ func (t *Task) Validate() error {
 	if len(t.Grade.Hidden) == 0 {
 		add("grade.hidden is empty")
 	}
+	for i, name := range t.Grade.Tests {
+		if !testNamePattern.MatchString(name) {
+			add("grade.tests[%d] %q is not a test name: want Test followed by word characters", i, name)
+		}
+	}
+	for i, name := range t.Grade.Exclude {
+		if !testNamePattern.MatchString(name) {
+			add("grade.exclude[%d] %q is not a test name: want Test followed by word characters", i, name)
+		}
+	}
+	for i, name := range t.Grade.Deleted {
+		if name == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
+			add("grade.deleted[%d] %q is not inside the repository", i, name)
+		}
+	}
 	for i, hidden := range t.Grade.Hidden {
 		if hidden.Path == "" {
 			add("grade.hidden[%d].path is empty", i)
@@ -319,6 +334,9 @@ var (
 	idPattern    = regexp.MustCompile(`^pr-\d{4}$`)
 	blobPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	countPattern = regexp.MustCompile(`^\d+/\d+$`)
+	// testNamePattern is a Go test function name. The grade joins the names
+	// into one -run pattern, so anything else would change which tests run.
+	testNamePattern = regexp.MustCompile(`^Test\w*$`)
 )
 
 func (t *Task) applyDefaults() {

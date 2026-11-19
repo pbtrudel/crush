@@ -20,18 +20,33 @@ const compareUsage = `usage:
 
 // aggregateRow is one row of the per-variant table of design 4.2.
 type aggregateRow struct {
-	Variant         string  `json:"variant"`
-	Route           string  `json:"route"`
-	Kind            string  `json:"kind"`
-	Runs            int     `json:"runs"`
-	Valid           int     `json:"valid"`
-	Invalid         int     `json:"invalid"`
-	Contaminated    int     `json:"contaminated"`
-	PassRate        float64 `json:"pass_rate"`
-	FalseCompletion float64 `json:"false_completion_rate"`
-	StoppedShort    float64 `json:"stopped_short_rate"`
-	Steps           float64 `json:"steps_median"`
-	Tokens          int64   `json:"tokens_total"`
+	Variant      string  `json:"variant"`
+	Route        string  `json:"route"`
+	Kind         string  `json:"kind"`
+	Runs         int     `json:"runs"`
+	Valid        int     `json:"valid"`
+	Invalid      int     `json:"invalid"`
+	Contaminated int     `json:"contaminated"`
+	Completed    int     `json:"completed"`
+	PassRate     float64 `json:"pass_rate"`
+	// FalseCompletion is the share of valid runs, and
+	// FalseCompletionCompleted the share of the completed ones.
+	FalseCompletion          float64 `json:"false_completion_rate"`
+	FalseCompletionCompleted float64 `json:"false_completion_rate_completed"`
+	// Flagged is the count of false completions that left reports
+	// undelivered.
+	Flagged      int     `json:"flagged_false_completions"`
+	StoppedShort float64 `json:"stopped_short_rate"`
+	Steps        float64 `json:"steps_median"`
+	ToolCalls    float64 `json:"tool_calls_median"`
+	DurationMS   float64 `json:"duration_ms_median"`
+	TokensInput  float64 `json:"tokens_input_median"`
+	TokensRead   float64 `json:"tokens_cache_read_median"`
+	TokensWrite  float64 `json:"tokens_cache_write_median"`
+	TokensOutput float64 `json:"tokens_output_median"`
+	Tokens       int64   `json:"tokens_total"`
+	// Cost is the total cost when every run priced itself.
+	Cost *float64 `json:"cost,omitempty"`
 }
 
 // comparisonRow is the paired comparison of one variant against the control,
@@ -110,23 +125,11 @@ func compareCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	control := labels[exp.Variants[0].Name]
 
-	report := compareReport{Batch: record.ID, Suite: record.Suite, Control: control}
-	for _, agg := range score.Aggregates(runs) {
-		report.Aggregates = append(report.Aggregates, aggregateRow{
-			Variant:         agg.Variant,
-			Route:           agg.Route,
-			Kind:            agg.Kind,
-			Runs:            agg.Runs,
-			Valid:           agg.Valid,
-			Invalid:         agg.Invalid,
-			Contaminated:    agg.Contaminated,
-			PassRate:        agg.PassRate,
-			FalseCompletion: agg.FalseCompletionRate,
-			StoppedShort:    agg.StoppedShortRate,
-			Steps:           agg.Steps.Median,
-			Tokens: agg.Tokens.Input.Total + agg.Tokens.CacheRead.Total +
-				agg.Tokens.CacheWrite.Total + agg.Tokens.Output.Total,
-		})
+	report := compareReport{
+		Batch:      record.ID,
+		Suite:      record.Suite,
+		Control:    control,
+		Aggregates: aggregateRows(runs),
 	}
 
 	comparisons, failed, err := compareRows(exp, runs, control, labels)
@@ -210,24 +213,75 @@ func compareRows(exp *score.Experiment, runs []result.Result, control string, la
 	return rows, failed, nil
 }
 
-// printCompare writes the tables and the comparisons as plain text.
+// aggregateRows is the per-variant table of 4.2, one row per variant, route
+// and task kind.
+func aggregateRows(runs []result.Result) []aggregateRow {
+	aggs := score.Aggregates(runs)
+	rows := make([]aggregateRow, 0, len(aggs))
+	for _, agg := range aggs {
+		rows = append(rows, aggregateRow{
+			Variant:                  agg.Variant,
+			Route:                    agg.Route,
+			Kind:                     agg.Kind,
+			Runs:                     agg.Runs,
+			Valid:                    agg.Valid,
+			Invalid:                  agg.Invalid,
+			Contaminated:             agg.Contaminated,
+			Completed:                agg.Completed,
+			PassRate:                 agg.PassRate,
+			FalseCompletion:          agg.FalseCompletionRate,
+			FalseCompletionCompleted: agg.FalseCompletionRateCompleted,
+			Flagged:                  agg.FlaggedFalseCompletions,
+			StoppedShort:             agg.StoppedShortRate,
+			Steps:                    agg.Steps.Median,
+			ToolCalls:                agg.ToolCalls.Median,
+			DurationMS:               agg.DurationMS.Median,
+			TokensInput:              agg.Tokens.Input.Median,
+			TokensRead:               agg.Tokens.CacheRead.Median,
+			TokensWrite:              agg.Tokens.CacheWrite.Median,
+			TokensOutput:             agg.Tokens.Output.Median,
+			Tokens: agg.Tokens.Input.Total + agg.Tokens.CacheRead.Total +
+				agg.Tokens.CacheWrite.Total + agg.Tokens.Output.Total,
+			Cost: agg.Cost,
+		})
+	}
+	return rows
+}
+
+// printCompare writes the tables and the comparisons as plain text: the
+// rates and medians of 4.2 first, then the figures that only make sense
+// beside them, then one block per comparison.
 func printCompare(stdout io.Writer, report compareReport) {
 	fmt.Fprintf(stdout, "batch %s  suite %s  control %s\n\n", report.Batch, report.Suite, report.Control)
-	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "variant\troute\tkind\truns\tvalid\tinvalid\tpass\tfalse\tshort\tsteps\ttokens")
+
+	rates := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(rates, "variant\troute\tkind\truns\tvalid\tinvalid\tpass\tfalse\tshort\tsteps\ttokens")
 	for _, row := range report.Aggregates {
-		kind := row.Kind
-		if kind == "" {
-			kind = "all"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%.0f\t%d\n",
-			row.Variant, row.Route, kind, row.Runs, row.Valid, row.Invalid,
+		fmt.Fprintf(rates, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%.0f\t%d\n",
+			row.Variant, row.Route, kindName(row.Kind), row.Runs, row.Valid, row.Invalid,
 			percent(row.PassRate), percent(row.FalseCompletion), percent(row.StoppedShort),
 			row.Steps, row.Tokens)
 	}
-	if err := w.Flush(); err != nil {
+	if err := rates.Flush(); err != nil {
 		return
 	}
+
+	figures := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(figures, "\nvariant\troute\tkind\tfalse/completed\tflagged\tcompleted\ttools\tduration_s\ttok_in\ttok_read\ttok_write\ttok_out\tcost")
+	for _, row := range report.Aggregates {
+		cost := "n/a"
+		if row.Cost != nil {
+			cost = fmt.Sprintf("%.2f", *row.Cost)
+		}
+		fmt.Fprintf(figures, "%s\t%s\t%s\t%s\t%d\t%d\t%.0f\t%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%s\n",
+			row.Variant, row.Route, kindName(row.Kind), percent(row.FalseCompletionCompleted),
+			row.Flagged, row.Completed, row.ToolCalls, row.DurationMS/1000,
+			row.TokensInput, row.TokensRead, row.TokensWrite, row.TokensOutput, cost)
+	}
+	if err := figures.Flush(); err != nil {
+		return
+	}
+
 	for _, row := range report.Comparisons {
 		route := row.Route
 		if route == "" {
@@ -246,6 +300,14 @@ func printCompare(stdout io.Writer, report compareReport) {
 			fmt.Fprintf(stdout, "  void: %s\n", row.VoidReason)
 		}
 	}
+}
+
+// kindName names the overall row of a table.
+func kindName(kind string) string {
+	if kind == "" {
+		return "all"
+	}
+	return kind
 }
 
 // percent formats a rate as a whole percentage.

@@ -68,16 +68,14 @@ func scanDatabase(path string, markers []string) (int, error) {
 		if err := rows.Scan(&parts); err != nil {
 			return 0, err
 		}
-		if toolCallContaminated(parts, markers) {
-			count++
-		}
+		count += contaminatedCalls(parts, markers)
 	}
 	return count, rows.Err()
 }
 
-// toolCallContaminated reports whether one message's parts hold a tool call
-// whose input names a marker.
-func toolCallContaminated(parts string, markers []string) bool {
+// contaminatedCalls counts the tool calls of one message whose input names a
+// marker: design 3.7 counts tool calls, not messages.
+func contaminatedCalls(parts string, markers []string) int {
 	var list []struct {
 		Type string `json:"type"`
 		Data struct {
@@ -85,8 +83,9 @@ func toolCallContaminated(parts string, markers []string) bool {
 		} `json:"data"`
 	}
 	if json.Unmarshal([]byte(parts), &list) != nil {
-		return false
+		return 0
 	}
+	count := 0
 	for _, part := range list {
 		if part.Type != "tool_call" || part.Data.Input == "" {
 			continue
@@ -94,9 +93,10 @@ func toolCallContaminated(parts string, markers []string) bool {
 		input := strings.ToLower(part.Data.Input)
 		for _, marker := range markers {
 			if marker != "" && strings.Contains(input, marker) {
-				return true
+				count++
+				break
 			}
 		}
 	}
-	return false
+	return count
 }

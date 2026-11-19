@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -125,7 +126,7 @@ func testArgs(tk *task.Task, filter []string) []string {
 
 // touchedPattern runs only the task's tests.
 func touchedPattern(tests []string) []string {
-	return []string{"-run", "^(" + strings.Join(tests, "|") + ")$"}
+	return []string{"-run", Pattern(tests)}
 }
 
 // skipArgs skips the excluded tests, or nothing when the task excludes none.
@@ -133,7 +134,19 @@ func skipArgs(exclude []string) []string {
 	if len(exclude) == 0 {
 		return nil
 	}
-	return []string{"-skip", "^(" + strings.Join(exclude, "|") + ")$"}
+	return []string{"-skip", Pattern(exclude)}
+}
+
+// Pattern is the -run or -skip value that selects exactly the named tests. A
+// name is literal text, so it is quoted: the task format allows only Test
+// followed by word characters, and this keeps the pattern right even if that
+// rule is ever widened.
+func Pattern(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = regexp.QuoteMeta(name)
+	}
+	return "^(" + strings.Join(quoted, "|") + ")$"
 }
 
 // failedNames is the sorted union of the test names that did not pass.
@@ -279,9 +292,14 @@ func runGoTest(ctx context.Context, srcDir string, env, args []string) (outcome,
 		return out, err
 	}
 	// A go command that failed before it ran a test binary, as when the
-	// package does not load, is a build failure too.
-	if events == 0 && runErr != nil {
+	// package does not load, is a build failure. A run that reported events
+	// but named no failing test, as a panic outside a test function does,
+	// still failed its package.
+	switch {
+	case runErr != nil && events == 0:
 		out.compile = true
+	case runErr != nil && !out.packageFailed && len(failed) == 0:
+		out.packageFailed = true
 	}
 	for name := range failed {
 		out.failed = append(out.failed, name)

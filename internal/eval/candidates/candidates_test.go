@@ -157,6 +157,17 @@ func TestClassify(t *testing.T) {
 			reason: "pass on parent",
 		},
 		{
+			// The test of the package reads .git, so a classification on a
+			// tree without repository metadata fails it and drops a good
+			// candidate.
+			name:  "keeps the repository",
+			base:  map[string]string{"go.mod": goMod, "p/p.go": answer1, "p/p_test.go": gitAwareTest1},
+			merge: map[string]string{"p/p.go": answer2, "p/p_test.go": gitAwareTest2},
+			files: goFiles(),
+			class: candidates.ClassPlain,
+			tests: []string{"TestAnswer"},
+		},
+		{
 			name:   "filtered",
 			title:  "ci: nothing to grade",
 			base:   map[string]string{"go.mod": goMod},
@@ -179,7 +190,7 @@ func TestClassify(t *testing.T) {
 
 			got, err := candidates.Classify(context.Background(), repo, pr, t.TempDir(), goEnv(t))
 			require.NoError(t, err)
-			require.Equal(t, tt.class, got.Class)
+			require.Equal(t, tt.class, got.Class, got.Reason)
 			require.Equal(t, tt.names, got.Names)
 			require.Equal(t, tt.tests, got.Tests)
 			if tt.reason == "" {
@@ -225,6 +236,49 @@ const (
 	wantTest = "package p\n\nimport \"testing\"\n\nfunc TestWant(t *testing.T) {\n\tif Want() != 2 {\n\t\tt.Fatalf(\"Want() = %d\", Want())\n\t}\n}\n"
 
 	brokenTest = "\nfunc TestBroken(t *testing.T) { t.Fatal(\"broken\") }\n"
+
+	gitAwareTest1 = `package p
+
+import (
+	"os/exec"
+	"testing"
+)
+
+func TestAnswer(t *testing.T) {
+	if Answer() != 1 {
+		t.Fatalf("Answer() = %d", Answer())
+	}
+}
+
+// TestHasGit reads the checkout's repository, as several tests of the
+// project do.
+func TestHasGit(t *testing.T) {
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput(); err != nil {
+		t.Fatalf("no repository above the package: %v: %s", err, out)
+	}
+}
+`
+	gitAwareTest2 = `package p
+
+import (
+	"os/exec"
+	"testing"
+)
+
+func TestAnswer(t *testing.T) {
+	if Answer() != 2 {
+		t.Fatalf("Answer() = %d", Answer())
+	}
+}
+
+// TestHasGit reads the checkout's repository, as several tests of the
+// project do.
+func TestHasGit(t *testing.T) {
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput(); err != nil {
+		t.Fatalf("no repository above the package: %v: %s", err, out)
+	}
+}
+`
 
 	manyNames     = "\nfunc W1() {}\nfunc W2() {}\nfunc W3() {}\nfunc W4() {}\nfunc W5() {}\n"
 	manyNamesTest = "package p\n\nimport \"testing\"\n\nfunc TestMany(t *testing.T) {\n\tW1()\n\tW2()\n\tW3()\n\tW4()\n\tW5()\n}\n"

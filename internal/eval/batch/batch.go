@@ -42,6 +42,10 @@ const (
 	DefaultSeed uint64 = 1
 )
 
+// systemConfigPath is where Crush reads the machine's system config. The
+// runner cannot switch it off, so the batch records whether one exists.
+const systemConfigPath = "/etc/crush/crush.json"
+
 // Record is batches/<id>/batch.json: what a batch is, written before it
 // starts so a resumed batch knows its seed, suite and experiment.
 type Record struct {
@@ -51,6 +55,15 @@ type Record struct {
 	Suite      string    `json:"suite"`
 	Experiment string    `json:"experiment"`
 	Started    time.Time `json:"started"`
+	// SystemConfig is whether this machine has a /etc/crush config, which
+	// every run reads as well as the generated one.
+	SystemConfig bool `json:"system_config"`
+}
+
+// systemConfig reports whether the machine has a system config.
+func systemConfig() bool {
+	_, err := os.Stat(systemConfigPath)
+	return err == nil
 }
 
 // Write records the batch in the eval home.
@@ -262,12 +275,13 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		opts.Seed = record.Seed
 	case errors.Is(err, fs.ErrNotExist):
 		record := Record{
-			Schema:     Schema,
-			ID:         opts.ID,
-			Seed:       opts.Seed,
-			Suite:      opts.Suite,
-			Experiment: opts.Path,
-			Started:    opts.Now().UTC(),
+			Schema:       Schema,
+			ID:           opts.ID,
+			Seed:         opts.Seed,
+			Suite:        opts.Suite,
+			Experiment:   opts.Path,
+			Started:      opts.Now().UTC(),
+			SystemConfig: systemConfig(),
 		}
 		if err := record.Write(opts.Home); err != nil {
 			return nil, err
