@@ -31,6 +31,7 @@ const usage = `usage:
   crush-eval compare <batch-id> [--json]
   crush-eval baseline <batch-id> [--route <name>] [--out <file>]
   crush-eval rescan <batch-id>
+  crush-eval limits <batch-id> [--write]
   crush-eval plan <experiment.yaml>
   crush-eval login <route>`
 
@@ -65,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return baselineCmd(args[1:], stdout, stderr)
 	case "rescan":
 		return rescanCmd(args[1:], stdout, stderr)
+	case "limits":
+		return limitsCmd(args[1:], stdout, stderr)
 	case "plan":
 		return planCmd(args[1:], stdout, stderr)
 	case "login":
