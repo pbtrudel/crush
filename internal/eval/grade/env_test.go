@@ -35,6 +35,29 @@ func TestEnvPutsToolchainFirst(t *testing.T) {
 	require.Contains(t, graded, "GOPROXY=off")
 }
 
+// TestEnvOmitsUnsetCaches checks that a cache neither the parent nor the
+// selected go sets is left out rather than set empty, which go rejects.
+func TestEnvOmitsUnsetCaches(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	silentGo(t, root)
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+	resolve := func([]string) (string, error) { return root, nil }
+
+	graded := env("/scratch/home", parent, resolve)
+	require.NotContains(t, graded, "GOCACHE=")
+	require.NotContains(t, graded, "GOMODCACHE=")
+}
+
+// silentGo writes a go in root's bin that reports no value for any name.
+func silentGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"), 0o700))
+}
+
 // fakeGo writes a go in root's bin that reports /fake/<name> for the go env
 // name it is asked for.
 func fakeGo(t *testing.T, root string) {

@@ -128,8 +128,12 @@ func env(home string, parent []string, resolve toolchain.Resolver) []string {
 		"GOPROXY=off",
 		"GOTOOLCHAIN=local",
 	}
+	// A cache neither the parent nor the selected go sets is left out: an
+	// empty GOCACHE makes go refuse to build.
 	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
-		env = append(env, name+"="+toolchain.Value(parent, name, resolve))
+		if value := toolchain.Value(parent, name, resolve); value != "" {
+			env = append(env, name+"="+value)
+		}
 	}
 	return env
 }

@@ -75,6 +75,13 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	add := func(key, value string) {
 		env = append(env, key+"="+value)
 	}
+	// A cache neither the parent nor the selected go sets is left out: an
+	// empty GOCACHE makes go refuse to build.
+	addIfSet := func(key, value string) {
+		if value != "" {
+			add(key, value)
+		}
+	}
 
 	if _, ok := parentVars["PATH"]; !ok {
 		return nil, fmt.Errorf("parent environment has no PATH")
@@ -90,8 +97,8 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	// The user's go env file holds the caches, and the child's HOME is its
 	// own empty directory, so go in the child would otherwise build without
 	// a build cache and find no downloaded module.
-	add("GOCACHE", toolchain.Value(parent, "GOCACHE", resolve))
-	add("GOMODCACHE", toolchain.Value(parent, "GOMODCACHE", resolve))
+	addIfSet("GOCACHE", toolchain.Value(parent, "GOCACHE", resolve))
+	addIfSet("GOMODCACHE", toolchain.Value(parent, "GOMODCACHE", resolve))
 	for _, name := range r.Env {
 		value, ok := parentVars[name]
 		if !ok {

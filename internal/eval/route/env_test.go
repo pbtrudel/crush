@@ -178,6 +178,31 @@ func TestChildEnvResolvesCaches(t *testing.T) {
 	require.Equal(t, "/fake/GOMODCACHE", envMap(env)["GOMODCACHE"])
 }
 
+// TestChildEnvOmitsUnsetCaches checks that a cache neither the parent nor
+// the selected go sets is left out rather than set empty, which go rejects.
+func TestChildEnvOmitsUnsetCaches(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	silentGo(t, root)
+	h := home.At("/state/crush-eval")
+	r := &Route{Name: "deepseek-flash", Provider: "commandcode"}
+	parent := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/someone"}
+
+	env, err := r.childEnv(h, Dirs{Home: "/run/home", Config: "/run/config"}, parent, toolchainAt(root))
+	require.NoError(t, err)
+	require.NotContains(t, env, "GOCACHE=")
+	require.NotContains(t, env, "GOMODCACHE=")
+}
+
+// silentGo writes a go in root's bin that reports no value for any name.
+func silentGo(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"), 0o700))
+}
+
 // fakeGo writes a go in root's bin that reports /fake/<name> for the go env
 // name it is asked for.
 func fakeGo(t *testing.T, root string) {
