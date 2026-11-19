@@ -39,7 +39,7 @@ limits:
   timeout: 25m
 risks:
   - "hidden choice: the acknowledgement text is `Running ` plus the command name in backticks, for example `Running `/stop``."
-  - "the pull request renamed two of the six tests the design table lists, so the grade names the four tests that exist at the merge (TestBridgeInteractionViaInputQueue is now TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInputLoop is now TestQuestionComponentArrivesThroughInteractionLoop)."
+  - "the pull request renamed two of the six tests the design table lists, and the three unchanged ones pass at the base, so the grade names only the renamed failing test; the others run in the package pass (TestBridgeInteractionViaInputQueue is now TestBridgeInteractionViaGatewayQueue, TestQuestionComponentArrivesThroughInputLoop is now TestQuestionComponentArrivesThroughInteractionLoop)."
   - "the em dashes in the prompt are the pull request's own Why text, kept verbatim."
 vetted:
   date: "2026-11-19"

@@ -26,7 +26,7 @@ limits:
   max_steps: 120
   timeout: 25m
 risks:
-  - 'hidden choice: the context derives from the app''s lifetime context, not the caller''s, and a new call cancels the previous coordinator''s context'
+  - 'hidden choice: the context derives from the app''s `globalCtx` field, not the caller''s, and a new call cancels the previous coordinator''s context'
   - TestStaleWatcherReportsMissingFiles is in the same hidden file but belongs to an unrelated change; it is not graded by name and runs only in the package pass (design, Noticed not changed here)
 vetted:
   date: "2026-11-19"

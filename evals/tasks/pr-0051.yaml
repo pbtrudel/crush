@@ -34,3 +34,9 @@ limits:
   timeout: 25m
 risks:
   - "correlated: pr-0044, pr-0051, pr-0076"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 5, packages: 9}
