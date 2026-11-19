@@ -173,6 +173,30 @@ func TestCompareMetrics(t *testing.T) {
 	require.InDelta(t, -60.0, tokens.Estimate, 1e-9)
 }
 
+// TestCompareGuardIsPassRateOnly checks that the margin rule is not applied
+// to a count: a variant that spends fewer tokens passes no guard, and the
+// caller states one with a pass-rate comparison instead.
+func TestCompareGuardIsPassRateOnly(t *testing.T) {
+	t.Parallel()
+
+	var runs []result.Result
+	for i := 1; i <= 4; i++ {
+		task := "t" + string(rune('0'+i))
+		control := run("control", task, result.KindPlain, 0, true)
+		control.Tokens = result.Tokens{Input: 1000}
+		variant := run("variant", task, result.KindPlain, 0, true)
+		variant.Tokens = result.Tokens{Input: 100}
+		runs = append(runs, control, variant)
+	}
+
+	tokens := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricTokens, Margin: 0.05})
+	require.InDelta(t, -900.0, tokens.Estimate, 1e-9)
+	require.False(t, tokens.GuardPassed, "the margin rule is not applied to a token count")
+
+	passRate := comparison(runs, score.Options{Control: "control", Variant: "variant", Margin: 0.05})
+	require.True(t, passRate.GuardPassed)
+}
+
 func TestComparePoolsRoutes(t *testing.T) {
 	t.Parallel()
 

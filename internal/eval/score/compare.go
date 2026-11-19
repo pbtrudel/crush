@@ -54,11 +54,18 @@ type Options struct {
 	// and the unit is then (task, route).
 	Route  string
 	Metric Metric
-	// Margin is the pass-rate guard M of 4.3.
+	// Margin is the pass-rate guard M of 4.3, a share of the tasks.
 	Margin float64
 	// Seed and Draws default to DefaultSeed and DefaultDraws.
 	Seed  uint64
 	Draws int
+}
+
+// Interval is the estimate and its 95% interval.
+type Interval struct {
+	Estimate float64 `json:"estimate"`
+	Lower    float64 `json:"lower"`
+	Upper    float64 `json:"upper"`
 }
 
 // Comparison is the paired comparison of 4.3.
@@ -74,7 +81,11 @@ type Comparison struct {
 	Lower    float64
 	Upper    float64
 	Margin   float64
-	// GuardPassed is the margin rule: Lower > -Margin.
+	// GuardPassed is the margin rule of 4.3 rule 2: the pass rate's lower
+	// bound stays above -Margin. It is set only for a pass-rate comparison.
+	// Steps, tokens and false completions are reported with their own
+	// interval and no margin rule: a share of the tasks means nothing for
+	// a count.
 	GuardPassed bool
 	Void        bool
 	VoidReason  string
@@ -183,7 +194,9 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 	}
 	cmp.Estimate = sum / float64(len(diffs))
 	cmp.Lower, cmp.Upper = bootstrap(diffs, opts.Draws, opts.Seed)
-	cmp.GuardPassed = cmp.Lower > -opts.Margin
+	if opts.Metric == MetricPassRate {
+		cmp.GuardPassed = cmp.Lower > -opts.Margin
+	}
 	return cmp, nil
 }
 

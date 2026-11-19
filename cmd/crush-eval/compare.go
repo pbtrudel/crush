@@ -37,19 +37,21 @@ type aggregateRow struct {
 // comparisonRow is the paired comparison of one variant against the control,
 // on one route or over every route.
 type comparisonRow struct {
-	Variant           string  `json:"variant"`
-	Route             string  `json:"route"`
-	Units             int     `json:"units"`
-	Dropped           int     `json:"dropped"`
-	Estimate          float64 `json:"estimate"`
-	Lower             float64 `json:"lower"`
-	Upper             float64 `json:"upper"`
-	Margin            float64 `json:"margin"`
-	GuardPassed       bool    `json:"guard_passed"`
-	Void              bool    `json:"void"`
-	VoidReason        string  `json:"void_reason,omitempty"`
-	InvalidRate       float64 `json:"invalid_rate"`
-	ContaminationRate float64 `json:"contamination_rate"`
+	Variant           string         `json:"variant"`
+	Route             string         `json:"route"`
+	Metric            score.Metric   `json:"metric"`
+	Units             int            `json:"units"`
+	Dropped           int            `json:"dropped"`
+	Estimate          float64        `json:"estimate"`
+	Lower             float64        `json:"lower"`
+	Upper             float64        `json:"upper"`
+	Guard             score.Interval `json:"guard"`
+	Margin            float64        `json:"margin"`
+	GuardPassed       bool           `json:"guard_passed"`
+	Void              bool           `json:"void"`
+	VoidReason        string         `json:"void_reason,omitempty"`
+	InvalidRate       float64        `json:"invalid_rate"`
+	ContaminationRate float64        `json:"contamination_rate"`
 }
 
 // compareReport is what compare prints with --json.
@@ -127,46 +129,12 @@ func compareCmd(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 
-	failed := false
-	for _, variant := range exp.Variants[1:] {
-		routes := append([]string{}, exp.Routes...)
-		if len(exp.Routes) > 1 {
-			// Families that share a variant are pooled, and the unit is
-			// then (task, route).
-			routes = append(routes, "")
-		}
-		for _, name := range routes {
-			cmp, err := score.Compare(runs, score.Options{
-				Control: control,
-				Variant: labels[variant.Name],
-				Route:   name,
-				Metric:  exp.PrimaryMetric,
-				Margin:  exp.Margin,
-			})
-			if err != nil {
-				fmt.Fprintln(stderr, err)
-				return 1
-			}
-			report.Comparisons = append(report.Comparisons, comparisonRow{
-				Variant:           labels[variant.Name],
-				Route:             name,
-				Units:             cmp.Units,
-				Dropped:           cmp.Dropped,
-				Estimate:          cmp.Estimate,
-				Lower:             cmp.Lower,
-				Upper:             cmp.Upper,
-				Margin:            cmp.Margin,
-				GuardPassed:       cmp.GuardPassed,
-				Void:              cmp.Void,
-				VoidReason:        cmp.VoidReason,
-				InvalidRate:       cmp.InvalidRate,
-				ContaminationRate: cmp.ContaminationRate,
-			})
-			if cmp.Void || !cmp.GuardPassed {
-				failed = true
-			}
-		}
+	comparisons, failed, err := compareRows(exp, runs, control, labels)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
+	report.Comparisons = comparisons
 
 	if *jsonOut {
 		if code := print(stdout, stderr, report); code != 0 {
@@ -179,6 +147,67 @@ func compareCmd(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// compareRows compares every non-control variant against the control on the
+// experiment's primary metric, on every route and pooled over all of them
+// when there is more than one. It reports whether any comparison failed.
+func compareRows(exp *score.Experiment, runs []result.Result, control string, labels map[string]string) ([]comparisonRow, bool, error) {
+	var rows []comparisonRow
+	failed := false
+	for _, variant := range exp.Variants[1:] {
+		routes := append([]string{}, exp.Routes...)
+		if len(exp.Routes) > 1 {
+			// Families that share a variant are pooled, and the unit is
+			// then (task, route).
+			routes = append(routes, "")
+		}
+		for _, name := range routes {
+			// The primary metric is reported on its own, and the guard of
+			// 4.3 rule 2 is always the pass rate: its margin is a share of
+			// the tasks, which says nothing about steps or tokens.
+			primary, err := score.Compare(runs, score.Options{
+				Control: control,
+				Variant: labels[variant.Name],
+				Route:   name,
+				Metric:  exp.PrimaryMetric,
+			})
+			if err != nil {
+				return nil, false, err
+			}
+			guard, err := score.Compare(runs, score.Options{
+				Control: control,
+				Variant: labels[variant.Name],
+				Route:   name,
+				Metric:  score.MetricPassRate,
+				Margin:  exp.Margin,
+			})
+			if err != nil {
+				return nil, false, err
+			}
+			rows = append(rows, comparisonRow{
+				Variant:           labels[variant.Name],
+				Route:             name,
+				Metric:            exp.PrimaryMetric,
+				Units:             primary.Units,
+				Dropped:           primary.Dropped,
+				Estimate:          primary.Estimate,
+				Lower:             primary.Lower,
+				Upper:             primary.Upper,
+				Guard:             score.Interval{Estimate: guard.Estimate, Lower: guard.Lower, Upper: guard.Upper},
+				Margin:            exp.Margin,
+				GuardPassed:       guard.GuardPassed,
+				Void:              primary.Void,
+				VoidReason:        primary.VoidReason,
+				InvalidRate:       primary.InvalidRate,
+				ContaminationRate: primary.ContaminationRate,
+			})
+			if primary.Void || !guard.GuardPassed {
+				failed = true
+			}
+		}
+	}
+	return rows, failed, nil
 }
 
 // printCompare writes the tables and the comparisons as plain text.
@@ -209,8 +238,10 @@ func printCompare(stdout io.Writer, report compareReport) {
 			guard = "fail"
 		}
 		fmt.Fprintf(stdout, "\n%s vs %s on %s\n", report.Control, row.Variant, route)
-		fmt.Fprintf(stdout, "  units %d  dropped %d  estimate %+.4f  95%% [%+.4f, %+.4f]  margin %.4f  guard %s\n",
-			row.Units, row.Dropped, row.Estimate, row.Lower, row.Upper, row.Margin, guard)
+		fmt.Fprintf(stdout, "  %s: units %d  dropped %d  estimate %+.4f  95%% [%+.4f, %+.4f]\n",
+			row.Metric, row.Units, row.Dropped, row.Estimate, row.Lower, row.Upper)
+		fmt.Fprintf(stdout, "  pass_rate guard: estimate %+.4f  95%% [%+.4f, %+.4f]  margin %.4f  %s\n",
+			row.Guard.Estimate, row.Guard.Lower, row.Guard.Upper, row.Margin, guard)
 		if row.Void {
 			fmt.Fprintf(stdout, "  void: %s\n", row.VoidReason)
 		}
