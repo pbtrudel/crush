@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -90,12 +91,30 @@ func Value(env []string, name string, resolve Resolver) string {
 // environment the child gets, so a caller that puts the selected toolchain
 // first on the child's PATH must name the binary to run it.
 func Go(env []string) string {
+	return goBinary(env, runtime.GOOS)
+}
+
+// goBinary is Go for one GOOS: it looks for the name go has there and checks
+// the executable bit only where the system keeps one.
+func goBinary(env []string, goos string) string {
+	name := goName(goos)
 	for _, dir := range filepath.SplitList(value(env, "PATH")) {
-		path := filepath.Join(dir, "go")
+		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if goos == "windows" || info.Mode().Perm()&0o111 != 0 {
 			return path
 		}
+	}
+	return name
+}
+
+// goName is the name of the go binary on goos.
+func goName(goos string) string {
+	if goos == "windows" {
+		return "go.exe"
 	}
 	return "go"
 }
