@@ -71,8 +71,11 @@ func captureTransportIfEnabled(base http.RoundTripper) http.RoundTripper {
 type captureTransport struct {
 	base http.RoundTripper
 	dir  string
-	seq  atomic.Uint64
 }
+
+// captureSeq numbers the capture files. It is process-global so two
+// transports writing into the same directory cannot pick the same name.
+var captureSeq atomic.Uint64
 
 // captureExchange is one recorded request and its response.
 type captureExchange struct {
@@ -147,7 +150,7 @@ func (t *captureTransport) write(exchange captureExchange) {
 	name := fmt.Sprintf(
 		"%s-%03d-%s.json",
 		time.Now().UTC().Format("20060102T150405.000000Z"),
-		t.seq.Add(1),
+		captureSeq.Add(1),
 		captureURLSlug(exchange.URL),
 	)
 	if err := os.WriteFile(filepath.Join(t.dir, name), append(data, '\n'), 0o600); err != nil {
@@ -177,6 +180,9 @@ func captureURLSlug(rawURL string) string {
 // and hands the buffer to the recorder once the body is closed or drained.
 type captureBody struct {
 	io.ReadCloser
+	// mu guards buf and truncated: Read fills them while another goroutine
+	// may call Close, which reads them.
+	mu        sync.Mutex
 	buf       bytes.Buffer
 	truncated bool
 	once      sync.Once
@@ -187,6 +193,7 @@ type captureBody struct {
 func (b *captureBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
+		b.mu.Lock()
 		if b.buf.Len() < captureBodyLimit {
 			room := captureBodyLimit - b.buf.Len()
 			b.buf.Write(p[:min(n, room)])
@@ -194,6 +201,7 @@ func (b *captureBody) Read(p []byte) (int, error) {
 		} else {
 			b.truncated = true
 		}
+		b.mu.Unlock()
 	}
 	if err != nil {
 		b.finish()
@@ -211,9 +219,16 @@ func (b *captureBody) Close() error {
 
 func (b *captureBody) finish() {
 	b.once.Do(func() {
-		if b.done != nil {
-			b.done(b.buf.Bytes(), b.truncated)
+		if b.done == nil {
+			return
 		}
+		// Copy under the lock: a Read racing this Close can still append to
+		// the buffer after the callback returns.
+		b.mu.Lock()
+		body := append([]byte(nil), b.buf.Bytes()...)
+		truncated := b.truncated
+		b.mu.Unlock()
+		b.done(body, truncated)
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/oauth"
@@ -446,4 +447,45 @@ func TestCaptureStacksUnderMistralVibeTransport(t *testing.T) {
 
 	require.Contains(t, base.body, "vibe_code")
 	require.Equal(t, base.body, readCapture(t, dir).RequestBody)
+}
+
+// hookedBody calls onRead once, on the first read.
+type hookedBody struct {
+	once   sync.Once
+	onRead func()
+}
+
+func (b *hookedBody) Read(p []byte) (int, error) {
+	b.once.Do(b.onRead)
+	return copy(p, "captured-chunk"), nil
+}
+
+func (b *hookedBody) Close() error { return nil }
+
+// TestCaptureBodyReadCloseRace closes the captured body from another
+// goroutine while a Read is between the network read and the buffer write.
+// Read writes the buffer and Close reads it, so the two need to agree on one
+// lock.
+func TestCaptureBodyReadCloseRace(t *testing.T) {
+	// give the capture a real dir so nothing else is in play.
+	finished := make(chan struct{})
+	inner := &hookedBody{}
+	var body *captureBody
+	inner.onRead = func() {
+		// Close from another goroutine, so the buffer write that follows
+		// this read has no ordering against the buffer read in Close.
+		go func() { _ = body.Close() }()
+	}
+	body = &captureBody{
+		ReadCloser: inner,
+		done: func([]byte, bool) {
+			close(finished)
+		},
+	}
+
+	buf := make([]byte, 64)
+	n, err := body.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, len("captured-chunk"), n)
+	<-finished
 }
