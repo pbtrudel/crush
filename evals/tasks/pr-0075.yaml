@@ -1,0 +1,45 @@
+schema: 1
+id: pr-0075
+source:
+  repo: pbtrudel/crush
+  pr: 75
+  merge: 0d4af8b4fed48337f22a98f7935150ff5372d548
+  base: 19f1cf88683bbd8d604d74178ef4db4a2fdd59af
+kind: plain
+why: |
+  `/btw` in Discord (and the TUI side-question dialog) renders `(the model
+  returned no answer)` whenever the provider ends a response without any text.
+  The ephemeral side-question path ignored the finish reason and logged
+  nothing, so every such stop was indistinguishable from a real answer and
+  could not be diagnosed.
+prompt: |
+  `/btw` in Discord (and the TUI side-question dialog) renders `(the model
+  returned no answer)` whenever the provider ends a response without any text.
+  The ephemeral side-question path ignored the finish reason and logged
+  nothing, so every such stop was indistinguishable from a real answer and
+  could not be diagnosed.
+
+  An answer that comes back with no text is an error rather than an empty
+  answer: the error names the finish reason as `finish_reason=<reason>`
+  (`stop`, `length` or `error`) and says there was no answer.
+grade:
+  packages: [./internal/agent]
+  tests: [TestEphemeralReportsWhyAnAnswerIsEmpty, TestEphemeralKeepsConversationHistory]
+  exclude: []
+  hidden:
+    - {path: internal/agent/ephemeral_test.go, blob: a0b87594015d0af410281efa447634c34e0441d0}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: an empty answer is an error whose text contains `finish_reason=<reason>` and says there was no answer."
+  - "correlated: pr-0061, pr-0075, pr-0080 (the same function changed at three points in time; the three tasks are not independent)."
+  - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 15, packages: 10}
