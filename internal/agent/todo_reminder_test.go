@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -316,4 +320,90 @@ func TestTodoReminderDue(t *testing.T) {
 			require.Equal(t, tt.want, todoReminderDue(tt.step, tt.todos, tt.stepsSinceLast, tt.sent))
 		})
 	}
+}
+
+// slowCompactionModel answers from a script like scriptedModel and stalls
+// the compaction request, so the compaction outlasts the turn's cleanup
+// context.
+type slowCompactionModel struct {
+	scriptedModel
+	delay time.Duration
+}
+
+func (m *slowCompactionModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if isCompactionCall(call) {
+		time.Sleep(m.delay)
+	}
+	return m.scriptedModel.Stream(ctx, call)
+}
+
+// isCompactionCall reports whether the request carries the compaction
+// instruction, the only call the note test stalls.
+func isCompactionCall(call fantasy.Call) bool {
+	for _, msg := range call.Prompt {
+		for _, part := range msg.Content {
+			text, ok := part.(fantasy.TextPart)
+			if ok && strings.Contains(text.Text, "Compact the conversation above") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// finalAssistantText returns the text of the last assistant message that is
+// not a compaction summary.
+func finalAssistantText(t *testing.T, env fakeEnv, sessionID string) string {
+	t.Helper()
+	msgs, err := env.messages.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	text := ""
+	for _, msg := range msgs {
+		if msg.Role != message.Assistant || msg.IsSummaryMessage {
+			continue
+		}
+		text = msg.Content().Text
+	}
+	return text
+}
+
+// The note is written after the end-of-turn compaction, so it cannot borrow
+// the turn's cleanup context: a compaction that outlasts that context would
+// expire it and the note would be lost.
+func TestStaleTodoNoteSurvivesASlowCompaction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the cleanup context's 5 s budget")
+	}
+	env := testEnv(t)
+	// Five progress steps leave three unanswered reminders about the same
+	// item; the sixth answer closes the turn at 150k of a 200k window,
+	// above the 100k threshold, so the turn compacts afterwards.
+	script := make([]scriptedCall, 0, 7)
+	for range 5 {
+		script = append(script, callTool(tools.BashToolName, 150_000))
+	}
+	script = append(script,
+		answer("done", fantasy.FinishReasonStop, 150_000),
+		answer("# Conversation Summary\n\nAll good.", fantasy.FinishReasonStop, 1_000),
+	)
+	model := &slowCompactionModel{
+		scriptedModel: scriptedModel{script: script},
+		// Comfortably longer than the 5 s the turn's cleanup context
+		// allows; that budget is a literal in Run, so the test cannot
+		// lower it.
+		delay: 6 * time.Second,
+	}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: tools.BashToolName})
+	sess, err := env.sessions.Create(t.Context(), "slow compaction")
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.UpdateTodos(t.Context(), sess.ID, []session.Todo{
+		{Content: "Deploy it", Status: session.TodoStatusInProgress},
+	}))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Contains(t, finalAssistantText(t, env, sess.ID), `Todo list still shows "Deploy it" as unfinished`)
 }

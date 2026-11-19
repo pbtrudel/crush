@@ -2078,11 +2078,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// a further reminder would not help; the note keeps the user from
 	// discovering the stale list only when they open it.
 	if finished && !a.isSubAgent && todoStaleItem != "" {
-		if latest, getErr := a.sessions.Get(cleanupCtx, call.SessionID); getErr != nil {
+		// A compaction can outlast cleanupCtx, so the note gets its own
+		// short deadline, detached from the run like the other final
+		// writes.
+		noteCtx, cancelNote := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelNote()
+		if latest, getErr := a.sessions.Get(noteCtx, call.SessionID); getErr != nil {
 			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
 		} else if staleTodoAtTurnEnd(todoStaleItem, todoReminderUnanswered, latest.Todos) {
 			currentAssistant.AppendContent(staleTodoNote(todoStaleItem, todoReminderUnanswered+1))
-			if updateErr := a.messages.Update(cleanupCtx, *currentAssistant); updateErr != nil {
+			if updateErr := a.messages.Update(noteCtx, *currentAssistant); updateErr != nil {
 				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
 			}
 		}
