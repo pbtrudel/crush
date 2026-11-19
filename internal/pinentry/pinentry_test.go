@@ -18,31 +18,32 @@ import (
 func TestParsePS(t *testing.T) {
 	t.Parallel()
 
-	out := []byte(`    1 /sbin/launchd
-  338 /usr/libexec/logd
- 1337 /opt/homebrew/bin/pinentry-curses
- 1442 gpg
- 2499 gpg-agent
- 3000 /usr/bin/Google Chrome Helper
+	out := []byte(`    1     0 /sbin/launchd
+  338     1 /usr/libexec/logd
+ 1337   338 /opt/homebrew/bin/pinentry-curses
+ 1442     1 gpg
+ 2499     1 gpg-agent
+ 3000  1442 /usr/bin/Google Chrome Helper
 bad line here
+ 1443    no gpg
 `)
 
 	procs := parsePS(out)
 	require.Len(t, procs, 6)
-	require.Equal(t, Proc{PID: 1, Name: "launchd", Path: "/sbin/launchd"}, procs[0])
-	require.Equal(t, Proc{PID: 1337, Name: "pinentry-curses", Path: "/opt/homebrew/bin/pinentry-curses"}, procs[2])
+	require.Equal(t, Proc{PID: 1, PPID: 0, Name: "launchd", Path: "/sbin/launchd"}, procs[0])
+	require.Equal(t, Proc{PID: 1337, PPID: 338, Name: "pinentry-curses", Path: "/opt/homebrew/bin/pinentry-curses"}, procs[2])
 	// Bare names (Linux ps style) carry no path.
-	require.Equal(t, Proc{PID: 1442, Name: "gpg"}, procs[3])
+	require.Equal(t, Proc{PID: 1442, PPID: 1, Name: "gpg"}, procs[3])
 	// gpg-agent must not be confused with gpg.
-	require.Equal(t, Proc{PID: 2499, Name: "gpg-agent"}, procs[4])
+	require.Equal(t, Proc{PID: 2499, PPID: 1, Name: "gpg-agent"}, procs[4])
 	// Commands with spaces keep the full remainder as their name.
-	require.Equal(t, Proc{PID: 3000, Name: "Google Chrome Helper", Path: "/usr/bin/Google Chrome Helper"}, procs[5])
+	require.Equal(t, Proc{PID: 3000, PPID: 1442, Name: "Google Chrome Helper", Path: "/usr/bin/Google Chrome Helper"}, procs[5])
 }
 
 func TestClassify(t *testing.T) {
 	t.Parallel()
 
-	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, {PID: 2, Name: "gpg"}}, nil)
+	handover, ctrlL, gpg := classify([]Proc{{PID: 1, Name: "pinentry-curses"}, ownProc(2, "gpg")}, nil)
 	require.True(t, handover)
 	require.True(t, ctrlL)
 	require.True(t, gpg)
@@ -170,7 +171,7 @@ func TestWatcherPassphraseFlow(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	pin := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
+	pin := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
 
 	// Dialog appears: terminal handover requested, dialog redraws on
 	// Ctrl-L.
@@ -230,8 +231,8 @@ func TestWatcherTouchAfterPassphrase(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	// Passphrase dialog with gpg waiting behind it.
 	s.tick(now, pinAndGPG)
@@ -259,7 +260,7 @@ func TestWatcherTouchWithCachedCredentials(t *testing.T) {
 
 	s := newTestService()
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg2"}}
+	gpgOnly := []Proc{ownProc(20, "gpg2")}
 
 	// gpg starts waiting without ever showing a dialog (cached
 	// passphrase). No hint before the grace period.
@@ -278,7 +279,7 @@ func TestWatcherTouchExpiry(t *testing.T) {
 	s.touchGrace = 100 * time.Millisecond
 	s.touchMax = 500 * time.Millisecond
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	now = tickAll(s, now, gpgOnly, 100*time.Millisecond, 2)
 	require.Equal(t, Event{TouchPending: true}, s.last)
@@ -295,8 +296,8 @@ func TestWatcherDialogReappearsDuringTouchWait(t *testing.T) {
 	s := newTestService()
 	s.touchGrace = 100 * time.Millisecond
 	now := time.Now()
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-tty"}, {PID: 20, Name: "gpg"}}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-tty"}, ownProc(20, "gpg")}
 
 	// Touch wait detected without a dialog.
 	now = tickAll(s, now, gpgOnly, 100*time.Millisecond, 2)
@@ -316,8 +317,8 @@ func TestWatcherReleasePrecedesTouchHint(t *testing.T) {
 	s.reopenWindow = 100 * time.Millisecond
 	s.touchGrace = 100 * time.Millisecond
 	now := time.Now()
-	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, {PID: 20, Name: "gpg"}}
-	gpgOnly := []Proc{{PID: 20, Name: "gpg"}}
+	pinAndGPG := []Proc{{PID: 10, Name: "pinentry-curses"}, ownProc(20, "gpg")}
+	gpgOnly := []Proc{ownProc(20, "gpg")}
 
 	s.tick(now, pinAndGPG)
 	require.Equal(t, Event{Active: true, CtrlLRedraw: true}, s.last)
@@ -410,6 +411,59 @@ func TestServiceSleepsWithoutTrackedCommands(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for pinentry event")
 	}
+}
+
+// ownProc describes a process this test process started, as a process
+// started by a Crush command is.
+func ownProc(pid int, name string) Proc {
+	return Proc{PID: pid, PPID: os.Getpid(), Name: name}
+}
+
+func TestClassifyCountsOnlyOurGPG(t *testing.T) {
+	t.Parallel()
+	parent := os.Getpid()
+
+	// A gpg started by Crush counts.
+	_, _, gpg := classify([]Proc{ownProc(20, "gpg")}, nil)
+	require.True(t, gpg)
+
+	// A deeper descendant of Crush counts too.
+	_, _, gpg = classify([]Proc{
+		{PID: 30, PPID: parent, Name: "sh"},
+		{PID: 31, PPID: 30, Name: "gpg2"},
+	}, nil)
+	require.True(t, gpg)
+
+	// A gpg belonging to another program or another Crush instance does
+	// not count: it cannot be waiting for our key.
+	_, _, gpg = classify([]Proc{{PID: 40, PPID: parent + 1, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+
+	// A parent missing from the snapshot cannot be attributed to Crush.
+	_, _, gpg = classify([]Proc{{PID: 41, PPID: 999999, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+
+	// A malformed snapshot with a parent cycle terminates.
+	_, _, gpg = classify([]Proc{{PID: 42, PPID: 42, Name: "gpg"}}, nil)
+	require.False(t, gpg)
+}
+
+func TestWatcherTouchRequiresOurGPG(t *testing.T) {
+	t.Parallel()
+
+	s := newTestService()
+	s.touchGrace = 100 * time.Millisecond
+	now := time.Now()
+	foreign := []Proc{{PID: 20, PPID: os.Getpid() + 1, Name: "gpg"}}
+
+	// Another program's gpg is never a security key wait of ours.
+	now = tickAll(s, now, foreign, 100*time.Millisecond, 5)
+	require.Equal(t, Event{}, s.last)
+	require.Equal(t, stateIdle, s.state)
+
+	// A gpg started by Crush still is.
+	tickAll(s, now, []Proc{ownProc(20, "gpg")}, 100*time.Millisecond, 2)
+	require.Equal(t, Event{TouchPending: true}, s.last)
 }
 
 // waitUntil polls cond for up to five seconds.
