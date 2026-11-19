@@ -522,3 +522,111 @@ func TestDuplicateTaskIdsFromOldFileStayScoped(t *testing.T) {
 	require.Equal(t, "b view", state.Tasks[0].Subject, "another session's task with the same id is untouched")
 	require.Equal(t, "edited", state.Tasks[1].Subject)
 }
+
+// The file can disappear while a process runs, for instance when the data
+// directory is cleaned. Memory is then the newest record this process has,
+// and the next write must keep it and recreate the file.
+func TestMissingStateFileKeepsMemory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	service := openSharedTeam(t, path, nil)
+	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "one", Description: "d"})
+	require.NoError(t, err)
+	require.NoError(t, service.SendMessage(context.Background(), "lead", "session-a", SendRequest{
+		Target: "lead", Message: "note",
+	}))
+	require.NoError(t, os.Remove(path))
+
+	second, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "two", Description: "d"})
+	require.NoError(t, err)
+	require.Equal(t, "task-2", second.ID, "an id already handed out is not reused")
+
+	state := sharedState(t, path)
+	require.Len(t, state.Tasks, 2)
+	require.Len(t, state.Messages, 1)
+	require.Equal(t, 2, state.NextTask)
+	require.Equal(t, 1, state.NextMessage)
+}
+
+// A write whose file lock is unusable falls back to an in-process lock. Two
+// Services on one state file must still take turns, so the second write does
+// not start before the first one is done.
+func TestFailingFileLockStillSerializesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	// A directory where the lock file belongs makes every lock attempt
+	// fail, which is the fallback path.
+	require.NoError(t, os.Mkdir(lockPath(path), 0o755))
+	services := []*Service{openSharedTeam(t, path, nil), openSharedTeam(t, path, nil)}
+
+	var (
+		mu      sync.Mutex
+		active  int
+		overlap bool
+		wg      sync.WaitGroup
+	)
+	for _, service := range services {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = service.write(mustApply, func() (bool, error) {
+				mu.Lock()
+				active++
+				if active > 1 {
+					overlap = true
+				}
+				mu.Unlock()
+				time.Sleep(30 * time.Millisecond)
+				mu.Lock()
+				active--
+				mu.Unlock()
+				return false, nil
+			})
+		}()
+	}
+	wg.Wait()
+	require.False(t, overlap, "two writes overlapped with no file lock to order them")
+}
+
+// The team tools drain the caller's inbox on every response, read-only ones
+// included. With no mail waiting and an unchanged file there is nothing to
+// take, so the drain must not wait for another process's lock.
+func TestDrainInboxWithoutMailDoesNotWaitForTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	service := openSharedTeam(t, path, nil)
+	service.lockTimeout = 300 * time.Millisecond
+	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "one", Description: "d"})
+	require.NoError(t, err)
+
+	release, err := lock.File(context.Background(), lockPath(path))
+	require.NoError(t, err)
+	start := time.Now()
+	pending := service.DrainInbox("lead", "session-a")
+	elapsed := time.Since(start)
+	release()
+
+	require.Empty(t, pending)
+	require.Less(t, elapsed, service.lockTimeout/2, "an empty drain waited for the state lock")
+}
+
+// A drain may still have mail to take when another process wrote it, and the
+// file changing is what says so.
+func TestDrainInboxSeesMailAnotherServiceWrote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.json")
+	runnerB := newFakeRunner()
+	a := openSharedTeam(t, path, nil)
+	b := openSharedTeam(t, path, runnerB)
+	_, err := a.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "one", Description: "d"})
+	require.NoError(t, err)
+
+	_, err = b.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name: "worker", Description: "d", Prompt: "p", ParentID: "session-a",
+	})
+	require.NoError(t, err)
+	runnerB.finish("worker")
+	require.Eventually(t, func() bool {
+		return len(sharedState(t, path).Messages) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	pending := a.DrainInbox("lead", "session-a")
+	require.Len(t, pending, 1, "the report another process wrote")
+	require.Equal(t, "worker", pending[0].From)
+}

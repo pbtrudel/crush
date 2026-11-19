@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -496,8 +497,8 @@ const (
 	mustApply
 )
 
-// stateLocks holds one mutex per state file, so Services in this process
-// queue on a Go mutex instead of spinning on the file lock.
+// stateLocks holds one slot per state file, so Services in this process
+// queue on a Go channel instead of spinning on the file lock.
 var stateLocks sync.Map
 
 // write runs fn on the freshest durable record. fn runs with s.mu held and
@@ -523,11 +524,12 @@ func (s *Service) write(mode writeMode, fn func() (bool, error)) error {
 	return err
 }
 
-// lockState takes the process mutex and the cross-process state lock, and
-// returns the release for both. A refusable write whose wait times out fails
-// with TEAM_STATE_BUSY and changes nothing, so a retry is safe. Any other
-// failure warns and continues without the file lock, which is what Crush did
-// before the lock existed.
+// lockState takes the in-process write slot and the cross-process state
+// lock, and returns the release for both. A refusable write whose wait times
+// out fails with TEAM_STATE_BUSY and changes nothing, so a retry is safe.
+// Any other failure warns and continues without the file lock, but still
+// takes turns with the other Services in this process, which is what Crush
+// did before the file lock existed.
 func (s *Service) lockState(mode writeMode) (func(), error) {
 	if s.path == "" {
 		return func() {}, nil
@@ -536,14 +538,16 @@ func (s *Service) lockState(mode writeMode) (func(), error) {
 	if abs, err := filepath.Abs(s.path); err == nil {
 		key = abs
 	}
-	value, _ := stateLocks.LoadOrStore(key, &sync.Mutex{})
-	mutex := value.(*sync.Mutex)
-	mutex.Lock()
+	slot, err := s.takeSlot(key, mode)
+	if err != nil {
+		return nil, err
+	}
+	release := func() { <-slot }
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		// The save below reports this too, and it must not be skipped:
 		// the record stays in memory until a later save succeeds.
 		s.warnLockFailed(fmt.Errorf("create team state directory: %w", err))
-		return mutex.Unlock, nil
+		return release, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.lockTimeout)
 	unlock, err := lock.File(ctx, lockPath(s.path))
@@ -551,21 +555,40 @@ func (s *Service) lockState(mode writeMode) (func(), error) {
 	if err == nil {
 		return func() {
 			unlock()
-			mutex.Unlock()
+			release()
 		}, nil
 	}
-	// The mutex still guards the fields read below, so it is dropped when
-	// the failing path returns.
-	defer mutex.Unlock()
 	if errors.Is(err, context.DeadlineExceeded) {
 		if mode == refusable {
+			release()
 			return nil, newError(CodeStateBusy, "Team state is busy in another Crush process; retry")
 		}
 		slog.Warn("Wrote the Team state without its lock", "path", s.path, "error", err)
-		return func() {}, nil
+		return release, nil
 	}
 	s.warnLockFailed(err)
-	return func() {}, nil
+	return release, nil
+}
+
+// takeSlot waits for the one write slot of the state file at key. The wait
+// is bounded by lockTimeout, so no write queues behind another for longer
+// than that; a mustApply write waits it out, because the work it records has
+// already happened.
+func (s *Service) takeSlot(key string, mode writeMode) (chan struct{}, error) {
+	value, _ := stateLocks.LoadOrStore(key, make(chan struct{}, 1))
+	slot := value.(chan struct{})
+	timer := time.NewTimer(s.lockTimeout)
+	defer timer.Stop()
+	select {
+	case slot <- struct{}{}:
+		return slot, nil
+	case <-timer.C:
+	}
+	if mode == refusable {
+		return nil, newError(CodeStateBusy, "Team state is busy in another Crush process; retry")
+	}
+	slot <- struct{}{}
+	return slot, nil
 }
 
 // warnLockFailed reports an unusable state lock once per Service: a
@@ -591,6 +614,11 @@ func (s *Service) reloadLocked() {
 	}
 	stamp, statErr := statState(s.path)
 	if statErr == nil && stamp.equal(s.stamp) {
+		return
+	}
+	if statErr != nil && errors.Is(statErr, fs.ErrNotExist) {
+		// The file is gone. Memory is the newest record this process has,
+		// and the next save recreates the file.
 		return
 	}
 	disk, err := loadState(s.path)
@@ -1347,6 +1375,16 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 // DrainInbox returns and marks delivered every pending message for name that
 // belongs to the caller's team.
 func (s *Service) DrainInbox(name, sessionID string) []Message {
+	// The team tools drain on every response, read-only ones included. With
+	// an unchanged file and no mail waiting there is nothing to take and no
+	// reason to wait for another process's lock.
+	s.mu.Lock()
+	stamp, statErr := statState(s.path)
+	quiet := statErr == nil && stamp.equal(s.stamp) && !s.hasPendingLocked(name, sessionID)
+	s.mu.Unlock()
+	if quiet {
+		return nil
+	}
 	var pending []Message
 	// Mail that is read has already been handed over, so it must reach the
 	// file even when another process holds the state lock.
@@ -1355,6 +1393,21 @@ func (s *Service) DrainInbox(name, sessionID string) []Message {
 		return len(pending) > 0, nil
 	})
 	return pending
+}
+
+// hasPendingLocked reports whether any message is waiting for name in the
+// caller's scope. Callers must hold s.mu.
+func (s *Service) hasPendingLocked(name, sessionID string) bool {
+	scope := s.scopeLocked(name, sessionID)
+	if len(scope) == 0 {
+		return false
+	}
+	for i := range s.state.Messages {
+		if s.inboxPendingLocked(scope, &s.state.Messages[i], name) {
+			return true
+		}
+	}
+	return false
 }
 
 // drainLocked takes the messages name may read: those a member of the
