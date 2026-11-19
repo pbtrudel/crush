@@ -592,19 +592,26 @@ func TestFailingFileLockStillSerializesWrites(t *testing.T) {
 func TestDrainInboxWithoutMailDoesNotWaitForTheLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "team.json")
 	service := openSharedTeam(t, path, nil)
-	service.lockTimeout = 300 * time.Millisecond
+	service.lockTimeout = 30 * time.Second
 	_, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "one", Description: "d"})
 	require.NoError(t, err)
 
 	release, err := lock.File(context.Background(), lockPath(path))
 	require.NoError(t, err)
-	start := time.Now()
-	pending := service.DrainInbox("lead", "session-a")
-	elapsed := time.Since(start)
-	release()
+	defer release()
 
-	require.Empty(t, pending)
-	require.Less(t, elapsed, service.lockTimeout/2, "an empty drain waited for the state lock")
+	done := make(chan []Message, 1)
+	go func() {
+		done <- service.DrainInbox("lead", "session-a")
+	}()
+	// The lock is held for the whole select, so a drain that took it could
+	// only return once the timeout below fired.
+	select {
+	case pending := <-done:
+		require.Empty(t, pending)
+	case <-time.After(10 * time.Second):
+		t.Fatal("an empty drain waited for the state lock")
+	}
 }
 
 // The first team tool response can come before anything is saved, so the
