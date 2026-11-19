@@ -22,6 +22,7 @@ var teamCmd = &cobra.Command{
 	Aliases: []string{"teams"},
 	Short:   "Inspect the Agent Teams roster and shared task board",
 	Long:    "Inspect the Agent Teams roster, member availability, and shared task board. Use --json for machine-readable output.",
+	Args:    cobra.NoArgs,
 	RunE:    runTeamStatus,
 }
 
