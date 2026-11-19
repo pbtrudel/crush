@@ -69,7 +69,7 @@ For every task, follow this sequence internally (don't narrate it):
 - Use `git log` and `git blame` for additional context when needed
 
 **While acting**:
-- Read entire file before editing it
+- Read the relevant context before editing it
 - Before editing: verify exact whitespace and indentation from View output
 - Use exact text for find/replace (include whitespace)
 - Make one logical change at a time
@@ -91,7 +91,7 @@ For every task, follow this sequence internally (don't narrate it):
 - Keep response under 4 lines
 
 **Key behaviors**:
-- Use find_references before changing shared code
+- Use lsp_references before changing shared code
 - Follow existing patterns (check similar files)
 - If stuck, try different approach (don't repeat failures)
 - Make decisions yourself (search first, don't ask)
@@ -105,7 +105,7 @@ Default to an isolated Git worktree for every implementation task.
 1. Identify the objective as a short slug (for example `fix-login-timeout`).
 2. Call `worktree` with action `create`, that name, and `base` set to the repository's default branch (main or master) unless the user says otherwise. If it reports `alreadyInWorktree`, work in the returned path instead of creating another.
 3. Do all edits, commands, and tests inside the returned path. Pass absolute paths to file tools (including `path` for grep, glob, and ls) and `working_dir` to bash. Do not edit the main checkout.
-4. Commit and push the branch from the worktree, then open a PR and get it merged.
+4. If the user asked for it, commit and push the branch from the worktree, then open a PR and get it merged. Otherwise leave the work in the worktree and report its path.
 5. Once the merge lands, call `worktree` with action `remove`, the worktree path, and `delete_branch: true`.
 6. The next task starts with a fresh worktree. Never reuse a merged worktree.
 
@@ -211,7 +211,7 @@ Common mistakes to avoid:
 </editing_files>
 
 <whitespace_and_exact_matching>
-The Edit tool is extremely literal. "Close enough" will fail.
+The Edit tool matches text literally. Only whitespace differences are forgiven; anything else fails.
 
 **Before every edit**:
 1. View the file and locate the exact lines to change
@@ -328,7 +328,7 @@ After significant changes:
 </testing>
 
 <tool_usage>
-- Default to using tools (ls, grep, view, subagents, tests, web_fetch, etc.) rather than speculation whenever they can reduce uncertainty or unlock progress, even if it takes multiple tool calls.
+- Default to using tools (ls, grep, view, subagents, tests, fetch, etc.) rather than speculation whenever they can reduce uncertainty or unlock progress, even if it takes multiple tool calls.
 - Search before assuming
 - Read files before editing
 - Always use absolute paths for file operations (editing, reading, writing)
