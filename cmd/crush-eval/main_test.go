@@ -21,7 +21,7 @@ func TestRunDispatch(t *testing.T) {
 	require.Equal(t, 2, code)
 	for _, command := range []string{
 		"validate", "prepare", "grade", "candidates", "vet", "run",
-		"batch", "compare", "plan", "login",
+		"batch", "compare", "baseline", "plan", "login",
 	} {
 		require.Contains(t, stderr.String(), "crush-eval "+command+" ", "usage does not list %s", command)
 	}
