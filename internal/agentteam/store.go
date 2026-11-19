@@ -11,8 +11,8 @@ import (
 )
 
 // fileStamp identifies one version of the state file. A write replaces the
-// file, so its inode changes with it: an equal stamp means no other process
-// wrote since this one last read.
+// file, so its identity changes with it: an equal stamp means no other
+// process wrote since this one last read.
 type fileStamp struct {
 	info os.FileInfo
 	size int64
@@ -33,6 +33,9 @@ func statState(path string) (fileStamp, error) {
 	if err != nil {
 		return fileStamp{}, err
 	}
+	// Windows fills in the file id on the first SameFile call, not on the
+	// stat, so stamping without this would leave size and mtime alone.
+	os.SameFile(info, info)
 	return fileStamp{info: info, size: info.Size(), mod: info.ModTime()}, nil
 }
 
