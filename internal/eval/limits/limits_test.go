@@ -128,6 +128,22 @@ func TestWriteLimits(t *testing.T) {
 		require.Equal(t, want, tk.Limits)
 	})
 
+	t.Run("keeps a column-0 comment after the block", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "pr-0001.yaml")
+		text := "schema: 1\nid: pr-0001\nlimits:\n  max_steps: 120\n  timeout: 25m\n" +
+			"\n# Frozen from the A/A batch.\nrisks: []\n"
+		require.NoError(t, os.WriteFile(path, []byte(text), 0o644))
+
+		require.NoError(t, WriteLimits(path, want))
+
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t,
+			"schema: 1\nid: pr-0001\nlimits:\n  max_steps: 40\n  timeout: 10m\n"+
+				"\n# Frozen from the A/A batch.\nrisks: []\n", string(got))
+	})
+
 	t.Run("appends a missing block", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "pr-0001.yaml")

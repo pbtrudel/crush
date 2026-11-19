@@ -180,66 +180,11 @@ func Overused(tasks []*task.Task) []PackageUse {
 // WriteVetted replaces the vetted block of the task file at path, leaving the
 // rest of the file byte-for-byte unchanged.
 func WriteVetted(path string, v task.Vetted) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
 	block, err := encodeVetted(v)
 	if err != nil {
 		return err
 	}
-	lines := splitLines(data)
-	start, end := vettedSpan(lines)
-	if start < 0 {
-		start, end = len(lines), len(lines)
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			lines = append(lines, "\n")
-			start, end = len(lines), len(lines)
-		}
-	}
-	var out bytes.Buffer
-	for _, line := range lines[:start] {
-		out.WriteString(line)
-	}
-	out.Write(block)
-	for _, line := range lines[end:] {
-		out.WriteString(line)
-	}
-	return os.WriteFile(path, out.Bytes(), 0o644)
-}
-
-// splitLines splits a file into lines that keep their trailing newline.
-func splitLines(data []byte) []string {
-	lines := strings.SplitAfter(string(data), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-// vettedSpan returns the line range of the file's top-level vetted block, or
-// -1 when the file has none.
-func vettedSpan(lines []string) (start, end int) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(strings.Join(lines, "")), &doc); err != nil {
-		return -1, -1
-	}
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return -1, -1
-	}
-	mapping := doc.Content[0]
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value != "vetted" {
-			continue
-		}
-		start = mapping.Content[i].Line - 1
-		end = start + 1
-		for end < len(lines) && (strings.TrimSpace(lines[end]) == "" || lines[end][0] == ' ' || lines[end][0] == '\t' || lines[end][0] == '#') {
-			end++
-		}
-		return start, end
-	}
-	return -1, -1
+	return task.ReplaceBlock(path, "vetted", block)
 }
 
 // encodeVetted renders the vetted block with the field order of the design.
