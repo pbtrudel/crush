@@ -1,0 +1,51 @@
+schema: 1
+id: pr-0081
+source:
+  repo: pbtrudel/crush
+  pr: 81
+  merge: ac52fdf65d337d9816ba552cb5c97408315fd711
+  base: 8325082029d81f59796cac04103c73bf0e746d49
+kind: interface
+why: |
+  Subagents cannot use MCP servers. A delegated task runs on the task preset, which carried `allowed_mcp: {}` — an empty allow-list that means "no MCP servers" — and a hand-picked read-only tool list. The read-write variant copied the coder's tools but kept that empty MCP list, so no subagent could call any MCP tool the Lead could. The same preset also lacked `fetch`, `download`, `todos`, the job tools, `crush_info`/`crush_logs`, LSP diagnostics/references, and the MCP resource tools.
+
+  The practical effect: a subagent told to use Tavily, Semgrep, ClickUp, or any other configured server could not, and had to hand the work back to the Lead.
+prompt: |
+  Subagents cannot use MCP servers. A delegated task runs on the task preset, which carried `allowed_mcp: {}` — an empty allow-list that means "no MCP servers" — and a hand-picked read-only tool list. The read-write variant copied the coder's tools but kept that empty MCP list, so no subagent could call any MCP tool the Lead could. The same preset also lacked `fetch`, `download`, `todos`, the job tools, `crush_info`/`crush_logs`, LSP diagnostics/references, and the MCP resource tools.
+
+  The practical effect: a subagent told to use Tavily, Semgrep, ClickUp, or any other configured server could not, and had to hand the work back to the Lead.
+interface: |
+  Interface: `internal/config` declares `func resolveSubAgentTools(tools []string) []string`.
+  The task preset's tool list is the coder's list in the coder's order minus the delegation
+  tools (`agent`, `agent_dispatch`, `agent_send`, `agent_status`, `agent_stop`,
+  `agentic_fetch`), the interactive and team tools (`question`, `spawn_teammate`,
+  `send_message`, `list_agents`, `wait_agent`, `interrupt_agent`, `team_task_create`,
+  `team_task_list`, `team_task_get`, `team_task_update`) and the file-editing tools (`edit`,
+  `multiedit`, `write`, `lsp_rename`, `lsp_replace_symbol`, `worktree`).
+  The task preset's MCP allow-list is nil rather than an empty map, so a subagent uses every
+  MCP server its coder uses, and the read-write variant takes the coder's allow-list as it is.
+grade:
+  packages: [./internal/agent, ./internal/config]
+  tests: [TestConfig_setupAgentsWithDisabledTools, TestConfig_setupAgentsWithEveryReadOnlyToolDisabled, TestConfig_setupAgentsWithNoDisabledTools, TestReadToolAliasInDefaultToolLists, TestSubAgentPaletteKeepsMCPTools, TestWriteAgentConfigInheritsCoderMCPs]
+  exclude: []
+  hidden:
+    - {path: internal/agent/agent_preset_test.go, blob: 01e5010cccc3cc4ee533d7ebd6d9042a54211ef3}
+    - {path: internal/agent/subagent_tools_test.go, blob: 3ea80b388b0221b3f9a0f314103ed7f978ef3639}
+    - {path: internal/config/load_test.go, blob: a31e75dfc7b18e7d963a401b6b37aeff9a4079c0}
+    - {path: internal/config/read_alias_test.go, blob: 6acf18227bc3cd6390ab8800e8f0142be52b7f18}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'hidden choice: the exact task preset tool list and its order, and that the MCP allow-list is nil instead of an empty map'
+  - the hidden-choice paragraph states most of the excluded tool set, which is the design of the change
+  - the touched tests are 6, not the 7 of the design table
+  - TestDispatchModelCatalog in ./internal/agent flaked once during candidate classification; it passed on rerun and in every vet repetition
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 17, packages: 13}

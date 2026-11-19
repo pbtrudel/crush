@@ -1,0 +1,44 @@
+schema: 1
+id: pr-0035
+source:
+  repo: pbtrudel/crush
+  pr: 35
+  merge: 49d4056eea39d71b4fc6ef09494b3b988750ad99
+  base: 977cd9c3cebad047f9f46293b88ea304fdf39a40
+kind: plain
+why: |
+  The RC status footer showed a growing "Done in X" after every turn: the
+  terminal durations were recomputed from the current time on each tick, so a
+  finished turn's duration kept counting up while the thread sat idle (a short
+  turn displayed as "Done in 43m 33s"), and the footer kept re-editing itself
+  every tick.
+prompt: |
+  The RC status footer showed a growing "Done in X" after every turn: the
+  terminal durations were recomputed from the current time on each tick, so a
+  finished turn's duration kept counting up while the thread sat idle (a short
+  turn displayed as "Done in 43m 33s"), and the footer kept re-editing itself
+  every tick.
+
+  The frozen duration is the run's own elapsed time from its start to its
+  terminal state, and it freezes the same way for completed, cancelled and
+  failed runs (`Done in 10s`, `Cancelled after 10s`, `Failed after 10s`).
+grade:
+  packages: [./internal/discord]
+  tests: [TestFooterTerminalElapsedFreezesAtCompletion, TestBridgeFooterMetrics]
+  exclude: []
+  hidden:
+    - {path: internal/discord/bridge_test.go, blob: 964fedb8c679dfef77c066c6dc7186384e93c280}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the frozen duration covers completed, cancelled and failed runs and is measured from the run's start to its terminal state."
+  - "asserts rendered footer text, so a harmless formatting choice fails the task."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 11, packages: 4}

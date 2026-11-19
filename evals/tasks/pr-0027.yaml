@@ -1,0 +1,52 @@
+schema: 1
+id: pr-0027
+source:
+  repo: pbtrudel/crush
+  pr: 27
+  merge: 1533107dce145b82753aeea18448f1f0a40dc885
+  base: 720d1590897b8e3f7f16c8c933360738363fdb30
+kind: interface
+why: |
+  OpenAI-compatible providers report prompt-cache hits in different usage shapes, and crush could only read one of them. fantasy's default extraction understands `prompt_tokens_details.cached_tokens` (OpenAI and gateways that normalize to it), but DeepSeek reports `prompt_cache_hit_tokens` and Kimi/Moonshot report a top-level `cached_tokens`. On those providers the cache reads stayed folded into the input tokens, so:
+
+  - cost accounting billed cached reads at the full input price (for DeepSeek v4 Flash's cached portion, a ~50x overcharge), and
+  - the sidebar's cached-share badge never appeared (it is hidden at 0), making the cache hit rate on the most-used models invisible.
+
+  This matters most for DeepSeek and Z.AI users, whose prompt caching is automatic: there is nothing request-side left to tune, so surfacing the numbers is the only remaining lever.
+prompt: |
+  OpenAI-compatible providers report prompt-cache hits in different usage shapes, and crush could only read one of them. fantasy's default extraction understands `prompt_tokens_details.cached_tokens` (OpenAI and gateways that normalize to it), but DeepSeek reports `prompt_cache_hit_tokens` and Kimi/Moonshot report a top-level `cached_tokens`. On those providers the cache reads stayed folded into the input tokens, so:
+
+  - cost accounting billed cached reads at the full input price (for DeepSeek v4 Flash's cached portion, a ~50x overcharge), and
+  - the sidebar's cached-share badge never appeared (it is hidden at 0), making the cache hit rate on the most-used models invisible.
+
+  This matters most for DeepSeek and Z.AI users, whose prompt caching is automatic: there is nothing request-side left to tune, so surfacing the numbers is the only remaining lever.
+interface: |
+  Interface: `internal/agent` declares `func cacheAwareUsage(response openaisdk.ChatCompletion) (fantasy.Usage, fantasy.ProviderOptionsData)`
+  and `func cacheAwareStreamUsage(chunk openaisdk.ChatCompletionChunk, ctx map[string]any, metadata fantasy.ProviderMetadata) (fantasy.Usage, fantasy.ProviderMetadata)`,
+  where `openaisdk` is `github.com/charmbracelet/openai-go` and the fantasy types come from
+  `charm.land/fantasy`.
+  The adopted cache-read count is subtracted from the uncached input, so that input plus
+  cache_read equals the provider's prompt_tokens, and the standard field wins whenever it is
+  present, even as an explicit 0.
+grade:
+  packages: [./internal/agent]
+  tests: [TestCacheAwareUsageDialects]
+  exclude: [TestCoderAgent, TestMistralTransportRewritesRequestBody]
+  hidden:
+    - {path: internal/agent/cache_usage_test.go, blob: 1ae598dfbc685b5933908b66501e7501b180e734}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'hidden choice: the adopted count is subtracted from the input tokens and the standard field wins even at an explicit 0'
+  - 'excluded by name: TestCoderAgent fails at the merge commit (and at the base) because its VCR cassettes no longer match the tools'' descriptions; it belongs to no part of this change and the package pass skips it'
+  - package ./internal/agent is the slowest graded package and is shared with other tasks (design rule 9 handled suite-wide)
+  - 'excluded by name: TestMistralTransportRewritesRequestBody flaked in one of five merge reps (its httptest SSE server races under load); it is unrelated to this change and the package pass skips it'
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 12, packages: 7}

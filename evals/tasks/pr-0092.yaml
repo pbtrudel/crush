@@ -1,0 +1,33 @@
+schema: 1
+id: pr-0092
+source:
+  repo: pbtrudel/crush
+  pr: 92
+  merge: 66fd188a7a3a989dababa4b02780ca4222d749a6
+  base: 02e688f36557a3e95a60ca38662559387b650c3e
+kind: plain
+why: |
+  When switching models, `ctrl+r` cycles the reasoning effort before Enter. The picker read those levels from the provider catalog, which can lag behind the configured provider model (for example a model synced with low/high/max while the catalog still says low/medium/high). The picker then offered levels that do not exist and omitted real ones, disagreeing with Select Reasoning Effort, which reads the configured model.
+prompt: |
+  When switching models, `ctrl+r` cycles the reasoning effort before Enter. The picker read those levels from the provider catalog, which can lag behind the configured provider model (for example a model synced with low/high/max while the catalog still says low/medium/high). The picker then offered levels that do not exist and omitted real ones, disagreeing with Select Reasoning Effort, which reads the configured model.
+
+  The picker offers the configured model's effort levels in its configured order and selects its configured default effort level.
+grade:
+  packages: [./internal/ui/dialog]
+  tests: [TestModelsUsesConfiguredReasoningLevels]
+  exclude: []
+  hidden:
+    - {path: internal/ui/dialog/models_test.go, blob: eaa9f57622997a214306983dc6ea33241b7c47db}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the picker offers the configured model's effort levels in its configured order and selects its configured default effort level."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 18, packages: 5}

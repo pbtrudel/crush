@@ -1,0 +1,42 @@
+schema: 1
+id: pr-0065
+source:
+  repo: pbtrudel/crush
+  pr: 65
+  merge: dbbdc820fd6a89c8399fef6e3f591ae729143d5c
+  base: 96ebc39dbfd0e82d10e1b32cc48f962bd022ad73
+kind: interface
+why: |
+  `/goal` and `/loop` worked when typed into the editor, but they were missing from the TUI command dialog, so they could not be discovered or selected from the menu.
+prompt: |
+  `/goal` and `/loop` worked when typed into the editor, but they were missing from the TUI command dialog, so they could not be discovered or selected from the menu.
+interface: |
+  Interface: `internal/ui/dialog` declares the message types `ActionGoal{Objective string}` and
+  `ActionLoop{Task string}`, and the arguments dialog fills `Objective` from an argument with
+  the id `objective` and `Task` from an argument with the id `task`.
+  The system command list carries the two commands with the ids `goal` (shown as "Set Goal")
+  and `loop` (shown as "Start Loop") when a session is open. Submitting the arguments dialog
+  starts the goal or loop exactly as typing `/goal <objective>` or `/loop <task>` in the editor
+  does, with the automation state already recorded when the handler returns.
+grade:
+  packages: [./internal/ui/dialog, ./internal/ui/model]
+  tests: [TestGoalAndLoopCommandsVisibleWithSession, TestGoalCommandFromMenu, TestLoopCommandFromMenu]
+  exclude: []
+  hidden:
+    - {path: internal/ui/dialog/commands_automation_test.go, blob: 24130a416c16c1b2202eb83881eb2304c916245b}
+    - {path: internal/ui/model/automation_test.go, blob: b48cd7ebc4dbd92bdb2bf744b96b39e4c1e08c26}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'hidden choice: the command ids `goal` and `loop` and the argument ids `objective` and `task`'
+  - the commands are graded by id and by the dialog-to-handler flow, not by the rendered rows
+  - "correlated: pr-0011, pr-0065, pr-0094"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 16, packages: 6}

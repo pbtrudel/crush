@@ -1,0 +1,43 @@
+schema: 1
+id: pr-0022
+source:
+  repo: pbtrudel/crush
+  pr: 22
+  merge: 424ec96b9a8020a35b98e8523b9af5b0cdf541bc
+  base: 50ccadaddef4eaf03481b5b278c07e93e4f7a373
+kind: interface
+why: |
+  `config.Load` and provider resolution log through slog while the config is being loaded — but the log file path is itself derived from that config, so the file logger cannot exist yet. Those early records were discarded with `slog.DiscardHandler` in `Execute`, which hid exactly the diagnostics users and support need when a provider is misconfigured: a failing setup ran with an empty log file.
+prompt: |
+  `config.Load` and provider resolution log through slog while the config is being loaded — but the log file path is itself derived from that config, so the file logger cannot exist yet. Those early records were discarded with `slog.DiscardHandler` in `Execute`, which hid exactly the diagnostics users and support need when a provider is misconfigured: a failing setup ran with an empty log file.
+interface: |
+  Interface: `internal/log` declares `func newBufferHandler() *bufferHandler`, and the
+  returned `*bufferHandler` implements `slog.Handler` with `Enabled(context.Context, slog.Level) bool`,
+  `Handle(context.Context, slog.Record) error`, `WithAttrs([]slog.Attr) slog.Handler` and
+  `WithGroup(string) slog.Handler`; it also has the method `replay(l *slog.Logger)`.
+  A replay writes each buffered record to the target logger's handler only when that handler
+  is enabled for the record's level, empties the buffer so that a second replay writes
+  nothing, and keeps the attributes added before a `WithGroup` call unprefixed while the ones
+  added after it carry the group name, a dot and their key. Handlers derived with `WithAttrs`
+  or `WithGroup` record into the same buffer as the original, and a replay writes the records
+  in the order they were logged.
+grade:
+  packages: [./internal/log]
+  tests: [TestBufferHandlerReplayEmptiesBuffer, TestBufferHandlerReplayRespectsTargetLevel, TestBufferHandlerReplaysRecordsInOrder, TestBufferHandlerWithAttrsAndGroup]
+  exclude: []
+  hidden:
+    - {path: internal/log/buffer_test.go, blob: a86444d95abc29e8927eda0b6c602cfd6a5b6752}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'borderline: the interface names the method set, which points at the shape of the fix (design 1.5)'
+  - 'hidden choice: replay filters by the target handler''s level, drains the buffer once, and renders attributes added after WithGroup as group.key'
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 0, packages: 0}

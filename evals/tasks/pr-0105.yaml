@@ -1,0 +1,36 @@
+schema: 1
+id: pr-0105
+source:
+  repo: pbtrudel/crush
+  pr: 105
+  merge: 6dec801a873c40df0f01258a5672570278fc42a5
+  base: 326d3b408d06b8345adfb31d1dea98caffe9bb75
+kind: interface
+why: |
+  `App.initCoderAgent` replaced `app.AgentCoordinator` without stopping the coordinator it replaced. `agent.NewCoordinator` starts a background-job watcher on the context it is given, so the replaced coordinator kept receiving every background shell completion and could wake a session on its own agent, with a busy state nothing else sees. Every `crush run` hits this: `app.New` builds one coordinator, then `RunNonInteractive` replaces it. The `crush run` session-tree wait (#104) cannot see such a run, and `crush run --json` (next) takes its reason from the session's last run, so a stray run could become that reason. The UI and the server replace coordinators the same way.
+prompt: |
+  `App.initCoderAgent` replaced `app.AgentCoordinator` without stopping the coordinator it replaced. `agent.NewCoordinator` starts a background-job watcher on the context it is given, so the replaced coordinator kept receiving every background shell completion and could wake a session on its own agent, with a busy state nothing else sees. Every `crush run` hits this: `app.New` builds one coordinator, then `RunNonInteractive` replaces it. The `crush run` session-tree wait (#104) cannot see such a run. The UI and the server replace coordinators the same way.
+interface: |
+  Interface: `internal/app` declares `func (app *App) coordinatorContext() context.Context`.
+  The context it returns derives from the app's `globalCtx` field rather than the caller's,
+  and a later call cancels the context a previous call returned.
+grade:
+  packages: [./internal/app]
+  tests: [TestCoordinatorContextEndsWithTheApp, TestCoordinatorContextLivesWithTheApp]
+  exclude: []
+  hidden:
+    - {path: internal/app/app_test.go, blob: 32ada4fb3ff45c7c2b088626f57c9d59b4d18050}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'hidden choice: the context derives from the app''s `globalCtx` field, not the caller''s, and a new call cancels the previous coordinator''s context'
+  - TestStaleWatcherReportsMissingFiles is in the same hidden file but belongs to an unrelated change; it is not graded by name and runs only in the package pass (design, Noticed not changed here)
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 16, packages: 3}

@@ -1,0 +1,37 @@
+schema: 1
+id: pr-0019
+source:
+  repo: pbtrudel/crush
+  pr: 19
+  merge: 5ff2a4bd0a62c39eafeb5a7cea33319cdc862248
+  base: 46cdb8cb1e4be8594e0c3bfaf6116b878e2ed4e8
+kind: interface
+why: |
+  When a provider rejects a request because it exceeds the model's context window, the turn failed outright and the user lost mid-task work. The existing guards only run after each step and between turns, so a single step with several large tool outputs can overshoot between checks; models with an unknown context window (`ContextWindow == 0`, e.g. custom/local providers) had no protection at all and grew until the provider errored.
+prompt: |
+  When a provider rejects a request because it exceeds the model's context window, the turn failed outright and the user lost mid-task work. The existing guards only run after each step and between turns, so a single step with several large tool outputs can overshoot between checks; models with an unknown context window (`ContextWindow == 0`, e.g. custom/local providers) had no protection at all and grew until the provider errored.
+interface: |
+  Interface: `internal/agent` gains `func isContextOverflowError(err error) bool` and `func shouldRecoverFromOverflow(err error, retried bool) bool`. An overflow is recognised only through fantasy's structured provider error, `ProviderError.ContextTooLargeErr` or a non-zero `ProviderError.ContextMaxTokens`, never from a message string such as `prompt is too long`; recovery is allowed on a first attempt and refused once the call was retried or the error is not an overflow.
+grade:
+  packages: [./internal/agent]
+  tests: [TestIsContextOverflowError, TestShouldRecoverFromOverflow]
+  exclude: [TestCoderAgent, TestMistralTransportRewritesRequestBody]
+  hidden:
+    - {path: internal/agent/context_error_test.go, blob: ccf70caa872c2f46e46e2f427a8b8b5fb26bce64}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'reserve: rule 9 (internal/agent), and the interface gives the design away'
+  - "interface is close to the change: naming the classifier and the retry predicate points at the design (design table note)."
+  - "hidden choice: detection goes through fantasy's ProviderError fields only, with no provider-message matching, and recovery is allowed once."
+  - "excluded TestCoderAgent: its recorded VCR cassettes no longer match the prompt text, so the internal/agent package fails at this merge for a reason unrelated to the task; it is skipped by name in the package run."
+  - "excluded TestMistralTransportRewritesRequestBody: its two parallel subtests read each other's captured path through the shared http.DefaultTransport, so it fails intermittently in the internal/agent package run for a reason unrelated to the task; vetting of pr-0021 caught it."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 11, packages: 5}
