@@ -1,0 +1,71 @@
+schema: 1
+id: pr-0085
+source:
+  repo: pbtrudel/crush
+  pr: 85
+  merge: 889bd84084ec61861dfe0d451d0e74738e54a56d
+  base: b11c8ddf07c15d0cae14d424f81fb2f83ba05e95
+kind: plain
+why: |
+  The Claude Agent provider showed every model with a 200K context window and a
+  bare family name ("Opus"), even though the CLI runs those models with a 1M
+  window and calls them "Opus 5.5".
+
+  Both symptoms have the same cause. The `claude` CLI's `initialize` response
+  is the only thing Crush probes, and it carries neither a context window nor a
+  versioned name:
+
+  ```json
+  {"value":"opus","displayName":"Opus","resolvedModel":"claude-opus-5-5",
+   "description":"Opus 5.5 · Best for everyday, complex tasks"}
+  ```
+
+  The version exists only inside the free-text description, which the cached
+  `models.json` does not keep, and the window is not reported at all. So
+  `catalogFrom` filled in neither, and every model fell back to the 200K default
+  while keeping the CLI's short name.
+prompt: |
+  The Claude Agent provider showed every model with a 200K context window and a
+  bare family name ("Opus"), even though the CLI runs those models with a 1M
+  window and calls them "Opus 5.5".
+
+  Both symptoms have the same cause. The `claude` CLI's `initialize` response
+  is the only thing Crush probes, and it carries neither a context window nor a
+  versioned name:
+
+  ```json
+  {"value":"opus","displayName":"Opus","resolvedModel":"claude-opus-5-5",
+   "description":"Opus 5.5 · Best for everyday, complex tasks"}
+  ```
+
+  The version exists only inside the free-text description, which the cached
+  `models.json` does not keep, and the window is not reported at all. So
+  `catalogFrom` filled in neither, and every model fell back to the 200K default
+  while keeping the CLI's short name.
+
+  The window is the CLI-reported one when the CLI reports one, else 1,000,000
+  for a model whose id or resolved name ends in `[1m]`, else the matching
+  Anthropic catalog entry's window, else the existing 200K default; the name is
+  the catalog entry's name with its leading `Claude ` removed (as in "Opus
+  5.5"), else the CLI's name; and prices come from the catalog entry for the
+  resolved name with a `[1m]` suffix or an `anthropic.` prefix stripped, and are
+  empty when no entry matches.
+grade:
+  packages: [./internal/claudeagent]
+  tests: [TestProviderEntryContextWindow, TestProviderEntryName, TestProviderEntryPricing]
+  exclude: []
+  hidden:
+    - {path: internal/claudeagent/catalog_test.go, blob: 10ac7e18b6752a6c8bd595f30a12dabcf998561b}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choices: the window precedence (CLI, then the `[1m]` suffix, then the catalog entry, then 200K), the name source (catalog name without `Claude `, else the CLI name) and the price lookup (`[1m]` suffix and `anthropic.` prefix stripped, empty when no entry matches)."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 1, packages: 0}
