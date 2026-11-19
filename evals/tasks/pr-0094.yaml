@@ -1,0 +1,42 @@
+schema: 1
+id: pr-0094
+source:
+  repo: pbtrudel/crush
+  pr: 94
+  merge: afd83084bd6ba56ebd94c5cc82984c47f4e84a50
+  base: f40751a79ceb8c4b0f09c80dbb4d8162bad319bf
+kind: plain
+why: |
+  `/goal` and `/loop` create a session on demand, but their command-palette
+  entries were only added when a session already existed. Opening the
+  palette at startup therefore showed neither, even though typing
+  `/goal <objective>` in the editor worked.
+prompt: |
+  `/goal` and `/loop` create a session on demand, but their command-palette
+  entries were only added when a session already existed. Opening the
+  palette at startup therefore showed neither, even though typing
+  `/goal <objective>` in the editor worked.
+
+  Both entries stay in the dialog's default command list under their existing ids `goal` and `loop`, with or without a session.
+grade:
+  packages: [./internal/ui/dialog, ./internal/ui/model]
+  tests: [TestGoalAndLoopCommandsAlwaysVisible]
+  exclude: []
+  hidden:
+    - {path: internal/ui/dialog/commands_automation_test.go, blob: 5ae06d9579f194ddcc3d4e65df7a9c031062d572}
+    - {path: internal/ui/model/hosttheme_test.go, blob: 3942e8c6bdcfe408b4905b280f67c12163d80149}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - "hidden choice: the entries keep the ids `goal` and `loop` and live in the dialog's default command list."
+  - "the design table lists TestGoalAndLoopCommandsVisibleWithSession; the pull request renamed it to TestGoalAndLoopCommandsAlwaysVisible, so only the latter exists at the merge and is graded."
+  - "rendered state: the hidden hosttheme_test.go draws the palette to check transparency, and its helper changed here for an unrelated reason; no test of that file is graded by name."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 25, packages: 12}
