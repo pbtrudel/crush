@@ -18,14 +18,10 @@ import (
 )
 
 const rescanUsage = `usage:
-  crush-eval rescan <batch-id>`
+  crush-eval rescan <batch-id>
 
-// The markers a batch ran with hold the suite and repository paths relative
-// to the directory the batch ran in.
-const (
-	rescanSuiteDir = "evals"
-	rescanRepoDir  = "."
-)
+The batch must not be running: a live batch appends result lines that the
+rewrite would drop.`
 
 // rescanCmd re-runs the contamination scan of every run of a batch that kept
 // its session database and rewrites results.jsonl with the new counts. It
@@ -59,7 +55,7 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	tasks, err := task.LoadDir(filepath.Join(rescanSuiteDir, "tasks"))
+	tasks, err := task.LoadDir(filepath.Join(suiteDir, "tasks"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -92,7 +88,7 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		tk, ok := byID[line.Task]
 		if !ok {
 			fmt.Fprintf(stderr, "task %q not found in %s/tasks\n",
-				line.Task, rescanSuiteDir)
+				line.Task, suiteDir)
 			return 1
 		}
 		name := evalrun.DirName(line.Task, line.Variant, line.Route, line.Rep)
@@ -100,7 +96,7 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		switch _, err := os.Stat(db); {
 		case err == nil:
 			contaminatedMatches, err = evalrun.Matches(
-				db, tk, rescanSuiteDir, rescanRepoDir)
+				db, tk, suiteDir, repoDir)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
@@ -155,12 +151,18 @@ func writeResults(path string, lines []result.Result) error {
 		body = append(body, data...)
 		body = append(body, '\n')
 	}
+	// The temporary file takes the mode of the file it replaces, so a
+	// rewrite does not change who may read the batch.
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat results: %w", err)
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "results-*.jsonl")
 	if err != nil {
 		return fmt.Errorf("create the temporary results file: %w", err)
 	}
 	defer os.Remove(tmp.Name()) //nolint:errcheck // Gone after the rename.
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		return fmt.Errorf("set the results file mode: %w", err)
 	}
 	if _, err := tmp.Write(body); err != nil {

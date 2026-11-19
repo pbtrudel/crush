@@ -77,7 +77,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		}
 		routes[name] = rt
 	}
-	tasks, err := task.LoadDir(filepath.Join("evals", "tasks"))
+	tasks, err := task.LoadDir(filepath.Join(suiteDir, "tasks"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -89,17 +89,17 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
 			return 1
 		}
-		if err := tk.ValidateRepo("."); err != nil {
+		if err := tk.ValidateRepo(repoDir); err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", tk.ID, err)
 			return 1
 		}
 	}
-	footer, err := os.ReadFile(filepath.Join("evals", "footer.md"))
+	footer, err := os.ReadFile(filepath.Join(suiteDir, "footer.md"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	suite, err := task.SuiteVersion("evals")
+	suite, err := task.SuiteVersion(suiteDir)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -134,10 +134,10 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		Seed:       *seed,
 		Tasks:      tasks,
 		Routes:     routes,
-		RepoDir:    ".",
+		RepoDir:    repoDir,
 		Home:       h,
 		Suite:      suite,
-		SuiteDir:   "evals",
+		SuiteDir:   suiteDir,
 		Footer:     string(footer),
 		Toolchain:  version,
 		Env:        grade.Env(gradeHome),

@@ -18,6 +18,14 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
+// The suite and the repository a batch runs with, relative to the directory
+// crush-eval runs in. rescan rebuilds its contamination markers from the same
+// paths.
+const (
+	suiteDir = "evals"
+	repoDir  = "."
+)
+
 const usage = `usage:
   crush-eval validate [dir]
   crush-eval prepare <task-id> <dest>

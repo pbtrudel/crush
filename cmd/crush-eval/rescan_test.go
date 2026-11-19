@@ -49,6 +49,7 @@ func TestRescanRewritesContamination(t *testing.T) {
 		`{"schema":1,"batch":"b1","task":"pr-0001","variant":"control@abc","route":"fake","rep":3,"exit":0,"contaminated":true,"contaminated_matches":1,"pass":false}`,
 		`{"schema":1,"batch":"b1","task":"pr-0001","variant":"control@abc","route":"fake","rep":4,"exit":0,"contaminated":true,"contaminated_matches":2,"pass":true}`,
 	})
+	require.NoError(t, os.Chmod(filepath.Join(batchDir, "results.jsonl"), 0o640))
 	writeSessionDB(t, runDB(batchDir, 1), `grep -n "through prefix" pkg.go`)
 	writeSessionDB(t, runDB(batchDir, 2), `cd x && gh pr list`)
 	writeSessionDB(t, runDB(batchDir, 4), `ls pkg`)
@@ -94,7 +95,8 @@ func TestRescanRewritesContamination(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Equal(t, os.FileMode(0o640), info.Mode().Perm(),
+		"the rewrite keeps the results file mode")
 }
 
 // runDB is the session database of one run of the test batch.
