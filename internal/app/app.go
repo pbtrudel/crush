@@ -927,15 +927,17 @@ func eventCoalesceKey(ev pubsub.Event[tea.Msg]) string {
 // exits when ctx is cancelled or the upstream channel closes. It is a free
 // function rather than a method because generic methods are flagged by
 // gopls ("method must have no type parameters"), which broke editor
-// diagnostics for this package.
+// diagnostics for this package. It subscribes before the fan-in
+// goroutine starts, so an event published as soon as it returns is not
+// dropped.
 func subscribe[T any](
 	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
 ) {
+	subCh := subscriber(ctx)
 	app.serviceEventsWG.Go(func() {
-		subCh := subscriber(ctx)
 		for {
 			select {
 			case event, ok := <-subCh:
@@ -962,15 +964,16 @@ func subscribe[T any](
 // this for terminal events that subscribers cannot tolerate losing —
 // notably RunComplete, which is the authoritative end-of-run signal
 // for `crush run`. A lossy fan-in here can drop the only terminal
-// event and hang non-interactive clients waiting on it.
+// event and hang non-interactive clients waiting on it. Like
+// [subscribe], it subscribes before the fan-in goroutine starts.
 func subscribeMustDeliver[T any](
 	app *App,
 	ctx context.Context,
 	name string,
 	subscriber func(context.Context) <-chan pubsub.Event[T],
 ) {
+	subCh := subscriber(ctx)
 	app.serviceEventsWG.Go(func() {
-		subCh := subscriber(ctx)
 		for {
 			select {
 			case event, ok := <-subCh:

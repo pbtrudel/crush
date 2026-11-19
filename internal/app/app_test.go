@@ -32,9 +32,6 @@ func TestSetupSubscriber_NormalFlow(t *testing.T) {
 	app := &App{serviceEventsWG: &wg, events: out}
 	subscribe(app, ctx, "test", src.Subscribe)
 
-	// Yield so the subscriber goroutine can call src.Subscribe before we publish.
-	time.Sleep(10 * time.Millisecond)
-
 	src.Publish(pubsub.CreatedEvent, "hello")
 	src.Publish(pubsub.CreatedEvent, "world")
 
