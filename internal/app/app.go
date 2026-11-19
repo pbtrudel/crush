@@ -386,9 +386,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 
 	var (
-		spinner   *format.Spinner
-		stderrTTY bool
-		progress  bool
+		spinner     *format.Spinner
+		stderrTTY   bool
+		progress    bool
+		interrupted bool
 	)
 
 	// The object is the whole output, and a spinner in raw mode would turn
@@ -414,10 +415,13 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		spinner.Start()
 	}
 
-	// Helper function to stop spinner once.
+	// Helper function to stop spinner once. A spinner the user stopped with
+	// Ctrl-C or Esc saw a key press, not a signal, so its interrupt is
+	// recorded here for the exit path.
 	stopSpinner := func() {
 		if !hideSpinner && spinner != nil {
 			spinner.Stop()
+			interrupted = interrupted || spinner.Interrupted()
 			spinner = nil
 		}
 	}
@@ -516,6 +520,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		select {
 		case result := <-done:
 			stopSpinner()
+			if interrupted {
+				return InterruptedExit(interrupted, nil)
+			}
 			if result.err != nil {
 				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled) {
 					slog.Debug("Non-interactive: agent processing cancelled", "session_id", sess.ID)
@@ -557,7 +564,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 
 		case <-ctx.Done():
 			stopSpinner()
-			return ctx.Err()
+			return InterruptedExit(interrupted, ctx.Err())
 		}
 	}
 }

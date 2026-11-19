@@ -256,7 +256,7 @@ func exitCode(err error, interrupted bool) int {
 	switch {
 	case interrupted:
 		// An interrupt is not a failure worth printing; exit like a shell would.
-		return 130
+		return app.ExitCodeInterrupted
 	case errors.As(err, &exitErr):
 		return exitErr.Code
 	case err != nil:

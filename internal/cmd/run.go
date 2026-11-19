@@ -13,6 +13,7 @@ import (
 
 	"charm.land/log/v2"
 	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/event"
@@ -266,9 +267,10 @@ func runNonInteractive(
 	}
 
 	var (
-		spinner   *format.Spinner
-		stderrTTY bool
-		progress  bool
+		spinner     *format.Spinner
+		stderrTTY   bool
+		progress    bool
+		interrupted bool
 	)
 
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
@@ -287,9 +289,13 @@ func runNonInteractive(
 		spinner.Start()
 	}
 
+	// Helper function to stop spinner once. A spinner the user stopped with
+	// Ctrl-C or Esc saw a key press, not a signal, so its interrupt is
+	// recorded here for the exit path.
 	stopSpinner := func() {
 		if !hideSpinner && spinner != nil {
 			spinner.Stop()
+			interrupted = interrupted || spinner.Interrupted()
 			spinner = nil
 		}
 	}
@@ -374,7 +380,7 @@ func runNonInteractive(
 		case ev, ok := <-events:
 			if !ok {
 				stopSpinner()
-				return nil
+				return app.InterruptedExit(interrupted, nil)
 			}
 
 			// Forward events to herdr if running inside a herdr pane.
@@ -387,12 +393,12 @@ func runNonInteractive(
 				return err
 			}
 			if done {
-				return nil
+				return app.InterruptedExit(interrupted, nil)
 			}
 
 		case <-ctx.Done():
 			stopSpinner()
-			return ctx.Err()
+			return app.InterruptedExit(interrupted, ctx.Err())
 		}
 	}
 }

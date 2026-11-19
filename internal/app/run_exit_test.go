@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,4 +52,24 @@ func TestRunExitCode(t *testing.T) {
 			require.Equal(t, "the run ended with "+string(tt.reason), err.Error())
 		})
 	}
+}
+
+// A run the user stopped from the spinner ends the way a signal would: the
+// spinner holds the terminal in raw mode, so the Ctrl-C it received never
+// reached the process as SIGINT and exitCode cannot know on its own.
+func TestInterruptedExit(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, InterruptedExit(false, nil))
+	require.ErrorIs(t, InterruptedExit(false, context.Canceled), context.Canceled)
+
+	err := InterruptedExit(true, nil)
+	var exitErr *ExitError
+	require.ErrorAs(t, err, &exitErr)
+	require.Equal(t, 130, exitErr.Code)
+
+	// The interrupt wins over the cancel it caused.
+	err = InterruptedExit(true, context.Canceled)
+	require.ErrorAs(t, err, &exitErr)
+	require.Equal(t, 130, exitErr.Code)
 }

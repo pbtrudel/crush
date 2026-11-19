@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,13 +15,15 @@ import (
 
 // Spinner wraps the bubbles spinner for non-interactive mode
 type Spinner struct {
-	done chan struct{}
-	prog *tea.Program
+	done        chan struct{}
+	prog        *tea.Program
+	interrupted atomic.Bool
 }
 
 type model struct {
-	cancel context.CancelFunc
-	anim   *anim.Anim
+	cancel      context.CancelFunc
+	anim        *anim.Anim
+	interrupted *atomic.Bool
 }
 
 type tickMsg struct{}
@@ -38,6 +41,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			// The terminal is in raw mode here, so Ctrl-C is a key and the
+			// process never sees SIGINT. Remember that the user asked to
+			// stop so the caller can end the way a signal would.
+			m.interrupted.Store(true)
 			m.cancel()
 			return m, tea.Quit
 		}
@@ -50,17 +57,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // NewSpinner creates a new spinner with the given message
 func NewSpinner(ctx context.Context, cancel context.CancelFunc, animSettings anim.Settings) *Spinner {
+	s := &Spinner{done: make(chan struct{}, 1)}
 	m := model{
-		anim:   anim.New(animSettings),
-		cancel: cancel,
+		anim:        anim.New(animSettings),
+		cancel:      cancel,
+		interrupted: &s.interrupted,
 	}
 
-	p := tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithContext(ctx))
+	s.prog = tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithContext(ctx))
 
-	return &Spinner{
-		prog: p,
-		done: make(chan struct{}, 1),
-	}
+	return s
 }
 
 // Start begins the spinner animation
@@ -75,6 +81,12 @@ func (s *Spinner) Start() {
 		}
 	}()
 }
+
+// Interrupted reports whether the user stopped the run from the spinner, with
+// Ctrl-C or Esc. The spinner runs with the terminal in raw mode, so those keys
+// arrive as key presses and the process never receives SIGINT; a caller that
+// sees this true should end the run as if it had.
+func (s *Spinner) Interrupted() bool { return s.interrupted.Load() }
 
 // Stop ends the spinner animation
 func (s *Spinner) Stop() {
