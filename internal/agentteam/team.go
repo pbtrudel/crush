@@ -807,7 +807,7 @@ func (s *Service) watch(name string, run Run) {
 	s.enqueueLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 	s.saveLocked()
 	s.notifyLocked()
-	pending := s.drainLocked(name)
+	pending := s.drainLocked(name, member.ParentID)
 	runner := s.runner
 	if len(pending) > 0 {
 		// Marked under the lock that took the messages, so the member never
@@ -1067,7 +1067,7 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	if running || target.Role == RoleLead {
 		return nil
 	}
-	pending := s.DrainInbox(target.Name)
+	pending := s.DrainInbox(target.Name, target.ParentID)
 	if len(pending) == 0 {
 		return nil
 	}
@@ -1082,26 +1082,50 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	return nil
 }
 
-// DrainInbox returns and marks delivered every pending message for name.
-func (s *Service) DrainInbox(name string) []Message {
+// DrainInbox returns and marks delivered every pending message for name that
+// belongs to the caller's team.
+func (s *Service) DrainInbox(name, sessionID string) []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pending := s.drainLocked(name)
+	pending := s.drainLocked(name, sessionID)
 	if len(pending) > 0 {
 		s.saveLocked()
 	}
 	return pending
 }
 
-func (s *Service) drainLocked(name string) []Message {
+// drainLocked takes the messages name may read: those a member of the
+// caller's scope wrote. Callers must hold s.mu.
+func (s *Service) drainLocked(name, sessionID string) []Message {
+	scope := s.scopeLocked(name, sessionID)
+	if len(scope) == 0 {
+		return nil
+	}
 	var pending []Message
 	for i := range s.state.Messages {
-		if s.state.Messages[i].To == name && !s.state.Messages[i].Delivered {
-			s.state.Messages[i].Delivered = true
-			pending = append(pending, s.state.Messages[i])
+		message := &s.state.Messages[i]
+		if !s.inboxPendingLocked(scope, message, name) {
+			continue
 		}
+		message.Delivered = true
+		pending = append(pending, *message)
 	}
 	return pending
+}
+
+// inboxPendingLocked reports whether message is waiting for name in scope.
+// Every Lead session in a workspace answers to "lead", so mail for the Lead
+// counts only when a teammate of this scope wrote it: the sender is what says
+// which session the message belongs to. Callers must hold s.mu.
+func (s *Service) inboxPendingLocked(scope map[string]bool, message *Message, name string) bool {
+	if message.To != name || message.Delivered {
+		return false
+	}
+	if name == leadName {
+		member, ok := s.memberLocked(message.From)
+		return ok && scope[member.ParentID]
+	}
+	return s.memberVisibleLocked(scope, message.From)
 }
 
 // WaitForChange waits for the next roster, message, or task change.
@@ -1236,8 +1260,9 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var tree TreeStatus
+	scope := s.scopeLocked(leadName, sessionID)
 	members := make(map[string]bool)
-	for _, member := range s.visibleMembersLocked(s.scopeLocked(leadName, sessionID)) {
+	for _, member := range s.visibleMembersLocked(scope) {
 		members[member.Name] = true
 		if member.SessionID != "" {
 			tree.Sessions = append(tree.Sessions, member.SessionID)
@@ -1247,7 +1272,8 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 			tree.Active++
 		}
 	}
-	for i, msg := range s.state.Messages {
+	for i := range s.state.Messages {
+		msg := &s.state.Messages[i]
 		switch {
 		case msg.Delivered:
 		// A failed member never drains its inbox on its own, so its
@@ -1257,7 +1283,10 @@ func (s *Service) Tree(sessionID string) TreeStatus {
 		// already wrote still counts below.
 		case members[msg.To] && i >= s.loaded && s.statusLocked(msg.To) != StatusFailed:
 			tree.UnreadByTeammates++
-		case msg.To == leadName && members[msg.From]:
+		// Mail counts only when this tree's Lead may drain it, so
+		// another Lead session reading a report cannot make it vanish
+		// from the count of the Lead that never saw it.
+		case s.inboxPendingLocked(scope, msg, leadName):
 			tree.UnreadByLead++
 		}
 	}

@@ -103,8 +103,9 @@ func (c *coordinator) teamTools(caller string, parentModel func() Model) []fanta
 }
 
 // teamResponse renders a compact JSON result and appends pending peer
-// messages, which is how Team inbox delivery reaches the model.
-func (c *coordinator) teamResponse(caller string, value any) fantasy.ToolResponse {
+// messages, which is how Team inbox delivery reaches the model. The inbox
+// is the caller's own: its session says which team the mail belongs to.
+func (c *coordinator) teamResponse(ctx context.Context, caller string, value any) fantasy.ToolResponse {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error())
@@ -113,7 +114,7 @@ func (c *coordinator) teamResponse(caller string, value any) fantasy.ToolRespons
 	if c.team == nil {
 		return fantasy.NewTextResponse(text)
 	}
-	pending := c.team.DrainInbox(caller)
+	pending := c.team.DrainInbox(caller, tools.GetSessionFromContext(ctx))
 	if len(pending) == 0 {
 		return fantasy.NewTextResponse(text)
 	}
@@ -166,7 +167,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, map[string]any{"member": view}), nil
+			return c.teamResponse(ctx, caller, map[string]any{"member": view}), nil
 		},
 	)
 }
@@ -183,7 +184,7 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, map[string]bool{"sent": true}), nil
+			return c.teamResponse(ctx, caller, map[string]bool{"sent": true}), nil
 		},
 	)
 }
@@ -197,7 +198,7 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, members), nil
+			return c.teamResponse(ctx, caller, members), nil
 		},
 	)
 }
@@ -216,7 +217,7 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 				timeout = time.Duration(ms) * time.Millisecond
 			}
 			if !c.team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
-				return c.teamResponse(caller, map[string]any{
+				return c.teamResponse(ctx, caller, map[string]any{
 					"timedOut": false,
 					"noProgress": map[string]string{
 						"reason":  "no-active-peer",
@@ -229,7 +230,7 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, result), nil
+			return c.teamResponse(ctx, caller, result), nil
 		},
 	)
 }
@@ -243,7 +244,7 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, map[string]string{"previousStatus": string(previous)}), nil
+			return c.teamResponse(ctx, caller, map[string]string{"previousStatus": string(previous)}), nil
 		},
 	)
 }
@@ -262,7 +263,7 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, view), nil
+			return c.teamResponse(ctx, caller, view), nil
 		},
 	)
 }
@@ -294,7 +295,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if list.NextCursor > 0 {
 				result["nextCursor"] = list.NextCursor
 			}
-			return c.teamResponse(caller, result), nil
+			return c.teamResponse(ctx, caller, result), nil
 		},
 	)
 }
@@ -308,7 +309,7 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, view), nil
+			return c.teamResponse(ctx, caller, view), nil
 		},
 	)
 }
@@ -339,7 +340,7 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(caller, view), nil
+			return c.teamResponse(ctx, caller, view), nil
 		},
 	)
 }

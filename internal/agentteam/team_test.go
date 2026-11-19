@@ -241,7 +241,7 @@ func TestSendMessageResumesInactiveTeammate(t *testing.T) {
 	}))
 	require.Equal(t, 2, runner.promptCount())
 
-	pending := service.DrainInbox("lead")
+	pending := service.DrainInbox("lead", "session-a")
 	require.Len(t, pending, 1)
 	require.Contains(t, pending[0].Text, "reviewer finished its turn")
 }
@@ -259,7 +259,7 @@ func TestSendMessageToRunningTeammateQueues(t *testing.T) {
 	}))
 	require.Equal(t, 1, runner.promptCount())
 
-	pending := service.DrainInbox("reviewer")
+	pending := service.DrainInbox("reviewer", "session-a")
 	require.Len(t, pending, 1)
 	require.Equal(t, "lead", pending[0].From)
 	require.Equal(t, "Steer left.", pending[0].Text)
@@ -275,7 +275,7 @@ func TestSendMessageToLeadInbox(t *testing.T) {
 	require.NoError(t, service.SendMessage(context.Background(), "reviewer", "session-a", SendRequest{
 		Target: "lead", Message: "Done.",
 	}))
-	pending := service.DrainInbox("lead")
+	pending := service.DrainInbox("lead", "session-a")
 	require.Len(t, pending, 1)
 	require.Equal(t, "reviewer", pending[0].From)
 }
@@ -514,7 +514,7 @@ func TestWatchSettlesTasksAndReportsToLead(t *testing.T) {
 		return err == nil && got.Status == TaskCompleted
 	}, time.Second, 10*time.Millisecond)
 
-	pending := service.DrainInbox("lead")
+	pending := service.DrainInbox("lead", "session-a")
 	require.Len(t, pending, 1)
 	require.Contains(t, pending[0].Text, "reviewer finished its turn")
 	require.Contains(t, pending[0].Text, task.ID+" completed")
@@ -541,7 +541,7 @@ func TestWatchReleasesTasksOnFailure(t *testing.T) {
 		return err == nil && got.Status == TaskPending && got.OwnerName == ""
 	}, time.Second, 10*time.Millisecond)
 
-	pending := service.DrainInbox("lead")
+	pending := service.DrainInbox("lead", "session-a")
 	require.Len(t, pending, 1)
 	require.Contains(t, pending[0].Text, "reviewer failed")
 	require.Contains(t, pending[0].Text, task.ID+" released")
@@ -802,7 +802,7 @@ func settleTeammate(t *testing.T, service *Service, runner *fakeRunner, output s
 
 	var pending []Message
 	require.Eventually(t, func() bool {
-		pending = service.DrainInbox("lead")
+		pending = service.DrainInbox("lead", "session-a")
 		return len(pending) == 1
 	}, time.Second, 10*time.Millisecond)
 	return pending[0].Text

@@ -44,7 +44,7 @@ func TestTreeReportsTheSessionsTeam(t *testing.T) {
 	require.Equal(t, 1, service.Tree("session-b").Active)
 	require.Zero(t, service.Tree("session-b").UnreadByLead)
 
-	service.DrainInbox("lead")
+	service.DrainInbox("lead", "session-a")
 	require.Zero(t, service.Tree("session-a").UnreadByLead)
 
 	runner.finish("other")
