@@ -25,7 +25,9 @@ const (
 // Limit is the frozen limits of one task and the runs they came from.
 type Limit struct {
 	Task string
-	// Runs and Passes count the task's runs on the route.
+	// Runs counts every run of the task on the route, contaminated and
+	// failed ones included. Passes counts the clean passes only, the runs
+	// the limits come from.
 	Runs   int
 	Passes int
 	// Steps and Duration are the 90th percentile of the passing runs, and
@@ -98,11 +100,7 @@ func Compute(tasks []*task.Task, runs []result.Result, route string) ([]Limit, e
 func nearestRank(values []int64) int64 {
 	sorted := slices.Clone(values)
 	slices.Sort(sorted)
-	rank := (9*len(sorted) + 9) / 10
-	if rank < 1 {
-		rank = 1
-	}
-	return sorted[rank-1]
+	return sorted[(9*len(sorted)+9)/10-1]
 }
 
 // roundUp rounds a duration up to the next whole minute.

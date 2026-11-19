@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
@@ -26,11 +25,7 @@ const batchUsage = `usage:
 // batchCmd runs an experiment: it builds the variants, grades the references
 // and runs the suite on every route under the route and machine caps.
 func batchCmd(args []string, stdout, stderr io.Writer) int {
-	// The experiment comes first in the usage, but the flag package stops at
-	// the first positional argument, so move it behind the flags.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		args = append(args[1:], args[0])
-	}
+	args = moveFirstArg(args)
 	flags := flag.NewFlagSet("batch", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	id := flags.String("id", "", "batch id; defaults to the experiment's date and name")

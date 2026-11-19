@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -22,11 +21,7 @@ const limitsUsage = `usage:
 // limitsCmd freezes the tasks' limits from the passing runs of one batch, as
 // design 4.4 step 2 asks, and with --write replaces their limits blocks.
 func limitsCmd(args []string, stdout, stderr io.Writer) int {
-	// The batch id comes first in the usage, but the flag package stops at
-	// the first positional argument, so move it behind the flags.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		args = append(args[1:], args[0])
-	}
+	args = moveFirstArg(args)
 	flags := flag.NewFlagSet("limits", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	write := flags.Bool("write", false, "write the limits into evals/tasks")
@@ -59,7 +54,7 @@ func limitsCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	tasks, err := task.LoadDir(filepath.Join("evals", "tasks"))
+	tasks, err := task.LoadDir(filepath.Join(suiteDir, "tasks"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -71,11 +66,17 @@ func limitsCmd(args []string, stdout, stderr io.Writer) int {
 	}
 
 	table := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "task\truns\tpassing\tp90_steps\tp90_duration\tmax_steps\ttimeout\twritten")
+	fmt.Fprintln(table, "task\truns\tclean_passes\tp90_steps\tp90_duration\tmax_steps\ttimeout\twritten")
 	for _, limit := range frozen {
 		written := ""
-		if *write {
-			path := filepath.Join("evals", "tasks", limit.Task+".yaml")
+		switch {
+		case !*write:
+		case limit.Passes == 0:
+			// A task with no clean pass has no measurement to freeze: it
+			// keeps the limits it has.
+			written = "kept"
+		default:
+			path := filepath.Join(suiteDir, "tasks", limit.Task+".yaml")
 			if err := limits.WriteLimits(path, task.Limits{
 				MaxSteps: limit.MaxSteps,
 				Timeout:  task.Duration(limit.Timeout),

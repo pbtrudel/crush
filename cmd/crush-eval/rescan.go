@@ -69,11 +69,10 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 	// directory is cleared when an attempt starts.
 	final := result.Final(lines)
 	var (
-		scanned             int
-		before, after       int
-		matchesBefore       int
-		matchesAfter        int
-		contaminatedMatches int
+		scanned       int
+		before, after int
+		matchesBefore int
+		matchesAfter  int
 	)
 	for i := range lines {
 		line := &lines[i]
@@ -93,17 +92,17 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		}
 		name := evalrun.DirName(line.Task, line.Variant, line.Route, line.Rep)
 		db := filepath.Join(batchDir, "runs", name, "data", "crush.db")
+		matches := 0
 		switch _, err := os.Stat(db); {
 		case err == nil:
-			contaminatedMatches, err = evalrun.Matches(
-				db, tk, suiteDir, repoDir)
+			matches, err = evalrun.Matches(db, tk, suiteDir, repoDir)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
 			scanned++
-			line.Contaminated = contaminatedMatches > 0
-			line.ContaminatedMatches = contaminatedMatches
+			line.Contaminated = matches > 0
+			line.ContaminatedMatches = matches
 		case !errors.Is(err, fs.ErrNotExist):
 			fmt.Fprintln(stderr, err)
 			return 1

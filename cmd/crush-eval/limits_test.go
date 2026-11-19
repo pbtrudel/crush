@@ -24,9 +24,11 @@ func TestLimitsCommandWrites(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
-	for _, id := range []string{"pr-0001", "pr-0002"} {
-		writeTestFile(t, filepath.Join("evals", "tasks", id+".yaml"), taskFileWithLimits(id))
-	}
+	writeTestFile(t, filepath.Join("evals", "tasks", "pr-0001.yaml"), taskFileWithLimits("pr-0001"))
+	// pr-0002 has no clean pass, so --write keeps the limits it already has.
+	kept := strings.Replace(taskFileWithLimits("pr-0002"),
+		"  max_steps: 120\n  timeout: 25m\n", "  max_steps: 50\n  timeout: 15m\n", 1)
+	writeTestFile(t, filepath.Join("evals", "tasks", "pr-0002.yaml"), kept)
 	writeBatch(t, dir, "b1", []string{
 		// pr-0001 passes twice with 10 and 30 steps and 2m and 6m; its 90th
 		// percentile doubles to 60 steps and 12m.
@@ -65,8 +67,13 @@ func TestLimitsCommandWrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 60, tk.Limits.MaxSteps)
 
+	require.Contains(t, stdout.String(), "yes",
+		"a task with a clean pass says its limits were written")
+	require.Contains(t, stdout.String(), "kept",
+		"a task without a clean pass says it kept its limits")
+
 	got, err = os.ReadFile(filepath.Join("evals", "tasks", "pr-0002.yaml"))
 	require.NoError(t, err)
-	require.Equal(t, taskFileWithLimits("pr-0002"), string(got),
-		"a task without a passing run keeps the defaults")
+	require.Equal(t, kept, string(got),
+		"a task without a clean pass keeps the limits it has")
 }

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
@@ -278,6 +279,19 @@ func evalTmpDir() (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// moveFirstArg moves a leading positional argument behind the flags: the flag
+// package stops at the first positional argument, so a command states the
+// batch id or the experiment first in its usage but parses it last. It returns
+// a new slice, so the caller's args stay as they were.
+func moveFirstArg(args []string) []string {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return args
+	}
+	moved := make([]string, 0, len(args))
+	moved = append(moved, args[1:]...)
+	return append(moved, args[0])
 }
 
 // print writes one JSON line and returns 0, or 1 when the value does not

@@ -23,11 +23,7 @@ const baselineUsage = `usage:
 // baselineCmd writes the baseline of design 4.4 for one route of a batch:
 // the passes and valid runs of every task, every variant pooled, counts only.
 func baselineCmd(args []string, stdout, stderr io.Writer) int {
-	// The batch id comes first in the usage, but the flag package stops at
-	// the first positional argument, so move it behind the flags.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		args = append(args[1:], args[0])
-	}
+	args = moveFirstArg(args)
 	flags := flag.NewFlagSet("baseline", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	routeName := flags.String("route", "", "route to count; defaults to the batch's only route")
@@ -91,9 +87,9 @@ func baselineCmd(args []string, stdout, stderr io.Writer) int {
 		Passes int    `json:"passes"`
 		Runs   int    `json:"runs"`
 	}{Batch: record.ID, Route: route, Out: path, Tasks: len(base.Tasks)}
-	for _, task := range base.Tasks {
-		line.Passes += task.Passes
-		line.Runs += task.Runs
+	for _, entry := range base.Tasks {
+		line.Passes += entry.Passes
+		line.Runs += entry.Runs
 	}
 	return print(stdout, stderr, line)
 }
