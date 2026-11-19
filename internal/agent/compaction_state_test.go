@@ -285,3 +285,105 @@ func TestRenderCompactionStateShrinksToTheByteCap(t *testing.T) {
 	require.Empty(t, empty)
 	require.Empty(t, listed)
 }
+
+// The state block lists at most 20 skills, but every skill a compaction
+// summarizes away has to reach the next compaction: the stats carry the
+// list the next block and the next request read, so a capped list there
+// loses the rest for good.
+func TestCompactionStatsCarryEveryDroppedSkill(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	stub := &stubSummaryModel{summaryText: "# Summary"}
+	sa := compactionStateAgent(t, env, stub)
+
+	names := make([]string, 0, 25)
+	for i := range 25 {
+		names = append(names, fmt.Sprintf("skill-%02d", i))
+	}
+	sessionID := compactionStateSeed(t, env, names...)
+
+	ctx := t.Context()
+	require.NoError(t, sa.Summarize(ctx, sessionID, nil, nil))
+	sess, err := env.sessions.Get(ctx, sessionID)
+	require.NoError(t, err)
+	summary, err := env.messages.Get(ctx, sess.SummaryMessageID)
+	require.NoError(t, err)
+	stats, ok := summary.CompactionStatsPart()
+	require.True(t, ok, "the summary must carry the compaction stats")
+	require.Equal(t, names, stats.ReloadSkills,
+		"the stats must carry every skill the compaction summarized away")
+}
+
+// The changed-file check is a locality test, not a prefix test: a file whose
+// name begins with two dots is still inside the working directory.
+func TestRelativePathTestsLocalityNotPrefix(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	sa := compactionStateAgent(t, env, &stubSummaryModel{summaryText: "# Summary"})
+
+	require.Equal(t, "..notes.md", sa.relativePath(filepath.Join(env.workingDir, "..notes.md")),
+		"a name that starts with two dots is not a parent directory")
+
+	outside := filepath.Join(filepath.Dir(env.workingDir), "outside.md")
+	require.Equal(t, outside, sa.relativePath(outside),
+		"a file outside the working directory keeps its absolute path")
+}
+
+// A session that was never compacted replays its messages as stored: no
+// summary label, no state block, nothing added to the request.
+func TestUncompactedSessionReplayIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	stub := &stubSummaryModel{summaryText: "# Summary"}
+	sa := compactionStateAgent(t, env, stub)
+	ctx := t.Context()
+
+	sess, err := env.sessions.Create(ctx, "plain")
+	require.NoError(t, err)
+	for i, turn := range []struct {
+		role message.MessageRole
+		text string
+	}{
+		{message.User, "first"},
+		{message.Assistant, "answer"},
+		{message.User, "second"},
+	} {
+		_, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role:  turn.role,
+			Parts: []message.ContentPart{message.TextContent{Text: turn.text}},
+		})
+		require.NoError(t, err, "message %d", i)
+	}
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	sess, err = env.sessions.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	replayed, err := sa.getSessionMessages(ctx, sess)
+	require.NoError(t, err)
+	require.Len(t, replayed, len(stored))
+	for i := range stored {
+		require.Equal(t, stored[i].Role, replayed[i].Role)
+		require.Equal(t, stored[i].Content().Text, replayed[i].Content().Text,
+			"an uncompacted message must reach the model exactly as stored")
+	}
+
+	// The request carries the same texts in the same order. The todo-list
+	// reminder is a step injection that predates compaction and is not part
+	// of the replayed history.
+	prompt, _ := sa.preparePrompt(replayed, false, false)
+	var texts []string
+	for _, msg := range prompt {
+		for _, part := range msg.Content {
+			text, ok := fantasy.AsMessagePart[fantasy.TextPart](part)
+			if !ok || strings.HasPrefix(text.Text, "<system_reminder>") {
+				continue
+			}
+			texts = append(texts, text.Text)
+		}
+	}
+	require.Equal(t, []string{"first", "answer", "second"}, texts)
+}

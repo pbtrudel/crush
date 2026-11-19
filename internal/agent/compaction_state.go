@@ -46,9 +46,11 @@ type compactionStateLists struct {
 
 // renderCompactionState renders the hidden state message. It applies the
 // per-list caps first and then shrinks the longest list until the whole
-// block fits compactionStateByteLimit. It also returns the skills the block
-// lists, which the compaction stats carry to the next compaction. A session
-// with no state to repeat renders nothing, so no block is stored.
+// block fits compactionStateByteLimit. It also returns every skill it was
+// given, not only the names that fit the cap: the compaction stats carry
+// them to the next compaction, and a skill dropped here would be lost for
+// good. A session with no state to repeat renders nothing, so no block is
+// stored.
 func renderCompactionState(todos []session.Todo, snapshot string, files, skills []string) (string, []string) {
 	lists := compactionStateLists{
 		todos:     compactionStateTodoLines(todos),
@@ -62,13 +64,14 @@ func renderCompactionState(todos []session.Todo, snapshot string, files, skills 
 	if len(lists.todos) == 0 && lists.snapshot == "" && len(lists.files) == 0 && len(lists.skills) == 0 {
 		return "", nil
 	}
+	full := slices.Clone(skills)
 	for {
 		block := lists.render()
 		if len(block) <= compactionStateByteLimit {
-			return block, lists.skills
+			return block, full
 		}
 		if !lists.shrink() {
-			return block, lists.skills
+			return block, full
 		}
 	}
 }
@@ -294,7 +297,9 @@ func (a *sessionAgent) relativePath(path string) string {
 		return path
 	}
 	rel, err := filepath.Rel(workingDir, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || !filepath.IsLocal(rel) {
+		// A locality test, not a prefix test: a name that starts with
+		// two dots is a file in the directory, not a step above it.
 		return path
 	}
 	return rel
