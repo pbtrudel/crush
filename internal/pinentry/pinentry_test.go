@@ -151,6 +151,10 @@ func TestResolveFlavor(t *testing.T) {
 
 func newTestService() *Service {
 	s := NewService()
+	// Tests never consult the terminal they run on: the default check is
+	// replaced by one that accepts every candidate. Tests of the filter
+	// set their own.
+	s.owns = func(int) bool { return true }
 	s.reopenWindow = 300 * time.Millisecond
 	s.touchGrace = 800 * time.Millisecond
 	s.touchMax = 3 * time.Minute
@@ -411,6 +415,18 @@ func TestServiceSleepsWithoutTrackedCommands(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for pinentry event")
 	}
+}
+
+func TestLsofMentions(t *testing.T) {
+	t.Parallel()
+
+	// lsof -Fn prints one line per descriptor: f<fd> then n<path>.
+	out := []byte("p4242\nf5\nn/dev/ttys001\nf6\nn/dev/ttys001\n")
+
+	require.True(t, lsofMentions(out, "/dev/ttys001"))
+	require.False(t, lsofMentions(out, "/dev/ttys002"))
+	require.False(t, lsofMentions(nil, "/dev/ttys001"), "no output is no match")
+	require.False(t, lsofMentions([]byte("p4242\n"), "/dev/ttys001"), "a pid header without descriptors is no match")
 }
 
 // ownProc describes a process this test process started, as a process

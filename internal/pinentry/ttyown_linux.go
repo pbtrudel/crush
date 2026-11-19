@@ -3,7 +3,9 @@
 package pinentry
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,20 +21,27 @@ type terminalRef struct {
 	rdev uint64
 }
 
-// ownTerminalRef identifies the terminal Crush runs on from stdin. A stdin
-// that is not a terminal (a pipe, /dev/null) leaves the terminal
-// unidentified.
+// ownTerminalRef identifies the terminal Crush runs on. It tries the
+// standard streams in turn, because only one of them needs to be a
+// terminal. A pinentry that opens /dev/tty instead of the device the agent
+// named would not match, but an agent-spawned pinentry has no controlling
+// terminal and opens the pts by name, so the device is what to compare.
 func ownTerminalRef() (terminalRef, bool) {
-	// /dev/null is a character device too, so the device type of the
+	// /dev/null is a character device too, so the device type of a
 	// descriptor is not enough: only the terminal ioctls prove it.
-	if _, err := unix.IoctlGetTermios(0, unix.TCGETS); err != nil {
-		return terminalRef{}, false
+	for _, fd := range []int{0, 1, 2} {
+		if _, err := unix.IoctlGetTermios(fd, unix.TCGETS); err != nil {
+			continue
+		}
+		target, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+		if err != nil {
+			continue
+		}
+		if ref, ok := terminalRefAt(target); ok {
+			return ref, true
+		}
 	}
-	target, err := os.Readlink("/proc/self/fd/0")
-	if err != nil {
-		return terminalRef{}, false
-	}
-	return terminalRefAt(target)
+	return terminalRef{}, false
 }
 
 // terminalRefAt describes the terminal device at path.
@@ -54,7 +63,11 @@ func ownsTerminal(pid int, ref terminalRef) bool {
 	dir := fmt.Sprintf("/proc/%d/fd", pid)
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		slog.Debug("Pinentry watcher: cannot read fds", "pid", pid, "error", err)
+		// A pid that exited between the snapshot and this check is not a
+		// failure worth logging.
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Debug("Pinentry watcher: cannot read fds", "pid", pid, "error", err)
+		}
 		return false
 	}
 	for _, e := range ents {
