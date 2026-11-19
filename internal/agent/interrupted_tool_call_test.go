@@ -323,7 +323,7 @@ func TestListSettledMessages_HealthySessionIsUntouched(t *testing.T) {
 func listSettled(t *testing.T, env fakeEnv, sessionID string) []message.Message {
 	t.Helper()
 	agent := NewSessionAgent(SessionAgentOptions{Models: noModels, Sessions: env.sessions, Messages: env.messages})
-	msgs, err := agent.ListSettledMessages(t.Context(), sessionID)
+	msgs, err := agent.ListSettledMessages(t.Context(), sessionID, nil)
 	require.NoError(t, err)
 	return msgs
 }
@@ -354,9 +354,52 @@ func TestListSettledMessages_SkipsBusySessions(t *testing.T) {
 	agent := NewSessionAgent(SessionAgentOptions{Models: noModels, Sessions: env.sessions, Messages: env.messages}).(*sessionAgent)
 	agent.activeRequests.Set(sess.ID, &activeCancel{cancel: func() {}})
 
-	msgs, err := agent.ListSettledMessages(t.Context(), sess.ID)
+	msgs, err := agent.ListSettledMessages(t.Context(), sess.ID, nil)
 	require.NoError(t, err)
 	for _, m := range msgs {
 		require.Empty(t, m.ToolResults(), "a live run's unanswered call must be left alone")
 	}
+}
+
+// A dispatched subagent runs on an agent instance of its own, so a reader
+// holding the main agent sees its session as idle. Reading the child
+// transcript through the coordinator must still leave the live run's calls
+// alone: only the coordinator knows a subagent owns them.
+func TestListSettledMessages_LeavesALiveSubagentAlone(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	child, assistant := killedTurn(t, env, true)
+
+	main := NewSessionAgent(SessionAgentOptions{Models: noModels, Sessions: env.sessions, Messages: env.messages})
+	c := &coordinator{mainAgent: main}
+
+	// Marked busy the same way a dispatched run does, on the coordinator
+	// rather than on the agent instance the reader holds.
+	untrack := c.trackSubSession(child.ID)
+
+	msgs, err := c.ListSettledMessages(ctx, child.ID)
+	require.NoError(t, err)
+	for _, m := range msgs {
+		require.Empty(t, m.ToolResults(), "a live subagent's unanswered call must be left alone")
+	}
+	stored, err := env.messages.List(ctx, child.ID)
+	require.NoError(t, err)
+	for _, m := range stored {
+		require.Empty(t, m.ToolResults(), "reading a live subagent must write no settle row")
+	}
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsFinished(), "a live subagent's turn is not finished by a read")
+
+	// Once the subagent ends, the same read repairs what it left behind.
+	untrack()
+	msgs, err = c.ListSettledMessages(ctx, child.ID)
+	require.NoError(t, err)
+	var settled []message.ToolResult
+	for _, m := range msgs {
+		settled = append(settled, m.ToolResults()...)
+	}
+	require.Len(t, settled, 1, "the orphaned call is settled once the subagent is gone")
+	require.Equal(t, interruptedToolCallResult, settled[0].Content)
 }

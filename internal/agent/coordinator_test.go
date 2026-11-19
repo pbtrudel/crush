@@ -73,7 +73,7 @@ func (m *mockSessionAgent) Summarize(context.Context, string, fantasy.ProviderOp
 	return nil
 }
 func (m *mockSessionAgent) GenerateTitle(context.Context, string, string) {}
-func (m *mockSessionAgent) ListSettledMessages(context.Context, string) ([]message.Message, error) {
+func (m *mockSessionAgent) ListSettledMessages(context.Context, string, func(string) bool) ([]message.Message, error) {
 	return nil, nil
 }
 

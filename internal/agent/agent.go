@@ -266,7 +266,12 @@ type SessionAgent interface {
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
-	ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error)
+	// ListSettledMessages reads a session's transcript, first settling any
+	// tool calls a dead process left without a reply. live reports whether
+	// a run this instance cannot see, such as a dispatched subagent on an
+	// agent of its own, is working on the session; nil means this instance
+	// answers for the session alone.
+	ListSettledMessages(ctx context.Context, sessionID string, live func(sessionID string) bool) ([]message.Message, error)
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)
