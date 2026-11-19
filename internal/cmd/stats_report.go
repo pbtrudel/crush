@@ -65,7 +65,15 @@ Child sessions' steps, teammates' included, count toward the prompt open
 in their top-level session when they were written. Steps before a
 session's first prompt in the window, and child steps whose prompt falls
 before --since, belong to no prompt; a continuation whose stamped step
-falls before --since counts as a prompt.`,
+falls before --since counts as a prompt.
+
+By model and By build count a prompt under the model and build of its
+first step, so a prompt that caused no step is in Turns but in neither,
+and a model used only in child sessions shows no prompts; their median
+steps leave child sessions out. Their tool calls and results come from
+every session, each counted by the step that made the call, and a result
+whose call falls before --since is skipped, so their totals can fall
+short of Tools, Edits and Shell.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsReport,
 }
