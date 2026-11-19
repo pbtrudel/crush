@@ -294,9 +294,31 @@ func migrateCatwalkV2Model(model map[string]any) bool {
 	return changed
 }
 
+// LoadOption changes what Load pays for, for a caller that does not need
+// everything a full load does.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	skipProviderUpdate bool
+}
+
+// WithoutProviderUpdate keeps the provider catalog refresh off. The load
+// still configures providers and selects models, but it reads the cached or
+// embedded catalog instead of fetching Catwalk and Hyper, so it issues no
+// network request and cannot wait on one. Intended for commands that start
+// only to read local state, such as the data directory.
+func WithoutProviderUpdate() LoadOption {
+	return func(o *loadOptions) { o.skipProviderUpdate = true }
+}
+
 // Load loads the configuration from the default paths and returns a
 // ConfigStore that owns both the pure-data Config and all runtime state.
-func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigStore, error) {
+func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigStore, error) {
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	// Migrate deprecated disable_notifications before loading config.
 	migrateDisableNotifications()
 
@@ -374,9 +396,25 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 	// list is fatal: starting up without providers is worse than starting
 	// up with slightly stale ones. Pass a Hyper token refresher so the
 	// catalog fetch can retry on 401.
+	//
+	// A caller that asked for no provider update must not reach the network.
+	// Turn the refresh off for this load, then put the setting back so the
+	// store does not report a preference the user never expressed: the load
+	// then serves the cached or embedded catalog, exactly as an offline load
+	// does today.
+	autoUpdate := cfg.Options.DisableProviderAutoUpdate
+	if o.skipProviderUpdate {
+		cfg.Options.DisableProviderAutoUpdate = true
+	}
 	providers, err := LoadProviders(ctx, cfg, func(ctx context.Context) error {
 		return store.RefreshOAuthToken(ctx, ScopeGlobal, "hyper")
 	})
+	if o.skipProviderUpdate {
+		// The token refresher can publish a replacement config, so restore
+		// the setting on the live one rather than on the pointer the load
+		// started with.
+		store.Config().Options.DisableProviderAutoUpdate = autoUpdate
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
@@ -397,7 +435,7 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 	// The refetches publish a copy-on-write config, so re-read it
 	// afterwards: the mutations below must land on the live config rather
 	// than a snapshot the store has already replaced.
-	if CatwalkUpdated() {
+	if !o.skipProviderUpdate && CatwalkUpdated() {
 		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		store.refetchOpenAIModels(fetchCtx, ScopeGlobal)
 		store.refetchGrokModels(fetchCtx, ScopeGlobal)

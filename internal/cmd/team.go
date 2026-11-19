@@ -63,7 +63,7 @@ func teamStatePath(cmd *cobra.Command) (string, error) {
 		return "", err
 	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
-	cfg, err := config.Init(cmd.Context(), cwd, dataDir, false)
+	cfg, err := config.Init(cmd.Context(), cwd, dataDir, false, config.WithoutProviderUpdate())
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize config: %w", err)
 	}

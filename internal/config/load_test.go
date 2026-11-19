@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -2866,4 +2867,62 @@ func TestMigrateModelSlots(t *testing.T) {
 		require.False(t, changed)
 		require.Equal(t, in, string(out))
 	})
+}
+
+// countCatalogRequests points the Catwalk and Hyper catalogs at a stub that
+// counts the requests it receives, so a test can tell whether a load went to
+// the network for the provider catalog. The stub answers 500: both syncers
+// treat that as a failed refresh and fall back to what they already have.
+func countCatalogRequests(t *testing.T) (catwalkHits, totalHits *atomic.Int64) {
+	t.Helper()
+
+	var catwalkCount, total atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		total.Add(1)
+		if strings.HasPrefix(r.URL.Path, "/v3/") {
+			catwalkCount.Add(1)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("CATWALK_URL", server.URL)
+	t.Setenv("HYPER_URL", server.URL)
+	return &catwalkCount, &total
+}
+
+// TestLoadWithoutProviderUpdateMakesNoRequests pins both halves of the
+// contract: a plain load still refreshes the provider catalog, and a load
+// that asks for no update serves the cached or embedded catalog without
+// reaching the network, while still resolving the data directory.
+func TestLoadWithoutProviderUpdateMakesNoRequests(t *testing.T) {
+	// Not parallel: the provider catalog is memoized per process and the
+	// load reads the environment this test sets.
+	workDir, _ := isolateLoadEnv(t)
+	// The plain half below asserts that the catalog is fetched, which only
+	// happens while auto-update is on.
+	t.Setenv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE", "false")
+	catwalkHits, totalHits := countCatalogRequests(t)
+
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+
+	_, err := Load(t.Context(), workDir, "", false)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), catwalkHits.Load(), "a plain load still fetches the catalog")
+
+	resetProviderState()
+	catwalkHits.Store(0)
+	totalHits.Store(0)
+
+	store, err := Load(t.Context(), workDir, "", false, WithoutProviderUpdate())
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(workDir, ".crush"), store.Config().Options.DataDirectory)
+	// The catalog still resolves, from the embedded copy this time.
+	require.NotEmpty(t, store.knownProviders)
+	require.Zero(t, catwalkHits.Load(), "the option must not fetch the Catwalk catalog")
+	require.Zero(t, totalHits.Load(), "the option must not reach the network at all")
+	// The offline path must not look to the caller like a setting the user
+	// chose.
+	require.False(t, store.Config().Options.DisableProviderAutoUpdate)
 }
