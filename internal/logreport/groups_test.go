@@ -2,6 +2,7 @@ package logreport
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/message"
@@ -30,7 +31,10 @@ func TestByModelAndByBuild(t *testing.T) {
 	result("lead", "e1", "edit", true, `{"error_kind":"text_not_found"}`)
 	result("lead", "b1", "bash", false, `{"exit_code":1}`)
 	result("lead", "g1", "glob", false, "")
-	log.lastStep("lead", newBuild, message.TurnEndCompleted)
+	// An interrupted command carries no exit code and is a foreground
+	// command all the same, and a failure.
+	log.lastStep("lead", newBuild, message.TurnEndCompleted, message.ToolCall{ID: "b6", Name: "bash"})
+	result("lead", "b6", "bash", true, `{"interrupted":true}`)
 	// A child session's calls count for its model, not its prompts.
 	log.step("team-x", newBuild, message.ToolCall{ID: "b2", Name: "bash"})
 	result("team-x", "b2", "bash", false, `{"exit_code":0}`)
@@ -51,27 +55,39 @@ func TestByModelAndByBuild(t *testing.T) {
 	result("lead", "gone", "edit", true, "")
 	prompt("three")
 	log.step("lead", "")
-	log.step("lead", "")
+	// A command moved to the background writes a bare result, and the
+	// step that called it carries no build stamp.
+	log.step("lead", "", message.ToolCall{ID: "b4", Name: "bash"})
 	log.step("lead", oldBuild)
+	// A refusal carries an error kind alone: neither a foreground command
+	// nor a bare result, whatever its build.
+	log.model, log.provider = "model-c", "provider-c"
+	log.step("lead", newBuild, message.ToolCall{ID: "b5", Name: "bash"})
+	result("lead", "b4", "bash", false, `{"background":true,"shell_id":"x"}`)
+	result("lead", "b5", "bash", true, `{"error_kind":"permission_denied"}`)
 
 	r := log.report(Options{})
 	require.Equal(t, []Group{
 		{
 			Model: "model-b", Provider: "provider-b", Prompts: 2, MedianSteps: 1,
-			ToolCalls: 4, ToolErrorRate: 0.5, Edits: 2, EditFailureRate: 0.5,
-			ShellResults: 1,
+			ToolCalls: 5, ToolErrorRate: 0.4, Edits: 2, EditFailureRate: 0.5,
+			ShellResults: 2, ShellUnstamped: 1,
 		},
 		{
 			Model: "model-a", Provider: "provider-a", Prompts: 1, MedianSteps: 2,
-			ToolCalls: 4, ToolErrorRate: 0.25, Edits: 1, EditFailureRate: 1,
-			ShellResults: 2, ShellCommands: 2, ShellFailureRate: 0.5,
+			ToolCalls: 5, ToolErrorRate: 0.4, Edits: 1, EditFailureRate: 1,
+			ShellResults: 3, ShellCommands: 3, ShellFailureRate: 2.0 / 3.0,
+		},
+		{
+			Model: "model-c", Provider: "provider-c",
+			ToolCalls: 1, ToolErrorRate: 1, ShellResults: 1,
 		},
 	}, r.ByModel)
 	require.Equal(t, []Group{
 		{
 			Build: newBuild, Prompts: 1, MedianSteps: 2,
-			ToolCalls: 4, ToolErrorRate: 0.25, Edits: 1, EditFailureRate: 1,
-			ShellResults: 2, ShellCommands: 2, ShellFailureRate: 0.5,
+			ToolCalls: 6, ToolErrorRate: 0.5, Edits: 1, EditFailureRate: 1,
+			ShellResults: 4, ShellCommands: 3, ShellFailureRate: 2.0 / 3.0,
 		},
 		{
 			Build: oldBuild, Prompts: 1, MedianSteps: 1,
@@ -79,14 +95,40 @@ func TestByModelAndByBuild(t *testing.T) {
 			ShellResults: 1,
 		},
 		// The third prompt's first step carries no build.
-		{Build: "unstamped", Prompts: 1, MedianSteps: 3},
+		{Build: "unstamped", Prompts: 1, MedianSteps: 4, ToolCalls: 1, ShellResults: 1, ShellUnstamped: 1},
 	}, r.ByBuild)
+
+	// The shell column reads as the Shell section does: a rate over the
+	// group's foreground commands, "unstamped" for the results of a build
+	// that never stamps, and a dash for a group with neither.
+	var modelText, buildText bytes.Buffer
+	writeGroups(&modelText, "By model", r.ByModel, false)
+	writeGroups(&buildText, "By build", r.ByBuild, true)
+	require.Equal(t, "66.67%", shellColumn(t, modelText.String(), "model-a\tprovider-a"))
+	require.Equal(t, "unstamped", shellColumn(t, modelText.String(), "model-b\tprovider-b"))
+	require.Equal(t, "66.67%", shellColumn(t, buildText.String(), newBuild))
+	require.Equal(t, "-", shellColumn(t, modelText.String(), "model-c\tprovider-c"),
+		"a refusal is neither a command nor an unstamped result")
+	require.Equal(t, "-", shellColumn(t, buildText.String(), oldBuild),
+		"its bare result comes from a build that stamps")
+	require.Equal(t, "unstamped", shellColumn(t, buildText.String(), "unstamped"))
 
 	// The columns name models, providers and builds, never a tool: a
 	// model can invent any tool name.
-	var text bytes.Buffer
-	writeGroups(&text, "By model", r.ByModel, false)
-	writeGroups(&text, "By build", r.ByBuild, true)
-	require.NotContains(t, text.String(), "made_up_tool")
-	require.Contains(t, text.String(), "unstamped", "a shell rate without stamps")
+	require.NotContains(t, modelText.String()+buildText.String(), "made_up_tool")
+}
+
+// shellColumn returns the last field of the rendered row named name.
+func shellColumn(t *testing.T, text, name string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(text, "\n") {
+		rest, ok := strings.CutPrefix(line, "  "+name+"\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Split(rest, "\t")
+		return fields[len(fields)-1]
+	}
+	t.Fatalf("no row named %q in:\n%s", name, text)
+	return ""
 }

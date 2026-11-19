@@ -26,8 +26,11 @@ type Group struct {
 	EditFailureRate float64 `json:"edit_failure_rate"`
 	// ShellCommands are the shell results that carry an exit stamp, out of
 	// ShellResults; the failure rate is over the commands.
-	ShellResults     int     `json:"shell_results"`
-	ShellCommands    int     `json:"shell_commands"`
+	ShellResults  int `json:"shell_results"`
+	ShellCommands int `json:"shell_commands"`
+	// ShellUnstamped are the shell results from builds that did not stamp
+	// exit codes, as in the Shell section.
+	ShellUnstamped   int     `json:"shell_unstamped"`
 	ShellFailureRate float64 `json:"shell_failure_rate"`
 }
 
@@ -41,6 +44,9 @@ type groupCounts struct {
 	calls, errors, edits, editsFailed int
 	shellResults, shellCommands       int
 	shellFailed                       int
+	// bare counts the shell results without either stamp by the build of
+	// their call's step.
+	bare map[string]int
 }
 
 type groupsSection struct {
@@ -95,11 +101,19 @@ func (s *groupsSection) message(p *pass, m *message.Message) {
 					continue
 				}
 				g.shellResults++
-				if interrupted || code.Exists() {
+				switch {
+				case interrupted || code.Exists():
 					g.shellCommands++
 					if interrupted || code.Int() != 0 {
 						g.shellFailed++
 					}
+				// An error kind comes from a build that stamps: neither a
+				// command nor a bare result.
+				case !gjson.Get(tr.Metadata, "error_kind").Exists():
+					if g.bare == nil {
+						g.bare = map[string]int{}
+					}
+					g.bare[c.build]++
 				}
 			}
 		}
@@ -108,7 +122,7 @@ func (s *groupsSection) message(p *pass, m *message.Message) {
 
 func (s *groupsSection) endSession(*pass) {}
 
-func (s *groupsSection) finish(_ *pass, r *Report) {
+func (s *groupsSection) finish(p *pass, r *Report) {
 	for _, seg := range s.turns.segments {
 		if seg.steps == 0 {
 			continue
@@ -119,6 +133,13 @@ func (s *groupsSection) finish(_ *pass, r *Report) {
 	}
 	r.ByModel, r.ByBuild = []Group{}, []Group{}
 	for key, c := range s.groups {
+		// A bare result is unstamped only when its build never stamps.
+		unstamped := 0
+		for build, n := range c.bare {
+			if p.kindName("", build) == "unstamped" {
+				unstamped += n
+			}
+		}
 		g := Group{
 			Model:            key.model,
 			Provider:         key.provider,
@@ -131,6 +152,7 @@ func (s *groupsSection) finish(_ *pass, r *Report) {
 			EditFailureRate:  ratio(c.editsFailed, c.edits),
 			ShellResults:     c.shellResults,
 			ShellCommands:    c.shellCommands,
+			ShellUnstamped:   unstamped,
 			ShellFailureRate: ratio(c.shellFailed, c.shellCommands),
 		}
 		if key.build != "" {
@@ -164,7 +186,7 @@ func writeGroups(out io.Writer, title string, groups []Group, byBuild bool) {
 		switch {
 		case g.ShellCommands > 0:
 			shell = percent(g.ShellFailureRate)
-		case g.ShellResults > 0:
+		case g.ShellUnstamped > 0:
 			shell = "unstamped"
 		}
 		fmt.Fprintf(out, "  %s\t%d\t%d\t%s\t%s\t%s\n", name, g.Prompts, g.MedianSteps,
