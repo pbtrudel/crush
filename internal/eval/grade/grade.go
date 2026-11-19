@@ -56,7 +56,7 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir string, env []str
 	}
 	res.ModelTestsRemoved = len(removed)
 
-	if err := overlay(ctx, repoDir, srcDir, tk.Grade.Hidden, tk.Grade.Deleted); err != nil {
+	if err := ApplyHidden(ctx, repoDir, srcDir, tk.Grade.Hidden, tk.Grade.Deleted); err != nil {
 		return res, err
 	}
 
@@ -166,9 +166,9 @@ func removeModelTests(ctx context.Context, srcDir, base string, packages []strin
 	return removed, nil
 }
 
-// overlay writes the hidden files into srcDir and deletes the files the task
-// says the pull request removed. It checks every blob against its hash.
-func overlay(ctx context.Context, repoDir, srcDir string, hidden []task.Hidden, deleted []string) error {
+// ApplyHidden writes the hidden files into srcDir and deletes the files the
+// task says the pull request removed. It checks every blob against its hash.
+func ApplyHidden(ctx context.Context, repoDir, srcDir string, hidden []task.Hidden, deleted []string) error {
 	for _, file := range hidden {
 		data, err := gitBytes(ctx, repoDir, "cat-file", "blob", file.Blob)
 		if err != nil {

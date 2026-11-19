@@ -298,3 +298,39 @@ func TestPrompt(t *testing.T) {
 		require.NotContains(t, got, "never sent")
 	})
 }
+
+func TestValidateVetted(t *testing.T) {
+	t.Parallel()
+
+	filled := strings.Replace(plainFile, "vetted: {}\n", `vetted:
+  date: 2026-11-25
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 1, packages: 2}
+`, 1)
+
+	t.Run("accepts a filled block", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "pr-0007.yaml")
+		writeFile(t, path, filled)
+
+		tk, err := task.Load(path)
+		require.NoError(t, err)
+		require.NoError(t, tk.Validate())
+	})
+
+	t.Run("rejects a malformed block", func(t *testing.T) {
+		t.Parallel()
+		broken := strings.NewReplacer("2026-11-25", "25/11/2026", "base_fails: 5/5", "base_fails: five", "touched: 1", "touched: -1").Replace(filled)
+		path := filepath.Join(t.TempDir(), "pr-0007.yaml")
+		writeFile(t, path, broken)
+
+		tk, err := task.Load(path)
+		require.NoError(t, err)
+		err = tk.Validate()
+		require.ErrorContains(t, err, "vetted.date")
+		require.ErrorContains(t, err, "vetted.base_fails")
+		require.ErrorContains(t, err, "vetted.grade_seconds.touched")
+	})
+}

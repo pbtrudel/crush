@@ -43,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return gradeCmd(args[1:], stdout, stderr)
 	case "candidates":
 		return candidatesCmd(args[1:], stdout, stderr)
+	case "vet":
+		return vetCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2

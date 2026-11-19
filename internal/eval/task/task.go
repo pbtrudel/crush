@@ -100,8 +100,8 @@ type Vetted struct {
 
 // GradeSeconds are the timings of a vetting grade run.
 type GradeSeconds struct {
-	Touched  int `yaml:"touched"`
-	Packages int `yaml:"packages"`
+	Touched  int `yaml:"touched" json:"touched"`
+	Packages int `yaml:"packages" json:"packages"`
 }
 
 // Duration is a time.Duration written as a Go duration string in YAML.
@@ -232,6 +232,26 @@ func (t *Task) Validate() error {
 	if t.Limits.Timeout <= 0 {
 		add("limits.timeout must be positive")
 	}
+	if t.Vetted != (Vetted{}) {
+		if _, err := time.Parse("2006-01-02", t.Vetted.Date); err != nil {
+			add("vetted.date %q is not a date", t.Vetted.Date)
+		}
+		if t.Vetted.Go == "" {
+			add("vetted.go is empty")
+		}
+		if !countPattern.MatchString(t.Vetted.BaseFails) {
+			add("vetted.base_fails %q is not n/n", t.Vetted.BaseFails)
+		}
+		if !countPattern.MatchString(t.Vetted.MergePasses) {
+			add("vetted.merge_passes %q is not n/n", t.Vetted.MergePasses)
+		}
+		if t.Vetted.GradeSeconds.Touched < 0 {
+			add("vetted.grade_seconds.touched is negative")
+		}
+		if t.Vetted.GradeSeconds.Packages < 0 {
+			add("vetted.grade_seconds.packages is negative")
+		}
+	}
 
 	return problemsError(problems)
 }
@@ -295,8 +315,9 @@ func Prompt(t *Task, footer string) string {
 }
 
 var (
-	idPattern   = regexp.MustCompile(`^pr-\d{4}$`)
-	blobPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	idPattern    = regexp.MustCompile(`^pr-\d{4}$`)
+	blobPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	countPattern = regexp.MustCompile(`^\d+/\d+$`)
 )
 
 func (t *Task) applyDefaults() {
