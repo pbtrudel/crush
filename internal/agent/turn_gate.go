@@ -170,7 +170,7 @@ func (a *sessionAgent) turnEndMaxContinuations() int {
 func (a *sessionAgent) turnEndGateEvent(call SessionAgentCall, assistant *message.Message, end message.TurnEnd, changed []string) hooks.Event {
 	ev := turnEndEvent(nil, assistant)
 	ev.SessionID = call.SessionID
-	ev.ChangedFiles = changed
+	ev.ChangedFiles = pathEntries(changed)
 	// stop_hook_active is Claude Code's name for "this run continues a turn
 	// that was already checked", so a Stop script can skip its second call.
 	active := call.gateContinued

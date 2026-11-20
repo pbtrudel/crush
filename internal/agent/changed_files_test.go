@@ -487,3 +487,35 @@ func TestGateHookChangedFilesWithoutTheCheck(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, path, strings.TrimSpace(string(data)))
 }
+
+// A rename names a symbol rather than a file, so its marker says the turn
+// changed something to the checks but stays out of the hook's file list.
+func TestGateHookPayloadHasNoRenameMarker(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "files.log")
+	record := &fakeGateCheck{name: "fake"}
+	model := &scriptedModel{script: []scriptedCall{
+		callToolWithInput(tools.RenameToolName, `{"symbol":"Old","new_name":"New"}`, 1_000),
+		answer("done", fantasy.FinishReasonStop, 1_000),
+	}}
+	sa := newCompactionAgent(env, model, nil, false, &recordingTool{name: tools.RenameToolName})
+	sa.gateChecks = []gateCheck{record}
+	sa.hooks = hooks.NewRunner(hooks.Static(map[string][]config.HookConfig{
+		hooks.EventTurnEnd: {{Command: `jq -r '.changed_files[]?' >> ` + logPath}},
+	}), dir, dir)
+	sess, err := env.sessions.Create(t.Context(), "renamed")
+	require.NoError(t, err)
+
+	_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	inputs := record.recorded()
+	require.NotEmpty(t, inputs)
+	require.Equal(t, []string{"(renamed Old)"}, inputs[0].ChangedFiles,
+		"the check still sees that the turn changed something")
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Empty(t, strings.TrimSpace(string(data)), "the hook gets no pseudo-path")
+}

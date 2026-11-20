@@ -11,6 +11,10 @@ import (
 	"github.com/charmbracelet/crush/internal/gitutil"
 )
 
+// renameMarkerPrefix opens the entry a rename contributes in place of a
+// path, such as "(renamed Old)".
+const renameMarkerPrefix = "(renamed "
+
 // changedFileTools are the tools whose input names the file they change. A
 // rename is handled apart: it names a symbol, not a file.
 var changedFileTools = []string{
@@ -42,7 +46,7 @@ func stepChangedFiles(step fantasy.StepResult) []string {
 		}
 		if call.ToolName == tools.RenameToolName {
 			if symbol := toolStringInput(call.Input, "symbol"); symbol != "" {
-				files = append(files, "(renamed "+symbol+")")
+				files = append(files, renameMarkerPrefix+symbol+")")
 			}
 			continue
 		}
@@ -54,6 +58,19 @@ func stepChangedFiles(step fantasy.StepResult) []string {
 		}
 	}
 	return files
+}
+
+// pathEntries returns the entries that are file paths, leaving out a
+// rename's marker, which names a symbol rather than a file.
+func pathEntries(entries []string) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, renameMarkerPrefix) {
+			continue
+		}
+		paths = append(paths, entry)
+	}
+	return paths
 }
 
 // toolStringInput reads one string field of a tool call's JSON input.
