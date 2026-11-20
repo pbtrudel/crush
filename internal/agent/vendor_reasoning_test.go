@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
+	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
@@ -122,4 +124,41 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.Equal(t, "enabled", thinking["type"])
 		require.Equal(t, false, thinking["clear_thinking"])
 	})
+}
+
+// TestGetProviderOptionsDeepSeekUnchanged freezes the options a DeepSeek model
+// on an OpenAI-compatible route built before the vendor rules landed. DeepSeek
+// has no flag, so its request must stay exactly as it was.
+func TestGetProviderOptionsDeepSeekUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// The model is shaped like the commandcode route: openai-compat,
+	// base_url, reasoning on, and no user extra_body. The expected map was
+	// taken from a dump of the code at origin/main, before this branch.
+	model := Model{
+		CatwalkCfg: catwalk.Model{
+			ID: "deepseek-v4.1-flash",
+			Reasoning: catwalk.Reasoning{
+				Thinking:     catwalk.ThinkingToggleable,
+				EffortLevels: catwalk.NewEffortLevels("low", "high", "max"),
+			},
+		},
+		ModelCfg: config.SelectedModel{
+			Provider:        "commandcode",
+			Model:           "deepseek/deepseek-v4.1-flash",
+			ReasoningEffort: "high",
+		},
+	}
+	providerCfg := config.ProviderConfig{
+		ID:      "commandcode",
+		Type:    openaicompat.Name,
+		BaseURL: "https://api.commandcode.ai/provider/v1",
+	}
+
+	require.Equal(t, fantasy.ProviderOptions{
+		openaicompat.Name: &openaicompat.ProviderOptions{
+			ReasoningEffort: ptr(openai.ReasoningEffort("high")),
+			ExtraBody:       map[string]any{},
+		},
+	}, getProviderOptions(model, providerCfg))
 }

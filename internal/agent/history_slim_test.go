@@ -430,6 +430,31 @@ func TestSlimHistory_KeepsVendorReasoning(t *testing.T) {
 	})
 }
 
+// TestSlimHistory_DeepSeekDefaultUnchanged covers the other half of the
+// DeepSeek exemption: history_slim_reasoning is off by default, so with the
+// option off DeepSeek's history is slimmed exactly like any other family's.
+func TestSlimHistory_DeepSeekDefaultUnchanged(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
+	agent.cfg = config.NewTestStore(&config.Config{Options: &config.Options{}})
+
+	deepseek := coldHistory()
+	other := coldHistory()
+	agent.slimHistory(Model{
+		Model:      &stubProviderModel{provider: "other"},
+		CatwalkCfg: catwalk.Model{ID: "deepseek-v4.1-flash"},
+	}, deepseek, 0)
+	agent.slimHistory(Model{
+		Model:      &stubProviderModel{provider: "other"},
+		CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+	}, other, 0)
+
+	require.Equal(t, other, deepseek)
+	require.Equal(t, 1, reasoningParts(deepseek[5]))
+	require.Equal(t, stubText("/w/a.go"), deepseek[2].Parts[0].(message.ToolResult).Content)
+}
+
 // TestSlimHistory_ProviderGuard covers the provider whose transcript lives on
 // its side: a rewritten history is replayed to it as text, which costs more
 // than the tokens slimming saves.
