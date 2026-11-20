@@ -232,9 +232,9 @@ func short(s string, max int) string {
 }
 
 // endpoint resolves where the probe sends its request and the headers Crush
-// sends with it. Nothing here prints a credential, and nothing writes the eval
-// home: Crush guards its data config with a cross-process lock, so a probe
-// that persisted a token could race a live batch's child.
+// sends with it. Nothing here prints a credential, and nothing writes the
+// eval home: Crush guards its data config with a cross-process lock, so a
+// probe that persisted a token could race a live batch's child.
 func endpoint(ctx context.Context, opts Options) (string, http.Header, error) {
 	r := opts.Route
 	base := r.ProviderBaseURL()

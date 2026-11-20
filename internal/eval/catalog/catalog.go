@@ -42,8 +42,8 @@ type Fingerprint struct {
 // Freeze copies the user's cached catalogs from their Crush data dir into the
 // eval home's data dir, where every run's child reads them, and returns the
 // fingerprint of what the eval home now serves. A catalog that is not valid
-// JSON is refused: Crush would fall back to its embedded catalog, which is the
-// failure a freeze exists to prevent.
+// JSON is refused: Crush would fall back to its embedded catalog, which is
+// the failure a freeze exists to prevent.
 func Freeze(h *home.Home, from string) (Fingerprint, error) {
 	providers, err := os.ReadFile(filepath.Join(from, ProvidersFile))
 	if err != nil {
