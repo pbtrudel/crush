@@ -1,14 +1,19 @@
 package run
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/eval/netjail"
+	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/stretchr/testify/require"
 )
 
@@ -97,4 +102,36 @@ func (f *fixture) dirMatches(t *testing.T) []string {
 	matches, err := filepath.Glob(filepath.Join(f.home.BatchDir("b1"), "runs", "*"))
 	require.NoError(t, err)
 	return matches
+}
+
+// TestJailProxyOfCopilotRoute checks the two ends of the jail's allowlist for
+// a Copilot route: the run gets a proxy on the forwarded port, and a
+// connection to the token endpoint on api.github.com is refused and counted,
+// so a model cannot reach the fork's pull requests through it.
+func TestJailProxyOfCopilotRoute(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.route.Provider = route.ProviderCopilot
+	opts := f.options()
+
+	proxy, port, cleanup, err := startProxy(context.Background(), opts)
+	require.NoError(t, err)
+	defer cleanup()
+	defer proxy.Close() //nolint:errcheck // The counts are read first.
+	require.Equal(t, netjail.ProxyPort, port)
+
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", proxy.Path())
+	require.NoError(t, err)
+	defer conn.Close() //nolint:errcheck // Read-only test.
+	_, err = io.WriteString(conn, "CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\n\r\n")
+	require.NoError(t, err)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // Read-only test.
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	denied, hosts := proxy.Denied()
+	require.Equal(t, 1, denied)
+	require.Equal(t, []string{"api.github.com:443"}, hosts)
 }
