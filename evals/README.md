@@ -46,7 +46,12 @@ matches.
 
 `crush-eval login <route>` runs `crush login` with the eval home as
 `CRUSH_GLOBAL_DATA`, so the route's OAuth token lands in
-`~/.local/state/crush-eval/data` and never in your own Crush data directory.
+`~/.local/state/crush-eval/data` and never in your own Crush data directory. A
+jailed Copilot run must also finish inside about 25 minutes: a Copilot token
+lives about 30, and the runner renews one before the run when it would die
+inside the run plus a buffer of a tenth of its lifetime or five minutes,
+whichever is larger. A longer task timeout fails up front with that bound in
+the message, because the jail blocks the endpoint that would renew the token.
 That sign-in also stores a main model, its recent models and UI options in the
 same file. `login` strips those three fields afterwards: a run names its model
 on the command line, and a pinned one the route does not configure fails every

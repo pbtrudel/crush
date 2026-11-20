@@ -587,10 +587,10 @@ func read(t *testing.T, path string) string {
 	return string(data)
 }
 
-// TestRunFailsOnNearExpiryToken checks that a jailed Copilot run whose token
-// would die inside the run stops before the child starts, with a reason that
-// names the way out. The jail blocks the endpoint that renews the token, so
-// starting the run would only waste a checkout and a timeout.
+// TestRunFailsOnNearExpiryToken checks that a jailed Copilot run stops before
+// the child starts when even a fresh token cannot cover the run, with a reason
+// that names the way out. The jail blocks the endpoint that renews the token,
+// so starting the run would only waste a checkout and a timeout.
 func TestRunFailsOnNearExpiryToken(t *testing.T) {
 	t.Parallel()
 
@@ -607,8 +607,9 @@ func TestRunFailsOnNearExpiryToken(t *testing.T) {
 	opts.Timeout = 10 * time.Minute
 	opts.Preflight = func() error { return nil }
 	opts.RefreshToken = func(context.Context, string, string) (*oauth.Token, error) {
-		t.Error("a token Crush still accepts must not be exchanged")
-		return nil, nil
+		// A real Copilot token lives about half an hour, which cannot cover
+		// a ten minute run plus the buffer.
+		return &oauth.Token{AccessToken: "still-short", ExpiresAt: time.Now().Add(13 * time.Minute).Unix()}, nil
 	}
 	_, err := Run(context.Background(), opts)
 	require.ErrorContains(t, err, "copilot")
