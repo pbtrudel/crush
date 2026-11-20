@@ -185,6 +185,7 @@ func reasoningStreamWith(id, cipher, callID string) string {
 		`{"type":"response.output_item.done","output_index":0,"item":`+replayItem(map[string]any{
 			"id": id, "type": "reasoning", "encrypted_content": cipher,
 			"summary": []any{map[string]any{"type": "summary_text", "text": "Thinking"}},
+			"content": []any{map[string]any{"type": "reasoning_text", "text": "Private reasoning"}},
 		})+`}`,
 		`{"type":"response.output_item.added","output_index":1,"item":`+replayItem(map[string]any{
 			"id": "fc_1", "type": "function_call", "call_id": callID, "name": "view", "arguments": "",
@@ -198,6 +199,7 @@ func reasoningStreamWith(id, cipher, callID string) string {
 			replayItem(map[string]any{
 				"id": id, "type": "reasoning", "encrypted_content": cipher,
 				"summary": []any{map[string]any{"type": "summary_text", "text": "Thinking"}},
+				"content": []any{map[string]any{"type": "reasoning_text", "text": "Private reasoning"}},
 			})+`,`+
 			replayItem(map[string]any{
 				"id": "fc_1", "type": "function_call", "call_id": callID, "name": "view", "arguments": `{"path":"a.txt"}`,
@@ -272,6 +274,8 @@ func TestResponsesReplayInsertsReasoningBeforeFunctionCall(t *testing.T) {
 
 	items := replayInputItems(t, bodies[1])
 	require.Equal(t, "rsn_1", items[1]["id"], "the item id travels with the reasoning item")
+	require.NotContains(t, items[1], "content", "content is not an input field of a reasoning item")
+	require.NotEmpty(t, items[1]["summary"], "the summary travels with the reasoning item")
 }
 
 // TestResponsesReplayInsertsReasoningBeforeAssistantText covers a response
@@ -340,6 +344,10 @@ func TestResponsesReplayInsertsOneReasoningItemBeforeSeveralCalls(t *testing.T) 
 		[]string{"user", "reasoning", "function_call", "function_call_output", "function_call", "function_call_output", "function_call", "function_call_output"},
 		replayInputTypes(t, bodies[1]),
 	)
+	reasoning := replayInputItems(t, bodies[1])[1]
+	summary, ok := reasoning["summary"].([]any)
+	require.True(t, ok, "summary is always present")
+	require.Empty(t, summary, "an absent summary is sent as an empty array")
 }
 
 // TestResponsesReplayStandsDownWhenRequestHasReasoning covers the compatibility

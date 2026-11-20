@@ -530,27 +530,26 @@ func followingFollower(rest []int, items map[int]*replayOutputItem) (replayFollo
 }
 
 // reasoningItemJSON trims a closed reasoning item to the fields the input
-// array accepts and pins the closing encrypted content.
+// array accepts and pins the closing encrypted content. The output item's
+// content is dropped: it is not an input field, and the summary is always
+// present because the API expects it.
 func reasoningItemJSON(raw json.RawMessage, encrypted string) json.RawMessage {
 	var original struct {
 		ID      string            `json:"id"`
 		Summary []json.RawMessage `json:"summary"`
-		Content []json.RawMessage `json:"content"`
 	}
 	_ = json.Unmarshal(raw, &original)
 
+	if original.Summary == nil {
+		original.Summary = []json.RawMessage{}
+	}
 	trimmed := map[string]any{
 		"type":              "reasoning",
 		"encrypted_content": encrypted,
+		"summary":           original.Summary,
 	}
 	if original.ID != "" {
 		trimmed["id"] = original.ID
-	}
-	if len(original.Summary) > 0 {
-		trimmed["summary"] = original.Summary
-	}
-	if len(original.Content) > 0 {
-		trimmed["content"] = original.Content
 	}
 	encoded, err := json.Marshal(trimmed)
 	if err != nil {
