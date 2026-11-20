@@ -51,6 +51,18 @@ func (t compactionTrigger) hookTrigger() string {
 	return compactTriggerAuto
 }
 
+// measuresFromNow reports whether the compaction measures the session's
+// trailing idle gap from "now" instead of from the last stored message. The
+// preflight compactions run before the prompt that triggered them is stored,
+// so the gap they have to measure is the one that prompt will close.
+func (t compactionTrigger) measuresFromNow() bool {
+	switch t {
+	case compactionTriggerFusionPreflight, compactionTriggerFusionRoute, compactionTriggerModelSwitch:
+		return true
+	}
+	return false
+}
+
 // turnCompactionTrigger names which of the four causes that share the
 // end-of-turn compaction applied. Overflow recovery also trips the guard
 // flag, so it is tested first. The ceiling case asks autoCompactLimit which

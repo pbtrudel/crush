@@ -2302,14 +2302,10 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// message's own time, the way the turn that filled the cache measured
 	// its idle gap from the prompt it had just stored: measuring from "now"
 	// would stub the whole history of a session that has simply been quiet
-	// for longer than the idle window. A preflight compaction runs before
-	// the prompt that triggered it is stored, so its gap is the one that
-	// prompt will close, and it still measures from "now".
+	// for longer than the idle window. A preflight compaction still measures
+	// from "now", because its gap is the one the coming prompt will close.
 	anchor := a.now().Unix()
-	preflight := trigger == compactionTriggerFusionPreflight ||
-		trigger == compactionTriggerFusionRoute ||
-		trigger == compactionTriggerModelSwitch
-	if !preflight && len(msgs) > 0 && msgs[len(msgs)-1].CreatedAt > 0 {
+	if !trigger.measuresFromNow() && len(msgs) > 0 && msgs[len(msgs)-1].CreatedAt > 0 {
 		anchor = msgs[len(msgs)-1].CreatedAt
 	}
 	a.slimHistory(largeModel, msgs, anchor)
@@ -2329,6 +2325,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// a manual /compact in a fresh process, has to build one.
 	compactionTools, ok := a.stepTools.Get(sessionID)
 	if ok {
+		// The list may name a tool the registry has dropped since. That is
+		// intended: the guard refuses to run any tool, and re-sending the
+		// list the step sent is what keeps the prefix cacheable.
 		compactionTools = slices.Clone(compactionTools)
 	} else {
 		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
