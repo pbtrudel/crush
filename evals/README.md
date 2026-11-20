@@ -55,9 +55,10 @@ the message, because the jail blocks the endpoint that would renew the token.
 That sign-in also stores a main model, its recent models and UI options in the
 same file. `login` strips those three fields afterwards: a run names its model
 on the command line, and a pinned one the route does not configure fails every
-run with "model provider not configured". `run` refuses to start, and says how
-to clear it, if such a selection is still there; it never edits the file,
-because a live batch may be reading it.
+run with "model provider not configured". A jailed child's token refresh can
+write them back mid-batch, so `run` strips them again on the host before every
+run, atomically and with mode 0o600. A data config with none of them is left
+byte for byte alone.
 
 A run's child has provider auto-update off, so Crush serves the model catalog
 its data dir holds. Freeze your own Crush catalog into the eval home once, and

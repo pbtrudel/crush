@@ -35,16 +35,25 @@ const maxResponsesReplayLineBytes = 1 << 20
 // repeatedly and the value cannot change mid-process.
 var responsesReplayEnv = sync.OnceValue(readResponsesReplayEnv)
 
-func readResponsesReplayEnv() bool {
-	enabled, _ := strconv.ParseBool(os.Getenv("CRUSH_RESPONSES_REASONING_REPLAY"))
-	return enabled
+// readResponsesReplayEnv returns the environment override, or nil when the
+// variable is unset or holds no boolean, so the config option decides.
+func readResponsesReplayEnv() *bool {
+	enabled, err := strconv.ParseBool(os.Getenv("CRUSH_RESPONSES_REASONING_REPLAY"))
+	if err != nil {
+		return nil
+	}
+	return &enabled
 }
 
 // responsesReasoningReplayEnabled reports whether the transport is installed.
-// The config option is the normal switch; the environment variable lets a
-// harness turn it on for one run without touching the config file.
+// The caller passes the option, which is on unless explicitly false; the
+// environment variable overrides it in either direction for one run without
+// touching the config file.
 func responsesReasoningReplayEnabled(option bool) bool {
-	return option || responsesReplayEnv()
+	if override := responsesReplayEnv(); override != nil {
+		return *override
+	}
+	return option
 }
 
 // newResponsesReasoningReplayTransport wraps base with a transport that
@@ -731,11 +740,11 @@ func requestWithBody(req *http.Request, body []byte) *http.Request {
 }
 
 // withResponsesReasoningReplay installs the replay transport on a provider
-// client when the option or its environment override asks for it. A provider
-// that had no client of its own gets one, so the transport has somewhere to
-// sit.
+// client unless the option is off or the environment override says so. A
+// provider that had no client of its own gets one, so the transport has
+// somewhere to sit.
 func (c *coordinator) withResponsesReasoningReplay(client *http.Client) *http.Client {
-	if !responsesReasoningReplayEnabled(c.cfg.Config().Options.ResponsesReasoningReplay) {
+	if !responsesReasoningReplayEnabled(c.cfg.Config().Options.GetResponsesReasoningReplay()) {
 		return client
 	}
 	if client == nil {

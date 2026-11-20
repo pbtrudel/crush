@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -535,18 +536,19 @@ func resetResponsesReplayEnv(t *testing.T) {
 	t.Cleanup(func() { responsesReplayEnv = previous })
 }
 
-// TestResponsesReasoningReplayEnabled covers the two gates: the config option
-// and the environment override the eval runner sets per variant.
+// TestResponsesReasoningReplayEnabled covers the two gates: the config
+// option, which is on unless it is explicitly false, and the environment
+// override the eval runner sets per variant.
 func TestResponsesReasoningReplayEnabled(t *testing.T) {
+	t.Run("option on and no override", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
+		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
+		require.True(t, responsesReasoningReplayEnabled(true))
+	})
 	t.Run("option off and no override", func(t *testing.T) {
 		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
 		require.False(t, responsesReasoningReplayEnabled(false))
-	})
-	t.Run("option on", func(t *testing.T) {
-		resetResponsesReplayEnv(t)
-		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
-		require.True(t, responsesReasoningReplayEnabled(true))
 	})
 	t.Run("override one", func(t *testing.T) {
 		resetResponsesReplayEnv(t)
@@ -558,10 +560,44 @@ func TestResponsesReasoningReplayEnabled(t *testing.T) {
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "true")
 		require.True(t, responsesReasoningReplayEnabled(false))
 	})
-	t.Run("override off", func(t *testing.T) {
+	t.Run("override zero beats the option", func(t *testing.T) {
 		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "0")
-		require.False(t, responsesReasoningReplayEnabled(false))
+		require.False(t, responsesReasoningReplayEnabled(true))
+	})
+	t.Run("override false beats the option", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
+		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "false")
+		require.False(t, responsesReasoningReplayEnabled(true))
+	})
+	t.Run("unparseable override follows the option", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
+		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "sometimes")
+		require.True(t, responsesReasoningReplayEnabled(true))
+	})
+}
+
+// TestResponsesReasoningReplayInstalledByDefault covers the wiring: a config
+// that never mentions the option gets the transport, and an explicit false
+// leaves the client untouched.
+func TestResponsesReasoningReplayInstalledByDefault(t *testing.T) {
+	t.Run("no option", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
+		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
+		c := &coordinator{cfg: config.NewTestStore(&config.Config{Options: &config.Options{}})}
+
+		client := c.withResponsesReasoningReplay(nil)
+		require.NotNil(t, client)
+		require.IsType(t, &responsesReasoningReplayTransport{}, client.Transport)
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
+		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
+		c := &coordinator{cfg: config.NewTestStore(&config.Config{
+			Options: &config.Options{ResponsesReasoningReplay: ptr(false)},
+		})}
+
+		require.Nil(t, c.withResponsesReasoningReplay(nil), "an explicit false installs nothing")
 	})
 }
 

@@ -646,8 +646,8 @@
         },
         "responses_reasoning_replay": {
           "type": "boolean",
-          "description": "Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. Off by default; the endpoint must accept them.",
-          "default": false
+          "description": "Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. On by default; set it to false to turn it off.",
+          "default": true
         },
         "compact_tail_tokens": {
           "type": "integer",
