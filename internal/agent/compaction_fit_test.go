@@ -108,11 +108,13 @@ func seedOversizedHistory(t *testing.T, env fakeEnv, sessionID string, resultCha
 // TestSummarize_PrunesOnlyWhenTheRequestCannotFit is the cost guard: pruning
 // rewrites tool results the provider has already cached, so a compaction that
 // fits must send the conversation byte-identical, even when the mid-turn
-// guard is what asked for it.
+// guard is what asked for it. An overflow recovery is the exception: the
+// provider has already rejected that request as too large, so the estimate
+// that says it fits cannot be trusted.
 func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 	const resultChars = 20_000
 
-	run := func(t *testing.T, promptTokens int64) string {
+	run := func(t *testing.T, trigger compactionTrigger, promptTokens int64) string {
 		t.Helper()
 		env := testEnv(t)
 		stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
@@ -128,7 +130,7 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, agent.summarize(
-			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, compactionTriggerGuard, false,
+			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, trigger, false,
 		))
 		require.Len(t, stub.calls, 1)
 		return toolResultTextIn(t, stub.calls[0].Prompt)
@@ -136,7 +138,7 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 
 	t.Run("a guard-triggered request that fits keeps the history intact", func(t *testing.T) {
 		// A reported context that leaves the window with room to spare.
-		text := run(t, 50_000)
+		text := run(t, compactionTriggerGuard, 50_000)
 		require.Len(t, text, resultChars, "an oversized result must reach the summarizer in full")
 		require.False(t, tools.HasSpillNotice(text))
 	})
@@ -144,7 +146,15 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 	t.Run("a guard-triggered request that cannot fit prunes", func(t *testing.T) {
 		// Past the window once the summary budget and the instruction are
 		// reserved.
-		text := run(t, 195_000)
+		text := run(t, compactionTriggerGuard, 195_000)
+		require.True(t, tools.HasSpillNotice(text))
+		require.Less(t, len(text), resultChars)
+	})
+
+	t.Run("an overflow-triggered request that fits still prunes", func(t *testing.T) {
+		// The estimate says the request fits, but the provider already
+		// rejected it as too large.
+		text := run(t, compactionTriggerOverflow, 50_000)
 		require.True(t, tools.HasSpillNotice(text))
 		require.Less(t, len(text), resultChars)
 	})

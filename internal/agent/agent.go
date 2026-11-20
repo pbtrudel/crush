@@ -2380,20 +2380,23 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// Keep the history byte-identical unless the request cannot fit
 	// otherwise, whatever trigger asked for it: the mid-turn guard fires
 	// while the request still fits, and rewriting there would throw away a
-	// warm cache for nothing. Decide from the larger of the reported context
-	// and an estimate of what this request will actually carry. The reported
-	// count is exact for the request it came from but predates anything
-	// stored afterwards, such as a large tool result, and preflight
-	// compaction decided to run from the assembled prompt, not from that
-	// count. Zero reported usage still means the size is unknown, and an
-	// unknown size never fits.
+	// warm cache for nothing. An overflow recovery is the exception, because
+	// the provider has already rejected that request as too large: the size
+	// below is a heuristic built from the last request's count and an
+	// estimate, and neither can be trusted against a rejection. Decide from
+	// the larger of the reported context and an estimate of what this
+	// request will actually carry. The reported count is exact for the
+	// request it came from but predates anything stored afterwards, such as
+	// a large tool result, and preflight compaction decided to run from the
+	// assembled prompt, not from that count. Zero reported usage still means
+	// the size is unknown, and an unknown size never fits.
 	contextTokens := tokensBefore
 	if contextTokens > 0 {
 		if estimate := a.fusionPromptEstimate(largeModel, msgs, systemPrompt, "", compactionTools, nil); estimate > contextTokens {
 			contextTokens = estimate
 		}
 	}
-	if !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
+	if trigger == compactionTriggerOverflow || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
 		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
 			slog.Debug(
 				"Pruned tool results before compaction",
