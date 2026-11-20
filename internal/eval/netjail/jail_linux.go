@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,18 +54,21 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 		attr = &syscall.SysProcAttr{}
 	}
 	attr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS
-	// Its own uid is mapped to root inside the namespace. The kernel gives
-	// capabilities in a new user namespace only to a process whose
-	// namespace uid is 0, and only such a process may bring loopback up.
-	// Files it writes outside are still owned by the host uid, since that
-	// is the only id the mapping allows.
+	// The child keeps the caller's uid and gid, so files and tests see the
+	// identities they would on the host. The helper still needs three
+	// capabilities inside the namespace: net admin to bring loopback up,
+	// sys admin to mount the masks, and setpcap to drop the bound set.
+	// Main clears all of them before it starts the child.
+	uid, gid := os.Getuid(), os.Getgid()
 	attr.UidMappings = append(attr.UidMappings, syscall.SysProcIDMap{
-		ContainerID: 0, HostID: os.Getuid(), Size: 1,
+		ContainerID: uid, HostID: uid, Size: 1,
 	})
 	attr.GidMappings = append(attr.GidMappings, syscall.SysProcIDMap{
-		ContainerID: 0, HostID: os.Getgid(), Size: 1,
+		ContainerID: gid, HostID: gid, Size: 1,
 	})
 	attr.GidMappingsEnableSetgroups = false
+	attr.AmbientCaps = append(attr.AmbientCaps,
+		uintptr(unix.CAP_NET_ADMIN), uintptr(unix.CAP_SYS_ADMIN), uintptr(unix.CAP_SETPCAP))
 	cmd.SysProcAttr = attr
 	return nil
 }
@@ -101,7 +105,38 @@ func Main(args []string) int {
 			return 1
 		}
 	}
+	// Capabilities are per thread, and the child inherits the set of the
+	// thread that forks it, so the drop and the exec have to stay on one
+	// thread.
+	runtime.LockOSThread()
+	if err := dropPrivileges(); err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: drop capabilities: %v\n", err)
+		return 1
+	}
 	return runChild(argv)
+}
+
+// dropPrivileges removes everything the helper needed before it starts the
+// child: the ambient set, the inheritable and bounding sets, and the right
+// to gain privileges through a setuid binary or file capabilities.
+func dropPrivileges() error {
+	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
+		return fmt.Errorf("clear the ambient set: %w", err)
+	}
+	for _, capability := range []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_NET_ADMIN, unix.CAP_SETPCAP} {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, capability, 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d from the bounding set: %w", capability, err)
+		}
+	}
+	// Version 3 has two 32-bit words; the second must be zeroed too.
+	var data [2]unix.CapUserData
+	if err := unix.Capset(&unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}, &data[0]); err != nil {
+		return fmt.Errorf("clear the capability sets: %w", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("set no_new_privs: %w", err)
+	}
+	return nil
 }
 
 // parseArgs reads the jail's own flags up to the -- that starts the child's

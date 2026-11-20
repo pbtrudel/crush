@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // TestMain doubles as the jail's entry point: the integration test re-execs
@@ -67,6 +69,17 @@ func probe() int {
 	fail := func(format string, args ...any) int {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 		return 1
+	}
+
+	// The identity probe reports the uid, gid and capabilities the child
+	// really has after exec.
+	if os.Getenv("NETJAIL_IDENTITY") != "" {
+		status, err := os.ReadFile("/proc/self/status")
+		if err != nil {
+			return fail("read status: %v", err)
+		}
+		fmt.Printf("uid=%d gid=%d %s %s\n", os.Getuid(), os.Getgid(), capLine(status, "CapEff"), capLine(status, "CapAmb"))
+		return 0
 	}
 
 	// A masked directory hides a unix socket the host can still reach.
@@ -216,6 +229,39 @@ func TestJail(t *testing.T) {
 	require.Empty(t, hosts)
 }
 
+// capLine returns the "CapXxx:<hex>" field of /proc/self/status.
+func capLine(status []byte, name string) string {
+	for _, line := range strings.Split(string(status), "\n") {
+		if strings.HasPrefix(line, name+":") {
+			fields := strings.Fields(line)
+			return strings.TrimSuffix(fields[0], ":") + "=" + fields[1]
+		}
+	}
+	return name + "=missing"
+}
+
+// TestJailIdentity checks that the child keeps the host uid and gid and has
+// no capabilities, effective or ambient.
+func TestJailIdentity(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_IDENTITY=1")
+	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), fmt.Sprintf("uid=%d gid=%d", os.Getuid(), os.Getgid()))
+	require.Contains(t, string(out), "CapEff=0000000000000000")
+	require.Contains(t, string(out), "CapAmb=0000000000000000")
+}
+
 // TestJailMasksSockets checks that a directory the jail masks with an empty
 // tmpfs hides a unix socket that the host can still reach.
 func TestJailMasksSockets(t *testing.T) {
@@ -264,11 +310,16 @@ func TestWrapMergesSysProcAttr(t *testing.T) {
 	require.True(t, cmd.SysProcAttr.Setpgid)
 	require.NotZero(t, cmd.SysProcAttr.Cloneflags&syscall.CLONE_NEWUSER)
 	require.NotZero(t, cmd.SysProcAttr.Cloneflags&syscall.CLONE_NEWNET)
+	require.NotZero(t, cmd.SysProcAttr.Cloneflags&syscall.CLONE_NEWNS)
 	require.Len(t, cmd.SysProcAttr.UidMappings, 1)
 	require.Len(t, cmd.SysProcAttr.GidMappings, 1)
+	require.Equal(t, os.Getuid(), cmd.SysProcAttr.UidMappings[0].ContainerID)
 	require.Equal(t, os.Getuid(), cmd.SysProcAttr.UidMappings[0].HostID)
+	require.Equal(t, os.Getgid(), cmd.SysProcAttr.GidMappings[0].ContainerID)
 	require.Equal(t, os.Getgid(), cmd.SysProcAttr.GidMappings[0].HostID)
 	require.False(t, cmd.SysProcAttr.GidMappingsEnableSetgroups)
+	require.Contains(t, cmd.SysProcAttr.AmbientCaps, uintptr(unix.CAP_NET_ADMIN))
+	require.Contains(t, cmd.SysProcAttr.AmbientCaps, uintptr(unix.CAP_SYS_ADMIN))
 }
 
 // TestWrapWithoutProxy checks the grading command line: no socket, no port.
