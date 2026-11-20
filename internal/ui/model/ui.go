@@ -6388,16 +6388,30 @@ func (m *UI) reloadConfig() tea.Cmd {
 }
 
 // setAgentTeams persists the Agent Teams toggle and applies it in place. The
-// coordinator creates or tears down the Team service during the reload.
+// coordinator creates or tears down the Team service during the reload. A
+// workspace config that sets the option outranks the global file, so when the
+// global write does not take effect the toggle is written there too.
 func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.agent_teams", enabled); err != nil {
-			return util.ReportError(err)()
+		msg := m.writeAgentTeams(config.ScopeGlobal, enabled)
+		if msg.err != nil {
+			return msg
 		}
-		ctx, cancel := common.WorkspaceOpContext()
-		defer cancel()
-		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: true}
+		if cfg := m.com.Config(); cfg != nil && cfg.Options.GetAgentTeams() != enabled {
+			msg = m.writeAgentTeams(config.ScopeWorkspace, enabled)
+		}
+		return msg
 	}
+}
+
+// writeAgentTeams writes the option at one scope and reloads the config.
+func (m *UI) writeAgentTeams(scope config.Scope, enabled bool) configReloadedMsg {
+	if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
+		return configReloadedMsg{err: err}
+	}
+	ctx, cancel := common.WorkspaceOpContext()
+	defer cancel()
+	return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: true}
 }
 
 // sendMessage sends a message with the given content and attachments.
