@@ -7,6 +7,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// turnEndVerdict reads an aggregate the way the gate does: the reasons that
+// ask for a continuation, and whether a hook halted the turn.
+func turnEndVerdict(agg AggregateResult) (string, bool) {
+	answers, stop := TurnEndReasons(agg)
+	texts := make([]string, 0, len(answers))
+	for _, answer := range answers {
+		if answer.Halt {
+			continue
+		}
+		texts = append(texts, answer.Reason)
+	}
+	return strings.Join(texts, "\n"), stop
+}
+
 // turnEndRunner runs the given TurnEnd hooks and returns their aggregate.
 func turnEndRunner(t *testing.T, cfgs ...HookConfig) AggregateResult {
 	t.Helper()
@@ -108,7 +122,7 @@ func TestTurnEndVerdict(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			reason, stop := TurnEndVerdict(turnEndRunner(t, tt.hooks...))
+			reason, stop := turnEndVerdict(turnEndRunner(t, tt.hooks...))
 			require.Equal(t, tt.wantStop, stop)
 			require.Equal(t, tt.wantReason, reason)
 		})
@@ -143,7 +157,7 @@ func TestTurnEndReasonsMarkAHalt(t *testing.T) {
 	require.True(t, stop)
 	require.Equal(t, []TurnEndReason{{Hook: "guard", Reason: "hands off", Halt: true}}, reasons)
 
-	reason, stop := TurnEndVerdict(agg)
+	reason, stop := turnEndVerdict(agg)
 	require.True(t, stop)
 	require.Empty(t, reason)
 }
@@ -165,7 +179,7 @@ func TestTurnEndReasonsKeepTheHooksWording(t *testing.T) {
 	t.Parallel()
 
 	agg := turnEndRunner(t, HookConfig{Command: `echo "say what you did" >&2; exit 2`})
-	reason, stop := TurnEndVerdict(agg)
+	reason, stop := turnEndVerdict(agg)
 	require.False(t, stop)
 	require.Equal(t, "say what you did", reason)
 	require.NotContains(t, reason, TurnEndDefaultReason)

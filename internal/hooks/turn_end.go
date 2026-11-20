@@ -57,18 +57,3 @@ func TurnEndReasons(agg AggregateResult) (reasons []TurnEndReason, stop bool) {
 	}
 	return reasons, stop
 }
-
-// TurnEndVerdict reads the aggregated hooks as one answer for an ending
-// turn: the text to continue with, and whether a hook halted the turn. A
-// halt outranks every reason.
-func TurnEndVerdict(agg AggregateResult) (reason string, stop bool) {
-	reasons, stop := TurnEndReasons(agg)
-	texts := make([]string, 0, len(reasons))
-	for _, r := range reasons {
-		if r.Halt {
-			continue
-		}
-		texts = append(texts, r.Reason)
-	}
-	return strings.Join(texts, "\n"), stop
-}

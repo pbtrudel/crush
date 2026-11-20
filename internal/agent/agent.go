@@ -375,9 +375,9 @@ type sessionAgent struct {
 	notify      pubsub.Publisher[notify.Notification]
 	runComplete pubsub.Publisher[notify.RunComplete]
 	hooks       *hooks.Runner
-	// gateChecks are the built-in checks the turn-end gate evaluates, in
-	// the order they are registered. Production fills the list per run;
-	// tests set it directly.
+	// gateChecks are extra built-in checks a test registers ahead of the
+	// completion check; production leaves the list nil. It is a test seam,
+	// like snapshotState.
 	gateChecks []gateCheck
 	// snapshotState reads the working tree for the gate. It is a field so
 	// a test can count the calls; nil means gitutil.Snapshot.
