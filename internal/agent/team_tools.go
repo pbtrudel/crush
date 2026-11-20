@@ -136,6 +136,9 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 		"Create one named, durable teammate. Only the Team Lead may call this tool."+
 			" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve.",
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if c.agentsOff() {
+				return fantasy.NewTextErrorResponse(agentsOffRefusal), nil
+			}
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {
 				mode = agentteam.ContextFresh

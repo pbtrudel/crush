@@ -35,6 +35,11 @@ const (
 	AgentStopToolName     = "agent_stop"
 )
 
+// agentsOffRefusal is the tool error every delegation tool returns when Agent
+// Teams is off at call time. A turn that started while it was on holds a tool
+// list that cannot be rebuilt under it, so the check has to happen per call.
+const agentsOffRefusal = "Agents are turned off; enable Agent Teams to delegate work to another agent"
+
 // stopForShutdown is the stop reason used when Crush itself is quitting.
 // Nobody is left to read a report then, so none is written; the next run on
 // the parent session finds the dispatch unanswered and reports it as
@@ -389,6 +394,9 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 		AgentDispatchToolName,
 		strings.TrimSpace(agentDispatchToolDescription),
 		func(ctx context.Context, params AgentDispatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if c.agentsOff() {
+				return fantasy.NewTextErrorResponse(agentsOffRefusal), nil
+			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
 			}
@@ -681,6 +689,9 @@ func (c *coordinator) agentSendTool(parentModel func() Model) fantasy.AgentTool 
 		AgentSendToolName,
 		agentSendToolDescription,
 		func(ctx context.Context, params AgentSendParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if c.agentsOff() {
+				return fantasy.NewTextErrorResponse(agentsOffRefusal), nil
+			}
 			label := strings.TrimSpace(params.Label)
 			if label == "" {
 				return fantasy.NewTextErrorResponse("label is required"), nil

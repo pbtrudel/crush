@@ -187,6 +187,9 @@ type (
 	// configReloadedMsg is sent when a config reload attempt completes.
 	configReloadedMsg struct {
 		err error
+		// retryWhenIdle asks for the reload to run again once the agent
+		// stops working, instead of reporting the busy refusal.
+		retryWhenIdle bool
 	}
 	// sideAnswerMsg carries the answer to a side question.
 	sideAnswerMsg struct {
@@ -559,6 +562,11 @@ type UI struct {
 	// in-flight fetch captures it at dispatch and its result is discarded
 	// if the generation has moved on (see workspace_cache.go).
 	promptQueueGen uint64
+	// pendingConfigReload records a config reload that was refused because
+	// the agent was busy. It runs on the next idle edge, when the
+	// coordinator can swap tools and prompts again.
+	pendingConfigReload bool
+
 	// agentBusyCache / permModeCache memoize the workspace busy and
 	// permission-mode probes (synchronous HTTP round-trips in client/server
 	// mode). Reads never probe; refreshes happen off-thread (see
@@ -2071,6 +2079,22 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case dialog.ActionMCPAuthStarted:
 		cmds = append(cmds, m.authenticateMCP(msg.Ctx, msg.Name))
+	case configReloadedMsg:
+		// A reload asked to wait for an idle agent is retried on the next
+		// idle edge; the coordinator cannot swap tools and prompts under a
+		// running turn.
+		switch {
+		case msg.err == nil:
+			m.pendingConfigReload = false
+			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
+		case msg.retryWhenIdle && errors.Is(msg.err, app.ErrConfigReloadBusy):
+			m.pendingConfigReload = true
+			cmds = append(cmds, util.ReportInfo("Agent Teams will apply when the current turn ends"))
+		default:
+			cmds = append(cmds, util.ReportError(msg.err))
+		}
+		// crushrc may have changed skill paths and custom commands.
+		cmds = append(cmds, m.loadCustomCommands())
 	case dialog.ActionMCPAuthComplete, dialog.ActionMCPAuthErrored:
 		// The OAuth flow finished server-side: refresh the memoized states
 		// so the sidebar reflects the outcome even when the state_changed
@@ -2870,14 +2894,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionReloadConfig:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.reloadConfig())
-	case configReloadedMsg:
-		if msg.err != nil {
-			cmds = append(cmds, util.ReportError(msg.err))
-		} else {
-			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
-		}
-		// crushrc may have changed skill paths and custom commands.
-		cmds = append(cmds, m.loadCustomCommands())
 	case skillsReloadedMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
@@ -6380,7 +6396,7 @@ func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 		}
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
-		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: true}
 	}
 }
 

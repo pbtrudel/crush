@@ -235,6 +235,10 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 
 	var cmds []tea.Cmd
 	busy := m.isAgentBusy()
+	if prevBusy && !busy && m.pendingConfigReload {
+		m.pendingConfigReload = false
+		cmds = append(cmds, m.reloadConfig())
+	}
 	if busy {
 		// A session reload that raced an unpopulated busy cache (the
 		// zero-value read at boot) froze the animation clock even though
