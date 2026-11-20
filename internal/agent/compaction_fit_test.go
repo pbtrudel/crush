@@ -107,11 +107,12 @@ func seedOversizedHistory(t *testing.T, env fakeEnv, sessionID string, resultCha
 
 // TestSummarize_PrunesOnlyWhenTheRequestCannotFit is the cost guard: pruning
 // rewrites tool results the provider has already cached, so a compaction that
-// fits must send the conversation byte-identical.
+// fits must send the conversation byte-identical, even when the mid-turn
+// guard is what asked for it.
 func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 	const resultChars = 20_000
 
-	run := func(t *testing.T, atLimit bool) string {
+	run := func(t *testing.T, promptTokens int64) string {
 		t.Helper()
 		env := testEnv(t)
 		stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
@@ -122,26 +123,28 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 		require.NoError(t, err)
 		seedOversizedHistory(t, env, sess.ID, resultChars)
 
-		// A reported context that leaves the window with room to spare.
-		sess.PromptTokens = 50_000
+		sess.PromptTokens = promptTokens
 		_, err = env.sessions.Save(ctx, sess)
 		require.NoError(t, err)
 
 		require.NoError(t, agent.summarize(
-			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, compactionTriggerManual, false, atLimit,
+			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, compactionTriggerGuard, false,
 		))
 		require.Len(t, stub.calls, 1)
 		return toolResultTextIn(t, stub.calls[0].Prompt)
 	}
 
-	t.Run("a request that fits keeps the history intact", func(t *testing.T) {
-		text := run(t, false)
+	t.Run("a guard-triggered request that fits keeps the history intact", func(t *testing.T) {
+		// A reported context that leaves the window with room to spare.
+		text := run(t, 50_000)
 		require.Len(t, text, resultChars, "an oversized result must reach the summarizer in full")
 		require.False(t, tools.HasSpillNotice(text))
 	})
 
-	t.Run("a request forced by the window prunes", func(t *testing.T) {
-		text := run(t, true)
+	t.Run("a guard-triggered request that cannot fit prunes", func(t *testing.T) {
+		// Past the window once the summary budget and the instruction are
+		// reserved.
+		text := run(t, 195_000)
 		require.True(t, tools.HasSpillNotice(text))
 		require.Less(t, len(text), resultChars)
 	})
