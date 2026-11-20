@@ -79,6 +79,14 @@ func (w *agentTeamsWorkspace) writeWorkspaceFile(enabled bool) {
 	_ = os.WriteFile(config.WorkspaceConfigPath(w.dataDir), []byte(data), 0o600)
 }
 
+// setGlobal puts the option in the global config file, which is the cached
+// value the UI reads until a reload lands.
+func (w *agentTeamsWorkspace) setGlobal(value bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.global = &value
+}
+
 func (w *agentTeamsWorkspace) AgentIsReady() bool { return true }
 
 func (w *agentTeamsWorkspace) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }

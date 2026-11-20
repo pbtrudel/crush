@@ -112,6 +112,40 @@ func agentRowDescription(agent AgentDescriptor) string {
 	return strings.Join(parts, " · ")
 }
 
+// Filter returns the search text the list is filtered by.
+func (a *Agents) Filter() string {
+	return a.input.Value()
+}
+
+// SelectedSessionID returns the session of the selected row, or the empty
+// string when nothing is selected.
+func (a *Agents) SelectedSessionID() string {
+	item, ok := a.list.SelectedItem().(*CommandItem)
+	if !ok || item == nil {
+		return ""
+	}
+	return item.ID()
+}
+
+// Restore puts back a saved search and selection, for a list rebuilt after a
+// viewer closes. A session the filter no longer lists leaves the first row
+// selected.
+func (a *Agents) Restore(filter, sessionID string) {
+	if filter != "" {
+		a.input.SetValue(filter)
+		a.list.SetFilter(filter)
+	}
+	a.list.ScrollToTop()
+	a.list.SetSelected(0)
+	for idx, item := range a.list.FilteredItems() {
+		if selected, ok := item.(*CommandItem); ok && selected.ID() == sessionID {
+			a.list.SetSelected(idx)
+			a.list.ScrollToSelected()
+			return
+		}
+	}
+}
+
 // ID implements Dialog.
 func (a *Agents) ID() string {
 	return AgentsID

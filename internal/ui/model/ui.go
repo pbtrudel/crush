@@ -259,6 +259,13 @@ type (
 	gitBranchPollMsg struct{}
 )
 
+// agentsListState is what an agent viewer has to put back on the Agents list
+// when it closes.
+type agentsListState struct {
+	filter    string
+	sessionID string
+}
+
 // UI represents the main user interface model.
 type UI struct {
 	com          *common.Common
@@ -446,10 +453,10 @@ type UI struct {
 	// accept an earlier viewer's asynchronous load result.
 	agentViewer           *agentViewer
 	agentViewerGeneration uint64
-	// agentsParent is the Agents list the viewer was opened from. It sits off
-	// the dialog stack while the viewer is up, so the viewer owns the whole
-	// screen and its keys, and goes back on when the viewer closes.
-	agentsParent *dialog.Agents
+	// agentsReturn is what the Agents list the viewer was opened from has to
+	// come back with. The list itself is rebuilt when the viewer closes, so
+	// statuses and models are fresh.
+	agentsReturn *agentsListState
 
 	// onboarding state
 	onboarding struct {
@@ -2732,10 +2739,13 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
 	case dialog.ActionSelectAgent:
-		// The list is kept for Esc to come back to, with the filter and
-		// the selection the user left it with.
+		// Remember the search and the selection, so Esc can put the list
+		// back the way the user left it.
 		if agents, ok := m.dialog.Dialog(dialog.AgentsID).(*dialog.Agents); ok {
-			m.agentsParent = agents
+			m.agentsReturn = &agentsListState{
+				filter:    agents.Filter(),
+				sessionID: agents.SelectedSessionID(),
+			}
 		}
 		m.dialog.CloseDialog(dialog.AgentsID)
 		cmds = append(cmds, m.openAgentViewer(msg.Agent))
@@ -3807,10 +3817,10 @@ func (m *UI) openAuthenticationDialogWithMethod(provider catwalk.Provider, model
 func (m *UI) handleAgentViewerKeyPress(msg tea.KeyPressMsg) tea.Cmd {
 	viewerChat := m.agentViewer.chat
 	if key.Matches(msg, m.keyMap.Chat.Cancel) {
-		parent := m.agentsParent
+		saved := m.agentsReturn
 		cmd := m.closeAgentViewer()
-		if parent != nil {
-			m.dialog.OpenDialog(parent)
+		if saved != nil && m.agentsListed() {
+			m.reopenAgentsList(saved)
 		}
 		return cmd
 	}
@@ -6906,6 +6916,22 @@ func (m *UI) openAgentsDialog() tea.Cmd {
 	return nil
 }
 
+// agentsListed reports whether agents can exist in this session at all. With
+// Agent Teams off there is no list to go back to.
+func (m *UI) agentsListed() bool {
+	cfg := m.com.Config()
+	return cfg == nil || cfg.Options.GetAgentTeams()
+}
+
+// reopenAgentsList rebuilds the Agents list from the current descriptors, so
+// a status or model that changed while the viewer was open is shown, with the
+// search and selection the viewer was opened with.
+func (m *UI) reopenAgentsList(saved *agentsListState) {
+	agents := dialog.NewAgents(m.com, m.agentDescriptors())
+	agents.Restore(saved.filter, saved.sessionID)
+	m.dialog.OpenDialog(agents)
+}
+
 // openAgentViewer opens an independent transcript without changing the main
 // session or consuming the agent's run lifecycle.
 func (m *UI) openAgentViewer(descriptor dialog.AgentDescriptor) tea.Cmd {
@@ -6930,7 +6956,7 @@ func (m *UI) closeAgentViewer() tea.Cmd {
 		return nil
 	}
 	m.agentViewer.Close()
-	m.agentsParent = nil
+	m.agentsReturn = nil
 	m.agentViewer = nil
 	m.updateLayoutAndSize()
 	m.invalidateFrames()
