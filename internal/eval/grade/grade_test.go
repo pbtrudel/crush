@@ -121,7 +121,7 @@ func TestGrade(t *testing.T) {
 				tt.change(t, src)
 			}
 
-			got, err := grade.Grade(context.Background(), newTask(blob, tt.names, tt.exclude), repo, src, base, goEnv(t))
+			got, err := grade.Grade(context.Background(), newTask(blob, tt.names, tt.exclude), repo, src, base, goEnv(t), false)
 			require.NoError(t, err)
 			require.Equal(t, tt.want.Touched, got.Touched, "touched")
 			require.Equal(t, tt.want.Packages, got.Packages, "packages")
@@ -160,7 +160,7 @@ func TestGradeIgnoresRepositoryHooks(t *testing.T) {
 	require.NoError(t, os.Remove(marker))
 
 	base := git(t, src, "rev-parse", "HEAD")
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t), false)
 	require.NoError(t, err)
 	require.True(t, got.Pass())
 	require.NoFileExists(t, marker, "grading ran the checkout's fsmonitor")
@@ -176,7 +176,7 @@ func TestGradeModelDeletedGit(t *testing.T) {
 	fix(t, src)
 	require.NoError(t, os.RemoveAll(filepath.Join(src, ".git")))
 
-	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t))
+	got, err := grade.Grade(context.Background(), newTask(blob, []string{"TestFix"}, nil), repo, src, base, goEnv(t), false)
 	require.NoError(t, err, "a model that deletes .git is a failed grade, not a runner error")
 	require.False(t, got.Pass())
 	require.Contains(t, got.Reason, "not a git repository")

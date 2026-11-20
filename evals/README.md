@@ -42,5 +42,19 @@ matches.
    commits and hidden blobs against this repository, and prints the suite
    version.
 
+## Network jail
+
+On Linux, `crush-eval run`, `batch` and `grade` put the model's process and the
+grading `go test` in a network, mount and user namespace with only loopback.
+The mount namespace hides `/run`, `/var/run`, `/tmp`, `/mnt/wslg` and
+`/run/user` behind empty tmpfs mounts, so filesystem unix sockets are out of
+reach, and the child keeps your uid and gid without capabilities. The one host
+it may reach is the route's `base_url` host, through an HTTP proxy on a per-run
+unix socket. `--network host` turns this off; on other systems it is the
+default and the jail refuses to start. A machine where user namespaces are
+blocked fails with a message that says to use `--network host`. A result line
+records `network`, and in jail mode `net_denied` with the sorted
+`net_denied_hosts` the proxy refused.
+
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).

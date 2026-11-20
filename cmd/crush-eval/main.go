@@ -11,11 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -30,13 +32,13 @@ const (
 const usage = `usage:
   crush-eval validate [dir]
   crush-eval prepare <task-id> <dest>
-  crush-eval grade <task-id> <run-dir>
-  crush-eval grade --reference <task-id>
+  crush-eval grade <task-id> <run-dir> [--network jail|host]
+  crush-eval grade --reference <task-id> [--network jail|host]
   crush-eval candidates [--repo pbtrudel/crush] [--pr N ...] [--out file]
   crush-eval vet <task-id> [--reps 5] [--write]
   crush-eval vet --all
-  crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD]
-  crush-eval batch <experiment.yaml> [--id ID] [--seed N]
+  crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--network jail|host]
+  crush-eval batch <experiment.yaml> [--id ID] [--seed N] [--network jail|host]
   crush-eval compare <batch-id> [--json]
   crush-eval baseline <batch-id> [--route <name>] [--out <file>]
   crush-eval rescan <batch-id>
@@ -81,6 +83,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return planCmd(args[1:], stdout, stderr)
 	case "login":
 		return loginCmd(args[1:], stdout, stderr)
+	case "__jail":
+		return netjail.Main(args[1:])
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -173,18 +177,25 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("grade", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	reference := flags.Bool("reference", false, "grade the merge commit's tree")
-	if err := flags.Parse(args); err != nil {
+	network := flags.String("network", netjail.DefaultMode(), "network mode of the grade: jail or host")
+	positional, err := interleaved(flags, args)
+	if err != nil {
+		return 2
+	}
+	jailed, err := parseNetwork(*network)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	want := 2
 	if *reference {
 		want = 1
 	}
-	if flags.NArg() != want {
-		fmt.Fprintln(stderr, "usage: crush-eval grade <task-id> <run-dir> | crush-eval grade --reference <task-id>")
+	if len(positional) != want {
+		fmt.Fprintln(stderr, "usage: crush-eval grade <task-id> <run-dir> | crush-eval grade --reference <task-id> [--network jail|host]")
 		return 2
 	}
-	tk, err := findTask(flags.Arg(0))
+	tk, err := findTask(positional[0])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -204,7 +215,7 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 		}
 		defer os.RemoveAll(dir)
 	} else {
-		dir = flags.Arg(1)
+		dir = positional[1]
 	}
 
 	// Grade with an empty HOME: the tests of the repository load its Crush
@@ -219,7 +230,7 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	var graded grade.Result
 	if *reference {
-		graded, err = grade.Reference(ctx, tk, ".", dir, grade.Env(home))
+		graded, err = grade.Reference(ctx, tk, ".", dir, grade.Env(home), jailed)
 	} else {
 		// A prepared checkout's base is its one root commit. A run that
 		// rewrote its history makes this command approximate; the batch
@@ -228,7 +239,7 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 		var base string
 		base, err = gitx.Output(ctx, src, "rev-list", "--max-parents=0", "HEAD")
 		if err == nil {
-			graded, err = grade.Grade(ctx, tk, ".", src, base, grade.Env(home))
+			graded, err = grade.Grade(ctx, tk, ".", src, base, grade.Env(home), jailed)
 		}
 	}
 	if err != nil {
@@ -279,6 +290,43 @@ func evalTmpDir() (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// interleaved parses args with flags that may follow positional arguments,
+// which the flag package alone does not allow, and returns the positionals.
+func interleaved(flags *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := flags.Parse(args); err != nil {
+			return nil, err
+		}
+		if flags.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, flags.Arg(0))
+		args = flags.Args()[1:]
+	}
+}
+
+// parseNetwork checks a --network value on this system and reports whether
+// it means the jail.
+func parseNetwork(value string) (bool, error) {
+	return parseNetworkFor(value, runtime.GOOS)
+}
+
+// parseNetworkFor checks a --network value for one system. The jail is
+// rejected where it cannot exist instead of failing at the clone.
+func parseNetworkFor(value, goos string) (bool, error) {
+	switch value {
+	case netjail.ModeJail:
+		if goos != "linux" {
+			return false, fmt.Errorf("network %q needs Linux; use --network host", value)
+		}
+		return true, nil
+	case netjail.ModeHost:
+		return false, nil
+	}
+	return false, fmt.Errorf("network %q: want %s or %s", value, netjail.ModeJail, netjail.ModeHost)
 }
 
 // moveFirstArg moves a leading positional argument behind the flags: the flag

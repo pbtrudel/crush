@@ -78,7 +78,7 @@ func Run(ctx context.Context, tk *task.Task, repoDir, scratch string, reps int, 
 		if err != nil {
 			return res, err
 		}
-		got, err := grade.Grade(ctx, tk, repoDir, src, base, env)
+		got, err := grade.Grade(ctx, tk, repoDir, src, base, env, false)
 		if err != nil {
 			return res, err
 		}

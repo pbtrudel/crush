@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/run"
@@ -55,7 +56,9 @@ type Record struct {
 	Suite  string `json:"suite"`
 	// Toolchain is the go version the batch runs with, as `go version`
 	// prints it, so a batch under another toolchain is visible.
-	Toolchain  string    `json:"toolchain"`
+	Toolchain string `json:"toolchain"`
+	// Network is the network mode its runs and grades use, jail or host.
+	Network    string    `json:"network"`
 	Experiment string    `json:"experiment"`
 	Started    time.Time `json:"started"`
 	// SystemConfig is whether this machine has a /etc/crush config, which
@@ -129,6 +132,14 @@ type Options struct {
 	// ParentEnv is the environment a run's child environment is built from.
 	// Nil means os.Environ().
 	ParentEnv []string
+	// Network is the network mode of the batch's runs and grades,
+	// netjail.ModeJail or ModeHost. Empty means host.
+	Network string
+	// NetworkSet is whether the caller passed --network explicitly, which
+	// a resumed batch checks against its record.
+	NetworkSet bool
+	// Preflight checks that the jail can start. Nil means netjail.Preflight.
+	Preflight func() error
 	// Env is the environment reference grades run go with.
 	Env []string
 	// Scratch is the parent of the reference checkouts. Empty means the
@@ -240,6 +251,12 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			return nil, fmt.Errorf("route %q: concurrency must be at least 1", name)
 		}
 	}
+	if opts.Network == "" {
+		opts.Network = netjail.ModeHost
+	}
+	if opts.Network != netjail.ModeJail && opts.Network != netjail.ModeHost {
+		return nil, fmt.Errorf("network %q: want %s or %s", opts.Network, netjail.ModeJail, netjail.ModeHost)
+	}
 	if opts.Seed == 0 {
 		opts.Seed = DefaultSeed
 	}
@@ -279,6 +296,15 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			return nil, fmt.Errorf("batch %s ran suite %s, not %s", opts.ID, record.Suite, opts.Suite)
 		}
 		opts.Seed = record.Seed
+		mode := record.Network
+		if mode == "" {
+			// A record written before the flag existed ran on the host.
+			mode = netjail.ModeHost
+		}
+		if opts.NetworkSet && opts.Network != mode {
+			return nil, fmt.Errorf("batch %s ran network %s, not %s", opts.ID, mode, opts.Network)
+		}
+		opts.Network = mode
 	case errors.Is(err, fs.ErrNotExist):
 		record := Record{
 			Schema:       Schema,
@@ -286,6 +312,7 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			Seed:         opts.Seed,
 			Suite:        opts.Suite,
 			Toolchain:    opts.Toolchain,
+			Network:      opts.Network,
 			Experiment:   opts.Path,
 			Started:      opts.Now().UTC(),
 			SystemConfig: systemConfig(),
@@ -295,6 +322,16 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		}
 	default:
 		return nil, err
+	}
+
+	if opts.Network == netjail.ModeJail {
+		preflight := opts.Preflight
+		if preflight == nil {
+			preflight = netjail.Preflight
+		}
+		if err := preflight(); err != nil {
+			return nil, err
+		}
 	}
 
 	r := &runner{
@@ -413,7 +450,7 @@ func (r *runner) gradeReference(ctx context.Context, tk *task.Task) (grade.Resul
 		return grade.Result{}, err
 	}
 	defer os.RemoveAll(dir) //nolint:errcheck // Temporary checkout.
-	return grade.Reference(ctx, tk, r.opts.RepoDir, dir, r.opts.Env)
+	return grade.Reference(ctx, tk, r.opts.RepoDir, dir, r.opts.Env, r.opts.Network == netjail.ModeJail)
 }
 
 // readResults loads the batch's result lines and the finality state of every
@@ -631,6 +668,7 @@ func (r *runner) attempt(ctx context.Context, j *job) outcome {
 		Overlay:   r.overlays[j.key.Variant],
 		GradeSem:  r.gradeSem,
 		ParentEnv: r.opts.ParentEnv,
+		Network:   r.opts.Network,
 	}
 	runFn := run.Run
 	if r.opts.Run != nil {

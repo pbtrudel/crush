@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	runner "github.com/charmbracelet/crush/internal/eval/run"
 	"github.com/charmbracelet/crush/internal/eval/task"
@@ -35,11 +36,16 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	rep := flags.Int("rep", 1, "repetition")
 	maxSteps := flags.Int("max-steps", 0, "override the task's step limit")
 	timeout := flags.Duration("timeout", 0, "override the task's time limit")
+	network := flags.String("network", netjail.DefaultMode(), "network mode of the run: jail or host")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	if _, err := parseNetwork(*network); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	if flags.NArg() != 1 || *routeName == "" {
-		fmt.Fprintln(stderr, "usage: crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--batch adhoc] [--rep 1]")
+		fmt.Fprintln(stderr, "usage: crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--batch adhoc] [--rep 1] [--network jail|host]")
 		return 2
 	}
 	tk, err := findTask(flags.Arg(0))
@@ -95,6 +101,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		Footer:   string(footer),
 		MaxSteps: *maxSteps,
 		Timeout:  *timeout,
+		Network:  *network,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

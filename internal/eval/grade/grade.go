@@ -20,6 +20,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/task"
 	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
@@ -44,8 +45,9 @@ type Result struct {
 func (r Result) Pass() bool { return r.Touched && r.Packages }
 
 // Reference prepares the merge commit's tree of tk in dest and grades it,
-// which is what `crush-eval grade --reference` does.
-func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []string) (Result, error) {
+// which is what `crush-eval grade --reference` does. jailed runs go inside
+// the network jail.
+func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []string, jailed bool) (Result, error) {
 	if _, err := checkout.Prepare(ctx, repoDir, tk.Source.Merge, dest); err != nil {
 		return Result{}, err
 	}
@@ -54,20 +56,20 @@ func Reference(ctx context.Context, tk *task.Task, repoDir, dest string, env []s
 	if err != nil {
 		return Result{}, err
 	}
-	return Grade(ctx, tk, repoDir, src, base, env)
+	return Grade(ctx, tk, repoDir, src, base, env, jailed)
 }
 
 // Grade grades the working tree of srcDir against tk, from base, the commit
 // the run started at, which the model's own history cannot change. It
 // removes the test files the model added to the graded packages, writes the
 // task's hidden files and runs the touched tests and then every test of the
-// graded packages. It reads the hidden blobs from repoDir and runs go with
-// env.
+// graded packages. It reads the hidden blobs from repoDir, runs go with
+// env, and puts go inside the network jail when jailed is set.
 //
 // A checkout the model broke, as when it deletes .git or moves its work to
 // an orphan branch, is a failed grade with a reason, not an error: one bad
 // run must not stop the batch.
-func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env []string) (Result, error) {
+func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env []string, jailed bool) (Result, error) {
 	var res Result
 
 	removed, err := removeModelTests(ctx, srcDir, base, tk.Grade.Packages)
@@ -80,11 +82,11 @@ func Grade(ctx context.Context, tk *task.Task, repoDir, srcDir, base string, env
 		return failed(err), nil
 	}
 
-	touched, err := GoTest(ctx, srcDir, env, testArgs(tk, touchedPattern(tk.Grade.Tests)))
+	touched, err := GoTest(ctx, srcDir, env, testArgs(tk, touchedPattern(tk.Grade.Tests)), jailed)
 	if err != nil {
 		return res, err
 	}
-	all, err := GoTest(ctx, srcDir, env, testArgs(tk, skipArgs(tk.Grade.Exclude)))
+	all, err := GoTest(ctx, srcDir, env, testArgs(tk, skipArgs(tk.Grade.Exclude)), jailed)
 	if err != nil {
 		return res, err
 	}
@@ -277,12 +279,21 @@ type Outcome struct {
 }
 
 // GoTest runs one go command with args in dir and parses its test2json
-// stream.
-func GoTest(ctx context.Context, dir string, env, args []string) (Outcome, error) {
+// stream. jailed puts go and every test binary it starts in the network
+// jail, with loopback only and no proxy.
+func GoTest(ctx context.Context, dir string, env, args []string, jailed bool) (Outcome, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, toolchain.Go(env), args...)
 	cmd.Dir = dir
 	cmd.Env = env
+	if jailed {
+		// A cancelled grade must stop go and every test binary it started,
+		// not just the helper that ran them.
+		netjail.KillGroup(cmd)
+		if err := netjail.Wrap(cmd, "", 0); err != nil {
+			return Outcome{}, err
+		}
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

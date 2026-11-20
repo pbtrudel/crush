@@ -9,6 +9,18 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/toolchain"
 )
 
+// blockedEnv are agent and session sockets the jail cannot isolate: a
+// filesystem unix socket would survive the network namespace, so a route
+// may not pass one and the child environment never carries one.
+var blockedEnv = []string{
+	"SSH_AUTH_SOCK",
+	"DOCKER_HOST",
+	"WSL_INTEROP",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"XDG_RUNTIME_DIR",
+	"GPG_AGENT_INFO",
+}
+
 // runnerEnv are the variables the runner sets itself. A route may not
 // name one of them. CRUSH_CLIENT_SERVER, GH_TOKEN and GITHUB_TOKEN are
 // never passed at all, so a child runs standalone and holds no GitHub
@@ -68,7 +80,7 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	}
 
 	for _, name := range r.Env {
-		if slices.Contains(runnerEnv, name) {
+		if slices.Contains(runnerEnv, name) || slices.Contains(blockedEnv, name) {
 			return nil, fmt.Errorf("route %s: env must not set %s", r.Name, name)
 		}
 	}

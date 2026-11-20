@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/task"
@@ -65,6 +66,11 @@ type Options struct {
 	// ParentEnv is the environment the child environment is built from.
 	// Nil means os.Environ().
 	ParentEnv []string
+	// Network is the run's network mode, netjail.ModeJail or ModeHost.
+	// Empty means host.
+	Network string
+	// Preflight checks that the jail can start. Nil means netjail.Preflight.
+	Preflight func() error
 }
 
 // Run performs one run and appends its result line to the batch's
@@ -95,8 +101,21 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		Rep:     opts.Rep,
 		Attempt: opts.Attempt,
 		Started: time.Now().UTC(),
+		Network: networkMode(opts.Network),
+		// The line always holds a list, so a host run and a jail run with
+		// no refusals have the same shape.
+		NetDeniedHosts: []string{},
 	}
 
+	if line.Network == netjail.ModeJail {
+		preflight := opts.Preflight
+		if preflight == nil {
+			preflight = netjail.Preflight
+		}
+		if err := preflight(); err != nil {
+			return line, err
+		}
+	}
 	if err := opts.Home.Ensure(); err != nil {
 		return line, err
 	}
@@ -135,18 +154,35 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := route.WriteGlobalConfig(filepath.Join(dirs.Config, "crush.json"), opts.Route, opts.Overlay); err != nil {
 		return line, err
 	}
+	var proxy *netjail.Proxy
+	jailSock := ""
+	jailPort := 0
+	if line.Network == netjail.ModeJail {
+		var cleanup func()
+		proxy, jailPort, cleanup, err = startProxy(ctx, opts)
+		if err != nil {
+			return line, err
+		}
+		jailSock = proxy.Path()
+		defer cleanup()
+		defer proxy.Close() //nolint:errcheck // The counts are read first.
+	}
 	env, err := opts.Route.ChildEnv(opts.Home, dirs, parentEnv(opts.ParentEnv))
 	if err != nil {
 		return line, err
 	}
+	env = append(env, networkEnv(line.Network, jailPort)...)
 
 	stdoutPath := filepath.Join(runDir, "stdout.json")
 	exit, killed, err := execute(ctx, opts.BinPath,
 		commandArgs(opts, src, filepath.Join(runDir, "data"), maxSteps, timeout),
 		env, task.Prompt(opts.Task, opts.Footer), stdoutPath,
-		filepath.Join(runDir, "stderr.log"), timeout+grace)
+		filepath.Join(runDir, "stderr.log"), timeout+grace, jailSock, jailPort)
 	if err != nil {
 		return line, err
+	}
+	if proxy != nil {
+		line.NetDenied, line.NetDeniedHosts = proxy.Denied()
 	}
 	if err := ctx.Err(); err != nil {
 		// A cancelled run stops here: nothing after the child is worth
@@ -231,7 +267,7 @@ func commandArgs(opts Options, src, dataDir string, maxSteps int, timeout time.D
 // execute runs the binary with limit as its deadline and kills its process
 // group when the deadline passes. It returns the process exit code and
 // whether the watchdog fired.
-func execute(ctx context.Context, bin string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration) (int, bool, error) {
+func execute(ctx context.Context, bin string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration, jailSock string, jailPort int) (int, bool, error) {
 	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, false, fmt.Errorf("create stdout: %w", err)
@@ -244,11 +280,19 @@ func execute(ctx context.Context, bin string, args, env []string, prompt, stdout
 	defer stderr.Close() //nolint:errcheck // Read-only log.
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Holding a killed process's output pipe open must not keep Wait
+	// waiting after the group is gone.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	kill := processGroup(cmd)
+	if jailSock != "" {
+		if err := netjail.Wrap(cmd, jailSock, jailPort); err != nil {
+			return 0, false, err
+		}
+	}
 	var killed atomic.Bool
 	// A cancelled context kills the whole process group, tools included,
 	// instead of leaving crush and its children running.
@@ -354,7 +398,7 @@ func gradeRun(ctx context.Context, opts Options, src, base, runDir string) (grad
 		return grade.Result{}, fmt.Errorf("create grading home: %w", err)
 	}
 	defer os.RemoveAll(emptyHome) //nolint:errcheck // Temporary home.
-	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, base, grade.Env(emptyHome))
+	return grade.Grade(ctx, opts.Task, opts.RepoDir, src, base, grade.Env(emptyHome), opts.Network == netjail.ModeJail)
 }
 
 // treeStats is the size of the change against the task base, untracked
@@ -412,6 +456,64 @@ func DirName(taskID, variant, route string, rep int) string {
 		}
 		return '-'
 	}, name)
+}
+
+// networkMode is the run's network mode, with the host as the default.
+func networkMode(mode string) string {
+	if mode == netjail.ModeJail {
+		return netjail.ModeJail
+	}
+	return netjail.ModeHost
+}
+
+// networkEnv is the proxy environment a jailed run adds. A host run adds
+// nothing.
+func networkEnv(network string, port int) []string {
+	if network != netjail.ModeJail {
+		return nil
+	}
+	return netjail.Env(port)
+}
+
+// maxSocketPath is the longest proxy path a unix address can hold, with
+// room for the terminator.
+const maxSocketPath = 100
+
+// proxySocket creates the run's own 0700 directory under the eval home and
+// returns a socket path in it with the function that removes the directory.
+// The directory sits outside the paths the jail masks, so the jailed child
+// can still reach the socket.
+func proxySocket(homeDir string) (string, func(), error) {
+	dir, err := os.MkdirTemp(homeDir, "net-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create the proxy's directory: %w", err)
+	}
+	path := filepath.Join(dir, "net.sock")
+	if len(path) > maxSocketPath {
+		_ = os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("proxy socket path %q is too long for a unix address", path)
+	}
+	return path, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// startProxy starts the host side of the network jail for one run and
+// returns it with the local port the jail forwards to it and the function
+// that removes its directory.
+func startProxy(ctx context.Context, opts Options) (*netjail.Proxy, int, func(), error) {
+	host, err := opts.Route.APIHost()
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	path, cleanup, err := proxySocket(opts.Home.Dir())
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	proxy, err := netjail.Listen(ctx, path, []string{host})
+	if err != nil {
+		cleanup()
+		return nil, 0, nil, err
+	}
+	return proxy, netjail.ProxyPort, cleanup, nil
 }
 
 // parentEnv is the environment the child environment is built from.

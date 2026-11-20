@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/charmbracelet/crush/internal/eval/task"
@@ -20,7 +21,7 @@ import (
 )
 
 const batchUsage = `usage:
-  crush-eval batch <experiment.yaml> [--id ID] [--seed N]`
+  crush-eval batch <experiment.yaml> [--id ID] [--seed N] [--network jail|host]`
 
 // batchCmd runs an experiment: it builds the variants, grades the references
 // and runs the suite on every route under the route and machine caps.
@@ -30,9 +31,20 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	id := flags.String("id", "", "batch id; defaults to the experiment's date and name")
 	seed := flags.Uint64("seed", 0, "seed that shuffles the task order; 0 means the default")
+	network := flags.String("network", netjail.DefaultMode(), "network mode of the batch's runs and grades: jail or host")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	if _, err := parseNetwork(*network); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	networkSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "network" {
+			networkSet = true
+		}
+	})
 	if flags.NArg() != 1 {
 		fmt.Fprintln(stderr, batchUsage)
 		return 2
@@ -135,6 +147,8 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		SuiteDir:   suiteDir,
 		Footer:     string(footer),
 		Toolchain:  version,
+		Network:    *network,
+		NetworkSet: networkSet,
 		Env:        grade.Env(gradeHome),
 		Scratch:    scratch,
 	})

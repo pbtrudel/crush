@@ -4,6 +4,8 @@ package route
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,6 +40,30 @@ type Limits struct {
 	RunsPerWindow int `yaml:"runs_per_window"`
 	// Window is the length of the window in seconds. 0 means none.
 	Window int `yaml:"window"`
+}
+
+// APIHost is the host:port of the route's base_url: the one address the
+// network jail lets a run reach. The port defaults to the scheme's port.
+func (r *Route) APIHost() (string, error) {
+	raw, _ := r.ProviderConfig["base_url"].(string)
+	if raw == "" {
+		return "", fmt.Errorf("route %s: provider_config has no base_url for the network jail", r.Name)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("route %s: base_url %q: %w", r.Name, raw, err)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("route %s: base_url %q has no host", r.Name, raw)
+	}
+	if u.Port() != "" {
+		return strings.ToLower(u.Host), nil
+	}
+	port := "443"
+	if u.Scheme == "http" {
+		port = "80"
+	}
+	return strings.ToLower(net.JoinHostPort(u.Hostname(), port)), nil
 }
 
 // Load reads routes/<name>.yaml from dir and validates it.
