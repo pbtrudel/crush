@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/result"
@@ -518,4 +519,39 @@ func TestBatchNeedsTheCatalog(t *testing.T) {
 	require.ErrorContains(t, err, "crush-eval catalog freeze")
 	require.Empty(t, f.builds)
 	require.Empty(t, f.calls)
+}
+
+// TestBatchResumeRefusesAnotherCatalog checks that a catalog freeze between
+// resume attempts does not mix two sets of models in one batch.
+func TestBatchResumeRefusesAnotherCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	record := Record{
+		Schema: Schema, ID: "b1", Seed: 7, Suite: f.opts.Suite, Experiment: f.opts.Path,
+		Catalog: catalog.Fingerprint{Providers: "frozen-earlier", Hyper: "hyper-earlier"},
+	}
+	require.NoError(t, os.MkdirAll(f.opts.Home.BatchDir("b1"), 0o700))
+	require.NoError(t, record.Write(f.opts.Home))
+
+	_, err := Run(context.Background(), f.opts)
+	require.ErrorContains(t, err, "catalog")
+	require.Empty(t, f.builds)
+	require.Empty(t, f.calls)
+}
+
+// TestBatchResumeAcceptsARecordWithoutACatalog checks that a batch recorded
+// before the fingerprint existed resumes as it is: it has nothing to compare
+// against, and its finished lines stay valid.
+func TestBatchResumeAcceptsARecordWithoutACatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	record := Record{Schema: Schema, ID: "b1", Seed: 7, Suite: f.opts.Suite, Experiment: f.opts.Path}
+	require.NoError(t, os.MkdirAll(f.opts.Home.BatchDir("b1"), 0o700))
+	require.NoError(t, record.Write(f.opts.Home))
+
+	_, err := Run(context.Background(), f.opts)
+	require.NoError(t, err)
+	require.NotEmpty(t, f.calls)
 }

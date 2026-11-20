@@ -306,6 +306,12 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		if record.Suite != opts.Suite {
 			return nil, fmt.Errorf("batch %s ran suite %s, not %s", opts.ID, record.Suite, opts.Suite)
 		}
+		// A catalog freeze between attempts would mix two sets of models in
+		// one batch. A record from before the fingerprint existed has nothing
+		// to compare against and is accepted as it is.
+		if record.Catalog != (catalog.Fingerprint{}) && record.Catalog != catalogs {
+			return nil, fmt.Errorf("batch %s ran the catalog %+v, not %+v: freeze the catalog it ran or start a new batch", opts.ID, record.Catalog, catalogs)
+		}
 		opts.Seed = record.Seed
 		mode := record.Network
 		if mode == "" {
