@@ -24,6 +24,12 @@ var parentEnv = []string{
 	"GH_TOKEN=gh-parent-token",
 	"GITHUB_TOKEN=gh-parent-token",
 	"CRUSH_CLIENT_SERVER=1",
+	"SSH_AUTH_SOCK=/run/user/1000/keyring/ssh",
+	"DOCKER_HOST=unix:///var/run/docker.sock",
+	"WSL_INTEROP=/run/WSL/1_interop",
+	"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+	"XDG_RUNTIME_DIR=/run/user/1000",
+	"GPG_AGENT_INFO=/run/user/1000/gnupg/S.gpg-agent:0:1",
 	"UNRELATED=1",
 }
 
@@ -56,6 +62,9 @@ func TestChildEnv(t *testing.T) {
 	require.NotContains(t, envMap(env), "GITHUB_TOKEN")
 	require.NotContains(t, envMap(env), "CRUSH_CLIENT_SERVER")
 	require.NotContains(t, envMap(env), "UNRELATED")
+	for _, name := range blockedEnv {
+		require.NotContains(t, envMap(env), name)
+	}
 }
 
 func TestChildEnvClaudeAgent(t *testing.T) {
@@ -267,4 +276,20 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return out
+}
+
+// TestChildEnvRejectsBlockedVariables checks that a route cannot name an
+// agent socket variable the jail cannot isolate.
+func TestChildEnvRejectsBlockedVariables(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range blockedEnv {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := &Route{Name: "r", Env: []string{name}}
+			dirs := Dirs{Home: "/state/crush-eval/runs/r1/home", Config: "/state/crush-eval/runs/r1/config/crush"}
+			_, err := r.childEnv(home.At("/state/crush-eval"), dirs, parentEnv, toolchainAt("/toolchains/go1.27.2"))
+			require.ErrorContains(t, err, "must not set "+name)
+		})
+	}
 }

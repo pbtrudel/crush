@@ -7,8 +7,6 @@ package run
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,11 +147,13 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	jailSock := ""
 	jailPort := 0
 	if line.Network == netjail.ModeJail {
-		proxy, jailPort, err = startProxy(ctx, opts, runDir)
+		var cleanup func()
+		proxy, jailPort, cleanup, err = startProxy(ctx, opts)
 		if err != nil {
 			return line, err
 		}
 		jailSock = proxy.Path()
+		defer cleanup()
 		defer proxy.Close() //nolint:errcheck // The counts are read first.
 	}
 	env, err := opts.Route.ChildEnv(opts.Home, dirs, parentEnv(opts.ParentEnv))
@@ -462,36 +462,48 @@ func networkEnv(network string, port int) []string {
 }
 
 // maxSocketPath is the longest proxy path a unix address can hold, with
-// room for the terminator and for path prefixes a test may add.
+// room for the terminator.
 const maxSocketPath = 100
 
-// proxyPath is where the run's proxy listens: in the run directory, or in
-// the eval home when that path is too long for a unix socket address.
-func proxyPath(runDir, homeDir string) string {
-	path := filepath.Join(runDir, "net.sock")
-	if len(path) <= maxSocketPath {
-		return path
+// proxySocket creates the run's own 0700 directory under the eval home and
+// returns a socket path in it with the function that removes the directory.
+// The directory sits outside the paths the jail masks, so the jailed child
+// can still reach the socket.
+func proxySocket(homeDir string) (string, func(), error) {
+	dir, err := os.MkdirTemp(homeDir, "net-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create the proxy's directory: %w", err)
 	}
-	sum := sha256.Sum256([]byte(runDir))
-	return filepath.Join(homeDir, "sock", "net-"+hex.EncodeToString(sum[:6])+".sock")
+	path := filepath.Join(dir, "net.sock")
+	if len(path) > maxSocketPath {
+		_ = os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("proxy socket path %q is too long for a unix address", path)
+	}
+	return path, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // startProxy starts the host side of the network jail for one run and
-// returns it with the local port the jail forwards to it.
-func startProxy(ctx context.Context, opts Options, runDir string) (*netjail.Proxy, int, error) {
+// returns it with the local port the jail forwards to it and the function
+// that removes its directory.
+func startProxy(ctx context.Context, opts Options) (*netjail.Proxy, int, func(), error) {
 	host, err := opts.Route.APIHost()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	port, err := netjail.Port()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	proxy, err := netjail.Listen(ctx, proxyPath(runDir, opts.Home.Dir()), []string{host})
+	path, cleanup, err := proxySocket(opts.Home.Dir())
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return proxy, port, nil
+	proxy, err := netjail.Listen(ctx, path, []string{host})
+	if err != nil {
+		cleanup()
+		return nil, 0, nil, err
+	}
+	return proxy, port, cleanup, nil
 }
 
 // parentEnv is the environment the child environment is built from.

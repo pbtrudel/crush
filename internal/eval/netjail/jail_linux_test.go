@@ -39,6 +39,11 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// testMasks are the default masks without /tmp: the test binary itself
+// lives under /tmp, and the helper could not exec it after masking that
+// directory.
+var testMasks = []string{"/run", "/var/run", "/mnt/wslg", "/run/user"}
+
 // canJail reports whether this machine lets an unprivileged process start
 // the jail, and why not when it does not.
 func canJail(t *testing.T) (bool, string) {
@@ -47,7 +52,7 @@ func canJail(t *testing.T) (bool, string) {
 	require.NoError(t, err)
 	cmd := exec.CommandContext(context.Background(), self)
 	cmd.Env = append(os.Environ(), "NETJAIL_NOOP=1")
-	require.NoError(t, netjail.Wrap(cmd, "", 0))
+	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Sprintf("%v: %s", err, out)
@@ -62,6 +67,17 @@ func probe() int {
 	fail := func(format string, args ...any) int {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 		return 1
+	}
+
+	// A masked directory hides a unix socket the host can still reach.
+	if masked := os.Getenv("NETJAIL_MASK_SOCK"); masked != "" {
+		conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", masked)
+		if err == nil {
+			conn.Close()
+			return fail("the masked socket %s was reachable", masked)
+		}
+		fmt.Println("masked ok")
+		return 0
 	}
 
 	iface, err := net.InterfaceByName("lo")
@@ -190,7 +206,7 @@ func TestJail(t *testing.T) {
 		"NETJAIL_ALLOW="+srv.Listener.Addr().String(),
 		"NETJAIL_FWD_PORT="+strconv.Itoa(port),
 	)
-	require.NoError(t, netjail.Wrap(cmd, sock, port))
+	require.NoError(t, netjail.Wrap(cmd, sock, port, testMasks...))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "probe ok")
@@ -198,6 +214,38 @@ func TestJail(t *testing.T) {
 	denied, hosts := p.Denied()
 	require.Zero(t, denied)
 	require.Empty(t, hosts)
+}
+
+// TestJailMasksSockets checks that a directory the jail masks with an empty
+// tmpfs hides a unix socket that the host can still reach.
+func TestJailMasksSockets(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
+	require.NoError(t, err)
+	defer ln.Close()
+
+	// The socket answers the host, so the child's failure is the mask, not
+	// a missing listener.
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", path)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_MASK_SOCK="+path)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, dir))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "masked ok")
 }
 
 // TestWrapMergesSysProcAttr checks that Wrap keeps the process group the
@@ -243,7 +291,7 @@ func TestJailExitCode(t *testing.T) {
 		t.Skipf("user namespaces are unavailable: %s", reason)
 	}
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 7")
-	require.NoError(t, netjail.Wrap(cmd, "", 0))
+	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
 	err := cmd.Run()
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit)

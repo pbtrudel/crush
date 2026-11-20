@@ -12,18 +12,26 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
+// DefaultMasks are the directories the jail replaces with empty tmpfs
+// mounts, so a filesystem unix socket under one of them cannot be reached.
+// /var/run is skipped when it is a symlink into /run.
+var DefaultMasks = []string{"/run", "/var/run", "/tmp", "/mnt/wslg", "/run/user"}
+
 // Wrap turns cmd into one that runs under the network jail: the same binary
-// re-executed through the hidden __jail subcommand, cloned into a new user
-// and network namespace. sock, when not empty, is the unix socket of the
-// host proxy and port the local port the jail forwards to it. Fields the
-// caller already set on cmd.SysProcAttr, such as the process group, are kept.
-func Wrap(cmd *exec.Cmd, sock string, port int) error {
+// re-executed through the hidden __jail subcommand, cloned into new user,
+// network and mount namespaces. sock, when not empty, is the unix socket of
+// the host proxy and port the local port the jail forwards to it. masks are
+// the directories the jail hides behind an empty tmpfs; none means
+// DefaultMasks. Fields the caller already set on cmd.SysProcAttr, such as
+// the process group, are kept.
+func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate the jail binary: %w", err)
@@ -31,6 +39,9 @@ func Wrap(cmd *exec.Cmd, sock string, port int) error {
 	args := []string{self, "__jail"}
 	if sock != "" {
 		args = append(args, "--sock", sock, "--port", strconv.Itoa(port))
+	}
+	for _, mask := range masks {
+		args = append(args, "--mask", mask)
 	}
 	args = append(args, "--")
 	args = append(args, cmd.Args...)
@@ -41,7 +52,7 @@ func Wrap(cmd *exec.Cmd, sock string, port int) error {
 	if attr == nil {
 		attr = &syscall.SysProcAttr{}
 	}
-	attr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET
+	attr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS
 	// Its own uid is mapped to root inside the namespace. The kernel gives
 	// capabilities in a new user namespace only to a process whose
 	// namespace uid is 0, and only such a process may bring loopback up.
@@ -58,15 +69,27 @@ func Wrap(cmd *exec.Cmd, sock string, port int) error {
 	return nil
 }
 
-// Main runs the jail side of the hidden __jail subcommand: it brings
-// loopback up, forwards the proxy port when one is given, runs the child
-// with the same environment, streams and directory, and returns its exit
-// code.
+// Main runs the jail side of the hidden __jail subcommand: it makes the
+// mount tree private, masks the directories that can hold filesystem
+// sockets, brings loopback up, forwards the proxy port when one is given,
+// runs the child with the same environment, streams and directory, and
+// returns its exit code.
 func Main(args []string) int {
-	sock, port, argv, err := parseArgs(args)
+	sock, port, masks, argv, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+	if len(masks) == 0 {
+		masks = DefaultMasks
+	}
+	if err := privateMounts(); err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: make the mount tree private: %v\n", err)
+		return 1
+	}
+	if err := maskPaths(masks); err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: mask the filesystem sockets: %v\n", err)
+		return 1
 	}
 	if err := loopbackUp(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: bring loopback up: %v\n", err)
@@ -83,38 +106,78 @@ func Main(args []string) int {
 
 // parseArgs reads the jail's own flags up to the -- that starts the child's
 // command line.
-func parseArgs(args []string) (sock string, port int, argv []string, err error) {
+func parseArgs(args []string) (sock string, port int, masks []string, argv []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
 			argv = args[i+1:]
 			if len(argv) == 0 {
-				return "", 0, nil, errors.New("netjail: no command after --")
+				return "", 0, nil, nil, errors.New("netjail: no command after --")
 			}
 			if sock != "" && port <= 0 {
-				return "", 0, nil, errors.New("netjail: --sock needs a positive --port")
+				return "", 0, nil, nil, errors.New("netjail: --sock needs a positive --port")
 			}
-			return sock, port, argv, nil
+			return sock, port, masks, argv, nil
 		case "--sock":
 			i++
 			if i >= len(args) {
-				return "", 0, nil, errors.New("netjail: --sock needs a path")
+				return "", 0, nil, nil, errors.New("netjail: --sock needs a path")
 			}
 			sock = args[i]
 		case "--port":
 			i++
 			if i >= len(args) {
-				return "", 0, nil, errors.New("netjail: --port needs a number")
+				return "", 0, nil, nil, errors.New("netjail: --port needs a number")
 			}
 			port, err = strconv.Atoi(args[i])
 			if err != nil {
-				return "", 0, nil, fmt.Errorf("netjail: --port %q: %w", args[i], err)
+				return "", 0, nil, nil, fmt.Errorf("netjail: --port %q: %w", args[i], err)
 			}
+		case "--mask":
+			i++
+			if i >= len(args) {
+				return "", 0, nil, nil, errors.New("netjail: --mask needs a path")
+			}
+			masks = append(masks, args[i])
 		default:
-			return "", 0, nil, fmt.Errorf("netjail: unexpected argument %q", args[i])
+			return "", 0, nil, nil, fmt.Errorf("netjail: unexpected argument %q", args[i])
 		}
 	}
-	return "", 0, nil, errors.New("netjail: no command after --")
+	return "", 0, nil, nil, errors.New("netjail: no command after --")
+}
+
+// privateMounts keeps every mount the jail makes out of the host and out of
+// other jails.
+func privateMounts() error {
+	return unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, "")
+}
+
+// maskPaths hides each directory behind an empty tmpfs. A path that does
+// not exist is skipped, as is /var/run when it is a symlink into /run, which
+// is masked already.
+func maskPaths(paths []string) error {
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if path == "/var/run" && info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			if target == "/run" || strings.HasPrefix(target, "/run/") {
+				continue
+			}
+		}
+		if err := unix.Mount("tmpfs", path, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+			return fmt.Errorf("mask %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 // loopbackUp sets IFF_UP on lo. A fresh network namespace has the interface

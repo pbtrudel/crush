@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,25 +19,47 @@ func TestNetworkEnv(t *testing.T) {
 	require.Equal(t, netjail.Env(1234), networkEnv(netjail.ModeJail, 1234))
 }
 
-// TestProxyPath checks where the proxy's socket lives: in the run directory
-// when the path fits a unix address, in the eval home's sock directory when
-// it does not.
-func TestProxyPath(t *testing.T) {
+// TestProxySocket checks that each run's proxy gets its own 0700 directory
+// under the eval home, outside the directories the jail masks, and that the
+// socket path fits a unix address.
+func TestProxySocket(t *testing.T) {
 	t.Parallel()
 
-	home := filepath.Join(string(filepath.Separator), "home", "u", ".local", "state", "crush-eval")
-	short := filepath.Join(home, "batches", "b1", "runs", "pr-0010-main@abc12345-fake-r1")
-	require.Equal(t, filepath.Join(short, "net.sock"), proxyPath(short, home))
-
-	long := filepath.Join(home, "batches", "2026-11-19-an-experiment-with-a-long-name", "runs", "pr-0010-main@abc12345-deepseek-flash-r1")
-	path := proxyPath(long, home)
-	require.NotEqual(t, filepath.Join(long, "net.sock"), path)
-	require.Contains(t, path, filepath.Join(home, "sock"))
+	home := t.TempDir()
+	path, cleanup, err := proxySocket(home)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	require.Equal(t, home, filepath.Dir(filepath.Dir(path)))
 	require.LessOrEqual(t, len(path), maxSocketPath)
 	require.True(t, strings.HasSuffix(path, ".sock"), path)
 
-	other := proxyPath(long+"-other", home)
-	require.NotEqual(t, path, other, "two runs never share a socket")
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+	// The directory is unique to this run.
+	other, otherCleanup, err := proxySocket(home)
+	require.NoError(t, err)
+	require.NotEqual(t, dir, filepath.Dir(other))
+	otherCleanup()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep"), nil, 0o600))
+	cleanup()
+	require.NoDirExists(t, dir)
+}
+
+// TestProxySocketTooLong checks that an eval home too deep for a unix socket
+// address is an error, not a silently shortened path.
+func TestProxySocketTooLong(t *testing.T) {
+	t.Parallel()
+
+	home := filepath.Join(t.TempDir(), strings.Repeat("h", 120))
+	require.NoError(t, os.MkdirAll(home, 0o700))
+	path, cleanup, err := proxySocket(home)
+	require.Nil(t, cleanup)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "too long")
 }
 
 // TestRunJailNeedsBaseURL checks that a jail run of a route without a
