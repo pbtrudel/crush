@@ -20,7 +20,8 @@ var signInFields = []string{"models", "recent_models", "options"}
 
 // StripDataConfig removes those fields from the eval home's data config after
 // a sign-in, atomically and with mode 0o600. Providers and every other field
-// stay as they are, byte for byte.
+// keep their values: the file is re-encoded as indented JSON, so key order,
+// whitespace and JSON escaping can change, and nothing else does.
 func StripDataConfig(h *home.Home) error {
 	path := filepath.Join(h.DataDir(), "crush.json")
 	doc, err := readDataConfig(path)
@@ -61,8 +62,8 @@ func CheckDataConfig(h *home.Home) error {
 }
 
 // readDataConfig reads the top-level fields of a data config, or nil when the
-// file does not exist. Values stay raw, so the providers object and unknown
-// fields keep their exact bytes.
+// file does not exist. Values stay raw, so removing a field changes no value:
+// only key order, indentation and JSON escaping change.
 func readDataConfig(path string) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
