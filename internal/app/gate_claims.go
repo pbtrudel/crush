@@ -2,7 +2,9 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
@@ -119,13 +121,23 @@ func claimBacked(claim string, commands, called []string) bool {
 		}
 	}
 	// A claim may name a tool instead of a command, such as
-	// "lsp_diagnostics on the package".
+	// "lsp_diagnostics on the package". Only a whole word of the claim
+	// counts, so a short name like "ls" does not match inside "tools".
+	words := claimWords(target)
 	for _, name := range called {
-		if name != "" && strings.Contains(target, name) {
+		if name != "" && slices.Contains(words, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// claimWords splits a claim into its words, keeping the underscores tool
+// names carry.
+func claimWords(claim string) []string {
+	return strings.FieldsFunc(claim, func(r rune) bool {
+		return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // collapseSpace reduces every run of whitespace to one space.

@@ -82,6 +82,28 @@ func TestGateClaims(t *testing.T) {
 		require.Zero(t, unbacked)
 	})
 
+	t.Run("a tool name only counts as a whole word", func(t *testing.T) {
+		t.Parallel()
+		// "ls" sits inside "tools", and calling ls verified nothing
+		// about a test run.
+		rows := answeredStep("root", "c1", "ls", `{"path":"."}`, false)
+		rows = append(rows, commandStep("root", verifiedAnswer("go test ./tools/..."), "", "", ""))
+
+		claims, unbacked := gateClaims(rows, "root")
+		require.Equal(t, 1, claims)
+		require.Equal(t, 1, unbacked)
+	})
+
+	t.Run("a tool name in the middle of a claim still counts", func(t *testing.T) {
+		t.Parallel()
+		rows := answeredStep("root", "c1", "lsp_diagnostics", `{"file_path":"a.go"}`, false)
+		rows = append(rows, commandStep("root", verifiedAnswer("checked lsp_diagnostics for a.go"), "", "", ""))
+
+		claims, unbacked := gateClaims(rows, "root")
+		require.Equal(t, 1, claims)
+		require.Zero(t, unbacked)
+	})
+
 	t.Run("a claim no call backs", func(t *testing.T) {
 		t.Parallel()
 		rows := answeredStep("root", "c1", "bash", `{"command":"go build ./..."}`, false)
