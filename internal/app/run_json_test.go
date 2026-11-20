@@ -177,6 +177,7 @@ func TestRunResultJSON(t *testing.T) {
 		"session": {"steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0}},
 		"tree": {"sessions": 1, "steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0},
 			"turn_ends": {"completed": 1}, "undelivered_reports": 2},
+		"gate": {"continuations": 0, "claims": 0, "unbacked_claims": 0},
 		"estimated": false, "cost": 0.5
 	}`, string(data))
 }

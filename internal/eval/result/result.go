@@ -58,6 +58,13 @@ type Diff struct {
 	Deleted int `json:"deleted"`
 }
 
+// Gate is what the turn-end gate did during a run (design 4.3).
+type Gate struct {
+	Continuations  int `json:"continuations"`
+	Claims         int `json:"claims"`
+	UnbackedClaims int `json:"unbacked_claims"`
+}
+
 // Result is one attempt of one run. It holds no prompt, answer, file content
 // or path from the session.
 type Result struct {
@@ -85,16 +92,19 @@ type Result struct {
 	DurationMS int64     `json:"duration_ms"`
 	// TextLength is the length of the run's answer text. The text itself
 	// never enters the line.
-	TextLength         int            `json:"text_length"`
-	UndeliveredReports int            `json:"undelivered_reports"`
-	TurnEnds           map[string]int `json:"turn_ends"`
-	UsageLimited       bool           `json:"usage_limited"`
-	Grade              Grade          `json:"grade"`
-	Pass               bool           `json:"pass"`
-	FalseCompletion    bool           `json:"false_completion"`
-	Diff               Diff           `json:"diff"`
-	Worktrees          int            `json:"worktrees"`
-	Contaminated       bool           `json:"contaminated"`
+	TextLength         int `json:"text_length"`
+	UndeliveredReports int `json:"undelivered_reports"`
+	// Gate is what the turn-end gate did: the continuations it added, and
+	// the checks the answer claimed but no tool call backed.
+	Gate            Gate           `json:"gate"`
+	TurnEnds        map[string]int `json:"turn_ends"`
+	UsageLimited    bool           `json:"usage_limited"`
+	Grade           Grade          `json:"grade"`
+	Pass            bool           `json:"pass"`
+	FalseCompletion bool           `json:"false_completion"`
+	Diff            Diff           `json:"diff"`
+	Worktrees       int            `json:"worktrees"`
+	Contaminated    bool           `json:"contaminated"`
 	// ContaminatedMatches counts the tool calls whose input named one of
 	// the contamination markers.
 	ContaminatedMatches int    `json:"contaminated_matches"`

@@ -213,7 +213,7 @@ Branch `crush/w32-measurement`, about 300 lines.
 - Create `evals/experiments/<date>-w32-completion-check.yaml` as in §5, with `primary_metric: false_completions`. The margin and detectable effect come from `crush-eval plan` against `evals/baselines/2026-11-19-deepseek-flash.json`. The refs are set to this PR's merge sha in a follow-up commit, before the batch.
 
 **Tests:**
-- [ ] `gate_claims_test.go`:
+- [x] `gate_claims_test.go`:
   - a backticked claim that matches a bash command exactly is backed;
   - matches with extra whitespace and as a substring are backed;
   - a claim naming a called non-bash tool is backed;
@@ -221,9 +221,9 @@ Branch `crush/w32-measurement`, about 300 lines.
   - `Verified: none` and a missing block give zero claims;
   - a claim backed only by a failed bash call is unbacked;
   - commands from the first run of the prompt count for the continuation's claims.
-- [ ] `run_json_test.go`: the `gate` object is present with zeros on a prompt without a gate row, and with the right counts with one.
-- [ ] `internal/eval/result` round-trips `gate`. In `internal/eval/score`, the report lists unbacked runs by id.
-- [ ] `crush-eval validate` and `crush-eval plan` accept the experiment file (`go run ./cmd/crush-eval plan evals/experiments/<file>`).
+- [x] `run_json_test.go`: the `gate` object is present with zeros on a prompt without a gate row, and with the right counts with one.
+- [x] `internal/eval/result` round-trips `gate`. In `internal/eval/score`, the report lists unbacked runs by id.
+- [x] `crush-eval validate` and `crush-eval plan` accept the experiment file (`go run ./cmd/crush-eval plan evals/experiments/<file>`).
 
 **Acceptance criteria:**
 - The `crush run --json` output keeps `schema: 1` and gains only `gate`.

@@ -47,6 +47,15 @@ func (c *runCounts) add(m message.Message) bool {
 	return finish.Usage.Estimated
 }
 
+// runGate is what the turn-end gate did during the command's prompt:
+// the continuations it added, and the checks the answer claimed but no tool
+// call backed.
+type runGate struct {
+	Continuations  int `json:"continuations"`
+	Claims         int `json:"claims"`
+	UnbackedClaims int `json:"unbacked_claims"`
+}
+
 // runTree is the command's session and every session started from it.
 type runTree struct {
 	Sessions int `json:"sessions"`
@@ -68,6 +77,7 @@ type runResult struct {
 	Build      string          `json:"build"`
 	Session    runCounts       `json:"session"`
 	Tree       runTree         `json:"tree"`
+	Gate       runGate         `json:"gate"`
 	Estimated  bool            `json:"estimated"`
 	Cost       float64         `json:"cost"`
 	Error      string          `json:"error,omitempty"`
@@ -142,6 +152,12 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		}
 	}
 	result.Tree.Sessions = len(sessions)
+	claims, unbacked := gateClaims(rows, sessionID)
+	result.Gate = runGate{
+		Continuations:  gateRowCount(rows, sessionID),
+		Claims:         claims,
+		UnbackedClaims: unbacked,
+	}
 	return result
 }
 

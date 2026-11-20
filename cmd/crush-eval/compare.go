@@ -45,6 +45,13 @@ type aggregateRow struct {
 	TokensWrite  float64 `json:"tokens_cache_write_median"`
 	TokensOutput float64 `json:"tokens_output_median"`
 	Tokens       int64   `json:"tokens_total"`
+	// GateContinuations, GateClaims and GateUnbacked are what the turn-end
+	// gate did over the valid runs, and UnbackedRuns names the runs whose
+	// answer claimed a check it never ran.
+	GateContinuations int      `json:"gate_continuations"`
+	GateClaims        int      `json:"gate_claims"`
+	GateUnbacked      int      `json:"gate_unbacked_claims"`
+	UnbackedRuns      []string `json:"gate_unbacked_runs,omitempty"`
 	// Cost is the total cost when every run priced itself.
 	Cost *float64 `json:"cost,omitempty"`
 }
@@ -242,7 +249,11 @@ func aggregateRows(runs []result.Result) []aggregateRow {
 			TokensOutput:             agg.Tokens.Output.Median,
 			Tokens: agg.Tokens.Input.Total + agg.Tokens.CacheRead.Total +
 				agg.Tokens.CacheWrite.Total + agg.Tokens.Output.Total,
-			Cost: agg.Cost,
+			Cost:              agg.Cost,
+			GateContinuations: agg.GateContinuations,
+			GateClaims:        agg.GateClaims,
+			GateUnbacked:      agg.GateUnbacked,
+			UnbackedRuns:      agg.UnbackedRuns,
 		})
 	}
 	return rows
@@ -280,6 +291,22 @@ func printCompare(stdout io.Writer, report compareReport) {
 	}
 	if err := figures.Flush(); err != nil {
 		return
+	}
+
+	gate := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(gate, "\nvariant\troute\tkind\tcontinuations\tclaims\tunbacked")
+	for _, row := range report.Aggregates {
+		fmt.Fprintf(gate, "%s\t%s\t%s\t%d\t%d\t%d\n",
+			row.Variant, row.Route, kindName(row.Kind),
+			row.GateContinuations, row.GateClaims, row.GateUnbacked)
+	}
+	if err := gate.Flush(); err != nil {
+		return
+	}
+	for _, row := range report.Aggregates {
+		for _, id := range row.UnbackedRuns {
+			fmt.Fprintf(stdout, "unbacked claims: %s %s\n", row.Variant, id)
+		}
 	}
 
 	for _, row := range report.Comparisons {
