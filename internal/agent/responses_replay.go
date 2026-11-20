@@ -354,6 +354,10 @@ type replayStream struct {
 	items    map[int]*replayOutputItem
 	buf      []byte
 	finished bool
+	// skipping drops the tail of an oversize line, and oversizeLogged
+	// keeps the Debug entry to one per stream.
+	skipping       bool
+	oversizeLogged bool
 }
 
 type replayOutputItem struct {
@@ -383,6 +387,8 @@ type replayEvent struct {
 	} `json:"response"`
 }
 
+// write records complete SSE lines as they pass through. The bytes are only
+// observed: the reader forwards them unchanged.
 func (s *replayStream) write(p []byte) {
 	if s.finished {
 		return
@@ -395,12 +401,21 @@ func (s *replayStream) write(p []byte) {
 		}
 		line := s.buf[:index]
 		s.buf = s.buf[index+1:]
-		s.observeLine(line)
+		if !s.skipping {
+			s.observeLine(line)
+		}
+		s.skipping = false
 	}
 	if len(s.buf) > maxResponsesReplayLineBytes {
-		// One unterminated line this large is unusable; stop buffering.
+		// One unterminated line this large cannot be a reasoning item.
+		// Drop what is buffered, skip to the next newline and keep
+		// forwarding the stream.
 		s.buf = nil
-		s.finished = true
+		s.skipping = true
+		if !s.oversizeLogged {
+			s.oversizeLogged = true
+			slog.Debug("Dropping an oversize Responses SSE line", "limit_bytes", maxResponsesReplayLineBytes)
+		}
 	}
 }
 
@@ -430,8 +445,7 @@ func (s *replayStream) observeLine(line []byte) {
 		s.setItem(*event.OutputIndex, event.Item, event.Type == "response.output_item.done")
 	}
 
-	switch event.Type {
-	case "response.completed", "response.incomplete", "response.failed":
+	if event.Type == "response.completed" {
 		s.finish()
 	}
 }
@@ -558,8 +572,9 @@ func reasoningItemJSON(raw json.RawMessage, encrypted string) json.RawMessage {
 	return encoded
 }
 
-// replayRecordingBody records the streamed response as it is read. Close
-// finishes the stream too, in case the consumer stops before EOF.
+// replayRecordingBody observes the streamed response as it is read. Only a
+// response.completed event closes the record: an aborted, cancelled or
+// closed stream records nothing.
 type replayRecordingBody struct {
 	body   io.ReadCloser
 	stream *replayStream
@@ -570,14 +585,10 @@ func (b *replayRecordingBody) Read(p []byte) (int, error) {
 	if n > 0 {
 		b.stream.write(p[:n])
 	}
-	if err == io.EOF {
-		b.stream.finish()
-	}
 	return n, err
 }
 
 func (b *replayRecordingBody) Close() error {
-	b.stream.finish()
 	return b.body.Close()
 }
 

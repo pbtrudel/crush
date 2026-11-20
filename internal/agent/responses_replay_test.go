@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -292,6 +293,7 @@ func TestResponsesReplayInsertsReasoningBeforeAssistantText(t *testing.T) {
 		`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Let me look."}]}}`,
 		`{"type":"response.output_item.added","output_index":2,"item":{"id":"fc_text","type":"function_call","call_id":"call_text","name":"view","arguments":""}}`,
 		`{"type":"response.output_item.done","output_index":2,"item":{"id":"fc_text","type":"function_call","call_id":"call_text","name":"view","arguments":"{}"}}`,
+		`{"type":"response.completed","response":{"id":"resp_text","output":[]}}`,
 	).body
 	server := newReplayTestServer(t, replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: stream})
 	client := replayTestClient(t, true)
@@ -558,6 +560,7 @@ func TestResponsesReplayIgnoresOpeningEncryptedContent(t *testing.T) {
 		`{"type":"response.output_item.added","output_index":0,"item":{"id":"rsn_open","type":"reasoning","encrypted_content":"open-cipher-only","summary":[]}}`,
 		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rsn_open","type":"reasoning","summary":[]}}`,
 		`{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_open","type":"function_call","call_id":"call_open","name":"view","arguments":"{}"}}`,
+		`{"type":"response.completed","response":{"id":"resp_open","output":[]}}`,
 	).body
 	server := newReplayTestServer(t, replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: stream})
 	client := replayTestClient(t, true)
@@ -777,4 +780,111 @@ func TestLogBodyTruncates(t *testing.T) {
 	truncated := logBody([]byte(strings.Repeat("x", 400)))
 	require.Len(t, truncated, 303)
 	require.True(t, strings.HasSuffix(truncated, "..."))
+}
+
+// postRaw sends one request through client and returns the response body.
+func (s *replayTestServer) postRaw(t *testing.T, client *http.Client, body string) []byte {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.server.URL+"/responses", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return raw
+}
+
+// TestResponsesReplayRecordsOnlyCompletedResponses covers aborted streams:
+// an unfinished stream, an incomplete response and a failed response carry
+// items but must not be replayed.
+func TestResponsesReplayRecordsOnlyCompletedResponses(t *testing.T) {
+	t.Parallel()
+
+	unfinished := sseBody(
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rsn_un","type":"reasoning","encrypted_content":"close-cipher-un","summary":[]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_un","name":"view","arguments":"{}"}}`,
+	).body
+	incomplete := sseBody(
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rsn_inc","type":"reasoning","encrypted_content":"close-cipher-inc","summary":[]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_inc","name":"view","arguments":"{}"}}`,
+		`{"type":"response.incomplete","response":{"id":"resp_inc","output":[{"id":"rsn_inc","type":"reasoning","encrypted_content":"close-cipher-inc","summary":[]},{"type":"function_call","call_id":"call_inc","name":"view","arguments":"{}"}]}}`,
+	).body
+	failed := sseBody(
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rsn_fail","type":"reasoning","encrypted_content":"close-cipher-fail","summary":[]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_fail","name":"view","arguments":"{}"}}`,
+		`{"type":"response.failed","response":{"id":"resp_fail","output":[]}}`,
+	).body
+
+	server := newReplayTestServer(t,
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: unfinished},
+		completedResponse("resp_un"),
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: incomplete},
+		completedResponse("resp_inc"),
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: failed},
+		completedResponse("resp_fail"),
+	)
+	client := replayTestClient(t, true)
+
+	for i, callID := range []string{"call_un", "call_inc", "call_fail"} {
+		server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+		server.post(t, client, replayRequest(t, "gpt-test",
+			`{"role":"user","content":"hi"}`,
+			functionCall(callID, "view", "{}"),
+			functionCallOutput(callID, "ok"),
+		))
+		bodies := server.seenBodies()
+		require.Empty(t, replayReasoningItems(t, bodies[i*2+1]), "an aborted stream is not replayed")
+	}
+}
+
+// TestResponsesReplayDoesNotFinishOnClose covers a consumer that stops before
+// the response completes: closing the body must not record its items.
+func TestResponsesReplayDoesNotFinishOnClose(t *testing.T) {
+	t.Parallel()
+
+	transport := newResponsesReasoningReplayTransport(nil, true).(*responsesReasoningReplayTransport)
+	stream := newReplayStream(transport, replayScope{endpoint: "https://example.test/responses", model: "gpt-test"}, conversationPrefix{})
+	data := []byte(sseBody(
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rsn_close","type":"reasoning","encrypted_content":"close-cipher-close","summary":[]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_close","name":"view","arguments":"{}"}}`,
+	).body)
+	body := &replayRecordingBody{body: io.NopCloser(bytes.NewReader(data)), stream: stream}
+
+	// Read every byte without asking for another one, so the body never
+	// reports EOF before Close.
+	_, err := io.ReadFull(body, make([]byte, len(data)))
+	require.NoError(t, err)
+	require.NoError(t, body.Close())
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	require.Empty(t, transport.items, "a body closed before response.completed records nothing")
+}
+
+// TestResponsesReplayForwardsOversizeLine covers an SSE line over the 1 MiB
+// buffer bound: the bytes still reach the consumer unchanged and recording
+// resumes on the next event.
+func TestResponsesReplayForwardsOversizeLine(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("x", 2<<20)
+	stream := "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"" + huge + "\"}]}}\n\n" + reasoningStream()
+	server := newReplayTestServer(t, replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: stream})
+	client := replayTestClient(t, true)
+
+	received := server.postRaw(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+	require.Equal(t, stream, string(received), "the streamed bytes pass through unchanged")
+
+	server.post(t, client, replayRequest(t, "gpt-test",
+		`{"role":"user","content":"hi"}`,
+		functionCall("call_a", "view", `{"path":"a.txt"}`),
+		functionCallOutput("call_a", "ok"),
+	))
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 2)
+	require.Equal(t, []string{"close-cipher-1"}, replayReasoningItems(t, bodies[1]),
+		"recording resumes after the oversize line")
 }
