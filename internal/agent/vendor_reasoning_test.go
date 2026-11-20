@@ -144,6 +144,25 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.NotContains(t, extra, "preserve_thinking")
 	})
 
+	t.Run("a distill model takes its own family's rule", func(t *testing.T) {
+		t.Parallel()
+		// The name carries qwen, but the model is DeepSeek's own: it must not
+		// get the qwen flag and must keep its history.
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("deepseek-r1-distill-qwen-32b"), neuralwatt))
+		require.NotContains(t, extra, "preserve_thinking")
+		require.NotContains(t, extra, "thinking")
+		require.True(t, vendorReasoningNeedsHistory("deepseek-r1-distill-qwen-32b"))
+	})
+
+	t.Run("a similar name is not glm", func(t *testing.T) {
+		t.Parallel()
+		for _, id := range []string{"chatglm-6b", "vendor/some-glm-4.6"} {
+			extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel(id), neuralwatt))
+			require.NotContains(t, extra, "thinking", id)
+			require.False(t, vendorReasoningNeedsHistory(id), id)
+		}
+	})
+
 	t.Run("no flag when the request does not reason", func(t *testing.T) {
 		t.Parallel()
 		model := Model{
@@ -176,6 +195,33 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestVendorFamily pins the family matching: the base model name decides,
+// so a vendor prefix and another family's name in the id do not.
+func TestVendorFamily(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"GLM-5.3", "glm"},
+		{"z-ai/glm-5.3", "glm"},
+		{"kimi-k2.6", "kimi"},
+		{"moonshotai/Kimi-K3", "kimi"},
+		{"qwen3.8-flash", "qwen"},
+		{"mimo-v2.6-pro", "mimo"},
+		{"deepseek/deepseek-v4.1-flash", "deepseek"},
+		{"deepseek-r1-distill-qwen-32b", "deepseek"},
+		{"chatglm-6b", ""},
+		{"vendor/some-glm-4.6", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, vendorFamily(tt.id))
+		})
+	}
 }
 
 // TestGetProviderOptionsDeepSeekUnchanged freezes the options a DeepSeek model

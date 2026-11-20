@@ -1,92 +1,31 @@
 package agent
 
 import (
+	"path"
 	"strings"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 )
 
-// vendorReasoningRule is what a vendor's API requires before it keeps the
-// reasoning the model produced in earlier turns.
-type vendorReasoningRule struct {
-	// flag is the request field that asks for the reasoning to be kept.
-	// Nested flags live inside the "thinking" object; the others are
-	// top-level request fields.
-	flag   string
-	nested bool
-	value  any
-	// topLevelFallback sets the same field at the top level when the host
-	// already sends "thinking" as something other than an object.
-	topLevelFallback bool
-	// needsHistory is set when the API requires the reasoning content back
-	// in the history, so slimming must not drop it.
-	needsHistory bool
-}
-
-// vendorReasoningRuleFor returns the rule of a model family, matched
-// case-insensitively on a fragment of the model id.
-//
-// Z.AI documents thinking.clear_thinking ("Controls whether to clear
-// reasoning_content from previous conversation turns"), true by default.
-// Moonshot documents thinking.keep, null by default (earlier turns are
-// ignored) and "all" to keep previous turns' reasoning_content. Alibaba
-// documents a top-level preserve_thinking, which makes the model read
-// historical assistant reasoning_content. MiMo documents no flag: it
-// requires the reasoning_content field back in the history, as do Kimi and
-// DeepSeek, and Crush already sends it for every reasoning part.
-func vendorReasoningRuleFor(modelID string) vendorReasoningRule {
-	id := strings.ToLower(modelID)
+// vendorFamily returns the model family whose API has a rule about the
+// reasoning it produced in earlier turns, matched on the model's base name
+// so a vendor prefix or another family's name in the path cannot decide it.
+func vendorFamily(modelID string) string {
+	id := strings.ToLower(path.Base(modelID))
 	switch {
-	case strings.Contains(id, "glm-"):
-		return vendorReasoningRule{
-			flag: "clear_thinking", nested: true, value: false,
-			topLevelFallback: true,
-		}
-	case strings.Contains(id, "kimi"):
-		return vendorReasoningRule{flag: "keep", nested: true, value: "all", needsHistory: true}
-	case strings.Contains(id, "qwen"):
-		return vendorReasoningRule{flag: "preserve_thinking", value: true}
-	case strings.Contains(id, "mimo"):
-		return vendorReasoningRule{needsHistory: true}
-	case strings.Contains(id, "deepseek"):
-		return vendorReasoningRule{needsHistory: true}
+	case strings.HasPrefix(id, "glm-"):
+		return "glm"
+	case strings.HasPrefix(id, "kimi"):
+		return "kimi"
+	case strings.HasPrefix(id, "qwen"):
+		return "qwen"
+	case strings.HasPrefix(id, "mimo"):
+		return "mimo"
+	case strings.HasPrefix(id, "deepseek"):
+		return "deepseek"
 	}
-	return vendorReasoningRule{}
-}
-
-// addVendorReasoningFlag adds the family's keep-earlier-reasoning field to
-// an OpenAI-compatible request. A nested flag is skipped when the provider
-// already set "thinking" to something other than an object: Hyper sends a
-// boolean, and rewriting that value would guess what the host accepts. GLM's
-// field is set at the top level there instead, for hosts that forward fields
-// they do not know; Kimi's has no top-level form, so it is left out.
-func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
-	rule := vendorReasoningRuleFor(modelID)
-	if rule.flag == "" {
-		return
-	}
-	if !rule.nested {
-		extraBody[rule.flag] = rule.value
-		return
-	}
-	if current, exists := extraBody["thinking"]; exists {
-		thinking, isObject := current.(map[string]any)
-		if !isObject {
-			if rule.topLevelFallback {
-				extraBody[rule.flag] = rule.value
-			}
-			return
-		}
-		thinking[rule.flag] = rule.value
-		return
-	}
-	thinking := map[string]any{rule.flag: rule.value}
-	if rule.flag == "keep" {
-		// Moonshot needs the object's type when Crush creates it.
-		thinking["type"] = "enabled"
-	}
-	extraBody["thinking"] = thinking
+	return ""
 }
 
 // vendorReasoningProvider reports whether the provider is one whose vendor
@@ -109,10 +48,51 @@ func vendorReasoningProvider(providerID string) bool {
 	return false
 }
 
+// addVendorReasoningFlag adds the field that asks the vendor to keep the
+// reasoning of earlier turns: Z.AI's thinking.clear_thinking, Moonshot's
+// thinking.keep "all", or Alibaba's top-level preserve_thinking. MiMo, Kimi
+// and DeepSeek also require the reasoning back in the history, which Crush
+// already sends.
+func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
+	switch vendorFamily(modelID) {
+	case "glm":
+		// Z.AI documents clear_thinking inside the thinking object. A host
+		// that sends thinking as a boolean gets it at the top level, which
+		// the host may forward.
+		if thinking, ok := extraBody["thinking"].(map[string]any); ok {
+			thinking["clear_thinking"] = false
+			return
+		}
+		if _, exists := extraBody["thinking"]; !exists {
+			extraBody["thinking"] = map[string]any{"clear_thinking": false}
+			return
+		}
+		extraBody["clear_thinking"] = false
+	case "kimi":
+		// Moonshot documents thinking.keep "all" and no top-level form, so a
+		// host that sends thinking as a boolean gets nothing.
+		thinking, ok := extraBody["thinking"].(map[string]any)
+		if !ok {
+			if _, exists := extraBody["thinking"]; exists {
+				return
+			}
+			thinking = map[string]any{"type": "enabled"}
+			extraBody["thinking"] = thinking
+		}
+		thinking["keep"] = "all"
+	case "qwen":
+		extraBody["preserve_thinking"] = true
+	}
+}
+
 // vendorReasoningNeedsHistory reports whether the family's API requires the
 // reasoning content it produced to be sent back with the history.
 func vendorReasoningNeedsHistory(modelID string) bool {
-	return vendorReasoningRuleFor(modelID).needsHistory
+	switch vendorFamily(modelID) {
+	case "kimi", "mimo", "deepseek":
+		return true
+	}
+	return false
 }
 
 // requestReasons reports whether the request as built asks the model to
