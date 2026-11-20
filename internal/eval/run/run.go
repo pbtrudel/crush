@@ -125,8 +125,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 	// A model selection left in the eval home's data config outranks the
 	// route's own model, so the run would use a provider the route does not
-	// configure. Refuse instead of editing a config a batch may share.
-	if err := route.CheckDataConfig(opts.Home); err != nil {
+	// configure. A jailed child's token refresh rewrites that file mid-batch,
+	// so clear the selection here, on the host, before every run.
+	if err := route.StripDataConfig(opts.Home); err != nil {
 		return line, err
 	}
 	catalogs, err := catalog.Read(opts.Home)

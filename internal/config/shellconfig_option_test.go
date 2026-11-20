@@ -133,7 +133,22 @@ func TestShellConfigOptionResetRejectsNonList(t *testing.T) {
 	require.Contains(t, err.Error(), "not one")
 }
 
+// Replay is on unless the option says otherwise, so a crushrc that never
+// mentions it keeps the default and an explicit false turns it off.
 func TestShellConfigOptionResponsesReasoningReplay(t *testing.T) {
-	store := loadCrushSh(t, `option responses-reasoning-replay`)
-	require.True(t, store.Config().Options.ResponsesReasoningReplay)
+	t.Run("unset stays on", func(t *testing.T) {
+		store := loadCrushSh(t, ``)
+		require.Nil(t, store.Config().Options.ResponsesReasoningReplay)
+		require.True(t, store.Config().Options.GetResponsesReasoningReplay())
+	})
+	t.Run("bare turns it on", func(t *testing.T) {
+		store := loadCrushSh(t, `option responses-reasoning-replay`)
+		require.NotNil(t, store.Config().Options.ResponsesReasoningReplay)
+		require.True(t, store.Config().Options.GetResponsesReasoningReplay())
+	})
+	t.Run("false turns it off", func(t *testing.T) {
+		store := loadCrushSh(t, `option responses-reasoning-replay false`)
+		require.NotNil(t, store.Config().Options.ResponsesReasoningReplay)
+		require.False(t, store.Config().Options.GetResponsesReasoningReplay())
+	})
 }

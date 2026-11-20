@@ -493,8 +493,10 @@ type Options struct {
 	HistorySlimReasoning bool `json:"history_slim_reasoning,omitempty" jsonschema:"description=When slimming older history\\, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.,default=false"`
 	// ResponsesReasoningReplay sends the encrypted reasoning items an OpenAI
 	// Responses endpoint returned earlier in the turn back with the next
-	// request. Off by default until each endpoint is known to accept them.
-	ResponsesReasoningReplay bool `json:"responses_reasoning_replay,omitempty" jsonschema:"description=Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. Off by default; the endpoint must accept them.,default=false"`
+	// request. On by default, because replaying them recovered a large part
+	// of the pass rate the model lost between steps. Set it to false, or
+	// CRUSH_RESPONSES_REASONING_REPLAY=0, to turn it off.
+	ResponsesReasoningReplay *bool `json:"responses_reasoning_replay,omitempty" jsonschema:"description=Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. On by default; set it to false to turn it off.,default=true"`
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
@@ -767,6 +769,15 @@ func (o *Options) GetRepetitionDetection() bool {
 		return true
 	}
 	return *o.RepetitionDetection
+}
+
+// GetResponsesReasoningReplay reports whether the Responses reasoning replay
+// transport is installed. It is on unless the option is explicitly false.
+func (o *Options) GetResponsesReasoningReplay() bool {
+	if o == nil || o.ResponsesReasoningReplay == nil {
+		return true
+	}
+	return *o.ResponsesReasoningReplay
 }
 
 // GetPinentryIntegrated reports whether the integrated pinentry is

@@ -617,21 +617,55 @@ func TestRunFailsOnNearExpiryToken(t *testing.T) {
 	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
 }
 
-// TestRunRefusesPinnedModel checks that a run refuses to start while the eval
-// home data config pins a model. That selection outranks the route's own model
-// and fails the run on a provider the route does not configure.
-func TestRunRefusesPinnedModel(t *testing.T) {
+// TestRunStripsPinnedModel checks that the model selection a child's token
+// refresh leaves in the eval home data config is cleared before the run, so
+// the route's own model on the command line is the one used.
+func TestRunStripsPinnedModel(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t)
 	require.NoError(t, f.home.Ensure())
-	write(t, filepath.Join(f.home.DataDir(), "crush.json"),
-		`{"models":{"main":{"provider":"commandcode","model":"claude-sonnet-5-5"}},"providers":{}}`)
+	path := filepath.Join(f.home.DataDir(), "crush.json")
+	write(t, path,
+		`{"models":{"main":{"provider":"commandcode","model":"qwen3.8-max"}},"recent_models":{"large":[]},"options":{"disable_metrics":true},"providers":{"commandcode":{"api_key":"token"}}}`)
 
-	_, err := Run(context.Background(), f.options())
-	require.ErrorContains(t, err, "models")
-	require.ErrorContains(t, err, "crush-eval login")
-	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	line := f.run(t)
+
+	require.Equal(t, "fake", line.Route)
+	require.FileExists(t, f.env["FAKE_ARGV"], "the child started")
+	var doc map[string]json.RawMessage
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &doc))
+	for _, key := range []string{"models", "recent_models", "options"} {
+		require.NotContains(t, doc, key, "%s must be stripped", key)
+	}
+	require.JSONEq(t, `{"commandcode":{"api_key":"token"}}`, string(doc["providers"]), "providers survive")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+// TestRunLeavesADataConfigWithNoSelectionAlone checks that a data config a run
+// has nothing to strip from is not rewritten: a batch may be reading it, and
+// other fields must keep their bytes.
+func TestRunLeavesADataConfigWithNoSelectionAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	require.NoError(t, f.home.Ensure())
+	path := filepath.Join(f.home.DataDir(), "crush.json")
+	write(t, path, `{"providers":{"commandcode":{"api_key":"token"}}}`)
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.run(t)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
 }
 
 // TestRunRecordsTheCatalog checks that a run records the sha256 of the model
