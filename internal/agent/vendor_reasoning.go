@@ -11,6 +11,9 @@ type vendorReasoningRule struct {
 	flag   string
 	nested bool
 	value  any
+	// topLevelFallback sets the same field at the top level when the host
+	// already sends "thinking" as something other than an object.
+	topLevelFallback bool
 	// needsHistory is set when the API requires the reasoning content back
 	// in the history, so slimming must not drop it.
 	needsHistory bool
@@ -31,7 +34,10 @@ func vendorReasoningRuleFor(modelID string) vendorReasoningRule {
 	id := strings.ToLower(modelID)
 	switch {
 	case strings.Contains(id, "glm-"):
-		return vendorReasoningRule{flag: "clear_thinking", nested: true, value: false}
+		return vendorReasoningRule{
+			flag: "clear_thinking", nested: true, value: false,
+			topLevelFallback: true,
+		}
 	case strings.Contains(id, "kimi"):
 		return vendorReasoningRule{flag: "keep", nested: true, value: "all", needsHistory: true}
 	case strings.Contains(id, "qwen"):
@@ -47,7 +53,9 @@ func vendorReasoningRuleFor(modelID string) vendorReasoningRule {
 // addVendorReasoningFlag adds the family's keep-earlier-reasoning field to
 // an OpenAI-compatible request. A nested flag is skipped when the provider
 // already set "thinking" to something other than an object: Hyper sends a
-// boolean, and rewriting that value would guess what the host accepts.
+// boolean, and rewriting that value would guess what the host accepts. GLM's
+// field is set at the top level there instead, for hosts that forward fields
+// they do not know; Kimi's has no top-level form, so it is left out.
 func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
 	rule := vendorReasoningRuleFor(modelID)
 	if rule.flag == "" {
@@ -60,6 +68,9 @@ func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
 	if current, exists := extraBody["thinking"]; exists {
 		thinking, isObject := current.(map[string]any)
 		if !isObject {
+			if rule.topLevelFallback {
+				extraBody[rule.flag] = rule.value
+			}
 			return
 		}
 		thinking[rule.flag] = rule.value

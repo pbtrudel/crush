@@ -82,15 +82,30 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.NotContains(t, extra, "thinking")
 	})
 
-	t.Run("a host's boolean thinking is left alone", func(t *testing.T) {
+	t.Run("glm falls back to a top-level flag beside boolean thinking", func(t *testing.T) {
 		t.Parallel()
-		// Hyper sends "thinking" as a boolean, which Crush sets itself. A
-		// nested vendor flag must not rewrite it into an object.
+		// Hyper sends "thinking" as a boolean, which Crush sets itself. The
+		// boolean is not rewritten; GLM's flag goes at the top level, which
+		// the host may forward.
 		model := reasoningGatewayModel("glm-5.3")
 		model.ModelCfg.Think = true
 		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.Equal(t, true, extra["thinking"])
+		require.Equal(t, false, extra["clear_thinking"])
+	})
+
+	t.Run("kimi on boolean thinking gets nothing", func(t *testing.T) {
+		t.Parallel()
+		// Kimi has no top-level form for thinking.keep, so a boolean
+		// thinking leaves the flag out rather than guessing a shape.
+		model := reasoningGatewayModel("kimi-k2.6")
+		model.ModelCfg.Think = true
+		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		require.Equal(t, true, extra["thinking"])
+		require.NotContains(t, extra, "keep")
+		require.NotContains(t, extra, "clear_thinking")
 	})
 
 	t.Run("a host's thinking object gains the flag", func(t *testing.T) {

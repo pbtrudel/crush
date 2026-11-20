@@ -774,6 +774,14 @@ func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
 		extra := gatewayExtraBody(t, opts)
 		assert.Equal(t, false, extra["thinking"])
 	})
+
+	t.Run("the user can override glm's top-level fallback", func(t *testing.T) {
+		t.Parallel()
+		opts := getProviderOptions(model(map[string]any{"clear_thinking": true}), hyperCfg)
+		extra := gatewayExtraBody(t, opts)
+		assert.Equal(t, true, extra["clear_thinking"])
+		assert.Equal(t, true, extra["thinking"])
+	})
 }
 
 func TestGetProviderOptionsMalformedFallback(t *testing.T) {
