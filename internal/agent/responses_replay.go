@@ -22,6 +22,10 @@ import (
 // the oldest items from sitting in memory for the life of the session.
 const maxResponsesReplayItems = 32
 
+// maxResponsesReplayInputItems bounds the request input the transport
+// hashes. Real sessions stay far below it; a larger input is sent as is.
+const maxResponsesReplayInputItems = 100_000
+
 // maxResponsesReplayLineBytes bounds one buffered SSE line. A reasoning item
 // with its encrypted content fits well under it; anything larger is dropped
 // rather than buffered without end.
@@ -92,6 +96,9 @@ type conversationPrefix struct {
 // prefixHashes hashes every prefix of canonical input items, including the
 // empty prefix at index 0, so a record's prefix check is a single compare.
 func prefixHashes(items [][]byte) [][sha256.Size]byte {
+	if len(items) > maxResponsesReplayInputItems {
+		return nil
+	}
 	hashes := make([][sha256.Size]byte, len(items)+1)
 	h := sha256.New()
 	for i, item := range items {
@@ -146,7 +153,9 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 	}
 
 	input, ok := parseResponsesInput(original)
-	if !ok {
+	// A request past the bound is passed through untouched rather than
+	// hashed, so the prefix tables stay a bounded allocation.
+	if !ok || len(input) > maxResponsesReplayInputItems {
 		return t.base.RoundTrip(requestWithBody(req, original))
 	}
 	scope := replayScope{endpoint: responsesEndpoint(req), model: responsesModel(original)}
