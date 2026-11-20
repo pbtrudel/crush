@@ -35,6 +35,8 @@ func (m *UI) agentDescriptors() []dialog.AgentDescriptor {
 			Name:            member.Name,
 			Kind:            agentrun.KindTeammate,
 			Status:          agentRunStatusFromTeam(member.Status),
+			Model:           member.Model,
+			ModelProvider:   member.ModelProvider,
 		})
 	}
 
@@ -54,6 +56,8 @@ func (m *UI) agentDescriptors() []dialog.AgentDescriptor {
 				Name:            status.Label,
 				Kind:            agentrun.KindSubagent,
 				Status:          agentRunStatusFromDispatch(status),
+				Model:           status.Model,
+				ModelProvider:   status.ModelProvider,
 				StartedAt:       status.Started,
 				FinishedAt:      status.Finished,
 			})
@@ -154,6 +158,10 @@ func mergeAgentDescriptor(dst, src dialog.AgentDescriptor) dialog.AgentDescripto
 	}
 	if src.FinishedAt.IsZero() {
 		src.FinishedAt = dst.FinishedAt
+	}
+	// The registry records no model, so a dispatch's is the only one.
+	if src.Model == "" {
+		src.Model, src.ModelProvider = dst.Model, dst.ModelProvider
 	}
 	return src
 }

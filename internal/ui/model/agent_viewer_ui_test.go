@@ -599,3 +599,22 @@ func TestAgentViewerUITextRemainsReadableAtNarrowWidth(t *testing.T) {
 	scr := uv.NewScreenBuffer(u.width, u.height)
 	require.NotPanics(t, func() { u.Draw(scr, scr.Bounds()) })
 }
+
+// The viewer header names the model the viewed agent runs on, and stays as it
+// was when the model is unknown.
+func TestAgentViewerUIHeaderShowsTheAgentModel(t *testing.T) {
+	t.Parallel()
+
+	u, _ := newAgentViewerUITest(t)
+	known := newAgentViewer(u.com, dialog.AgentDescriptor{
+		SessionID: "child", Name: "researcher", Status: agentrun.StatusDone,
+		Model: "glm-5", ModelProvider: "hyper",
+	}, config.ScrollbarDefault, 1)
+	require.Contains(t, ansi.Strip(known.header()), "researcher · glm-5 · hyper")
+
+	unknown := newAgentViewer(u.com, dialog.AgentDescriptor{
+		SessionID: "child", Name: "researcher", Status: agentrun.StatusDone,
+	}, config.ScrollbarDefault, 1)
+	require.NotContains(t, ansi.Strip(unknown.header()), " ·  · ")
+	require.Contains(t, ansi.Strip(unknown.header()), "researcher")
+}

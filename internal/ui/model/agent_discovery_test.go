@@ -193,3 +193,40 @@ func TestAgentDescriptorsOrdersRunningFirstAndStable(t *testing.T) {
 			[]string{got[0].SessionID, got[1].SessionID, got[2].SessionID, got[3].SessionID})
 	})
 }
+
+// Every descriptor names the model its agent runs on: teammates from the
+// roster's model override, dispatched subagents from the run model their
+// dispatch recorded.
+func TestAgentDescriptorsCarryTheModelEachAgentRunsOn(t *testing.T) {
+	t.Parallel()
+	u := newTestUI()
+	u.com.Workspace = agentDiscoveryWorkspace{}
+	u.session = &session.Session{ID: "root"}
+	call := message.ToolCall{ID: "call-1", Name: agent.AgentDispatchToolName, Input: `{"label":"review","prompt":"inspect"}`}
+	item := chat.NewToolMessageItem(u.com.Styles, "parent-message", call, nil, false, u.com.Workspace.WorkingDir()).(*chat.AgentToolMessageItem)
+	item.SetResult(&message.ToolResult{
+		ToolCallID: "call-1",
+		Name:       agent.AgentDispatchToolName,
+		Content:    "started",
+		Metadata:   `{"label":"review","run_model":"hyper/glm-5"}`,
+	})
+	u.chat.SetMessages(item)
+	// The same subagent is in the run registry, which records no model, so
+	// the dispatch's model has to survive the merge.
+	u.agentRuns = []agentrun.Run{{
+		ID: "run-1", SessionID: u.com.Workspace.CreateAgentToolSessionID("parent-message", "call-1"),
+		ParentSessionID: "root", Name: "registry", Kind: agentrun.KindSubagent, Status: agentrun.StatusRunning,
+	}}
+	u.teamState = agentteam.State{Members: []agentteam.Member{{
+		ID: "member-1", Name: "reviewer", SessionID: "team-child", ParentID: "root",
+		Status: agentteam.StatusRunning, Model: "opus-4", ModelProvider: "anthropic",
+	}}}
+
+	got := u.agentDescriptors()
+
+	require.Len(t, got, 2)
+	require.Equal(t, "glm-5", got[0].Model)
+	require.Equal(t, "hyper", got[0].ModelProvider)
+	require.Equal(t, "opus-4", got[1].Model)
+	require.Equal(t, "anthropic", got[1].ModelProvider)
+}
