@@ -60,6 +60,7 @@ func TestPrepareTokenRefreshesAndWrites(t *testing.T) {
 	require.True(t, ok, "the run config holds the token object")
 	require.Equal(t, "fresh", token["access_token"])
 	require.Equal(t, float64(fresh.ExpiresAt), token["expires_at"])
+	require.NotContains(t, token, "refresh_token", "the pinned copy holds no long-lived refresh token")
 }
 
 // TestPrepareTokenRefreshesAShortToken checks that a token Crush would still
@@ -242,6 +243,7 @@ func TestPrepareTokenKeepsAValidToken(t *testing.T) {
 	token := runProvider(t, runData, ProviderCopilot)["oauth"].(map[string]any)
 	require.Equal(t, "long-lived", token["access_token"])
 	require.Equal(t, float64(stored.ExpiresAt), token["expires_at"])
+	require.NotContains(t, token, "refresh_token", "the pinned copy holds no long-lived refresh token")
 }
 
 // TestPrepareTokenIgnoresProvidersThatRefreshAtTheAPIHost checks that Hyper

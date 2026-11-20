@@ -85,7 +85,12 @@ func (r *Route) PrepareToken(ctx context.Context, h *home.Home, runDataDir strin
 				r.Provider, copilotRunLimit, copilotTokenLifetime, r.Name)
 		}
 	}
-	return writeTokenFile(filepath.Join(runDataDir, "crush.json"), r.Provider, token)
+	// The pinned copy is the child's for the whole run and cannot renew
+	// anything, so the long-lived GitHub token stays out of the run directory,
+	// which outlives the run.
+	pinned := *token
+	pinned.RefreshToken = ""
+	return writeTokenFile(filepath.Join(runDataDir, "crush.json"), r.Provider, &pinned)
 }
 
 // tokenMargin is how long before a token's expiry the run must be over: Crush
