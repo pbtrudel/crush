@@ -690,3 +690,79 @@ func fantasyToolNames(tools []fantasy.Tool) []string {
 	}
 	return names
 }
+
+// messagesJSON renders each message of a request on its own, without the
+// message-level cache-control markers (the only part of a message that a
+// breakpoint is allowed to move), so two requests can be compared on the
+// bytes the provider reads.
+func messagesJSON(t *testing.T, messages []fantasy.Message) []string {
+	t.Helper()
+	out := make([]string, len(messages))
+	for i, msg := range messages {
+		msg.ProviderOptions = nil
+		data, err := json.Marshal(msg)
+		require.NoError(t, err)
+		out[i] = string(data)
+	}
+	return out
+}
+
+// TestSummarize_AppliesTheLiveStepMediaPasses pins the media rewrites. Every
+// live step drops empty tool media and applies the request image budget, so a
+// compaction request that skips them sends different bytes at the first image
+// and re-reads everything behind it.
+func TestSummarize_AppliesTheLiveStepMediaPasses(t *testing.T) {
+	env := testEnv(t)
+	model := &toolRequestModel{text: "done"}
+	imageLimit := 1
+	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit}})
+	large := Model{
+		Model: model,
+		CatwalkCfg: catwalk.Model{
+			ContextWindow:    200_000,
+			DefaultMaxTokens: 32_000,
+			Capabilities:     catwalk.Capabilities{Vision: true},
+		},
+	}
+	agent := NewSessionAgent(SessionAgentOptions{
+		Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },
+		SystemPrompt: "SYSTEM PROMPT",
+		Sessions:     env.sessions,
+		Messages:     env.messages,
+		Cfg:          cfg,
+		Tools:        []fantasy.AgentTool{&recordingTool{name: "alpha"}},
+		titles:       env.titles,
+	}).(*sessionAgent)
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	// Two images, so the one-image budget has to drop the oldest.
+	for _, name := range []string{"first.png", "second.png"} {
+		_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role: message.User,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "look at " + name},
+				message.BinaryContent{Path: name, MIMEType: "image/png", Data: []byte("fake-png")},
+			},
+		})
+		require.NoError(t, err)
+	}
+
+	_, err = agent.Run(ctx, SessionAgentCall{Prompt: "carry on", SessionID: sess.ID, MaxOutputTokens: 1000})
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	live := messagesJSON(t, model.calls[0].Prompt)
+	require.Contains(t, strings.Join(live, "\n"), imageOmittedText,
+		"the live step must omit the oldest image")
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.Len(t, model.calls, 2)
+
+	compaction := messagesJSON(t, model.calls[1].Prompt)
+	require.Greater(t, len(compaction), len(live))
+	require.Equal(t, live, compaction[:len(live)],
+		"the compaction must send the live step's messages unchanged")
+	require.Contains(t, compaction[len(compaction)-1], "Compact the conversation above")
+}

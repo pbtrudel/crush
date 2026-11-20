@@ -2466,7 +2466,13 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			}
 			a.normalizePromptMessages(prepared.Messages)
 			prepared.Tools = compactionTools
+			// Every live step rewrites empty tool media and applies the
+			// request image budget before sending. Skipping either here
+			// would change the bytes at the first rewritten part and
+			// re-read the conversation behind it.
+			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 			// The last-message marker lands on the message that closed
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
