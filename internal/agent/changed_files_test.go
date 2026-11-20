@@ -194,9 +194,12 @@ func TestGateChangedFilesFromTheWorkingTree(t *testing.T) {
 	model := &scriptedModel{script: []scriptedCall{
 		callTool("bash", 1_000),
 		answer("done", fantasy.FinishReasonStop, 1_000),
+		answer("verified", fantasy.FinishReasonStop, 1_000),
 	}}
 	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
+	// Only the completion check reads the working tree, so it is on here.
+	cfg.Config().Options.TurnEndCompletionCheck = true
 	path := filepath.Join(env.workingDir, "by-shell.txt")
 	sa := newCompactionAgent(env, model, cfg, false, &shellWritingTool{recordingTool{name: tools.BashToolName}, path})
 	sa.hooks = hooks.NewRunner(hooks.Static(map[string][]config.HookConfig{
@@ -208,9 +211,15 @@ func TestGateChangedFilesFromTheWorkingTree(t *testing.T) {
 	_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
 	require.NoError(t, err)
 
+	// The hook runs once per candidate ending, so it sees the same file
+	// each time the turn considers ending.
 	data, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "by-shell.txt", strings.TrimSpace(string(data)), "the hook payload matches the gate's files")
+	lines := strings.Fields(string(data))
+	require.NotEmpty(t, lines)
+	for _, line := range lines {
+		require.Equal(t, "by-shell.txt", line, "the hook payload matches the gate's files")
+	}
 }
 
 // A TurnEnd hook sees the files the turn's tools changed when git cannot
@@ -268,10 +277,7 @@ func TestGateBaselineTakenOncePerPrompt(t *testing.T) {
 		answer("fixed", fantasy.FinishReasonStop, 1_000),
 	}}
 	sa := gateEnvAgent(t, env, model, check)
-	dir := t.TempDir()
-	sa.hooks = hooks.NewRunner(hooks.Static(map[string][]config.HookConfig{
-		hooks.EventTurnEnd: {{Command: `true`}},
-	}), dir, dir)
+	sa.cfg.Config().Options.TurnEndCompletionCheck = true
 	// Each snapshot reports its own sequence number as HEAD, so the test
 	// can tell a baseline from an end.
 	calls := 0
@@ -446,4 +452,38 @@ func TestGateTakesNoBaselineForChildRuns(t *testing.T) {
 		require.NoError(t, err)
 		require.Zero(t, calls)
 	})
+}
+
+// Only the completion check reads the working tree. A TurnEnd hook that
+// wants changed_files gets the tool calls, with no git call spent on it.
+func TestGateHookChangedFilesWithoutTheCheck(t *testing.T) {
+	t.Parallel()
+	env := newGitEnv(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "files.log")
+	path := filepath.Join(env.workingDir, "written.txt")
+	model := &scriptedModel{script: []scriptedCall{
+		callToolWithInput(tools.WriteToolName, `{"file_path":"`+path+`"}`, 1_000),
+		answer("done", fantasy.FinishReasonStop, 1_000),
+	}}
+	sfg := gateEnvAgent(t, env, model)
+	sfg.tools = csync.NewSliceFrom([]fantasy.AgentTool{&writeTool{recordingTool: recordingTool{name: tools.WriteToolName}}})
+	sfg.hooks = hooks.NewRunner(hooks.Static(map[string][]config.HookConfig{
+		hooks.EventTurnEnd: {{Command: `jq -r '.changed_files[]?' >> ` + logPath}},
+	}), dir, dir)
+	calls := 0
+	sfg.snapshotState = func(context.Context, string) (gitutil.WorktreeState, error) {
+		calls++
+		return gitutil.WorktreeState{}, nil
+	}
+	sess, err := env.sessions.Create(t.Context(), "hookonly")
+	require.NoError(t, err)
+
+	_, err = sfg.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Zero(t, calls, "no built-in check reads the tree, so none is read")
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Equal(t, path, strings.TrimSpace(string(data)))
 }

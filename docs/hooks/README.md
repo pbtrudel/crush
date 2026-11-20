@@ -369,8 +369,10 @@ The payload says where the turn stands:
   // string. How the run ended, such as "completed" or "step_limit".
   "turn_end": "completed",
 
-  // string[]. Files changed in the turn, from git and from the edit tools.
-  // May be empty, and absent outside a repository with no tool edits.
+  // string[]. Files the turn changed, from its edit tools, expressed
+  // against the repository root. Git is compared only when
+  // options.turn_end_completion_check is on, so with hooks alone a change
+  // made by a shell command or a teammate is not listed. May be empty.
   "changed_files": ["internal/agent/agent.go"],
 
   // number. Continuations this prompt has left, after this one.
@@ -930,8 +932,9 @@ error:
   // "step_limit" or "tool_stop".
   "turn_end": "completed",
 
-  // string[] (TurnEnd). Files changed in the turn. May be empty, and left
-  // out when nothing changed.
+  // string[] (TurnEnd). Files the turn's edit tools changed, relative to
+  // the repository root. Git is compared only when the completion check is
+  // on. May be empty, and left out when nothing changed.
   "changed_files": ["internal/agent/agent.go"],
 
   // number (TurnEnd). Continuations this prompt has left.

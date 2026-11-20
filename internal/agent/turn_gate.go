@@ -143,14 +143,12 @@ func (a *sessionAgent) snapshotWorktree(ctx context.Context, dir string) (gituti
 	return gitutil.Snapshot(ctx, dir)
 }
 
-// gateNeedsChangedFiles reports whether anything reads the turn's changed
-// files, so a prompt with no hook and no built-in check costs no git call.
-// Without a working directory there is nothing to read.
+// gateNeedsChangedFiles reports whether anything reads the working tree. Only
+// the completion check does: a TurnEnd hook that wants changed_files gets the
+// tool calls alone, which costs no git call. Without a working directory
+// there is nothing to read.
 func (a *sessionAgent) gateNeedsChangedFiles() bool {
-	if a.gateWorkingDir() == "" {
-		return false
-	}
-	return a.hooks.Configured(hooks.EventTurnEnd) || a.completionCheckOn()
+	return a.gateWorkingDir() != "" && a.completionCheckOn()
 }
 
 // turnEndMaxContinuations returns how many continuations one prompt may
