@@ -218,15 +218,17 @@ func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCal
 // request to continue: a guard, a halt or a budget is never overridden.
 func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, userQueued bool) *SessionAgentCall {
 	// The working tree is read once here, before any check runs, so every
-	// check and the hook payload see the same files.
-	var endState gitutil.WorktreeState
+	// check and the hook payload see the same files. A failed snapshot
+	// leaves nothing to compare, so the turn falls back to its tool calls
+	// rather than reading the baseline as all deletions.
+	var endState *gitutil.WorktreeState
 	if call.gateBaseline != nil {
 		state, snapErr := a.snapshotWorktree(ctx, a.gateWorkingDir())
 		if snapErr != nil {
 			slog.Debug("Turn-end gate: no working-tree snapshot at the turn's end",
 				"session_id", call.SessionID, "error", snapErr)
 		} else {
-			endState = state
+			endState = &state
 		}
 	}
 	changed, headFrom, headTo := turnChangedFiles(call, endState)

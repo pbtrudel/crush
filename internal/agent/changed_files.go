@@ -67,14 +67,15 @@ func toolStringInput(input, field string) string {
 // turnChangedFiles returns the files a prompt changed: the union of the
 // working tree's comparison against the prompt's baseline and the tool calls
 // of every run, sorted and deduplicated. The HEAD shas frame the comparison;
-// both are empty when no baseline was taken, as outside a repository.
-func turnChangedFiles(call SessionAgentCall, end gitutil.WorktreeState) (paths []string, headFrom, headTo string) {
+// both are empty when there was nothing to compare, as outside a repository
+// or when one of the two snapshots failed.
+func turnChangedFiles(call SessionAgentCall, end *gitutil.WorktreeState) (paths []string, headFrom, headTo string) {
 	paths = slices.Clone(call.gateChangedFiles)
-	if call.gateBaseline == nil {
+	if call.gateBaseline == nil || end == nil {
 		slices.Sort(paths)
 		return slices.Compact(paths), "", ""
 	}
-	gitPaths, headFrom, headTo := call.gateBaseline.Changed(end)
+	gitPaths, headFrom, headTo := call.gateBaseline.Changed(*end)
 	paths = append(paths, gitPaths...)
 	slices.Sort(paths)
 	return slices.Compact(paths), headFrom, headTo

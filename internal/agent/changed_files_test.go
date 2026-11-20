@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,7 +108,7 @@ func TestTurnChangedFiles(t *testing.T) {
 			gateChangedFiles: []string{"b.go", "a.go"},
 		}
 
-		paths, headFrom, headTo := turnChangedFiles(call, after)
+		paths, headFrom, headTo := turnChangedFiles(call, &after)
 		require.Equal(t, []string{"a.go", "b.go", "c.go"}, paths)
 		require.Equal(t, "aaa", headFrom)
 		require.Equal(t, "aaa", headTo)
@@ -118,7 +119,7 @@ func TestTurnChangedFiles(t *testing.T) {
 		before := gitutil.WorktreeState{Head: "aaa", Entries: map[string]string{}}
 		after := gitutil.WorktreeState{Head: "bbb", Entries: map[string]string{}}
 
-		paths, headFrom, headTo := turnChangedFiles(SessionAgentCall{gateBaseline: &before}, after)
+		paths, headFrom, headTo := turnChangedFiles(SessionAgentCall{gateBaseline: &before}, &after)
 		require.Empty(t, paths)
 		require.Equal(t, "aaa", headFrom)
 		require.Equal(t, "bbb", headTo)
@@ -127,7 +128,7 @@ func TestTurnChangedFiles(t *testing.T) {
 	t.Run("the fallback has tool calls only", func(t *testing.T) {
 		t.Parallel()
 		call := SessionAgentCall{gateChangedFiles: []string{"z.go"}}
-		paths, headFrom, headTo := turnChangedFiles(call, gitutil.WorktreeState{})
+		paths, headFrom, headTo := turnChangedFiles(call, nil)
 		require.Equal(t, []string{"z.go"}, paths)
 		require.Empty(t, headFrom)
 		require.Equal(t, headFrom, headTo)
@@ -314,4 +315,38 @@ func TestGateTakesNoSnapshotWhenNotNeeded(t *testing.T) {
 	require.Zero(t, calls, "nothing reads the snapshot, so none is taken")
 	require.Equal(t, 1, model.callCount())
 	require.Len(t, gateRows(t, env, sess.ID), 0)
+}
+
+// When the end snapshot fails there is nothing to compare, so the turn
+// falls back to its tool calls instead of reading every entry the baseline
+// had as deleted.
+func TestGateSkipsTheGitComparisonWithoutAnEndSnapshot(t *testing.T) {
+	t.Parallel()
+	env := newGitEnv(t)
+	// A change made before the prompt stands in the baseline.
+	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "tracked.txt"), []byte("earlier\n"), 0o644))
+	record := &fakeGateCheck{name: "fake"}
+	model := &scriptedModel{script: []scriptedCall{answer("done", fantasy.FinishReasonStop, 1_000)}}
+	sfg := gateEnvAgent(t, env, model, record)
+	sfg.cfg.Config().Options.TurnEndCompletionCheck = true
+	calls := 0
+	sfg.snapshotState = func(ctx context.Context, dir string) (gitutil.WorktreeState, error) {
+		calls++
+		if calls > 1 {
+			return gitutil.WorktreeState{}, errors.New("git went away")
+		}
+		return gitutil.Snapshot(ctx, dir)
+	}
+	sess, err := env.sessions.Create(t.Context(), "snapshot")
+	require.NoError(t, err)
+
+	_, err = sfg.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	inputs := record.recorded()
+	require.Len(t, inputs, 1)
+	require.Empty(t, inputs[0].ChangedFiles, "a failed snapshot leaves no paths to report")
+	require.Empty(t, inputs[0].HeadFrom)
+	require.Empty(t, inputs[0].HeadTo)
+	require.Equal(t, 2, calls, "the baseline and one failed end snapshot")
 }
