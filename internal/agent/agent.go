@@ -2209,8 +2209,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}
 	// A continued turn keeps the session registered until the hand-off
 	// reads the queue, so a prompt typed in between is queued rather than
-	// started, and drops the continuation (see below).
-
+	// started, and drops the continuation. The seam lets a test stand in
+	// that window.
 	if gateNext != nil && a.beforeHandoff != nil {
 		a.beforeHandoff()
 	}
