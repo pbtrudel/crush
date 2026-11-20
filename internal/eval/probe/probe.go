@@ -87,7 +87,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		{opts.Extra, &report.With},
 	} {
 		for range reps {
-			answer, err := ask(ctx, client, url, header, opts.Route.Model, pass.extra)
+			answer, err := ask(ctx, client, url, header, opts.Route.Model, pass.extra, opts.Route.Provider)
 			if err != nil {
 				return Report{}, err
 			}
@@ -117,7 +117,7 @@ func requestBody(model string, extra map[string]any) map[string]any {
 }
 
 // ask sends one request and returns its answer, cut to a short line.
-func ask(ctx context.Context, client *http.Client, url string, header http.Header, model string, extra map[string]any) (string, error) {
+func ask(ctx context.Context, client *http.Client, url string, header http.Header, model string, extra map[string]any, provider string) (string, error) {
 	raw, err := json.Marshal(requestBody(model, extra))
 	if err != nil {
 		return "", fmt.Errorf("encode the probe request: %w", err)
@@ -138,7 +138,7 @@ func ask(ctx context.Context, client *http.Client, url string, header http.Heade
 		return "", fmt.Errorf("read the probe answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", statusError(resp.StatusCode, data)
+		return "", refusal(resp.StatusCode, data, provider)
 	}
 	var out struct {
 		Choices []struct {
@@ -156,10 +156,12 @@ func ask(ctx context.Context, client *http.Client, url string, header http.Heade
 	return short(out.Choices[0].Message.Content, maxAnswer), nil
 }
 
-// statusError names a refused request by its status and, when the body is
-// JSON, the provider's error type or code. The body text never appears: a
-// provider can echo a key in it.
-func statusError(status int, body []byte) error {
+// refusal names a refused request by its status and, when the body is JSON,
+// the provider's error type or code. The body text never appears: a provider
+// can echo a key in it. A Copilot refusal that reads as "no such endpoint"
+// also says that the probe speaks chat completions, since Copilot serves some
+// models only through /responses.
+func refusal(status int, body []byte, provider string) error {
 	var parsed struct {
 		Error struct {
 			Type string          `json:"type"`
@@ -181,7 +183,15 @@ func statusError(status int, body []byte) error {
 			detail = ": code " + short(code, maxErrorField)
 		}
 	}
-	return fmt.Errorf("probe request failed: status %d%s", status, detail)
+	err := fmt.Errorf("probe request failed: status %d%s", status, detail)
+	if provider != route.ProviderCopilot {
+		return err
+	}
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w; the probe speaks chat completions, so a model served only through /responses cannot be probed", err)
+	}
+	return err
 }
 
 // scalar is a JSON value as text when it is a string or a number, and empty
@@ -266,9 +276,10 @@ func endpoint(ctx context.Context, opts Options) (string, http.Header, error) {
 		header.Set("Authorization", "Bearer "+token.AccessToken)
 	case hyperp.Name:
 		// Crush's agent reaches Hyper over the OpenAI-compatible path below
-		// the base URL, not the catalog endpoint: captured agent requests
-		// POST to https://hyper.charm.land/v1/chat/completions, and a probe
-		// there answered. /api/v1/fantasy speaks fantasy's own protocol.
+		// the base URL: its captured agent requests POST to
+		// https://hyper.charm.land/v1/chat/completions, and a live probe of
+		// that path answered. The catalog endpoint on /api/v1/fantasy speaks
+		// fantasy's own protocol instead, so it is not what a run uses.
 		url = strings.TrimSuffix(hyperp.BaseURL(), "/") + "/v1/chat/completions"
 		token, err := storedToken(opts)
 		if err != nil {

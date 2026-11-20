@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -397,4 +398,52 @@ func TestEndpointWithoutAStoredToken(t *testing.T) {
 		Home:  home.At(t.TempDir()),
 	})
 	require.ErrorContains(t, err, "crush-eval login gpt")
+}
+
+// TestRunCopilotFailureHint checks the one hint a failed Copilot probe adds:
+// the probe speaks chat completions, so a model that Copilot serves only
+// through /responses cannot be probed. An auth failure gets no such hint.
+func TestRunCopilotFailureHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		status   int
+		wantHint bool
+	}{
+		{name: "model not served here", status: http.StatusNotFound, wantHint: true},
+		{name: "bad request", status: http.StatusBadRequest, wantHint: true},
+		{name: "unauthorized", status: http.StatusUnauthorized, wantHint: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := home.At(t.TempDir())
+			require.NoError(t, h.Ensure())
+			storeToken(t, h, route.ProviderCopilot, &oauth.Token{
+				AccessToken: "token",
+				ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+			})
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, `{"error":{"type":"not_found"}}`)
+			}))
+			t.Cleanup(server.Close)
+
+			rt := &route.Route{
+				Name: "gpt", Provider: route.ProviderCopilot, Model: "gpt-6-luna",
+				ProviderConfig: map[string]any{"base_url": server.URL},
+			}
+			_, err := Run(context.Background(), Options{Route: rt, Home: h})
+			require.ErrorContains(t, err, fmt.Sprintf("status %d", tt.status))
+			if tt.wantHint {
+				require.ErrorContains(t, err, "chat completions")
+				require.ErrorContains(t, err, "/responses")
+			} else {
+				require.NotContains(t, err.Error(), "/responses")
+			}
+		})
+	}
 }
