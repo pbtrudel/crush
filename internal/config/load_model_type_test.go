@@ -28,6 +28,7 @@ func TestLoadKeepsCatalogModelType(t *testing.T) {
 		Models: []catwalk.Model{
 			{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol", Type: catwalk.TypeResponses},
 			{ID: "gpt-5.6-luna", Name: "GPT 5.6 Luna", Type: catwalk.TypeResponses},
+			{ID: "claude-sonnet", Name: "Claude Sonnet", Type: catwalk.TypeMessages},
 		},
 	}})
 	resetProviderState()
@@ -38,7 +39,8 @@ func TestLoadKeepsCatalogModelType(t *testing.T) {
 		filepath.Join(workDir, "crush.json"),
 		[]byte(`{"providers":{"copilot":{"api_key":"ghu_test","models":[
 			{"id":"gpt-5.6-sol","name":"My Sol"},
-			{"id":"gpt-5.6-luna","name":"My Luna","type":"completions"}
+			{"id":"gpt-5.6-luna","name":"My Luna","type":"openai-compat"},
+			{"id":"claude-sonnet","name":"My Claude"}
 		]}}}`),
 		0o600,
 	))
@@ -61,5 +63,9 @@ func TestLoadKeepsCatalogModelType(t *testing.T) {
 
 	luna, ok := models["gpt-5.6-luna"]
 	require.True(t, ok)
-	require.Equal(t, catwalk.TypeCompletions, luna.Type, "an explicit type in the user entry wins")
+	require.Equal(t, catwalk.Type("openai-compat"), luna.Type, "an explicit type in the user entry wins")
+
+	claude, ok := models["claude-sonnet"]
+	require.True(t, ok)
+	require.Equal(t, catwalk.TypeMessages, claude.Type, "a non-Responses catalog type is kept too")
 }
