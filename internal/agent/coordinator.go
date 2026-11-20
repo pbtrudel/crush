@@ -1044,6 +1044,11 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			}
 		}
 
+		// The user's configured extra_body wins over Crush's own fields,
+		// key by key.
+		if userExtraBody, ok := mergedOptions["extra_body"].(map[string]any); ok {
+			maps.Copy(extraBody, userExtraBody)
+		}
 		mergedOptions["extra_body"] = extraBody
 
 		parsed, err := openaicompat.ParseOptions(mergedOptions)
