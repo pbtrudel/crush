@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/oauth"
@@ -279,7 +280,8 @@ func TestEndpointHyper(t *testing.T) {
 		Home:  h,
 	})
 	require.NoError(t, err)
-	require.Equal(t, "https://hyper.charm.land/v1/chat/completions", url)
+	// The base URL is Crush's own, so the expectation follows $HYPER_URL.
+	require.Equal(t, strings.TrimSuffix(hyperp.BaseURL(), "/")+"/v1/chat/completions", url)
 	require.Equal(t, "Bearer hyper-token", header.Get("Authorization"))
 }
 

@@ -1,8 +1,12 @@
 package route
 
 import (
+	"net"
+	"net/url"
+	"strings"
 	"testing"
 
+	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/stretchr/testify/require"
 )
 
@@ -11,6 +15,16 @@ import (
 // ships models for.
 func TestAPIHost(t *testing.T) {
 	t.Parallel()
+
+	// The Hyper host comes from Crush's own base URL, so the expectation
+	// follows $HYPER_URL instead of assuming the default.
+	hyperBase, err := url.Parse(hyperp.BaseURL())
+	require.NoError(t, err)
+	hyperPort := "443"
+	if hyperBase.Scheme == "http" {
+		hyperPort = "80"
+	}
+	hyperHost := strings.ToLower(net.JoinHostPort(hyperBase.Hostname(), hyperPort))
 
 	tests := []struct {
 		name     string
@@ -46,7 +60,7 @@ func TestAPIHost(t *testing.T) {
 			// Hyper's API host is the one Crush's own base URL names.
 			name:     "hyper built-in endpoint",
 			provider: "hyper",
-			want:     "hyper.charm.land:443",
+			want:     hyperHost,
 		},
 		{
 			name:     "base_url beats the built-in endpoint",

@@ -293,3 +293,30 @@ func TestChildEnvRejectsBlockedVariables(t *testing.T) {
 		})
 	}
 }
+
+// TestChildEnvForwardsHyperURL checks that a child resolves the same Hyper base
+// URL the jail allowlist uses: the runner derives the allowed host from
+// $HYPER_URL, so the child must see the same value, and a route may not set it
+// to something else.
+func TestChildEnvForwardsHyperURL(t *testing.T) {
+	t.Parallel()
+
+	h := home.At("/state/crush-eval")
+	dirs := Dirs{Home: "/run/home", Config: "/run/config"}
+	resolve := toolchainAt("/toolchains/go1.27.2")
+	parent := append([]string{}, parentEnv...)
+	parent = append(parent, "HYPER_URL=https://hyper.example")
+
+	r := &Route{Name: "glm", Provider: "hyper"}
+	env, err := r.childEnv(h, dirs, parent, resolve)
+	require.NoError(t, err)
+	require.Equal(t, "https://hyper.example", envMap(env)["HYPER_URL"])
+
+	env, err = r.childEnv(h, dirs, parentEnv, resolve)
+	require.NoError(t, err)
+	require.NotContains(t, envMap(env), "HYPER_URL", "a parent without the variable adds none")
+
+	r.Env = []string{"HYPER_URL"}
+	_, err = r.childEnv(h, dirs, parent, resolve)
+	require.ErrorContains(t, err, "HYPER_URL")
+}
