@@ -606,12 +606,14 @@ When multiple hooks match the same tool call:
 
 If a hook exceeds its timeout, Crush cancels its context and treats the
 result as a non-blocking error so the tool call proceeds. The default
-timeout is 30 seconds. A `TurnEnd` hook runs before the session is released,
-so a slow one keeps the session busy for as long as it runs, up to its
-timeout; background notification work in the hook itself. Shebang-dispatched subprocesses are killed through
+timeout is 30 seconds. Shebang-dispatched subprocesses are killed through
 `exec.CommandContext`; in-process hooks get a short grace period to yield
 and are then abandoned (the agent moves on regardless). Long-running work
 should honor context cancellation or run out-of-process via a shebang.
+
+A `TurnEnd` hook runs before the session is released, so a slow one keeps the
+session busy for as long as it runs, up to its timeout: background
+notification work in the hook itself.
 
 ## Examples
 
