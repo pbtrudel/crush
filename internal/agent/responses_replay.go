@@ -1,0 +1,594 @@
+package agent
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// maxResponsesReplayItems bounds the reasoning items one transport keeps.
+// A turn rarely runs more than a handful of steps, and each item carries an
+// encrypted blob of a few kilobytes, so a small bound is enough and keeps
+// the oldest items from sitting in memory for the life of the session.
+const maxResponsesReplayItems = 32
+
+// maxResponsesReplayLineBytes bounds one buffered SSE line. A reasoning item
+// with its encrypted content fits well under it; anything larger is dropped
+// rather than buffered without end.
+const maxResponsesReplayLineBytes = 1 << 20
+
+// responsesReasoningReplayEnabled reports whether the transport is installed.
+// The config option is the normal switch; the environment variable lets a
+// harness turn it on for one run without touching the config file.
+func responsesReasoningReplayEnabled(option bool) bool {
+	if option {
+		return true
+	}
+	enabled, _ := strconv.ParseBool(os.Getenv("CRUSH_RESPONSES_REASONING_REPLAY"))
+	return enabled
+}
+
+// newResponsesReasoningReplayTransport wraps base with a transport that
+// replays the encrypted reasoning items a Responses endpoint returned earlier
+// in the turn. A disabled transport is not installed at all: the caller's
+// transport comes back untouched, so requests and responses are byte for byte
+// what they were before the feature existed.
+func newResponsesReasoningReplayTransport(base http.RoundTripper, enabled bool) http.RoundTripper {
+	if !enabled {
+		return base
+	}
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &responsesReasoningReplayTransport{base: base}
+}
+
+// replayedReasoning is one closed reasoning item and the output item that
+// followed it. The follower anchors the item in a later request: it is
+// matched by call_id for a function call and by text for an assistant
+// message.
+type replayedReasoning struct {
+	endpoint string
+	model    string
+	item     json.RawMessage
+	follower replayFollower
+}
+
+type replayFollower struct {
+	callID string
+	text   string
+}
+
+// responsesReasoningReplayTransport records reasoning items from streamed
+// Responses responses and inserts them into later requests to the same
+// endpoint and model.
+type responsesReasoningReplayTransport struct {
+	base http.RoundTripper
+
+	mu       sync.Mutex
+	items    []replayedReasoning
+	disabled bool
+}
+
+func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.paused() || !isResponsesRequest(req) {
+		return t.base.RoundTrip(req)
+	}
+
+	original, err := readResponsesBody(req)
+	if err != nil {
+		return nil, err
+	}
+
+	body, inserted := t.withRecordedItems(req, original)
+	// The original body was consumed to inspect it; every request is
+	// rebuilt from the bytes we hold.
+	sent := requestWithBody(req, body)
+
+	resp, err := t.base.RoundTrip(sent)
+	if err != nil {
+		return nil, err
+	}
+
+	if inserted > 0 && rejectedReplayedReasoning(resp) {
+		t.pause()
+		_ = resp.Body.Close()
+		slog.Warn("Provider rejected replayed reasoning items, retrying without them",
+			"url", req.URL.Redacted(), "status", resp.StatusCode)
+		return t.base.RoundTrip(requestWithBody(req, original))
+	}
+
+	if !t.paused() && isEventStream(resp) {
+		resp.Body = &replayRecordingBody{
+			body:   resp.Body,
+			stream: newReplayStream(t, responsesEndpoint(req), responsesModel(original)),
+		}
+	}
+	return resp, nil
+}
+
+func (t *responsesReasoningReplayTransport) paused() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.disabled
+}
+
+func (t *responsesReasoningReplayTransport) pause() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.disabled = true
+}
+
+// remember stores one item, dropping the oldest ones past the bound.
+func (t *responsesReasoningReplayTransport) remember(item replayedReasoning) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.items = append(t.items, item)
+	if over := len(t.items) - maxResponsesReplayItems; over > 0 {
+		t.items = t.items[over:]
+	}
+}
+
+func (t *responsesReasoningReplayTransport) recordedItems() []replayedReasoning {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]replayedReasoning(nil), t.items...)
+}
+
+// withRecordedItems returns the request body carrying the recorded items in
+// front of the item each one followed. Bodies that already hold a reasoning
+// item, or that match no recorded item, are returned unchanged.
+func (t *responsesReasoningReplayTransport) withRecordedItems(req *http.Request, body []byte) ([]byte, int) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return body, 0
+	}
+	rawInput, ok := fields["input"]
+	if !ok {
+		return body, 0
+	}
+	var input []json.RawMessage
+	if err := json.Unmarshal(rawInput, &input); err != nil {
+		return body, 0
+	}
+
+	items := parseReplayInput(input)
+	for _, item := range items {
+		if item.Type == "reasoning" {
+			// A library that replays its own items already sent them.
+			return body, 0
+		}
+	}
+
+	plan := planReasoningInsertions(items, t.recordedItems(), responsesEndpoint(req), responsesModel(body))
+	if len(plan) == 0 {
+		return body, 0
+	}
+
+	out := make([]json.RawMessage, 0, len(input)+len(plan))
+	for i, item := range input {
+		for _, insertion := range plan {
+			if insertion.index == i {
+				out = append(out, insertion.item)
+			}
+		}
+		out = append(out, item)
+	}
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return body, 0
+	}
+	fields["input"] = encoded
+	rewritten, err := json.Marshal(fields)
+	if err != nil {
+		return body, 0
+	}
+	return rewritten, len(plan)
+}
+
+// replayInputItem is the part of an input item the transport matches on.
+type replayInputItem struct {
+	Type    string          `json:"type"`
+	CallID  string          `json:"call_id"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+func parseReplayInput(input []json.RawMessage) []replayInputItem {
+	items := make([]replayInputItem, len(input))
+	for i, raw := range input {
+		_ = json.Unmarshal(raw, &items[i])
+	}
+	return items
+}
+
+type reasoningInsertion struct {
+	index int
+	item  json.RawMessage
+}
+
+// planReasoningInsertions decides where each recorded item goes. The plan is
+// in recording order and each follower is used once, so two items never land
+// on the same anchor.
+func planReasoningInsertions(input []replayInputItem, records []replayedReasoning, endpoint, model string) []reasoningInsertion {
+	var plan []reasoningInsertion
+	used := make(map[int]bool)
+	for _, record := range records {
+		if record.endpoint != endpoint || record.model != model {
+			continue
+		}
+		index := followerIndex(input, record.follower, used)
+		if index < 0 {
+			continue
+		}
+		used[index] = true
+		plan = append(plan, reasoningInsertion{index: index, item: record.item})
+	}
+	return plan
+}
+
+func followerIndex(input []replayInputItem, follower replayFollower, used map[int]bool) int {
+	for i, item := range input {
+		if used[i] {
+			continue
+		}
+		if follower.callID != "" && item.Type == "function_call" && item.CallID == follower.callID {
+			return i
+		}
+		if follower.text != "" && item.Role == "assistant" && inputItemText(item.Content) == follower.text {
+			return i
+		}
+	}
+	return -1
+}
+
+// inputItemText reads the text of an assistant message input item, whether it
+// was written as a plain string or as a list of content parts.
+func inputItemText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	for _, part := range parts {
+		if part.Type == "output_text" || part.Type == "text" {
+			return part.Text
+		}
+	}
+	return ""
+}
+
+// replayStream reads one streamed Responses response and records its closed
+// reasoning items once the response is complete. It accepts both the plain
+// SSE events and the envelope GitHub Copilot wraps response-level events in.
+type replayStream struct {
+	transport *responsesReasoningReplayTransport
+	endpoint  string
+	model     string
+
+	items    map[int]*replayOutputItem
+	buf      []byte
+	finished bool
+}
+
+type replayOutputItem struct {
+	typ       string
+	callID    string
+	text      string
+	encrypted string
+	item      json.RawMessage
+	closed    bool
+}
+
+func newReplayStream(transport *responsesReasoningReplayTransport, endpoint, model string) *replayStream {
+	return &replayStream{
+		transport: transport,
+		endpoint:  endpoint,
+		model:     model,
+		items:     map[int]*replayOutputItem{},
+	}
+}
+
+type replayEvent struct {
+	Type        string          `json:"type"`
+	OutputIndex *int            `json:"output_index"`
+	Item        json.RawMessage `json:"item"`
+	Response    *struct {
+		Output []json.RawMessage `json:"output"`
+	} `json:"response"`
+}
+
+func (s *replayStream) write(p []byte) {
+	if s.finished {
+		return
+	}
+	s.buf = append(s.buf, p...)
+	for {
+		index := bytes.IndexByte(s.buf, '\n')
+		if index < 0 {
+			break
+		}
+		line := s.buf[:index]
+		s.buf = s.buf[index+1:]
+		s.observeLine(line)
+	}
+	if len(s.buf) > maxResponsesReplayLineBytes {
+		// One unterminated line this large is unusable; stop buffering.
+		s.buf = nil
+		s.finished = true
+	}
+}
+
+func (s *replayStream) observeLine(line []byte) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return
+	}
+	payload := bytes.TrimSpace(line[len("data:"):])
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return
+	}
+
+	var event replayEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return
+	}
+
+	// Copilot wraps response-level events in {"response": {...}}; the
+	// completed response repeats the full output.
+	if event.Response != nil && len(event.Response.Output) > 0 {
+		for i, item := range event.Response.Output {
+			s.setItem(i, item, true)
+		}
+	}
+	if len(event.Item) > 0 && event.OutputIndex != nil {
+		s.setItem(*event.OutputIndex, event.Item, event.Type == "response.output_item.done")
+	}
+
+	switch event.Type {
+	case "response.completed", "response.incomplete", "response.failed":
+		s.finish()
+	}
+}
+
+func (s *replayStream) setItem(index int, raw json.RawMessage, closed bool) {
+	var item struct {
+		Type             string `json:"type"`
+		CallID           string `json:"call_id"`
+		EncryptedContent string `json:"encrypted_content"`
+		Content          []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return
+	}
+
+	out, ok := s.items[index]
+	if !ok {
+		out = &replayOutputItem{}
+		s.items[index] = out
+	}
+	if item.Type != "" {
+		out.typ = item.Type
+	}
+	if item.CallID != "" {
+		out.callID = item.CallID
+	}
+	for _, part := range item.Content {
+		if (part.Type == "output_text" || part.Type == "text") && part.Text != "" {
+			out.text = part.Text
+			break
+		}
+	}
+	if out.typ == "reasoning" {
+		out.item = append(json.RawMessage(nil), raw...)
+	}
+	if closed {
+		out.closed = true
+		// Only the closing event's encrypted content is kept: the
+		// opening event's copy is shorter and unused.
+		if item.EncryptedContent != "" {
+			out.encrypted = item.EncryptedContent
+		}
+	}
+}
+
+// finish records the closed reasoning items of the finished response, each
+// with the first anchorable item that followed it.
+func (s *replayStream) finish() {
+	if s.finished {
+		return
+	}
+	s.finished = true
+
+	indices := make([]int, 0, len(s.items))
+	for index := range s.items {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+
+	for position, index := range indices {
+		out := s.items[index]
+		if !out.closed || out.typ != "reasoning" || out.encrypted == "" {
+			continue
+		}
+		follower, ok := followingFollower(indices[position+1:], s.items)
+		if !ok {
+			// Nothing to anchor it to: reasoning behind a final answer
+			// is only replayed once the message store carries it.
+			continue
+		}
+		s.transport.remember(replayedReasoning{
+			endpoint: s.endpoint,
+			model:    s.model,
+			item:     reasoningItemJSON(out.item, out.encrypted),
+			follower: follower,
+		})
+	}
+}
+
+// followingFollower walks the output items after a reasoning item and returns
+// the first one a request can be anchored on.
+func followingFollower(rest []int, items map[int]*replayOutputItem) (replayFollower, bool) {
+	for _, index := range rest {
+		out := items[index]
+		switch {
+		case out.typ == "function_call" && out.callID != "":
+			return replayFollower{callID: out.callID}, true
+		case out.typ == "message" && out.text != "":
+			return replayFollower{text: out.text}, true
+		}
+	}
+	return replayFollower{}, false
+}
+
+// reasoningItemJSON trims a closed reasoning item to the fields the input
+// array accepts and pins the closing encrypted content.
+func reasoningItemJSON(raw json.RawMessage, encrypted string) json.RawMessage {
+	var original struct {
+		ID      string            `json:"id"`
+		Summary []json.RawMessage `json:"summary"`
+		Content []json.RawMessage `json:"content"`
+	}
+	_ = json.Unmarshal(raw, &original)
+
+	trimmed := map[string]any{
+		"type":              "reasoning",
+		"encrypted_content": encrypted,
+	}
+	if original.ID != "" {
+		trimmed["id"] = original.ID
+	}
+	if len(original.Summary) > 0 {
+		trimmed["summary"] = original.Summary
+	}
+	if len(original.Content) > 0 {
+		trimmed["content"] = original.Content
+	}
+	encoded, err := json.Marshal(trimmed)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+// replayRecordingBody records the streamed response as it is read. Close
+// finishes the stream too, in case the consumer stops before EOF.
+type replayRecordingBody struct {
+	body   io.ReadCloser
+	stream *replayStream
+}
+
+func (b *replayRecordingBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	if n > 0 {
+		b.stream.write(p[:n])
+	}
+	if err == io.EOF {
+		b.stream.finish()
+	}
+	return n, err
+}
+
+func (b *replayRecordingBody) Close() error {
+	b.stream.finish()
+	return b.body.Close()
+}
+
+// isResponsesRequest reports whether the request targets a Responses
+// endpoint. Chat-completions traffic from the same provider passes through.
+func isResponsesRequest(req *http.Request) bool {
+	if req == nil || req.Method != http.MethodPost || req.Body == nil || req.Body == http.NoBody {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSuffix(req.URL.Path, "/"), "/responses")
+}
+
+func responsesEndpoint(req *http.Request) string {
+	return req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
+}
+
+func responsesModel(body []byte) string {
+	var request struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &request)
+	return request.Model
+}
+
+func isEventStream(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusOK &&
+		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+}
+
+// rejectedReplayedReasoning reads a 4xx body to see whether the provider
+// named an item or reasoning as the problem. The body is restored for the
+// caller, and the check is deliberately loose: providers word the rejection
+// differently, and a wrong guess only costs one retry.
+func rejectedReplayedReasoning(resp *http.Response) bool {
+	if resp.StatusCode < 400 || resp.StatusCode >= 500 || resp.Body == nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return false
+	}
+	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "reasoning") || strings.Contains(text, "item")
+}
+
+func readResponsesBody(req *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reading responses request body: %w", err)
+	}
+	return body, nil
+}
+
+func requestWithBody(req *http.Request, body []byte) *http.Request {
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.ContentLength = int64(len(body))
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	clone.TransferEncoding = nil
+	return clone
+}
+
+// withResponsesReasoningReplay installs the replay transport on a provider
+// client when the option or its environment override asks for it. A provider
+// that had no client of its own gets one, so the transport has somewhere to
+// sit.
+func (c *coordinator) withResponsesReasoningReplay(client *http.Client) *http.Client {
+	if !responsesReasoningReplayEnabled(c.cfg.Config().Options.ResponsesReasoningReplay) {
+		return client
+	}
+	if client == nil {
+		client = &http.Client{}
+	}
+	client.Transport = newResponsesReasoningReplayTransport(client.Transport, true)
+	return client
+}

@@ -1693,6 +1693,7 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 			Token: token,
 		}
 	}
+	httpClient = c.withResponsesReasoningReplay(httpClient)
 	if httpClient != nil {
 		opts = append(opts, openai.WithHTTPClient(httpClient))
 	}
@@ -1806,6 +1807,9 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		}
 		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
 	}
+	if wireType == catwalk.TypeResponses {
+		httpClient = c.withResponsesReasoningReplay(httpClient)
+	}
 	if httpClient != nil {
 		opts = append(opts, openaicompat.WithHTTPClient(httpClient))
 	}
@@ -1827,8 +1831,12 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 		azure.WithAPIKey(apiKey),
 		azure.WithUseResponsesAPI(),
 	}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	httpClient = c.withResponsesReasoningReplay(httpClient)
+	if httpClient != nil {
 		opts = append(opts, azure.WithHTTPClient(httpClient))
 	}
 	if options == nil {
