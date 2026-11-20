@@ -607,3 +607,20 @@ func TestRunFailsOnNearExpiryToken(t *testing.T) {
 	require.ErrorContains(t, err, "expires")
 	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
 }
+
+// TestRunRefusesPinnedModel checks that a run refuses to start while the eval
+// home data config pins a model. That selection outranks the route's own model
+// and fails the run on a provider the route does not configure.
+func TestRunRefusesPinnedModel(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	require.NoError(t, f.home.Ensure())
+	write(t, filepath.Join(f.home.DataDir(), "crush.json"),
+		`{"models":{"main":{"provider":"commandcode","model":"claude-sonnet-5-5"}},"providers":{}}`)
+
+	_, err := Run(context.Background(), f.options())
+	require.ErrorContains(t, err, "models")
+	require.ErrorContains(t, err, "crush-eval login")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}

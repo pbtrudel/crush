@@ -135,29 +135,5 @@ func writeTokenFile(path, provider string, token *oauth.Token) error {
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
-	// Write beside the target and rename, so a crash cannot leave half a
-	// config behind for the child to read.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".crush-*.json")
-	if err != nil {
-		return fmt.Errorf("create the token file: %w", err)
-	}
-	defer os.Remove(tmp.Name()) //nolint:errcheck // Only there when the rename failed.
-	if _, err := tmp.Write(append(raw, '\n')); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("tighten %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("install %s: %w", path, err)
-	}
-	return nil
+	return writeFileAtomic(path, append(raw, '\n'))
 }

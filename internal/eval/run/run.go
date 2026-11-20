@@ -122,6 +122,12 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := opts.Home.Ensure(); err != nil {
 		return line, err
 	}
+	// A model selection left in the eval home's data config outranks the
+	// route's own model, so the run would use a provider the route does not
+	// configure. Refuse instead of editing a config a batch may share.
+	if err := route.CheckDataConfig(opts.Home); err != nil {
+		return line, err
+	}
 	runDir := filepath.Join(opts.Home.BatchDir(opts.Batch), "runs", runDirName(opts))
 	// A retried attempt starts from a fresh checkout.
 	if err := os.RemoveAll(runDir); err != nil {
