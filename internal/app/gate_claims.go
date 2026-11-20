@@ -69,28 +69,73 @@ func toolCommand(input string) string {
 	return parsed.Command
 }
 
-// verifiedClaims reads the backticked command of every "- " line in an
-// answer's Verified block. A missing block and "Verified: none" hold no
-// claim.
+// verifiedClaims reads the backticked command of every line in an answer's
+// Verified block, which a model may write with or without bold markers, with
+// an item on the heading's line, and with "- ", "* " or "1. " bullets. A
+// missing block and "Verified: none" hold no claim.
 func verifiedClaims(text string) []string {
 	var claims []string
 	inBlock := false
 	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
+		// Bold markers carry no meaning here, and a heading may be
+		// wrapped in them.
+		line = strings.ReplaceAll(strings.TrimSpace(line), "**", "")
 		if !inBlock {
-			if strings.EqualFold(trimmed, "Verified:") {
-				inBlock = true
+			rest, heading := verifiedHeading(line)
+			if !heading {
+				continue
+			}
+			inBlock = true
+			if claim := claimOf(rest); claim != "" {
+				claims = append(claims, claim)
 			}
 			continue
 		}
-		if !strings.HasPrefix(trimmed, "- ") {
+		item, bullet := bulletItem(line)
+		if !bullet {
 			break
 		}
-		if claim := backticked(trimmed); claim != "" {
+		if claim := claimOf(item); claim != "" {
 			claims = append(claims, claim)
 		}
 	}
 	return claims
+}
+
+// verifiedHeading splits a line that opens the Verified block into what
+// follows the word, which is empty when the heading stands alone.
+func verifiedHeading(line string) (rest string, ok bool) {
+	const heading = "Verified:"
+	if len(line) < len(heading) || !strings.EqualFold(line[:len(heading)], heading) {
+		return "", false
+	}
+	return strings.TrimSpace(line[len(heading):]), true
+}
+
+// bulletItem returns the text after a "- ", "* " or "1. " marker.
+func bulletItem(line string) (item string, ok bool) {
+	for _, marker := range []string{"- ", "* "} {
+		if after, found := strings.CutPrefix(line, marker); found {
+			return strings.TrimSpace(after), true
+		}
+	}
+	digits := 0
+	for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+		digits++
+	}
+	if digits > 0 && strings.HasPrefix(line[digits:], ". ") {
+		return strings.TrimSpace(line[digits+2:]), true
+	}
+	return "", false
+}
+
+// claimOf returns the backticked command of an item, or "", which covers a
+// line that holds no command and the word "none".
+func claimOf(item string) string {
+	if stripped, bullet := bulletItem(item); bullet {
+		item = stripped
+	}
+	return backticked(item)
 }
 
 // backticked returns the first backticked span of a line, or "".

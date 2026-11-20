@@ -203,3 +203,32 @@ func TestSummarizeRunGateCounts(t *testing.T) {
 		commandStep("root", "Done.", "", "", "")))
 	require.Nil(t, plain.Gate)
 }
+
+// The Verified block survives the shapes a model writes it in: a bold
+// heading, an item on the heading's line, and any of the three bullet
+// markers.
+func TestVerifiedClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"dash bullets", "Verified:\n- `go build ./...`: ok\n- `go vet ./...`: ok", []string{"go build ./...", "go vet ./..."}},
+		{"bold heading", "**Verified:**\n- `go build ./...`: ok", []string{"go build ./..."}},
+		{"an item on the heading line", "Verified: `go build ./...` compiled", []string{"go build ./..."}},
+		{"star bullets", "Verified:\n* `go build ./...`\n* `go vet ./...`", []string{"go build ./...", "go vet ./..."}},
+		{"numbered bullets", "Verified:\n1. `go build ./...`\n2. `go vet ./...`", []string{"go build ./...", "go vet ./..."}},
+		{"verified none", "Verified: none\nUnverified: the tests", nil},
+		{"no block", "All done.", nil},
+		{"prose ends the block", "Verified:\n- `go build ./...`: ok\n\nThat is all.", []string{"go build ./..."}},
+		{"a claim with no command", "Verified:\n- I ran the tests", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, verifiedClaims(tt.text))
+		})
+	}
+}
