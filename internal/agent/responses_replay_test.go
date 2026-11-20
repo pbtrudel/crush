@@ -888,3 +888,16 @@ func TestResponsesReplayForwardsOversizeLine(t *testing.T) {
 	require.Equal(t, []string{"close-cipher-1"}, replayReasoningItems(t, bodies[1]),
 		"recording resumes after the oversize line")
 }
+
+// TestCarriesRecordableEvent pins the prefilter: only events that can carry a
+// closed output item or the completed response are parsed.
+func TestCarriesRecordableEvent(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, carriesRecordableEvent([]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{}}`)))
+	require.True(t, carriesRecordableEvent([]byte(`data: {"response": {"id": "resp_1", "output": []}, "type": "response.completed"}`)))
+	require.False(t, carriesRecordableEvent([]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{}}`)))
+	require.False(t, carriesRecordableEvent([]byte(`data: {"type":"response.output_text.delta","delta":"hi"}`)))
+	require.False(t, carriesRecordableEvent([]byte(`data: {"type":"response.reasoning_summary_text.delta","delta":"hi"}`)))
+	require.False(t, carriesRecordableEvent([]byte(`event: response.completed`)))
+}

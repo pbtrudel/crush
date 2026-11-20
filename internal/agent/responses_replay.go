@@ -366,7 +366,6 @@ type replayOutputItem struct {
 	text      string
 	encrypted string
 	item      json.RawMessage
-	closed    bool
 }
 
 func newReplayStream(transport *responsesReasoningReplayTransport, scope replayScope, prefix conversationPrefix) *replayStream {
@@ -419,9 +418,20 @@ func (s *replayStream) write(p []byte) {
 	}
 }
 
+// carriesRecordableEvent filters out the bulk of the stream cheaply: deltas,
+// item openings and the rest cannot close or complete a record. It runs on
+// the consumer's Read path, so it must not unmarshal what it can skip.
+func carriesRecordableEvent(line []byte) bool {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	return bytes.Contains(line, []byte("response.output_item.done")) ||
+		bytes.Contains(line, []byte("response.completed"))
+}
+
 func (s *replayStream) observeLine(line []byte) {
 	line = bytes.TrimSpace(line)
-	if !bytes.HasPrefix(line, []byte("data:")) {
+	if !carriesRecordableEvent(line) {
 		return
 	}
 	payload := bytes.TrimSpace(line[len("data:"):])
@@ -438,11 +448,11 @@ func (s *replayStream) observeLine(line []byte) {
 	// completed response repeats the full output.
 	if event.Response != nil && len(event.Response.Output) > 0 {
 		for i, item := range event.Response.Output {
-			s.setItem(i, item, true)
+			s.setItem(i, item)
 		}
 	}
 	if len(event.Item) > 0 && event.OutputIndex != nil {
-		s.setItem(*event.OutputIndex, event.Item, event.Type == "response.output_item.done")
+		s.setItem(*event.OutputIndex, event.Item)
 	}
 
 	if event.Type == "response.completed" {
@@ -450,7 +460,10 @@ func (s *replayStream) observeLine(line []byte) {
 	}
 }
 
-func (s *replayStream) setItem(index int, raw json.RawMessage, closed bool) {
+// setItem keeps what a closed output item contributes: its type, call id,
+// first text, and for a reasoning item the item itself and the closing
+// encrypted content.
+func (s *replayStream) setItem(index int, raw json.RawMessage) {
 	var item struct {
 		Type             string `json:"type"`
 		CallID           string `json:"call_id"`
@@ -483,9 +496,6 @@ func (s *replayStream) setItem(index int, raw json.RawMessage, closed bool) {
 	}
 	if out.typ == "reasoning" {
 		out.item = append(json.RawMessage(nil), raw...)
-	}
-	if closed {
-		out.closed = true
 		// Only the closing event's encrypted content is kept: the
 		// opening event's copy is shorter and unused.
 		if item.EncryptedContent != "" {
@@ -510,7 +520,7 @@ func (s *replayStream) finish() {
 
 	for position, index := range indices {
 		out := s.items[index]
-		if !out.closed || out.typ != "reasoning" || out.encrypted == "" {
+		if out.typ != "reasoning" || out.encrypted == "" {
 			continue
 		}
 		follower, ok := followingFollower(indices[position+1:], s.items)
