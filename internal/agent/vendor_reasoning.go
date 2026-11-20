@@ -41,7 +41,6 @@ func vendorReasoningProvider(providerID string) bool {
 		string(catwalk.InferenceKimiCoding),
 		string(catwalk.InferenceProviderAlibabaSingapore),
 		string(catwalk.InferenceProviderAlibabaUS),
-		string(catwalk.InferenceProviderNeuralwatt),
 		hyper.Name:
 		return true
 	}

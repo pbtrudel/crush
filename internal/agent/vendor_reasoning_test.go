@@ -49,7 +49,7 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 
 	zai := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
 	hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
-	neuralwatt := config.ProviderConfig{ID: string(catwalk.InferenceProviderNeuralwatt), Type: openaicompat.Name}
+	moonshot := config.ProviderConfig{ID: string(catwalk.InferenceProviderMoonshot), Type: openaicompat.Name}
 	alibaba := config.ProviderConfig{ID: string(catwalk.InferenceProviderAlibabaSingapore), Type: openaicompat.Name}
 
 	t.Run("glm joins zai's thinking object", func(t *testing.T) {
@@ -104,9 +104,9 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.Equal(t, disabled, extra["thinking"])
 	})
 
-	t.Run("kimi creates an enabled thinking object at neuralwatt", func(t *testing.T) {
+	t.Run("kimi creates an enabled thinking object at moonshot", func(t *testing.T) {
 		t.Parallel()
-		thinking, ok := flagsFor(t, neuralwatt, "moonshotai/Kimi-K3")["thinking"].(map[string]any)
+		thinking, ok := flagsFor(t, moonshot, "moonshotai/Kimi-K3")["thinking"].(map[string]any)
 		require.True(t, ok, "kimi needs a thinking object")
 		require.Equal(t, map[string]any{"type": "enabled", "keep": "all"}, thinking)
 	})
@@ -130,7 +130,7 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 	t.Run("families without a flag get none", func(t *testing.T) {
 		t.Parallel()
 		for _, id := range []string{"mimo-v2.6-pro", "deepseek/deepseek-v4.1-flash", "deepseek-r1-distill-qwen-32b"} {
-			extra := flagsFor(t, neuralwatt, id)
+			extra := flagsFor(t, moonshot, id)
 			require.NotContains(t, extra, "thinking", id)
 			require.NotContains(t, extra, "preserve_thinking", id)
 		}
@@ -140,7 +140,7 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 	t.Run("a similar name is not glm", func(t *testing.T) {
 		t.Parallel()
 		for _, id := range []string{"chatglm-6b", "vendor/some-glm-4.6"} {
-			require.NotContains(t, flagsFor(t, neuralwatt, id), "thinking", id)
+			require.NotContains(t, flagsFor(t, moonshot, id), "thinking", id)
 			require.False(t, vendorReasoningNeedsHistory(id), id)
 		}
 	})
@@ -149,9 +149,9 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		t.Parallel()
 		model := Model{
 			CatwalkCfg: catwalk.Model{ID: "kimi-k2.6"},
-			ModelCfg:   config.SelectedModel{Provider: "neuralwatt", Model: "kimi-k2.6"},
+			ModelCfg:   config.SelectedModel{Provider: "moonshot", Model: "kimi-k2.6"},
 		}
-		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, neuralwatt)), "thinking")
+		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, moonshot)), "thinking")
 	})
 
 	t.Run("hosts outside the allow-list get nothing", func(t *testing.T) {
@@ -159,6 +159,7 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		hosts := []config.ProviderConfig{
 			{ID: string(catwalk.InferenceProviderFireworks), Type: openaicompat.Name},
 			{ID: string(catwalk.InferenceProviderIoNet), Type: openaicompat.Name},
+			{ID: string(catwalk.InferenceProviderNeuralwatt), Type: openaicompat.Name},
 			{ID: "commandcode", Type: openaicompat.Name, BaseURL: "https://api.commandcode.ai/provider/v1"},
 		}
 		for _, providerCfg := range hosts {
