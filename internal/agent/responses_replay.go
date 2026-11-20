@@ -50,7 +50,7 @@ func newResponsesReasoningReplayTransport(base http.RoundTripper, enabled bool) 
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &responsesReasoningReplayTransport{base: base}
+	return &responsesReasoningReplayTransport{base: base, paused: map[replayScope]bool{}}
 }
 
 // replayedReasoning is one closed reasoning item and the output item that
@@ -125,13 +125,13 @@ func canonicalItems(input []json.RawMessage) [][]byte {
 type responsesReasoningReplayTransport struct {
 	base http.RoundTripper
 
-	mu       sync.Mutex
-	items    []replayedReasoning
-	disabled bool
+	mu     sync.Mutex
+	items  []replayedReasoning
+	paused map[replayScope]bool
 }
 
 func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.paused() || !isResponsesRequest(req) {
+	if !isResponsesRequest(req) {
 		return t.base.RoundTrip(req)
 	}
 
@@ -145,6 +145,9 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 		return t.base.RoundTrip(requestWithBody(req, original))
 	}
 	scope := replayScope{endpoint: responsesEndpoint(req), model: responsesModel(original)}
+	if t.pausedFor(scope) {
+		return t.base.RoundTrip(requestWithBody(req, original))
+	}
 	prefix := conversationPrefix{hash: prefixHashes(canonicalItems(input))[len(input)], count: len(input)}
 
 	body, inserted := t.withRecordedItems(original, input, scope)
@@ -157,15 +160,19 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 		return nil, err
 	}
 
-	if inserted > 0 && rejectedReplayedReasoning(resp) {
-		t.pause()
-		_ = resp.Body.Close()
-		slog.Warn("Provider rejected replayed reasoning items, retrying without them",
-			"url", req.URL.Redacted(), "status", resp.StatusCode)
-		return t.base.RoundTrip(requestWithBody(req, original))
+	if inserted > 0 {
+		if rejected, rejectedBody := replayRejection(resp); rejected {
+			t.pauseFor(scope)
+			_ = resp.Body.Close()
+			slog.Warn("Provider rejected replayed reasoning items, retrying without them",
+				"url", req.URL.Redacted(), "status", resp.StatusCode, "body", logBody(rejectedBody))
+			// The retry is not wrapped: the scope is paused, so nothing
+			// from it would be inserted again.
+			return t.base.RoundTrip(requestWithBody(req, original))
+		}
 	}
 
-	if !t.paused() && isEventStream(resp) {
+	if !t.pausedFor(scope) && isEventStream(resp) {
 		resp.Body = &replayRecordingBody{
 			body:   resp.Body,
 			stream: newReplayStream(t, scope, prefix),
@@ -174,16 +181,16 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 	return resp, nil
 }
 
-func (t *responsesReasoningReplayTransport) paused() bool {
+func (t *responsesReasoningReplayTransport) pausedFor(scope replayScope) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.disabled
+	return t.paused[scope]
 }
 
-func (t *responsesReasoningReplayTransport) pause() {
+func (t *responsesReasoningReplayTransport) pauseFor(scope replayScope) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.disabled = true
+	t.paused[scope] = true
 }
 
 // remember stores one item, dropping the oldest ones past the bound.
@@ -617,21 +624,56 @@ func isEventStream(resp *http.Response) bool {
 		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 }
 
-// rejectedReplayedReasoning reads a 4xx body to see whether the provider
-// named an item or reasoning as the problem. The body is restored for the
-// caller, and the check is deliberately loose: providers word the rejection
-// differently, and a wrong guess only costs one retry.
-func rejectedReplayedReasoning(resp *http.Response) bool {
-	if resp.StatusCode < 400 || resp.StatusCode >= 500 || resp.Body == nil {
-		return false
+// replayRejection reads a 400 body to see whether the provider rejected the
+// replayed items specifically. The body is restored for the caller. Only a
+// 400 qualifies: 429 and 5xx are transient and say nothing about replay.
+func replayRejection(resp *http.Response) (bool, []byte) {
+	if resp.StatusCode != http.StatusBadRequest || resp.Body == nil {
+		return false, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
-		return false
+		return false, nil
 	}
 	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+	return namesReplayFailure(body), body
+}
+
+// namesReplayFailure recognises the wording of a rejected replay: an item id,
+// a reasoning item, a missing required follower, encrypted content, or an
+// error param pointing into the input array. A bare "reasoning" or "item" is
+// not enough: invalid reasoning effort and tools errors mention both.
+func namesReplayFailure(body []byte) bool {
 	text := strings.ToLower(string(body))
-	return strings.Contains(text, "reasoning") || strings.Contains(text, "item")
+	for _, marker := range []string{"rs_", "reasoning item", "required following item", "encrypted_content"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+
+	var payload struct {
+		Error struct {
+			Param string `json:"param"`
+		} `json:"error"`
+		Param string `json:"param"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	param := payload.Error.Param
+	if param == "" {
+		param = payload.Param
+	}
+	return strings.HasPrefix(strings.ToLower(param), "input")
+}
+
+// logBody trims an error body to the 300 bytes a log line should carry.
+func logBody(body []byte) string {
+	const limit = 300
+	if len(body) > limit {
+		return strings.TrimSpace(string(body[:limit])) + "..."
+	}
+	return strings.TrimSpace(string(body))
 }
 
 func readResponsesBody(req *http.Request) ([]byte, error) {

@@ -170,27 +170,37 @@ func replayReasoningItems(t *testing.T, body []byte) []string {
 // reasoningStream builds a streamed response holding one reasoning item whose
 // closing event carries closeCipher, followed by one function_call.
 func reasoningStream() string {
+	return reasoningStreamWith("rsn_1", "close-cipher-1", "call_a")
+}
+
+// reasoningStreamWith is reasoningStream with the item id, closing cipher and
+// call id spelled out.
+func reasoningStreamWith(id, cipher, callID string) string {
 	return sseBody(
 		`{"type":"response.created","response":{"id":"resp_1","output":[]}}`,
 		`{"type":"response.output_item.added","output_index":0,"item":`+replayItem(map[string]any{
-			"id": "rsn_1", "type": "reasoning", "encrypted_content": "open-cipher-1", "summary": []any{},
+			"id": id, "type": "reasoning", "encrypted_content": "open-" + cipher, "summary": []any{},
 		})+`}`,
 		`{"type":"response.reasoning_summary_text.delta","item_id":"rsn_1","delta":"Thinking"}`,
 		`{"type":"response.output_item.done","output_index":0,"item":`+replayItem(map[string]any{
-			"id": "rsn_1", "type": "reasoning", "encrypted_content": "close-cipher-1",
+			"id": id, "type": "reasoning", "encrypted_content": cipher,
 			"summary": []any{map[string]any{"type": "summary_text", "text": "Thinking"}},
 		})+`}`,
-		`{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"view","arguments":""}}`,
-		`{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"view","arguments":"{\"path\":\"a.txt\"}"}}`,
+		`{"type":"response.output_item.added","output_index":1,"item":`+replayItem(map[string]any{
+			"id": "fc_1", "type": "function_call", "call_id": callID, "name": "view", "arguments": "",
+		})+`}`,
+		`{"type":"response.output_item.done","output_index":1,"item":`+replayItem(map[string]any{
+			"id": "fc_1", "type": "function_call", "call_id": callID, "name": "view", "arguments": `{"path":"a.txt"}`,
+		})+`}`,
 		// Copilot wraps the response-level events; the completed event
 		// repeats the whole output, including the closing reasoning item.
 		`{"type":"response.completed","response":{"id":"resp_1","output":[`+
 			replayItem(map[string]any{
-				"id": "rsn_1", "type": "reasoning", "encrypted_content": "close-cipher-1",
+				"id": id, "type": "reasoning", "encrypted_content": cipher,
 				"summary": []any{map[string]any{"type": "summary_text", "text": "Thinking"}},
 			})+`,`+
 			replayItem(map[string]any{
-				"id": "fc_1", "type": "function_call", "call_id": "call_a", "name": "view", "arguments": `{"path":"a.txt"}`,
+				"id": "fc_1", "type": "function_call", "call_id": callID, "name": "view", "arguments": `{"path":"a.txt"}`,
 			})+`]}}`,
 	).body
 }
@@ -368,7 +378,7 @@ func TestResponsesReplayRetriesWithoutItemsOnRejection(t *testing.T) {
 		replayTestResponse{
 			status:      http.StatusBadRequest,
 			contentType: "application/json",
-			body:        `{"error":{"message":"Item 'rsn_1' of type 'reasoning' was not found."}}`,
+			body:        `{"error":{"message":"Item 'rs_abc123' of type 'reasoning' was not found.","param":"input[1]"}}`,
 		},
 		completedResponse("resp_2"),
 		completedResponse("resp_3"),
@@ -614,4 +624,149 @@ func TestResponsesReplayTrimsTextAnchors(t *testing.T) {
 	require.Len(t, bodies, 2)
 	require.Equal(t, []string{"close-cipher-trim"}, replayReasoningItems(t, bodies[1]))
 	require.Equal(t, []string{"user", "reasoning", "assistant"}, replayInputTypes(t, bodies[1]))
+}
+
+// TestResponsesReplayKeepsInsertingAfterUnrelatedError covers a 400 that is
+// not about the replayed items: an invalid reasoning effort names reasoning
+// but must not stop the transport.
+func TestResponsesReplayKeepsInsertingAfterUnrelatedError(t *testing.T) {
+	t.Parallel()
+
+	server := newReplayTestServer(t,
+		reasoningResponse(),
+		replayTestResponse{
+			status:      http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":{"message":"Invalid value: 'high'. Supported values are: 'low', 'medium', 'high'.","param":"reasoning.effort","type":"invalid_request_error"}}`,
+		},
+		completedResponse("resp_after"),
+	)
+	client := replayTestClient(t, true)
+
+	server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+	second := replayRequest(t, "gpt-test",
+		`{"role":"user","content":"hi"}`,
+		functionCall("call_a", "view", `{"path":"a.txt"}`),
+		functionCallOutput("call_a", "ok"),
+	)
+	server.post(t, client, second)
+	server.post(t, client, second)
+
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 3, "an unrelated 400 is not retried")
+	require.Equal(t, []string{"close-cipher-1"}, replayReasoningItems(t, bodies[1]))
+	require.Equal(t, []string{"close-cipher-1"}, replayReasoningItems(t, bodies[2]),
+		"the transport still inserts after an unrelated 400")
+}
+
+// TestResponsesReplayKeepsInsertingAfterRateLimit covers a 429 whose body
+// mentions items and input: only a replay rejection at 400 may pause.
+func TestResponsesReplayKeepsInsertingAfterRateLimit(t *testing.T) {
+	t.Parallel()
+
+	server := newReplayTestServer(t,
+		reasoningResponse(),
+		replayTestResponse{
+			status:      http.StatusTooManyRequests,
+			contentType: "application/json",
+			body:        `{"error":{"message":"Rate limit reached for items in your organization.","param":"input","code":"rate_limit_exceeded"}}`,
+		},
+		completedResponse("resp_after"),
+	)
+	client := replayTestClient(t, true)
+
+	server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+	second := replayRequest(t, "gpt-test",
+		`{"role":"user","content":"hi"}`,
+		functionCall("call_a", "view", `{"path":"a.txt"}`),
+		functionCallOutput("call_a", "ok"),
+	)
+	server.post(t, client, second)
+	server.post(t, client, second)
+
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 3, "a 429 is not retried")
+	require.Equal(t, []string{"close-cipher-1"}, replayReasoningItems(t, bodies[2]),
+		"a 429 does not pause replay")
+}
+
+// TestResponsesReplayPausesOnlyTheRejectedModel covers the kill switch: a
+// matching 400 pauses the endpoint and model it came from, and no other.
+func TestResponsesReplayPausesOnlyTheRejectedModel(t *testing.T) {
+	t.Parallel()
+
+	server := newReplayTestServer(t,
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: reasoningStreamWith("rsn_a", "close-cipher-a", "call_a")},
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: reasoningStreamWith("rsn_b", "close-cipher-b", "call_b")},
+		replayTestResponse{
+			status:      http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":{"message":"Item 'rs_a' of type 'reasoning' was provided without its required following item.","param":"input[4]"}}`,
+		},
+		completedResponse("resp_retry"),
+		completedResponse("resp_a3"),
+		completedResponse("resp_b2"),
+	)
+	client := replayTestClient(t, true)
+
+	server.post(t, client, replayRequest(t, "gpt-a", `{"role":"user","content":"a"}`))
+	server.post(t, client, replayRequest(t, "gpt-b", `{"role":"user","content":"b"}`))
+
+	requestA := replayRequest(t, "gpt-a",
+		`{"role":"user","content":"a"}`,
+		functionCall("call_a", "view", "{}"),
+		functionCallOutput("call_a", "ok"),
+	)
+	requestB := replayRequest(t, "gpt-b",
+		`{"role":"user","content":"b"}`,
+		functionCall("call_b", "view", "{}"),
+		functionCallOutput("call_b", "ok"),
+	)
+
+	server.post(t, client, requestA) // rejected, retried once
+	server.post(t, client, requestA) // paused for gpt-a
+	server.post(t, client, requestB) // gpt-b is unaffected
+
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 6)
+	require.Equal(t, []string{"close-cipher-a"}, replayReasoningItems(t, bodies[2]), "the rejected attempt carries the item")
+	require.Equal(t, requestA, string(bodies[3]), "the retry is the original body")
+	require.Equal(t, requestA, string(bodies[4]), "gpt-a stays paused")
+	require.Equal(t, []string{"close-cipher-b"}, replayReasoningItems(t, bodies[5]), "gpt-b still replays its own item")
+}
+
+// TestNamesReplayFailure pins the markers that identify a rejected replay and
+// the wording that must not trip it.
+func TestNamesReplayFailure(t *testing.T) {
+	t.Parallel()
+
+	rejections := []string{
+		`{"error":{"message":"Item 'rs_abc' was not found."}}`,
+		`{"error":{"message":"Item of type reasoning cannot be sent without its required following item."}}`,
+		`{"error":{"message":"Reasoning item was provided without its required following item."}}`,
+		`{"error":{"message":"Missing encrypted_content."}}`,
+		`{"error":{"message":"Invalid 'input[3]'.","param":"input[3]"}}`,
+	}
+	for _, body := range rejections {
+		require.True(t, namesReplayFailure([]byte(body)), body)
+	}
+
+	unrelated := []string{
+		`{"error":{"message":"Invalid value: 'reasoning.effort'.","param":"reasoning.effort"}}`,
+		`{"error":{"message":"Tools in items must be a list.","param":"tools"}}`,
+		`not json at all`,
+	}
+	for _, body := range unrelated {
+		require.False(t, namesReplayFailure([]byte(body)), body)
+	}
+}
+
+// TestLogBodyTruncates covers the log line's 300-byte budget.
+func TestLogBodyTruncates(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "short", logBody([]byte("short\n")))
+	truncated := logBody([]byte(strings.Repeat("x", 400)))
+	require.Len(t, truncated, 303)
+	require.True(t, strings.HasSuffix(truncated, "..."))
 }
