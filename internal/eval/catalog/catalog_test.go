@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/stretchr/testify/require"
 )
@@ -106,22 +107,26 @@ func TestRead(t *testing.T) {
 	require.Equal(t, sha(hyperJSON), fp.Hyper)
 }
 
-// TestUserDataDir checks the resolution of the user's Crush data dir, the way
-// Crush resolves it: $CRUSH_GLOBAL_DATA, then $XDG_DATA_HOME, then the home
-// directory.
-func TestUserDataDir(t *testing.T) {
+// TestUserDataDirMatchesCrush checks the resolution of the user's Crush data
+// dir against Crush's own: config.GlobalConfigData is a path function with no
+// side effects, so a change there fails here instead of making a freeze copy
+// files Crush never wrote.
+func TestUserDataDirMatchesCrush(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdg)
-	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(xdg, "data"))
+	t.Setenv("CRUSH_GLOBAL_DATA", "")
 
 	dir, err := UserDataDir()
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(xdg, "data"), dir)
+	require.Equal(t, filepath.Join(xdg, "crush"), dir)
+	require.Equal(t, filepath.Dir(config.GlobalConfigData()), dir)
 
-	t.Setenv("CRUSH_GLOBAL_DATA", "")
+	data := t.TempDir()
+	t.Setenv("CRUSH_GLOBAL_DATA", data)
 	dir, err = UserDataDir()
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(xdg, "crush"), dir)
+	require.Equal(t, data, dir)
+	require.Equal(t, filepath.Dir(config.GlobalConfigData()), dir)
 }
 
 // source is a stand-in for the user's Crush data dir.
