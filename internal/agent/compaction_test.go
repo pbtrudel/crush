@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -610,4 +611,82 @@ func TestSummarize_AttachesCompactionStats(t *testing.T) {
 	require.Equal(t, 2, stats.KeptMessages)
 	require.Equal(t, "manual", stats.Trigger)
 	require.Equal(t, version.BuildStamp(), summary.FinishPart().Build)
+}
+
+// toolRequestModel records every request that carries tools, which is every
+// step the agent itself sends (title generation sends none), and answers with
+// a fixed text so a turn ends in one step.
+type toolRequestModel struct {
+	fakeLanguageModel
+	text  string
+	mu    sync.Mutex
+	calls []fantasy.Call
+}
+
+func (m *toolRequestModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if len(call.Tools) == 0 {
+		return func(yield func(fantasy.StreamPart) bool) {
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+		}, nil
+	}
+	m.mu.Lock()
+	m.calls = append(m.calls, call)
+	m.mu.Unlock()
+	return func(yield func(fantasy.StreamPart) bool) {
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.text}) {
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+	}, nil
+}
+
+// toolsJSON renders a request's tools block, which is serialized ahead of the
+// messages and therefore decides whether the whole prompt cache is reused.
+func toolsJSON(t *testing.T, tools []fantasy.Tool) string {
+	t.Helper()
+	data, err := json.Marshal(tools)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// TestSummarize_SendsTheToolListOfTheLastStep pins the frozen palette. The
+// tools block precedes the messages in every request, so a registry that
+// changed after the turn's last step (a server that connected, a server that
+// went away) must not rewrite it: the compaction has to re-send the list that
+// step sent or the provider re-reads the whole conversation.
+func TestSummarize_SendsTheToolListOfTheLastStep(t *testing.T) {
+	env := testEnv(t)
+	model := &toolRequestModel{text: "done"}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"}, &recordingTool{name: "beta"})
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	_, err = agent.Run(ctx, SessionAgentCall{Prompt: "hello", SessionID: sess.ID, MaxOutputTokens: 1000})
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	live := model.calls[0].Tools
+	require.Equal(t, []string{"alpha", "beta"}, fantasyToolNames(live))
+
+	// The registry changes after the step that filled the cache: one tool
+	// goes away and another is registered.
+	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "alpha"}, &recordingTool{name: "gamma"}})
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.Len(t, model.calls, 2)
+
+	require.Equal(t, toolsJSON(t, live), toolsJSON(t, model.calls[1].Tools),
+		"the compaction must send the tools block of the last step, byte for byte")
+}
+
+// fantasyToolNames lists the names of a request's tools, in order.
+func fantasyToolNames(tools []fantasy.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.GetName())
+	}
+	return names
 }

@@ -388,6 +388,11 @@ type sessionAgent struct {
 	// back to their sorted positions, which would rewrite the block and
 	// re-read the conversation from the first adopted tool.
 	adoptedTools *csync.Map[string, []string]
+	// stepTools records, per session, the tool list the last step actually
+	// sent. The tools block is serialized ahead of the messages, so a
+	// compaction re-sends that exact list instead of rebuilding it from a
+	// registry a server may have changed since (see toolsForStep).
+	stepTools *csync.Map[string, []fantasy.AgentTool]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
@@ -508,6 +513,7 @@ func NewSessionAgent(
 		promptHashes:           csync.NewMap[string, []string](),
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
+		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
@@ -1462,6 +1468,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
+			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
 			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
@@ -2305,8 +2312,18 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// the prompt from a different system prompt or tool list — as this
 	// path once did — discards the cache for the entire context.
 	systemPrompt := a.systemPromptForSession(sessionID)
-	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
-	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	// The tools block is serialized ahead of the messages, so rebuilding it
+	// here from a registry that changed since the turn's last step would
+	// rewrite the cached prefix for the whole conversation. Re-send the list
+	// that step sent. Only a compaction with no live step behind it, such as
+	// a manual /compact in a fresh process, has to build one.
+	compactionTools, ok := a.stepTools.Get(sessionID)
+	if ok {
+		compactionTools = slices.Clone(compactionTools)
+	} else {
+		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
 	// keeps any text a tool did produce within the same budget the session
 	// log uses. Composing them means neither layer can be lost by editing
