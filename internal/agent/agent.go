@@ -2298,11 +2298,21 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		return nil
 	}
 	// The compaction request must send the bytes the turn sent, or it
-	// misses the cache it exists to preserve.
-	// Slim with "now" as the trailing message's time, not zero: a preflight
-	// compaction runs before the prompt that triggered it is stored, and the
-	// request that follows measures the same trailing idle gap.
-	a.slimHistory(largeModel, msgs, a.now().Unix())
+	// misses the cache it exists to preserve. Slim from the trailing
+	// message's own time, the way the turn that filled the cache measured
+	// its idle gap from the prompt it had just stored: measuring from "now"
+	// would stub the whole history of a session that has simply been quiet
+	// for longer than the idle window. A preflight compaction runs before
+	// the prompt that triggered it is stored, so its gap is the one that
+	// prompt will close, and it still measures from "now".
+	anchor := a.now().Unix()
+	preflight := trigger == compactionTriggerFusionPreflight ||
+		trigger == compactionTriggerFusionRoute ||
+		trigger == compactionTriggerModelSwitch
+	if !preflight && len(msgs) > 0 && msgs[len(msgs)-1].CreatedAt > 0 {
+		anchor = msgs[len(msgs)-1].CreatedAt
+	}
+	a.slimHistory(largeModel, msgs, anchor)
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
