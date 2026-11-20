@@ -10,6 +10,7 @@ package catalog
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -40,25 +41,53 @@ type Fingerprint struct {
 
 // Freeze copies the user's cached catalogs from their Crush data dir into the
 // eval home's data dir, where every run's child reads them, and returns the
-// fingerprint of what the eval home now serves.
+// fingerprint of what the eval home now serves. A catalog that is not valid
+// JSON is refused: Crush would fall back to its embedded catalog, which is the
+// failure a freeze exists to prevent.
 func Freeze(h *home.Home, from string) (Fingerprint, error) {
 	providers, err := os.ReadFile(filepath.Join(from, ProvidersFile))
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("read %s: %w", filepath.Join(from, ProvidersFile), err)
 	}
-	if err := fsx.WriteFileAtomic(filepath.Join(h.DataDir(), ProvidersFile), providers, 0o600); err != nil {
+	if err := validJSON(providers, ProvidersFile); err != nil {
 		return Fingerprint{}, err
 	}
+	// The Hyper catalog is read before anything is written, so a freeze lands
+	// both catalogs or changes nothing.
 	hyper, err := os.ReadFile(filepath.Join(from, HyperFile))
 	switch {
 	case err == nil:
-		if err := fsx.WriteFileAtomic(filepath.Join(h.DataDir(), HyperFile), hyper, 0o600); err != nil {
+		if err := validJSON(hyper, HyperFile); err != nil {
 			return Fingerprint{}, err
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return Fingerprint{}, fmt.Errorf("read %s: %w", filepath.Join(from, HyperFile), err)
 	}
+	if err := fsx.WriteFileAtomic(filepath.Join(h.DataDir(), ProvidersFile), providers, 0o600); err != nil {
+		return Fingerprint{}, err
+	}
+	target := filepath.Join(h.DataDir(), HyperFile)
+	switch {
+	case hyper != nil:
+		if err := fsx.WriteFileAtomic(target, hyper, 0o600); err != nil {
+			return Fingerprint{}, err
+		}
+	default:
+		// The user has no Hyper catalog, so an earlier freeze's copy is stale
+		// and would be recorded as the catalog the runs read.
+		if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return Fingerprint{}, fmt.Errorf("remove the stale %s: %w", HyperFile, err)
+		}
+	}
 	return Read(h)
+}
+
+// validJSON refuses a catalog Crush would not read.
+func validJSON(data []byte, name string) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("%s is not valid JSON; let Crush rewrite it before freezing", name)
+	}
+	return nil
 }
 
 // Read fingerprints the catalogs the eval home serves, and refuses a home

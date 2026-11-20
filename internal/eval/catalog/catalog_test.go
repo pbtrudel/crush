@@ -144,3 +144,57 @@ func sha(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
 }
+
+// TestFreezeRejectsInvalidJSON checks that a catalog Crush itself would refuse
+// is not copied: a torn file would make the child fall back to the embedded
+// catalog, which is the failure a freeze exists to prevent.
+func TestFreezeRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "providers",
+			files: map[string]string{"providers.json": `{"providers":[`},
+			want:  "providers.json",
+		},
+		{
+			name:  "hyper",
+			files: map[string]string{"providers.json": providersJSON, "hyper.json": `{`},
+			want:  "hyper.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := home.At(t.TempDir())
+			require.NoError(t, h.Ensure())
+
+			_, err := Freeze(h, source(t, tt.files))
+			require.ErrorContains(t, err, tt.want)
+			require.ErrorContains(t, err, "JSON")
+			require.NoFileExists(t, filepath.Join(h.DataDir(), "providers.json"), "nothing is copied")
+		})
+	}
+}
+
+// TestFreezeRemovesAStaleHyper checks that a user with no Hyper catalog does
+// not leave an older frozen one behind, which the fingerprint would then
+// record as the catalog its runs read.
+func TestFreezeRemovesAStaleHyper(t *testing.T) {
+	t.Parallel()
+
+	h := home.At(t.TempDir())
+	require.NoError(t, h.Ensure())
+	write(t, filepath.Join(h.DataDir(), "hyper.json"), hyperJSON)
+
+	fp, err := Freeze(h, source(t, map[string]string{"providers.json": providersJSON}))
+	require.NoError(t, err)
+	require.Equal(t, sha(providersJSON), fp.Providers)
+	require.Empty(t, fp.Hyper)
+	require.NoFileExists(t, filepath.Join(h.DataDir(), "hyper.json"))
+}
