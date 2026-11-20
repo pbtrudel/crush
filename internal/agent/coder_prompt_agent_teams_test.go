@@ -138,3 +138,22 @@ func TestAgentTeamsToggleReRendersTheLivePrompt(t *testing.T) {
 	require.NoError(t, coord.RefreshModels(t.Context()))
 	require.Contains(t, coord.agents[config.AgentCoder].SystemPrompt(), "## Agent Teams")
 }
+
+// A reload that changes neither the Agent Teams setting nor the tool palette
+// must leave the prompt alone: re-rendering it would also fold in things the
+// tool block does not depend on and rewrite the cached prompt prefix.
+func TestRefreshModelsKeepsThePromptWhenNothingRelevantChanged(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
+	before := coord.agents[config.AgentCoder].SystemPrompt()
+	require.NotContains(t, before, "LATE_INSTRUCTION")
+
+	// A new context file is exactly what a re-render would pick up.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(coord.cfg.WorkingDir(), "CRUSH.md"),
+		[]byte("LATE_INSTRUCTION"),
+		0o644,
+	))
+	require.NoError(t, coord.RefreshModels(t.Context()))
+
+	require.Equal(t, before, coord.agents[config.AgentCoder].SystemPrompt())
+}
