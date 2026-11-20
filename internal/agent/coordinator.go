@@ -1053,9 +1053,20 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			addVendorReasoningFlag(extraBody, model.CatwalkCfg.ID)
 		}
 
-		// The user's configured extra_body wins over Crush's own fields,
-		// key by key.
-		maps.Copy(extraBody, userExtraBody)
+		// The user's configured extra_body wins over Crush's own fields. A
+		// thinking object is merged one level deep, so the user's keys win
+		// and the other keys stay.
+		for key, value := range userExtraBody {
+			if key == "thinking" {
+				if userThinking, ok := value.(map[string]any); ok {
+					if thinking, ok := extraBody[key].(map[string]any); ok {
+						maps.Copy(thinking, userThinking)
+						continue
+					}
+				}
+			}
+			extraBody[key] = value
+		}
 		mergedOptions["extra_body"] = extraBody
 
 		parsed, err := openaicompat.ParseOptions(mergedOptions)

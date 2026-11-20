@@ -964,7 +964,7 @@
         },
         "extra_body": {
           "type": "object",
-          "description": "Additional fields to include in request bodies, only works with openai-compatible providers"
+          "description": "Additional fields to include in request bodies, only works with openai-compatible providers; keys override the fields Crush sets for the request"
         },
         "provider_options": {
           "type": "object",

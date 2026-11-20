@@ -782,6 +782,21 @@ func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
 		assert.Equal(t, true, extra["clear_thinking"])
 		assert.Equal(t, true, extra["thinking"])
 	})
+
+	t.Run("the user's thinking keys merge into crush's object", func(t *testing.T) {
+		t.Parallel()
+		// Z.AI's provider sets thinking.type; the user's key wins and the
+		// type is kept.
+		zaiCfg := config.ProviderConfig{
+			ID:   string(catwalk.InferenceProviderZAI),
+			Type: openaicompat.Name,
+		}
+		opts := getProviderOptions(model(map[string]any{
+			"thinking": map[string]any{"clear_thinking": true},
+		}), zaiCfg)
+		extra := gatewayExtraBody(t, opts)
+		assert.Equal(t, map[string]any{"type": "enabled", "clear_thinking": true}, extra["thinking"])
+	})
 }
 
 func TestGetProviderOptionsMalformedFallback(t *testing.T) {
