@@ -742,3 +742,115 @@ func TestTurnGate_NoChecksChangesNothing(t *testing.T) {
 	event := <-events
 	require.Equal(t, notify.RunComplete{SessionID: sess.ID, RunID: "run-1", Text: "done", Steps: 1, MessageID: msgs[1].ID}, event.Payload)
 }
+
+// A prompt typed after the gate decides to continue is queued behind the
+// turn, not started on its own, so the pending continuation is what gets
+// dropped and the user's prompt runs next.
+func TestTurnGate_PromptArrivingDuringTheHandoffIsQueued(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	inner := &scriptedModel{script: []scriptedCall{
+		answer("done", fantasy.FinishReasonStop, 1_000),
+		answer("typed answer", fantasy.FinishReasonStop, 1_000),
+		answer("continuation", fantasy.FinishReasonStop, 1_000),
+	}}
+	check := &fakeGateCheck{name: "fake", reason: "keep going", want: "done"}
+	sa := newGateAgent(t, env, inner, check)
+	sess, err := env.sessions.Create(t.Context(), "window")
+	require.NoError(t, err)
+
+	reached, release := make(chan struct{}), make(chan struct{})
+	sa.beforeHandoff = func() {
+		close(reached)
+		<-release
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+		done <- runErr
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run never reached the hand-off")
+	}
+	// The prompt typed here meets a busy session, so it queues.
+	_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "typed", RunID: "run-typed"})
+	require.NoError(t, err)
+	close(release)
+	select {
+	case runErr := <-done:
+		require.NoError(t, runErr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run did not finish")
+	}
+
+	require.Empty(t, gateRows(t, env, sess.ID), "the queued prompt drops the continuation")
+	require.Equal(t, "typed answer", finalAssistantText(t, env, sess.ID))
+	require.Equal(t, 2, inner.callCount(), "the continuation never ran")
+}
+
+// A cancel that arrives after the gate decides is not lost: the turn ends
+// with the reply it has, without a continuation.
+func TestTurnGate_CancelAfterTheGateDecides(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().MCP["signal"] = config.MCPConfig{ChannelReply: &config.MCPChannelReply{
+		User: &config.MCPChannelReplyRoute{Tool: "send_message_to_user", TargetParam: "user_id"},
+	}}
+	inner := &scriptedModel{script: []scriptedCall{
+		answer("done", fantasy.FinishReasonStop, 1_000),
+		answer("fixed", fantasy.FinishReasonStop, 1_000),
+	}}
+	check := &fakeGateCheck{name: "fake", reason: "keep going"}
+	sa, broker := newGateRunCompleteAgent(t, env, inner, check)
+	sa.cfg = cfg
+	var replies []string
+	sa.replyToolRun = func(_ context.Context, _ *config.ConfigStore, _, tool, input string) (mcp.ToolResult, error) {
+		replies = append(replies, tool+" "+input)
+		return mcp.ToolResult{Type: "text", Content: "sent"}, nil
+	}
+	sess, err := env.sessions.Create(t.Context(), "window")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	events := broker.Subscribe(ctx)
+	reached, release := make(chan struct{}), make(chan struct{})
+	sa.beforeHandoff = func() {
+		close(reached)
+		<-release
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := sa.Run(t.Context(), SessionAgentCall{
+			SessionID:   sess.ID,
+			RunID:       "run-1",
+			Prompt:      "go",
+			Channel:     "signal",
+			channelMeta: map[string]string{"sender": "+15551234567"},
+		})
+		done <- runErr
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run never reached the hand-off")
+	}
+	sa.Cancel(sess.ID)
+	close(release)
+	select {
+	case runErr := <-done:
+		require.NoError(t, runErr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run did not finish after the cancel")
+	}
+
+	require.Empty(t, gateRows(t, env, sess.ID), "the cancel drops the continuation")
+	require.Len(t, replies, 1, "the reply is sent exactly once")
+	require.Contains(t, replies[0], "done")
+	require.Equal(t, 1, inner.callCount())
+	require.Equal(t, "run-1", (<-events).Payload.RunID)
+}

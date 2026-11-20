@@ -378,6 +378,10 @@ type sessionAgent struct {
 	// snapshotState reads the working tree for the gate. It is a field so
 	// a test can count the calls; nil means gitutil.Snapshot.
 	snapshotState func(ctx context.Context, dir string) (gitutil.WorktreeState, error)
+	// beforeHandoff, when set, runs once between the gate's decision and
+	// the hand-off. It is a test seam for the window in between, where a
+	// prompt or a cancel can arrive.
+	beforeHandoff func()
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -2181,14 +2185,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		completed:   completedToolCalls.Copy(),
 		title:       currentSession.Title,
 	}
-	if gateNext != nil {
-		// The continuation writes the note, sends the reply, fires the
-		// hook and publishes the notification when it really ends. The
-		// session is released here, as on every hand-off.
-		a.activeRequests.Del(call.SessionID)
-		cancel()
-	} else {
+	if gateNext == nil {
 		a.finishWithoutGate(ctx, call, finish)
+	}
+	// A continued turn keeps the session registered until the hand-off
+	// reads the queue, so a prompt typed in between is queued rather than
+	// started, and drops the continuation (see below).
+
+	if gateNext != nil && a.beforeHandoff != nil {
+		a.beforeHandoff()
 	}
 
 	// Hand off to the next queued prompt (if any) under dispatchMu so
@@ -2246,6 +2251,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		if (marked && mark > 0) || call.limits.reached() || hasUserPrompt(queuedMessages) {
 			gateNext, gateDropped = nil, true
 		}
+	}
+	if gateNext != nil || gateDropped {
+		// Give up the session here, under the lock a new prompt must take
+		// to start: anything typed before now was queued, and the
+		// decision above saw it.
+		a.activeRequests.Del(call.SessionID)
+		cancel()
 	}
 	if gateNext == nil && len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
