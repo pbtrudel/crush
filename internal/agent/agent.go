@@ -1417,7 +1417,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// teammate in the same tree counts too. A compaction continuation and
 	// a gate continuation both copy the call, so this is taken once per
 	// prompt.
-	if call.gateBaseline == nil && !call.gateBaselineErr && a.gateNeedsChangedFiles() {
+	// Only a Lead turn can continue, so only a Lead turn pays for the
+	// baseline.
+	if call.gateBaseline == nil && !call.gateBaselineErr && a.gateNeedsChangedFiles() &&
+		!call.NonInteractive && !call.Ephemeral && !a.isSubAgent {
 		state, snapErr := a.snapshotWorktree(genCtx, a.gateWorkingDir())
 		if snapErr != nil {
 			call.gateBaselineErr = true

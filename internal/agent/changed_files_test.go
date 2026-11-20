@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
@@ -390,4 +391,59 @@ func TestGateChangedFilesAreRepoRelative(t *testing.T) {
 	inputs := record.recorded()
 	require.NotEmpty(t, inputs)
 	require.Equal(t, []string{"sub/file.txt"}, inputs[0].ChangedFiles)
+}
+
+// Only a Lead turn can continue, so only a Lead turn pays for the baseline.
+func TestGateTakesNoBaselineForChildRuns(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a non-interactive turn", func(t *testing.T) {
+		t.Parallel()
+		env := newGitEnv(t)
+		model := &scriptedModel{script: []scriptedCall{answer("done", fantasy.FinishReasonStop, 1_000)}}
+		sa := gateEnvAgent(t, env, model)
+		sa.cfg.Config().Options.TurnEndCompletionCheck = true
+		calls := 0
+		sa.snapshotState = func(context.Context, string) (gitutil.WorktreeState, error) {
+			calls++
+			return gitutil.WorktreeState{}, nil
+		}
+		sess, err := env.sessions.Create(t.Context(), "child")
+		require.NoError(t, err)
+
+		_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go", NonInteractive: true})
+		require.NoError(t, err)
+		require.Zero(t, calls)
+	})
+
+	t.Run("a subagent turn", func(t *testing.T) {
+		t.Parallel()
+		env := newGitEnv(t)
+		cfg, err := config.Init(t.Context(), env.workingDir, "", false)
+		require.NoError(t, err)
+		cfg.Config().Options.TurnEndCompletionCheck = true
+		model := &scriptedModel{script: []scriptedCall{answer("done", fantasy.FinishReasonStop, 1_000)}}
+		large := Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200_000, DefaultMaxTokens: 10_000}}
+		sa := NewSessionAgent(SessionAgentOptions{
+			Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },
+			SystemPrompt: "SYSTEM PROMPT",
+			IsSubAgent:   true,
+			Sessions:     env.sessions,
+			Messages:     env.messages,
+			Cfg:          cfg,
+			Tools:        []fantasy.AgentTool{&recordingTool{name: "alpha"}},
+			titles:       env.titles,
+		}).(*sessionAgent)
+		calls := 0
+		sa.snapshotState = func(context.Context, string) (gitutil.WorktreeState, error) {
+			calls++
+			return gitutil.WorktreeState{}, nil
+		}
+		sess, err := env.sessions.Create(t.Context(), "child")
+		require.NoError(t, err)
+
+		_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+		require.NoError(t, err)
+		require.Zero(t, calls)
+	})
 }
