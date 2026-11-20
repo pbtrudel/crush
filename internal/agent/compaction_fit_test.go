@@ -241,3 +241,53 @@ func TestSummarizePrunesWhenTheStoredHistoryIsBiggerThanTheReportedUsage(t *test
 	require.True(t, tools.HasSpillNotice(toolResultTextIn(t, stub.calls[0].Prompt)),
 		"the oversized result must be pruned so the request fits")
 }
+
+// TestSummarize_PrunesAtTheFitBoundary pins the line itself: the last
+// reported context the request still fits sends the history untouched, and
+// one token past it prunes.
+func TestSummarize_PrunesAtTheFitBoundary(t *testing.T) {
+	const resultChars = 20_000
+
+	// run summarizes the seeded history with a reported context that many
+	// tokens past the line where the request stops fitting.
+	run := func(t *testing.T, pastFitLine int64) string {
+		t.Helper()
+		env := testEnv(t)
+		stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
+		agent := newCompactionAgent(env, stub, nil, false)
+
+		model := agent.largeModel.Get()
+		window := effectiveContextWindow(model)
+		output := compactionMaxOutputTokens(model)
+		fitLine := window - output - compactionRequestReserve
+		require.True(t, compactionFits(window, fitLine, output), "the fit line itself must fit")
+		require.False(t, compactionFits(window, fitLine+1, output), "one token past it must not")
+
+		ctx := t.Context()
+		sess, err := env.sessions.Create(ctx, "test")
+		require.NoError(t, err)
+		seedOversizedHistory(t, env, sess.ID, resultChars)
+
+		sess.PromptTokens = fitLine + pastFitLine
+		_, err = env.sessions.Save(ctx, sess)
+		require.NoError(t, err)
+
+		require.NoError(t, agent.summarize(
+			ctx, sess.ID, model, nil, nil, false, compactionTriggerGuard, false,
+		))
+		require.Len(t, stub.calls, 1)
+		return toolResultTextIn(t, stub.calls[0].Prompt)
+	}
+
+	t.Run("the last context that fits keeps the history intact", func(t *testing.T) {
+		text := run(t, 0)
+		require.Len(t, text, resultChars, "an oversized result must reach the summarizer in full")
+		require.False(t, tools.HasSpillNotice(text))
+	})
+
+	t.Run("one token past the fit line prunes", func(t *testing.T) {
+		text := run(t, 1)
+		require.True(t, tools.HasSpillNotice(text))
+		require.Less(t, len(text), resultChars)
+	})
+}
