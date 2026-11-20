@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +80,29 @@ func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.Co
 		DisableAutoSummarize: disableAutoSummarize,
 		Tools:                tools,
 		titles:               env.titles,
+	}).(*sessionAgent)
+}
+
+// newVisionCompactionAgent builds a compaction agent whose model can see
+// images and whose config caps the request image budget, so a test can drive
+// the media passes through a live step and a compaction alike.
+func newVisionCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.ConfigStore, tools ...fantasy.AgentTool) *sessionAgent {
+	large := Model{
+		Model: model,
+		CatwalkCfg: catwalk.Model{
+			ContextWindow:    200_000,
+			DefaultMaxTokens: 32_000,
+			Capabilities:     catwalk.Capabilities{Vision: true},
+		},
+	}
+	return NewSessionAgent(SessionAgentOptions{
+		Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },
+		SystemPrompt: "SYSTEM PROMPT",
+		Sessions:     env.sessions,
+		Messages:     env.messages,
+		Cfg:          cfg,
+		Tools:        tools,
+		titles:       env.titles,
 	}).(*sessionAgent)
 }
 
@@ -614,13 +638,15 @@ func TestSummarize_AttachesCompactionStats(t *testing.T) {
 }
 
 // toolRequestModel records every request that carries tools, which is every
-// step the agent itself sends (title generation sends none), and answers with
-// a fixed text so a turn ends in one step.
+// step the agent itself sends (title generation sends none). It calls the
+// "probe" tool on its first toolSteps steps and then answers with a fixed
+// text, so a turn can be made to carry a tool result.
 type toolRequestModel struct {
 	fakeLanguageModel
-	text  string
-	mu    sync.Mutex
-	calls []fantasy.Call
+	text      string
+	toolSteps int
+	mu        sync.Mutex
+	calls     []fantasy.Call
 }
 
 func (m *toolRequestModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
@@ -630,9 +656,22 @@ func (m *toolRequestModel) Stream(_ context.Context, call fantasy.Call) (fantasy
 		}, nil
 	}
 	m.mu.Lock()
+	step := len(m.calls)
 	m.calls = append(m.calls, call)
 	m.mu.Unlock()
 	return func(yield func(fantasy.StreamPart) bool) {
+		if step < m.toolSteps {
+			if !yield(fantasy.StreamPart{
+				Type:          fantasy.StreamPartTypeToolCall,
+				ID:            fmt.Sprintf("call-%d", step+1),
+				ToolCallName:  "probe",
+				ToolCallInput: "{}",
+			}) {
+				return
+			}
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
+			return
+		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
 		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.text}) {
 			return
@@ -647,6 +686,17 @@ func (m *toolRequestModel) Stream(_ context.Context, call fantasy.Call) (fantasy
 func toolsJSON(t *testing.T, tools []fantasy.Tool) string {
 	t.Helper()
 	data, err := json.Marshal(tools)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// toolBreakpointJSON renders a request tool's provider options, where the
+// last-tool cache breakpoint lives. Test tools serialize as function tools.
+func toolBreakpointJSON(t *testing.T, tool fantasy.Tool) string {
+	t.Helper()
+	fn, ok := tool.(fantasy.FunctionTool)
+	require.True(t, ok)
+	data, err := json.Marshal(fn.ProviderOptions)
 	require.NoError(t, err)
 	return string(data)
 }
@@ -716,23 +766,7 @@ func TestSummarize_AppliesTheLiveStepMediaPasses(t *testing.T) {
 	model := &toolRequestModel{text: "done"}
 	imageLimit := 1
 	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit}})
-	large := Model{
-		Model: model,
-		CatwalkCfg: catwalk.Model{
-			ContextWindow:    200_000,
-			DefaultMaxTokens: 32_000,
-			Capabilities:     catwalk.Capabilities{Vision: true},
-		},
-	}
-	agent := NewSessionAgent(SessionAgentOptions{
-		Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },
-		SystemPrompt: "SYSTEM PROMPT",
-		Sessions:     env.sessions,
-		Messages:     env.messages,
-		Cfg:          cfg,
-		Tools:        []fantasy.AgentTool{&recordingTool{name: "alpha"}},
-		titles:       env.titles,
-	}).(*sessionAgent)
+	agent := newVisionCompactionAgent(env, model, cfg, &recordingTool{name: "alpha"})
 
 	ctx := t.Context()
 	sess, err := env.sessions.Create(ctx, "test")
