@@ -525,29 +525,55 @@ func TestResponsesReplayReadsEnvelopeOnlyStream(t *testing.T) {
 	)
 }
 
+// resetResponsesReplayEnv gives a test a fresh read of the environment
+// override and restores the shared one afterwards.
+func resetResponsesReplayEnv(t *testing.T) {
+	t.Helper()
+
+	previous := responsesReplayEnv
+	responsesReplayEnv = sync.OnceValue(readResponsesReplayEnv)
+	t.Cleanup(func() { responsesReplayEnv = previous })
+}
+
 // TestResponsesReasoningReplayEnabled covers the two gates: the config option
 // and the environment override the eval runner sets per variant.
 func TestResponsesReasoningReplayEnabled(t *testing.T) {
 	t.Run("option off and no override", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
 		require.False(t, responsesReasoningReplayEnabled(false))
 	})
 	t.Run("option on", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "")
 		require.True(t, responsesReasoningReplayEnabled(true))
 	})
 	t.Run("override one", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "1")
 		require.True(t, responsesReasoningReplayEnabled(false))
 	})
 	t.Run("override true", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "true")
 		require.True(t, responsesReasoningReplayEnabled(false))
 	})
 	t.Run("override off", func(t *testing.T) {
+		resetResponsesReplayEnv(t)
 		t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "0")
 		require.False(t, responsesReasoningReplayEnabled(false))
 	})
+}
+
+// TestResponsesReplayEnvReadOnce covers the single read: the value is a
+// process-level switch, so a later change to the environment is not seen.
+func TestResponsesReplayEnvReadOnce(t *testing.T) {
+	resetResponsesReplayEnv(t)
+	t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "1")
+	require.True(t, responsesReasoningReplayEnabled(false))
+
+	t.Setenv("CRUSH_RESPONSES_REASONING_REPLAY", "0")
+	require.True(t, responsesReasoningReplayEnabled(false), "the override is read once")
 }
 
 // TestResponsesReplayIgnoresOpeningEncryptedContent pins the closing value:

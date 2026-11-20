@@ -27,15 +27,20 @@ const maxResponsesReplayItems = 32
 // rather than buffered without end.
 const maxResponsesReplayLineBytes = 1 << 20
 
+// responsesReplayEnv reads the environment override once: providers are built
+// repeatedly and the value cannot change mid-process.
+var responsesReplayEnv = sync.OnceValue(readResponsesReplayEnv)
+
+func readResponsesReplayEnv() bool {
+	enabled, _ := strconv.ParseBool(os.Getenv("CRUSH_RESPONSES_REASONING_REPLAY"))
+	return enabled
+}
+
 // responsesReasoningReplayEnabled reports whether the transport is installed.
 // The config option is the normal switch; the environment variable lets a
 // harness turn it on for one run without touching the config file.
 func responsesReasoningReplayEnabled(option bool) bool {
-	if option {
-		return true
-	}
-	enabled, _ := strconv.ParseBool(os.Getenv("CRUSH_RESPONSES_REASONING_REPLAY"))
-	return enabled
+	return option || responsesReplayEnv()
 }
 
 // newResponsesReasoningReplayTransport wraps base with a transport that
