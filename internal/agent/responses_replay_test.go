@@ -195,6 +195,21 @@ func reasoningStream() string {
 	).body
 }
 
+// reasoningTextStream builds a streamed response holding one reasoning item
+// followed by an assistant message carrying text.
+func reasoningTextStream(id, encrypted, text string) string {
+	return sseBody(
+		`{"type":"response.output_item.done","output_index":0,"item":`+replayItem(map[string]any{
+			"id": id, "type": "reasoning", "encrypted_content": encrypted, "summary": []any{},
+		})+`}`,
+		`{"type":"response.output_item.done","output_index":1,"item":`+replayItem(map[string]any{
+			"id": "msg_" + id, "type": "message", "role": "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": text}},
+		})+`}`,
+		`{"type":"response.completed","response":{"id":"resp_text","output":[]}}`,
+	).body
+}
+
 // reasoningResponse is reasoningStream as a canned server response.
 func reasoningResponse() replayTestResponse {
 	return replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: reasoningStream()}
@@ -435,8 +450,7 @@ func TestResponsesReplayDropsOldestItems(t *testing.T) {
 	transport := newResponsesReasoningReplayTransport(nil, true).(*responsesReasoningReplayTransport)
 	for i := range maxResponsesReplayItems + 5 {
 		transport.remember(replayedReasoning{
-			endpoint: "https://example.test/responses",
-			model:    "gpt-test",
+			scope: replayScope{endpoint: "https://example.test/responses", model: "gpt-test"},
 			item: json.RawMessage(replayItem(map[string]any{
 				"type": "reasoning", "id": fmt.Sprintf("rsn_%d", i), "encrypted_content": "cipher",
 			})),
@@ -541,4 +555,63 @@ func TestResponsesReplayIgnoresOpeningEncryptedContent(t *testing.T) {
 	bodies := server.seenBodies()
 	require.Len(t, bodies, 2)
 	require.Equal(t, second, string(bodies[1]), "the opening event's encrypted content is never replayed")
+}
+
+// TestResponsesReplayScopesToConversation covers two sessions sharing one
+// transport, both ending an assistant message with the same text: the record
+// from one conversation is never inserted into the other.
+func TestResponsesReplayScopesToConversation(t *testing.T) {
+	t.Parallel()
+
+	server := newReplayTestServer(t,
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: reasoningTextStream("rsn_a", "close-cipher-a", "Done.")},
+		completedResponse("resp_b1"),
+		completedResponse("resp_a2"),
+		completedResponse("resp_b2"),
+	)
+	client := replayTestClient(t, true)
+
+	// Session A reasons, writes "Done." and stops.
+	server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"session A"}`))
+	// Session B starts later with the same closing words ahead of it.
+	server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"session B"}`))
+
+	server.post(t, client, replayRequest(t, "gpt-test",
+		`{"role":"user","content":"session A"}`,
+		`{"role":"assistant","content":"Done."}`,
+	))
+	server.post(t, client, replayRequest(t, "gpt-test",
+		`{"role":"user","content":"session B"}`,
+		`{"role":"assistant","content":"Done."}`,
+	))
+
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 4)
+	require.Equal(t, []string{"close-cipher-a"}, replayReasoningItems(t, bodies[2]),
+		"the conversation that produced the item gets it")
+	require.Empty(t, replayReasoningItems(t, bodies[3]),
+		"the other conversation, with the same assistant text, does not")
+}
+
+// TestResponsesReplayTrimsTextAnchors covers whitespace around an assistant
+// message: the response and the replayed request may differ by surrounding
+// whitespace and must still match.
+func TestResponsesReplayTrimsTextAnchors(t *testing.T) {
+	t.Parallel()
+
+	server := newReplayTestServer(t,
+		replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: reasoningTextStream("rsn_trim", "close-cipher-trim", "  Done.\n")},
+	)
+	client := replayTestClient(t, true)
+
+	server.post(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+	server.post(t, client, replayRequest(t, "gpt-test",
+		`{"role":"user","content":"hi"}`,
+		`{"role":"assistant","content":"Done."}`,
+	))
+
+	bodies := server.seenBodies()
+	require.Len(t, bodies, 2)
+	require.Equal(t, []string{"close-cipher-trim"}, replayReasoningItems(t, bodies[1]))
+	require.Equal(t, []string{"user", "reasoning", "assistant"}, replayInputTypes(t, bodies[1]))
 }

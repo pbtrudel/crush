@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,17 +56,67 @@ func newResponsesReasoningReplayTransport(base http.RoundTripper, enabled bool) 
 // replayedReasoning is one closed reasoning item and the output item that
 // followed it. The follower anchors the item in a later request: it is
 // matched by call_id for a function call and by text for an assistant
-// message.
+// message. The prefix pins the conversation that produced it, so a record is
+// never handed to a request from another session.
 type replayedReasoning struct {
-	endpoint string
-	model    string
+	scope    replayScope
+	prefix   conversationPrefix
 	item     json.RawMessage
 	follower replayFollower
+}
+
+// replayScope is the endpoint and model a record belongs to.
+type replayScope struct {
+	endpoint string
+	model    string
 }
 
 type replayFollower struct {
 	callID string
 	text   string
+}
+
+// conversationPrefix identifies the request input that produced a record.
+// The input only ever grows at the end within a conversation, so a later
+// request must start with exactly the same items.
+type conversationPrefix struct {
+	hash  [sha256.Size]byte
+	count int
+}
+
+// prefixHashes hashes every prefix of canonical input items, including the
+// empty prefix at index 0, so a record's prefix check is a single compare.
+func prefixHashes(items [][]byte) [][sha256.Size]byte {
+	hashes := make([][sha256.Size]byte, len(items)+1)
+	h := sha256.New()
+	for i, item := range items {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(item)))
+		_, _ = h.Write(size[:])
+		_, _ = h.Write(item)
+		copy(hashes[i+1][:], h.Sum(nil))
+	}
+	return hashes
+}
+
+// canonicalItems renders each input item with sorted keys and no extra
+// whitespace, so equal items compare equal even when the encoder differs.
+func canonicalItems(input []json.RawMessage) [][]byte {
+	items := make([][]byte, len(input))
+	for i, raw := range input {
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			items[i] = bytes.Clone(raw)
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			items[i] = bytes.Clone(raw)
+			continue
+		}
+		items[i] = encoded
+	}
+	return items
 }
 
 // responsesReasoningReplayTransport records reasoning items from streamed
@@ -88,7 +140,14 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 		return nil, err
 	}
 
-	body, inserted := t.withRecordedItems(req, original)
+	input, ok := parseResponsesInput(original)
+	if !ok {
+		return t.base.RoundTrip(requestWithBody(req, original))
+	}
+	scope := replayScope{endpoint: responsesEndpoint(req), model: responsesModel(original)}
+	prefix := conversationPrefix{hash: prefixHashes(canonicalItems(input))[len(input)], count: len(input)}
+
+	body, inserted := t.withRecordedItems(original, input, scope)
 	// The original body was consumed to inspect it; every request is
 	// rebuilt from the bytes we hold.
 	sent := requestWithBody(req, body)
@@ -109,7 +168,7 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 	if !t.paused() && isEventStream(resp) {
 		resp.Body = &replayRecordingBody{
 			body:   resp.Body,
-			stream: newReplayStream(t, responsesEndpoint(req), responsesModel(original)),
+			stream: newReplayStream(t, scope, prefix),
 		}
 	}
 	return resp, nil
@@ -146,17 +205,9 @@ func (t *responsesReasoningReplayTransport) recordedItems() []replayedReasoning 
 // withRecordedItems returns the request body carrying the recorded items in
 // front of the item each one followed. Bodies that already hold a reasoning
 // item, or that match no recorded item, are returned unchanged.
-func (t *responsesReasoningReplayTransport) withRecordedItems(req *http.Request, body []byte) ([]byte, int) {
+func (t *responsesReasoningReplayTransport) withRecordedItems(body []byte, input []json.RawMessage, scope replayScope) ([]byte, int) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return body, 0
-	}
-	rawInput, ok := fields["input"]
-	if !ok {
-		return body, 0
-	}
-	var input []json.RawMessage
-	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return body, 0
 	}
 
@@ -168,7 +219,7 @@ func (t *responsesReasoningReplayTransport) withRecordedItems(req *http.Request,
 		}
 	}
 
-	plan := planReasoningInsertions(items, t.recordedItems(), responsesEndpoint(req), responsesModel(body))
+	plan := planReasoningInsertions(items, prefixHashes(canonicalItems(input)), t.recordedItems(), scope)
 	if len(plan) == 0 {
 		return body, 0
 	}
@@ -216,17 +267,23 @@ type reasoningInsertion struct {
 	item  json.RawMessage
 }
 
-// planReasoningInsertions decides where each recorded item goes. The plan is
-// in recording order and each follower is used once, so two items never land
-// on the same anchor.
-func planReasoningInsertions(input []replayInputItem, records []replayedReasoning, endpoint, model string) []reasoningInsertion {
+// planReasoningInsertions decides where each recorded item goes. A record is
+// only used by a request from the same conversation, that is one whose input
+// starts with the items that produced the record. The plan is in recording
+// order and each follower is used once, so two items never land on the same
+// anchor.
+func planReasoningInsertions(input []replayInputItem, prefixes [][sha256.Size]byte, records []replayedReasoning, scope replayScope) []reasoningInsertion {
 	var plan []reasoningInsertion
 	used := make(map[int]bool)
 	for _, record := range records {
-		if record.endpoint != endpoint || record.model != model {
+		if record.scope != scope {
 			continue
 		}
-		index := followerIndex(input, record.follower, used)
+		start := record.prefix.count
+		if start >= len(prefixes) || prefixes[start] != record.prefix.hash {
+			continue
+		}
+		index := followerIndex(input, record.follower, used, start)
 		if index < 0 {
 			continue
 		}
@@ -236,15 +293,18 @@ func planReasoningInsertions(input []replayInputItem, records []replayedReasonin
 	return plan
 }
 
-func followerIndex(input []replayInputItem, follower replayFollower, used map[int]bool) int {
-	for i, item := range input {
+// followerIndex looks for the anchor after the conversation prefix, so an
+// equal assistant text in an earlier turn can never be mistaken for it.
+func followerIndex(input []replayInputItem, follower replayFollower, used map[int]bool, start int) int {
+	for i := start; i < len(input); i++ {
+		item := input[i]
 		if used[i] {
 			continue
 		}
 		if follower.callID != "" && item.Type == "function_call" && item.CallID == follower.callID {
 			return i
 		}
-		if follower.text != "" && item.Role == "assistant" && inputItemText(item.Content) == follower.text {
+		if follower.text != "" && item.Role == "assistant" && strings.TrimSpace(inputItemText(item.Content)) == follower.text {
 			return i
 		}
 	}
@@ -281,8 +341,8 @@ func inputItemText(raw json.RawMessage) string {
 // SSE events and the envelope GitHub Copilot wraps response-level events in.
 type replayStream struct {
 	transport *responsesReasoningReplayTransport
-	endpoint  string
-	model     string
+	scope     replayScope
+	prefix    conversationPrefix
 
 	items    map[int]*replayOutputItem
 	buf      []byte
@@ -298,11 +358,11 @@ type replayOutputItem struct {
 	closed    bool
 }
 
-func newReplayStream(transport *responsesReasoningReplayTransport, endpoint, model string) *replayStream {
+func newReplayStream(transport *responsesReasoningReplayTransport, scope replayScope, prefix conversationPrefix) *replayStream {
 	return &replayStream{
 		transport: transport,
-		endpoint:  endpoint,
-		model:     model,
+		scope:     scope,
+		prefix:    prefix,
 		items:     map[int]*replayOutputItem{},
 	}
 }
@@ -439,8 +499,8 @@ func (s *replayStream) finish() {
 			continue
 		}
 		s.transport.remember(replayedReasoning{
-			endpoint: s.endpoint,
-			model:    s.model,
+			scope:    s.scope,
+			prefix:   s.prefix,
 			item:     reasoningItemJSON(out.item, out.encrypted),
 			follower: follower,
 		})
@@ -455,8 +515,8 @@ func followingFollower(rest []int, items map[int]*replayOutputItem) (replayFollo
 		switch {
 		case out.typ == "function_call" && out.callID != "":
 			return replayFollower{callID: out.callID}, true
-		case out.typ == "message" && out.text != "":
-			return replayFollower{text: out.text}, true
+		case out.typ == "message" && strings.TrimSpace(out.text) != "":
+			return replayFollower{text: strings.TrimSpace(out.text)}, true
 		}
 	}
 	return replayFollower{}, false
@@ -526,6 +586,22 @@ func isResponsesRequest(req *http.Request) bool {
 
 func responsesEndpoint(req *http.Request) string {
 	return req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
+}
+
+// parseResponsesInput returns the request's input items. A body without a
+// usable input array is not touched.
+func parseResponsesInput(body []byte) ([]json.RawMessage, bool) {
+	var request struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil, false
+	}
+	var input []json.RawMessage
+	if err := json.Unmarshal(request.Input, &input); err != nil {
+		return nil, false
+	}
+	return input, true
 }
 
 func responsesModel(body []byte) string {
