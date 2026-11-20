@@ -42,6 +42,55 @@ matches.
    commits and hidden blobs against this repository, and prints the suite
    version.
 
+## Signing in, catalogs and probes
+
+`crush-eval login <route>` runs `crush login` with the eval home as
+`CRUSH_GLOBAL_DATA`, so the route's OAuth token lands in
+`~/.local/state/crush-eval/data` and never in your own Crush data directory.
+That sign-in also stores a main model, its recent models and UI options in the
+same file. `login` strips those three fields afterwards: a run names its model
+on the command line, and a pinned one the route does not configure fails every
+run with "model provider not configured". `run` refuses to start, and says how
+to clear it, if such a selection is still there; it never edits the file,
+because a live batch may be reading it.
+
+A run's child has provider auto-update off, so Crush serves the model catalog
+its data dir holds. Freeze your own Crush catalog into the eval home once, and
+again when you want newer models:
+
+```sh
+crush-eval catalog freeze
+```
+
+It copies `providers.json` and `hyper.json` from your Crush data directory
+(`$CRUSH_GLOBAL_DATA`, else `$XDG_DATA_HOME/crush`, else
+`~/.local/share/crush`), byte for byte and with mode 0o600, and prints their
+sha256. `batch` and `run` record those hashes in `batch.json` and in every
+result line, so two batches are known to have run on the same models, and both
+refuse to start when `providers.json` is missing from the eval home: the
+embedded catalog lacks the models the routes name.
+
+`crush-eval probe <route> [--extra JSON] [--reps N]` checks whether a model
+recalls a value it wrote in its own reasoning, which is what lets a suite trust
+a chain of turns. It sends non-streaming chat requests holding a user turn, an
+assistant turn whose `reasoning_content` names a fixed nonce and whose text is
+`OK`, and a user turn asking for the nonce, once as Crush builds the request
+and once with `--extra` merged into the body, then prints only the two recall
+counts and the short answers:
+
+```
+$ crush-eval probe gpt-6-luna --reps 3
+without 0/3 recalled
+  I did not note a codeword.
+  ...
+with 3/3 recalled
+  A7F3-B2Q9
+  ...
+```
+
+A probe runs on the host, outside the jail, so it renews an expired OAuth token
+itself, and it prints no credential.
+
 ## Network jail
 
 On Linux, `crush-eval run`, `batch` and `grade` put the model's process and the
