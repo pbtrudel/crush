@@ -534,6 +534,10 @@ type Options struct {
 	// continue one prompt. Zero turns continuations off: the checks still
 	// run and are observed.
 	TurnEndMaxContinuations *int `json:"turn_end_max_continuations,omitempty" jsonschema:"description=How many times the turn-end gate may continue one prompt before the turn ends. A continuation is one more model run with a harness message from Crush. 0 turns continuations off and still runs the checks.,default=1,example=0"`
+	// TurnEndCompletionCheck asks the model to verify its work before a
+	// turn that changed files ends. Experimental until the task suite has
+	// measured whether it prevents false completions.
+	TurnEndCompletionCheck bool `json:"turn_end_completion_check,omitempty" jsonschema:"description=Experimental: ask the model to verify its work\\, with the commands it ran\\, before ending a turn that changed files. Off by default until the task suite measures whether it prevents false completions.,default=false"`
 	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
 	// Crush dialog (loopback pinentry) instead of handing the terminal
 	// over to an external pinentry program. No GPG or git configuration
@@ -762,6 +766,13 @@ func (o *Options) GetRepeatToolReminders() bool {
 		return true
 	}
 	return *o.RepeatToolReminders
+}
+
+// GetTurnEndCompletionCheck reports whether the completion check runs. The
+// nil receiver and an unset field both mean off: it is an experiment until
+// the task suite has measured it.
+func (o *Options) GetTurnEndCompletionCheck() bool {
+	return o != nil && o.TurnEndCompletionCheck
 }
 
 // DefaultTurnEndMaxContinuations is how many times one prompt may be

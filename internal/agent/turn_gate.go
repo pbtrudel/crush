@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -153,7 +154,7 @@ func (a *sessionAgent) snapshotWorktree(ctx context.Context, dir string) (gituti
 // gateNeedsChangedFiles reports whether anything reads the turn's changed
 // files, so a prompt with no hook and no built-in check costs no git call.
 func (a *sessionAgent) gateNeedsChangedFiles() bool {
-	return a.hooks.Configured(hooks.EventTurnEnd)
+	return a.hooks.Configured(hooks.EventTurnEnd) || a.completionCheckOn()
 }
 
 // turnEndMaxContinuations returns how many continuations one prompt may
@@ -255,7 +256,11 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 	}
 	reasons := hookReasons
 	stopped := hookStop
-	for _, check := range a.gateChecks {
+	checks := slices.Clone(a.gateChecks)
+	if a.completionCheckOn() {
+		checks = append(checks, completionGateCheck{})
+	}
+	for _, check := range checks {
 		verdict := check.Check(ctx, in)
 		stopped = stopped || verdict.Stop
 		if verdict.Reason == "" {

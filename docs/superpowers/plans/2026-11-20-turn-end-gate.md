@@ -184,14 +184,14 @@ Branch `crush/w32-completion-check`, about 200 lines.
 - Modify `internal/agent/turn_gate.go`: register the check after the hooks when it is enabled.
 
 **Tests:**
-- [ ] `completionMessage`:
+- [x] `completionMessage`:
   - exact text for one file;
   - 25 files truncated to 20 plus `and 5 more`;
   - the commits line when HEAD moved.
-- [ ] The check returns no reason with no files and no HEAD move.
-- [ ] Option and environment combinations, each in its own test with `t.Setenv` and a reset of the once-value, following `responses_replay_test.go:540-576`: off/unset, on/unset, off/`1`, off/`true`, off/`0`.
-- [ ] End to end, with a fake model that writes a file through `write` and then ends: two runs; the gate row contains `Files changed in this turn: <path>`; the continuation's request offers the same tools as the first.
-- [ ] A `NonInteractive` call with the check on gives one run.
+- [x] The check returns no reason with no files and no HEAD move.
+- [x] Option and environment combinations, each in its own test with `t.Setenv` and a reset of the once-value, following `responses_replay_test.go:540-576`: off/unset, on/unset, off/`1`, off/`true`, off/`0`.
+- [x] End to end, with a fake model that writes a file through `write` and then ends: two runs; the gate row contains `Files changed in this turn: <path>`; the continuation's request offers the same tools as the first.
+- [x] A `NonInteractive` call with the check on gives one run.
 
 **Acceptance criteria:**
 - With the option off and the variable unset, the agent tests show no gate row and no extra run.

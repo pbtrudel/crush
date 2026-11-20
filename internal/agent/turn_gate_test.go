@@ -80,17 +80,36 @@ func (c *fakeGateCheck) recorded() []gateInput {
 // was sent.
 type promptRecordingModel struct {
 	*scriptedModel
-	mu      sync.Mutex
-	prompts [][]fantasy.Message
+	mu    sync.Mutex
+	calls []recordedCall
+}
+
+// recordedCall is one request the model saw.
+type recordedCall struct {
+	prompt []fantasy.Message
+	tools  []string
 }
 
 func (m *promptRecordingModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	if len(call.Tools) > 0 {
+		recorded := recordedCall{prompt: slices.Clone(call.Prompt)}
+		for _, tool := range call.Tools {
+			recorded.tools = append(recorded.tools, tool.GetName())
+		}
 		m.mu.Lock()
-		m.prompts = append(m.prompts, slices.Clone(call.Prompt))
+		m.calls = append(m.calls, recorded)
 		m.mu.Unlock()
 	}
 	return m.scriptedModel.Stream(ctx, call)
+}
+
+// toolNames returns the tools offered to the call at index i.
+func (m *promptRecordingModel) toolNames(t *testing.T, i int) []string {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.Less(t, i, len(m.calls), "the model saw fewer calls than the test expected")
+	return m.calls[i].tools
 }
 
 // userTexts returns the text of every user message of the prompt at index
@@ -99,9 +118,9 @@ func (m *promptRecordingModel) userTexts(t *testing.T, i int) []string {
 	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	require.Less(t, i, len(m.prompts), "the model saw fewer calls than the test expected")
+	require.Less(t, i, len(m.calls), "the model saw fewer calls than the test expected")
 	var texts []string
-	for _, msg := range m.prompts[i] {
+	for _, msg := range m.calls[i].prompt {
 		if msg.Role != fantasy.MessageRoleUser {
 			continue
 		}

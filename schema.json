@@ -814,6 +814,11 @@
             0
           ]
         },
+        "turn_end_completion_check": {
+          "type": "boolean",
+          "description": "Experimental: ask the model to verify its work, with the commands it ran, before ending a turn that changed files. Off by default until the task suite measures whether it prevents false completions.",
+          "default": false
+        },
         "pinentry_integrated": {
           "type": "boolean",
           "description": "Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.",
