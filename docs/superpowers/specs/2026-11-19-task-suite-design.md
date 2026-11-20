@@ -242,7 +242,7 @@ crush-eval/
   gh/                       empty (GH_CONFIG_DIR)
   bin/<sha>/crush           built variants
   batches/<id>/results.jsonl
-  batches/<id>/runs/<run>/{src,data,home,config/crush,stdout.json,stderr.log,grade.json}
+  batches/<id>/runs/<run>/{src,data,home,config/crush,net.sock,stdout.json,stderr.log,grade.json}
 ```
 
 A route file:
@@ -267,7 +267,7 @@ How credentials reach the child without being copied:
 - **OAuth routes** (Copilot) sign in once with `crush-eval login <route>`, which runs `crush login` with `CRUSH_GLOBAL_DATA` set to the eval home. The token then lives in the eval home's data file and is never copied from the user's own. Refreshes write there too. Two runs that refresh at once could race on that file; the route's concurrency bounds it, and a failed refresh ends as `provider_error`, which is retried (3.6).
 - **Claude Agent** uses the `claude` CLI's own sign-in. The CLI also reads the user's `~/.claude` settings and instructions, which would leak into the run. The route sets `CLAUDE_CONFIG_DIR` to a directory in the eval home and signs in there once. Whether the CLI honors that variable for every file it reads is checked before Claude enters the matrix (5.2).
 
-The generated global config holds the route's provider block and these options, identical for every variant unless the variant's overlay changes one: `disable_metrics: true`, `disable_provider_auto_update: true`, `disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch]`, no MCP servers, no hooks. It is written per run, into `<run>/config/crush`, because two runs of different variants start within milliseconds of each other. The child environment is built from scratch: `PATH`, `HOME`, `LANG`, `GOCACHE`, `GOMODCACHE`, the route's variables, `CRUSH_GLOBAL_CONFIG`, `CRUSH_GLOBAL_DATA`, `CRUSH_SKILLS_DIR`, `CRUSH_DISABLE_METRICS=1`, `GH_CONFIG_DIR`, `GOPROXY=off`, `GOFLAGS=-buildvcs=false`, `GOTOOLCHAIN=local`. `HOME` is the run's own empty `<run>/home`, not the user's: a shell or build the model starts must not read `~/.config/crush/crushrc` and the API keys in it, `~/.config/gh` or `~/.claude`. `GOCACHE` and `GOMODCACHE` are passed explicitly, Claude reads `CLAUDE_CONFIG_DIR`, and the OAuth tokens of a route live in `CRUSH_GLOBAL_DATA`, so nothing needs the real home. `CRUSH_CLIENT_SERVER` is never set, which settles the point the measurement design left open; `GH_TOKEN` and `GITHUB_TOKEN` are never passed.
+The generated global config holds the route's provider block and these options, identical for every variant unless the variant's overlay changes one: `disable_metrics: true`, `disable_provider_auto_update: true`, `disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch]`, no MCP servers, no hooks. It is written per run, into `<run>/config/crush`, because two runs of different variants start within milliseconds of each other. The child environment is built from scratch: `PATH`, `HOME`, `LANG`, `GOCACHE`, `GOMODCACHE`, the route's variables, `CRUSH_GLOBAL_CONFIG`, `CRUSH_GLOBAL_DATA`, `CRUSH_SKILLS_DIR`, `CRUSH_DISABLE_METRICS=1`, `GH_CONFIG_DIR`, `GOPROXY=off`, `GOFLAGS=-buildvcs=false`, `GOTOOLCHAIN=local`, and in jail mode the four proxy variables of 3.8. `HOME` is the run's own empty `<run>/home`, not the user's: a shell or build the model starts must not read `~/.config/crush/crushrc` and the API keys in it, `~/.config/gh` or `~/.claude`. `GOCACHE` and `GOMODCACHE` are passed explicitly, Claude reads `CLAUDE_CONFIG_DIR`, and the OAuth tokens of a route live in `CRUSH_GLOBAL_DATA`, so nothing needs the real home. `CRUSH_CLIENT_SERVER` is never set, which settles the point the measurement design left open; `GH_TOKEN` and `GITHUB_TOKEN` are never passed.
 
 Global context files resolve to `crush-eval/config/CRUSH.md` and `crush-eval/AGENTS.md`, which do not exist, so only the checkout's own `AGENTS.md` reaches the model, as it would for a user of this repository. `/etc` system config is read by Crush as always; the runner records whether one exists.
 
@@ -290,7 +290,7 @@ The prompt goes on standard input. `--data-dir` keeps the session database out o
 4. `go test -count=1 -json -timeout <grade.timeout> -skip '^(<exclude>)$' <packages>`: every test of the graded packages, which catches a fix that breaks a neighbor. All must pass.
 5. The grade passes when both pass. A build failure is a failed grade with `compile_error`.
 
-Grading runs in the checkout after the model has exited, so nothing the model can do reaches the hidden files in time. The working tree is graded as it is, whatever HEAD points to. Work left in another worktree or branch counts as not done; the runner records whether the model created any (`git worktree list`, `git branch`), because the repository's own instructions and Agent Teams can move work into a worktree.
+Grading runs in the checkout after the model has exited, so nothing the model can do reaches the hidden files in time. In jail mode the two `go test` commands run in the network jail of 3.8, with no proxy port, so a test that binds 127.0.0.1 works and nothing reaches out. The working tree is graded as it is, whatever HEAD points to. Work left in another worktree or branch counts as not done; the runner records whether the model created any (`git worktree list`, `git branch`), because the repository's own instructions and Agent Teams can move work into a worktree.
 
 `crush-eval grade --reference <task>` grades the merge commit's tree the same way. `vet` uses it, and each batch grades every task's reference once before its runs, so a change in the machine (toolchain, cache) shows as a failing reference instead of a drop in pass rate.
 
@@ -306,7 +306,8 @@ One JSON line per attempt in `results.jsonl`:
  "estimated":false,"cost":0.0,"duration_ms":412000,"undelivered_reports":0,
  "turn_ends":{"completed":2},"grade":{"touched":true,"packages":true,"compile_error":false,
  "model_tests_removed":0},"pass":true,"false_completion":false,
- "diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"project_config":"<blob>"}
+ "diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"project_config":"<blob>",
+ "network":"jail","net_denied":0,"net_denied_hosts":[]}
 ```
 
 No prompt, answer, file content or path from the session goes into the line. The run's `text` is dropped; its length is kept.
@@ -320,6 +321,12 @@ Order: runs are interleaved by task and repetition, alternating variants (task 1
 #### 3.7 Contamination check
 
 After each run the runner opens the run's own session database (in `<run>/data`, never the user's) read-only and scans tool-call inputs for: the task's merge sha, `pbtrudel/crush/pull`, `github.com/pbtrudel/crush`, `gh pr`, `gh api`, the suite path, the repository's absolute path, and `git cat-file`. A match sets `contaminated: true` with a count; no text is kept. Contaminated runs are reported and excluded from comparisons. A rate above 2% of a batch stops the comparison until the cause is found.
+
+#### 3.8 Network jail
+
+A run's model process and its grading go in a Linux network namespace with loopback only (`--network jail`, the default on Linux; `--network host` on other systems and on request, recorded as `network` in the batch record and every result line). The namespace has no route out and no DNS. The model API stays reachable through one hole: an HTTP CONNECT proxy on a unix socket in the run directory (or in the eval home's `sock/` when that path is too long for a unix address), which tunnels only the `host:port` of the route's `base_url`, port 443 or 80 by scheme. The child gets `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and `http_proxy` pointing at `127.0.0.1:<port>`, a port the jail forwards to the proxy. Any other CONNECT, and any plain request, gets 403 and is counted by name, never by path or body: the result line records `net_denied` and the sorted `net_denied_hosts`. Grading runs `go test` in the same jail without the forwarded port, so the jail's loopback still serves tests and nothing leaves.
+
+What the jail does not cover: non-Linux systems, where the default is `--network host` and the jail refuses to start; the model API host itself, which a run must reach; and a route that names no `base_url`, which cannot run jailed because the jail has nothing to allow. It also does not hide the machine's files: the jail isolates the network, not the filesystem.
 
 ### 4. Scoring and comparison
 
@@ -413,7 +420,6 @@ Corrections verified by tests (roadmap step 2) do not run the suite. Families th
 
 - Public benchmarks (Decision 3).
 - Tasks graded by anything but Go tests: UI golden files, a model as judge, manual review.
-- A network sandbox. The design disables Crush's web tools, blocks `gh` credentials and sets `GOPROXY=off`, and detects contact with the answer (3.7). It does not stop a shell command from reaching the network.
 - Running the suite in CI. It costs money and needs subscriptions.
 - The client/server mode, Windows and macOS.
 - Interactive features (TUI, Discord) beyond what their unit tests grade.

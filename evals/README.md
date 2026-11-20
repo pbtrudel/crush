@@ -42,5 +42,15 @@ matches.
    commits and hidden blobs against this repository, and prints the suite
    version.
 
+## Network jail
+
+On Linux, `crush-eval run` and `batch` put the model's process in a network
+namespace with only loopback, and grade in the same namespace. The one host it
+may reach is the route's `base_url` host, through an HTTP proxy on a unix
+socket. `--network host` turns this off; on other systems it is the default and
+the jail refuses to start. `crush-eval grade` defaults to the host and takes
+`--network jail` explicitly. A result line records `network`, and in jail mode
+`net_denied` with the sorted `net_denied_hosts` the proxy refused.
+
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).
