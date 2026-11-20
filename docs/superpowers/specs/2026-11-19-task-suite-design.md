@@ -241,8 +241,9 @@ crush-eval/
   skills/                   empty (CRUSH_SKILLS_DIR)
   gh/                       empty (GH_CONFIG_DIR)
   bin/<sha>/crush           built variants
+  net-<random>/net.sock     one proxy socket per live run, 0700
   batches/<id>/results.jsonl
-  batches/<id>/runs/<run>/{src,data,home,config/crush,net.sock,stdout.json,stderr.log,grade.json}
+  batches/<id>/runs/<run>/{src,data,home,config/crush,stdout.json,stderr.log,grade.json}
 ```
 
 A route file:
@@ -324,9 +325,13 @@ After each run the runner opens the run's own session database (in `<run>/data`,
 
 #### 3.8 Network jail
 
-A run's model process and its grading go in a Linux network namespace with loopback only (`--network jail`, the default on Linux; `--network host` on other systems and on request, recorded as `network` in the batch record and every result line). The namespace has no route out and no DNS. The model API stays reachable through one hole: an HTTP CONNECT proxy on a unix socket in the run directory (or in the eval home's `sock/` when that path is too long for a unix address), which tunnels only the `host:port` of the route's `base_url`, port 443 or 80 by scheme. The child gets `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and `http_proxy` pointing at `127.0.0.1:<port>`, a port the jail forwards to the proxy. Any other CONNECT, and any plain request, gets 403 and is counted by name, never by path or body: the result line records `net_denied` and the sorted `net_denied_hosts`. Grading runs `go test` in the same jail without the forwarded port, so the jail's loopback still serves tests and nothing leaves.
+A run's model process and its grading go in a Linux network, mount and user namespace with loopback only (`--network jail`, the default on Linux; `--network host` on other systems and on request, recorded as `network` in the batch record and every result line). The network namespace has no route out and no DNS. The mount namespace is private, and the jail mounts an empty tmpfs over `/run`, `/var/run`, `/tmp`, `/mnt/wslg` and `/run/user`, skipping any that does not exist, so a path-based unix socket under them (the docker daemon, an ssh agent, the WSL interop socket) is unreachable. It never masks a directory that holds the binary it has to exec, which keeps a binary built under `/tmp` runnable. The child keeps the caller's uid and gid; the helper uses ambient `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SETPCAP`, then clears the ambient, inheritable, permitted, effective and bounding sets, sets `no_new_privs`, and only then execs the child. Its `/proc/self/status` shows `CapEff` and `CapAmb` zero.
 
-What the jail does not cover: non-Linux systems, where the default is `--network host` and the jail refuses to start; the model API host itself, which a run must reach; and a route that names no `base_url`, which cannot run jailed because the jail has nothing to allow. It also does not hide the machine's files: the jail isolates the network, not the filesystem.
+The model API stays reachable through one hole: an HTTP CONNECT proxy on a unix socket in a per-run 0700 directory under the eval home, which tunnels only the `host:port` of the route's `base_url`, port 443 or 80 by scheme. The child gets `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and `http_proxy` pointing at `127.0.0.1:3128`, the port the jail forwards to the proxy (every jail has its own network namespace, so the constant is safe). Any other CONNECT, and any plain request, gets 403 and is counted by name, never by path or body: the result line records `net_denied` and the sorted `net_denied_hosts`, at most 100 names of 255 bytes each. Grading runs `go test` in the same jail without the forwarded port, so the jail's loopback still serves tests and nothing leaves. A cancelled run or grade kills the whole process group, and the helper sets `Pdeathsig` on its child.
+
+`run` and `batch` preflight the jail once per process: a machine where user namespaces are blocked fails with a message that says to use `--network host`, never a silent fallback. `grade` defaults to the same mode. A resumed batch treats an empty `network` in its record as `host` and refuses an explicit `--network` that differs. `jail` is rejected at flag parsing on non-Linux systems.
+
+What the jail does not cover: non-Linux systems, where the default is `--network host`; the model API host itself, which a run must reach; a route that names no `base_url`, which cannot run jailed because the jail has nothing to allow; and the machine's files outside the masked directories, which the jail does not hide.
 
 ### 4. Scoring and comparison
 
