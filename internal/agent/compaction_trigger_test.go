@@ -142,3 +142,27 @@ func TestCompactionTrigger_Overflow(t *testing.T) {
 
 	require.Equal(t, "overflow", summaryTrigger(t, env, sess.ID))
 }
+
+// TestCompactionTriggerMeasuresFromNow pins which compactions measure their
+// trailing idle gap from "now": the ones that run before the prompt that
+// triggered them is stored, whose gap is the one that prompt will close.
+func TestCompactionTriggerMeasuresFromNow(t *testing.T) {
+	t.Parallel()
+
+	for _, trigger := range []compactionTrigger{
+		compactionTriggerFusionPreflight,
+		compactionTriggerFusionRoute,
+		compactionTriggerModelSwitch,
+	} {
+		require.True(t, trigger.measuresFromNow(), string(trigger))
+	}
+	for _, trigger := range []compactionTrigger{
+		compactionTriggerThreshold,
+		compactionTriggerCeiling,
+		compactionTriggerGuard,
+		compactionTriggerOverflow,
+		compactionTriggerManual,
+	} {
+		require.False(t, trigger.measuresFromNow(), string(trigger))
+	}
+}
