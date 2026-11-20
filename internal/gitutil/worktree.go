@@ -73,7 +73,7 @@ func CreateWorktreeFrom(ctx context.Context, repoDir, name, base string) (path, 
 		break
 	}
 
-	if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, path, base); err != nil {
+	if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, "--end-of-options", path, base); err != nil {
 		return "", "", fmt.Errorf("git worktree add: %w", err)
 	}
 	return path, branch, nil
@@ -189,7 +189,7 @@ func RemoveWorktree(ctx context.Context, dir, path string, force bool) error {
 	if force {
 		args = append(args, "--force")
 	}
-	args = append(args, abs)
+	args = append(args, "--end-of-options", abs)
 	if _, err := gitOutput(ctx, root, args...); err != nil {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
@@ -211,7 +211,9 @@ func DeleteBranch(ctx context.Context, dir, branch string, force bool) error {
 	if force {
 		flag = "-D"
 	}
-	if _, err := gitOutput(ctx, root, "branch", flag, branch); err != nil {
+	// The branch name comes from the caller, so it must never be read as
+	// an option.
+	if _, err := gitOutput(ctx, root, "branch", flag, "--end-of-options", branch); err != nil {
 		return fmt.Errorf("git branch %s %s: %w", flag, branch, err)
 	}
 	return nil
