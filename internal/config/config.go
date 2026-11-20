@@ -490,6 +490,10 @@ type Options struct {
 	// HistorySlimReasoning also drops plain reasoning text from the slimmed
 	// history.
 	HistorySlimReasoning bool `json:"history_slim_reasoning,omitempty" jsonschema:"description=When slimming older history\\, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.,default=false"`
+	// ResponsesReasoningReplay sends the encrypted reasoning items an OpenAI
+	// Responses endpoint returned earlier in the turn back with the next
+	// request. Off by default until each endpoint is known to accept them.
+	ResponsesReasoningReplay bool `json:"responses_reasoning_replay,omitempty" jsonschema:"description=Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. Off by default; the endpoint must accept them.,default=false"`
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`

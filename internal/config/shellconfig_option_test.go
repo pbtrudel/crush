@@ -132,3 +132,8 @@ func TestShellConfigOptionResetRejectsNonList(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not one")
 }
+
+func TestShellConfigOptionResponsesReasoningReplay(t *testing.T) {
+	store := loadCrushSh(t, `option responses-reasoning-replay`)
+	require.True(t, store.Config().Options.ResponsesReasoningReplay)
+}
