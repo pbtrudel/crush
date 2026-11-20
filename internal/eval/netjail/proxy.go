@@ -71,7 +71,7 @@ type Proxy struct {
 	path  string
 	allow map[string]bool
 	ln    net.Listener
-	done  chan struct{}
+	stop  func() bool
 	once  sync.Once
 
 	mu     sync.Mutex
@@ -115,19 +115,12 @@ func Listen(ctx context.Context, path string, allow []string) (*Proxy, error) {
 		path:  path,
 		allow: allowed,
 		ln:    ln,
-		done:  make(chan struct{}),
 		conns: make(map[net.Conn]bool),
 		hosts: make(map[string]bool),
 	}
 	p.wg.Add(1)
 	go p.serve()
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = p.Close()
-		case <-p.done:
-		}
-	}()
+	p.stop = context.AfterFunc(ctx, func() { _ = p.Close() })
 	return p, nil
 }
 
@@ -162,7 +155,9 @@ func (p *Proxy) Denied() (int, []string) {
 func (p *Proxy) Close() error {
 	var err error
 	p.once.Do(func() {
-		close(p.done)
+		if p.stop != nil {
+			p.stop()
+		}
 		err = p.ln.Close()
 		p.mu.Lock()
 		p.closed = true
@@ -248,28 +243,31 @@ func (p *Proxy) handle(conn net.Conn) {
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
 	}
-	// Bytes the client sent after the headers belong to the tunnel, and a
-	// half-close lets the other direction drain.
+	// Bytes the client sent after the headers belong to the tunnel. When
+	// either direction ends, both connections close: a half-close would
+	// leave the other copy blocked on a live server and Close would wait
+	// for it.
+	closeBoth := closing(conn, upstream)
 	var copies sync.WaitGroup
-	copies.Add(2)
+	copies.Add(1)
 	go func() {
 		defer copies.Done()
 		_, _ = io.Copy(upstream, buffered)
-		closeWrite(upstream)
+		closeBoth()
 	}()
-	go func() {
-		defer copies.Done()
-		_, _ = io.Copy(conn, upstream)
-		closeWrite(conn)
-	}()
+	_, _ = io.Copy(conn, upstream)
+	closeBoth()
 	copies.Wait()
 }
 
-// closeWrite ends the write side of a tunnelled connection without closing
-// the read side.
-func closeWrite(conn net.Conn) {
-	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = cw.CloseWrite()
+// closing returns a function that closes both connections once.
+func closing(a, b net.Conn) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = a.Close()
+			_ = b.Close()
+		})
 	}
 }
 

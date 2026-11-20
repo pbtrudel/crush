@@ -287,6 +287,9 @@ func GoTest(ctx context.Context, dir string, env, args []string, jailed bool) (O
 	cmd.Dir = dir
 	cmd.Env = env
 	if jailed {
+		// A cancelled grade must stop go and every test binary it started,
+		// not just the helper that ran them.
+		netjail.KillGroup(cmd)
 		if err := netjail.Wrap(cmd, "", 0); err != nil {
 			return Outcome{}, err
 		}

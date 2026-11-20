@@ -269,6 +269,9 @@ func execute(ctx context.Context, bin string, args, env []string, prompt, stdout
 	defer stderr.Close() //nolint:errcheck // Read-only log.
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Holding a killed process's output pipe open must not keep Wait
+	// waiting after the group is gone.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = stdout

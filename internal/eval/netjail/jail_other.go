@@ -16,6 +16,9 @@ func Wrap(cmd *exec.Cmd, sock string, port int) error {
 	return errors.New("network jail needs Linux")
 }
 
+// KillGroup is a no-op where the jail does not exist.
+func KillGroup(cmd *exec.Cmd) {}
+
 // Main reports that the jail needs Linux. It never runs a child.
 func Main(args []string) int {
 	fmt.Fprintln(os.Stderr, "Network jail needs Linux")

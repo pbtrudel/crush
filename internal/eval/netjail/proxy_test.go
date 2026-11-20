@@ -90,6 +90,122 @@ func TestProxyTunnelsConnect(t *testing.T) {
 	require.Empty(t, hosts)
 }
 
+// holdServer starts a TCP server that accepts one connection, reports when
+// its side stops reading, and keeps the connection open until the test ends.
+// Keeping it open is what makes a half-closed tunnel hang.
+func holdServer(t *testing.T) (string, <-chan struct{}) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	closed := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		t.Cleanup(func() { conn.Close() })
+		_, _ = io.Copy(io.Discard, conn)
+		close(closed)
+	}()
+	return ln.Addr().String(), closed
+}
+
+// connect asks the proxy for a tunnel to target and returns the client
+// connection after the 200.
+func connect(t *testing.T, p *netjail.Proxy, target string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	conn := dialProxy(t, p)
+	_, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	require.NoError(t, err)
+	r := bufio.NewReader(conn)
+	resp := readResponse(t, r, http.MethodConnect)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	return conn, r
+}
+
+// TestProxyTunnelClosesUpstream checks that the proxy closes the upstream
+// side when the client leaves, instead of holding it until the server ends.
+func TestProxyTunnelClosesUpstream(t *testing.T) {
+	t.Parallel()
+
+	target, closed := holdServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := netjail.Listen(ctx, filepath.Join(t.TempDir(), "net.sock"), []string{target})
+	require.NoError(t, err)
+	defer p.Close() //nolint:errcheck // Test cleanup.
+
+	conn, _ := connect(t, p, target)
+	require.NoError(t, conn.Close())
+
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the upstream connection stayed open after the client left")
+	}
+}
+
+// TestProxyTunnelClosesClient checks that the client sees the end when the
+// upstream server closes.
+func TestProxyTunnelClosesClient(t *testing.T) {
+	t.Parallel()
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target := ln.Addr().String()
+	p, err := netjail.Listen(ctx, filepath.Join(t.TempDir(), "net.sock"), []string{target})
+	require.NoError(t, err)
+	defer p.Close() //nolint:errcheck // Test cleanup.
+
+	conn, r := connect(t, p, target)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+	_, err = r.ReadByte()
+	require.Error(t, err, "the client kept reading after the server closed")
+}
+
+// TestProxyCloseWithLiveTunnel checks that Close returns while a tunnel is
+// still live and that it closes both ends.
+func TestProxyCloseWithLiveTunnel(t *testing.T) {
+	t.Parallel()
+
+	target, closed := holdServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := netjail.Listen(ctx, filepath.Join(t.TempDir(), "net.sock"), []string{target})
+	require.NoError(t, err)
+
+	conn, _ := connect(t, p, target)
+	done := make(chan error, 1)
+	go func() { done <- p.Close() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close hung with a live tunnel")
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close left the upstream connection open")
+	}
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	_, err = conn.Read(make([]byte, 1))
+	require.Error(t, err, "the client connection survived Close")
+}
+
 // TestProxyDenies checks that a host outside the allowlist and a plain
 // request are both refused and counted by host, with no path or body kept.
 func TestProxyDenies(t *testing.T) {
@@ -203,10 +319,17 @@ func TestDefaultMode(t *testing.T) {
 func TestPort(t *testing.T) {
 	t.Parallel()
 
-	port, err := netjail.Port()
-	require.NoError(t, err)
-	require.NotZero(t, port)
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:"+strconv.Itoa(port))
-	require.NoError(t, err)
-	require.NoError(t, ln.Close())
+	for range 10 {
+		port, err := netjail.Port()
+		require.NoError(t, err)
+		require.NotZero(t, port)
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err != nil {
+			// A parallel test may have taken the port; try another.
+			continue
+		}
+		require.NoError(t, ln.Close())
+		return
+	}
+	t.Fatal("Port did not return a bindable port")
 }

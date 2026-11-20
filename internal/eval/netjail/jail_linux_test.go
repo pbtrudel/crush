@@ -333,6 +333,36 @@ func TestWrapWithoutProxy(t *testing.T) {
 	require.Equal(t, []string{self, "__jail", "--", "true"}, cmd.Args)
 }
 
+// TestJailCancelKillsGroup checks that a cancelled jail takes its child and
+// the child's process group with it instead of waiting for them.
+func TestJailCancelKillsGroup(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "sleep", "30")
+	netjail.KillGroup(cmd)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled jail did not exit")
+	}
+	require.Eventually(t, func() bool {
+		return syscall.Kill(-pid, 0) == syscall.ESRCH
+	}, 2*time.Second, 10*time.Millisecond, "the jailed process group survived")
+}
+
 // TestJailExitCode checks that the jail returns the child's exit code.
 func TestJailExitCode(t *testing.T) {
 	t.Parallel()

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -71,6 +72,25 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 		uintptr(unix.CAP_NET_ADMIN), uintptr(unix.CAP_SYS_ADMIN), uintptr(unix.CAP_SETPCAP))
 	cmd.SysProcAttr = attr
 	return nil
+}
+
+// KillGroup makes cmd a process group leader whose cancellation kills the
+// whole group, so a jailed go or the test binaries it starts do not outlive
+// the context.
+func KillGroup(cmd *exec.Cmd) {
+	attr := cmd.SysProcAttr
+	if attr == nil {
+		attr = &syscall.SysProcAttr{}
+	}
+	attr.Setpgid = true
+	cmd.SysProcAttr = attr
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 }
 
 // Main runs the jail side of the hidden __jail subcommand: it makes the
@@ -261,18 +281,16 @@ func forwardConn(conn net.Conn, sock string) {
 		return
 	}
 	defer upstream.Close()
+	closeBoth := closing(conn, upstream)
 	var copies sync.WaitGroup
-	copies.Add(2)
+	copies.Add(1)
 	go func() {
 		defer copies.Done()
 		_, _ = io.Copy(upstream, conn)
-		closeWrite(upstream)
+		closeBoth()
 	}()
-	go func() {
-		defer copies.Done()
-		_, _ = io.Copy(conn, upstream)
-		closeWrite(conn)
-	}()
+	_, _ = io.Copy(conn, upstream)
+	closeBoth()
 	copies.Wait()
 }
 
@@ -280,13 +298,15 @@ func forwardConn(conn net.Conn, sock string) {
 // directory, forwards SIGINT and SIGTERM, and returns its exit code.
 func runChild(argv []string) int {
 	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
+	// A helper killed without warning must take its child with it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	cmd.Env = os.Environ()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(signals)
 
 	if err := cmd.Start(); err != nil {
