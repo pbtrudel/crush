@@ -191,4 +191,12 @@ func TestAgentTeamsOffRebuildsTheLivePalette(t *testing.T) {
 	require.NotContains(t, palette, AgentDispatchToolName)
 	require.NotContains(t, palette, SpawnTeammateToolName)
 	require.Contains(t, palette, tools.AgenticFetchToolName)
+
+	// Turning it back on restores the whole surface.
+	on := true
+	coord.cfg.Config().Options.AgentTeams = &on
+	require.NoError(t, coord.RefreshModels(t.Context()))
+	palette = coderToolNames(t, coord)
+	require.Contains(t, palette, AgentDispatchToolName)
+	require.Contains(t, palette, SpawnTeammateToolName)
 }
