@@ -443,6 +443,10 @@ type UI struct {
 	// accept an earlier viewer's asynchronous load result.
 	agentViewer           *agentViewer
 	agentViewerGeneration uint64
+	// agentsParent is the Agents list the viewer was opened from. It sits off
+	// the dialog stack while the viewer is up, so the viewer owns the whole
+	// screen and its keys, and goes back on when the viewer closes.
+	agentsParent *dialog.Agents
 
 	// onboarding state
 	onboarding struct {
@@ -2698,6 +2702,11 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
 	case dialog.ActionSelectAgent:
+		// The list stays behind the viewer: it comes back, filter and
+		// selection intact, when the viewer is left.
+		if agents, ok := m.dialog.Dialog(dialog.AgentsID).(*dialog.Agents); ok {
+			m.agentsParent = agents
+		}
 		m.dialog.CloseDialog(dialog.AgentsID)
 		cmds = append(cmds, m.openAgentViewer(msg.Agent))
 
@@ -3776,7 +3785,12 @@ func (m *UI) openAuthenticationDialogWithMethod(provider catwalk.Provider, model
 func (m *UI) handleAgentViewerKeyPress(msg tea.KeyPressMsg) tea.Cmd {
 	viewerChat := m.agentViewer.chat
 	if key.Matches(msg, m.keyMap.Chat.Cancel) {
-		return m.closeAgentViewer()
+		parent := m.agentsParent
+		cmd := m.closeAgentViewer()
+		if parent != nil {
+			m.dialog.OpenDialog(parent)
+		}
+		return cmd
 	}
 
 	var cmds []tea.Cmd
@@ -6874,6 +6888,7 @@ func (m *UI) closeAgentViewer() tea.Cmd {
 		return nil
 	}
 	m.agentViewer.Close()
+	m.agentsParent = nil
 	m.agentViewer = nil
 	m.updateLayoutAndSize()
 	m.invalidateFrames()
