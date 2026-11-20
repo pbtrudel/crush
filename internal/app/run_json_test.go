@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -120,6 +121,34 @@ func TestSummarizeRunFollowsAGateContinuation(t *testing.T) {
 	require.Equal(t, 2, runExitCode(result.Reason))
 }
 
+// A run the gate never continued prints the object it printed before the
+// gate existed: no gate key, and the same keys as then.
+func TestRunResultOmitsTheGateWhenUnused(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix it.", false),
+		stepRow("root", "Done.", 0, message.TurnEndCompleted, nil),
+	}
+
+	result := summarizeRun("root", rows)
+	require.Nil(t, result.Gate)
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"gate"`)
+	var object map[string]any
+	require.NoError(t, json.Unmarshal(data, &object))
+	fields := make([]string, 0, len(object))
+	for field := range object {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	require.Equal(t, []string{
+		"build", "cost", "duration_ms", "estimated", "model", "provider", "reason",
+		"schema", "session", "session_id", "text", "tree",
+	}, fields)
+}
+
 // A subagent report folded back into the session opens no run, so the
 // prompt's run still decides the reason; a hidden background notice opens
 // none either.
@@ -166,6 +195,7 @@ func TestRunResultJSON(t *testing.T) {
 			Sessions: 1, runCounts: runCounts{Steps: 1, Tokens: runTokens{Input: 5}},
 			TurnEnds: map[message.TurnEnd]int{message.TurnEndCompleted: 1}, UndeliveredReports: 2,
 		},
+		Gate: &runGate{Continuations: 1, Claims: 2, UnbackedClaims: 1},
 		Cost: 0.5,
 	}
 
@@ -177,7 +207,7 @@ func TestRunResultJSON(t *testing.T) {
 		"session": {"steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0}},
 		"tree": {"sessions": 1, "steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0},
 			"turn_ends": {"completed": 1}, "undelivered_reports": 2},
-		"gate": {"continuations": 0, "claims": 0, "unbacked_claims": 0},
+		"gate": {"continuations": 1, "claims": 2, "unbacked_claims": 1},
 		"estimated": false, "cost": 0.5
 	}`, string(data))
 }

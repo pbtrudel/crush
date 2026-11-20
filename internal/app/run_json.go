@@ -77,10 +77,12 @@ type runResult struct {
 	Build      string          `json:"build"`
 	Session    runCounts       `json:"session"`
 	Tree       runTree         `json:"tree"`
-	Gate       runGate         `json:"gate"`
-	Estimated  bool            `json:"estimated"`
-	Cost       float64         `json:"cost"`
-	Error      string          `json:"error,omitempty"`
+	// Gate is set only for a run the turn-end gate continued, so a run
+	// without the gate prints the object it printed before it existed.
+	Gate      *runGate `json:"gate,omitempty"`
+	Estimated bool     `json:"estimated"`
+	Cost      float64  `json:"cost"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // summarizeRun builds the object from the rows the command wrote in the
@@ -152,11 +154,15 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		}
 	}
 	result.Tree.Sessions = len(sessions)
-	claims, unbacked := gateClaims(rows, sessionID)
-	result.Gate = runGate{
-		Continuations:  gateRowCount(rows, sessionID),
-		Claims:         claims,
-		UnbackedClaims: unbacked,
+	// Only a run the gate continued has anything to report, and only then
+	// is the answer worth scanning for claims it never backed.
+	if continuations := gateRowCount(rows, sessionID); continuations > 0 {
+		claims, unbacked := gateClaims(rows, sessionID)
+		result.Gate = &runGate{
+			Continuations:  continuations,
+			Claims:         claims,
+			UnbackedClaims: unbacked,
+		}
 	}
 	return result
 }

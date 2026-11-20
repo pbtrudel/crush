@@ -171,11 +171,13 @@ func TestSummarizeRunGateCounts(t *testing.T) {
 	)
 
 	result := summarizeRun("root", rows)
+	require.NotNil(t, result.Gate)
 	require.Equal(t, 1, result.Gate.Continuations)
 	require.Equal(t, 1, result.Gate.Claims)
 	require.Equal(t, 1, result.Gate.UnbackedClaims)
 
+	// A run the gate never continued carries no gate object at all.
 	plain := summarizeRun("root", append(answeredStep("root", "c1", "bash", `{"command":"go build ./..."}`, false),
 		commandStep("root", "Done.", "", "", "")))
-	require.Equal(t, runGate{}, plain.Gate)
+	require.Nil(t, plain.Gate)
 }
