@@ -136,6 +136,9 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 		"Create one named, durable teammate. Only the Team Lead may call this tool."+
 			" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve.",
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {
 				mode = agentteam.ContextFresh
@@ -177,6 +180,9 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 		SendMessageToolName,
 		"Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn.",
 		func(ctx context.Context, params sendMessageParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			err := c.team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
 				Target:  params.Target,
 				Message: params.Message,
@@ -240,6 +246,9 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 		InterruptAgentToolName,
 		"Interrupt one teammate's current turn while preserving its pending inbox. Team Lead only.",
 		func(ctx context.Context, params interruptAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			previous, err := c.team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
 			if err != nil {
 				return c.teamError(err), nil
@@ -254,6 +263,9 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 		TeamTaskCreateToolName,
 		"Create one unowned pending task on the shared Team task board.",
 		func(ctx context.Context, params teamTaskCreateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			view, err := c.team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,

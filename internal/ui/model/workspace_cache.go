@@ -235,6 +235,13 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 
 	var cmds []tea.Cmd
 	busy := m.isAgentBusy()
+	// The retry belongs to any idle probe, not just a busy-to-idle edge: a
+	// refusal can land while the memoized state already reads idle, and the
+	// probe that follows is the only sign of whether it can run.
+	if !busy && m.pendingConfigReload {
+		m.pendingConfigReload = false
+		cmds = append(cmds, m.reloadConfig(true))
+	}
 	if busy {
 		// A session reload that raced an unpopulated busy cache (the
 		// zero-value read at boot) froze the animation clock even though

@@ -170,3 +170,17 @@ func TestDispatchCollapsesOlderToolCalls(t *testing.T) {
 	require.NotContains(t, out, "earlier tool calls")
 	require.Contains(t, out, "f00.go")
 }
+
+// A run model is provider/model and a model id may itself contain slashes, so
+// only the first one separates the two.
+func TestSplitRunModelUsesTheFirstSlash(t *testing.T) {
+	t.Parallel()
+
+	model, provider := splitRunModel("openrouter/anthropic/claude-x")
+	require.Equal(t, "anthropic/claude-x", model)
+	require.Equal(t, "openrouter", provider)
+
+	model, provider = splitRunModel("glm-5")
+	require.Equal(t, "glm-5", model)
+	require.Empty(t, provider)
+}
