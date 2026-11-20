@@ -2,6 +2,9 @@ package batch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/result"
@@ -124,8 +128,15 @@ func newFixture(t *testing.T, tasks, reps int) *fixture {
 		},
 	}
 	f.results = filepath.Join(h.BatchDir("b1"), "results.jsonl")
+	// Every run reads the eval home's provider catalog, which stands in for
+	// the user's frozen one.
+	require.NoError(t, os.MkdirAll(h.DataDir(), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(h.DataDir(), "providers.json"), []byte(batchCatalog), 0o600))
 	return f
 }
+
+// batchCatalog is the provider catalog the fixture's eval home serves.
+const batchCatalog = `{"providers":[{"id":"commandcode"}]}` + "\n"
 
 // run is the fake runner: it records the call, tracks live runs and appends
 // the line the responder returns.
@@ -471,4 +482,76 @@ func TestRunStopsOnFailingReference(t *testing.T) {
 		require.Empty(t, f.calls)
 		require.NoFileExists(t, f.results)
 	})
+}
+
+// TestBatchRecordsTheCatalog checks that a batch records the sha256 of the
+// model catalogs its runs read, in the record a later comparison reads.
+func TestBatchRecordsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	f.batchRun(t)
+
+	var record struct {
+		Catalog struct {
+			Providers string `json:"providers"`
+			Hyper     string `json:"hyper"`
+		} `json:"catalog"`
+	}
+	data, err := os.ReadFile(filepath.Join(f.opts.Home.BatchDir("b1"), "batch.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &record))
+	sum := sha256.Sum256([]byte(batchCatalog))
+	require.Equal(t, hex.EncodeToString(sum[:]), record.Catalog.Providers)
+	require.Empty(t, record.Catalog.Hyper)
+}
+
+// TestBatchNeedsTheCatalog checks that a batch refuses to start without the
+// provider catalog, before it builds a variant or grades a reference.
+func TestBatchNeedsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	require.NoError(t, os.Remove(filepath.Join(f.opts.Home.DataDir(), "providers.json")))
+
+	_, err := Run(context.Background(), f.opts)
+	require.ErrorContains(t, err, "providers.json")
+	require.ErrorContains(t, err, "crush-eval catalog freeze")
+	require.Empty(t, f.builds)
+	require.Empty(t, f.calls)
+}
+
+// TestBatchResumeRefusesAnotherCatalog checks that a catalog freeze between
+// resume attempts does not mix two sets of models in one batch.
+func TestBatchResumeRefusesAnotherCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	record := Record{
+		Schema: Schema, ID: "b1", Seed: 7, Suite: f.opts.Suite, Experiment: f.opts.Path,
+		Catalog: catalog.Fingerprint{Providers: "frozen-earlier", Hyper: "hyper-earlier"},
+	}
+	require.NoError(t, os.MkdirAll(f.opts.Home.BatchDir("b1"), 0o700))
+	require.NoError(t, record.Write(f.opts.Home))
+
+	_, err := Run(context.Background(), f.opts)
+	require.ErrorContains(t, err, "catalog")
+	require.Empty(t, f.builds)
+	require.Empty(t, f.calls)
+}
+
+// TestBatchResumeAcceptsARecordWithoutACatalog checks that a batch recorded
+// before the fingerprint existed resumes as it is: it has nothing to compare
+// against, and its finished lines stay valid.
+func TestBatchResumeAcceptsARecordWithoutACatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, 1, 1)
+	record := Record{Schema: Schema, ID: "b1", Seed: 7, Suite: f.opts.Suite, Experiment: f.opts.Path}
+	require.NoError(t, os.MkdirAll(f.opts.Home.BatchDir("b1"), 0o700))
+	require.NoError(t, record.Write(f.opts.Home))
+
+	_, err := Run(context.Background(), f.opts)
+	require.NoError(t, err)
+	require.NotEmpty(t, f.calls)
 }

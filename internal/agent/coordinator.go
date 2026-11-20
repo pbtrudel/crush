@@ -1044,6 +1044,29 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			}
 		}
 
+		userExtraBody, _ := mergedOptions["extra_body"].(map[string]any)
+
+		// Ask the vendor to keep the reasoning of earlier turns when the
+		// request asks for reasoning.
+		if vendorReasoningProvider(providerCfg.ID) &&
+			requestReasons(extraBody, userExtraBody, mergedOptions["reasoning_effort"]) {
+			addVendorReasoningFlag(extraBody, model.CatwalkCfg.ID)
+		}
+
+		// The user's configured extra_body wins over Crush's own fields. A
+		// thinking object is merged one level deep, so the user's keys win
+		// and the other keys stay.
+		for key, value := range userExtraBody {
+			if key == "thinking" {
+				if userThinking, ok := value.(map[string]any); ok {
+					if thinking, ok := extraBody[key].(map[string]any); ok {
+						maps.Copy(thinking, userThinking)
+						continue
+					}
+				}
+			}
+			extraBody[key] = value
+		}
 		mergedOptions["extra_body"] = extraBody
 
 		parsed, err := openaicompat.ParseOptions(mergedOptions)
@@ -1693,6 +1716,7 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 			Token: token,
 		}
 	}
+	httpClient = c.withResponsesReasoningReplay(httpClient)
 	if httpClient != nil {
 		opts = append(opts, openai.WithHTTPClient(httpClient))
 	}
@@ -1806,6 +1830,9 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		}
 		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
 	}
+	if wireType == catwalk.TypeResponses {
+		httpClient = c.withResponsesReasoningReplay(httpClient)
+	}
 	if httpClient != nil {
 		opts = append(opts, openaicompat.WithHTTPClient(httpClient))
 	}
@@ -1827,8 +1854,12 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 		azure.WithAPIKey(apiKey),
 		azure.WithUseResponsesAPI(),
 	}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	httpClient = c.withResponsesReasoningReplay(httpClient)
+	if httpClient != nil {
 		opts = append(opts, azure.WithHTTPClient(httpClient))
 	}
 	if options == nil {

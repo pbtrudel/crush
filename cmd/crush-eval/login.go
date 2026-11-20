@@ -58,5 +58,11 @@ func loginCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	// A terminal sign-in also picks a main model; a run names its own, and
+	// the selection would fail every run on the route's provider.
+	if err := route.StripDataConfig(h); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	return 0
 }

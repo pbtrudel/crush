@@ -2743,6 +2743,11 @@ func (a *sessionAgent) slimHistory(model Model, msgs []message.Message, next int
 	if idle <= 0 || (model.Model != nil && model.Model.Provider() == claudeagent.Name) {
 		return
 	}
+	// Kimi, MiMo and DeepSeek require the reasoning content they produced
+	// back in the history, so slimming must not drop it.
+	if vendorReasoningNeedsHistory(model.CatwalkCfg.ID) {
+		dropReasoning = false
+	}
 	if cut := slimColdHistory(msgs, next, idle, dropReasoning); cut > 0 {
 		slog.Debug("Slimmed history before the last idle gap", "messages", cut)
 	}

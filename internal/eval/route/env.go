@@ -43,6 +43,7 @@ var runnerEnv = []string{
 	"GOFLAGS",
 	"GOTOOLCHAIN",
 	"CLAUDE_CONFIG_DIR",
+	"HYPER_URL",
 }
 
 // Dirs are the per-run directories a child gets: its own empty HOME and the
@@ -113,6 +114,9 @@ func (r *Route) childEnv(h *home.Home, dirs Dirs, parent []string, resolve toolc
 	// a build cache and find no downloaded module.
 	addIfSet("GOCACHE", toolchain.ValueWithRoot(parent, "GOCACHE", root))
 	addIfSet("GOMODCACHE", toolchain.ValueWithRoot(parent, "GOMODCACHE", root))
+	// The jail allows the host of the Hyper base URL this process resolved, so
+	// the child has to resolve the same one.
+	addIfSet("HYPER_URL", parentVars["HYPER_URL"])
 	for _, name := range r.Env {
 		value, ok := parentVars[name]
 		if !ok {

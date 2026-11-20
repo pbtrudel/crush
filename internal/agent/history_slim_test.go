@@ -392,6 +392,69 @@ func TestSlimColdHistory(t *testing.T) {
 	})
 }
 
+// TestSlimHistory_KeepsVendorReasoning covers the families whose API requires
+// the reasoning content it produced to be sent back: dropping it from the
+// slimmed history would break or degrade their requests.
+func TestSlimHistory_KeepsVendorReasoning(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
+	agent.cfg = config.NewTestStore(&config.Config{
+		Options: &config.Options{HistorySlimReasoning: true},
+	})
+
+	slim := func(t *testing.T, id string) []message.Message {
+		t.Helper()
+		msgs := coldHistory()
+		agent.slimHistory(Model{
+			Model:      &stubProviderModel{provider: "other"},
+			CatwalkCfg: catwalk.Model{ID: id},
+		}, msgs, 0)
+		return msgs
+	}
+
+	for _, id := range []string{"moonshotai/Kimi-K3", "mimo-v2.6-pro", "deepseek-v4.1-flash"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			msgs := slim(t, id)
+			require.Equal(t, 1, reasoningParts(msgs[5]), "earlier reasoning must be kept")
+			require.Equal(t, stubText("/w/a.go"), msgs[2].Parts[0].(message.ToolResult).Content,
+				"the rest of the slimming still applies")
+		})
+	}
+
+	t.Run("another family still drops it", func(t *testing.T) {
+		t.Parallel()
+		msgs := slim(t, "glm-5.3")
+		require.Zero(t, reasoningParts(msgs[5]))
+	})
+}
+
+// TestSlimHistory_DeepSeekDefaultUnchanged covers the other half of the
+// DeepSeek exemption: history_slim_reasoning is off by default, so with the
+// option off DeepSeek's history is slimmed exactly like any other family's.
+func TestSlimHistory_DeepSeekDefaultUnchanged(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
+	agent.cfg = config.NewTestStore(&config.Config{Options: &config.Options{}})
+
+	deepseek := coldHistory()
+	other := coldHistory()
+	agent.slimHistory(Model{
+		Model:      &stubProviderModel{provider: "other"},
+		CatwalkCfg: catwalk.Model{ID: "deepseek-v4.1-flash"},
+	}, deepseek, 0)
+	agent.slimHistory(Model{
+		Model:      &stubProviderModel{provider: "other"},
+		CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+	}, other, 0)
+
+	require.Equal(t, other, deepseek)
+	require.Equal(t, 1, reasoningParts(deepseek[5]))
+	require.Equal(t, stubText("/w/a.go"), deepseek[2].Parts[0].(message.ToolResult).Content)
+}
+
 // TestSlimHistory_ProviderGuard covers the provider whose transcript lives on
 // its side: a rewritten history is replayed to it as text, which costs more
 // than the tokens slimming saves.

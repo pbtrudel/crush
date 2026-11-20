@@ -94,6 +94,25 @@ type Comparison struct {
 	ContaminationRate float64
 }
 
+// catalogsOf lists the distinct catalog fingerprints of runs. An empty one is
+// a line written before the fingerprint existed, never a mismatch.
+func catalogsOf(runs []result.Result) []string {
+	seen := make(map[string]bool, len(runs))
+	distinct := make([]string, 0, 2)
+	for _, r := range runs {
+		if r.Catalog.Providers == "" {
+			continue
+		}
+		key := r.Catalog.Providers + "\x00" + r.Catalog.Hyper
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		distinct = append(distinct, key)
+	}
+	return distinct
+}
+
 // Compare pairs a variant against a control over the task means, as stated
 // in 4.3. Runs that are contaminated or invalid are excluded from the pairs
 // but count toward the void rule, which is over every line given: pass the
@@ -138,6 +157,9 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 		}
 		if cmp.ContaminationRate > ContaminatedLimit {
 			reasons = append(reasons, fmt.Sprintf("contaminated runs %.1f%% above %.0f%%", 100*cmp.ContaminationRate, 100*ContaminatedLimit))
+		}
+		if distinct := catalogsOf(runs); len(distinct) > 1 {
+			reasons = append(reasons, fmt.Sprintf("runs served by %d model catalogs", len(distinct)))
 		}
 		cmp.Void = len(reasons) > 0
 		cmp.VoidReason = strings.Join(reasons, "; ")

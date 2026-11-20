@@ -1,0 +1,14 @@
+date: 2026-11-19
+name: w13-qwen-preserve
+variants:
+  - name: control
+    ref: 41dc556e967f24921ca36f5550da3a5a99ddc726
+  - name: preserve
+    ref: 047d1b70ae6783a4274b097b3faec61ca9a0e211
+routes: [qwen3.8-flash]
+repetitions: 3
+primary_metric: pass_rate
+margin: 0.1
+detectable_effect: 0.09085640776123453
+# Planning stand-in: no A/A baseline for this family yet (lean plan).
+baseline: evals/baselines/2026-11-19-deepseek-flash.json

@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy/providers/bedrock"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/discover"
 	"github.com/charmbracelet/crush/internal/message"
@@ -720,6 +721,61 @@ func TestGetProviderOptionsTopKExtraBody(t *testing.T) {
 		require.True(t, ok)
 		_, hasTopK := parsed.ExtraBody["top_k"]
 		assert.False(t, hasTopK)
+	})
+}
+
+// gatewayExtraBody returns the extra fields an OpenAI-compatible request
+// carries for the given options.
+func gatewayExtraBody(t *testing.T, opts fantasy.ProviderOptions) map[string]any {
+	t.Helper()
+	raw, ok := opts[openaicompat.Name]
+	require.True(t, ok)
+	parsed, ok := raw.(*openaicompat.ProviderOptions)
+	require.True(t, ok)
+	return parsed.ExtraBody
+}
+
+func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
+	t.Parallel()
+
+	// Hyper writes "thinking" itself, so these cover a field of Crush's own
+	// next to one the user configured.
+	hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+	model := func(extraBody map[string]any) Model {
+		model := reasoningGatewayModel("glm-5.3")
+		model.ModelCfg.Think = true
+		return withExtraBody(model, extraBody)
+	}
+
+	t.Run("crush's fields survive the user's extra_body", func(t *testing.T) {
+		t.Parallel()
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"custom_flag": "kept"}), hyperCfg))
+		assert.Equal(t, true, extra["thinking"])
+		assert.Equal(t, "kept", extra["custom_flag"])
+	})
+
+	t.Run("the user wins key by key", func(t *testing.T) {
+		t.Parallel()
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"thinking": false}), hyperCfg))
+		assert.Equal(t, false, extra["thinking"])
+	})
+
+	t.Run("the user can override the vendor flag", func(t *testing.T) {
+		t.Parallel()
+		model := withExtraBody(reasoningGatewayModel("qwen3.8-flash"), map[string]any{"preserve_thinking": false})
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		assert.Equal(t, false, extra["preserve_thinking"])
+	})
+
+	t.Run("the user's thinking keys merge into crush's object", func(t *testing.T) {
+		t.Parallel()
+		// Z.AI's provider sets thinking.type; the user's key wins and the
+		// type is kept.
+		zaiCfg := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{
+			"thinking": map[string]any{"clear_thinking": true},
+		}), zaiCfg))
+		assert.Equal(t, map[string]any{"type": "enabled", "clear_thinking": true}, extra["thinking"])
 	})
 }
 

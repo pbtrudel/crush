@@ -1,0 +1,14 @@
+date: 2026-11-19
+name: w12-gpt-replay
+variants:
+  - name: control
+    ref: 41dc556e967f24921ca36f5550da3a5a99ddc726
+  - name: replay
+    ref: 6342dfde79414ae079b65e93fcf082f7042b4db9
+routes: [gpt-6-luna]
+repetitions: 3
+primary_metric: pass_rate
+margin: 0.1
+detectable_effect: 0
+# Planning stand-in: no A/A baseline for this family yet (lean plan).
+baseline: evals/baselines/2026-11-19-deepseek-flash.json

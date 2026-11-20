@@ -554,6 +554,16 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			if len(config.Models) > 0 {
 				models := []catwalk.Model{}
 				seen := make(map[string]bool)
+				// A listed model replaces its catalog entry, but the
+				// catalog's endpoint type is not something a user would
+				// restate. Without it a Responses model falls back to the
+				// provider's chat-completions type and leaves that API.
+				catalogTypes := make(map[string]catwalk.Type, len(p.Models))
+				for _, model := range p.Models {
+					if model.Type != "" {
+						catalogTypes[model.ID] = model.Type
+					}
+				}
 
 				for _, model := range config.Models {
 					if seen[model.ID] {
@@ -562,6 +572,9 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 					seen[model.ID] = true
 					if model.Name == "" {
 						model.Name = model.ID
+					}
+					if model.Type == "" {
+						model.Type = catalogTypes[model.ID]
 					}
 					models = append(models, model)
 				}

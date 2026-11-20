@@ -219,6 +219,7 @@ var optionSpecs = map[string]optionSpec{
 	"repeat-tool-reminders":        {jsonKey: "repeat_tool_reminders", kind: optBool},
 	"repetition-detection":         {jsonKey: "repetition_detection", kind: optBool},
 	"history-slim-reasoning":       {jsonKey: "history_slim_reasoning", kind: optBool},
+	"responses-reasoning-replay":   {jsonKey: "responses_reasoning_replay", kind: optBool},
 
 	// Boolean fields exposed positively but stored as their negation.
 	"metrics":              {jsonKey: "disable_metrics", kind: optBool, inverted: true},

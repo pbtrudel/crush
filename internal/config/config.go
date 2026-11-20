@@ -122,15 +122,16 @@ type ProviderConfig struct {
 	// lenient nounset, $(echo), or literal "") is omitted from the
 	// outgoing request rather than sent as "Header:".
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" jsonschema:"description=Additional HTTP headers to send with requests"`
-	// ExtraBody is merged verbatim into OpenAI-compatible request
-	// bodies. String values are NOT shell-expanded: this is a plain
-	// JSON passthrough so that arbitrary provider-extension fields
-	// (numbers, nested objects, booleans) round-trip without a
-	// recursive walker guessing at intent. If you need an env-var-
-	// driven value at request time, put it in extra_headers, or in
-	// the provider's top-level api_key / base_url, all of which do
-	// expand.
-	ExtraBody map[string]any `json:"extra_body,omitempty" jsonschema:"description=Additional fields to include in request bodies\\, only works with openai-compatible providers"`
+	// ExtraBody is merged into OpenAI-compatible request bodies. Its keys
+	// override the fields Crush sets for the request; inside a "thinking"
+	// object the user's keys override Crush's and the other keys stay.
+	// String values are NOT shell-expanded: this is a plain JSON
+	// passthrough so that arbitrary provider-extension fields (numbers,
+	// nested objects, booleans) round-trip without a recursive walker
+	// guessing at intent. If you need an env-var-driven value at request
+	// time, put it in extra_headers, or in the provider's top-level
+	// api_key / base_url, all of which do expand.
+	ExtraBody map[string]any `json:"extra_body,omitempty" jsonschema:"description=Additional fields to include in request bodies\\, only works with openai-compatible providers; keys override the fields Crush sets for the request"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
 
@@ -490,6 +491,10 @@ type Options struct {
 	// HistorySlimReasoning also drops plain reasoning text from the slimmed
 	// history.
 	HistorySlimReasoning bool `json:"history_slim_reasoning,omitempty" jsonschema:"description=When slimming older history\\, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.,default=false"`
+	// ResponsesReasoningReplay sends the encrypted reasoning items an OpenAI
+	// Responses endpoint returned earlier in the turn back with the next
+	// request. Off by default until each endpoint is known to accept them.
+	ResponsesReasoningReplay bool `json:"responses_reasoning_replay,omitempty" jsonschema:"description=Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. Off by default; the endpoint must accept them.,default=false"`
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`

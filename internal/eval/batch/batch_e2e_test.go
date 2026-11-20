@@ -97,6 +97,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"FAKE_CONTENT="+e2eFixed,
 	)
 	h := home.At(t.TempDir())
+	require.NoError(t, os.MkdirAll(h.DataDir(), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(h.DataDir(), "providers.json"), []byte(batchCatalog), 0o600))
 	exp := newExperiment(2)
 	opts := Options{
 		ID:         "e2e",

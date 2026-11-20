@@ -3,6 +3,7 @@ package score_test
 import (
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/score"
 	"github.com/stretchr/testify/require"
@@ -226,4 +227,52 @@ func TestCompareRejectsBadOptions(t *testing.T) {
 
 	_, err = score.Compare(nil, score.Options{Metric: score.MetricPassRate})
 	require.ErrorContains(t, err, "control")
+}
+
+// TestCompareIgnoresAnEmptyCatalog checks that a line written before the
+// catalog fingerprint existed is not a mismatch beside lines that have one:
+// old batches stay comparable, and their record carries no fingerprint.
+func TestCompareIgnoresAnEmptyCatalog(t *testing.T) {
+	t.Parallel()
+
+	runs := pairedRuns(6)
+	for i := range runs {
+		runs[i].Catalog = catalog.Fingerprint{Providers: "providers-a"}
+	}
+	runs[0].Catalog = catalog.Fingerprint{}
+
+	cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Margin: 0.05})
+	require.False(t, cmp.Void)
+	require.Empty(t, cmp.VoidReason)
+}
+
+// TestCompareVoidsMixedCatalogs checks that two catalogs in one batch void the
+// comparison: the pairs would be comparing models served from different
+// catalogs.
+func TestCompareVoidsMixedCatalogs(t *testing.T) {
+	t.Parallel()
+
+	runs := pairedRuns(6)
+	for i := range runs {
+		runs[i].Catalog = catalog.Fingerprint{Providers: "providers-a"}
+	}
+	runs[len(runs)-1].Catalog = catalog.Fingerprint{Providers: "providers-b"}
+
+	cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Margin: 0.05})
+	require.True(t, cmp.Void)
+	require.Contains(t, cmp.VoidReason, "catalog")
+}
+
+// pairedRuns is n tasks run by both variants, the control failing and the
+// variant passing.
+func pairedRuns(n int) []result.Result {
+	var runs []result.Result
+	for i := 0; i < n; i++ {
+		task := "t" + string(rune('a'+i))
+		runs = append(runs,
+			run("control", task, result.KindPlain, 0, false),
+			run("variant", task, result.KindPlain, 0, true),
+		)
+	}
+	return runs
 }

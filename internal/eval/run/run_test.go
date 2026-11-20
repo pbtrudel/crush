@@ -2,7 +2,10 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +15,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,6 +82,9 @@ func TestAdd(t *testing.T) {
 	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
 )
 
+// fixtureCatalog is the provider catalog the fixture's eval home serves.
+const fixtureCatalog = `{"providers":[{"id":"commandcode"}]}` + "\n"
+
 // fixture is a throwaway repository with one buggy package and the hidden
 // test the task grades with.
 type fixture struct {
@@ -119,6 +127,9 @@ func newFixture(t *testing.T) *fixture {
 		env:   map[string]string{},
 		grace: 2 * time.Second,
 	}
+	// Every run reads the eval home's provider catalog, which stands in for
+	// the user's frozen one.
+	write(t, filepath.Join(f.home.DataDir(), "providers.json"), fixtureCatalog)
 	for _, name := range fakeVars {
 		f.env[name] = ""
 	}
@@ -574,4 +585,91 @@ func read(t *testing.T, path string) string {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return string(data)
+}
+
+// TestRunFailsOnNearExpiryToken checks that a jailed Copilot run stops before
+// the child starts when even a fresh token cannot cover the run, with a reason
+// that names the way out. The jail blocks the endpoint that renews the token,
+// so starting the run would only waste a checkout and a timeout.
+func TestRunFailsOnNearExpiryToken(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.route.Provider = route.ProviderCopilot
+	require.NoError(t, f.home.Ensure())
+	write(t, filepath.Join(f.home.DataDir(), "crush.json"), fmt.Sprintf(
+		`{"providers":{"copilot":{"oauth":{"access_token":"short","refresh_token":"github-token","expires_at":%d}}}}`,
+		time.Now().Add(12*time.Minute).Unix(),
+	))
+
+	opts := f.options()
+	opts.Network = netjail.ModeJail
+	opts.Timeout = 10 * time.Minute
+	opts.Preflight = func() error { return nil }
+	opts.RefreshToken = func(context.Context, string, string) (*oauth.Token, error) {
+		// A real Copilot token lives about half an hour, which cannot cover
+		// a ten minute run plus the buffer.
+		return &oauth.Token{AccessToken: "still-short", ExpiresAt: time.Now().Add(13 * time.Minute).Unix()}, nil
+	}
+	_, err := Run(context.Background(), opts)
+	require.ErrorContains(t, err, "copilot")
+	require.ErrorContains(t, err, "expires")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}
+
+// TestRunRefusesPinnedModel checks that a run refuses to start while the eval
+// home data config pins a model. That selection outranks the route's own model
+// and fails the run on a provider the route does not configure.
+func TestRunRefusesPinnedModel(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	require.NoError(t, f.home.Ensure())
+	write(t, filepath.Join(f.home.DataDir(), "crush.json"),
+		`{"models":{"main":{"provider":"commandcode","model":"claude-sonnet-5-5"}},"providers":{}}`)
+
+	_, err := Run(context.Background(), f.options())
+	require.ErrorContains(t, err, "models")
+	require.ErrorContains(t, err, "crush-eval login")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}
+
+// TestRunRecordsTheCatalog checks that a run records the sha256 of the model
+// catalogs its child read from the eval home, so two batches are compared only
+// when the same catalog served them.
+func TestRunRecordsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+
+	line := f.run(t)
+
+	require.Equal(t, fileSHA(t, filepath.Join(f.home.DataDir(), "providers.json")), line.Catalog.Providers)
+	require.Empty(t, line.Catalog.Hyper)
+	require.Contains(t, read(t, filepath.Join(f.home.BatchDir("b1"), "results.jsonl")), `"catalog"`)
+}
+
+// TestRunNeedsTheCatalog checks that a run refuses to start without the
+// provider catalog, since the child would fall back to a catalog that lacks
+// the route's model.
+func TestRunNeedsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	require.NoError(t, os.Remove(filepath.Join(f.home.DataDir(), "providers.json")))
+
+	_, err := Run(context.Background(), f.options())
+	require.ErrorContains(t, err, "providers.json")
+	require.ErrorContains(t, err, "crush-eval catalog freeze")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}
+
+// fileSHA is the hex sha256 of a file.
+func fileSHA(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

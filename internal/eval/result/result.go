@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 )
 
 // Task kinds. The pass rate counts both the same, and scores are also
@@ -99,6 +101,9 @@ type Result struct {
 	ProjectConfig       string `json:"project_config"`
 	// Network is the network mode of the run, jail or host.
 	Network string `json:"network"`
+	// Catalog is the sha256 of the model catalogs the run's child read from
+	// the eval home, so two batches compare only on one catalog.
+	Catalog catalog.Fingerprint `json:"catalog"`
 	// NetDenied counts the connections the jail's proxy refused, and
 	// NetDeniedHosts names them: hosts or host:port, never a path or body.
 	NetDenied      int      `json:"net_denied"`
