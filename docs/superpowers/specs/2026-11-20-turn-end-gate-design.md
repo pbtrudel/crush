@@ -58,7 +58,9 @@ type gateInput struct {
     SessionID     string
     TurnEnd       message.TurnEnd
     Reply         string   // currentAssistant.Content().String()
-    ChangedFiles  []string // section 4.1, across every run of this prompt
+    ChangedFiles  []string // section 4.1: git comparison united with tool calls
+    HeadFrom      string   // HEAD at prompt start; "" in fallback mode
+    HeadTo        string   // HEAD at the gate; equal to HeadFrom if no commit
     Continuations int      // call.gateContinuations
 }
 type gateCheck interface {
@@ -101,11 +103,15 @@ The same RunID, `limits` and `channelMeta` are kept. The continuation's steps th
 - The stale-todo note (`:2111`), the channel reply (`:2128`), the `TurnEnd` firing at its old place (`:2139`) and `AgentFinished` (`:2145`) are skipped. The continuation does all four when it really ends.
 - The release (`:2136-2137`) still happens, as on every hand-off today.
 - At the hand-off, under `sessionMu` (`agent.go:2165`):
-  - If a cancel mark exists, or `call.limits.reached()`, `gateNext` is dropped and its prompt's turn ends as it is. Because the reply, the note and the notification were skipped earlier, the dropped case sends them at this point, after unlocking. The function is called `finishWithoutGate`, so the two paths cannot drift.
-  - If neither applies and `gateNext` survives, it becomes `firstQueuedMessage`. Anything already queued stays behind it. `outerOwesRunComplete` is false because the RunID is the same, and `BeginAccepted` keeps the session visible to a cancel during the hand-off, as for queued prompts.
+  - `gateNext` is dropped if a cancel mark exists, if `call.limits.reached()`, or if the queue now holds a visible user prompt (see below). Its prompt's turn then ends as it is. Because the reply, the note and the notification were skipped earlier, the dropped case sends them at this point, after unlocking, through `finishWithoutGate`, which the normal path also calls, so the two paths cannot drift. The ordinary hand-off then runs the queued prompt next.
+  - If none applies and `gateNext` survives, it becomes `firstQueuedMessage`. Queued reports and wake-ups stay behind it. `outerOwesRunComplete` is false because the RunID is the same, and `BeginAccepted` keeps the session visible to a cancel during the hand-off, as for queued prompts.
 - In the recursive `Run`, a call with `gateContinued` set does not fire `TurnStart` (`agent.go:1384`). Claude Code does not fire `UserPromptSubmit` for a `Stop` continuation either.
 
-**A queued user prompt takes precedence.** The gate looks at the queue under `sessionMu` before it runs any check. A call queued then counts if it carries a visible prompt: `!HiddenUserMessage && Report == nil && !Wakeup`. If one is there, the built-in checks are skipped, the hooks run observe-only, and the turn ends as today. The user's new prompt then starts the next run. A user prompt that arrives after this check, while the gate is running, is queued behind the continuation. It waits for at most `max` extra runs. Folding it into the continuation instead would mix a user turn with a harness turn in one run, so this design does not do that. Queued subagent reports and wake-ups do not stop a continuation. They are folded into its first step the way they are folded today (`agent.go:1468-1503`).
+**A queued user prompt takes precedence (decided).** A queued call counts as a user prompt if it carries a visible prompt: `!HiddenUserMessage && Report == nil && !Wakeup`. The precedence is checked twice, both times under `sessionMu`:
+- *Before the gate runs.* If a user prompt is already queued, the built-in checks are skipped, the hooks run observe-only, and the turn ends as today.
+- *At the hand-off.* A user prompt that arrived while the gate was running, for example during a slow hook, drops `gateNext` (previous paragraph). The turn ends with the reply as it stood, and the user's prompt runs next.
+
+The user therefore never waits behind a harness run that had not started when they sent the prompt. The continuation is never folded into the user's run, because that would mix a user turn with a harness turn. Queued subagent reports and wake-ups do not stop a continuation. They are folded into its first step the way they are folded today (`agent.go:1468-1503`).
 
 **The bound.** `options.turn_end_max_continuations`, an `*int`, defaults to 1. `0` turns off continuations from every source; hooks still fire and are observed. Unlike Claude Code's cap of 8 consecutive continuations, which resets on every tool call, the count here is per prompt and never resets: Crush's default checks cost a model run each.
 
@@ -154,21 +160,19 @@ The events table row becomes `TurnEnd | … | continue with reason, halt | — |
   1. They now run before the request is released. A slow synchronous hook keeps the session busy for its duration, up to its timeout.
   2. When a continuation happens they run once per candidate ending, so twice per prompt at the default cap. `stop_hook_active` lets a script skip the second call.
 
-  Both go into the documentation, and the "once per prompt" sentence (`:196`) is corrected.
+  Both are handled with a documentation note only; no per-hook option is added (decided). The note goes under the `TurnEnd` example and in the Timeouts section (`docs/hooks/README.md:296-303`, `:526-533`). It says that a slow `TurnEnd` hook keeps the session busy, and that a notification hook should background its work, as the read-aloud example already does. The "once per prompt" sentence (`:196`) is corrected.
 - A hook that already exits 2 or prints `decision: "block"` on `TurnEnd` will now continue the turn. Today that output is discarded, so such a hook was written either for Claude Code's `Stop` semantics or by mistake. The release notes name the change.
 - `fireTurnHook` keeps its signature for `TurnStart`, `Interrupt` and `StopFailure`. The `TurnEnd` firing moves into the gate on the normal path. It stays at `agent.go:2139` only for runs that skip the gate, for example `shouldSummarize` runs that did not resume, so `TurnEnd` still fires exactly once per run.
 
 ### 3. Scope
 
-**Lead turns only, for now.**
+**Lead turns only (decided).** Teammates and subagents are revisited together with W8, the delegation policy.
 - Hooks keep their documented scope, because the skip at `turn_hooks.go:76` stays and `docs/hooks/README.md:194-197` keeps its promise.
-- The built-in checks also run only where `!call.NonInteractive`.
+- The built-in checks also run only where `!call.NonInteractive`. No scope option is added.
 
-**The case for covering subagents and teammates too.** With delegation mandatory (W8), much of the editing happens in teammates, and a Lead that only delegated reports their work without a check. The case against:
-- Every child turn would pay one extra run, and the child's final message is a report that the Lead reads, not an answer to the user. The Lead's own gate sees `changed_files` only if delegation is counted (section 4.1).
-- A continuation in a child keeps the Lead's `wait_agent` waiting longer.
-
-**Recommendation.** Make the built-in check's scope an option with values `lead` (default) and `all`, with `all` meaning write-access subagents and teammates. Decide after the first experiment, not before (open question 2). Hooks stay Lead-only either way.
+The tradeoff, kept for W8:
+- *For covering children.* With delegation mandatory, much of the editing happens in teammates, and their work reaches the user without a check of its own. The Lead's gate does see the files they changed, because the git comparison of section 4.1 counts every change in the working tree.
+- *Against.* Every child turn would pay one extra run, and the child's final message is a report that the Lead reads, not an answer to the user. A continuation in a child also keeps the Lead's `wait_agent` waiting longer.
 
 **Claude Agent provider.** The CLI owns the loop inside a run, but each Crush run still ends where `Stream` returns, so the gate runs in `Run` as on every provider. The continuation's run brings one new hidden row, and the provider sends it as a new user message on the CLI's transcript (`session.go:286`, `transport.go:555-563`). It is not a steer, because nothing is parked. That is the "one more steered message" the roadmap describes. The CLI shows the row as a user message, so the text's opening sentence carries the label. The CLI's own `Stop` hooks, from the user's Claude settings, run inside the CLI before Crush sees the end. They are independent of this gate; in the suite, `CLAUDE_CONFIG_DIR` isolates them. Results on this route are reported separately (roadmap W0.4).
 
@@ -176,7 +180,28 @@ The events table row becomes `TurnEnd | … | continue with reason, halt | — |
 
 #### 4.1 Changed files
 
-`OnStepFinish` already walks each step's tool calls and results (`agent.go:1699-1792`). A new helper, `stepChangedFiles(step fantasy.StepResult) []string`, follows the pattern of `stepMadeTaskProgress` (`internal/agent/todo_reminder.go:48-71`). It collects the `file_path` input of every successful call to:
+**Primary: compare the git state (decided).** A new exported function, `gitutil.Snapshot(ctx, dir) (WorktreeState, error)`, lives in `internal/gitutil/snapshot.go`. The existing `gitOutput` (`internal/gitutil/worktree.go:264`) is unexported.
+
+- **One git call.** `Snapshot` runs `git --no-optional-locks status --porcelain=v2 --branch -z --untracked-files=all`. Its `# branch.oid` header carries the HEAD sha, so the porcelain lines and the HEAD sha come from one call. `--no-optional-locks` keeps the call from taking the index lock that the model's own git commands need.
+- **The result.** It returns the HEAD sha and a map from path to its porcelain entry.
+- **Timeout.** Each call is bounded to 5 s.
+
+When the snapshots are taken:
+- **At prompt start.** In `Run`, before `TurnStart` (`agent.go:1384`), when `call.gateBaseline` is nil. A gate continuation and a compaction continuation both copy `call`, so the baseline is taken once per prompt. It is stored on the call, as a new unexported field.
+- **At turn end.** In `runTurnGate`.
+- **Only when needed.** Both are taken only when the completion check is on or at least one `TurnEnd` hook is configured, because `changed_files` is in the hook payload.
+
+The cost is two git calls per Lead prompt in that case, plus one more for each continuation, whose ending is checked again.
+
+**Comparing the snapshots.**
+- **Changed paths.** A path is changed if its entry was added, removed or differs between the two snapshots.
+- **HEAD moved.** If HEAD moved, the turn counts as changed. The message names the old and new short shas, because files the model committed no longer appear in the porcelain output.
+- **Coverage.** This catches edits made through `bash` (formatters, `sed`, `git apply`) and by teammates and subagents in the same working tree. It does not see work moved into another worktree.
+- **The gap.** A file that was already modified at prompt start and is modified again by `bash` keeps the same porcelain entry, because v2 lists the HEAD and index object names, not the working-tree content. Tool edits of such a file are still caught by the union with the tool-call set below.
+
+**Fallback: the tool calls.** If `Snapshot` fails at prompt start (not a repository, git missing, timeout), the prompt uses tool-call detection alone, and a debug log records why.
+
+The tool-call set is always collected, because it is free. It is united with the git result when both exist. `OnStepFinish` already walks each step's tool calls and results (`agent.go:1699-1792`). A new helper, `stepChangedFiles(step fantasy.StepResult) []string`, follows the pattern of `stepMadeTaskProgress` (`internal/agent/todo_reminder.go:48-71`). It collects the `file_path` input of every successful call to:
 - `edit` (`internal/agent/tools/edit.go:46`)
 - `multiedit` (`internal/agent/tools/multiedit.go:55`)
 - `write` (`internal/agent/tools/write.go:45`)
@@ -185,9 +210,9 @@ The events table row becomes `TurnEnd | … | continue with reason, halt | — |
 
 A call whose result is `ToolResultOutputContentError` is skipped. The set is carried on the call (`gateChangedFiles`), so it accumulates across the runs of one prompt.
 
-Not counted: files changed by `bash` (formatters, `sed`, `git apply`) or by a subagent or teammate. That is a known gap, chosen for v1 because it costs nothing and is deterministic. The alternative is a `git status --porcelain` fingerprint at `TurnStart` and at the gate, as `internal/gitutil/worktree.go:180` already runs. It catches both kinds of change, costs two processes per Lead prompt, and works only inside a repository (open question 3).
+In fallback mode, files changed by `bash` or by a teammate or subagent are not seen.
 
-The check runs only when the set is non-empty.
+The check runs only when the union is non-empty or HEAD moved. Paths are relative to the working directory.
 
 #### 4.2 The message
 
@@ -204,7 +229,9 @@ List under Verified only commands you ran in this turn, exactly as you ran them.
 Files changed in this turn: <comma-separated paths, at most 20, then "and N more">
 ```
 
-The continuation has its full tool set. The point is a verification pass, as in the published harness change (roadmap source [5]). A text-only answer would only ask the model to recall what it did (open question 4).
+If HEAD moved, the message adds the line `Commits made in this turn: <old short sha>..<new short sha>`.
+
+**The continuation gets the full tool set (decided).** The point is a verification pass, as in the published harness change (roadmap source [5]). A text-only answer would only ask the model to recall what it did.
 
 #### 4.3 Regression signal
 
@@ -229,20 +256,24 @@ date: <date the batch starts>
 name: w32-completion-check
 variants:
   - name: control
-    ref: <merge sha of PR 3>
+    ref: <merge sha of PR 5>
   - name: check
-    ref: <merge sha of PR 3>
+    ref: <merge sha of PR 5>
     overlay: {turn_end_completion_check: true}
 routes: [deepseek-flash]
 repetitions: 3
-primary_metric: pass_rate
-margin: <from crush-eval plan, at least the detectable effect>
+primary_metric: false_completions
+margin: <pass-rate guard, from crush-eval plan, at least the detectable effect>
 baseline: evals/baselines/2026-11-19-deepseek-flash.json
 detectable_effect: <from crush-eval plan>
 ```
 
 - **Same build for both variants.** The overlay is merged into the generated config's options (`internal/eval/score/plan.go:137-144`, `internal/eval/run/run.go:169`). The child's environment is built from an allow-list (`internal/eval/route/env.go:28-45`, `:120-140`), so the runner uses the config option and does not pass the environment variable. The variable exists for manual `crush run` trials and for a one-off run outside the suite.
-- **Metrics.** As instructed, the primary metric is pass rate, used as the guard. The target metric is false completions (`internal/eval/score/compare.go:19-20`; definition in task-suite design 4.1). `crush-eval compare --metric false_completions` reports it from the same batch. Also reported:
+- **Metrics (decided).** Following task-suite design 4.3:
+  - The primary metric is false completions (`internal/eval/score/compare.go:19-20`; definition in task-suite design 4.1).
+  - Pass rate is the guard, with the margin stated in the file. `crush-eval compare --metric pass_rate` reports it from the same batch.
+
+  Also reported:
   - `tree.steps` and tokens, since a continuation costs at least one run;
   - stopped-short runs, since a continuation can reach the frozen step limit and turn a pass into exit 2;
   - `gate.unbacked_claims`.
@@ -258,7 +289,7 @@ This asks once, in place of appending to the model's reply. `staleTodoNote` (`to
 
 ## Pull requests
 
-Each PR is at most about 400 changed lines including tests, and each keeps behavior unchanged by default until PR 3.
+Each PR is at most about 400 changed lines including tests. Until PR 4 nothing changes for a user without `TurnEnd` hooks, and the completion check stays off by default after it.
 
 1. **Gate core** (~380 lines), in `internal/agent/turn_gate.go`, `agent.go`, `internal/config/config.go`, `internal/app/run_json.go`, `internal/logreport`.
    - Contents: the `gateCheck` interface, `runTurnGate`, `gateNext` hand-off and `finishWithoutGate`, the `gateContinuations` and `gateContinued` fields, `turn_end_max_continuations`, the `<turn_end_gate>` tag, the run reopening in `opensRun` and `continues`.
@@ -268,7 +299,8 @@ Each PR is at most about 400 changed lines including tests, and each keeps behav
      - the cap of 1 holds with a check that always asks;
      - `0` disables the gate;
      - a prompt queued before the gate wins and the check is not run;
-     - a prompt queued during the gate runs after the continuation;
+     - a prompt queued while a blocking fake check runs drops the continuation, the reply is sent once, and the prompt runs next;
+     - a queued subagent report does not drop the continuation;
      - a cancel during the check ends the turn with no continuation and sends the reply once;
      - a reached step limit drops the continuation;
      - `step_limit` and `tool_stop` endings never continue;
@@ -280,24 +312,30 @@ Each PR is at most about 400 changed lines including tests, and each keeps behav
    - Tests:
      - `internal/hooks`: the verdict for exit 2, `block`, `deny` without reason, `additionalContext`, `context`, `continue:false`, exit 49, timeout, and two hooks combined;
      - `internal/agent`: a hook continues once; `stop_hook_active` is true on the second call; a halting hook overrides a hook that asks to continue; `TurnEnd` fires once per run on the paths that skip the gate.
-3. **Completion check** (~250 lines).
-   - Contents: `stepChangedFiles`, `gateChangedFiles`, the message, `turn_end_completion_check`, `CRUSH_TURN_END_COMPLETION_CHECK`.
+3. **Changed-file detection** (~340 lines), in `internal/gitutil/snapshot.go`, `internal/agent/turn_gate.go`, `agent.go`, `internal/hooks`.
+   - Contents: `gitutil.Snapshot` and its comparison, the `gateBaseline` field and the snapshot at prompt start, `stepChangedFiles` and `gateChangedFiles`, the union, the fallback, `HeadFrom`/`HeadTo`, and `changed_files` filled in the hook payload.
    - Tests:
-     - changed files from successful and failed calls of each tool;
-     - no check when nothing changed;
-     - the message text, including the file-list truncation;
+     - `internal/gitutil`, on temporary repositories: a modified, an added, an untracked, a deleted and a renamed file; a commit (HEAD moved); a clean tree; a directory outside a repository returns an error;
+     - `internal/agent`: changed files from successful and failed calls of each tool; a file changed only by a fake `bash` step is found through git; the fallback outside a repository; a baseline taken once across a gate continuation; no snapshot when the check is off and no `TurnEnd` hook is configured.
+4. **Completion check** (~200 lines).
+   - Contents: the check, the message, `turn_end_completion_check`, `CRUSH_TURN_END_COMPLETION_CHECK`.
+   - Tests:
+     - no check when nothing changed and HEAD did not move;
+     - the message text, including the file-list truncation and the commits line;
      - option and environment combinations, following `internal/agent/responses_replay_test.go:540-576`;
      - the check is skipped for `NonInteractive` calls.
-4. **Measurement** (~300 lines).
+5. **Measurement** (~300 lines).
    - Contents: `gateClaims`, the `gate` object in `crush run --json`, copying it into result lines and the batch report in `internal/eval`, and the experiment file with `plan` output.
    - Tests: claim parsing (backticks, `none`, missing block); backed matches by whitespace and substring; unbacked claims; the JSON field.
-5. **Later, W3.3** (~200 lines): the `todos` check and the note as fallback. Tests: the check asks once; the note is written only when no continuation is left.
+6. **Later, W3.3** (~200 lines): the `todos` check and the note as fallback. Tests: the check asks once; the note is written only when no continuation is left.
 
-## Open questions
+## Decisions
 
-1. **Primary metric.** Section 4.3 of the task-suite design says the primary result is the metric the change targets, which here is false completions, and that pass rate is the guard. The instruction for this design was pass rate as primary. Which should the experiment file name?
-2. **Subagents and teammates.** Should the completion check also run for write-access subagents and teammates (`all`) in a second experiment arm, or wait until the W8 policy decision? Hooks stay Lead-only either way.
-3. **Changed files.** Keep the v1 detection from tool calls only, or add the `git status` fingerprint so that edits made through `bash` and through delegation trigger the check? The fingerprint is closer to what the suite grades, at the cost of two processes per Lead prompt.
-4. **Tools during the continuation.** Full tools (recommended: the check is meant to make the model verify), or text only, which matches the roadmap's "one extra step" and costs exactly one model call?
-5. **A prompt queued during the gate.** The design runs it after the continuation. Should the continuation instead be dropped whenever any user prompt arrives before the hand-off, so the user is never kept waiting by a harness run?
-6. **Slow `TurnEnd` hooks.** Moving `TurnEnd` before the release holds the session busy while notification hooks run. Is the documentation note enough, or should a hook config field (for example `"gate": false`) keep a hook observe-only at the old position?
+Settled by the user on 2026-11-20.
+
+1. **Primary metric:** false completions. Pass rate is the guard, following task-suite design 4.3 (section 5).
+2. **Changed files:** compare the `git status` porcelain output and the HEAD sha at prompt start and at turn end, and fall back to tool-call detection outside a git repository. The cost is two git calls per Lead prompt (section 4.1).
+3. **Tools during the continuation:** the full tool set (section 4.2).
+4. **Scope:** Lead turns only. Teammates and subagents are revisited with W8 (section 3).
+5. **A user prompt that arrives while the gate runs:** it drops the continuation and runs next (section 1).
+6. **Slow `TurnEnd` hooks:** a documentation note only, with no per-hook option (section 2).
