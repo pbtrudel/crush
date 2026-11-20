@@ -375,8 +375,9 @@ The payload says where the turn stands:
   // made by a shell command or a teammate is not listed. May be empty.
   "changed_files": ["internal/agent/agent.go"],
 
-  // number. Continuations this prompt has left, after this one.
-  "continuations_left": 0
+  // number. Continuations this prompt still has, this call included: 1 on
+  // the first call at the default cap, 0 on the next one.
+  "continuations_left": 1
 }
 ```
 
