@@ -3,6 +3,7 @@ package gitutil
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"slices"
 	"strings"
@@ -25,19 +26,25 @@ type WorktreeState struct {
 // Snapshot reads a working tree's git state in one call. The branch header
 // carries the HEAD sha, so the entries and the sha come from the same
 // snapshot. --no-optional-locks keeps the call from taking the index lock
-// that the model's own git commands need.
+// that the model's own git commands need, and a submodule's dirty work tree
+// is not a change of this tree.
 func Snapshot(ctx context.Context, dir string) (WorktreeState, error) {
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
 	defer cancel()
+	start := time.Now()
 	cmd := exec.CommandContext(ctx, "git",
 		"--no-optional-locks", "-C", dir,
 		"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all",
+		"--ignore-submodules=dirty",
 	)
 	out, err := cmd.Output()
 	if err != nil {
 		return WorktreeState{}, fmt.Errorf("git status: %w", err)
 	}
-	return parseWorktreeState(out), nil
+	state := parseWorktreeState(out)
+	slog.Debug("Read the working tree",
+		"dir", dir, "entries", len(state.Entries), "elapsed", time.Since(start))
+	return state, nil
 }
 
 // Changed lists the paths that differ between a state and a later one, plus

@@ -135,3 +135,31 @@ func TestSnapshotKeepsAPathWithASpace(t *testing.T) {
 	paths, _, _ := before.Changed(after)
 	require.Equal(t, []string{"a file.txt"}, paths)
 }
+
+// A submodule whose work tree was touched is not a change of this tree, so
+// a formatter that rewrites a vendored checkout does not make every turn
+// look like it changed files.
+func TestSnapshotIgnoresDirtySubmodules(t *testing.T) {
+	t.Parallel()
+	sub := filepath.Join(t.TempDir(), "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	git(t, sub, "init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("one\n"), 0o644))
+	git(t, sub, "add", ".")
+	git(t, sub, "commit", "-q", "-m", "init")
+
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	git(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub")
+	git(t, dir, "commit", "-q", "-m", "add submodule")
+
+	before, err := Snapshot(t.Context(), dir)
+	require.NoError(t, err)
+	// The submodule's work tree now differs from its commit.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "inner.txt"), []byte("two\n"), 0o644))
+
+	after, err := Snapshot(t.Context(), dir)
+	require.NoError(t, err)
+	paths, _, _ := before.Changed(after)
+	require.Empty(t, paths, "a dirty submodule is not a change")
+}
