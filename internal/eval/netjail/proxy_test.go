@@ -246,6 +246,146 @@ func TestProxyDenies(t *testing.T) {
 	}
 }
 
+// TestProxyAllowlist pins the cases a model could use to slip past the
+// allowlist or to make the proxy dial something else.
+func TestProxyAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		allow   func(target string) string
+		request func(target string) string
+		want    int
+		echo    bool
+	}{
+		{
+			name:    "allowed host",
+			allow:   func(target string) string { return target },
+			request: func(target string) string { return "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n" },
+			want:    http.StatusOK,
+			echo:    true,
+		},
+		{
+			name:    "case is ignored",
+			allow:   func(target string) string { return strings.ToUpper(target) },
+			request: func(target string) string { return "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n" },
+			want:    http.StatusOK,
+			echo:    true,
+		},
+		{
+			name:  "trailing dot is another host",
+			allow: func(target string) string { return localhost(target) },
+			request: func(target string) string {
+				dotted := strings.Replace(localhost(target), ":", ".:", 1)
+				return "CONNECT " + dotted + " HTTP/1.1\r\nHost: " + dotted + "\r\n\r\n"
+			},
+			want: http.StatusForbidden,
+		},
+		{
+			name:    "missing port",
+			allow:   func(target string) string { return target },
+			request: func(target string) string { return "CONNECT localhost HTTP/1.1\r\nHost: localhost\r\n\r\n" },
+			want:    http.StatusForbidden,
+		},
+		{
+			name:  "a Host header that differs from the CONNECT target",
+			allow: func(target string) string { return target },
+			request: func(target string) string {
+				return "CONNECT " + target + " HTTP/1.1\r\nHost: other.example:443\r\n\r\n"
+			},
+			want: http.StatusOK,
+			echo: true,
+		},
+		{
+			name:  "plain request to an allowed host",
+			allow: func(target string) string { return target },
+			request: func(target string) string {
+				return "GET http://" + target + "/secret HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
+			},
+			want: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := echoServer(t)
+			// localhost and 127.0.0.1 both reach the same server; the
+			// request uses the allowlist entry's spelling.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			p, err := netjail.Listen(ctx, filepath.Join(t.TempDir(), "net.sock"), []string{tt.allow(target)})
+			require.NoError(t, err)
+			defer p.Close() //nolint:errcheck // Test cleanup.
+
+			conn := dialProxy(t, p)
+			_, err = conn.Write([]byte(tt.request(target)))
+			require.NoError(t, err)
+			r := bufio.NewReader(conn)
+			resp := readResponse(t, r, http.MethodConnect)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, tt.want, resp.StatusCode)
+			if !tt.echo {
+				return
+			}
+			_, err = conn.Write([]byte("ping"))
+			require.NoError(t, err)
+			got := make([]byte, 4)
+			_, err = io.ReadFull(r, got)
+			require.NoError(t, err)
+			require.Equal(t, "ping", string(got))
+		})
+	}
+}
+
+// localhost is target's port with a name that resolves to it.
+func localhost(target string) string {
+	_, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return target
+	}
+	return net.JoinHostPort("localhost", port)
+}
+
+// TestProxyDenialCapped checks that a model cannot grow the denial log past
+// its caps while the total count keeps counting.
+func TestProxyDenialCapped(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := netjail.Listen(ctx, filepath.Join(t.TempDir(), "net.sock"), nil)
+	require.NoError(t, err)
+	defer p.Close() //nolint:errcheck // Test cleanup.
+
+	// The long name goes first, while the set still has room.
+	long := strings.Repeat("a", 300) + ".example:443"
+	deny(t, p, long)
+	for i := range 105 {
+		deny(t, p, fmt.Sprintf("h%d.example:443", i))
+	}
+
+	denied, hosts := p.Denied()
+	require.Equal(t, 106, denied, "the total count is not capped")
+	require.Len(t, hosts, 100, "the name set is capped")
+	for _, host := range hosts {
+		require.LessOrEqual(t, len(host), 255, "a denied name is capped")
+	}
+	require.Contains(t, hosts, long[:255], "the long name is truncated, not dropped")
+}
+
+// deny asks the proxy for a host it does not allow and requires a 403.
+func deny(t *testing.T, p *netjail.Proxy, target string) {
+	t.Helper()
+	conn := dialProxy(t, p)
+	defer conn.Close()
+	_, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	require.NoError(t, err)
+	resp := readResponse(t, bufio.NewReader(conn), http.MethodConnect)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
 // TestProxyClosesOnCancel checks that the proxy stops listening and removes
 // its socket when the context ends.
 func TestProxyClosesOnCancel(t *testing.T) {

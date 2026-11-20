@@ -271,15 +271,27 @@ func closing(a, b net.Conn) func() {
 	}
 }
 
+// Bounds on the denial log. The names are model-controlled, so the set and
+// each name are capped; the total count keeps counting.
+const (
+	maxDeniedNames = 100
+	maxDeniedName  = 255
+)
+
 // record counts one refusal by the name the request asked for.
 func (p *Proxy) record(name string) {
 	if name == "" {
 		name = "unknown"
 	}
+	if len(name) > maxDeniedName {
+		name = name[:maxDeniedName]
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.denied++
-	p.hosts[name] = true
+	if _, seen := p.hosts[name]; seen || len(p.hosts) < maxDeniedNames {
+		p.hosts[name] = true
+	}
 }
 
 // requestName is the name a request asked for: the authority of a CONNECT,
