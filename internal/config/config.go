@@ -530,6 +530,10 @@ type Options struct {
 	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
+	// TurnEndMaxContinuations caps how many times the turn-end gate may
+	// continue one prompt. Zero turns continuations off: the checks still
+	// run and are observed.
+	TurnEndMaxContinuations *int `json:"turn_end_max_continuations,omitempty" jsonschema:"description=How many times the turn-end gate may continue one prompt before the turn ends. A continuation is one more model run with a harness message from Crush. 0 turns continuations off and still runs the checks.,default=1,example=0"`
 	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
 	// Crush dialog (loopback pinentry) instead of handing the terminal
 	// over to an external pinentry program. No GPG or git configuration
@@ -758,6 +762,19 @@ func (o *Options) GetRepeatToolReminders() bool {
 		return true
 	}
 	return *o.RepeatToolReminders
+}
+
+// DefaultTurnEndMaxContinuations is how many times one prompt may be
+// continued by the turn-end gate when the user has not set a cap.
+const DefaultTurnEndMaxContinuations = 1
+
+// GetTurnEndMaxContinuations returns the cap on turn-end continuations for
+// one prompt. Zero turns them off.
+func (o *Options) GetTurnEndMaxContinuations() int {
+	if o == nil || o.TurnEndMaxContinuations == nil {
+		return DefaultTurnEndMaxContinuations
+	}
+	return max(0, *o.TurnEndMaxContinuations)
 }
 
 // GetRepetitionDetection reports whether streaming output repetition is

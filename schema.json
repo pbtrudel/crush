@@ -644,6 +644,11 @@
           "description": "When slimming older history, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.",
           "default": false
         },
+        "responses_reasoning_replay": {
+          "type": "boolean",
+          "description": "Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. Off by default; the endpoint must accept them.",
+          "default": false
+        },
         "compact_tail_tokens": {
           "type": "integer",
           "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",
@@ -800,6 +805,14 @@
           "type": "boolean",
           "description": "Stop a stream that degenerates into a long run of the same character or a short repeated pattern.",
           "default": true
+        },
+        "turn_end_max_continuations": {
+          "type": "integer",
+          "description": "How many times the turn-end gate may continue one prompt before the turn ends. A continuation is one more model run with a harness message from Crush. 0 turns continuations off and still runs the checks.",
+          "default": 1,
+          "examples": [
+            0
+          ]
         },
         "pinentry_integrated": {
           "type": "boolean",

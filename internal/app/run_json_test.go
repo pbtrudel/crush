@@ -95,6 +95,31 @@ func TestSummarizeRunFollowsAContinuation(t *testing.T) {
 	require.False(t, result.Estimated)
 }
 
+// The turn-end gate's row reopens the prompt's run, so the continuation's
+// ending decides the reason and the exit code.
+func TestSummarizeRunFollowsAGateContinuation(t *testing.T) {
+	t.Parallel()
+
+	rows := func(continuation message.TurnEnd) []message.Message {
+		return []message.Message{
+			userRow("root", "Fix it.", false),
+			stepRow("root", "Done.", 0, message.TurnEndCompleted, nil),
+			userRow("root", "<turn_end_gate>\nCrush checked your turn.", true),
+			stepRow("root", "Partial.", 0, continuation, nil),
+		}
+	}
+
+	result := summarizeRun("root", rows(message.TurnEndMaxTokens))
+	require.Equal(t, message.TurnEndMaxTokens, result.Reason)
+	require.Equal(t, "Partial.", result.Text)
+	require.Equal(t, 2, runExitCode(result.Reason), "a continuation that stopped short exits 2, not 0")
+
+	// A continuation that hit the step limit ends the command the same way.
+	result = summarizeRun("root", rows(message.TurnEndStepLimit))
+	require.Equal(t, message.TurnEndStepLimit, result.Reason)
+	require.Equal(t, 2, runExitCode(result.Reason))
+}
+
 // A subagent report folded back into the session opens no run, so the
 // prompt's run still decides the reason; a hidden background notice opens
 // none either.

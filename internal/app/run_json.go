@@ -146,16 +146,24 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 }
 
 // opensRun reports whether a user row of the session starts a run that can
-// decide the command's reason: the visible prompt, or its continuation
-// after a compaction. Rows the harness writes do not: hidden notices and
-// reminders, and subagent reports, which a non-interactive run cannot
-// produce and which may be recorded without starting a run.
+// decide the command's reason: the visible prompt, its continuation after a
+// compaction, or the turn-end gate's row, whose run ends the prompt. Other
+// rows the harness writes do not: hidden notices and reminders, and subagent
+// reports, which a non-interactive run cannot produce and which may be
+// recorded without starting a run.
 func opensRun(m message.Message) bool {
 	if len(m.SubAgentReports()) > 0 {
 		return false
 	}
-	return !m.Content().Hidden
+	if m.Content().Hidden {
+		return strings.HasPrefix(m.Content().Text, gateOpenTag)
+	}
+	return true
 }
+
+// gateOpenTag opens the hidden row the turn-end gate writes. It is the same
+// tag the log report knows, and the row that reopens the prompt's run.
+const gateOpenTag = "<turn_end_gate>"
 
 // treeSessionsQuery lists a session and every session started from it.
 // UNION skips a session already listed, so a parent cycle cannot loop.

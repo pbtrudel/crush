@@ -56,20 +56,20 @@ Branch `crush/w31-gate-core`, about 380 lines.
 - Modify `internal/app/run_json_test.go` and the matching logreport test.
 
 **Tests** (in `turn_gate_test.go` unless noted). They use a fake `gateCheck` and a model that ends each run with text:
-- [ ] A check that returns a reason produces a second run. Its first row is hidden, opens with `<turn_end_gate>` and contains the reason under `[check: <name>]`.
-- [ ] A check that always asks yields exactly two runs with the default cap of 1, and three runs with the cap set to 2.
-- [ ] `turn_end_max_continuations: 0` gives one run, and the check is still called.
-- [ ] A user prompt queued before the gate means the check is not called, and the prompt runs next.
-- [ ] A user prompt queued while a blocking fake check runs drops the continuation. The reply is sent once (the channel fake counts sends) and the user prompt runs next.
-- [ ] A queued subagent report does not drop the continuation.
-- [ ] Cancelling during a blocking check ends with no continuation, one reply and one `RunComplete`.
-- [ ] With the tree's step limit reached, there is no continuation.
-- [ ] A run ending in `tool_stop`, `step_limit` or `loop_guard` is not continued, although the check is called.
-- [ ] `TurnStart` fires once for a continued prompt (uses `recordingHooks`).
-- [ ] One `RunComplete` per RunID across the continuation, using `newCancelTestAgentWithRunComplete` (`dispatch_cancel_test.go:206`).
-- [ ] The threshold compaction is put off to the continuation's end: no summary row between the two runs.
-- [ ] `run_json_test.go`: a first run stamped `completed` plus a gate continuation stamped `step_limit` gives reason `step_limit` and exit 2.
-- [ ] Logreport: the gate row counts as an injection and the second run as a continuation.
+- [x] A check that returns a reason produces a second run. Its first row is hidden, opens with `<turn_end_gate>` and contains the reason under `[check: <name>]`.
+- [x] A check that always asks yields exactly two runs with the default cap of 1, and three runs with the cap set to 2.
+- [x] `turn_end_max_continuations: 0` gives one run, and the check is still called.
+- [x] A user prompt queued before the gate means the check is not called, and the prompt runs next.
+- [x] A user prompt queued while a blocking fake check runs drops the continuation. The reply is sent once (the channel fake counts sends) and the user prompt runs next.
+- [x] A queued subagent report does not drop the continuation.
+- [x] Cancelling during a blocking check ends with no continuation, one reply and one `RunComplete`.
+- [x] With the tree's step limit reached, there is no continuation.
+- [x] A run ending in `tool_stop`, `step_limit` or `loop_guard` is not continued, although the check is called.
+- [x] `TurnStart` fires once for a continued prompt (uses `recordingHooks`).
+- [x] One `RunComplete` per RunID across the continuation, using `newCancelTestAgentWithRunComplete` (`dispatch_cancel_test.go:206`).
+- [x] The threshold compaction is put off to the continuation's end: no summary row between the two runs.
+- [x] `run_json_test.go`: a first run stamped `completed` plus a gate continuation stamped `step_limit` gives reason `step_limit` and exit 2.
+- [x] Logreport: the gate row counts as an injection and the second run as a continuation.
 
 **Acceptance criteria:**
 - With no checks registered, the existing agent, app and logreport tests pass unchanged.

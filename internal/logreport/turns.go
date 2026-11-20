@@ -115,11 +115,15 @@ func (s *turnsSection) message(p *pass, m *message.Message) {
 	}
 }
 
-// continues reports whether a run that ended so is continued by a new
-// run: the context was compacted, which leaves a summary row. A guard or
-// overflow with no summary after it was not recovered, and a compaction a
-// hook blocked never ran, so neither is continued.
-func continues(end message.TurnEnd, summarized bool) bool {
+// continues reports whether a run that ended so is continued by a new run:
+// the context was compacted, which leaves a summary row, or the turn-end
+// gate's row follows, which only a completed turn gets. A guard or overflow
+// with no summary after it was not recovered, and a compaction a hook
+// blocked never ran, so neither is continued.
+func continues(end message.TurnEnd, summarized, gate bool) bool {
+	if gate {
+		return end == message.TurnEndCompleted
+	}
 	switch end {
 	case message.TurnEndContextGuard, message.TurnEndContextOverflow:
 		return summarized
@@ -128,11 +132,20 @@ func continues(end message.TurnEnd, summarized bool) bool {
 }
 
 func (s *turnsSection) user(p *pass, m *message.Message) {
-	row, _, _ := classifyUser(m)
-	if row == injectionRow || row == otherRow {
+	row, kind, _ := classifyUser(m)
+	if row == injectionRow {
+		// The turn-end gate's row is the start of the prompt's next
+		// run, not a row inside the open segment.
+		if kind == gateInjectionTag && continues(s.lastEnd, s.summarized, true) {
+			s.turns.Continuations++
+			s.lastEnd, s.summarized = "", false
+		}
 		return
 	}
-	continued := continues(s.lastEnd, s.summarized)
+	if row == otherRow {
+		return
+	}
+	continued := continues(s.lastEnd, s.summarized, false)
 	s.lastEnd, s.summarized = "", false
 	switch {
 	case !s.top:
