@@ -231,32 +231,39 @@ func TestGetProviderOptionsDeepSeekUnchanged(t *testing.T) {
 	t.Parallel()
 
 	// The model is shaped like the commandcode route: openai-compat,
-	// base_url, reasoning on, and no user extra_body. The expected map was
-	// taken from a dump of the code at origin/main, before this branch.
-	model := Model{
-		CatwalkCfg: catwalk.Model{
-			ID: "deepseek-v4.1-flash",
-			Reasoning: catwalk.Reasoning{
-				Thinking:     catwalk.ThinkingToggleable,
-				EffortLevels: catwalk.NewEffortLevels("low", "high", "max"),
+	// base_url, reasoning on, and no user extra_body. The expected options
+	// were produced by the code at origin/main 41dc556e and rechecked there
+	// against this test.
+	model := func(think bool) Model {
+		return Model{
+			CatwalkCfg: catwalk.Model{
+				ID: "deepseek/deepseek-v4.1-flash",
+				Reasoning: catwalk.Reasoning{
+					Thinking:     catwalk.ThinkingToggleable,
+					EffortLevels: catwalk.NewEffortLevels("low", "high", "max"),
+				},
 			},
-		},
-		ModelCfg: config.SelectedModel{
-			Provider:        "commandcode",
-			Model:           "deepseek/deepseek-v4.1-flash",
-			ReasoningEffort: "high",
-		},
+			ModelCfg: config.SelectedModel{
+				Provider:        "commandcode",
+				Model:           "deepseek/deepseek-v4.1-flash",
+				Think:           think,
+				ReasoningEffort: "max",
+			},
+		}
 	}
 	providerCfg := config.ProviderConfig{
 		ID:      "commandcode",
 		Type:    openaicompat.Name,
 		BaseURL: "https://api.commandcode.ai/provider/v1",
 	}
-
-	require.Equal(t, fantasy.ProviderOptions{
+	want := fantasy.ProviderOptions{
 		openaicompat.Name: &openaicompat.ProviderOptions{
-			ReasoningEffort: ptr(openai.ReasoningEffort("high")),
+			ReasoningEffort: ptr(openai.ReasoningEffort("max")),
 			ExtraBody:       map[string]any{},
 		},
-	}, getProviderOptions(model, providerCfg))
+	}
+
+	require.Equal(t, want, getProviderOptions(model(false), providerCfg))
+	require.Equal(t, want, getProviderOptions(model(true), providerCfg),
+		"a thinking toggle changes nothing on this route")
 }
