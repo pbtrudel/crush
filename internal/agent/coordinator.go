@@ -1044,6 +1044,13 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			}
 		}
 
+		// Ask the vendor to keep the reasoning of earlier turns when this
+		// request reasons. The user's extra_body still overrides these
+		// fields, key by key, below.
+		if model.CatwalkCfg.CanReason() && (model.ModelCfg.Think || reasoningEffort != "") {
+			addVendorReasoningFlag(extraBody, model.CatwalkCfg.ID)
+		}
+
 		// The user's configured extra_body wins over Crush's own fields,
 		// key by key.
 		if userExtraBody, ok := mergedOptions["extra_body"].(map[string]any); ok {
