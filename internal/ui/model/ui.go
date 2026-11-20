@@ -2893,7 +2893,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		})
 	case dialog.ActionReloadConfig:
 		m.dialog.CloseDialog(dialog.CommandsID)
-		cmds = append(cmds, m.reloadConfig())
+		cmds = append(cmds, m.reloadConfig(false))
 	case skillsReloadedMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
@@ -6364,7 +6364,7 @@ func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
 func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 	switch {
 	case value == "/reload":
-		return m.reloadConfig(), true
+		return m.reloadConfig(false), true
 	case value == "/goal" || strings.HasPrefix(value, "/goal "):
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
@@ -6379,39 +6379,45 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 
 // reloadConfig re-reads the config files and applies them to the running
 // agents. The command palette and the /reload slash command share it.
-func (m *UI) reloadConfig() tea.Cmd {
+// retryWhenIdle keeps a reload the busy agent refused pending until it idles.
+func (m *UI) reloadConfig(retryWhenIdle bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
-		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: retryWhenIdle}
 	}
 }
 
 // setAgentTeams persists the Agent Teams toggle and applies it in place. The
 // coordinator creates or tears down the Team service during the reload. A
-// workspace config that sets the option outranks the global file, so when the
-// global write does not take effect the toggle is written there too.
+// workspace config that sets the option outranks the global file, so the
+// toggle is written there too. The workspace file's contents decide that, not
+// the merged config: a busy agent refuses the reload, which would leave the
+// merged value stale. The reload is refused as busy rather than failed, and
+// runs again once the agent is idle.
 func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 	return func() tea.Msg {
-		msg := m.writeAgentTeams(config.ScopeGlobal, enabled)
-		if msg.err != nil {
-			return msg
+		scopes := []config.Scope{config.ScopeGlobal}
+		if m.workspaceSetsAgentTeams() {
+			scopes = append(scopes, config.ScopeWorkspace)
 		}
-		if cfg := m.com.Config(); cfg != nil && cfg.Options.GetAgentTeams() != enabled {
-			msg = m.writeAgentTeams(config.ScopeWorkspace, enabled)
+		for _, scope := range scopes {
+			if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
+				return configReloadedMsg{err: err}
+			}
 		}
-		return msg
+		return m.reloadConfig(true)()
 	}
 }
 
-// writeAgentTeams writes the option at one scope and reloads the config.
-func (m *UI) writeAgentTeams(scope config.Scope, enabled bool) configReloadedMsg {
-	if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
-		return configReloadedMsg{err: err}
+// workspaceSetsAgentTeams reports whether the workspace config file sets the
+// Agent Teams option, which is what makes a global write lose to it.
+func (m *UI) workspaceSetsAgentTeams() bool {
+	cfg := m.com.Config()
+	if cfg == nil || cfg.Options == nil {
+		return false
 	}
-	ctx, cancel := common.WorkspaceOpContext()
-	defer cancel()
-	return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: true}
+	return config.WorkspaceConfigSets(cfg.Options.DataDirectory, "options.agent_teams")
 }
 
 // sendMessage sends a message with the given content and attachments.

@@ -2,6 +2,8 @@ package model
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 
@@ -13,10 +15,14 @@ import (
 )
 
 // agentTeamsWorkspace records what the Agent Teams toggle writes and reports
-// the merged setting the way the config loader would: a workspace config that
-// sets the option outranks the global file.
+// the merged setting the way the config loader would: a workspace config file
+// that sets the option outranks the global file.
 type agentTeamsWorkspace struct {
 	*agentViewerUIWorkspace
+
+	// dataDir holds the workspace config file, as the real data directory
+	// would.
+	dataDir string
 
 	mu        sync.Mutex
 	global    *bool
@@ -24,6 +30,7 @@ type agentTeamsWorkspace struct {
 	writes    []agentTeamsWrite
 	reloads   int
 	reloadErr error
+	busy      bool
 }
 
 // agentTeamsWrite is one config write the toggle made.
@@ -42,7 +49,7 @@ func (w *agentTeamsWorkspace) Config() *config.Config {
 	case w.global != nil:
 		enabled = *w.global
 	}
-	return &config.Config{Options: &config.Options{AgentTeams: &enabled}}
+	return &config.Config{Options: &config.Options{AgentTeams: &enabled, DataDirectory: w.dataDir}}
 }
 
 func (w *agentTeamsWorkspace) SetConfigField(scope config.Scope, key string, value any) error {
@@ -54,11 +61,28 @@ func (w *agentTeamsWorkspace) SetConfigField(scope config.Scope, key string, val
 	}
 	if scope == config.ScopeWorkspace {
 		w.workspace = &enabled
+		w.writeWorkspaceFile(enabled)
 	} else {
 		w.global = &enabled
 	}
 	w.writes = append(w.writes, agentTeamsWrite{scope: scope, value: enabled})
 	return nil
+}
+
+// writeWorkspaceFile keeps the workspace config file in step with the writes,
+// since the toggle decides the scope from that file's contents. The caller
+// holds the lock.
+func (w *agentTeamsWorkspace) writeWorkspaceFile(enabled bool) {
+	data := fmt.Sprintf(`{"options":{"agent_teams":%t}}`, enabled)
+	_ = os.WriteFile(config.WorkspaceConfigPath(w.dataDir), []byte(data), 0o600)
+}
+
+func (w *agentTeamsWorkspace) AgentIsReady() bool { return true }
+
+func (w *agentTeamsWorkspace) AgentIsBusy() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.busy
 }
 
 func (w *agentTeamsWorkspace) ReloadConfig(context.Context) error {
@@ -82,7 +106,7 @@ func (w *agentTeamsWorkspace) reloadCount() int {
 func newAgentTeamsTest(t *testing.T) (*UI, *agentTeamsWorkspace) {
 	t.Helper()
 	u, viewerWorkspace := newAgentViewerUITest(t)
-	ws := &agentTeamsWorkspace{agentViewerUIWorkspace: viewerWorkspace}
+	ws := &agentTeamsWorkspace{agentViewerUIWorkspace: viewerWorkspace, dataDir: t.TempDir()}
 	u.com.Workspace = ws
 	return u, ws
 }

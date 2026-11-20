@@ -237,7 +237,7 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 	busy := m.isAgentBusy()
 	if prevBusy && !busy && m.pendingConfigReload {
 		m.pendingConfigReload = false
-		cmds = append(cmds, m.reloadConfig())
+		cmds = append(cmds, m.reloadConfig(false))
 	}
 	if busy {
 		// A session reload that raced an unpopulated busy cache (the

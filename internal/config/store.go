@@ -362,6 +362,27 @@ func (s *ConfigStore) configPath(scope Scope) (string, error) {
 	}
 }
 
+// WorkspaceConfigPath returns the workspace config file for a data directory.
+// The workspace scope is machine-owned JSON, never a shell config, so its
+// contents can be read without running anything.
+func WorkspaceConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, fmt.Sprintf("%s.json", appName))
+}
+
+// WorkspaceConfigSets reports whether the workspace config file in dataDir
+// sets the given JSON path. A missing or unreadable file sets nothing, which
+// is what a caller that only needs to outrank it cares about.
+func WorkspaceConfigSets(dataDir, key string) bool {
+	if dataDir == "" {
+		return false
+	}
+	data, err := readFile(WorkspaceConfigPath(dataDir))
+	if err != nil {
+		return false
+	}
+	return gjson.Get(string(data), key).Exists()
+}
+
 // HasConfigField checks whether a key exists in the config file for the given
 // scope.
 func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
