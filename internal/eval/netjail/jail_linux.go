@@ -297,7 +297,9 @@ func maskPaths(paths []string) error {
 				continue
 			}
 		}
-		if err := unix.Mount("tmpfs", path, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+		// Not MS_NOEXEC: go writes its test binaries under /tmp and runs
+		// them, and the tmpfs is empty until the child creates them.
+		if err := unix.Mount("tmpfs", path, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, ""); err != nil {
 			return fmt.Errorf("mask %s: %w", path, err)
 		}
 	}

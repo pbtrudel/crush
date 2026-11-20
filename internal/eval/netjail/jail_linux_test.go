@@ -66,6 +66,21 @@ func probe() int {
 		return 1
 	}
 
+	// go writes its test binaries under the masked /tmp and runs them, so a
+	// tmpfs mount there must not be noexec.
+	if os.Getenv("NETJAIL_EXEC_TMP") != "" {
+		path := "/tmp/exec-probe.sh"
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho exec-tmp-ok\n"), 0o700); err != nil {
+			return fail("write the probe: %v", err)
+		}
+		out, err := exec.CommandContext(context.Background(), path).CombinedOutput()
+		if err != nil {
+			return fail("run the probe: %v: %s", err, out)
+		}
+		fmt.Print(string(out))
+		return 0
+	}
+
 	// The identity probe reports the uid, gid and capabilities the child
 	// really has after exec.
 	if os.Getenv("NETJAIL_IDENTITY") != "" {
@@ -232,6 +247,26 @@ func capLine(status []byte, name string) string {
 		}
 	}
 	return name + "=missing"
+}
+
+// TestJailExecInTmp checks that the masked /tmp stays executable, since go
+// writes its test binaries there and runs them.
+func TestJailExecInTmp(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_EXEC_TMP=1")
+	require.NoError(t, netjail.Wrap(cmd, "", 0))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "exec-tmp-ok")
 }
 
 // TestPreflight checks that a machine that can start the jail passes the
