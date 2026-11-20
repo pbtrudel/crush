@@ -19,7 +19,8 @@ import (
 var signInFields = []string{"models", "recent_models", "options"}
 
 // StripDataConfig removes those fields from the eval home's data config after
-// a sign-in, atomically and with mode 0o600. Providers and every other field
+// a sign-in, or before a run whose child may have written them back, and does
+// it atomically and with mode 0o600. Providers and every other field
 // keep their values: the file is re-encoded as indented JSON, so key order,
 // whitespace and JSON escaping can change, and nothing else does.
 func StripDataConfig(h *home.Home) error {
@@ -43,22 +44,6 @@ func StripDataConfig(h *home.Home) error {
 		return fmt.Errorf("encode the eval home data config: %w", err)
 	}
 	return fsx.WriteFileAtomic(path, append(raw, '\n'), 0o600)
-}
-
-// CheckDataConfig refuses a run while the eval home's data config pins a
-// model: that outranks the route's own model on the command line, and fails
-// the run when the route does not configure the provider it names. The file
-// is not edited here, because a batch may be reading it.
-func CheckDataConfig(h *home.Home) error {
-	path := filepath.Join(h.DataDir(), "crush.json")
-	doc, err := readDataConfig(path)
-	if err != nil || doc == nil {
-		return err
-	}
-	if _, ok := doc["models"]; ok {
-		return errors.New("the eval home data config holds a model selection in `models`; run `crush-eval login <route>` to clear it")
-	}
-	return nil
 }
 
 // readDataConfig reads the top-level fields of a data config, or nil when the

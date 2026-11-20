@@ -82,28 +82,7 @@ func TestStripDataConfigKeepsAConfigWithNoSelection(t *testing.T) {
 	require.Equal(t, before, after)
 }
 
-// TestCheckDataConfig checks that a run refuses to start while the eval home
-// data config pins a model, which would replace the route's own model.
-func TestCheckDataConfig(t *testing.T) {
-	t.Parallel()
-
-	h := home.At(t.TempDir())
-	require.NoError(t, h.Ensure())
-	require.NoError(t, CheckDataConfig(h), "a home with no data config is fine")
-
-	path := filepath.Join(h.DataDir(), "crush.json")
-	writeJSON(t, path, dataConfigWithSelection())
-	err := CheckDataConfig(h)
-	require.ErrorContains(t, err, "models")
-	require.ErrorContains(t, err, "crush-eval login")
-
-	require.Contains(t, readDataDoc(t, path), "models", "the run does not edit the file")
-
-	writeJSON(t, path, map[string]any{"providers": map[string]any{"copilot": map[string]any{"api_key": "token"}}})
-	require.NoError(t, CheckDataConfig(h))
-}
-
-// readDataConfig reads a data config as its top-level fields.
+// readDataDoc reads a data config as its top-level fields.
 func readDataDoc(t *testing.T, path string) map[string]json.RawMessage {
 	t.Helper()
 	data, err := os.ReadFile(path)
