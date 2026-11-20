@@ -99,12 +99,6 @@ func StoredToken(h *home.Home, provider string) (*oauth.Token, error) {
 	return token, nil
 }
 
-// StoreToken writes a refreshed token into the eval home's data config, the
-// way Crush persists one, and keeps every other field of the file.
-func StoreToken(h *home.Home, provider string, token *oauth.Token) error {
-	return writeTokenFile(filepath.Join(h.DataDir(), "crush.json"), provider, token)
-}
-
 // writeTokenFile sets providers.<provider>.api_key and .oauth in the config
 // file at path, creating it when the run has not written one yet.
 func writeTokenFile(path, provider string, token *oauth.Token) error {

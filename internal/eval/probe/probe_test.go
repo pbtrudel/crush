@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -199,7 +200,10 @@ func TestEndpointCopilot(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	})
 
-	url, header, err := endpoint(context.Background(), h, &route.Route{Name: "gpt", Provider: route.ProviderCopilot})
+	url, header, err := endpoint(context.Background(), Options{
+		Route: &route.Route{Name: "gpt", Provider: route.ProviderCopilot},
+		Home:  h,
+	})
 	require.NoError(t, err)
 	require.Equal(t, "https://api.githubcopilot.com/chat/completions", url)
 	require.Equal(t, "Bearer copilot-token", header.Get("Authorization"))
@@ -221,7 +225,10 @@ func TestEndpointHyper(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	})
 
-	url, header, err := endpoint(context.Background(), h, &route.Route{Name: "glm", Provider: "hyper"})
+	url, header, err := endpoint(context.Background(), Options{
+		Route: &route.Route{Name: "glm", Provider: "hyper"},
+		Home:  h,
+	})
 	require.NoError(t, err)
 	require.Equal(t, "https://hyper.charm.land/v1/chat/completions", url)
 	require.Equal(t, "Bearer hyper-token", header.Get("Authorization"))
@@ -243,7 +250,7 @@ func TestEndpointProviderConfig(t *testing.T) {
 			"extra_headers": map[string]any{"User-Agent": "probe", "x-cmd-zdr": "$PROBE_TEST_HEADER"},
 		},
 	}
-	url, header, err := endpoint(context.Background(), home.At(t.TempDir()), rt)
+	url, header, err := endpoint(context.Background(), Options{Route: rt, Home: home.At(t.TempDir())})
 	require.NoError(t, err)
 	require.Equal(t, "https://api.commandcode.ai/provider/v1/chat/completions", url)
 	require.Equal(t, "Bearer resolved-key", header.Get("Authorization"))
@@ -254,6 +261,92 @@ func TestEndpointProviderConfig(t *testing.T) {
 // storeToken writes a token the way `crush-eval login` leaves one.
 func storeToken(t *testing.T, h *home.Home, provider string, token *oauth.Token) {
 	t.Helper()
-	require.NoError(t, route.StoreToken(h, provider, token))
-	require.FileExists(t, filepath.Join(h.DataDir(), "crush.json"))
+	doc := map[string]any{
+		"providers": map[string]any{
+			provider: map[string]any{"api_key": token.AccessToken, "oauth": token},
+		},
+	}
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(h.DataDir(), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(h.DataDir(), "crush.json"), data, 0o600))
+}
+
+// dataConfig is the eval home's data config, to prove a probe left it alone.
+func dataConfig(t *testing.T, h *home.Home) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(h.DataDir(), "crush.json"))
+	require.NoError(t, err)
+	return data
+}
+
+// TestEndpointHyperDoesNotExchangeAnExpiredToken checks that the probe never
+// exchanges a Hyper refresh token: Hyper rotates them, and Crush guards the
+// exchange with a cross-process lock the probe does not hold, so an exchange
+// here could revoke a live batch's token family.
+func TestEndpointHyperDoesNotExchangeAnExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	h := home.At(t.TempDir())
+	require.NoError(t, h.Ensure())
+	storeToken(t, h, "hyper", &oauth.Token{
+		AccessToken:  "old-token",
+		RefreshToken: "hyper-refresh",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	})
+	before := dataConfig(t, h)
+
+	_, _, err := endpoint(context.Background(), Options{
+		Route: &route.Route{Name: "glm", Provider: "hyper"},
+		Home:  h,
+		Refresh: func(context.Context, string, string) (*oauth.Token, error) {
+			t.Error("the probe must not exchange a Hyper refresh token")
+			return nil, nil
+		},
+	})
+	require.ErrorContains(t, err, "crush-eval login glm")
+	require.Equal(t, before, dataConfig(t, h), "the eval home is not written")
+}
+
+// TestEndpointCopilotRefreshesInMemory checks that an expired Copilot token is
+// renewed for the probe alone: Crush's own writes go through a lock the probe
+// does not hold, so the fresh token is never persisted.
+func TestEndpointCopilotRefreshesInMemory(t *testing.T) {
+	t.Parallel()
+
+	h := home.At(t.TempDir())
+	require.NoError(t, h.Ensure())
+	storeToken(t, h, route.ProviderCopilot, &oauth.Token{
+		AccessToken:  "old-token",
+		RefreshToken: "github-token",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	})
+	before := dataConfig(t, h)
+
+	var gotProvider, gotRefresh string
+	_, header, err := endpoint(context.Background(), Options{
+		Route: &route.Route{Name: "gpt", Provider: route.ProviderCopilot},
+		Home:  h,
+		Refresh: func(_ context.Context, provider, refreshToken string) (*oauth.Token, error) {
+			gotProvider, gotRefresh = provider, refreshToken
+			return &oauth.Token{AccessToken: "fresh-token", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Bearer fresh-token", header.Get("Authorization"))
+	require.Equal(t, route.ProviderCopilot, gotProvider)
+	require.Equal(t, "github-token", gotRefresh)
+	require.Equal(t, before, dataConfig(t, h), "the fresh token is kept in memory only")
+}
+
+// TestEndpointWithoutAStoredToken checks that a route signed out on the runner
+// says how to sign it back in.
+func TestEndpointWithoutAStoredToken(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := endpoint(context.Background(), Options{
+		Route: &route.Route{Name: "gpt", Provider: route.ProviderCopilot},
+		Home:  home.At(t.TempDir()),
+	})
+	require.ErrorContains(t, err, "crush-eval login gpt")
 }

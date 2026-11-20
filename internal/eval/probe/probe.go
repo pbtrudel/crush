@@ -20,6 +20,7 @@ import (
 	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/route"
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 )
 
@@ -47,6 +48,9 @@ type Options struct {
 	// Client sends the requests. Nil means a client with a two-minute
 	// timeout.
 	Client *http.Client
+	// Refresh renews an expired Copilot token in memory. Nil means
+	// route.DefaultRefreshToken.
+	Refresh route.RefreshTokenFunc
 }
 
 // Report is the outcome of one probe.
@@ -66,7 +70,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if reps < 1 {
 		reps = 1
 	}
-	url, header, err := endpoint(ctx, opts.Home, opts.Route)
+	url, header, err := endpoint(ctx, opts)
 	if err != nil {
 		return Report{}, err
 	}
@@ -173,10 +177,11 @@ func short(s string, max int) string {
 }
 
 // endpoint resolves where the probe sends its request and the headers Crush
-// sends with it. An expired OAuth token is renewed on the host, where the
-// token endpoint is reachable, and stored as Crush stores it. Nothing here
-// prints a credential.
-func endpoint(ctx context.Context, h *home.Home, r *route.Route) (string, http.Header, error) {
+// sends with it. Nothing here prints a credential, and nothing writes the eval
+// home: Crush guards its data config with a cross-process lock, so a probe
+// that persisted a token could race a live batch's child.
+func endpoint(ctx context.Context, opts Options) (string, http.Header, error) {
+	r := opts.Route
 	base := r.ProviderBaseURL()
 	if base == "" {
 		return "", nil, fmt.Errorf("route %s: provider %s has no base_url", r.Name, r.Provider)
@@ -197,39 +202,51 @@ func endpoint(ctx context.Context, h *home.Home, r *route.Route) (string, http.H
 		return url, header, nil
 	}
 
-	if r.Provider == hyperp.Name {
-		// The catalog endpoint speaks fantasy's own protocol; a captured
-		// agent request went to the OpenAI-compatible path below the base URL.
+	switch r.Provider {
+	case route.ProviderCopilot:
+		token, err := storedToken(opts)
+		if err != nil {
+			return "", nil, err
+		}
+		if token.IsExpired() {
+			refresh := opts.Refresh
+			if refresh == nil {
+				refresh = route.DefaultRefreshToken
+			}
+			token, err = refresh(ctx, r.Provider, token.RefreshToken)
+			if err != nil {
+				return "", nil, fmt.Errorf("route %s: refresh the %s token: %w", r.Name, r.Provider, err)
+			}
+		}
+		header.Set("Authorization", "Bearer "+token.AccessToken)
+	case hyperp.Name:
+		// Crush's agent reaches Hyper over the OpenAI-compatible path below
+		// the base URL, not the catalog endpoint: captured agent requests
+		// POST to https://hyper.charm.land/v1/chat/completions, and a probe
+		// there answered. /api/v1/fantasy speaks fantasy's own protocol.
 		url = strings.TrimSuffix(hyperp.BaseURL(), "/") + "/v1/chat/completions"
-	} else if r.Provider != route.ProviderCopilot {
+		token, err := storedToken(opts)
+		if err != nil {
+			return "", nil, err
+		}
+		if token.IsExpired() {
+			return "", nil, fmt.Errorf("route %s: the %s token has expired; run `crush-eval login %s` to renew it", r.Name, r.Provider, r.Name)
+		}
+		header.Set("Authorization", "Bearer "+token.AccessToken)
+	default:
 		return "", nil, fmt.Errorf("route %s: api_key does not resolve to a value", r.Name)
 	}
-	token, err := accessToken(ctx, h, r.Provider)
-	if err != nil {
-		return "", nil, fmt.Errorf("route %s: %w", r.Name, err)
-	}
-	header.Set("Authorization", "Bearer "+token)
 	return url, header, nil
 }
 
-// accessToken is the provider's stored access token, renewed and stored
-// again when it has expired so a probe is never a day away from a 401.
-func accessToken(ctx context.Context, h *home.Home, provider string) (string, error) {
-	token, err := route.StoredToken(h, provider)
+// storedToken is the provider's token from the eval home, with the way to get
+// one when it is missing.
+func storedToken(opts Options) (*oauth.Token, error) {
+	token, err := route.StoredToken(opts.Home, opts.Route.Provider)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("route %s: %w; run `crush-eval login %s`", opts.Route.Name, err, opts.Route.Name)
 	}
-	if token.IsExpired() {
-		fresh, err := route.DefaultRefreshToken(ctx, provider, token.RefreshToken)
-		if err != nil {
-			return "", fmt.Errorf("refresh the %s token: %w", provider, err)
-		}
-		if err := route.StoreToken(h, provider, fresh); err != nil {
-			return "", err
-		}
-		token = fresh
-	}
-	return token.AccessToken, nil
+	return token, nil
 }
 
 // extraHeaders are the provider headers a route adds, as a header name to a
