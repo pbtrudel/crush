@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 	"github.com/charmbracelet/crush/internal/eval/checkout"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/grade"
@@ -128,6 +129,11 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := route.CheckDataConfig(opts.Home); err != nil {
 		return line, err
 	}
+	catalogs, err := catalog.Read(opts.Home)
+	if err != nil {
+		return line, err
+	}
+	line.Catalog = catalogs
 	runDir := filepath.Join(opts.Home.BatchDir(opts.Batch), "runs", runDirName(opts))
 	// A retried attempt starts from a fresh checkout.
 	if err := os.RemoveAll(runDir); err != nil {

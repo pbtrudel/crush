@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -80,6 +82,9 @@ func TestAdd(t *testing.T) {
 	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
 )
 
+// fixtureCatalog is the provider catalog the fixture's eval home serves.
+const fixtureCatalog = `{"providers":[{"id":"commandcode"}]}` + "\n"
+
 // fixture is a throwaway repository with one buggy package and the hidden
 // test the task grades with.
 type fixture struct {
@@ -122,6 +127,9 @@ func newFixture(t *testing.T) *fixture {
 		env:   map[string]string{},
 		grace: 2 * time.Second,
 	}
+	// Every run reads the eval home's provider catalog, which stands in for
+	// the user's frozen one.
+	write(t, filepath.Join(f.home.DataDir(), "providers.json"), fixtureCatalog)
 	for _, name := range fakeVars {
 		f.env[name] = ""
 	}
@@ -623,4 +631,44 @@ func TestRunRefusesPinnedModel(t *testing.T) {
 	require.ErrorContains(t, err, "models")
 	require.ErrorContains(t, err, "crush-eval login")
 	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}
+
+// TestRunRecordsTheCatalog checks that a run records the sha256 of the model
+// catalogs its child read from the eval home, so two batches are compared only
+// when the same catalog served them.
+func TestRunRecordsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+
+	line := f.run(t)
+
+	require.Equal(t, fileSHA(t, filepath.Join(f.home.DataDir(), "providers.json")), line.Catalog.Providers)
+	require.Empty(t, line.Catalog.Hyper)
+	require.Contains(t, read(t, filepath.Join(f.home.BatchDir("b1"), "results.jsonl")), `"catalog"`)
+}
+
+// TestRunNeedsTheCatalog checks that a run refuses to start without the
+// provider catalog, since the child would fall back to a catalog that lacks
+// the route's model.
+func TestRunNeedsTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	require.NoError(t, os.Remove(filepath.Join(f.home.DataDir(), "providers.json")))
+
+	_, err := Run(context.Background(), f.options())
+	require.ErrorContains(t, err, "providers.json")
+	require.ErrorContains(t, err, "crush-eval catalog freeze")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
+}
+
+// fileSHA is the hex sha256 of a file.
+func fileSHA(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

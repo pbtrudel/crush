@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/eval/catalog"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/netjail"
@@ -64,6 +65,9 @@ type Record struct {
 	// SystemConfig is whether this machine has a /etc/crush config, which
 	// every run reads as well as the generated one.
 	SystemConfig bool `json:"system_config"`
+	// Catalog is the sha256 of the model catalogs the eval home served the
+	// runs, which the child reads because provider auto-update is off.
+	Catalog catalog.Fingerprint `json:"catalog"`
 }
 
 // systemConfig reports whether the machine has a system config.
@@ -286,6 +290,13 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 	if err := opts.Home.Ensure(); err != nil {
 		return nil, err
 	}
+	// Every child reads the eval home's model catalogs, because provider
+	// auto-update is off: record which ones and refuse to start without the
+	// provider catalog, which would leave the routes' models unknown.
+	catalogs, err := catalog.Read(opts.Home)
+	if err != nil {
+		return nil, err
+	}
 
 	// A resumed batch keeps the seed, suite and experiment it started with,
 	// and refuses a different suite: its lines would mix two suites.
@@ -316,6 +327,7 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			Experiment:   opts.Path,
 			Started:      opts.Now().UTC(),
 			SystemConfig: systemConfig(),
+			Catalog:      catalogs,
 		}
 		if err := record.Write(opts.Home); err != nil {
 			return nil, err

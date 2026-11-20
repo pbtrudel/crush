@@ -11,6 +11,7 @@ import (
 	"time"
 
 	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
+	"github.com/charmbracelet/crush/internal/eval/fsx"
 	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
@@ -135,5 +136,5 @@ func writeTokenFile(path, provider string, token *oauth.Token) error {
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
-	return writeFileAtomic(path, append(raw, '\n'))
+	return fsx.WriteFileAtomic(path, append(raw, '\n'), 0o600)
 }

@@ -39,6 +39,7 @@ const usage = `usage:
   crush-eval vet --all
   crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--network jail|host]
   crush-eval probe <route> [--extra JSON] [--reps N]
+  crush-eval catalog freeze
   crush-eval batch <experiment.yaml> [--id ID] [--seed N] [--network jail|host]
   crush-eval compare <batch-id> [--json]
   crush-eval baseline <batch-id> [--route <name>] [--out <file>]
@@ -72,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCmd(args[1:], stdout, stderr)
 	case "probe":
 		return probeCmd(args[1:], stdout, stderr)
+	case "catalog":
+		return catalogCmd(args[1:], stdout, stderr)
 	case "batch":
 		return batchCmd(args[1:], stdout, stderr)
 	case "compare":
