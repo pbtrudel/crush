@@ -324,14 +324,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errCoderAgentNotConfigured
 	}
 
-	// The prompt has to know the palette the coder is really given: it is what
-	// decides whether the Agent Teams policy applies, and tools can be cut
-	// with disabled_tools. effectiveToolNames is the same list buildTools
-	// filters the palette by, so the prompt and the tool block agree.
-	coderPrompt, err := coderPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
-	)
+	coderPrompt, err := c.agentPrompt(config.AgentCoder, agentCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -347,10 +340,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errPlanAgentNotConfigured
 	}
 
-	planSystemPrompt, err := planPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(planCfg, roleLead)),
-	)
+	planSystemPrompt, err := c.agentPrompt(config.AgentPlan, planCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,6 +1156,26 @@ const (
 
 // isSubAgent reports whether the role bills as agent-initiated.
 func (r agentRole) isSubAgent() bool { return r != roleLead }
+
+// agentPrompt builds a lead agent's base system prompt from the current
+// config, and nil for an agent whose prompt this coordinator does not own.
+// The prompt has to know the palette the agent is really given: it is what
+// decides whether the Agent Teams policy applies, and tools can be cut with
+// disabled_tools. effectiveToolNames is the same list buildTools filters the
+// palette by, so the prompt and the tool block agree.
+func (c *coordinator) agentPrompt(name string, agentCfg config.Agent) (*prompt.Prompt, error) {
+	opts := []prompt.Option{
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
+	}
+	switch name {
+	case config.AgentCoder:
+		return coderPrompt(opts...)
+	case config.AgentPlan:
+		return planPrompt(opts...)
+	}
+	return nil, nil
+}
 
 // agentSystemPrompt is where buildAgent takes the base system prompt from.
 // Template is rendered against the current environment; Prebuilt is used
@@ -2180,6 +2190,21 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 		return err
 	}
 	agent.SetTools(tools)
+
+	// The prompt is rendered from the tool palette and the Agent Teams
+	// setting, so a reload that changes either has to re-render it.
+	template, err := c.agentPrompt(name, agentCfg)
+	if err != nil {
+		return err
+	}
+	if template == nil {
+		return nil
+	}
+	systemPrompt, err := template.Build(ctx, models.Large.Model.Provider(), models.Large.Model.Model(), c.cfg)
+	if err != nil {
+		return err
+	}
+	agent.SetSystemPrompt(systemPrompt)
 	return nil
 }
 

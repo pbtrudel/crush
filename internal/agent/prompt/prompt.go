@@ -56,6 +56,9 @@ type PromptDat struct {
 	// TeamPolicy carries the Agent Teams coordination policy when the
 	// experimental feature is enabled.
 	TeamPolicy string
+	// AgentTeams is the Agent Teams setting. With it off the prompt
+	// carries no delegation instructions either.
+	AgentTeams bool
 }
 
 type ContextFile struct {
@@ -492,7 +495,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		CanWrite:      p.canWrite,
 		ToolNames:     p.toolNames,
 	}
-	if cfg.Options.GetAgentTeams() && hasTeamTools(p.toolNames) {
+	data.AgentTeams = cfg.Options.GetAgentTeams()
+	if data.AgentTeams && hasTeamTools(p.toolNames) {
 		data.TeamPolicy = agentteam.Policy
 	}
 
