@@ -570,8 +570,9 @@ type UI struct {
 	// if the generation has moved on (see workspace_cache.go).
 	promptQueueGen uint64
 	// pendingConfigReload records a config reload that was refused because
-	// the agent was busy. It runs on the next idle edge, when the
-	// coordinator can swap tools and prompts again.
+	// the agent was busy. It runs on the next idle probe, when the
+	// coordinator can swap tools and prompts again, and stays set until a
+	// reload lands.
 	pendingConfigReload bool
 
 	// agentBusyCache / permModeCache memoize the workspace busy and
