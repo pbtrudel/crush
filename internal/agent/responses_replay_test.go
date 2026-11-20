@@ -901,3 +901,107 @@ func TestCarriesRecordableEvent(t *testing.T) {
 	require.False(t, carriesRecordableEvent([]byte(`data: {"type":"response.reasoning_summary_text.delta","delta":"hi"}`)))
 	require.False(t, carriesRecordableEvent([]byte(`event: response.completed`)))
 }
+
+// chunkReader hands out at most size bytes per Read, to model an SSE stream
+// split across network reads.
+type chunkReader struct {
+	data []byte
+	size int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), r.size, len(r.data))
+	copy(p, r.data[:n])
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// TestResponsesReplayHandlesSplitReads covers an SSE stream delivered a few
+// bytes at a time with CRLF line endings.
+func TestResponsesReplayHandlesSplitReads(t *testing.T) {
+	t.Parallel()
+
+	transport := newResponsesReasoningReplayTransport(nil, true).(*responsesReasoningReplayTransport)
+	scope := replayScope{endpoint: "https://example.test/responses", model: "gpt-test"}
+	stream := newReplayStream(transport, scope, conversationPrefix{})
+	data := strings.ReplaceAll(reasoningTextStream("rsn_split", "close-cipher-split", "Done."), "\n", "\r\n")
+	body := &replayRecordingBody{
+		body:   io.NopCloser(&chunkReader{data: []byte(data), size: 5}),
+		stream: stream,
+	}
+
+	_, err := io.Copy(io.Discard, body)
+	require.NoError(t, err)
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	require.Len(t, transport.items, 1)
+	var item struct {
+		EncryptedContent string `json:"encrypted_content"`
+	}
+	require.NoError(t, json.Unmarshal(transport.items[0].item, &item))
+	require.Equal(t, "close-cipher-split", item.EncryptedContent)
+	require.Equal(t, "Done.", transport.items[0].follower.text)
+}
+
+// TestResponsesReplayForwardsStreamBytes covers the recorder's transparency:
+// the consumer receives exactly the bytes the server sent.
+func TestResponsesReplayForwardsStreamBytes(t *testing.T) {
+	t.Parallel()
+
+	stream := reasoningStream()
+	server := newReplayTestServer(t, replayTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: stream})
+	client := replayTestClient(t, true)
+
+	received := server.postRaw(t, client, replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`))
+	require.Equal(t, stream, string(received))
+}
+
+// TestResponsesReplayParallelRequests drives one transport from several
+// goroutines; -race checks the store and the pause map.
+func TestResponsesReplayParallelRequests(t *testing.T) {
+	t.Parallel()
+
+	stream := reasoningStream()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, stream)
+	}))
+	t.Cleanup(server.Close)
+
+	client := replayTestClient(t, true)
+	const requests = 8
+	errs := make(chan error, requests)
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/responses", strings.NewReader(replayRequest(t, "gpt-test", `{"role":"user","content":"hi"}`)))
+			if err != nil {
+				errs <- err
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
