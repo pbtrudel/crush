@@ -221,6 +221,9 @@ func TestRunCompletedPass(t *testing.T) {
 	require.Equal(t, "b1", line.Batch)
 	require.Equal(t, "fake", line.Route)
 	require.Equal(t, "deepseek", line.Family)
+	require.Equal(t, "host", line.Network)
+	require.Zero(t, line.NetDenied)
+	require.Empty(t, line.NetDeniedHosts)
 
 	dir := f.dir(t)
 	require.NoFileExists(t, filepath.Join(dir, "src"))

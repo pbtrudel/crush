@@ -97,6 +97,12 @@ type Result struct {
 	// the contamination markers.
 	ContaminatedMatches int    `json:"contaminated_matches"`
 	ProjectConfig       string `json:"project_config"`
+	// Network is the network mode of the run, jail or host.
+	Network string `json:"network"`
+	// NetDenied counts the connections the jail's proxy refused, and
+	// NetDeniedHosts names them: hosts or host:port, never a path or body.
+	NetDenied      int      `json:"net_denied"`
+	NetDeniedHosts []string `json:"net_denied_hosts"`
 }
 
 // Key identifies a run across its attempts.

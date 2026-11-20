@@ -47,7 +47,7 @@ exit 1
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(tt.script), 0o700))
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-			out, err := GoTest(context.Background(), dir, []string{"PATH=" + dir}, []string{"test", "-json", "./p"})
+			out, err := GoTest(context.Background(), dir, []string{"PATH=" + dir}, []string{"test", "-json", "./p"}, false)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantCompile, out.Compile, "compile")
 			require.Equal(t, tt.wantFailed, out.PackageFailed, "package failed")

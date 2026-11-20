@@ -414,7 +414,7 @@ type testRun struct {
 // stream the way the grade does. A command that never ran, as when go
 // itself is missing, is an error; a failing test or build is not.
 func runGoTest(ctx context.Context, dir string, env []string, args ...string) (testRun, error) {
-	got, err := grade.GoTest(ctx, dir, env, append([]string{"test", "-count=1", "-json", "-timeout", testTimeout}, args...))
+	got, err := grade.GoTest(ctx, dir, env, append([]string{"test", "-count=1", "-json", "-timeout", testTimeout}, args...), false)
 	if err != nil {
 		return testRun{}, err
 	}

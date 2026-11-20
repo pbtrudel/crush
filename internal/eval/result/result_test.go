@@ -61,9 +61,10 @@ func TestLineShape(t *testing.T) {
 
 	require.Equal(t, sorted("attempt", "batch", "build", "contaminated", "contaminated_matches", "cost", "diff",
 		"duration_ms", "estimated", "exit", "family", "false_completion", "grade", "kind",
-		"model", "pass", "project_config", "provider", "reason", "rep", "route", "schema",
-		"started", "steps", "suite", "task", "text_length", "tool_calls", "tokens", "turn_ends",
-		"undelivered_reports", "usage_limited", "variant", "worktrees"), keys(t, r))
+		"model", "net_denied", "net_denied_hosts", "network", "pass", "project_config", "provider",
+		"reason", "rep", "route", "schema", "started", "steps", "suite", "task", "text_length",
+		"tool_calls", "tokens", "turn_ends", "undelivered_reports", "usage_limited", "variant",
+		"worktrees"), keys(t, r))
 	require.Equal(t, sorted("cache_read", "cache_write", "input", "output"), keys(t, r.Tokens))
 	require.Equal(t, sorted("compile_error", "model_tests_removed", "packages", "touched"), keys(t, r.Grade))
 	require.Equal(t, sorted("added", "deleted", "files"), keys(t, r.Diff))

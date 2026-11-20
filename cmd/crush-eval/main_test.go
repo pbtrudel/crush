@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"flag"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,4 +43,32 @@ func TestRunDispatch(t *testing.T) {
 	} {
 		require.Contains(t, stderr.String(), "crush-eval "+command+" ", "usage does not list %s", command)
 	}
+}
+
+// TestInterleaved parses a flag that follows a positional argument and keeps
+// every positional in order.
+func TestInterleaved(t *testing.T) {
+	t.Parallel()
+
+	flags := flag.NewFlagSet("grade", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	reference := flags.Bool("reference", false, "reference")
+	network := flags.String("network", "host", "network")
+	positional, err := interleaved(flags, []string{"--reference", "pr-0065", "--network", "jail"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"pr-0065"}, positional)
+	require.True(t, *reference)
+	require.Equal(t, "jail", *network)
+
+	flags = flag.NewFlagSet("grade", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Bool("reference", false, "reference")
+	positional, err = interleaved(flags, []string{"pr-0010", "run-dir"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"pr-0010", "run-dir"}, positional)
+
+	flags = flag.NewFlagSet("grade", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	_, err = interleaved(flags, []string{"pr-0010", "--nope"})
+	require.Error(t, err)
 }
