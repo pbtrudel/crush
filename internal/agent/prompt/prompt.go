@@ -482,7 +482,9 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 
 	// A session started in a subdirectory of a repository is still in that
 	// repository; the project root decides, as it does for config loading.
-	inRepo := isGitRepo(store.WorkingDir())
+	// The check follows the directory the prompt names, so the rendered flag
+	// and the rendered path cannot describe two different places.
+	inRepo := isGitRepo(workingDir)
 	data := PromptDat{
 		Provider:      provider,
 		Model:         model,

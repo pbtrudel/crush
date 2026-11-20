@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/agent/prompt"
@@ -20,15 +21,27 @@ const (
 	delegateTodoLine    = "- When you delegate a todo to a teammate or subagent"
 )
 
-// coderPromptText renders the coder prompt from the production template. The
-// fixed working directory and platform keep the rendered text stable, and the
-// tool list holds a team tool so the policy gate itself is not what drops the
-// policy.
-func coderPromptText(t *testing.T, teamsOn bool) string {
+// promptWorkDir returns a working directory of the test's own. repo marks it
+// as a git checkout with the .git entry the prompt looks for, so the rendered
+// repository flag never depends on where the test itself runs.
+func promptWorkDir(t *testing.T, repo bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	if repo {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: nowhere\n"), 0o644))
+	}
+	return dir
+}
+
+// coderPromptTextIn renders the coder prompt from the production template for
+// one working directory. The fixed platform keeps the rendered text stable,
+// and the tool list holds a team tool so the policy gate itself is not what
+// drops the policy.
+func coderPromptTextIn(t *testing.T, workDir string, teamsOn bool) string {
 	t.Helper()
 	store := config.NewTestStore(&config.Config{Options: &config.Options{AgentTeams: &teamsOn}})
 	p, err := coderPrompt(
-		prompt.WithWorkingDir("/work"),
+		prompt.WithWorkingDir(workDir),
 		prompt.WithPlatform("linux"),
 		prompt.WithToolNames([]string{"spawn_teammate", "agent_dispatch", "agentic_fetch", "bash", "view"}),
 	)
@@ -38,6 +51,35 @@ func coderPromptText(t *testing.T, teamsOn bool) string {
 	return got
 }
 
+// coderPromptText renders for the repository fixture, with its random path
+// hidden so the golden text is stable.
+func coderPromptText(t *testing.T, teamsOn bool) string {
+	t.Helper()
+	dir := promptWorkDir(t, true)
+	return strings.ReplaceAll(coderPromptTextIn(t, dir, teamsOn), dir, "/work")
+}
+
+// The repository flag describes the directory the prompt names, not the one
+// the test happens to run from.
+func TestCoderPromptGitFlagFollowsTheWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		repo bool
+		want string
+	}{
+		{name: "repository", repo: true, want: "Is directory a git repo: yes"},
+		{name: "plain directory", want: "Is directory a git repo: no"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := coderPromptTextIn(t, promptWorkDir(t, test.repo), true)
+			require.Contains(t, got, test.want)
+		})
+	}
+}
+
 // Turning Agent Teams on must leave the coder prompt byte for byte as it was
 // before the setting gated anything.
 func TestCoderPromptWithAgentTeamsOnMatchesGolden(t *testing.T) {
@@ -45,7 +87,9 @@ func TestCoderPromptWithAgentTeamsOnMatchesGolden(t *testing.T) {
 
 	want, err := os.ReadFile(filepath.Join("testdata", "coder_prompt_agent_teams_on.golden"))
 	require.NoError(t, err)
-	require.Equal(t, string(want), coderPromptText(t, true))
+	got := coderPromptText(t, true)
+	require.Contains(t, got, "Is directory a git repo: yes", "the fixture must be the repository the golden names")
+	require.Equal(t, string(want), got)
 }
 
 // With Agent Teams off the prompt carries no coordination section and no
