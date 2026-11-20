@@ -7,15 +7,17 @@ import (
 )
 
 // TestAPIHost is the host:port a route's network jail allows: the base_url
-// host, with the scheme's default port.
+// host, with the scheme's default port, or the endpoint of a provider Crush
+// ships models for.
 func TestAPIHost(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		config  map[string]any
-		want    string
-		wantErr string
+		name     string
+		provider string
+		config   map[string]any
+		want     string
+		wantErr  string
 	}{
 		{
 			name:   "https default port",
@@ -33,6 +35,26 @@ func TestAPIHost(t *testing.T) {
 			want:   "example.com:8443",
 		},
 		{
+			// Crush takes the Copilot endpoint from its model catalog, so a
+			// route names no base_url and the jail still has to allow the
+			// API, never the token endpoint on api.github.com.
+			name:     "copilot built-in endpoint",
+			provider: "copilot",
+			want:     "api.githubcopilot.com:443",
+		},
+		{
+			// Hyper's API host is the one Crush's own base URL names.
+			name:     "hyper built-in endpoint",
+			provider: "hyper",
+			want:     "hyper.charm.land:443",
+		},
+		{
+			name:     "base_url beats the built-in endpoint",
+			provider: "hyper",
+			config:   map[string]any{"base_url": "http://127.0.0.1:8080/v1"},
+			want:     "127.0.0.1:8080",
+		},
+		{
 			name:    "no base_url",
 			config:  map[string]any{"api_key": "$KEY"},
 			wantErr: "no base_url",
@@ -47,7 +69,7 @@ func TestAPIHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := &Route{Name: "r", ProviderConfig: tt.config}
+			r := &Route{Name: "r", Provider: tt.provider, ProviderConfig: tt.config}
 			got, err := r.APIHost()
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)

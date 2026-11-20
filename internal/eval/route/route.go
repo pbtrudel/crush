@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,10 +43,32 @@ type Limits struct {
 	Window int `yaml:"window"`
 }
 
-// APIHost is the host:port of the route's base_url: the one address the
+// ProviderCopilot is the provider whose token Crush renews at api.github.com.
+const ProviderCopilot = "copilot"
+
+// ProviderBaseURL is the route's API base URL: the base_url it names, or
+// the endpoint Crush itself uses for a built-in provider, which a route
+// then does not repeat.
+func (r *Route) ProviderBaseURL() string {
+	if raw, _ := r.ProviderConfig["base_url"].(string); raw != "" {
+		return raw
+	}
+	switch r.Provider {
+	case ProviderCopilot:
+		// Crush has no Go constant for this endpoint: it comes from the
+		// Copilot entry of the model catalog. The token endpoint on
+		// api.github.com is a different host, which the jail keeps blocked.
+		return "https://api.githubcopilot.com"
+	case hyperp.Name:
+		return hyperp.BaseURL()
+	}
+	return ""
+}
+
+// APIHost is the host:port of the route's base URL: the one address the
 // network jail lets a run reach. The port defaults to the scheme's port.
 func (r *Route) APIHost() (string, error) {
-	raw, _ := r.ProviderConfig["base_url"].(string)
+	raw := r.ProviderBaseURL()
 	if raw == "" {
 		return "", fmt.Errorf("route %s: provider_config has no base_url for the network jail", r.Name)
 	}
