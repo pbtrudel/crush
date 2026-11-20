@@ -504,10 +504,6 @@ func startProxy(ctx context.Context, opts Options) (*netjail.Proxy, int, func(),
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	port, err := netjail.Port()
-	if err != nil {
-		return nil, 0, nil, err
-	}
 	path, cleanup, err := proxySocket(opts.Home.Dir())
 	if err != nil {
 		return nil, 0, nil, err
@@ -517,7 +513,7 @@ func startProxy(ctx context.Context, opts Options) (*netjail.Proxy, int, func(),
 		cleanup()
 		return nil, 0, nil, err
 	}
-	return proxy, port, cleanup, nil
+	return proxy, netjail.ProxyPort, cleanup, nil
 }
 
 // parentEnv is the environment the child environment is built from.

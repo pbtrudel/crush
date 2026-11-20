@@ -54,16 +54,9 @@ func Env(port int) []string {
 	}
 }
 
-// Port returns a free TCP port. The jail's network namespace holds nothing
-// else, so the port only has to be one the jail may bind.
-func Port() (int, error) {
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("find a port for the jail: %w", err)
-	}
-	defer ln.Close() //nolint:errcheck // Only the port is needed.
-	return ln.Addr().(*net.TCPAddr).Port, nil
-}
+// ProxyPort is the port the jail forwards to the host proxy. Every jail has
+// its own network namespace, so concurrent runs can share it.
+const ProxyPort = 3128
 
 // Proxy is the host side of the jail: an HTTP CONNECT proxy on a unix socket
 // that reaches only the allowlisted host:port pairs.

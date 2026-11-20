@@ -200,8 +200,7 @@ func TestJail(t *testing.T) {
 	p, err := netjail.Listen(ctx, sock, []string{srv.Listener.Addr().String()})
 	require.NoError(t, err)
 	defer p.Close() //nolint:errcheck // Test cleanup.
-	port, err := netjail.Port()
-	require.NoError(t, err)
+	port := netjail.ProxyPort
 
 	self, err := os.Executable()
 	require.NoError(t, err)

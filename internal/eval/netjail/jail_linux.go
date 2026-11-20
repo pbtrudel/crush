@@ -28,6 +28,10 @@ import (
 // /var/run is skipped when it is a symlink into /run.
 var DefaultMasks = []string{"/run", "/var/run", "/tmp", "/mnt/wslg", "/run/user"}
 
+// executable is this binary, resolved once: a rebuilt or deleted executable
+// starts reporting a "(deleted)" path mid-batch otherwise.
+var executable = sync.OnceValues(os.Executable)
+
 // Wrap turns cmd into one that runs under the network jail: the same binary
 // re-executed through the hidden __jail subcommand, cloned into new user,
 // network and mount namespaces. sock, when not empty, is the unix socket of
@@ -36,7 +40,7 @@ var DefaultMasks = []string{"/run", "/var/run", "/tmp", "/mnt/wslg", "/run/user"
 // DefaultMasks. Fields the caller already set on cmd.SysProcAttr, such as
 // the process group, are kept.
 func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
-	self, err := os.Executable()
+	self, err := executable()
 	if err != nil {
 		return fmt.Errorf("locate the jail binary: %w", err)
 	}
@@ -81,7 +85,7 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 // are blocked fails with a message that names the way out instead of a bare
 // clone error per run.
 var Preflight = sync.OnceValue(func() error {
-	self, err := os.Executable()
+	self, err := executable()
 	if err != nil {
 		return fmt.Errorf("network jail unavailable: %w; use --network host", err)
 	}

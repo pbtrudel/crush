@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -453,23 +452,4 @@ func TestDefaultMode(t *testing.T) {
 		return
 	}
 	require.Equal(t, netjail.ModeHost, netjail.DefaultMode())
-}
-
-// TestPort checks that Port returns a usable TCP port.
-func TestPort(t *testing.T) {
-	t.Parallel()
-
-	for range 10 {
-		port, err := netjail.Port()
-		require.NoError(t, err)
-		require.NotZero(t, port)
-		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:"+strconv.Itoa(port))
-		if err != nil {
-			// A parallel test may have taken the port; try another.
-			continue
-		}
-		require.NoError(t, ln.Close())
-		return
-	}
-	t.Fatal("Port did not return a bindable port")
 }
