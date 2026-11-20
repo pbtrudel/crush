@@ -760,11 +760,11 @@ func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
 		assert.Equal(t, false, extra["thinking"])
 	})
 
-	t.Run("the user can override glm's top-level fallback", func(t *testing.T) {
+	t.Run("the user can override the vendor flag", func(t *testing.T) {
 		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"clear_thinking": true}), hyperCfg))
-		assert.Equal(t, true, extra["clear_thinking"])
-		assert.Equal(t, true, extra["thinking"])
+		model := withExtraBody(reasoningGatewayModel("qwen3.8-flash"), map[string]any{"preserve_thinking": false})
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		assert.Equal(t, false, extra["preserve_thinking"])
 	})
 
 	t.Run("the user's thinking keys merge into crush's object", func(t *testing.T) {

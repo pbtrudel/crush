@@ -61,46 +61,46 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.Equal(t, map[string]any{"type": "enabled", "clear_thinking": false}, thinking)
 	})
 
-	t.Run("glm falls back to a top-level flag beside boolean thinking", func(t *testing.T) {
+	t.Run("glm on boolean thinking gets nothing", func(t *testing.T) {
 		t.Parallel()
-		// Hyper sends "thinking" as a boolean, which Crush sets itself. The
-		// boolean is not rewritten; GLM's flag goes at the top level.
+		// Hyper ignores a top-level clear_thinking, so a host that sends
+		// thinking as a boolean gets no GLM flag at all.
 		model := reasoningGatewayModel("glm-5.3")
 		model.ModelCfg.Think = true
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.Equal(t, true, extra["thinking"])
-		require.Equal(t, false, extra["clear_thinking"])
+		require.NotContains(t, extra, "clear_thinking")
 	})
 
 	t.Run("hyper with thinking off but an effort sent still reasons", func(t *testing.T) {
 		t.Parallel()
 		// Hyper's capture sent thinking:false with effort max and the model
 		// still returned reasoning, so an effort alone asks for it.
-		extra := flagsFor(t, hyperCfg, "glm-5.3")
+		extra := flagsFor(t, hyperCfg, "qwen3.8-flash")
 		require.Equal(t, false, extra["thinking"])
-		require.Equal(t, false, extra["clear_thinking"])
+		require.Equal(t, true, extra["preserve_thinking"])
 	})
 
 	t.Run("an effort of none gets no flag", func(t *testing.T) {
 		t.Parallel()
-		model := reasoningGatewayModel("glm-5.3")
+		model := reasoningGatewayModel("qwen3.8-flash")
 		model.CatwalkCfg.Reasoning.EffortLevels = catwalk.NewEffortLevels("none", "max")
 		model.ModelCfg.ReasoningEffort = "none"
-		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, hyperCfg)), "clear_thinking")
+		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, hyperCfg)), "preserve_thinking")
 	})
 
 	t.Run("a user's effort of none gets no flag", func(t *testing.T) {
 		t.Parallel()
-		model := withExtraBody(reasoningGatewayModel("glm-5.3"), map[string]any{"reasoning_effort": "none"})
-		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, hyperCfg)), "clear_thinking")
+		model := withExtraBody(reasoningGatewayModel("qwen3.8-flash"), map[string]any{"reasoning_effort": "none"})
+		require.NotContains(t, gatewayExtraBody(t, getProviderOptions(model, hyperCfg)), "preserve_thinking")
 	})
 
 	t.Run("a user's disabled thinking gets no flag", func(t *testing.T) {
 		t.Parallel()
 		disabled := map[string]any{"type": "disabled"}
-		model := withExtraBody(reasoningGatewayModel("glm-5.3"), map[string]any{"thinking": disabled})
+		model := withExtraBody(reasoningGatewayModel("qwen3.8-flash"), map[string]any{"thinking": disabled})
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
-		require.NotContains(t, extra, "clear_thinking")
+		require.NotContains(t, extra, "preserve_thinking")
 		require.Equal(t, disabled, extra["thinking"])
 	})
 

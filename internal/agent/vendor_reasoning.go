@@ -56,17 +56,17 @@ func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
 	switch vendorFamily(modelID) {
 	case "glm":
 		// Z.AI documents clear_thinking inside the thinking object. A host
-		// that sends thinking as a boolean gets it at the top level, which
-		// the host may forward.
-		if thinking, ok := extraBody["thinking"].(map[string]any); ok {
-			thinking["clear_thinking"] = false
-			return
+		// that sends thinking as a boolean gets nothing: hyper ignores the
+		// top-level form.
+		thinking, ok := extraBody["thinking"].(map[string]any)
+		if !ok {
+			if _, exists := extraBody["thinking"]; exists {
+				return
+			}
+			thinking = map[string]any{}
+			extraBody["thinking"] = thinking
 		}
-		if _, exists := extraBody["thinking"]; !exists {
-			extraBody["thinking"] = map[string]any{"clear_thinking": false}
-			return
-		}
-		extraBody["clear_thinking"] = false
+		thinking["clear_thinking"] = false
 	case "kimi":
 		// Moonshot documents thinking.keep "all" and no top-level form, so a
 		// host that sends thinking as a boolean gets nothing.
