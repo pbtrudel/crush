@@ -2726,8 +2726,8 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
 	case dialog.ActionSelectAgent:
-		// The list stays behind the viewer: it comes back, filter and
-		// selection intact, when the viewer is left.
+		// The list is kept for Esc to come back to, with the filter and
+		// the selection the user left it with.
 		if agents, ok := m.dialog.Dialog(dialog.AgentsID).(*dialog.Agents); ok {
 			m.agentsParent = agents
 		}
