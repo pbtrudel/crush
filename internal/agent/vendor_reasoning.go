@@ -1,6 +1,11 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+
+	"charm.land/catwalk/v3/pkg/catwalk"
+	"github.com/charmbracelet/crush/internal/agent/hyper"
+)
 
 // vendorReasoningRule is what a vendor's API requires before it keeps the
 // reasoning the model produced in earlier turns.
@@ -76,7 +81,32 @@ func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
 		thinking[rule.flag] = rule.value
 		return
 	}
-	extraBody["thinking"] = map[string]any{rule.flag: rule.value}
+	thinking := map[string]any{rule.flag: rule.value}
+	if rule.flag == "keep" {
+		// Moonshot needs the object's type when Crush creates it.
+		thinking["type"] = "enabled"
+	}
+	extraBody["thinking"] = thinking
+}
+
+// vendorReasoningProvider reports whether the provider is one whose vendor
+// documents the keep-earlier-reasoning fields. Other hosts get nothing:
+// their handling is unverified, and Fireworks rejects thinking next to
+// reasoning_effort.
+func vendorReasoningProvider(providerID string) bool {
+	switch providerID {
+	case string(catwalk.InferenceProviderZAI),
+		string(catwalk.InferenceProviderZhipu),
+		string(catwalk.InferenceProviderZhipuCoding),
+		string(catwalk.InferenceProviderMoonshot),
+		string(catwalk.InferenceKimiCoding),
+		string(catwalk.InferenceProviderAlibabaSingapore),
+		string(catwalk.InferenceProviderAlibabaUS),
+		string(catwalk.InferenceProviderNeuralwatt),
+		hyper.Name:
+		return true
+	}
+	return false
 }
 
 // vendorReasoningNeedsHistory reports whether the family's API requires the

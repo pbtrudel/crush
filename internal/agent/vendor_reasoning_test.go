@@ -34,54 +34,23 @@ func reasoningGatewayModel(id string) Model {
 func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 	t.Parallel()
 
-	// A third-party gateway speaks chat completions and sets no thinking
-	// field of its own, so the family flag is the only carrier.
-	gateway := config.ProviderConfig{ID: "gateway", Type: openaicompat.Name}
+	zai := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
+	hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+	neuralwatt := config.ProviderConfig{ID: string(catwalk.InferenceProviderNeuralwatt), Type: openaicompat.Name}
+	alibaba := config.ProviderConfig{
+		ID:   string(catwalk.InferenceProviderAlibabaSingapore),
+		Type: openaicompat.Name,
+	}
 
-	t.Run("glm keeps earlier thinking", func(t *testing.T) {
+	t.Run("glm joins zai's thinking object", func(t *testing.T) {
 		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("GLM-5.3"), gateway))
+		// Z.AI documents clear_thinking inside the thinking object, which is
+		// what the zai provider already sets.
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("glm-5.3"), zai))
 		thinking, ok := extra["thinking"].(map[string]any)
-		require.True(t, ok, "glm needs a thinking object")
+		require.True(t, ok)
+		require.Equal(t, "enabled", thinking["type"])
 		require.Equal(t, false, thinking["clear_thinking"])
-	})
-
-	t.Run("kimi keeps all earlier thinking", func(t *testing.T) {
-		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("moonshotai/Kimi-K3"), gateway))
-		thinking, ok := extra["thinking"].(map[string]any)
-		require.True(t, ok, "kimi needs a thinking object")
-		require.Equal(t, "all", thinking["keep"])
-	})
-
-	t.Run("qwen reads earlier thinking", func(t *testing.T) {
-		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("qwen3.8-flash"), gateway))
-		require.Equal(t, true, extra["preserve_thinking"])
-	})
-
-	t.Run("mimo needs no flag", func(t *testing.T) {
-		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("mimo-v2.6-pro"), gateway))
-		require.NotContains(t, extra, "thinking")
-		require.NotContains(t, extra, "preserve_thinking")
-	})
-
-	t.Run("another family gets none", func(t *testing.T) {
-		t.Parallel()
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("deepseek-v4.1-flash"), gateway))
-		require.NotContains(t, extra, "thinking")
-		require.NotContains(t, extra, "preserve_thinking")
-	})
-
-	t.Run("no flag when the request does not reason", func(t *testing.T) {
-		t.Parallel()
-		model := Model{
-			CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
-			ModelCfg:   config.SelectedModel{Provider: "gateway", Model: "glm-5.3"},
-		}
-		extra := gatewayExtraBody(t, getProviderOptions(model, gateway))
-		require.NotContains(t, extra, "thinking")
 	})
 
 	t.Run("glm falls back to a top-level flag beside boolean thinking", func(t *testing.T) {
@@ -91,30 +60,15 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		// the host may forward.
 		model := reasoningGatewayModel("glm-5.3")
 		model.ModelCfg.Think = true
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.Equal(t, true, extra["thinking"])
 		require.Equal(t, false, extra["clear_thinking"])
-	})
-
-	t.Run("kimi on boolean thinking gets nothing", func(t *testing.T) {
-		t.Parallel()
-		// Kimi has no top-level form for thinking.keep, so a boolean
-		// thinking leaves the flag out rather than guessing a shape.
-		model := reasoningGatewayModel("kimi-k2.6")
-		model.ModelCfg.Think = true
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
-		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
-		require.Equal(t, true, extra["thinking"])
-		require.NotContains(t, extra, "keep")
-		require.NotContains(t, extra, "clear_thinking")
 	})
 
 	t.Run("hyper with thinking off but an effort sent still reasons", func(t *testing.T) {
 		t.Parallel()
 		// Hyper's capture sent thinking:false with effort max and the model
 		// still returned reasoning, so an effort alone asks for it.
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("glm-5.3"), hyperCfg))
 		require.Equal(t, false, extra["thinking"])
 		require.Equal(t, false, extra["clear_thinking"])
@@ -125,7 +79,6 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		model := reasoningGatewayModel("glm-5.3")
 		model.CatwalkCfg.Reasoning.EffortLevels = catwalk.NewEffortLevels("none", "max")
 		model.ModelCfg.ReasoningEffort = "none"
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.NotContains(t, extra, "clear_thinking")
 	})
@@ -136,7 +89,6 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		model.ModelCfg.ProviderOptions = map[string]any{
 			"extra_body": map[string]any{"reasoning_effort": "none"},
 		}
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.NotContains(t, extra, "clear_thinking")
 	})
@@ -147,25 +99,82 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		model.ModelCfg.ProviderOptions = map[string]any{
 			"extra_body": map[string]any{"thinking": map[string]any{"type": "disabled"}},
 		}
-		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
 		require.NotContains(t, extra, "clear_thinking")
 		require.Equal(t, map[string]any{"type": "disabled"}, extra["thinking"])
 	})
 
-	t.Run("a host's thinking object gains the flag", func(t *testing.T) {
+	t.Run("kimi creates an enabled thinking object at neuralwatt", func(t *testing.T) {
 		t.Parallel()
-		// Z.AI documents clear_thinking inside the thinking object, which is
-		// what the zai provider already sets.
-		zai := config.ProviderConfig{
-			ID:   string(catwalk.InferenceProviderZAI),
-			Type: openaicompat.Name,
-		}
-		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("glm-5.3"), zai))
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("moonshotai/Kimi-K3"), neuralwatt))
 		thinking, ok := extra["thinking"].(map[string]any)
-		require.True(t, ok)
+		require.True(t, ok, "kimi needs a thinking object")
 		require.Equal(t, "enabled", thinking["type"])
-		require.Equal(t, false, thinking["clear_thinking"])
+		require.Equal(t, "all", thinking["keep"])
+	})
+
+	t.Run("kimi on boolean thinking gets nothing", func(t *testing.T) {
+		t.Parallel()
+		// Kimi has no top-level form for thinking.keep, so a boolean
+		// thinking leaves the flag out rather than guessing a shape.
+		model := reasoningGatewayModel("kimi-k2.6")
+		model.ModelCfg.Think = true
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		require.Equal(t, true, extra["thinking"])
+		require.NotContains(t, extra, "keep")
+	})
+
+	t.Run("qwen reads earlier thinking", func(t *testing.T) {
+		t.Parallel()
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("qwen3.8-flash"), alibaba))
+		require.Equal(t, true, extra["preserve_thinking"])
+	})
+
+	t.Run("mimo needs no flag", func(t *testing.T) {
+		t.Parallel()
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("mimo-v2.6-pro"), neuralwatt))
+		require.NotContains(t, extra, "thinking")
+		require.NotContains(t, extra, "preserve_thinking")
+	})
+
+	t.Run("another family gets none", func(t *testing.T) {
+		t.Parallel()
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("deepseek-v4.1-flash"), neuralwatt))
+		require.NotContains(t, extra, "thinking")
+		require.NotContains(t, extra, "preserve_thinking")
+	})
+
+	t.Run("no flag when the request does not reason", func(t *testing.T) {
+		t.Parallel()
+		model := Model{
+			CatwalkCfg: catwalk.Model{ID: "kimi-k2.6"},
+			ModelCfg:   config.SelectedModel{Provider: "neuralwatt", Model: "kimi-k2.6"},
+		}
+		extra := gatewayExtraBody(t, getProviderOptions(model, neuralwatt))
+		require.NotContains(t, extra, "thinking")
+	})
+
+	t.Run("hosts outside the allow-list get nothing", func(t *testing.T) {
+		t.Parallel()
+		hosts := map[string]config.ProviderConfig{
+			"fireworks": {ID: string(catwalk.InferenceProviderFireworks), Type: openaicompat.Name},
+			"ionet":     {ID: string(catwalk.InferenceProviderIoNet), Type: openaicompat.Name},
+			"commandcode": {
+				ID:      "commandcode",
+				Type:    openaicompat.Name,
+				BaseURL: "https://api.commandcode.ai/provider/v1",
+			},
+		}
+		for name, providerCfg := range hosts {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				glm := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("glm-5.3"), providerCfg))
+				require.NotContains(t, glm, "thinking")
+				require.NotContains(t, glm, "clear_thinking")
+				qwen := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("qwen3.8-flash"), providerCfg))
+				require.NotContains(t, qwen, "preserve_thinking")
+			})
+		}
 	})
 }
 
