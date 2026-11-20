@@ -158,19 +158,67 @@ func TestRunShortAnswers(t *testing.T) {
 }
 
 // TestRunStatusError checks that a refused request stops the probe with the
-// status and the provider's own words, not a bogus recall count.
+// status and, when the body is JSON, the provider's own error type or code.
+// The body text never appears: a provider can echo a key in it.
 func TestRunStatusError(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(w, `{"error":"boom"}`)
-	}))
-	t.Cleanup(server.Close)
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "nested type",
+			status:  http.StatusInternalServerError,
+			body:    `{"error":{"type":"server_error","message":"upstream said sk-test-1234"}}`,
+			want:    []string{"status 500", "server_error"},
+			notWant: []string{"upstream said", "sk-test-1234"},
+		},
+		{
+			name:    "top-level type and code",
+			status:  http.StatusUnauthorized,
+			body:    `{"type":"authentication_error","code":"invalid_api_key","message":"key sk-test-1234 is not valid"}`,
+			want:    []string{"status 401", "authentication_error"},
+			notWant: []string{"not valid", "sk-test-1234"},
+		},
+		{
+			name:    "code only",
+			status:  http.StatusBadRequest,
+			body:    `{"error":{"code":"unsupported_model"}}`,
+			want:    []string{"status 400", "unsupported_model"},
+			notWant: []string{"error"},
+		},
+		{
+			name:    "plain text",
+			status:  http.StatusBadGateway,
+			body:    "bad gateway sk-test-1234",
+			want:    []string{"status 502"},
+			notWant: []string{"bad gateway", "sk-test-1234"},
+		},
+	}
 
-	_, err := Run(context.Background(), Options{Route: completionsRoute(server), Home: home.At(t.TempDir())})
-	require.ErrorContains(t, err, "500")
-	require.ErrorContains(t, err, "boom")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := Run(context.Background(), Options{Route: completionsRoute(server), Home: home.At(t.TempDir())})
+			require.Error(t, err)
+			for _, want := range tt.want {
+				require.ErrorContains(t, err, want)
+			}
+			for _, notWant := range tt.notWant {
+				require.NotContains(t, err.Error(), notWant)
+			}
+		})
+	}
 }
 
 // TestRunWithoutBaseURL checks that a route the probe cannot address fails

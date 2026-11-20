@@ -30,8 +30,8 @@ const (
 	Nonce = "A7F3-B2Q9"
 	// maxAnswer is the longest answer a report keeps, in characters.
 	maxAnswer = 40
-	// maxErrorBody is how much of a refused response the error keeps.
-	maxErrorBody = 200
+	// maxErrorField is the longest error type or code an error keeps.
+	maxErrorField = 64
 	// maxAnswerBody is how much of a response body the probe reads.
 	maxAnswerBody = 1 << 20
 )
@@ -138,7 +138,7 @@ func ask(ctx context.Context, client *http.Client, url string, header http.Heade
 		return "", fmt.Errorf("read the probe answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("probe request failed: %s: %s", resp.Status, short(string(data), maxErrorBody))
+		return "", statusError(resp.StatusCode, data)
 	}
 	var out struct {
 		Choices []struct {
@@ -154,6 +154,51 @@ func ask(ctx context.Context, client *http.Client, url string, header http.Heade
 		return "", errors.New("the probe answer holds no choices")
 	}
 	return short(out.Choices[0].Message.Content, maxAnswer), nil
+}
+
+// statusError names a refused request by its status and, when the body is
+// JSON, the provider's error type or code. The body text never appears: a
+// provider can echo a key in it.
+func statusError(status int, body []byte) error {
+	var parsed struct {
+		Error struct {
+			Type string          `json:"type"`
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+		Type string          `json:"type"`
+		Code json.RawMessage `json:"code"`
+	}
+	detail := ""
+	if json.Unmarshal(body, &parsed) == nil {
+		kind, code := parsed.Error.Type, scalar(parsed.Error.Code)
+		if kind == "" && code == "" {
+			kind, code = parsed.Type, scalar(parsed.Code)
+		}
+		switch {
+		case kind != "":
+			detail = ": type " + short(kind, maxErrorField)
+		case code != "":
+			detail = ": code " + short(code, maxErrorField)
+		}
+	}
+	return fmt.Errorf("probe request failed: status %d%s", status, detail)
+}
+
+// scalar is a JSON value as text when it is a string or a number, and empty
+// for anything else: null, an object, an array.
+func scalar(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var n json.Number
+	if json.Unmarshal(raw, &n) == nil {
+		return n.String()
+	}
+	return ""
 }
 
 // recalled counts the answers that hold the nonce.
