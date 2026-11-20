@@ -240,7 +240,7 @@ func (r *Runner) runOne(parentCtx context.Context, hook HookConfig, envVars []st
 	switch exitCode {
 	case 2:
 		if reason == "" {
-			reason = "blocked by hook"
+			reason = legacyDenyReason
 		}
 		return HookResult{Decision: DecisionDeny, Reason: reason}
 	case HaltExitCode:

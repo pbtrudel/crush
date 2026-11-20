@@ -2033,8 +2033,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// interrupts a slow check, and before the reply, so a continued turn
 	// is answered once.
 	var gateNext *SessionAgentCall
+	gateRan := false
 	if !overflowRecovery && !shouldSummarize && currentAssistant != nil &&
 		!call.NonInteractive && !call.Ephemeral {
+		gateRan = true
 		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID))
 	}
 	// Compact when the mid-turn overflow guard tripped, when a provider
@@ -2135,15 +2137,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// What the turn still owes the user. A continued turn owes it from its
 	// continuation, and a continuation the hand-off drops owes it then.
 	finish := gateFinish{
-		assistant:  currentAssistant,
-		summarized: shouldSummarize,
-		overflow:   overflowRecovery,
-		finished:   finished,
-		cancel:     cancel,
-		staleItem:  todoStaleItem,
-		staleN:     todoReminderUnanswered,
-		completed:  completedToolCalls.Copy(),
-		title:      currentSession.Title,
+		assistant:   currentAssistant,
+		summarized:  shouldSummarize,
+		overflow:    overflowRecovery,
+		finished:    finished,
+		turnEndHook: finished && !gateRan,
+		cancel:      cancel,
+		staleItem:   todoStaleItem,
+		staleN:      todoReminderUnanswered,
+		completed:   completedToolCalls.Copy(),
+		title:       currentSession.Title,
 	}
 	if gateNext != nil {
 		// The continuation writes the note, sends the reply, fires the

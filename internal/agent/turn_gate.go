@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -129,22 +130,65 @@ func (a *sessionAgent) turnEndMaxContinuations() int {
 	return cfg.Options.GetTurnEndMaxContinuations()
 }
 
+// turnEndGateEvent is the TurnEnd event the gate fires: the payload a
+// TurnEnd hook always got, plus the fields that describe the ending.
+func (a *sessionAgent) turnEndGateEvent(call SessionAgentCall, assistant *message.Message, end message.TurnEnd) hooks.Event {
+	ev := turnEndEvent(nil, assistant)
+	ev.SessionID = call.SessionID
+	// stop_hook_active is Claude Code's name for "this run continues a turn
+	// that was already checked", so a Stop script can skip its second call.
+	active := call.gateContinued
+	ev.StopHookActive = &active
+	ev.TurnEnd = string(end)
+	left := max(0, a.turnEndMaxContinuations()-call.gateContinuations)
+	ev.ContinuationsLeft = &left
+	return ev
+}
+
+// hookGateReasons runs the turn's TurnEnd hooks and reads their answers as
+// gate reasons, each labelled with its hook's display name. A hook that
+// halts the turn has its reason logged instead, because no continuation
+// follows it.
+func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd) (reasons []gateReason, stop bool) {
+	if call.NonInteractive {
+		return nil, false
+	}
+	agg := a.hooks.Run(ctx, a.turnEndGateEvent(call, assistant, end))
+	answers, stop := hooks.TurnEndReasons(agg)
+	reasons = make([]gateReason, 0, len(answers))
+	for _, answer := range answers {
+		if answer.Halt {
+			slog.Info("Turn-end gate: a TurnEnd hook halted the turn",
+				"session_id", call.SessionID, "hook", answer.Hook, "reason", answer.Reason)
+			continue
+		}
+		reasons = append(reasons, gateReason{
+			label: "hook: " + answer.Hook,
+			text:  answer.Reason,
+		})
+	}
+	return reasons, stop
+}
+
 // runTurnGate asks the checks whether an ending turn may continue the
 // prompt, and builds the call that does when they agree. It returns nil
 // when the turn ends here.
 //
-// Every check is asked before the cap is applied, so a check always sees a
-// candidate ending even when its answer cannot be used. A stop, an ending
-// other than completed, a limit and a cancel all outrank a request to
-// continue: a guard, a halt or a budget is never overridden.
+// The TurnEnd hooks are the first check, then the built-in checks in
+// registration order. Every check is asked before the cap is applied, so a
+// check always sees a candidate ending even when its answer cannot be used.
+// A stop, an ending other than completed, a limit and a cancel all outrank a
+// request to continue: a guard, a halt or a budget is never overridden.
 func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, userQueued bool) *SessionAgentCall {
-	checks := a.gateChecks
+	// The hooks run even when the user already has a prompt queued, so a
+	// TurnEnd hook keeps its once-per-prompt scope; only its answer is
+	// dropped then.
+	hookReasons, hookStop := a.hookGateReasons(ctx, call, assistant, end)
 	if userQueued {
-		// The user's own prompt takes the next run, so a check that
-		// would only ask for one is not asked.
-		checks = nil
-	}
-	if len(checks) == 0 {
+		if hookStop || len(hookReasons) > 0 {
+			slog.Debug("Turn-end gate: a queued prompt wins over a continuation",
+				"session_id", call.SessionID)
+		}
 		return nil
 	}
 	in := gateInput{
@@ -153,9 +197,9 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		Reply:         assistant.Content().String(),
 		Continuations: call.gateContinuations,
 	}
-	reasons := make([]gateReason, 0, len(checks))
-	stopped := false
-	for _, check := range checks {
+	reasons := hookReasons
+	stopped := hookStop
+	for _, check := range a.gateChecks {
 		verdict := check.Check(ctx, in)
 		stopped = stopped || verdict.Stop
 		if verdict.Reason == "" {
@@ -201,8 +245,11 @@ type gateFinish struct {
 	summarized bool
 	overflow   bool
 	// finished reports that this run is the prompt's last, so it owes the
-	// stale list note, the TurnEnd hook and the notification.
+	// stale list note and the notification.
 	finished bool
+	// turnEndHook reports that this run still owes the TurnEnd hook. The
+	// gate fires that hook on every run it evaluates.
+	turnEndHook bool
 	// released reports that the run already gave up the session before
 	// the hand-off, so it is not released twice.
 	released bool
@@ -254,7 +301,7 @@ func (a *sessionAgent) finishWithoutGate(ctx context.Context, call SessionAgentC
 		f.cancel()
 	}
 
-	if f.finished {
+	if f.turnEndHook {
 		a.fireTurnHook(ctx, call, turnEndEvent(nil, f.assistant))
 	}
 

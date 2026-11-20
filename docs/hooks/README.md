@@ -181,7 +181,7 @@ event name is a config error.
 | `SessionStart`       | Session created, or resumed with `--continue`  | observe                                  | —         | same                        |
 | `SessionEnd`         | App exits (2s budget)                          | observe                                  | —         | same                        |
 | `TurnStart`          | Agent begins processing a prompt               | observe                                  | —         | `UserPromptSubmit`          |
-| `TurnEnd`            | Agent finishes a turn                          | observe                                  | —         | `Stop`                      |
+| `TurnEnd`            | Agent finishes a turn                          | continue with reason, halt               | —         | `Stop`                      |
 | `StopFailure`        | Turn ends with a provider error                | observe                                  | —         | same                        |
 | `Interrupt`          | User cancels a turn (ctrl-c, escape)           | observe                                  | —         | none                        |
 | `PreCompact`         | Before context compaction (auto or `/compact`) | block                                    | —         | same                        |
@@ -194,7 +194,11 @@ the events that carry a tool name; configuring one elsewhere is a config error.
 **Scope**: tool and turn events only fire for the **top-level agent**.
 Subagents (the task tool, `agentic_fetch`, and friends) fire none of them,
 so a notification hook on `TurnEnd` speaks once per prompt rather than once
-per delegated turn. The outer subagent tool call itself _is_ hooked.
+per delegated turn. A `TurnEnd` hook runs once for every ending the harness
+considers, so a prompt that continues runs it twice at the default cap; read
+`stop_hook_active` (see [TurnEnd and continuation](#turnend-and-continuation))
+to tell the second call apart. The outer subagent tool call itself _is_
+hooked.
 
 **Permission events** fire only when a prompt is actually shown. Calls that a
 `PreToolUse` hook allowed, that are on the allow-list, or that run in YOLO
@@ -223,6 +227,10 @@ or notifying; do the heavy work elsewhere.
   ran, so instead of blocking anything the reason is handed to the model as
   feedback ("run the tests first"). This is Claude Code's `decision: "block"`
   and it works the same way here.
+- **`reason`, `context`, `decision: "deny"` or exit 2 on `TurnEnd`** — asks
+  Crush to continue the turn with that text instead of ending it.
+- **`halt: true` or `continue: false` on `TurnEnd`** — ends the turn there and
+  refuses every continuation, including the built-in checks'.
 
 Events marked "observe" ignore all control fields. They exist for logging,
 monitoring, and external integrations (e.g. herdr, dashboards). To auto-approve
@@ -297,9 +305,77 @@ fi
 
 ```bash
 #!/usr/bin/env bash
-# Speak the assistant's final message. Background it so the next prompt
-# is not held up behind the speech.
+# Speak the assistant's final message. Background it so the turn is not
+# held up behind the speech: a TurnEnd hook runs before the session is
+# released, so its own duration is time the session looks busy.
 jq -r '.last_assistant_message' | say &
+```
+
+**TurnEnd — send the model back to its work:**
+
+```bash
+#!/usr/bin/env bash
+# Once per prompt, ask for a verification pass when the turn edited files
+# and never ran the tests.
+[ "$(jq -r '.stop_hook_active')" = "true" ] && exit 0
+jq -r '.changed_files[]?' | grep -qE '(_test\.go|_test\.py)$' && exit 0
+if [ -n "$(jq -r '.changed_files[]?' | head -1)" ] && [ ! -f .tests-passed ]; then
+  echo "Run the tests you have not run yet, then answer." >&2
+  exit 2
+fi
+```
+
+See [TurnEnd and continuation](#turnend-and-continuation) for what Crush does
+with that answer.
+
+### TurnEnd and continuation
+
+`TurnEnd` fires when the model stops calling tools. Unlike the other observe
+events, its answer decides whether the turn really ends: a reason (exit 2 with
+stderr, `decision: "block"`, `decision: "deny"`, `context` or
+`hookSpecificOutput.additionalContext`) asks Crush for **one more run** of the
+prompt, and the reason reaches the model as a hidden message from Crush, not
+from you. The model sees the full tool set again, so it can run the check you
+asked for rather than only describe it.
+
+```jsonc
+[hook: run-the-tests]
+Run the tests you have not run yet, then answer.
+```
+
+Rules:
+
+- Only a turn the model **completed** continues. A guard, a step or time
+  limit, a tool that stopped the turn and a cancel all end it, and your reason
+  is logged and dropped.
+- `options.turn_end_max_continuations` caps the continuations one prompt may
+  get: `1` by default, `0` turns them off. Your hook still runs; its answer is
+  just not used.
+- A halt (`halt: true`, `continue: false` or exit 49) refuses every
+  continuation, including the built-in checks'. Reason is logged.
+- A prompt the user typed while the turn was ending takes the next run. Crush
+  then ends the turn with the reply as it stood and drops the continuation.
+- `TurnEnd` fires once for every ending Crush considers, so twice per prompt at
+  the default cap.
+
+The payload says where the turn stands:
+
+```jsonc
+{
+  // bool. True when this run is the continuation itself, so a Stop script
+  // can skip its second call. Claude Code's name, same meaning.
+  "stop_hook_active": false,
+
+  // string. How the run ended, such as "completed" or "step_limit".
+  "turn_end": "completed",
+
+  // string[]. Files changed in the turn, from git and from the edit tools.
+  // May be empty, and absent outside a repository with no tool edits.
+  "changed_files": ["internal/agent/agent.go"],
+
+  // number. Continuations this prompt has left, after this one.
+  "continuations_left": 0
+}
 ```
 
 ### Configuration
@@ -527,7 +603,9 @@ When multiple hooks match the same tool call:
 
 If a hook exceeds its timeout, Crush cancels its context and treats the
 result as a non-blocking error so the tool call proceeds. The default
-timeout is 30 seconds. Shebang-dispatched subprocesses are killed through
+timeout is 30 seconds. A `TurnEnd` hook runs before the session is released,
+so a slow one keeps the session busy for as long as it runs, up to its
+timeout; background notification work in the hook itself. Shebang-dispatched subprocesses are killed through
 `exec.CommandContext`; in-process hooks get a short grace period to yield
 and are then abandoned (the agent moves on regardless). Long-running work
 should honor context cancellation or run out-of-process via a shebang.
@@ -722,6 +800,12 @@ Where Crush differs:
   per-tool object. Crush's own field for replacing it is `updated_output`;
   Claude Code's `updatedToolOutput` maps onto it.
 - **`halt` and exit 49** have no Claude Code equivalent; they end the turn.
+- **The `Stop` cap** is one continuation per prompt by default, not eight
+  consecutive ones, and it never resets: Crush's built-in checks cost a model
+  run each. Raise `options.turn_end_max_continuations` if a workflow needs
+  more.
+- **`continue: false` and exit 49** also stop the built-in checks, not just
+  your own hook. A halt ends the turn there.
 
 ---
 
@@ -830,12 +914,28 @@ Present in every hook event:
 ### Stdin payload — turn events
 
 `TurnStart` and `Interrupt` use only the common fields. `TurnEnd` adds the
-assistant's reply and `StopFailure` adds the provider error:
+assistant's reply and where the turn stands; `StopFailure` adds the provider
+error:
 
 ```jsonc
 {
   // string (TurnEnd). The assistant's text for the turn.
   "last_assistant_message": "Here's what I found...",
+
+  // bool (TurnEnd). Always present. True when this run is the gate's
+  // continuation of the turn.
+  "stop_hook_active": false,
+
+  // string (TurnEnd). The turn-end stamp, such as "completed",
+  // "step_limit" or "tool_stop".
+  "turn_end": "completed",
+
+  // string[] (TurnEnd). Files changed in the turn. May be empty, and left
+  // out when nothing changed.
+  "changed_files": ["internal/agent/agent.go"],
+
+  // number (TurnEnd). Continuations this prompt has left.
+  "continuations_left": 1,
 
   // string (StopFailure). The provider error.
   "error": "Rate limit reached",

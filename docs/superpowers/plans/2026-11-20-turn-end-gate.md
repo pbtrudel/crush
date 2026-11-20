@@ -102,7 +102,7 @@ Branch `crush/w31-turnend-hooks`, about 320 lines.
 - Modify `internal/skills/builtin/crush-hooks/SKILL.md`: the `TurnEnd` lines (`:21`, `:33`, `:37`).
 
 **Tests:**
-- [ ] `turn_end_test.go`, as a table over `TurnEndVerdict`:
+- [x] `turn_end_test.go`, as a table over `TurnEndVerdict`:
   - exit 2 with stderr text;
   - `{"decision":"block","reason":…}`;
   - `{"decision":"deny"}` with no reason (gets the default text);
@@ -112,8 +112,8 @@ Branch `crush/w31-turnend-hooks`, about 320 lines.
   - exit 0 with no output, `allow`, exit 1 (all no opinion);
   - two hooks, one asking and one halting (stop);
   - two hooks both asking (reasons in config order).
-- [ ] `input_test.go`: the `TurnEnd` payload carries the four new fields, and `stop_hook_active` is present when false.
-- [ ] `hooks_test.go` in `internal/agent`, with a hook script on `TurnEnd` that exits 2 when `stop_hook_active` is false:
+- [x] `input_test.go`: the `TurnEnd` payload carries the four new fields, and `stop_hook_active` is present when false.
+- [x] `hooks_test.go` in `internal/agent`, with a hook script on `TurnEnd` that exits 2 when `stop_hook_active` is false:
   - two runs, and the second hook call sees `stop_hook_active: true`;
   - a halting hook next to an asking hook gives one run;
   - `TestTurnHooks_StartAndEnd` and `TestTurnHooks_SubAgentFiresNone` still pass;

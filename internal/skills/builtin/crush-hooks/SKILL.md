@@ -28,14 +28,24 @@ reject `matcher`.
 
 Only `PreToolUse` (allow/deny/halt/rewrite/context), `PostToolUse`
 (halt/replace output/context/feedback), `PostToolUseFailure`
-(halt/context), and `PreCompact` (block) honor output. The rest are
-observe-only. Turn and tool events fire only for the top-level agent, never
-for subagents (`agentic_fetch`, the task tool), so a `TurnEnd` hook runs
-once per user prompt.
+(halt/context), `TurnEnd` (continue with a reason, or halt), and `PreCompact`
+(block) honor output. The rest are observe-only. Turn and tool events fire
+only for the top-level agent, never for subagents (`agentic_fetch`, the task
+tool), so a `TurnEnd` hook speaks once per prompt rather than once per
+delegated turn.
+
+A `TurnEnd` answer of `decision: "deny"`, exit 2 with stderr, or `context`
+asks Crush for one more run of the prompt with that text, bounded by
+`options.turn_end_max_continuations` (default 1, `0` turns it off). Only a
+`completed` turn continues, a user prompt queued meanwhile wins, and
+`halt: true`, `continue: false` or exit 49 refuses every continuation. The
+hook runs once per candidate ending, so read `stop_hook_active` to skip the
+second call.
 
 Per-event payload extras: `PostToolUse` has `tool_response` (the output
 string), `PostToolUseFailure` and `StopFailure` have `error`, `TurnEnd` has
-`last_assistant_message`, `PermissionResult` has `decision`
+`last_assistant_message`, `stop_hook_active`, `turn_end`, `changed_files` and
+`continuations_left`, `PermissionResult` has `decision`
 (`granted`/`denied`/`cancelled`), `SessionStart` has `source`
 (`startup`/`resume`), `SessionEnd` has `reason`, and the compaction events
 have `trigger` (`auto`/`manual`). Payloads also carry `hook_event_name` and
@@ -113,7 +123,8 @@ Communicate back via exit code (+ stderr) or JSON on stdout.
 Exit 2 blocks one tool call (agent sees the reason and can try again); exit 49
 ends the whole turn (user takes over). Default to deny — reach for halt only
 when letting the agent retry is itself the problem (e.g. secrets detected,
-policy violation).
+policy violation). On `TurnEnd` the same output asks for one more run of the
+turn with stderr as the reason, or refuses it with exit 49.
 
 **JSON envelope (exit 0):**
 
