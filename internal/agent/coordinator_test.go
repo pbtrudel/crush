@@ -742,43 +742,27 @@ func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
 	// next to one the user configured.
 	hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
 	model := func(extraBody map[string]any) Model {
-		return Model{
-			CatwalkCfg: catwalk.Model{
-				ID: "glm-5.3",
-				Reasoning: catwalk.Reasoning{
-					Thinking:     catwalk.ThinkingToggleable,
-					EffortLevels: catwalk.NewEffortLevels("high"),
-				},
-			},
-			ModelCfg: config.SelectedModel{
-				Provider:        hyper.Name,
-				Model:           "glm-5.3",
-				Think:           true,
-				ReasoningEffort: "high",
-				ProviderOptions: map[string]any{"extra_body": extraBody},
-			},
-		}
+		model := reasoningGatewayModel("glm-5.3")
+		model.ModelCfg.Think = true
+		return withExtraBody(model, extraBody)
 	}
 
 	t.Run("crush's fields survive the user's extra_body", func(t *testing.T) {
 		t.Parallel()
-		opts := getProviderOptions(model(map[string]any{"custom_flag": "kept"}), hyperCfg)
-		extra := gatewayExtraBody(t, opts)
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"custom_flag": "kept"}), hyperCfg))
 		assert.Equal(t, true, extra["thinking"])
 		assert.Equal(t, "kept", extra["custom_flag"])
 	})
 
 	t.Run("the user wins key by key", func(t *testing.T) {
 		t.Parallel()
-		opts := getProviderOptions(model(map[string]any{"thinking": false}), hyperCfg)
-		extra := gatewayExtraBody(t, opts)
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"thinking": false}), hyperCfg))
 		assert.Equal(t, false, extra["thinking"])
 	})
 
 	t.Run("the user can override glm's top-level fallback", func(t *testing.T) {
 		t.Parallel()
-		opts := getProviderOptions(model(map[string]any{"clear_thinking": true}), hyperCfg)
-		extra := gatewayExtraBody(t, opts)
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{"clear_thinking": true}), hyperCfg))
 		assert.Equal(t, true, extra["clear_thinking"])
 		assert.Equal(t, true, extra["thinking"])
 	})
@@ -787,14 +771,10 @@ func TestGetProviderOptionsKeepsUserExtraBody(t *testing.T) {
 		t.Parallel()
 		// Z.AI's provider sets thinking.type; the user's key wins and the
 		// type is kept.
-		zaiCfg := config.ProviderConfig{
-			ID:   string(catwalk.InferenceProviderZAI),
-			Type: openaicompat.Name,
-		}
-		opts := getProviderOptions(model(map[string]any{
+		zaiCfg := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model(map[string]any{
 			"thinking": map[string]any{"clear_thinking": true},
-		}), zaiCfg)
-		extra := gatewayExtraBody(t, opts)
+		}), zaiCfg))
 		assert.Equal(t, map[string]any{"type": "enabled", "clear_thinking": true}, extra["thinking"])
 	})
 }
