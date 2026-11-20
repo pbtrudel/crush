@@ -84,3 +84,42 @@ func addVendorReasoningFlag(extraBody map[string]any, modelID string) {
 func vendorReasoningNeedsHistory(modelID string) bool {
 	return vendorReasoningRuleFor(modelID).needsHistory
 }
+
+// requestReasons reports whether the request as built asks the model to
+// reason: its thinking control is on, or an effort other than "none" is
+// sent. The user's own extra_body can turn either off.
+func requestReasons(extraBody, userExtra map[string]any, effort any) bool {
+	control, userSet := userExtra["thinking"]
+	if !userSet {
+		control = extraBody["thinking"]
+	}
+	on, off := thinkingState(control)
+	if on {
+		return true
+	}
+	if userSet && off {
+		return false
+	}
+	if value, ok := userExtra["reasoning_effort"]; ok {
+		effort = value
+	}
+	return effortSent(effort)
+}
+
+// thinkingState reports whether a thinking control asks for reasoning and
+// whether it turns reasoning off.
+func thinkingState(control any) (on, off bool) {
+	switch value := control.(type) {
+	case bool:
+		return value, !value
+	case map[string]any:
+		return value["type"] != "disabled", value["type"] == "disabled"
+	}
+	return false, false
+}
+
+// effortSent reports whether a reasoning effort is sent and is not "none".
+func effortSent(effort any) bool {
+	value, ok := effort.(string)
+	return ok && value != "" && value != "none"
+}

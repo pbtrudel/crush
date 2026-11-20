@@ -110,6 +110,49 @@ func TestGetProviderOptionsVendorReasoningFlags(t *testing.T) {
 		require.NotContains(t, extra, "clear_thinking")
 	})
 
+	t.Run("hyper with thinking off but an effort sent still reasons", func(t *testing.T) {
+		t.Parallel()
+		// Hyper's capture sent thinking:false with effort max and the model
+		// still returned reasoning, so an effort alone asks for it.
+		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(reasoningGatewayModel("glm-5.3"), hyperCfg))
+		require.Equal(t, false, extra["thinking"])
+		require.Equal(t, false, extra["clear_thinking"])
+	})
+
+	t.Run("an effort of none gets no flag", func(t *testing.T) {
+		t.Parallel()
+		model := reasoningGatewayModel("glm-5.3")
+		model.CatwalkCfg.Reasoning.EffortLevels = catwalk.NewEffortLevels("none", "max")
+		model.ModelCfg.ReasoningEffort = "none"
+		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		require.NotContains(t, extra, "clear_thinking")
+	})
+
+	t.Run("a user's effort of none gets no flag", func(t *testing.T) {
+		t.Parallel()
+		model := reasoningGatewayModel("glm-5.3")
+		model.ModelCfg.ProviderOptions = map[string]any{
+			"extra_body": map[string]any{"reasoning_effort": "none"},
+		}
+		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		require.NotContains(t, extra, "clear_thinking")
+	})
+
+	t.Run("a user's disabled thinking gets no flag", func(t *testing.T) {
+		t.Parallel()
+		model := reasoningGatewayModel("glm-5.3")
+		model.ModelCfg.ProviderOptions = map[string]any{
+			"extra_body": map[string]any{"thinking": map[string]any{"type": "disabled"}},
+		}
+		hyperCfg := config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}
+		extra := gatewayExtraBody(t, getProviderOptions(model, hyperCfg))
+		require.NotContains(t, extra, "clear_thinking")
+		require.Equal(t, map[string]any{"type": "disabled"}, extra["thinking"])
+	})
+
 	t.Run("a host's thinking object gains the flag", func(t *testing.T) {
 		t.Parallel()
 		// Z.AI documents clear_thinking inside the thinking object, which is
