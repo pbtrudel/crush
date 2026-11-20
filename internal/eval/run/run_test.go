@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/route"
 	"github.com/charmbracelet/crush/internal/eval/task"
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -574,4 +577,33 @@ func read(t *testing.T, path string) string {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return string(data)
+}
+
+// TestRunFailsOnNearExpiryToken checks that a jailed Copilot run whose token
+// would die inside the run stops before the child starts, with a reason that
+// names the way out. The jail blocks the endpoint that renews the token, so
+// starting the run would only waste a checkout and a timeout.
+func TestRunFailsOnNearExpiryToken(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.route.Provider = route.ProviderCopilot
+	require.NoError(t, f.home.Ensure())
+	write(t, filepath.Join(f.home.DataDir(), "crush.json"), fmt.Sprintf(
+		`{"providers":{"copilot":{"oauth":{"access_token":"short","refresh_token":"github-token","expires_at":%d}}}}`,
+		time.Now().Add(12*time.Minute).Unix(),
+	))
+
+	opts := f.options()
+	opts.Network = netjail.ModeJail
+	opts.Timeout = 10 * time.Minute
+	opts.Preflight = func() error { return nil }
+	opts.RefreshToken = func(context.Context, string, string) (*oauth.Token, error) {
+		t.Error("a token Crush still accepts must not be exchanged")
+		return nil, nil
+	}
+	_, err := Run(context.Background(), opts)
+	require.ErrorContains(t, err, "copilot")
+	require.ErrorContains(t, err, "expires")
+	require.NoFileExists(t, f.env["FAKE_ARGV"], "the child did not start")
 }

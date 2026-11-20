@@ -69,6 +69,9 @@ type Options struct {
 	// Network is the run's network mode, netjail.ModeJail or ModeHost.
 	// Empty means host.
 	Network string
+	// RefreshToken is the host-side OAuth exchange a jailed run uses before
+	// it starts. Nil means route.DefaultRefreshToken.
+	RefreshToken route.RefreshTokenFunc
 	// Preflight checks that the jail can start. Nil means netjail.Preflight.
 	Preflight func() error
 }
@@ -153,6 +156,15 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 	if err := route.WriteGlobalConfig(filepath.Join(dirs.Config, "crush.json"), opts.Route, opts.Overlay); err != nil {
 		return line, err
+	}
+	if line.Network == netjail.ModeJail {
+		refresh := opts.RefreshToken
+		if refresh == nil {
+			refresh = route.DefaultRefreshToken
+		}
+		if err := opts.Route.PrepareToken(ctx, opts.Home, filepath.Join(runDir, "data"), timeout, refresh); err != nil {
+			return line, err
+		}
 	}
 	var proxy *netjail.Proxy
 	jailSock := ""
