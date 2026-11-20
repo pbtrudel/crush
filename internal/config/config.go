@@ -122,15 +122,16 @@ type ProviderConfig struct {
 	// lenient nounset, $(echo), or literal "") is omitted from the
 	// outgoing request rather than sent as "Header:".
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" jsonschema:"description=Additional HTTP headers to send with requests"`
-	// ExtraBody is merged verbatim into OpenAI-compatible request
-	// bodies. String values are NOT shell-expanded: this is a plain
-	// JSON passthrough so that arbitrary provider-extension fields
-	// (numbers, nested objects, booleans) round-trip without a
-	// recursive walker guessing at intent. If you need an env-var-
-	// driven value at request time, put it in extra_headers, or in
-	// the provider's top-level api_key / base_url, all of which do
-	// expand.
-	ExtraBody map[string]any `json:"extra_body,omitempty" jsonschema:"description=Additional fields to include in request bodies\\, only works with openai-compatible providers"`
+	// ExtraBody is merged into OpenAI-compatible request bodies. Its keys
+	// override the fields Crush sets for the request; inside a "thinking"
+	// object the user's keys override Crush's and the other keys stay.
+	// String values are NOT shell-expanded: this is a plain JSON
+	// passthrough so that arbitrary provider-extension fields (numbers,
+	// nested objects, booleans) round-trip without a recursive walker
+	// guessing at intent. If you need an env-var-driven value at request
+	// time, put it in extra_headers, or in the provider's top-level
+	// api_key / base_url, all of which do expand.
+	ExtraBody map[string]any `json:"extra_body,omitempty" jsonschema:"description=Additional fields to include in request bodies\\, only works with openai-compatible providers; keys override the fields Crush sets for the request"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
 
