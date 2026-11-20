@@ -644,6 +644,11 @@
           "description": "When slimming older history, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.",
           "default": false
         },
+        "responses_reasoning_replay": {
+          "type": "boolean",
+          "description": "Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. On by default; set it to false to turn it off.",
+          "default": true
+        },
         "compact_tail_tokens": {
           "type": "integer",
           "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",

@@ -36,8 +36,11 @@ import (
 //	option max-background-jobs 200
 //	option pinentry-integrated false
 //	option pinentry-cache-timeout 300
+//	option responses-reasoning-replay false
 //
 // Boolean shortcuts: for boolean fields, omitting the value sets it to true.
+// Options that are on by default (progress, auto-lsp, pinentry-integrated,
+// responses-reasoning-replay) are turned off by passing false.
 func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	b := configBuilderFromCtx(ctx)
 	if b == nil {
