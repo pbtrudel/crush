@@ -149,13 +149,13 @@ Branch `crush/w31-changed-files`, about 340 lines.
 - Modify `internal/agent/turn_gate.go`: take the end snapshot in `runTurnGate`, fill `gateInput.ChangedFiles`, `HeadFrom` and `HeadTo`, and pass `changed_files` to the hook event.
 
 **Tests:**
-- [ ] `snapshot_test.go`, on `t.TempDir()` repositories made with `git init` and a local `user.email` and `user.name` set through `-c` flags:
+- [x] `snapshot_test.go`, on `t.TempDir()` repositories made with `git init` and a local `user.email` and `user.name` set through `-c` flags:
   - a modified, an added (staged), an untracked, a deleted and a renamed file are each reported;
   - a clean tree reports nothing;
   - a commit reports `headFrom != headTo`;
   - a directory outside any repository returns an error;
   - a file inside an untracked directory is listed by path.
-- [ ] `changed_files_test.go`:
+- [x] `changed_files_test.go`:
   - successful and failed calls of each of the five tools, reusing the `todoTestStep` helpers (`internal/agent/todo_reminder_test.go:19-48`);
   - the union and sort with git paths;
   - the fallback with no baseline;

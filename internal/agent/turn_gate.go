@@ -2,17 +2,23 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/gitutil"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 )
+
+// errNoWorkingDir reports that the gate has no directory to read, as in a
+// test without a config store.
+var errNoWorkingDir = errors.New("no working directory")
 
 // gateOpenTag starts the hidden user row the turn-end gate writes. The log
 // report and `crush run --json` recognise the row by this tag, as they do
@@ -32,6 +38,13 @@ type gateInput struct {
 	TurnEnd message.TurnEnd
 	// Reply is the assistant text of the run that is ending.
 	Reply string
+	// ChangedFiles are the files this prompt changed, from the working
+	// tree and from the tool calls. It is empty when nothing changed.
+	ChangedFiles []string
+	// HeadFrom is HEAD at the prompt's start and HeadTo HEAD at the gate.
+	// Both are empty when the directory is not a repository.
+	HeadFrom string
+	HeadTo   string
 	// Continuations counts the continuations this prompt already used.
 	Continuations int
 }
@@ -117,6 +130,32 @@ func (a *sessionAgent) userPromptQueued(sessionID string) bool {
 	return hasUserPrompt(queued)
 }
 
+// gateWorkingDir is the directory the gate's working-tree snapshot reads.
+func (a *sessionAgent) gateWorkingDir() string {
+	if a.cfg == nil {
+		return ""
+	}
+	return a.cfg.WorkingDir()
+}
+
+// snapshotWorktree reads the working tree for the gate. It is a method so a
+// test can count the calls; nil means gitutil.Snapshot.
+func (a *sessionAgent) snapshotWorktree(ctx context.Context, dir string) (gitutil.WorktreeState, error) {
+	if dir == "" {
+		return gitutil.WorktreeState{}, errNoWorkingDir
+	}
+	if a.snapshotState != nil {
+		return a.snapshotState(ctx, dir)
+	}
+	return gitutil.Snapshot(ctx, dir)
+}
+
+// gateNeedsChangedFiles reports whether anything reads the turn's changed
+// files, so a prompt with no hook and no built-in check costs no git call.
+func (a *sessionAgent) gateNeedsChangedFiles() bool {
+	return a.hooks.Configured(hooks.EventTurnEnd)
+}
+
 // turnEndMaxContinuations returns how many continuations one prompt may
 // get. Zero turns them off.
 func (a *sessionAgent) turnEndMaxContinuations() int {
@@ -132,9 +171,10 @@ func (a *sessionAgent) turnEndMaxContinuations() int {
 
 // turnEndGateEvent is the TurnEnd event the gate fires: the payload a
 // TurnEnd hook always got, plus the fields that describe the ending.
-func (a *sessionAgent) turnEndGateEvent(call SessionAgentCall, assistant *message.Message, end message.TurnEnd) hooks.Event {
+func (a *sessionAgent) turnEndGateEvent(call SessionAgentCall, assistant *message.Message, end message.TurnEnd, changed []string) hooks.Event {
 	ev := turnEndEvent(nil, assistant)
 	ev.SessionID = call.SessionID
+	ev.ChangedFiles = changed
 	// stop_hook_active is Claude Code's name for "this run continues a turn
 	// that was already checked", so a Stop script can skip its second call.
 	active := call.gateContinued
@@ -149,11 +189,11 @@ func (a *sessionAgent) turnEndGateEvent(call SessionAgentCall, assistant *messag
 // gate reasons, each labelled with its hook's display name. A hook that
 // halts the turn has its reason logged instead, because no continuation
 // follows it.
-func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd) (reasons []gateReason, stop bool) {
+func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, changed []string) (reasons []gateReason, stop bool) {
 	if call.NonInteractive {
 		return nil, false
 	}
-	agg := a.hooks.Run(ctx, a.turnEndGateEvent(call, assistant, end))
+	agg := a.hooks.Run(ctx, a.turnEndGateEvent(call, assistant, end, changed))
 	answers, stop := hooks.TurnEndReasons(agg)
 	reasons = make([]gateReason, 0, len(answers))
 	for _, answer := range answers {
@@ -180,22 +220,38 @@ func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCal
 // A stop, an ending other than completed, a limit and a cancel all outrank a
 // request to continue: a guard, a halt or a budget is never overridden.
 func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, userQueued bool) *SessionAgentCall {
+	// The working tree is read once here, before any check runs, so every
+	// check and the hook payload see the same files.
+	var endState gitutil.WorktreeState
+	if call.gateBaseline != nil {
+		state, snapErr := a.snapshotWorktree(ctx, a.gateWorkingDir())
+		if snapErr != nil {
+			slog.Debug("Turn-end gate: no working-tree snapshot at the turn's end",
+				"session_id", call.SessionID, "error", snapErr)
+		} else {
+			endState = state
+		}
+	}
+	changed, headFrom, headTo := turnChangedFiles(call, endState)
+	in := gateInput{
+		SessionID:     call.SessionID,
+		TurnEnd:       end,
+		Reply:         assistant.Content().String(),
+		ChangedFiles:  changed,
+		HeadFrom:      headFrom,
+		HeadTo:        headTo,
+		Continuations: call.gateContinuations,
+	}
 	// The hooks run even when the user already has a prompt queued, so a
 	// TurnEnd hook keeps its once-per-prompt scope; only its answer is
 	// dropped then.
-	hookReasons, hookStop := a.hookGateReasons(ctx, call, assistant, end)
+	hookReasons, hookStop := a.hookGateReasons(ctx, call, assistant, end, changed)
 	if userQueued {
 		if hookStop || len(hookReasons) > 0 {
 			slog.Debug("Turn-end gate: a queued prompt wins over a continuation",
 				"session_id", call.SessionID)
 		}
 		return nil
-	}
-	in := gateInput{
-		SessionID:     call.SessionID,
-		TurnEnd:       end,
-		Reply:         assistant.Content().String(),
-		Continuations: call.gateContinuations,
 	}
 	reasons := hookReasons
 	stopped := hookStop

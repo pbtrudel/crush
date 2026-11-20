@@ -45,6 +45,7 @@ import (
 	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/gitutil"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
@@ -223,6 +224,16 @@ type SessionAgentCall struct {
 	// gateContinued marks a call the turn-end gate started, so its run
 	// does not fire TurnStart again.
 	gateContinued bool
+	// gateBaseline is the working tree at the prompt's start, so the gate
+	// can see a change no tool call made. Nil when nothing reads it, or
+	// when it could not be taken.
+	gateBaseline *gitutil.WorktreeState
+	// gateBaselineErr records that the baseline could not be taken, so the
+	// prompt falls back to tool-call detection and does not retry.
+	gateBaselineErr bool
+	// gateChangedFiles are the files this prompt's tools changed, from
+	// every run of it.
+	gateChangedFiles []string
 }
 
 // filterToolsForChannel scopes the tool list for a turn. A channel-originated
@@ -364,6 +375,9 @@ type sessionAgent struct {
 	// the order they are registered. Production fills the list per run;
 	// tests set it directly.
 	gateChecks []gateCheck
+	// snapshotState reads the working tree for the gate. It is a field so
+	// a test can count the calls; nil means gitutil.Snapshot.
+	snapshotState func(ctx context.Context, dir string) (gitutil.WorktreeState, error)
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -1390,6 +1404,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
+	// The gate compares the working tree at the prompt's start with the
+	// tree at its end, so a change made by a shell command or by a
+	// teammate in the same tree counts too. A compaction continuation and
+	// a gate continuation both copy the call, so this is taken once per
+	// prompt.
+	if call.gateBaseline == nil && !call.gateBaselineErr && a.gateNeedsChangedFiles() {
+		state, snapErr := a.snapshotWorktree(genCtx, a.gateWorkingDir())
+		if snapErr != nil {
+			call.gateBaselineErr = true
+			slog.Debug("Turn-end gate: no working-tree baseline; only tool calls are compared",
+				"session_id", call.SessionID, "error", snapErr)
+		} else {
+			call.gateBaseline = &state
+		}
+	}
+
 	startTime := time.Now()
 	a.eventPromptSent(call.SessionID)
 	// A continuation is the same prompt, as Claude Code's Stop
@@ -1763,6 +1793,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			currentSession = updatedSession
 
 			stepResults = append(stepResults, stepResult)
+			// Free to collect, and it catches an edit the working tree
+			// cannot tell apart from one made before the prompt.
+			call.gateChangedFiles = append(call.gateChangedFiles, stepChangedFiles(stepResult)...)
 			if a.repeatToolRemindersEnabled() {
 				signature := getToolInteractionSignature(stepResult.Content)
 				if signature != lastRepeatSignature {
