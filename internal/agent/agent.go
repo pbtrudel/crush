@@ -2244,11 +2244,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}
 	// The gate's continuation is dropped by a cancel, a limit or a prompt
 	// the user typed while the checks ran. Its prompt then ends as it
-	// stands, and the user's prompt runs next.
+	// stands, and the user's prompt runs next. The cancel reaches the run
+	// through its context: genCtx is cancelled here for the last time, so
+	// anything set before now is a cancel the gate must respect.
 	gateDropped := false
 	if gateNext != nil {
 		mark, marked := a.cancelMark.Get(call.SessionID)
-		if (marked && mark > 0) || call.limits.reached() || hasUserPrompt(queuedMessages) {
+		if (marked && mark > 0) || call.limits.reached() || genCtx.Err() != nil || hasUserPrompt(queuedMessages) {
 			gateNext, gateDropped = nil, true
 		}
 	}
