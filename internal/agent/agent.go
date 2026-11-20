@@ -2198,6 +2198,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if gateNext == nil {
 		a.finishWithoutGate(ctx, call, finish)
 	}
+	// A continuation the hand-off drops leaves a turn that ended here
+	// after all, so it owes the stale note and the notification, and it
+	// runs the threshold compaction the gate put off.
+	dropContinuation := func() {
+		finish.finished = true
+		finish.released = true
+		a.compactDroppedGate(ctx, call, largeModel, currentSession)
+		a.finishWithoutGate(ctx, call, finish)
+	}
 	// A continued turn keeps the session registered until the hand-off
 	// reads the queue, so a prompt typed in between is queued rather than
 	// started, and drops the continuation (see below).
@@ -2287,8 +2296,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 		mu.Unlock()
 		if gateDropped {
-			finish.released = true
-			a.finishWithoutGate(ctx, call, finish)
+			dropContinuation()
 		}
 		return result, err
 	}
@@ -2337,8 +2345,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	firstQueuedMessage.Accepted = a.BeginAccepted(call.SessionID)
 	mu.Unlock()
 	if gateDropped {
-		finish.released = true
-		a.finishWithoutGate(ctx, call, finish)
+		dropContinuation()
 	}
 	if outerOwesRunComplete {
 		complete := notify.RunComplete{SessionID: call.SessionID, RunID: call.RunID}

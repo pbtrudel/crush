@@ -12,11 +12,13 @@ import (
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +50,11 @@ func (c *fakeGateCheck) Check(ctx context.Context, in gateInput) gateVerdict {
 	c.inputs = append(c.inputs, in)
 	c.mu.Unlock()
 	if c.entered != nil {
-		c.entered <- struct{}{}
+		// Never wait for the test: a later check would hang the run.
+		select {
+		case c.entered <- struct{}{}:
+		default:
+		}
 	}
 	if c.block != nil {
 		select {
@@ -853,4 +859,120 @@ func TestTurnGate_CancelAfterTheGateDecides(t *testing.T) {
 	require.Contains(t, replies[0], "done")
 	require.Equal(t, 1, inner.callCount())
 	require.Equal(t, "run-1", (<-events).Payload.RunID)
+}
+
+// assistantTexts lists the text of every assistant row that is not a
+// compaction summary, in log order.
+func assistantTexts(t *testing.T, env fakeEnv, sessionID string) []string {
+	t.Helper()
+	msgs, err := env.messages.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	var texts []string
+	for _, msg := range msgs {
+		if msg.Role != message.Assistant || msg.IsSummaryMessage {
+			continue
+		}
+		texts = append(texts, msg.Content().Text)
+	}
+	return texts
+}
+
+// droppedContinuation arranges the drop: a blocking check, a prompt typed
+// while it runs, and the values the caller waits on.
+type dropSetup struct {
+	check  *fakeGateCheck
+	done   chan error
+	finish func()
+}
+
+// startDroppedContinuation runs the prompt in the background and queues a
+// user prompt while the check holds, then releases the check.
+func startDroppedContinuation(t *testing.T, sa *sessionAgent, env fakeEnv, sessionID string) *dropSetup {
+	t.Helper()
+	setup := &dropSetup{
+		check: &fakeGateCheck{
+			name:   "fake",
+			reason: "keep going",
+			// Only the first turn asks, so the typed prompt's own
+			// ending leaves no row behind.
+			want:    "done",
+			block:   make(chan struct{}),
+			entered: make(chan struct{}, 1),
+		},
+		done: make(chan error, 1),
+	}
+	sa.gateChecks = []gateCheck{setup.check}
+	go func() {
+		_, runErr := sa.Run(t.Context(), SessionAgentCall{SessionID: sessionID, Prompt: "go"})
+		setup.done <- runErr
+	}()
+	select {
+	case <-setup.check.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gate never reached the check")
+	}
+	sa.enqueueCall(SessionAgentCall{SessionID: sessionID, Prompt: "typed", RunID: "run-typed"})
+	setup.finish = func() {
+		close(setup.check.block)
+		select {
+		case runErr := <-setup.done:
+			require.NoError(t, runErr)
+		case <-time.After(10 * time.Second):
+			t.Fatal("the run did not finish")
+		}
+	}
+	return setup
+}
+
+// A dropped continuation still ends its turn: the stale list note is
+// written, because this run turned out to be the prompt's last.
+func TestTurnGate_DroppedContinuationWritesTheStaleNote(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	script := make([]scriptedCall, 0, 8)
+	for range 5 {
+		script = append(script, callTool(tools.BashToolName, 1_000))
+	}
+	script = append(script,
+		answer("done", fantasy.FinishReasonStop, 1_000),
+		answer("typed answer", fantasy.FinishReasonStop, 1_000),
+	)
+	sa := newCompactionAgent(env, &scriptedModel{script: script}, nil, false, &recordingTool{name: tools.BashToolName})
+	sess, err := env.sessions.Create(t.Context(), "dropped note")
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.UpdateTodos(t.Context(), sess.ID, []session.Todo{
+		{Content: "Deploy it", Status: session.TodoStatusInProgress},
+	}))
+
+	startDroppedContinuation(t, sa, env, sess.ID).finish()
+
+	require.Empty(t, gateRows(t, env, sess.ID))
+	texts := assistantTexts(t, env, sess.ID)
+	require.NotEmpty(t, texts)
+	require.Contains(t, strings.Join(texts, "\n"),
+		`Todo list still shows "Deploy it" as unfinished`,
+		"the dropped turn still ends with the note")
+}
+
+// A dropped continuation runs the threshold compaction it put off, so a long
+// turn is still summarized.
+func TestTurnGate_DroppedContinuationCompactsTheTurn(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	// 150k of a 200k window is above the default threshold of half.
+	model := &scriptedModel{script: []scriptedCall{
+		answer("done", fantasy.FinishReasonStop, 150_000),
+		answer("# Conversation Summary\n\nAll good.", fantasy.FinishReasonStop, 1_000),
+		answer("typed answer", fantasy.FinishReasonStop, 1_000),
+	}}
+	sa := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"})
+	sess, err := env.sessions.Create(t.Context(), "dropped compaction")
+	require.NoError(t, err)
+
+	startDroppedContinuation(t, sa, env, sess.ID).finish()
+
+	require.Empty(t, gateRows(t, env, sess.ID))
+	require.Contains(t, rowKinds(t, env, sess.ID), "summary",
+		"the dropped continuation still compacts the turn")
+	require.Equal(t, "typed answer", finalAssistantText(t, env, sess.ID))
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 )
 
 // gateOpenTag starts the hidden user row the turn-end gate writes. The log
@@ -290,6 +291,21 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		return gateNextCall(call, gateMessage(reasons))
 	}
 	return nil
+}
+
+// compactDroppedGate runs the threshold compaction a dropped continuation
+// put off. The turn it belongs to has already ended, so a failure is logged
+// rather than returned: the reply and the queued prompt still have to go.
+func (a *sessionAgent) compactDroppedGate(ctx context.Context, call SessionAgentCall, largeModel Model, sess session.Session) {
+	if !a.shouldAutoCompact(largeModel, sess) {
+		return
+	}
+	threshold, _ := a.compactionConfig()
+	trigger := turnCompactionTrigger(false, false, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
+	if err := a.summarize(ctx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, false); err != nil {
+		slog.Warn("Failed to compact a dropped turn-end continuation",
+			"session_id", call.SessionID, "error", err)
+	}
 }
 
 // gateFinish is what a run still owes the user at its end: the stale list
