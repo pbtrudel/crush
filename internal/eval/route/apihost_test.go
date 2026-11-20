@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/catwalk/v3/pkg/embedded"
 	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/stretchr/testify/require"
 )
@@ -93,4 +94,28 @@ func TestAPIHost(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestCopilotHostMatchesTheCatalog checks the one host the code cannot take
+// from Crush's own source: Crush reads the Copilot endpoint from its model
+// catalog, so the literal here must agree with the catalog's Copilot entry,
+// or the jail would allow a host no run uses.
+func TestCopilotHostMatchesTheCatalog(t *testing.T) {
+	t.Parallel()
+
+	var endpoint string
+	for _, provider := range embedded.GetAll() {
+		if string(provider.ID) == ProviderCopilot {
+			endpoint = provider.APIEndpoint
+		}
+	}
+	require.NotEmpty(t, endpoint, "the embedded catalog has no copilot provider")
+
+	base, err := url.Parse(endpoint)
+	require.NoError(t, err)
+	want := strings.ToLower(net.JoinHostPort(base.Hostname(), "443"))
+
+	got, err := (&Route{Name: "gpt", Provider: ProviderCopilot}).APIHost()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
