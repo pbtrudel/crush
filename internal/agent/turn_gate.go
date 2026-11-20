@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -16,10 +15,6 @@ import (
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 )
-
-// errNoWorkingDir reports that the gate has no directory to read, as in a
-// test without a config store.
-var errNoWorkingDir = errors.New("no working directory")
 
 // gateOpenTag starts the hidden user row the turn-end gate writes. The log
 // report and `crush run --json` recognise the row by this tag, as they do
@@ -142,9 +137,6 @@ func (a *sessionAgent) gateWorkingDir() string {
 // snapshotWorktree reads the working tree for the gate. It is a method so a
 // test can count the calls; nil means gitutil.Snapshot.
 func (a *sessionAgent) snapshotWorktree(ctx context.Context, dir string) (gitutil.WorktreeState, error) {
-	if dir == "" {
-		return gitutil.WorktreeState{}, errNoWorkingDir
-	}
 	if a.snapshotState != nil {
 		return a.snapshotState(ctx, dir)
 	}
@@ -153,7 +145,11 @@ func (a *sessionAgent) snapshotWorktree(ctx context.Context, dir string) (gituti
 
 // gateNeedsChangedFiles reports whether anything reads the turn's changed
 // files, so a prompt with no hook and no built-in check costs no git call.
+// Without a working directory there is nothing to read.
 func (a *sessionAgent) gateNeedsChangedFiles() bool {
+	if a.gateWorkingDir() == "" {
+		return false
+	}
 	return a.hooks.Configured(hooks.EventTurnEnd) || a.completionCheckOn()
 }
 
