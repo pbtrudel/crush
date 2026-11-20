@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/ui/util"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,6 +80,12 @@ func (w *agentTeamsWorkspace) writeWorkspaceFile(enabled bool) {
 }
 
 func (w *agentTeamsWorkspace) AgentIsReady() bool { return true }
+
+func (w *agentTeamsWorkspace) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
+
+func (w *agentTeamsWorkspace) PermissionMode() permission.PermissionMode {
+	return permission.PermissionModeNormal
+}
 
 func (w *agentTeamsWorkspace) AgentIsBusy() bool {
 	w.mu.Lock()
@@ -170,4 +178,93 @@ func TestAgentTeamsReloadPendingOnlyOnBusyToggle(t *testing.T) {
 	_, _ = u.Update(configReloadedMsg{retryWhenIdle: true})
 	require.False(t, u.pendingConfigReload, "a reload that worked leaves nothing behind")
 	require.Zero(t, ws.reloadCount())
+}
+
+// A retry that is refused again keeps the reload pending instead of turning
+// the second refusal into an error, and the next idle edge applies it.
+func TestAgentTeamsReloadRetryStaysArmedWhileBusy(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newAgentTeamsTest(t)
+	u.agentBusyCache.set(true)
+	ws.mu.Lock()
+	ws.reloadErr = app.ErrConfigReloadBusy
+	ws.mu.Unlock()
+
+	msgs := runCmdCollect(u.setAgentTeams(false))
+	require.Len(t, msgs, 1)
+	_, _ = u.Update(msgs[0])
+	require.True(t, u.pendingConfigReload)
+
+	// The idle edge fires the retry, which the agent refuses again.
+	_, cmd := u.Update(busyStateMsg{gen: u.busyFetchGen, agentBusy: false, permMode: permission.PermissionModeNormal})
+	require.NotNil(t, cmd)
+	require.Equal(t, 1, ws.reloadCount(), "nothing was reloaded before the edge")
+	for _, msg := range runCmdCollect(cmd) {
+		require.NotNil(t, msg)
+		_, next := u.Update(msg)
+		for _, out := range runCmdCollect(next) {
+			if info, ok := out.(util.InfoMsg); ok {
+				require.NotEqual(t, util.InfoTypeError, info.Type, "a second busy result is not an error")
+			}
+		}
+	}
+	require.Equal(t, 2, ws.reloadCount())
+	require.True(t, u.pendingConfigReload, "a second busy result re-arms the retry")
+
+	ws.mu.Lock()
+	ws.reloadErr = nil
+	ws.mu.Unlock()
+	_, cmd = u.Update(busyStateMsg{gen: u.busyFetchGen, agentBusy: false, permMode: permission.PermissionModeNormal})
+	require.NotNil(t, cmd)
+	for _, msg := range runCmdCollect(cmd) {
+		if msg != nil {
+			_, _ = u.Update(msg)
+		}
+	}
+	require.False(t, u.pendingConfigReload)
+	require.Equal(t, 3, ws.reloadCount())
+	require.False(t, u.com.Config().Options.GetAgentTeams())
+}
+
+// When the memoized state already reads idle, a refusal cannot wait for a
+// busy-to-idle edge that will never come: the agent is probed instead.
+func TestAgentTeamsReloadRetryArmsWhenTheCacheReadsIdle(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newAgentTeamsTest(t)
+	u.agentBusyCache.set(false)
+	ws.mu.Lock()
+	ws.reloadErr = app.ErrConfigReloadBusy
+	ws.mu.Unlock()
+
+	msgs := runCmdCollect(u.setAgentTeams(false))
+	require.Len(t, msgs, 1)
+	_, cmd := u.Update(msgs[0])
+	require.True(t, u.pendingConfigReload)
+	require.NotNil(t, cmd, "the refusal probes the agent instead of waiting for an edge")
+
+	ws.mu.Lock()
+	ws.reloadErr = nil
+	ws.mu.Unlock()
+	var probed busyStateMsg
+	found := false
+	for _, msg := range runCmdCollect(cmd) {
+		if state, ok := msg.(busyStateMsg); ok {
+			probed, found = state, true
+		}
+	}
+	require.True(t, found, "the refusal dispatches a busy probe")
+	require.False(t, probed.agentBusy)
+
+	_, retry := u.Update(probed)
+	require.NotNil(t, retry, "an idle probe runs the pending reload")
+	for _, msg := range runCmdCollect(retry) {
+		if msg != nil {
+			_, _ = u.Update(msg)
+		}
+	}
+	require.False(t, u.pendingConfigReload)
+	require.Equal(t, 2, ws.reloadCount())
+	require.False(t, u.com.Config().Options.GetAgentTeams())
 }

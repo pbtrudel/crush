@@ -2088,8 +2088,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingConfigReload = false
 			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
 		case msg.retryWhenIdle && errors.Is(msg.err, app.ErrConfigReloadBusy):
+			// The retry stays armed until a reload lands, and a cache that
+			// already reads idle gets probed, since no busy-to-idle edge
+			// would ever run it.
 			m.pendingConfigReload = true
 			cmds = append(cmds, util.ReportInfo("Agent Teams will apply when the current turn ends"))
+			if !m.isAgentBusy() {
+				cmds = append(cmds, m.dispatchBusyRefresh())
+			}
 		default:
 			cmds = append(cmds, util.ReportError(msg.err))
 		}
