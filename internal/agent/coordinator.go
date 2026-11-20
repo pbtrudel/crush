@@ -1269,19 +1269,28 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 // headless run exits before one could arrive, so delegation blocks there and
 // detaches here. Subagents get neither, since they can neither fan out nor
 // ask questions. A teammate keeps the Lead's palette for prompt-cache
-// parity and refuses at run time instead.
+// parity and refuses at run time instead. With Agent Teams off no delegation
+// tool is attached in either mode, since there is no agent left to delegate
+// to; agentic_fetch stays, as it runs its helper inside its own call.
 func (c *coordinator) effectiveToolNames(agentCfg config.Agent, role agentRole) []string {
+	agentsOff := c.agentsOff()
 	return slices.DeleteFunc(slices.Clone(agentCfg.AllowedTools), func(name string) bool {
 		switch name {
 		case tools.QuestionToolName:
 			return role == roleSubAgent || !c.interactive
 		case AgentToolName:
-			return role.isSubAgent() || c.interactive
+			return agentsOff || role.isSubAgent() || c.interactive
 		case AgentDispatchToolName, AgentSendToolName, AgentStatusToolName, AgentStopToolName:
-			return role == roleSubAgent || !c.interactive
+			return agentsOff || role == roleSubAgent || !c.interactive
 		}
 		return false
 	})
+}
+
+// agentsOff reports whether Agent Teams is turned off in the current config.
+// A coordinator without a config keeps the surface it was built for.
+func (c *coordinator) agentsOff() bool {
+	return c.cfg != nil && !c.cfg.Config().Options.GetAgentTeams()
 }
 
 // buildTools builds an agent's tools. parentModel reports the model the
