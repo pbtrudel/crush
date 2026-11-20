@@ -39,6 +39,12 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	networkSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "network" {
+			networkSet = true
+		}
+	})
 	if flags.NArg() != 1 {
 		fmt.Fprintln(stderr, batchUsage)
 		return 2
@@ -142,6 +148,7 @@ func batchCmd(args []string, stdout, stderr io.Writer) int {
 		Footer:     string(footer),
 		Toolchain:  version,
 		Network:    *network,
+		NetworkSet: networkSet,
 		Env:        grade.Env(gradeHome),
 		Scratch:    scratch,
 	})

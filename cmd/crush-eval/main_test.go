@@ -72,3 +72,24 @@ func TestInterleaved(t *testing.T) {
 	_, err = interleaved(flags, []string{"pr-0010", "--nope"})
 	require.Error(t, err)
 }
+
+// TestParseNetworkFor checks that the jail is rejected where it cannot
+// exist, instead of failing at the clone.
+func TestParseNetworkFor(t *testing.T) {
+	t.Parallel()
+
+	jailed, err := parseNetworkFor("jail", "linux")
+	require.NoError(t, err)
+	require.True(t, jailed)
+
+	_, err = parseNetworkFor("jail", "darwin")
+	require.ErrorContains(t, err, "needs Linux")
+	require.ErrorContains(t, err, "--network host")
+
+	jailed, err = parseNetworkFor("host", "darwin")
+	require.NoError(t, err)
+	require.False(t, jailed)
+
+	_, err = parseNetworkFor("vpn", "linux")
+	require.ErrorContains(t, err, "want")
+}

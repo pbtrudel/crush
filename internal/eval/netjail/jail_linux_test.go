@@ -41,11 +41,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// testMasks are the default masks without /tmp: the test binary itself
-// lives under /tmp, and the helper could not exec it after masking that
-// directory.
-var testMasks = []string{"/run", "/var/run", "/mnt/wslg", "/run/user"}
-
 // canJail reports whether this machine lets an unprivileged process start
 // the jail, and why not when it does not.
 func canJail(t *testing.T) (bool, string) {
@@ -54,7 +49,7 @@ func canJail(t *testing.T) (bool, string) {
 	require.NoError(t, err)
 	cmd := exec.CommandContext(context.Background(), self)
 	cmd.Env = append(os.Environ(), "NETJAIL_NOOP=1")
-	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	require.NoError(t, netjail.Wrap(cmd, "", 0))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Sprintf("%v: %s", err, out)
@@ -219,7 +214,7 @@ func TestJail(t *testing.T) {
 		"NETJAIL_ALLOW="+srv.Listener.Addr().String(),
 		"NETJAIL_FWD_PORT="+strconv.Itoa(port),
 	)
-	require.NoError(t, netjail.Wrap(cmd, sock, port, testMasks...))
+	require.NoError(t, netjail.Wrap(cmd, sock, port))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "probe ok")
@@ -240,6 +235,18 @@ func capLine(status []byte, name string) string {
 	return name + "=missing"
 }
 
+// TestPreflight checks that a machine that can start the jail passes the
+// preflight run and batch use before a batch starts.
+func TestPreflight(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+	require.NoError(t, netjail.Preflight())
+}
+
 // TestJailIdentity checks that the child keeps the host uid and gid and has
 // no capabilities, effective or ambient.
 func TestJailIdentity(t *testing.T) {
@@ -254,7 +261,7 @@ func TestJailIdentity(t *testing.T) {
 	require.NoError(t, err)
 	cmd := exec.CommandContext(context.Background(), self)
 	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_IDENTITY=1")
-	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	require.NoError(t, netjail.Wrap(cmd, "", 0))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), fmt.Sprintf("uid=%d gid=%d", os.Getuid(), os.Getgid()))
@@ -346,7 +353,7 @@ func TestJailCancelKillsGroup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "sleep", "30")
 	netjail.KillGroup(cmd)
-	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	require.NoError(t, netjail.Wrap(cmd, "", 0))
 	require.NoError(t, cmd.Start())
 	pid := cmd.Process.Pid
 
@@ -372,7 +379,7 @@ func TestJailExitCode(t *testing.T) {
 		t.Skipf("user namespaces are unavailable: %s", reason)
 	}
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 7")
-	require.NoError(t, netjail.Wrap(cmd, "", 0, testMasks...))
+	require.NoError(t, netjail.Wrap(cmd, "", 0))
 	err := cmd.Run()
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit)

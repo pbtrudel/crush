@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,30 @@ func TestRunJailNeedsBaseURL(t *testing.T) {
 	f := newFixture(t)
 	opts := f.options()
 	opts.Network = netjail.ModeJail
+	opts.Preflight = func() error { return nil }
 	_, err := Run(context.Background(), opts)
 	require.ErrorContains(t, err, "base_url")
+}
+
+// TestRunJailPreflightError checks that a machine where user namespaces are
+// blocked fails before the checkout and points at --network host.
+func TestRunJailPreflightError(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	opts := f.options()
+	opts.Network = netjail.ModeJail
+	opts.Preflight = func() error { return errors.New("user namespaces are blocked") }
+	_, err := Run(context.Background(), opts)
+	require.ErrorContains(t, err, "user namespaces are blocked")
+	require.Empty(t, f.dirMatches(t), "the run did not start")
+}
+
+// dirMatches is the runs directory of the fixture's batch, empty when no run
+// directory exists.
+func (f *fixture) dirMatches(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(f.home.BatchDir("b1"), "runs", "*"))
+	require.NoError(t, err)
+	return matches
 }

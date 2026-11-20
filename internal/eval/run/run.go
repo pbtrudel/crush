@@ -69,6 +69,8 @@ type Options struct {
 	// Network is the run's network mode, netjail.ModeJail or ModeHost.
 	// Empty means host.
 	Network string
+	// Preflight checks that the jail can start. Nil means netjail.Preflight.
+	Preflight func() error
 }
 
 // Run performs one run and appends its result line to the batch's
@@ -105,6 +107,15 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		NetDeniedHosts: []string{},
 	}
 
+	if line.Network == netjail.ModeJail {
+		preflight := opts.Preflight
+		if preflight == nil {
+			preflight = netjail.Preflight
+		}
+		if err := preflight(); err != nil {
+			return line, err
+		}
+	}
 	if err := opts.Home.Ensure(); err != nil {
 		return line, err
 	}

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
@@ -176,7 +177,7 @@ func gradeCmd(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("grade", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	reference := flags.Bool("reference", false, "grade the merge commit's tree")
-	network := flags.String("network", netjail.ModeHost, "network mode of the grade: jail or host")
+	network := flags.String("network", netjail.DefaultMode(), "network mode of the grade: jail or host")
 	positional, err := interleaved(flags, args)
 	if err != nil {
 		return 2
@@ -307,11 +308,20 @@ func interleaved(flags *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// parseNetwork checks a --network value and reports whether it means the
-// jail.
+// parseNetwork checks a --network value on this system and reports whether
+// it means the jail.
 func parseNetwork(value string) (bool, error) {
+	return parseNetworkFor(value, runtime.GOOS)
+}
+
+// parseNetworkFor checks a --network value for one system. The jail is
+// rejected where it cannot exist instead of failing at the clone.
+func parseNetworkFor(value, goos string) (bool, error) {
 	switch value {
 	case netjail.ModeJail:
+		if goos != "linux" {
+			return false, fmt.Errorf("network %q needs Linux; use --network host", value)
+		}
 		return true, nil
 	case netjail.ModeHost:
 		return false, nil

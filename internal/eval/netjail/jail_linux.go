@@ -3,6 +3,7 @@
 package netjail
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -74,6 +76,32 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 	return nil
 }
 
+// Preflight checks once, for this process, that the jail can start. Run and
+// batch call it before doing any work, so a machine where user namespaces
+// are blocked fails with a message that names the way out instead of a bare
+// clone error per run.
+var Preflight = sync.OnceValue(func() error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("network jail unavailable: %w; use --network host", err)
+	}
+	cmd := exec.CommandContext(context.Background(), self)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := Wrap(cmd, "", 0); err != nil {
+		return fmt.Errorf("network jail unavailable: %w; use --network host", err)
+	}
+	// The jail only sets up and exits; there is no child to run.
+	cmd.Args = []string{self, "__jail", "--check"}
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("network jail unavailable (%v: %s); use --network host", err, detail)
+		}
+		return fmt.Errorf("network jail unavailable (%v); use --network host", err)
+	}
+	return nil
+})
+
 // KillGroup makes cmd a process group leader whose cancellation kills the
 // whole group, so a jailed go or the test binaries it starts do not outlive
 // the context.
@@ -99,14 +127,23 @@ func KillGroup(cmd *exec.Cmd) {
 // runs the child with the same environment, streams and directory, and
 // returns its exit code.
 func Main(args []string) int {
-	sock, port, masks, argv, err := parseArgs(args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+	check := len(args) == 1 && args[0] == "--check"
+	var sock string
+	var port int
+	var masks []string
+	var argv []string
+	if !check {
+		var err error
+		sock, port, masks, argv, err = parseArgs(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
 	if len(masks) == 0 {
 		masks = DefaultMasks
 	}
+	masks = unmaskExecutables(masks, argv...)
 	if err := privateMounts(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: make the mount tree private: %v\n", err)
 		return 1
@@ -132,6 +169,9 @@ func Main(args []string) int {
 	if err := dropPrivileges(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: drop capabilities: %v\n", err)
 		return 1
+	}
+	if check {
+		return 0
 	}
 	return runChild(argv)
 }
@@ -199,6 +239,31 @@ func parseArgs(args []string) (sock string, port int, masks []string, argv []str
 		}
 	}
 	return "", 0, nil, nil, errors.New("netjail: no command after --")
+}
+
+// unmaskExecutables drops from masks every directory that holds a binary
+// the jail still has to run: masking that directory would hide the binary
+// from the helper's own exec. The model's binary and the go toolchain live
+// outside the default masks, so this only matters for a binary built under
+// /tmp, as tests are.
+func unmaskExecutables(masks []string, binaries ...string) []string {
+	kept := masks[:0]
+	for _, mask := range masks {
+		hide := true
+		for _, binary := range binaries {
+			if binary == "" || !filepath.IsAbs(binary) {
+				continue
+			}
+			if binary == mask || strings.HasPrefix(binary, mask+string(filepath.Separator)) {
+				hide = false
+				break
+			}
+		}
+		if hide {
+			kept = append(kept, mask)
+		}
+	}
+	return kept
 }
 
 // privateMounts keeps every mount the jail makes out of the host and out of

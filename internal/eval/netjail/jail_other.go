@@ -16,6 +16,11 @@ func Wrap(cmd *exec.Cmd, sock string, port int) error {
 	return errors.New("network jail needs Linux")
 }
 
+// Preflight reports that the jail needs Linux.
+func Preflight() error {
+	return errors.New("network jail needs Linux; use --network host")
+}
+
 // KillGroup is a no-op where the jail does not exist.
 func KillGroup(cmd *exec.Cmd) {}
 

@@ -135,6 +135,11 @@ type Options struct {
 	// Network is the network mode of the batch's runs and grades,
 	// netjail.ModeJail or ModeHost. Empty means host.
 	Network string
+	// NetworkSet is whether the caller passed --network explicitly, which
+	// a resumed batch checks against its record.
+	NetworkSet bool
+	// Preflight checks that the jail can start. Nil means netjail.Preflight.
+	Preflight func() error
 	// Env is the environment reference grades run go with.
 	Env []string
 	// Scratch is the parent of the reference checkouts. Empty means the
@@ -291,9 +296,15 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 			return nil, fmt.Errorf("batch %s ran suite %s, not %s", opts.ID, record.Suite, opts.Suite)
 		}
 		opts.Seed = record.Seed
-		if record.Network != "" {
-			opts.Network = record.Network
+		mode := record.Network
+		if mode == "" {
+			// A record written before the flag existed ran on the host.
+			mode = netjail.ModeHost
 		}
+		if opts.NetworkSet && opts.Network != mode {
+			return nil, fmt.Errorf("batch %s ran network %s, not %s", opts.ID, mode, opts.Network)
+		}
+		opts.Network = mode
 	case errors.Is(err, fs.ErrNotExist):
 		record := Record{
 			Schema:       Schema,
@@ -311,6 +322,16 @@ func prepare(ctx context.Context, opts Options) (*runner, error) {
 		}
 	default:
 		return nil, err
+	}
+
+	if opts.Network == netjail.ModeJail {
+		preflight := opts.Preflight
+		if preflight == nil {
+			preflight = netjail.Preflight
+		}
+		if err := preflight(); err != nil {
+			return nil, err
+		}
 	}
 
 	r := &runner{
