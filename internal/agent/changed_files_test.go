@@ -350,3 +350,44 @@ func TestGateSkipsTheGitComparisonWithoutAnEndSnapshot(t *testing.T) {
 	require.Empty(t, inputs[0].HeadTo)
 	require.Equal(t, 2, calls, "the baseline and one failed end snapshot")
 }
+
+// Both sources speak in paths from the repository root, so a file a tool
+// wrote and the same file git reports are one change, even from a working
+// directory below the root.
+func TestGateChangedFilesAreRepoRelative(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	gitTest(t, root, "init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("one\n"), 0o644))
+	gitTest(t, root, "add", ".")
+	gitTest(t, root, "commit", "-q", "-m", "init")
+
+	env := testEnvAt(t, sub)
+	path := filepath.Join(sub, "file.txt")
+	record := &fakeGateCheck{name: "fake"}
+	model := &scriptedModel{script: []scriptedCall{
+		callToolWithInput(tools.WriteToolName, `{"file_path":"`+path+`"}`, 1_000),
+		callTool("bash", 1_000),
+		answer("done", fantasy.FinishReasonStop, 1_000),
+		answer("checked", fantasy.FinishReasonStop, 1_000),
+	}}
+	cfg, err := config.Init(t.Context(), sub, "", false)
+	require.NoError(t, err)
+	cfg.Config().Options.TurnEndCompletionCheck = true
+	sa := newCompactionAgent(env, model, cfg, false,
+		&writeTool{recordingTool: recordingTool{name: tools.WriteToolName}},
+		&shellWritingTool{recordingTool: recordingTool{name: tools.BashToolName}, path: path},
+	)
+	sa.gateChecks = []gateCheck{record}
+	sess, err := env.sessions.Create(t.Context(), "subdir")
+	require.NoError(t, err)
+
+	_, err = sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	inputs := record.recorded()
+	require.NotEmpty(t, inputs)
+	require.Equal(t, []string{"sub/file.txt"}, inputs[0].ChangedFiles)
+}

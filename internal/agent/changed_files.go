@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
@@ -64,13 +66,32 @@ func toolStringInput(input, field string) string {
 	return value
 }
 
+// repoRelative expresses a path against the repository root, so a tool's
+// absolute path and git's porcelain path are the same string for the same
+// file. It returns the cleaned path when there is no root, when the path is
+// already relative, or when it lies outside the root.
+func repoRelative(root, path string) string {
+	cleaned := filepath.Clean(path)
+	if root == "" || !filepath.IsAbs(cleaned) {
+		return cleaned
+	}
+	rel, err := filepath.Rel(root, cleaned)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return cleaned
+	}
+	return filepath.ToSlash(rel)
+}
+
 // turnChangedFiles returns the files a prompt changed: the union of the
 // working tree's comparison against the prompt's baseline and the tool calls
 // of every run, sorted and deduplicated. The HEAD shas frame the comparison;
 // both are empty when there was nothing to compare, as outside a repository
 // or when one of the two snapshots failed.
 func turnChangedFiles(call SessionAgentCall, end *gitutil.WorktreeState) (paths []string, headFrom, headTo string) {
-	paths = slices.Clone(call.gateChangedFiles)
+	paths = make([]string, 0, len(call.gateChangedFiles))
+	for _, path := range call.gateChangedFiles {
+		paths = append(paths, repoRelative(call.gateRoot, path))
+	}
 	if call.gateBaseline == nil || end == nil {
 		slices.Sort(paths)
 		return slices.Compact(paths), "", ""

@@ -231,6 +231,10 @@ type SessionAgentCall struct {
 	// gateBaselineErr records that the baseline could not be taken, so the
 	// prompt falls back to tool-call detection and does not retry.
 	gateBaselineErr bool
+	// gateRoot is the repository root resolved with the baseline, so the
+	// tool paths and git's paths compare as one. Empty outside a
+	// repository.
+	gateRoot string
 	// gateChangedFiles are the files this prompt's tools changed, from
 	// every run of it.
 	gateChangedFiles []string
@@ -1421,6 +1425,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				"session_id", call.SessionID, "error", snapErr)
 		} else {
 			call.gateBaseline = &state
+			// Resolved once, here, so the tool paths can be expressed
+			// against the root the porcelain paths use.
+			call.gateRoot, _ = gitutil.RepoRoot(genCtx, a.gateWorkingDir())
 		}
 	}
 
