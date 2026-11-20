@@ -155,6 +155,9 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 		AgentToolName,
 		description,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			// A teammate keeps this tool so its palette matches the Lead's,
 			// but nested delegation is not supported: the Team domain has
 			// one level, and a teammate's sub-agent would run outside the
