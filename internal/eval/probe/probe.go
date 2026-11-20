@@ -198,9 +198,9 @@ func endpoint(ctx context.Context, h *home.Home, r *route.Route) (string, http.H
 	}
 
 	if r.Provider == hyperp.Name {
-		// Hyper serves chat completions one path below its catalog
-		// endpoint, which Crush ships.
-		url = strings.TrimSuffix(hyperp.Embedded().APIEndpoint, "/") + "/chat/completions"
+		// The catalog endpoint speaks fantasy's own protocol; a captured
+		// agent request went to the OpenAI-compatible path below the base URL.
+		url = strings.TrimSuffix(hyperp.BaseURL(), "/") + "/v1/chat/completions"
 	} else if r.Provider != route.ProviderCopilot {
 		return "", nil, fmt.Errorf("route %s: api_key does not resolve to a value", r.Name)
 	}

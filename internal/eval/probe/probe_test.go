@@ -223,7 +223,7 @@ func TestEndpointHyper(t *testing.T) {
 
 	url, header, err := endpoint(context.Background(), h, &route.Route{Name: "glm", Provider: "hyper"})
 	require.NoError(t, err)
-	require.Equal(t, "https://hyper.charm.land/api/v1/fantasy/chat/completions", url)
+	require.Equal(t, "https://hyper.charm.land/v1/chat/completions", url)
 	require.Equal(t, "Bearer hyper-token", header.Get("Authorization"))
 }
 
