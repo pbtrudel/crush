@@ -4,7 +4,7 @@ import { act } from 'preact/test-utils';
 import { api } from '../../api/http';
 import { initialState } from '../../state/reducer';
 import { actions, state } from '../../state/store';
-import { CommandDeck } from './CommandDeck';
+import { CommandDeck, MAX_ATTACHMENT_BYTES } from './CommandDeck';
 
 type Files = { files: string[]; truncated: boolean };
 
@@ -36,8 +36,16 @@ function error() {
   return root.querySelector('#deck-error')!;
 }
 
-function key(name: string) {
-  textarea().dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+// jsdom does not run form submission from a button click, so the Transmit
+// click path is exercised as the submit event that click would fire.
+function submitForm() {
+  root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+}
+
+function key(name: string, keyCode?: number) {
+  const e = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true });
+  if (keyCode !== undefined) Object.defineProperty(e, 'keyCode', { value: keyCode });
+  textarea().dispatchEvent(e);
 }
 
 async function type(value: string, caret = value.length) {
@@ -186,10 +194,83 @@ describe('CommandDeck', () => {
     seed();
     await mount();
     const big = new File(['x'], 'big.bin');
-    Object.defineProperty(big, 'size', { value: 33 * 1024 * 1024 });
+    Object.defineProperty(big, 'size', { value: MAX_ATTACHMENT_BYTES + 1 });
     await attach(big);
     expect(error().textContent).toBe('Attachments must total under 32 MiB.');
     expect(root.querySelectorAll('.deck__files li')).toHaveLength(0);
+  });
+
+  it('sends only once when Enter or a click repeats before the prompt is accepted', async () => {
+    seed();
+    const pending = deferred<string | null>();
+    const send = vi.spyOn(actions, 'sendPrompt').mockReturnValueOnce(pending.promise);
+    await mount();
+    await type('run the tests');
+
+    await act(() => {
+      key('Enter');
+      key('Enter');
+      submitForm();
+    });
+    await flush();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(transmit().disabled).toBe(true);
+
+    await act(async () => {
+      pending.resolve(null);
+      await pending.promise;
+    });
+    await flush();
+    expect(textarea().value).toBe('');
+    expect(transmit().disabled).toBe(false);
+
+    await type('run them again');
+    send.mockResolvedValueOnce(null);
+    await act(() => {
+      submitForm();
+    });
+    await flush();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toBe('run them again');
+  });
+
+  it('ignores the Enter that ends an IME composition', async () => {
+    seed();
+    const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue(null);
+    vi.spyOn(api, 'completeFiles').mockResolvedValue({ files: ['src/a.ts'], truncated: false });
+    await mount();
+
+    await type('read @a');
+    await settle();
+    expect(listbox()).not.toBeNull();
+
+    await act(() => {
+      key('Enter', 229);
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(listbox()).not.toBeNull();
+    expect(textarea().value).toBe('read @a');
+  });
+
+  it('reserves multipart overhead against the cap at send time', async () => {
+    seed();
+    const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue(null);
+    await mount();
+    const file = new File(['x'], 'large.bin');
+    Object.defineProperty(file, 'size', { value: MAX_ATTACHMENT_BYTES - 100 * 1024 });
+    await attach(file);
+    expect(root.querySelectorAll('.deck__files li')).toHaveLength(1);
+
+    const prompt = 'x'.repeat(50 * 1024);
+    await type(prompt);
+    await act(() => {
+      key('Enter');
+    });
+    await flush();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(error().textContent).toBe('Attachments must total under 32 MiB.');
+    expect(textarea().value).toBe(prompt);
   });
 
   it('keeps the prompt and attachments when the send fails', async () => {

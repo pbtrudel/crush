@@ -3,9 +3,17 @@ import { actions, NO_SESSION_HINT, state } from '../../state/store';
 import { api } from '../../api/http';
 import { activeMention, applyMention } from './mention';
 
-// The gateway caps the whole prompt body at 32 MiB (multipart overhead and
-// the prompt included), so the deck rejects attachments that leave no room.
+// The gateway reads the whole prompt request through MaxBytesReader with a
+// 32 MiB limit (maxPromptBytes, internal/web/api.go), so the multipart
+// boundaries, the part headers, the prompt text and the attachments must all
+// fit in that one budget.
 export const MAX_ATTACHMENT_BYTES = 32 << 20;
+
+// Reserve for the multipart boundaries and part headers; the prompt text and
+// the attachments are measured separately.
+const MULTIPART_OVERHEAD = 64 << 10;
+
+const TOO_LARGE_ERROR = 'Attachments must total under 32 MiB.';
 
 export const MENTION_DEBOUNCE_MS = 120;
 
@@ -21,6 +29,9 @@ export function CommandDeck() {
   // Completion requests can resolve out of order; only the newest one may
   // touch the suggestion list.
   const request = useRef(0);
+  // The sending state lags a render, so a ref blocks a second send while the
+  // first request is in flight.
+  const inFlight = useRef(false);
   const ended = s.conn === 'ended';
   // M1 never starts a session from the browser: sending waits for the
   // terminal to have one (starting a session here lands with M3).
@@ -42,7 +53,12 @@ export function CommandDeck() {
         setSuggest(null);
       }
     }, MENTION_DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
+    return () => {
+      // Invalidate a response already in flight so it cannot set state after
+      // the text changed or the deck unmounted.
+      request.current++;
+      window.clearTimeout(t);
+    };
   }, [text]);
 
   const addFiles = (list: FileList | File[] | null) => {
@@ -50,7 +66,7 @@ export function CommandDeck() {
     const added = Array.from(list);
     const total = files.concat(added).reduce((n, f) => n + f.size, 0);
     if (total >= MAX_ATTACHMENT_BYTES) {
-      setError('Attachments must total under 32 MiB.');
+      setError(TOO_LARGE_ERROR);
       return;
     }
     setError('');
@@ -66,18 +82,33 @@ export function CommandDeck() {
   };
 
   const submit = async () => {
-    if (!text.trim()) { setError('Type a task before transmitting.'); return; }
-    if (!s.sessionId) { setError(NO_SESSION_HINT); return; }
-    setError('');
-    setSending(true);
-    const err = await actions.sendPrompt(text, files);
-    setSending(false);
-    if (err) { setError(err); return; }
-    setText('');
-    setFiles([]);
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      if (!text.trim()) { setError('Type a task before transmitting.'); return; }
+      if (!s.sessionId) { setError(NO_SESSION_HINT); return; }
+      const attachmentBytes = files.reduce((n, f) => n + f.size, 0);
+      const promptBytes = new TextEncoder().encode(text).length;
+      if (attachmentBytes + promptBytes + MULTIPART_OVERHEAD >= MAX_ATTACHMENT_BYTES) {
+        setError(TOO_LARGE_ERROR);
+        return;
+      }
+      setError('');
+      setSending(true);
+      const err = await actions.sendPrompt(text, files);
+      if (err) { setError(err); return; }
+      setText('');
+      setFiles([]);
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Safari reports the Enter that ends a composition after compositionend
+    // with keyCode 229, so isComposing alone is not enough.
+    const composing = e.isComposing || e.keyCode === 229;
     if (suggest) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -85,10 +116,14 @@ export function CommandDeck() {
         setSuggest({ ...suggest, index: (suggest.index + d + suggest.items.length) % suggest.items.length });
         return;
       }
-      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(suggest.items[suggest.index]); return; }
+      if (!composing && (e.key === 'Enter' || e.key === 'Tab')) {
+        e.preventDefault();
+        pick(suggest.items[suggest.index]);
+        return;
+      }
       if (e.key === 'Escape') { e.preventDefault(); setSuggest(null); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(); }
+    if (!composing && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); }
     if (e.key === 'Escape' && s.busy) { e.preventDefault(); void actions.cancel(); }
   };
 
@@ -141,7 +176,7 @@ export function CommandDeck() {
           <input ref={picker} type="file" multiple hidden onChange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)} />
           <button type="button" class="btn btn--ghost" disabled={ended} onClick={() => picker.current?.click()}>Attach</button>
           {s.busy && <button type="button" class="btn btn--danger" onClick={() => void actions.cancel()}>Cancel run</button>}
-          <button type="submit" class="btn btn--primary" disabled={ended || noSession} aria-busy={sending}>
+          <button type="submit" class="btn btn--primary" disabled={ended || noSession || sending} aria-busy={sending}>
             {sending ? 'Transmitting' : s.busy ? 'Queue task' : 'Transmit'}
           </button>
         </div>
