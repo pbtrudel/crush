@@ -11,6 +11,14 @@ function params(p: unknown): string {
   return typeof p === 'string' ? p : JSON.stringify(p, null, 2);
 }
 
+// editableOutside reports whether a key went to a text field outside the
+// dialog, such as the deck while the shell is not inert.
+function editableOutside(target: EventTarget | null, root: HTMLElement | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (root?.contains(target)) return false;
+  return target.isContentEditable || target.closest('input, textarea, select') !== null;
+}
+
 export function PermissionDialog({ req, more, disabled = false }: { req: PermissionRequest; more: number; disabled?: boolean }) {
   const root = useRef<HTMLDivElement>(null);
   // The sending state lags a render, so a ref blocks a second decision while
@@ -21,8 +29,12 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
   // permission request is still in state; only a failure re-arms the dialog.
   const [settled, setSettled] = useState(false);
   const [error, setError] = useState('');
+  // Changing the focus key makes the focus hook pull focus back into the
+  // dialog after a reconnect.
+  const [focusTick, setFocusTick] = useState(0);
   const lastId = useRef(req.id);
-  useDialogFocus(root, req.id);
+  const wasDisabled = useRef(disabled);
+  useDialogFocus(root, `${req.id}:${focusTick}`);
 
   useEffect(() => {
     if (lastId.current === req.id) return;
@@ -33,6 +45,16 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
     setError('');
   }, [req.id]);
 
+  useEffect(() => {
+    const recovered = wasDisabled.current && !disabled;
+    wasDisabled.current = disabled;
+    if (!recovered) return;
+    // A reconnect re-arms a dialog whose removal was missed, and focus goes
+    // back inside instead of staying on the body.
+    setSettled(false);
+    setFocusTick((n) => n + 1);
+  }, [disabled]);
+
   // decide sends one answer. After the first, further keys and clicks are
   // ignored until the dialog goes away; only a failure re-arms them.
   const decide = async (action: GrantAction) => {
@@ -42,6 +64,8 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
     setError('');
     try {
       const err = await actions.grant(req.id, action);
+      // A response for a request that was already replaced is stale.
+      if (lastId.current !== req.id) return;
       if (err) setError(err);
       else setSettled(true);
     } catch {
@@ -61,6 +85,10 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k !== 'a' && k !== 's' && k !== 'd') return;
+      // While disconnected the shell is not inert, so these keys may be
+      // ordinary typing in the deck. Never swallow them and never decide.
+      if (disabled || settled || busy.current) return;
+      if (editableOutside(e.target, root.current)) return;
       e.preventDefault();
       if (k === 'a') void decide('allow');
       if (k === 's') void decide('allow_session');

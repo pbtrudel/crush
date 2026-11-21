@@ -65,13 +65,17 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
   // first answer is in flight.
   const busy = useRef(false);
   const cancelled = useRef(false);
+  // Changing the focus key makes the focus hook pull focus back into the
+  // dialog after a reconnect.
+  const [focusTick, setFocusTick] = useState(0);
   const lastId = useRef(req.id);
+  const wasDisabled = useRef(disabled);
   const multi = req.questions.length > 1;
   const confirmTab = multi ? req.questions.length : -1;
   // A smaller batch can replace a larger one while the form is open; clamp so
   // the stale tab cannot index past the new questions.
   const current = req.questions[Math.min(tab, req.questions.length - 1)];
-  useDialogFocus(root, `${req.id}:${tab}`);
+  useDialogFocus(root, `${req.id}:${tab}:${focusTick}`);
 
   useEffect(() => {
     if (lastId.current === req.id) return;
@@ -84,6 +88,17 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
     setDraft({});
     setTab(0);
   }, [req.id]);
+
+  useEffect(() => {
+    const recovered = wasDisabled.current && !disabled;
+    wasDisabled.current = disabled;
+    if (!recovered) return;
+    // A reconnect re-arms a form whose removal was missed, and focus goes
+    // back inside instead of staying on the body.
+    cancelled.current = false;
+    setSettled(false);
+    setFocusTick((n) => n + 1);
+  }, [disabled]);
 
   const submit = async () => {
     if (busy.current || settled || disabled) return;
@@ -98,6 +113,8 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
     setError('');
     try {
       const err = await actions.answer(req.id, buildAnswers(req.questions, draft));
+      // A response for a batch that was already replaced is stale.
+      if (lastId.current !== req.id) return;
       if (err) setError(err);
       else setSettled(true);
     } catch {
@@ -109,19 +126,39 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
   };
 
   // cancel skips the batch once, whether it came from the key or the button.
-  const cancel = () => {
+  // A failure re-arms the form so a failed skip cannot wedge the dialog.
+  const cancel = async () => {
     if (disabled || settled || busy.current || cancelled.current) return;
     cancelled.current = true;
+    busy.current = true;
+    setSending(true);
     setSettled(true);
     setError('');
-    void actions.cancelQuestion(req.id).catch(() => setError(UNREACHABLE));
+    try {
+      const err = await actions.cancelQuestion(req.id);
+      if (lastId.current !== req.id) return;
+      if (err) {
+        cancelled.current = false;
+        setSettled(false);
+        setError(err);
+      }
+    } catch {
+      if (lastId.current === req.id) {
+        cancelled.current = false;
+        setSettled(false);
+        setError(UNREACHABLE);
+      }
+    } finally {
+      busy.current = false;
+      setSending(false);
+    }
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // A repeated or composing Escape must not send a second cancel.
       if (e.key !== 'Escape' || e.repeat || e.isComposing || e.keyCode === 229) return;
-      cancel();
+      void cancel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

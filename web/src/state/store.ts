@@ -107,9 +107,23 @@ export const actions = {
       return errorText(err);
     }
   },
-  async cancelQuestion(batchId: string) {
+  // cancelQuestion returns the error text for the form to show inline, or
+  // null. A batch the terminal already answered is dropped locally, the same
+  // way grant treats a permission that is no longer pending.
+  async cancelQuestion(batchId: string): Promise<string | null> {
     dispatch((s) => markAnswered(s, batchId));
-    await api.cancelQuestion().catch(report);
+    try {
+      const { resolved } = await api.cancelQuestion();
+      if (!resolved) answeredElsewhere();
+      return null;
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'not_pending') {
+        answeredElsewhere();
+        dispatch((s) => (s.question && s.question.id === batchId ? { ...s, question: null } : s));
+        return null;
+      }
+      return errorText(err);
+    }
   },
   dismissToast: (id: number) => dispatch((s) => dismissToast(s, id)),
 };

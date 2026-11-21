@@ -215,7 +215,7 @@ describe('Interrupt', () => {
     seed({ question: freeText() });
     const grant = vi.spyOn(actions, 'grant').mockResolvedValue(null);
     const answer = vi.spyOn(actions, 'answer');
-    const cancel = vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(undefined);
+    const cancel = vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(null);
     await mount();
     await type('draft');
     await act(() => {
@@ -303,5 +303,198 @@ describe('Interrupt', () => {
     expect(dialog()).toBeNull();
     expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+  it('re-enables the form and shows the error when skipping fails', async () => {
+    seed({ question: freeText() });
+    const failure = 'Question not cancelled: The request did not reach crush';
+    const cancel = vi
+      .spyOn(actions, 'cancelQuestion')
+      .mockResolvedValueOnce(failure)
+      .mockResolvedValueOnce(null);
+    await mount();
+    await act(() => {
+      key('Escape');
+    });
+    await flush();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(errorBox()!.textContent).toBe(failure);
+    expect(buttons().every((b) => !b.disabled)).toBe(true);
+    await act(() => {
+      key('Escape');
+    });
+    await flush();
+    expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not swallow decision keys typed outside the dialog', async () => {
+    seed({ conn: 'reconnecting', permissions: [permission()] });
+    const grant = vi.spyOn(actions, 'grant').mockResolvedValue(null);
+    await mount();
+    const outside = document.createElement('textarea');
+    document.body.append(outside);
+
+    const disconnected = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    await act(() => {
+      outside.dispatchEvent(disconnected);
+    });
+    expect(disconnected.defaultPrevented).toBe(false);
+    expect(grant).not.toHaveBeenCalled();
+
+    await act(() => {
+      state.value = { ...state.value, conn: 'live' };
+    });
+    const connected = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    await act(() => {
+      outside.dispatchEvent(connected);
+    });
+    expect(connected.defaultPrevented).toBe(false);
+    expect(grant).not.toHaveBeenCalled();
+    outside.remove();
+  });
+
+  it('does nothing on Escape in the permission dialog', async () => {
+    seed({ permissions: [permission()] });
+    const grant = vi.spyOn(actions, 'grant').mockResolvedValue(null);
+    const cancel = vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(null);
+    await mount();
+    await act(() => {
+      key('Escape');
+      key('Escape', {}, dialog()!);
+    });
+    await flush();
+    expect(grant).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('resets the in-flight guard when the request changes', async () => {
+    seed({ permissions: [permission()] });
+    const first = deferred<string | null>();
+    const grant = vi
+      .spyOn(actions, 'grant')
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(null);
+    await mount();
+    await act(() => {
+      key('a');
+    });
+    expect(grant.mock.calls[0]).toEqual(['p1', 'allow']);
+
+    await act(() => {
+      state.value = { ...state.value, permissions: [permission({ id: 'p2', tool_call_id: 'tc2' })] };
+    });
+    await act(() => {
+      key('a');
+    });
+    expect(grant).toHaveBeenCalledTimes(2);
+    expect(grant.mock.calls[1]).toEqual(['p2', 'allow']);
+
+    await act(async () => {
+      first.resolve('Permission not granted: stale');
+      await first.promise;
+    });
+    await flush();
+    expect(errorBox()).toBeNull();
+  });
+
+  it('clears the error when the request changes', async () => {
+    seed({ permissions: [permission()] });
+    vi.spyOn(actions, 'grant').mockResolvedValue('Permission not granted: nope');
+    await mount();
+    await act(() => {
+      key('a');
+    });
+    await flush();
+    expect(errorBox()!.textContent).toBe('Permission not granted: nope');
+    await act(() => {
+      state.value = { ...state.value, permissions: [permission({ id: 'p2', tool_call_id: 'tc2' })] };
+    });
+    expect(errorBox()).toBeNull();
+  });
+
+  it('resets the question form when the batch changes', async () => {
+    seed({ question: freeText() });
+    const first = deferred<string | null>();
+    const answer = vi
+      .spyOn(actions, 'answer')
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(null);
+    await mount();
+    await type('go');
+    await act(() => {
+      submitForm();
+    });
+    expect(answer).toHaveBeenCalledTimes(1);
+    expect(answer.mock.calls[0][0]).toBe('b1');
+
+    await act(() => {
+      state.value = {
+        ...state.value,
+        question: batch({
+          id: 'b2', tool_call_id: 'tc2',
+          questions: [{ id: 'q2', type: 'free_text', question: 'More?' }],
+        }),
+      };
+    });
+    expect(area().value).toBe('');
+    await type('next');
+    await act(() => {
+      submitForm();
+    });
+    expect(answer).toHaveBeenCalledTimes(2);
+    expect(answer.mock.calls[1][0]).toBe('b2');
+
+    await act(async () => {
+      first.resolve('Answers not sent: stale');
+      await first.promise;
+    });
+    await flush();
+    expect(errorBox()).toBeNull();
+  });
+
+  it('re-arms and refocuses the permission dialog when the connection recovers', async () => {
+    seed({ permissions: [permission()] });
+    vi.spyOn(actions, 'grant').mockResolvedValue(null);
+    await mount();
+    await act(() => {
+      key('a');
+    });
+    await flush();
+    expect(allow().disabled).toBe(true);
+
+    await act(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      state.value = { ...state.value, conn: 'reconnecting' };
+    });
+    expect(allow().disabled).toBe(true);
+
+    await act(() => {
+      state.value = { ...state.value, conn: 'live' };
+    });
+    expect(allow().disabled).toBe(false);
+    expect(document.activeElement).toBe(allow());
+  });
+
+  it('re-arms and refocuses the question form when the connection recovers', async () => {
+    seed({ question: freeText() });
+    vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(null);
+    await mount();
+    await act(() => {
+      key('Escape');
+    });
+    await flush();
+    expect(buttons().every((b) => b.disabled)).toBe(true);
+
+    await act(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      state.value = { ...state.value, conn: 'reconnecting' };
+    });
+    expect(buttons().every((b) => b.disabled)).toBe(true);
+
+    await act(() => {
+      state.value = { ...state.value, conn: 'live' };
+    });
+    expect(buttons().every((b) => !b.disabled)).toBe(true);
+    expect(document.activeElement).toBe(area());
   });
 });
