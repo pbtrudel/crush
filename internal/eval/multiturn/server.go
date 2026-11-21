@@ -3,6 +3,7 @@ package multiturn
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/eval/route"
 )
 
@@ -45,6 +47,8 @@ type serverTransport struct {
 	args []string
 	env  []string
 	log  string
+	// dataDir is the run's data directory, which the workspace must open.
+	dataDir string
 
 	base   string
 	client *http.Client
@@ -73,12 +77,13 @@ func startServer(ctx context.Context, opts Options, src, dataDir, runDir string,
 		"server", "--host", "http://127.0.0.1:" + strconv.Itoa(port),
 	}
 	s := &serverTransport{
-		bin:  opts.BinPath,
-		dir:  src,
-		args: args,
-		env:  env,
-		log:  filepath.Join(runDir, "server.log"),
-		base: "http://127.0.0.1:" + strconv.Itoa(port),
+		bin:     opts.BinPath,
+		dir:     src,
+		args:    args,
+		env:     env,
+		log:     filepath.Join(runDir, "server.log"),
+		dataDir: dataDir,
+		base:    "http://127.0.0.1:" + strconv.Itoa(port),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -185,7 +190,17 @@ func (s *serverTransport) createWorkspace(ctx context.Context, src string) error
 	}
 	// The server keys a workspace by the client that opened it and rejects
 	// one without a client id, so the run names itself with a fixed UUID.
-	body := map[string]any{"path": src, "permission_mode": "yolo", "client_id": harnessClientID}
+	// The data directory and environment travel with the request because the
+	// workspace, not the server process, opens the store and runs the tools:
+	// without data_dir the session lands in the checkout's .crush and the
+	// driver reads an empty database.
+	body := map[string]any{
+		"path":            src,
+		"permission_mode": "yolo",
+		"client_id":       harnessClientID,
+		"data_dir":        s.dataDir,
+		"env":             s.env,
+	}
 	if err := s.post(ctx, "/v1/workspaces", body, &ws); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
@@ -253,36 +268,115 @@ func (s *serverTransport) createSession(ctx context.Context) error {
 	return nil
 }
 
-// prompt sends one prompt and waits for its turn to end, returning the wall
-// time the turn took. Completion is read from the agent session's busy flag:
-// every step of a turn writes a finished message, so a message cannot mark a
-// turn's end.
-func (s *serverTransport) prompt(ctx context.Context, text string, limit time.Duration) (int64, error) {
+// prompt sends one prompt and waits for its turn to settle. It returns the
+// wall time to settle and, separately, the time at which the agent session
+// stopped reporting busy.
+//
+// The busy flag alone cannot mark a turn's end: the first smoke showed it
+// clearing while the turn-end compaction was still writing its summary, so
+// the next prompt was posted mid-compaction and the turns overlapped. A turn
+// is settled once the session is idle, the prompt's user row and an
+// assistant row after it are stored, and no assistant row (summary rows
+// included) is still unfinished, on three polls in a row. Waiting for summary
+// rows means a background summary finishes before the next prompt; that is
+// what a user's think time between prompts would hide, and the notes report
+// it as such.
+func (s *serverTransport) prompt(ctx context.Context, text string, limit time.Duration) (wall, idle int64, err error) {
+	before, err := s.lastRow(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	started := time.Now()
 	body := map[string]any{"session_id": s.sessID, "prompt": text}
 	if err := s.post(ctx, "/v1/workspaces/"+s.wsID+"/agent", body, nil); err != nil {
-		return 0, fmt.Errorf("send prompt: %w", err)
+		return 0, 0, fmt.Errorf("send prompt: %w", err)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	if err := s.waitBusy(runCtx); err != nil {
-		return time.Since(started).Milliseconds(), err
-	}
+	stable := 0
 	for {
 		busy, err := s.isBusy(runCtx)
 		if err != nil {
-			return time.Since(started).Milliseconds(), err
+			return time.Since(started).Milliseconds(), idle, err
 		}
-		if !busy {
-			return time.Since(started).Milliseconds(), nil
+		if busy {
+			idle, stable = 0, 0
+		} else {
+			if idle == 0 {
+				idle = time.Since(started).Milliseconds()
+			}
+			done, err := s.settled(runCtx, before)
+			if err != nil {
+				return time.Since(started).Milliseconds(), idle, err
+			}
+			if done {
+				stable++
+			} else {
+				stable = 0
+			}
+			if stable >= 3 {
+				return time.Since(started).Milliseconds(), idle, nil
+			}
 		}
 		select {
 		case <-runCtx.Done():
 			_ = s.post(context.WithoutCancel(runCtx), "/v1/workspaces/"+s.wsID+"/agent/sessions/"+s.sessID+"/cancel", map[string]any{}, nil)
-			return time.Since(started).Milliseconds(), fmt.Errorf("turn exceeded %s", limit)
-		case <-time.After(250 * time.Millisecond):
+			return time.Since(started).Milliseconds(), idle, fmt.Errorf("turn exceeded %s", limit)
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// lastRow is the highest message rowid stored so far, the mark a prompt's own
+// rows are found after. Without a store (the stub test) it is zero.
+func (s *serverTransport) lastRow(ctx context.Context) (int64, error) {
+	if s.dataDir == "" {
+		return 0, nil
+	}
+	conn, err := db.ConnectReadOnly(ctx, filepath.Join(s.dataDir, "crush.db"))
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close() //nolint:errcheck // Read-only connection.
+	var last sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `select max(rowid) from messages`).Scan(&last); err != nil {
+		return 0, err
+	}
+	return last.Int64, nil
+}
+
+// settled reports whether the prompt sent after row before has its user row,
+// an assistant row after that, and no assistant row left unfinished.
+func (s *serverTransport) settled(ctx context.Context, before int64) (bool, error) {
+	if s.dataDir == "" {
+		return true, nil
+	}
+	conn, err := db.ConnectReadOnly(ctx, filepath.Join(s.dataDir, "crush.db"))
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close() //nolint:errcheck // Read-only connection.
+	var user sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`select min(rowid) from messages where session_id = ? and role = 'user' and rowid > ?`,
+		s.sessID, before).Scan(&user); err != nil {
+		return false, err
+	}
+	if !user.Valid {
+		return false, nil
+	}
+	var answered, open int
+	if err := conn.QueryRowContext(ctx,
+		`select count(*) from messages where session_id = ? and role = 'assistant' and rowid > ? and finished_at is not null`,
+		s.sessID, user.Int64).Scan(&answered); err != nil {
+		return false, err
+	}
+	if err := conn.QueryRowContext(ctx,
+		`select count(*) from messages where session_id = ? and role = 'assistant' and finished_at is null`,
+		s.sessID).Scan(&open); err != nil {
+		return false, err
+	}
+	return answered > 0 && open == 0, nil
 }
 
 // waitBusy waits for the session to report a run, so the first idle poll does

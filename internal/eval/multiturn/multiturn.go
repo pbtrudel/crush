@@ -61,6 +61,8 @@ var disabledTools = []string{
 var FollowUps = []string{
 	"Check what you just did against the task in your first message, fix anything you missed, then stop.",
 	"Run the tests of the package you changed and fix any failure in the code you touched, then stop.",
+	"Add a test that covers the change if none exists, run it, and fix what fails, then stop.",
+	"Re-read every file you changed and fix any remaining problem you find, then stop.",
 	"State in one sentence what you changed, then stop.",
 }
 
@@ -121,6 +123,11 @@ type Turn struct {
 	// SummaryMS is the delay to the first of them.
 	Summaries int   `json:"summaries"`
 	SummaryMS int64 `json:"summary_ms,omitempty"`
+	// IdleMS is when the agent session stopped reporting busy, which the
+	// server transport records next to Wall: the gap between the two is
+	// work the session did after the run ended, a turn-end summary above
+	// all.
+	IdleMS int64 `json:"idle_ms,omitempty"`
 	// Context is the session's total context tokens when the turn ended,
 	// which is the number the compaction limit is compared against.
 	Context int64  `json:"context_tokens"`
@@ -305,8 +312,8 @@ func RunOne(ctx context.Context, opts Options, tk *task.Task, arm Arm, rep int) 
 				return run, err
 			}
 			started := time.Now()
-			wall, err := server.prompt(ctx, prompt, turnTimeout)
-			turn := Turn{Index: i + 1, Wall: wall, Exit: 0}
+			wall, idle, err := server.prompt(ctx, prompt, turnTimeout)
+			turn := Turn{Index: i + 1, Wall: wall, IdleMS: idle, Exit: 0}
 			if err != nil {
 				turn.Error = err.Error()
 				sampled := sampleTurnInto(&turn, started)

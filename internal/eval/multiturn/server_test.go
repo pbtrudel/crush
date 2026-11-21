@@ -91,9 +91,11 @@ func TestServerTransportDrivesOneSession(t *testing.T) {
 	require.Equal(t, "ws1", s.wsID)
 	require.Equal(t, "s1", s.sessID)
 
-	wall, err := s.prompt(ctx, "fix the bug", 10*time.Second)
+	wall, idle, err := s.prompt(ctx, "fix the bug", 10*time.Second)
 	require.NoError(t, err)
 	require.Positive(t, wall)
+	require.Positive(t, idle)
+	require.GreaterOrEqual(t, wall, idle)
 
 	mu.Lock()
 	initBody := bodies["/agent/init"]
