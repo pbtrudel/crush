@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/crush/internal/backend"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/wire"
 	"github.com/google/uuid"
 )
 
@@ -294,7 +295,7 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 // writeEvent wraps a workspace event in its SSE envelope and writes it to
 // the stream. Events with no wire form are skipped.
 func (c *controllerV1) writeEvent(w http.ResponseWriter, r *http.Request, flusher *http.ResponseController, ev any) {
-	wrapped := wrapEvent(ev)
+	wrapped := wire.Wrap(ev)
 	if wrapped == nil {
 		return
 	}
@@ -351,7 +352,7 @@ func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http
 	ws, _ := c.backend.GetWorkspace(id)
 	result := make([]proto.Session, len(sessions))
 	for i, s := range sessions {
-		result[i] = sessionToProto(s)
+		result[i] = wire.SessionToProto(s)
 		result[i].IsBusy = isSessionBusy(ws, s.ID)
 		result[i].AttachedClients = attachedClients(ws, s.ID)
 	}
@@ -375,7 +376,7 @@ func (c *controllerV1) handlePostWorkspaceSessions(w http.ResponseWriter, r *htt
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(sess)
+	out := wire.SessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
 	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
@@ -391,7 +392,7 @@ func (c *controllerV1) handleGetWorkspaceSession(w http.ResponseWriter, r *http.
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(sess)
+	out := wire.SessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
 	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
@@ -418,7 +419,7 @@ func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, 
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handlePutWorkspaceSession updates a session.
@@ -438,7 +439,7 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(saved)
+	out := wire.SessionToProto(saved)
 	out.IsBusy = isSessionBusy(ws, saved.ID)
 	out.AttachedClients = attachedClients(ws, saved.ID)
 	jsonEncode(w, out)
@@ -464,7 +465,7 @@ func (c *controllerV1) handleGetWorkspaceSessionUserMessages(w http.ResponseWrit
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handleGetWorkspaceAllUserMessages returns all user messages across sessions.
@@ -475,7 +476,7 @@ func (c *controllerV1) handleGetWorkspaceAllUserMessages(w http.ResponseWriter, 
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handleGetWorkspaceSessionFileTrackerFiles lists files read in a session.

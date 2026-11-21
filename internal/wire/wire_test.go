@@ -1,4 +1,4 @@
-package server
+package wire
 
 import (
 	"encoding/json"
@@ -9,11 +9,31 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/stretchr/testify/require"
 )
+
+// TestEncodeDistinguishesUnrecognizedFromDropped pins the contract that
+// separates a recognized-but-dropped event from an unrecognized type.
+func TestEncodeDistinguishesUnrecognizedFromDropped(t *testing.T) {
+	t.Parallel()
+
+	p, ok := Encode(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{ID: "m1"}})
+	require.True(t, ok)
+	require.NotNil(t, p)
+	require.Equal(t, pubsub.PayloadTypeMessage, p.Type)
+
+	p, ok = Encode(pubsub.Event[pinentry.Event]{})
+	require.True(t, ok, "recognized but dropped")
+	require.Nil(t, p)
+
+	p, ok = Encode("not an event")
+	require.False(t, ok)
+	require.Nil(t, p)
+}
 
 // TestMessageToProtoToolResult ensures that ToolResult metadata,
 // data, and MIME type survive the conversion to proto. Without these
@@ -39,7 +59,7 @@ func TestMessageToProtoToolResult(t *testing.T) {
 		},
 	}
 
-	got := messageToProto(src)
+	got := MessageToProto(src)
 	require.Len(t, got.Parts, 1)
 	tr, ok := got.Parts[0].(proto.ToolResult)
 	require.True(t, ok, "expected proto.ToolResult, got %T", got.Parts[0])
@@ -68,7 +88,7 @@ func TestMCPChannelEventToProto_RoundTrip(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeMCPEvent, env.Type)
 
@@ -95,7 +115,7 @@ func TestSkillsEventToProto_RoundTrip(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeSkillsEvent, env.Type)
 
@@ -135,7 +155,7 @@ func TestRunCompleteToProto_RoundTrip(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeRunComplete, env.Type)
 
@@ -170,7 +190,7 @@ func TestAgentErrorToProto_PreservesRunID(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeAgentEvent, env.Type)
 
@@ -202,7 +222,7 @@ func TestRunCompleteToProto_Error(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	var decoded pubsub.Event[proto.RunComplete]
 	require.NoError(t, json.Unmarshal(env.Payload, &decoded))
@@ -214,7 +234,7 @@ func TestRunCompleteToProto_Error(t *testing.T) {
 // app.UpdateAvailableMsg — published directly (not wrapped in
 // pubsub.Event) by app.checkForUpdates — survives the SSE envelope
 // conversion. Without this, client/server mode silently drops update
-// notifications because wrapEvent hits its default branch.
+// notifications because Wrap hits its default branch.
 func TestUpdateAvailableMsgToProto_RoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -224,7 +244,7 @@ func TestUpdateAvailableMsgToProto_RoundTrip(t *testing.T) {
 		IsDevelopment:  false,
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeUpdateAvailable, env.Type)
 
@@ -256,7 +276,7 @@ func TestHostThemeEvent_RoundTrip(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeHostTheme, env.Type)
 	require.Equal(t, "host_theme", env.Type)
@@ -268,7 +288,7 @@ func TestHostThemeEvent_RoundTrip(t *testing.T) {
 	require.True(t, src.Payload.Theme.Equal(decoded.Payload.Theme))
 
 	// A clear is a deleted event whose theme is null.
-	env = wrapEvent(pubsub.Event[proto.HostThemeState]{
+	env = Wrap(pubsub.Event[proto.HostThemeState]{
 		Type:    pubsub.DeletedEvent,
 		Payload: proto.HostThemeState{WorkspaceID: "w1"},
 	})
@@ -301,7 +321,7 @@ func TestMCPStateChangedEventForwardsCounts(t *testing.T) {
 		},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeMCPEvent, env.Type)
 
@@ -317,7 +337,7 @@ func TestMCPStateChangedEventForwardsCounts(t *testing.T) {
 
 // TestMCPUnknownEventTypeNotMappedToStateChange verifies that any
 // unrecognized MCP event type is not silently coerced to state_changed —
-// the mapping must return ok=false so wrapEvent can drop it instead of
+// the mapping must return ok=false so Encode can drop it instead of
 // fabricating a state change.
 func TestMCPUnknownEventTypeNotMappedToStateChange(t *testing.T) {
 	t.Parallel()
@@ -347,7 +367,7 @@ func TestMessageToProtoPrismModel(t *testing.T) {
 		PrismDollarSavings:      ptrFloat(0.002),
 	}
 
-	got := messageToProto(src)
+	got := MessageToProto(src)
 	require.Equal(t, "prism-42", got.PrismModelID)
 	require.Equal(t, "GLM 5.3", got.PrismModelName)
 	require.NotNil(t, got.PrismHypercreditSavings)
@@ -369,7 +389,7 @@ func TestConfigStaleMsgToProto_RoundTrip(t *testing.T) {
 		Missing: []string{"/home/u/.config/crush/crush.json"},
 	}
 
-	env := wrapEvent(src)
+	env := Wrap(src)
 	require.NotNil(t, env)
 	require.Equal(t, pubsub.PayloadTypeConfigStale, env.Type)
 

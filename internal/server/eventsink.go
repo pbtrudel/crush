@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/wire"
 )
 
 // sinkBacklog caps how many distinct entities a single slow client can
@@ -165,7 +166,7 @@ func frameDatas(frames []sinkFrame) [][]byte {
 // used to coalesce it. Frames whose entity cannot be identified get a
 // unique key so they are never collapsed into each other.
 func encodeEventPayload(payload any) ([]byte, string) {
-	wrapped := wrapEvent(payload)
+	wrapped := wire.Wrap(payload)
 	if wrapped == nil {
 		return nil, ""
 	}
