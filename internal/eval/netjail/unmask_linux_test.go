@@ -19,9 +19,24 @@ func TestUnmaskExecutablesDropsDefaultsOnly(t *testing.T) {
 	defaults := []string{"/tmp", "/run"}
 	masks := []string{"/tmp", "/work/crush", "/run"}
 	kept, blocked := unmaskExecutables(masks,
-		defaults, "/tmp/go-build/b001/netjail.test", "/work/crush/bin")
-	require.Equal(t, []string{"/run"}, kept, "/tmp holds the binary the jail runs")
+		defaults, "/work/crush/bin/crush", "/tmp/go-build/b001/netjail.test")
+	require.Equal(t, []string{"/run"}, kept, "/tmp holds a binary the jail runs")
 	require.Equal(t, []string{"/work/crush"}, blocked, "a requested mask is not dropped")
+}
+
+// TestUnmaskExecutablesKeepsAMaskOverAnArgument checks that a requested mask
+// is refused only for the executable itself. A run passes its own working
+// and data directories, which sit under the masked batches directory and
+// are bound back, as arguments; they must not block the mask.
+func TestUnmaskExecutablesKeepsAMaskOverAnArgument(t *testing.T) {
+	t.Parallel()
+
+	masks := []string{"/home/eval/batches"}
+	kept, blocked := unmaskExecutables(masks, DefaultMasks,
+		"/home/eval/bin/abc/crush", "--cwd", "/home/eval/batches/b1/runs/r1/src",
+		"--data-dir", "/home/eval/batches/b1/runs/r1/data")
+	require.Empty(t, blocked)
+	require.Equal(t, masks, kept)
 }
 
 // TestUnmaskExecutablesKeepsTheDefaults checks that filtering never rewrites
