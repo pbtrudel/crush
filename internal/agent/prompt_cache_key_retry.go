@@ -67,36 +67,46 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	rejected, rejectedBody := promptCacheKeyRejection(resp)
-	if !rejected {
+	// Only a 400 is inspected, and only its first 64KiB: a streaming body
+	// is never read here.
+	if resp.StatusCode != http.StatusBadRequest || resp.Body == nil {
 		return resp, nil
 	}
-	_ = resp.Body.Close()
+	original := resp.Body
+	rejection, err := io.ReadAll(io.LimitReader(original, 64<<10))
+	if err != nil || !bytes.Contains(bytes.ToLower(rejection), []byte(promptCacheKeyField)) {
+		// Hand the rejection on with the bytes already read, and let the
+		// caller's Close reach the original body through this one.
+		resp.Body = &promptCacheKeyBody{
+			Reader:   io.MultiReader(bytes.NewReader(rejection), original),
+			original: original,
+		}
+		return resp, nil
+	}
+	// The endpoint rejected the field. Drain and close the response so its
+	// connection is reused, then retry once without the field.
+	_, _ = io.Copy(io.Discard, original)
+	_ = original.Close()
 	if rejectPromptCacheKey(scope) {
 		slog.Info(
 			"Endpoint rejected prompt_cache_key, retrying without it",
 			"url", req.URL.Redacted(),
 			"model", scope.model,
-			"body", logBody(rejectedBody),
+			"body", logBody(rejection),
 		)
 	}
 	return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body)))
 }
 
-// promptCacheKeyRejection reports whether a response is a 400 naming the
-// prompt cache key field. Other statuses pass through untouched, so a
-// streaming response body is never read here. The body is restored for the
-// caller.
-func promptCacheKeyRejection(resp *http.Response) (bool, []byte) {
-	if resp.StatusCode != http.StatusBadRequest || resp.Body == nil {
-		return false, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return false, nil
-	}
-	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
-	return bytes.Contains(bytes.ToLower(body), []byte(promptCacheKeyField)), body
+// promptCacheKeyBody replays a buffered response body and closes the original
+// body when the caller is done with it.
+type promptCacheKeyBody struct {
+	io.Reader
+	original io.ReadCloser
+}
+
+func (b *promptCacheKeyBody) Close() error {
+	return b.original.Close()
 }
 
 // stripPromptCacheKey removes the prompt cache key from a request body.

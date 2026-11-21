@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -191,4 +192,71 @@ func TestBuildOpenaiCompatProviderRetriesWithoutPromptCacheKey(t *testing.T) {
 	require.Len(t, bodies, 2, "one rejected request and one retry without the field")
 	require.Contains(t, bodies[0], `"prompt_cache_key"`)
 	require.NotContains(t, bodies[1], "prompt_cache_key")
+}
+
+// roundTripFunc adapts a function to an http.RoundTripper, so a test can
+// answer a request without a server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// closeRecorder is a response body that counts Close calls.
+type closeRecorder struct {
+	io.Reader
+	closed atomic.Int32
+}
+
+func (c *closeRecorder) Close() error {
+	c.closed.Add(1)
+	return nil
+}
+
+// TestPromptCacheKeyRetryClosesRejectedBody pins the connection handling of a
+// retried rejection: the 400 body is drained and closed before the retry, so
+// the transport does not leak it.
+func TestPromptCacheKeyRetryClosesRejectedBody(t *testing.T) {
+	rejected := &closeRecorder{
+		Reader: strings.NewReader(`{"error":{"message":"Unrecognized request argument supplied: prompt_cache_key"}}`),
+	}
+	calls := 0
+	client := withPromptCacheKeyRetry(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: rejected, Header: http.Header{}}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl-1","choices":[]}`)),
+			Header:     http.Header{},
+		}, nil
+	})})
+
+	resp := postChatCompletion(t, client, "https://example.com", "close-retry-model")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+
+	require.Equal(t, 2, calls, "the rejection is retried once")
+	require.EqualValues(t, 1, rejected.closed.Load(), "the rejected body is closed")
+}
+
+// TestPromptCacheKeyRetryKeepsRejectionBody pins the other side: a 400 that is
+// passed on to the caller still delivers its body and closes the original.
+func TestPromptCacheKeyRetryKeepsRejectionBody(t *testing.T) {
+	body := &closeRecorder{
+		Reader: strings.NewReader(`{"error":{"message":"messages: field required"}}`),
+	}
+	client := withPromptCacheKeyRetry(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: body, Header: http.Header{}}, nil
+	})})
+
+	resp := postChatCompletion(t, client, "https://example.com", "pass-through-model")
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(read), "messages: field required")
+	_ = resp.Body.Close()
+
+	require.EqualValues(t, 1, body.closed.Load(), "passing the rejection on must close the original body")
 }
