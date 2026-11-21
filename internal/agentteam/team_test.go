@@ -943,3 +943,14 @@ func TestWriteReportSweepsOldReports(t *testing.T) {
 	_, err = os.Stat(fresh)
 	require.NoError(t, err, "a report inside the window is kept")
 }
+
+// TestPolicyDiscouragesFanOutWaves pins the cost rule: every teammate is a
+// session that resends the whole prompt, so a wave of near-identical
+// teammates for a small job multiplies that cost for no gain.
+func TestPolicyDiscouragesFanOutWaves(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(t, Policy, "One teammate per concrete, self-contained brief, never a wave.")
+	require.Contains(t, Policy, "Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small.")
+	require.Contains(t, Policy, "Cap a fan-out at what the task actually needs.")
+}
