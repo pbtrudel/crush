@@ -45,20 +45,23 @@ func writeGlobalContext(t *testing.T, dir string) {
 }
 
 // buildTaskPromptText renders the subagent prompt through the production
-// template for one working directory. The fixed platform keeps the rendered
-// text stable.
+// template for one working directory.
 func buildTaskPromptText(t *testing.T, workingDir string, canWrite bool, configure func(*config.ConfigStore)) string {
+	t.Helper()
+	return buildPromptText(t, workingDir, taskPrompt, configure, prompt.WithCanWrite(canWrite))
+}
+
+// buildPromptText renders one production prompt over a config loaded for
+// workingDir. The fixed platform keeps the rendered text stable.
+func buildPromptText(t *testing.T, workingDir string, constructor func(...prompt.Option) (*prompt.Prompt, error), configure func(*config.ConfigStore), opts ...prompt.Option) string {
 	t.Helper()
 	store, err := config.Init(t.Context(), workingDir, "", false)
 	require.NoError(t, err)
 	if configure != nil {
 		configure(store)
 	}
-	p, err := taskPrompt(
-		prompt.WithWorkingDir(workingDir),
-		prompt.WithPlatform("linux"),
-		prompt.WithCanWrite(canWrite),
-	)
+	opts = append([]prompt.Option{prompt.WithWorkingDir(workingDir), prompt.WithPlatform("linux")}, opts...)
+	p, err := constructor(opts...)
 	require.NoError(t, err)
 	built, err := p.Build(t.Context(), "mock", "mock-model", store)
 	require.NoError(t, err)
@@ -84,6 +87,23 @@ func TestTaskPromptCarriesProjectRulesOnly(t *testing.T) {
 		"the shared rules must say whose they are")
 	require.Less(t, strings.Index(built, subagentParentLine), strings.Index(built, "<rules>"),
 		"the line about the parent agent belongs before the rules")
+}
+
+// The coder prompt is the one the top-level agent and every teammate run
+// under. What a subagent drops is not general: the coder keeps both chains,
+// the project's rules and the user's procedures.
+func TestCoderPromptKeepsBothContextChains(t *testing.T) {
+	workingDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "AGENTS.md"), []byte(subagentProjectMarker), 0o644))
+	globalDir := isolatedGlobalConfig(t)
+	writeGlobalContext(t, globalDir)
+
+	built := buildPromptText(t, workingDir, coderPrompt, nil)
+
+	require.Contains(t, built, subagentProjectMarker,
+		"the coder works under the project's rules")
+	require.Contains(t, built, subagentGlobalMarker,
+		"the coder runs the user's commit, pull-request and delegation procedures")
 }
 
 // The project chain is read from the directory the prompt names, so the
