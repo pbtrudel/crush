@@ -1,0 +1,64 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background:
+    radial-gradient(120% 80% at 50% 110%, oklch(0.30 0.12 230 / 0.35), transparent 60%),
+    radial-gradient(80% 60% at 50% -10%, oklch(0.25 0.12 300 / 0.25), transparent 70%),
+    var(--void);
+  color: var(--text);
+  font: 400 var(--step-0)/1.6 var(--font-prose);
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(oklch(0.82 0.14 210 / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.82 0.14 210 / 0.05) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse at 50% 60%, black 20%, transparent 75%);
+}
+:where(button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px dashed var(--cyan);
+  outline-offset: 2px;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+code, pre, kbd { font-family: var(--font-code); }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.hud-label {
+  font: 500 var(--step--1)/1.1 var(--font-hud);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+[data-motion='off'] *, [data-motion='off'] *::before, [data-motion='off'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+/* The motion setting (Task 11) owns this, not the OS media query: choosing
+   "Reduced" must work on a machine without the OS preference too. */
+[data-motion='reduced'] *, [data-motion='reduced'] *::before, [data-motion='reduced'] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+}
+
+/* Shared by the shell, log, deck and interrupt tasks, so no task depends on
+   another task's stylesheet. */
+@keyframes blink { 50% { opacity: 0.3; } }
+.btn { min-block-size: 44px; padding: 0 18px; border-radius: 999px; font: 600 var(--step--1) var(--font-hud); letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid var(--edge); background: var(--surface-raised); transition: transform var(--dur-out) var(--ease-out), box-shadow var(--dur-out) var(--ease-out); }
+.btn:hover { transform: translateY(-1px); box-shadow: 0 0 18px oklch(0.82 0.14 210 / 0.25); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn--primary { background: var(--cyan); color: var(--void-deep); border-color: var(--cyan); }
+.btn--danger { border-color: var(--magenta); color: var(--magenta); background: transparent; }
+.btn--ghost { background: transparent; }
+.chip { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border: 1px solid var(--edge); border-radius: 999px; font: 400 var(--step--1) var(--font-code); }
+.chip button { background: none; border: 0; min-inline-size: 28px; min-block-size: 28px; }
+.link-button { background: none; border: 0; color: var(--cyan); text-decoration: underline; padding: 8px 0; min-block-size: 36px; }

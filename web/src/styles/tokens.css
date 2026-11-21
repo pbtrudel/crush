@@ -1,0 +1,41 @@
+:root {
+  --void: oklch(0.14 0.04 265);
+  --void-deep: oklch(0.10 0.035 265);
+  --surface: oklch(0.19 0.05 260 / 0.72);
+  --surface-solid: oklch(0.19 0.05 260);
+  --surface-raised: oklch(0.24 0.06 258 / 0.82);
+  --edge: oklch(0.82 0.14 210 / 0.28);
+  --edge-strong: oklch(0.82 0.14 210 / 0.6);
+  --cyan: oklch(0.82 0.14 210);
+  --cyan-dim: oklch(0.82 0.14 210 / 0.35);
+  --magenta: oklch(0.68 0.24 330);
+  --magenta-dim: oklch(0.68 0.24 330 / 0.35);
+  --violet: oklch(0.60 0.20 290);
+  --violet-dim: oklch(0.60 0.20 290 / 0.3);
+  --teal: oklch(0.78 0.13 175);
+  --amber: oklch(0.80 0.15 75);
+  --text: oklch(0.93 0.02 230);
+  --text-muted: oklch(0.70 0.04 240);
+
+  --font-hud: 'Chakra Petch', system-ui, sans-serif;
+  --font-prose: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', ui-monospace, monospace;
+
+  --step--1: 0.8125rem;
+  --step-0: 0.9375rem;
+  --step-1: 1.125rem;
+  --step-2: 1.5rem;
+  --step-3: 2rem;
+
+  --space-1: 4px;
+  --space-4: 16px;
+  --space-9: 36px;
+
+  --radius: 6px;
+  --glow-cyan: 0 0 0 1px var(--edge), 0 0 24px oklch(0.82 0.14 210 / 0.18), inset 0 1px 0 oklch(1 0 0 / 0.06);
+  --glow-magenta: 0 0 0 1px var(--magenta), 0 0 36px oklch(0.68 0.24 330 / 0.45);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-in: 320ms;
+  --dur-out: 220ms;
+}

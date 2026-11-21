@@ -54,3 +54,8 @@ manpages/
 completions/crush.*sh
 .prettierignore
 .task
+
+# Web mode frontend
+web/node_modules/
+web/test-results/
+web/playwright-report/

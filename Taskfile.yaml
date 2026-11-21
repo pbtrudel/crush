@@ -200,3 +200,40 @@ tasks:
     desc: Generate code using SQLC
     cmds:
       - sqlc generate
+
+  web:install:
+    desc: Install web mode frontend dependencies
+    dir: web
+    cmds:
+      - npm ci
+
+  web:build:
+    desc: Build the web mode frontend into internal/web/dist
+    dir: web
+    cmds:
+      - npm ci
+      - npm run build
+
+  web:test:
+    desc: Typecheck and unit test the web mode frontend
+    dir: web
+    cmds:
+      - npm run typecheck
+      - npm test
+
+  web:e2e:
+    desc: Run Playwright smoke tests against the fake gateway
+    dir: web
+    cmds:
+      - npm run e2e
+
+  web:check:
+    desc: Fail when the committed web mode build is stale
+    cmds:
+      - task: web:build
+      - git diff --exit-code -- internal/web/dist
+
+  web:dev:
+    desc: Serve the fake gateway; it prints how to start the Vite dev server
+    cmds:
+      - go run ./internal/web/cmd/webfake
