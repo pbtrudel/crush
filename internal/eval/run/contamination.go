@@ -29,6 +29,10 @@ type marker struct {
 	// and the child names it all the time, so it is not contact with
 	// another batch.
 	own string
+	// needs is the name of this repository, which the whole tool call must
+	// also name. A bare "gh pr create" is the recipe the checkout's own
+	// bash tool description shows, not a lookup at the fork.
+	needs string
 }
 
 // commandPattern compiles the pattern of a command marker: the words of the
@@ -45,16 +49,20 @@ func commandPattern(text string) *regexp.Regexp {
 }
 
 // contaminationMarkers are the strings design 3.7 scans tool calls for: the
-// task's merge commit, the fork's pull request and repository URLs, gh
-// commands, git's object reader, the suite path, and the host paths a jailed
-// run hides: the repository, the checkout the tasks come from, the worktrees
-// beside it and the eval home's batches.
+// task's merge commit, the fork's pull request and repository URLs, the gh
+// commands that name it, git's object reader, the suite path, and the host
+// paths a jailed run hides: the repository, the checkout the tasks come from,
+// the worktrees beside it and the eval home's batches.
 func contaminationMarkers(tk *task.Task, paths Paths) []marker {
+	fork := tk.Source.Repo
+	if fork == "" {
+		fork = "pbtrudel/crush"
+	}
 	markers := []marker{
 		{text: "pbtrudel/crush/pull"},
 		{text: "github.com/pbtrudel/crush"},
-		{text: "gh pr", command: commandPattern("gh pr")},
-		{text: "gh api", command: commandPattern("gh api")},
+		{text: "gh pr", command: commandPattern("gh pr"), needs: fork},
+		{text: "gh api", command: commandPattern("gh api"), needs: fork},
 		{text: "git cat-file", command: commandPattern("git cat-file")},
 	}
 	if tk.Source.Merge != "" {
@@ -68,6 +76,7 @@ func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
 		markers[i].own = strings.ToLower(m.own)
+		markers[i].needs = strings.ToLower(m.needs)
 	}
 	return markers
 }
@@ -156,12 +165,26 @@ func contaminatedCalls(parts string, markers []marker) int {
 	return count
 }
 
-// namesMarker reports whether one tool call's input names a marker.
+// namesMarker reports whether one tool call's input names a marker. A marker
+// that needs the repository's name matches only when the same input names it
+// too.
 func namesMarker(input string, markers []marker) bool {
 	texts := inputTexts(input)
 	for _, m := range markers {
 		if m.text == "" {
 			continue
+		}
+		if m.needs != "" {
+			named := false
+			for _, text := range texts {
+				if strings.Contains(text, m.needs) {
+					named = true
+					break
+				}
+			}
+			if !named {
+				continue
+			}
 		}
 		for _, text := range texts {
 			if m.matches(text) {

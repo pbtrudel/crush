@@ -36,20 +36,20 @@ func TestContaminatedCallsCommandMarkers(t *testing.T) {
 		{name: "inside a word", input: `grep -n "through prefix" pkg.go`, want: 0},
 		{name: "a longer command", input: "gh print", want: 0},
 		{name: "a hyphenated command", input: "gh-pr", want: 0},
-		{name: "after a separator", input: "cd x && gh pr list", want: 1},
-		{name: "in backticks", input: "`gh api repos`", want: 1},
+		{name: "after a separator", input: "cd x && gh pr list -R pbtrudel/crush", want: 1},
+		{name: "in backticks", input: "`gh api repos/pbtrudel/crush`", want: 1},
 		{name: "git's object reader", input: "git cat-file -p HEAD", want: 1},
-		{name: "at the start", input: "gh pr view 51", want: 1},
-		{name: "in a JSON command", input: `{"command":"gh pr view 51"}`, want: 1},
-		{name: "ends at the closing quote", input: `{"command":"gh pr"}`, want: 1},
-		{name: "after an escaped newline", input: `{"command":"cd x\ngh pr view 93"}`, want: 1},
-		{name: "before a newline", input: "gh pr\nview", want: 1},
-		{name: "before a separator", input: "gh pr;ls", want: 1},
-		{name: "after a path", input: "/usr/bin/gh pr view", want: 1},
-		{name: "with a double space", input: "gh  pr view", want: 1},
-		{name: "under sudo", input: "sudo gh pr view", want: 1},
-		{name: "in a substitution", input: "$(gh pr view)", want: 1},
-		{name: "in a nested field", input: `{"args":{"command":"gh pr view 51"}}`, want: 1},
+		{name: "at the start", input: "gh pr view 51 -R pbtrudel/crush", want: 1},
+		{name: "in a JSON command", input: `{"command":"gh pr view 51 -R pbtrudel/crush"}`, want: 1},
+		{name: "ends at the closing quote", input: `{"command":"git cat-file"}`, want: 1},
+		{name: "after an escaped newline", input: `{"command":"cd x\ngh pr view 93 -R pbtrudel/crush"}`, want: 1},
+		{name: "before a newline", input: "gh pr -R pbtrudel/crush\nview", want: 1},
+		{name: "before a separator", input: "gh pr -R pbtrudel/crush;ls", want: 1},
+		{name: "after a path", input: "/usr/bin/gh pr view -R pbtrudel/crush", want: 1},
+		{name: "with a double space", input: "gh  pr view -R pbtrudel/crush", want: 1},
+		{name: "under sudo", input: "sudo gh pr view -R pbtrudel/crush", want: 1},
+		{name: "in a substitution", input: "$(gh pr view -R pbtrudel/crush)", want: 1},
+		{name: "in a nested field", input: `{"args":{"command":"gh pr view 51 -R pbtrudel/crush"}}`, want: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -86,7 +86,7 @@ func TestContaminatedCallsCountsEachCall(t *testing.T) {
 	t.Parallel()
 
 	markers := contaminationMarkers(&task.Task{}, Paths{Suite: "evals", Repo: "."})
-	pr := `{"type":"tool_call","data":{"name":"bash","input":"gh pr view 1"}}`
+	pr := `{"type":"tool_call","data":{"name":"bash","input":"gh pr view 1 -R pbtrudel/crush"}}`
 	text := `{"type":"text","data":{"text":"gh pr view 1"}}`
 	cat := `{"type":"tool_call","data":{"name":"bash","input":"git cat-file"}}`
 	parts := "[" + pr + "," + text + "," + cat + "]"
@@ -127,5 +127,38 @@ func TestContaminatedCallsHostPaths(t *testing.T) {
 		"go build ./...",
 	} {
 		require.Zero(t, contaminatedCalls(call(t, input), markers), input)
+	}
+}
+
+// TestContaminatedCallsGhNeedsRepository checks that a gh command counts
+// only when the same input names this repository: the checkout ships "gh pr
+// create" in its own bash tool description, so a plain publish attempt is
+// no contact with the answer.
+func TestContaminatedCallsGhNeedsRepository(t *testing.T) {
+	t.Parallel()
+
+	markers := contaminationMarkers(
+		&task.Task{Source: task.Source{Repo: "pbtrudel/crush"}},
+		Paths{},
+	)
+
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{name: "the checkout's own recipe", input: "gh pr create --fill", want: 0},
+		{name: "another repository", input: "gh pr list -R charmbracelet/crush", want: 0},
+		{name: "the user's own account", input: "gh api user", want: 0},
+		{name: "this repository named by -R", input: "gh pr view 123 -R pbtrudel/crush", want: 1},
+		{name: "this repository named in the path", input: "gh api repos/pbtrudel/crush/pulls/5", want: 1},
+		{name: "git's object reader", input: "git cat-file -p HEAD", want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := contaminatedCalls(call(t, test.input), markers)
+			require.Equal(t, test.want, got, test.input)
+		})
 	}
 }

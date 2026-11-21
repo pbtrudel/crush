@@ -78,8 +78,8 @@ func TestAdd(t *testing.T) {
 );`
 	// twoContaminatedCalls is one message with three tool calls, two of them
 	// naming a marker: design 3.7 counts tool calls.
-	twoContaminatedCalls = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}"}},{"type":"tool_call","data":{"id":"t2","name":"bash","input":"{\"command\":\"gh api repos/x\"}"}},{"type":"tool_call","data":{"id":"t3","name":"bash","input":"{\"command\":\"ls\"}"}}]`
-	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
+	twoContaminatedCalls = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51 -R pbtrudel/crush\"}"}},{"type":"tool_call","data":{"id":"t2","name":"bash","input":"{\"command\":\"gh api repos/pbtrudel/crush/pulls/5\"}"}},{"type":"tool_call","data":{"id":"t3","name":"bash","input":"{\"command\":\"ls\"}"}}]`
+	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51 -R pbtrudel/crush\"}","provider_executed":false,"finished":true}}]`
 )
 
 // fixtureCatalog is the provider catalog the fixture's eval home serves.

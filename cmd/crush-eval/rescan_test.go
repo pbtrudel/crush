@@ -57,7 +57,7 @@ func TestRescanRewritesContamination(t *testing.T) {
 	})
 	require.NoError(t, os.Chmod(filepath.Join(batchDir, "results.jsonl"), 0o640))
 	writeSessionDB(t, runDB(batchDir, 1), `grep -n "through prefix" pkg.go`)
-	writeSessionDB(t, runDB(batchDir, 2), `cd x && gh pr list`)
+	writeSessionDB(t, runDB(batchDir, 2), `cd x && gh pr list -R pbtrudel/crush`)
 	writeSessionDB(t, runDB(batchDir, 4), `ls pkg`)
 
 	var stdout, stderr bytes.Buffer
