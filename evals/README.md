@@ -103,13 +103,25 @@ On Linux, `crush-eval run`, `batch` and `grade` put the model's process and the
 grading `go test` in a network, mount and user namespace with only loopback.
 The mount namespace hides `/run`, `/var/run`, `/tmp`, `/mnt/wslg` and
 `/run/user` behind empty tmpfs mounts, so filesystem unix sockets are out of
-reach, and the child keeps your uid and gid without capabilities. The one host
-it may reach is the route's `base_url` host, through an HTTP proxy on a per-run
-unix socket. `--network host` turns this off; on other systems it is the
-default and the jail refuses to start. A machine where user namespaces are
-blocked fails with a message that says to use `--network host`. A result line
-records `network`, and in jail mode `net_denied` with the sorted
-`net_denied_hosts` the proxy refused.
+reach, and the child keeps your uid and gid without capabilities.
+
+A run also hides the directories that hold the answers. It masks the git
+toplevel of the repository the tasks come from, the directory of sibling
+worktrees beside it when it is a linked worktree (`.crush-worktrees`, for
+example), and the eval home's `batches`. The run's own directory under
+`batches` is bind mounted back over the mask, so the child keeps writing its
+checkout, home, config and data while other runs and other batches stay out
+of reach. What the child reads stays readable: the eval home's `data`, with
+the route's token in `crush.json` and the `providers.json` and `hyper.json`
+catalog, the binary under `bin`, and the go toolchain with its build and
+module caches.
+
+The one host it may reach is the route's `base_url` host, through an HTTP
+proxy on a per-run unix socket. `--network host` turns this off; on other
+systems it is the default and the jail refuses to start. A machine where user
+namespaces are blocked fails with a message that says to use `--network
+host`. A result line records `network`, and in jail mode `net_denied` with the
+sorted `net_denied_hosts` the proxy refused.
 
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).

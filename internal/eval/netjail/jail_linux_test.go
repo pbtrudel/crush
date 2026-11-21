@@ -103,6 +103,34 @@ func probe() int {
 		return 0
 	}
 
+	// A mask with a kept path hides the directory's other entries and
+	// leaves the kept path readable and writable.
+	if dir := os.Getenv("NETJAIL_MASK_DIR"); dir != "" {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fail("read %s: %v", dir, err)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		fmt.Printf("entries=%s\n", strings.Join(names, ","))
+		if read := os.Getenv("NETJAIL_KEEP_READ"); read != "" {
+			data, err := os.ReadFile(read)
+			if err != nil {
+				return fail("read %s: %v", read, err)
+			}
+			fmt.Printf("content=%s\n", strings.TrimSpace(string(data)))
+		}
+		if write := os.Getenv("NETJAIL_KEEP_WRITE"); write != "" {
+			if err := os.WriteFile(write, []byte("written\n"), 0o600); err != nil {
+				return fail("write %s: %v", write, err)
+			}
+			fmt.Println("write ok")
+		}
+		return 0
+	}
+
 	iface, err := net.InterfaceByName("lo")
 	if err != nil {
 		return fail("loopback is missing: %v", err)
@@ -329,10 +357,57 @@ func TestJailMasksSockets(t *testing.T) {
 	require.NoError(t, err)
 	cmd := exec.CommandContext(context.Background(), self)
 	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_MASK_SOCK="+path)
-	require.NoError(t, netjail.Wrap(cmd, "", 0, dir))
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: dir}))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "masked ok")
+}
+
+// TestJailMaskKeepsTheRunDirectory checks a mask with a kept path, in the
+// layout of the eval home's batches: the masked directory reads as empty,
+// the run's own directory stays readable and writable, and the host still
+// sees both.
+func TestJailMaskKeepsTheRunDirectory(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	batches := filepath.Join(root, "batches")
+	sibling := filepath.Join(batches, "other", "runs", "pr-0010")
+	run := filepath.Join(batches, "b1", "runs", "pr-0010")
+	require.NoError(t, os.MkdirAll(sibling, 0o700))
+	require.NoError(t, os.MkdirAll(run, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sibling, "results.jsonl"), []byte("secret\n"), 0o600))
+	kept := filepath.Join(run, "src", "pkg.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(kept), 0o700))
+	require.NoError(t, os.WriteFile(kept, []byte("kept\n"), 0o600))
+	written := filepath.Join(run, "written.txt")
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(),
+		"NETJAIL_PROBE=1",
+		"NETJAIL_MASK_DIR="+batches,
+		"NETJAIL_KEEP_READ="+kept,
+		"NETJAIL_KEEP_WRITE="+written,
+	)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: batches, Keep: []string{run}}))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "entries=b1", "the masked batches hold only the run's own batch")
+	require.Contains(t, string(out), "content=kept")
+	require.Contains(t, string(out), "write ok")
+	// The kept path is the host directory itself, so a child's write lands
+	// in it, and the host still sees what the jail hid.
+	data, err := os.ReadFile(written)
+	require.NoError(t, err)
+	require.Equal(t, "written\n", string(data))
+	require.FileExists(t, filepath.Join(sibling, "results.jsonl"))
 }
 
 // TestWrapMergesSysProcAttr checks that Wrap keeps the process group the

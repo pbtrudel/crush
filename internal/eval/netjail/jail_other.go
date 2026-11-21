@@ -12,7 +12,7 @@ import (
 // Wrap reports that the jail needs Linux: only a Linux user namespace can
 // be created without privilege, and only Linux has the network namespace
 // the jail relies on.
-func Wrap(cmd *exec.Cmd, sock string, port int) error {
+func Wrap(cmd *exec.Cmd, sock string, port int, masks ...Mask) error {
 	return errors.New("network jail needs Linux")
 }
 
