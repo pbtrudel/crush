@@ -31,6 +31,11 @@ func TestIsReadOnlyCommand_Allowed(t *testing.T) {
 		"find . -name '*.go'",
 		"sort go.sum",
 		"diff a.txt b.txt",
+		"cut -d: -f1 go.sum",
+		"file go.mod",
+		"stat -c %s go.mod",
+		"uniq",
+		"uniq -c",
 		// Waiting is not progress either.
 		"sleep 5",
 		// A chain is judged by its parts.
@@ -60,6 +65,11 @@ func TestIsReadOnlyCommand_Denied(t *testing.T) {
 		// find is read-only until it is not.
 		"find . -delete",
 		"find . -exec rm {} ;",
+		// uniq takes a second operand to write, and file compiles the
+		// magic database it is given.
+		"uniq in.txt out.txt",
+		"file -C -m magic",
+		"file --compile -m magic",
 		// An unknown command still counts as progress, and so does
 		// anything the classifier cannot parse.
 		"",

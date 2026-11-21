@@ -7,7 +7,10 @@ package tools
 // narrower one, and these cannot.
 var readOnlyCommands = []safeCommand{
 	{argv: []string{"cat"}, allowOperands: true},
+	{argv: []string{"cut"}, allowOperands: true},
 	{argv: []string{"diff"}, allowOperands: true},
+	// -C compiles the magic database named by -m, which is a write.
+	{argv: []string{"file"}, denyFlags: []string{"-C", "--compile"}, allowOperands: true},
 	// find writes or runs programs only through these actions.
 	{
 		argv: []string{"find"},
@@ -25,7 +28,10 @@ var readOnlyCommands = []safeCommand{
 	{argv: []string{"sleep"}, allowOperands: true},
 	// -o writes the sorted output to a file.
 	{argv: []string{"sort"}, denyFlags: []string{"-o", "--output"}, allowOperands: true},
+	{argv: []string{"stat"}, allowOperands: true},
 	{argv: []string{"tail"}, allowOperands: true},
+	// A second operand is an output file, which uniq writes.
+	{argv: []string{"uniq"}, allowOperands: false},
 	{argv: []string{"wc"}, allowOperands: true},
 }
 
