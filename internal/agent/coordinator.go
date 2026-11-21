@@ -1691,6 +1691,12 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 	if !ok && !isMistralBaseURL(baseURL) {
 		return options
 	}
+	// The provider's own extra_body is applied to the request body after
+	// these options, so a key configured there wins and nothing is added
+	// here.
+	if _, exists := providerCfg.ExtraBody["prompt_cache_key"]; exists {
+		return options
+	}
 	if opts == nil {
 		opts = &openaicompat.ProviderOptions{}
 	}

@@ -557,6 +557,36 @@ func TestWithPromptCacheKeyKeepsUserValue(t *testing.T) {
 	}
 }
 
+// TestWithPromptCacheKeyProviderExtraBodyWins pins that a prompt_cache_key
+// configured in the provider's own extra_body wins too. That map is applied to
+// the request body after the call options, so setting the key here would only
+// fight it.
+func TestWithPromptCacheKeyProviderExtraBodyWins(t *testing.T) {
+	env := testEnv(t)
+
+	providers := []config.ProviderConfig{
+		{ID: "neuralwatt", Type: catwalk.TypeCompletions, BaseURL: "https://api.neuralwatt.com/v1"},
+		{ID: "mistral", Type: catwalk.TypeCompletions, BaseURL: "https://api.mistral.ai"},
+	}
+	for _, providerCfg := range providers {
+		providerCfg.ExtraBody = map[string]any{"prompt_cache_key": "provider-key"}
+		t.Run(providerCfg.ID, func(t *testing.T) {
+			coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+			model := Model{
+				CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+				ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "glm-5.3"},
+			}
+
+			opts := coord.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, "session-a")
+
+			compat, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
+			if ok {
+				require.NotContains(t, compat.ExtraBody, "prompt_cache_key")
+			}
+		})
+	}
+}
+
 // TestWithPromptCacheKeyStableAcrossCompaction pins the key across a
 // compaction: the summarize call must send the same value as the turn that
 // filled the context, or the provider can reuse nothing.
