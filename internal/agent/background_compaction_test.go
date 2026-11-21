@@ -138,6 +138,15 @@ func TestShouldStartBackgroundCompaction(t *testing.T) {
 		agent := newCompactionAgent(env, nil, backgroundCompactionConfig(t, env, 0.1), true)
 		require.False(t, agent.shouldStartBackgroundCompaction(agent.largeModel.Get(), atMargin))
 	})
+
+	// `crush run` answers one prompt and exits, so a summary started at
+	// its turn end dies with the process and the next run, a new process,
+	// could not adopt it anyway: it would only cost tokens.
+	t.Run("a non-interactive agent starts nothing", func(t *testing.T) {
+		agent := newCompactionAgent(env, nil, backgroundCompactionConfig(t, env, 0.1), false)
+		agent.nonInteractive = true
+		require.False(t, agent.shouldStartBackgroundCompaction(agent.largeModel.Get(), atMargin))
+	})
 }
 
 // TestBackgroundCompaction_ReadySummaryIsSpliced pins the point of the

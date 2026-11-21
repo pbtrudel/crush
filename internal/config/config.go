@@ -525,7 +525,7 @@ type Options struct {
 	// auto-compaction limit, as a fraction of the context window below it,
 	// so the next prompt does not wait for the summary. Off by default,
 	// because a summary the session never uses still costs tokens.
-	CompactBackgroundMargin *float64 `json:"compact_background_margin,omitempty" jsonschema:"description=Fraction of the context window below the auto-compaction limit at which the summary is written in the background\\, so the next prompt does not wait for it. A summary the session never uses still costs tokens. 0 (the default) keeps compaction blocking.,default=0,example=0.1"`
+	CompactBackgroundMargin *float64 `json:"compact_background_margin,omitempty" jsonschema:"description=Fraction of the context window below the auto-compaction limit at which the summary is written in the background\\, so the next prompt does not wait for it. A summary the session never uses still costs tokens. Ignored by crush run\\, which exits before the summary is used. 0 (the default) keeps compaction blocking.,default=0,example=0.1"`
 	// CompactionPruneChars is the per-tool-result character budget used
 	// before a compaction request is built. Oversized results keep their
 	// head and tail, which shrinks the summarizer input without changing

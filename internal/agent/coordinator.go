@@ -1270,6 +1270,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		SystemPromptSuffix:   system.Suffix,
 		IsSubAgent:           role.isSubAgent(),
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
+		NonInteractive:       !c.interactive,
 		IsYolo:               c.permissions.PermissionMode().SkipsPrompts(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,

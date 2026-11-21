@@ -79,7 +79,7 @@ func (a *sessionAgent) compactBackgroundMargin() float64 {
 // uses still costs tokens, and the saving has not been measured.
 func (a *sessionAgent) shouldStartBackgroundCompaction(model Model, sess session.Session) bool {
 	margin := a.compactBackgroundMargin()
-	if margin <= 0 || a.disableAutoSummarize {
+	if margin <= 0 || a.disableAutoSummarize || a.nonInteractive {
 		return false
 	}
 	window := effectiveContextWindow(model)

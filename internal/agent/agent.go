@@ -380,7 +380,11 @@ type sessionAgent struct {
 	// means mcp.RunTool.
 	replyToolRun         func(ctx context.Context, cfg *config.ConfigStore, name, tool, input string) (mcp.ToolResult, error)
 	disableAutoSummarize bool
-	isYolo               bool
+	// nonInteractive marks an agent that answers one prompt and exits
+	// (`crush run`), which never starts a background compaction: the
+	// process would exit before the summary is used.
+	nonInteractive bool
+	isYolo         bool
 	// permissions answers whether the user is being asked about tool
 	// calls at all. Nil in tests and anywhere that never needs to know.
 	permissions permission.Service
@@ -507,6 +511,7 @@ type SessionAgentOptions struct {
 	SystemPromptSuffix   string
 	IsSubAgent           bool
 	DisableAutoSummarize bool
+	NonInteractive       bool
 	Sessions             session.Service
 	Messages             message.Service
 	Permissions          permission.Service
@@ -556,6 +561,7 @@ func NewSessionAgent(
 		history:                opts.History,
 		cfg:                    opts.Cfg,
 		disableAutoSummarize:   opts.DisableAutoSummarize,
+		nonInteractive:         opts.NonInteractive,
 		isYolo:                 opts.IsYolo,
 		permissions:            opts.Permissions,
 		tools:                  csync.NewSliceFrom(opts.Tools),
