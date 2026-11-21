@@ -241,7 +241,7 @@ func TestPromptCacheKeyRetryClosesRejectedBody(t *testing.T) {
 	require.EqualValues(t, 1, rejected.closed.Load(), "the rejected body is closed")
 }
 
-// TestPromptCacheKeyRetryKeepsRejectionBody pins the other side: a 400 that is
+// TestPromptCacheKeyRetryKeepsRejectionBody pins the other side: a 400
 // passed on to the caller still delivers its body and closes the original.
 func TestPromptCacheKeyRetryKeepsRejectionBody(t *testing.T) {
 	body := &closeRecorder{
@@ -259,4 +259,73 @@ func TestPromptCacheKeyRetryKeepsRejectionBody(t *testing.T) {
 	_ = resp.Body.Close()
 
 	require.EqualValues(t, 1, body.closed.Load(), "passing the rejection on must close the original body")
+}
+
+// TestPromptCacheKeyRememberedScopeSkipsRetry pins the remembered scope:
+// once an endpoint and model rejected the field, later requests leave it out
+// before they are sent instead of earning a second 400.
+func TestPromptCacheKeyRememberedScopeSkipsRetry(t *testing.T) {
+	const model = "remembered-model"
+
+	var badRequests atomic.Int32
+	srv := newRecordingServer(t, func(w http.ResponseWriter, body string, _ int) {
+		if strings.Contains(body, promptCacheKeyField) {
+			badRequests.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"Unsupported parameter: prompt_cache_key"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","choices":[]}`)
+	})
+
+	for range 2 {
+		client := withPromptCacheKeyRetry(&http.Client{})
+		resp := postChatCompletion(t, client, srv.server.URL, model)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		_ = resp.Body.Close()
+	}
+
+	require.EqualValues(t, 1, badRequests.Load(), "only the first request may be rejected")
+	bodies := srv.seen()
+	require.Len(t, bodies, 3, "the second request is sent stripped, without a retry")
+	require.Contains(t, bodies[0], promptCacheKeyField)
+	require.NotContains(t, bodies[1], promptCacheKeyField)
+	require.NotContains(t, bodies[2], promptCacheKeyField)
+}
+
+// TestPromptCacheKeyRejectionIsModelScoped pins that a rejection for one
+// model does not strip the field from another model on the same endpoint: a
+// gateway can accept the field for a model it knows.
+func TestPromptCacheKeyRejectionIsModelScoped(t *testing.T) {
+	const (
+		rejectedModel = "model-a"
+		otherModel    = "model-b"
+	)
+
+	srv := newRecordingServer(t, func(w http.ResponseWriter, body string, _ int) {
+		rejected := strings.Contains(body, `"model":"`+rejectedModel+`"`) &&
+			strings.Contains(body, promptCacheKeyField)
+		if rejected {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"Unrecognized request argument supplied: prompt_cache_key"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","choices":[]}`)
+	})
+
+	client := withPromptCacheKeyRetry(&http.Client{})
+	resp := postChatCompletion(t, client, srv.server.URL, rejectedModel)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+
+	resp = postChatCompletion(t, client, srv.server.URL, otherModel)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+
+	bodies := srv.seen()
+	require.Len(t, bodies, 3, "the other model is answered without a retry")
+	require.NotContains(t, bodies[1], promptCacheKeyField, "the rejected model is stripped")
+	require.Contains(t, bodies[2], promptCacheKeyField, "the other model keeps the field")
 }

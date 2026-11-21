@@ -558,9 +558,9 @@ func TestWithPromptCacheKeyKeepsUserValue(t *testing.T) {
 }
 
 // TestWithPromptCacheKeyProviderExtraBodyWins pins that a prompt_cache_key
-// configured in the provider's own extra_body wins too. That map is applied to
-// the request body after the call options, so setting the key here would only
-// fight it.
+// configured in the provider's own extra_body wins too. That map is applied
+// to the request body after the call options, so setting the key here would
+// only fight it.
 func TestWithPromptCacheKeyProviderExtraBodyWins(t *testing.T) {
 	env := testEnv(t)
 
@@ -583,6 +583,60 @@ func TestWithPromptCacheKeyProviderExtraBodyWins(t *testing.T) {
 			if ok {
 				require.NotContains(t, compat.ExtraBody, "prompt_cache_key")
 			}
+		})
+	}
+}
+
+// TestWithPromptCacheKeyProviderSelection pins which providers get the
+// extra_body key: hyper takes it, while official OpenAI on the Responses API
+// and OpenRouter keep their own options namespaces and get nothing.
+func TestWithPromptCacheKeyProviderSelection(t *testing.T) {
+	env := testEnv(t)
+
+	modelFor := func(providerID string) Model {
+		return Model{
+			CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+			ModelCfg:   config.SelectedModel{Provider: providerID, Model: "glm-5.3"},
+		}
+	}
+	tests := []struct {
+		name    string
+		cfg     config.ProviderConfig
+		wantKey bool
+	}{
+		{"hyper", config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}, true},
+		{
+			"openai responses",
+			config.ProviderConfig{
+				ID:      string(catwalk.InferenceProviderOpenAI),
+				Type:    catwalk.TypeResponses,
+				BaseURL: "https://api.openai.com/v1",
+			},
+			false,
+		},
+		{
+			"openrouter",
+			config.ProviderConfig{
+				ID:      string(catwalk.InferenceProviderOpenRouter),
+				Type:    catwalk.TypeCompletions,
+				BaseURL: "https://openrouter.ai/api/v1",
+			},
+			false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			coord := newTestCoordinator(t, env, tc.cfg.ID, tc.cfg)
+
+			opts := coord.withPromptCacheKey(getProviderOptions(modelFor(tc.cfg.ID), tc.cfg), tc.cfg, "session-a")
+
+			compat, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
+			if !tc.wantKey {
+				require.False(t, ok, "provider must not get the extra_body key")
+				return
+			}
+			require.True(t, ok)
+			require.Equal(t, session.HashID("session-a"), compat.ExtraBody["prompt_cache_key"])
 		})
 	}
 }
