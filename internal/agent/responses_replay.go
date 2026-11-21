@@ -668,17 +668,22 @@ func isEventStream(resp *http.Response) bool {
 }
 
 // replayRejection reads a 400 body to see whether the provider rejected the
-// replayed items specifically. The body is restored for the caller. Only a
+// replayed items specifically. The body is restored for the caller, and its
+// Close reaches the original body, so the connection is not leaked. Only a
 // 400 qualifies: 429 and 5xx are transient and say nothing about replay.
 func replayRejection(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode != http.StatusBadRequest || resp.Body == nil {
 		return false, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	original := resp.Body
+	body, err := io.ReadAll(io.LimitReader(original, 64<<10))
+	resp.Body = &bufferedBody{
+		Reader:   io.MultiReader(bytes.NewReader(body), original),
+		original: original,
+	}
 	if err != nil {
 		return false, nil
 	}
-	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
 	return namesReplayFailure(body), body
 }
 
