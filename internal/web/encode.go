@@ -36,7 +36,69 @@ func encode(ev any) (string, json.RawMessage, bool) {
 	if !ok || p == nil {
 		return "", nil, false
 	}
+	if p.Type == pubsub.PayloadTypeMessage {
+		return p.Type, withoutAttachmentData(p.Payload), true
+	}
 	return p.Type, p.Payload, true
+}
+
+// withoutAttachmentData removes the base64 attachment bytes from a message
+// payload, keeping the path and MIME type the browser renders. The gateway
+// sends whole frames, keeps them in its replay ring and resends them in
+// snapshots, so repeated copies of attachment bytes would cost memory for
+// data the page never shows. The wire package keeps them for the
+// client/server path, which does carry attachments.
+func withoutAttachmentData(payload json.RawMessage) json.RawMessage {
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return payload
+	}
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(env["payload"], &msg); err != nil {
+		return payload
+	}
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(msg["parts"], &parts); err != nil {
+		return payload
+	}
+	changed := false
+	for _, part := range parts {
+		if string(part["type"]) != `"binary"` {
+			continue
+		}
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal(part["data"], &data); err != nil {
+			continue
+		}
+		if _, ok := data["Data"]; !ok {
+			continue
+		}
+		delete(data, "Data")
+		trimmed, err := json.Marshal(data)
+		if err != nil {
+			return payload
+		}
+		part["data"] = trimmed
+		changed = true
+	}
+	if !changed {
+		return payload
+	}
+	trimmedParts, err := json.Marshal(parts)
+	if err != nil {
+		return payload
+	}
+	msg["parts"] = trimmedParts
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return payload
+	}
+	env["payload"] = out
+	out, err = json.Marshal(env)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // innerPayload returns only the entity of a wire event, so snapshot

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/wire"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
@@ -145,6 +146,32 @@ func TestEntitiesKeepOrder(t *testing.T) {
 	require.Len(t, got, 2)
 	require.Contains(t, string(got[0]), `"id":"m1"`)
 	require.Contains(t, string(got[1]), `"id":"m2"`)
+}
+
+// TestEncodeStripsAttachmentData verifies the gateway's frames carry an
+// attachment's path and type but not its base64 bytes. The ring keeps full
+// frames and snapshots resend them, and the browser only renders the name.
+func TestEncodeStripsAttachmentData(t *testing.T) {
+	t.Parallel()
+	ev := pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
+		ID: "m1", SessionID: "s1", Role: message.User,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "see attached"},
+			message.BinaryContent{Path: "/tmp/shot.png", MIMEType: "image/png", Data: []byte("\x89PNG\r\n\x1a\nrest")},
+		},
+	}}
+	typ, raw, ok := encode(ev)
+	require.True(t, ok)
+	require.Equal(t, "message", typ)
+	require.NotContains(t, string(raw), `"Data"`)
+	require.Contains(t, string(raw), `"Path":"/tmp/shot.png"`)
+	require.Contains(t, string(raw), `"MIMEType":"image/png"`)
+	require.NotContains(t, string(innerPayload(ev)), `"Data"`)
+
+	// The client/server path keeps the bytes it needs.
+	p, ok := wire.Encode(ev)
+	require.True(t, ok)
+	require.Contains(t, string(p.Payload), `"Data"`)
 }
 
 func TestRingIsBounded(t *testing.T) {
