@@ -2,7 +2,9 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -66,6 +68,47 @@ func buildPromptText(t *testing.T, workingDir string, constructor func(...prompt
 	built, err := p.Build(t.Context(), "mock", "mock-model", store)
 	require.NoError(t, err)
 	return built
+}
+
+// contextFilePattern matches one file the prompt rendered: the template puts
+// the content between a newline and the closing tag.
+var contextFilePattern = regexp.MustCompile(`(?s)<file path="[^"]*">\n(.*?)\n</file>`)
+
+// newGitRepo returns a repository root, so context paths resolve against the
+// project root and not against the working directory alone.
+func newGitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), "git", "init", dir)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git init: %s", out)
+	return dir
+}
+
+// projectContextSection returns what the prompt placed between the project
+// context markers.
+func projectContextSection(t *testing.T, built string) string {
+	t.Helper()
+	_, after, ok := strings.Cut(built, "<project_context>")
+	require.True(t, ok, "the prompt carries a project context section")
+	section, _, ok := strings.Cut(after, "</project_context>")
+	require.True(t, ok, "the project context section is closed")
+	return section
+}
+
+// renderedContextFiles returns the content of every file a project context
+// section rendered, which is what the byte budget bounds.
+func renderedContextFiles(t *testing.T, section string) []string {
+	t.Helper()
+	matches := contextFilePattern.FindAllStringSubmatch(section, -1)
+	files := make([]string, 0, len(matches))
+	for _, match := range matches {
+		files = append(files, match[1])
+	}
+	return files
 }
 
 // A subagent works under the project's rules. It does not run the user's
@@ -143,4 +186,43 @@ func TestTaskPromptBudgetsProjectRules(t *testing.T) {
 	require.Contains(t, built, "context truncated to fit the context budget",
 		"the oversized project file is truncated to the budget")
 	require.NotContains(t, built, body, "the whole file does not fit the budget")
+
+	files := renderedContextFiles(t, projectContextSection(t, built))
+	require.Len(t, files, 1)
+	var rendered int
+	for _, file := range files {
+		rendered += len(file)
+	}
+	require.LessOrEqual(t, rendered, budget,
+		"the project rules the subagent sees must fit the budget")
+}
+
+// Broader files are dropped before the most specific one is cut, so a large
+// file at the repository root cannot cost a subagent the rules its own
+// package keeps.
+func TestTaskPromptDropsTheBroaderProjectFileFirst(t *testing.T) {
+	root := newGitRepo(t)
+	broader := "broader-rule-marker\n" + strings.Repeat("b", 280)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(broader), 0o644))
+	pkg := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	specific := "specific-rule-marker\n" + strings.Repeat("s", 280)
+	require.NoError(t, os.WriteFile(filepath.Join(pkg, "AGENTS.md"), []byte(specific), 0o644))
+	isolatedGlobalConfig(t)
+
+	const budget = 400
+	built := buildTaskPromptText(t, pkg, false, func(store *config.ConfigStore) {
+		store.Config().Options.ContextMaxBytes = new(budget)
+	})
+
+	section := projectContextSection(t, built)
+	files := renderedContextFiles(t, section)
+	require.Len(t, files, 1, "the broader file goes first")
+	require.Contains(t, files[0], "specific-rule-marker")
+	require.Contains(t, files[0], strings.Repeat("s", 280),
+		"the package's own rules survive whole")
+	require.NotContains(t, section, "broader-rule-marker")
+	require.Contains(t, section, "omitted",
+		"the budget notice names the file that was dropped")
+	require.Contains(t, section, "Context budget 400 bytes:")
 }
