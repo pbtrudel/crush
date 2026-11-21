@@ -93,6 +93,18 @@ func (s *Status) modeBadge() string {
 	return ""
 }
 
+// badges joins the mode badge and the web mode badge for the status row.
+func (s *Status) badges() string {
+	parts := make([]string, 0, 2)
+	if b := s.modeBadge(); b != "" {
+		parts = append(parts, b)
+	}
+	if s.com.Web != nil && s.com.Web.Running() {
+		parts = append(parts, s.com.Styles.Status.WebBadge.String())
+	}
+	return strings.Join(parts, " ")
+}
+
 // SetWidth sets the width of the status bar and help view.
 func (s *Status) SetWidth(width int) {
 	helpStyle := s.com.Styles.Status.Help
@@ -120,7 +132,7 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 	if !s.hideHelp {
 		helpStyle := s.com.Styles.Status.Help
 		helpWidth := area.Dx() - helpStyle.GetPaddingLeft() - helpStyle.GetPaddingRight()
-		badge := s.modeBadge()
+		badge := s.badges()
 		if badge != "" {
 			// Shrink the hints so the badge does not push them past the
 			// status area.

@@ -2798,6 +2798,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionOpenWeb:
+		cmds = append(cmds, m.openWeb())
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSummarize:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))
@@ -6382,6 +6385,8 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 	switch {
 	case value == "/reload":
 		return m.reloadConfig(false), true
+	case value == "/web":
+		return m.openWeb(), true
 	case value == "/goal" || strings.HasPrefix(value, "/goal "):
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
@@ -7316,6 +7321,26 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 	}
 	awsDlg.Finish(errMsg)
 	return nil
+}
+
+// openWeb starts web mode if needed, opens a browser tab and reports the
+// link, which stays usable when no browser can be opened.
+func (m *UI) openWeb() tea.Cmd {
+	if m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		u, err := web.Open(context.Background())
+		switch {
+		case u == "":
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		case err != nil:
+			return util.ReportWarn("Web mode is running. Open " + u)()
+		default:
+			return util.ReportInfo("Web mode: " + u)()
+		}
+	}
 }
 
 // newSession clears the current session state and prepares for a new session.

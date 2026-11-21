@@ -509,6 +509,7 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
+		NewCommandItem(c.com.Styles, "open_web", "Open Web Mode", "", ActionOpenWeb{}).WithAliases("web").WithIcon("◈"),
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
 	}
 	if c.hasSession && c.com.Config().Options.GetAgentTeams() {

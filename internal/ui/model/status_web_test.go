@@ -1,0 +1,34 @@
+package model
+
+import (
+	"context"
+	"testing"
+
+	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/stretchr/testify/require"
+)
+
+type fakeWeb struct {
+	running bool
+	opens   int
+}
+
+func (f *fakeWeb) Open(context.Context) (string, error) {
+	f.opens++
+	return "http://127.0.0.1:1/#t=x", nil
+}
+
+func (f *fakeWeb) Running() bool { return f.running }
+
+func TestStatusBadgesIncludeWebWhenRunning(t *testing.T) {
+	t.Parallel()
+	com := common.DefaultCommon(nil)
+	s := &Status{com: com}
+	require.NotContains(t, s.badges(), "WEB")
+
+	com.Web = &fakeWeb{running: false}
+	require.NotContains(t, s.badges(), "WEB")
+
+	com.Web = &fakeWeb{running: true}
+	require.Contains(t, s.badges(), "WEB")
+}
