@@ -46,6 +46,7 @@ const usage = `usage:
   crush-eval rescan <batch-id>
   crush-eval limits <batch-id> [--write]
   crush-eval plan <experiment.yaml>
+  crush-eval multiturn --id ID --ref SHA --route NAME --tasks ID,ID [--arms name=margin,...] [--reps N]
   crush-eval login <route>`
 
 func main() {
@@ -87,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return limitsCmd(args[1:], stdout, stderr)
 	case "plan":
 		return planCmd(args[1:], stdout, stderr)
+	case "multiturn":
+		return multiturnCmd(args[1:], stdout, stderr)
 	case "login":
 		return loginCmd(args[1:], stdout, stderr)
 	case "__jail":
