@@ -3908,6 +3908,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	if userPrompt == "" {
 		return
 	}
+	// A subagent run is never shown as a session of its own, so a title
+	// for it would be a billed model request nobody reads.
+	if a.isSubAgent {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, titleTimeout)
 	defer cancel()
 
@@ -3916,6 +3921,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	// while generation runs is not clobbered.
 	var initialTitle string
 	if sess, err := a.sessions.Get(ctx, sessionID); err == nil {
+		// Child sessions (teammates, agent tool runs) sit behind their
+		// parent and keep the title they were created with.
+		if sess.ParentSessionID != "" {
+			return
+		}
 		initialTitle = sess.Title
 	} else {
 		slog.Warn("Failed to read session for title generation", "session_id", sessionID, "error", err)
