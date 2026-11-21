@@ -74,9 +74,12 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// Subscribe before Start returns so no event emitted right after it
-	// is lost.
+	// is lost. The session the terminal views is read here, not in the
+	// pump goroutine: a goroutine that starts late would adopt a session
+	// changed in the meantime as its baseline and never announce the
+	// change.
 	events := g.ws.SubscribeEvents(g.ctx)
-	go g.pump(events)
+	go g.pump(events, g.ws.CurrentSessionID())
 	go func() {
 		defer close(g.done)
 		if err := g.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -121,10 +124,10 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 const followInterval = 250 * time.Millisecond
 
 // pump turns workspace events into frames and reports session changes.
-func (g *Gateway) pump(events <-chan any) {
+// last is the session the terminal was viewing when the gateway started.
+func (g *Gateway) pump(events <-chan any, last string) {
 	ticker := time.NewTicker(followInterval)
 	defer ticker.Stop()
-	last := g.ws.CurrentSessionID()
 	for {
 		select {
 		case <-g.ctx.Done():
