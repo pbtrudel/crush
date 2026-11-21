@@ -7,7 +7,10 @@ import { ConstellationSvg } from './ConstellationSvg';
 
 function webglAvailable(): boolean {
   try {
-    return !!document.createElement('canvas').getContext('webgl2');
+    const gl = document.createElement('canvas').getContext('webgl2');
+    // Release the probe context: browsers cap how many may exist at once.
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    return !!gl;
   } catch {
     return false;
   }

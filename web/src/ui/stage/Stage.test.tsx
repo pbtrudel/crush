@@ -24,7 +24,8 @@ describe('Stage', () => {
 
   it('falls back to the 2D constellation when the 3D scene fails to start', async () => {
     const original = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = (() => ({})) as unknown as typeof original;
+    // A context object is enough for the probe; the loss extension is absent.
+    HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof original;
     lowPower.value = false;
     const root = document.createElement('div');
     try {

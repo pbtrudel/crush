@@ -23,6 +23,14 @@ function contextArc(fill: number, p: Palette): THREE.Mesh {
   return mesh;
 }
 
+// stepColor moves a colour toward the attention target. Full motion blends
+// over several frames, but reduced and off render a single frame per update,
+// so they snap: the user who asked for less motion still sees the cue at once.
+export function stepColor(current: THREE.Color, target: THREE.Color, motion: SceneState['motion']): void {
+  if (motion === 'full') current.lerp(target, 0.2);
+  else current.copy(target);
+}
+
 // mountConstellation draws the holographic projector: a wireframe core
 // hovering over concentric light rings, a context-window arc on the
 // platform, and a hex lattice fading into fog. It only renders while
@@ -121,8 +129,8 @@ export function mountConstellation(canvas: HTMLCanvasElement, initial: SceneStat
       glow.scale.setScalar(pulse);
     }
     const target = state.attention ? MAGENTA : CYAN;
-    coreMat.color.lerp(target, 0.2);
-    glowMat.color.lerp(target, 0.2);
+    stepColor(coreMat.color, target, state.motion);
+    stepColor(glowMat.color, target, state.motion);
     renderer.render(scene, camera);
     raf = animating() ? requestAnimationFrame(draw) : 0;
   }
