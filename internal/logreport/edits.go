@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"strings"
 
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/tidwall/gjson"
 )
 
-// Edits is the Edits section, for edit and multiedit together.
+// Edits is the Edits section, for edit, multiedit and apply_patch together.
 type Edits struct {
 	Calls  int            `json:"calls"`
 	Failed int            `json:"failed"`
@@ -71,7 +72,7 @@ func (s *editsSection) message(p *pass, m *message.Message) {
 	switch m.Role {
 	case message.Assistant:
 		for _, tc := range m.ToolCalls() {
-			if tc.Name != editTool && tc.Name != multiEditTool && tc.Name != writeTool {
+			if tc.Name != editTool && tc.Name != multiEditTool && tc.Name != writeTool && tc.Name != applyPatchTool {
 				continue
 			}
 			c := newEditCall(tc)
@@ -83,7 +84,7 @@ func (s *editsSection) message(p *pass, m *message.Message) {
 		}
 	case message.Tool:
 		for _, tr := range m.ToolResults() {
-			if tr.Name == editTool || tr.Name == multiEditTool {
+			if tr.Name == editTool || tr.Name == multiEditTool || tr.Name == applyPatchTool {
 				s.result(p, tr)
 			}
 		}
@@ -93,14 +94,35 @@ func (s *editsSection) message(p *pass, m *message.Message) {
 func newEditCall(tc message.ToolCall) editCall {
 	h := fnv.New64a()
 	olds := gjson.Get(tc.Input, "edits.#.old_string").Array()
-	if tc.Name == editTool {
+	path := gjson.Get(tc.Input, "file_path").String()
+	switch tc.Name {
+	case editTool:
 		olds = []gjson.Result{gjson.Get(tc.Input, "old_string")}
+	case applyPatchTool:
+		// The patch is the text, so an identical patch is the same
+		// retry, and the section path is the first file it touches.
+		patch := gjson.Get(tc.Input, "patch")
+		olds = []gjson.Result{patch}
+		path = patchPath(patch.String())
 	}
 	for _, old := range olds {
 		h.Write([]byte(old.String()))
 		h.Write([]byte{0})
 	}
-	return editCall{name: tc.Name, path: gjson.Get(tc.Input, "file_path").String(), text: h.Sum64()}
+	return editCall{name: tc.Name, path: path, text: h.Sum64()}
+}
+
+// patchPath reads the first file an apply_patch call touches, so the
+// after-refusal report can tell a retry of the same file from a move on.
+func patchPath(patch string) string {
+	for line := range strings.SplitSeq(patch, "\n") {
+		for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
+			if path, found := strings.CutPrefix(line, prefix); found {
+				return strings.TrimSpace(path)
+			}
+		}
+	}
+	return ""
 }
 
 // follow settles the pending refusals that call c answers.
@@ -175,7 +197,7 @@ func (s *editsSection) finish(p *pass, r *Report) {
 
 func (e Edits) writeText(out io.Writer) {
 	a, runs := e.AfterRefusal, e.Runs
-	fmt.Fprintln(out, "Edits (edit and multiedit)")
+	fmt.Fprintln(out, "Edits (edit, multiedit and apply_patch)")
 	fmt.Fprintf(out, "  calls\t%d\n", e.Calls)
 	fmt.Fprintf(out, "  failed\t%d\t%s\t%s\n", e.Failed, percent(e.Rate), formatCounts(e.Kinds))
 	fmt.Fprintf(out, "  failed inside batches\t%d\t\t%s\n", e.BatchFailures, formatCounts(e.BatchFailureKinds))

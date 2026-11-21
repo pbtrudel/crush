@@ -14,6 +14,7 @@ var lazyCoreTools = map[string]struct{}{
 	tools.ViewToolName:       {},
 	tools.ReadToolName:       {},
 	tools.EditToolName:       {},
+	tools.ApplyPatchToolName: {},
 	tools.WriteToolName:      {},
 	tools.MultiEditToolName:  {},
 	tools.BashToolName:       {},

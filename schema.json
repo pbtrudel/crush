@@ -820,6 +820,11 @@
           "description": "System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family, and leaves tool guidance to the tool descriptions. Both keep the rules, environment, context files and skills.",
           "default": "full"
         },
+        "apply_patch": {
+          "type": "boolean",
+          "description": "Offer GPT and other OpenAI-family models the apply_patch tool (the *** Begin Patch format) instead of edit and multiedit. Off by default, and it changes nothing for models from other families.",
+          "default": false
+        },
         "turn_end_max_continuations": {
           "type": "integer",
           "description": "How many times the turn-end gate may continue one prompt before the turn ends. A continuation is one more model run with a harness message from Crush. 0 turns continuations off and still runs the checks.",

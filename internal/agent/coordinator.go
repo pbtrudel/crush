@@ -1432,6 +1432,18 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
 
+	// A GPT model gets apply_patch instead of edit and multiedit: it was
+	// trained on the *** Begin Patch format, and exact-string matching is
+	// where its edits most often fail. The option is off by default and
+	// changes nothing for any other model family.
+	if c.applyPatchFor(agent) {
+		allTools = slices.DeleteFunc(allTools, func(tool fantasy.AgentTool) bool {
+			name := tool.Info().Name
+			return name == tools.EditToolName || name == tools.MultiEditToolName
+		})
+		allTools = append(allTools, tools.NewApplyPatchTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()))
+	}
+
 	// Interactive-only, and never given to subagents; effectiveToolNames
 	// is what decides both.
 	if slices.Contains(allowed, tools.QuestionToolName) {

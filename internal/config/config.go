@@ -560,6 +560,11 @@ type Options struct {
 	// renders. Full stays the default until an eval shows the lean profile
 	// solves as many tasks.
 	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills.,enum=full,enum=lean,default=full"`
+	// ApplyPatch offers GPT models the apply_patch tool in place of edit
+	// and multiedit. Those models are trained on the *** Begin Patch
+	// format, and exact-string matching is where their edits most often
+	// fail.
+	ApplyPatch *bool `json:"apply_patch,omitempty" jsonschema:"description=Offer GPT and other OpenAI-family models the apply_patch tool (the *** Begin Patch format) instead of edit and multiedit. Off by default\\, and it changes nothing for models from other families.,default=false"`
 	// TurnEndMaxContinuations caps how many times the turn-end gate may
 	// continue one prompt. Zero turns continuations off: the checks still
 	// run and are observed.
@@ -600,6 +605,13 @@ const DefaultMaxBackgroundJobs = 50
 // option existed.
 func (o *Options) GetLazyTools() bool {
 	return o != nil && o.LazyTools != nil && *o.LazyTools
+}
+
+// GetApplyPatch reports whether GPT models are offered apply_patch instead of
+// edit and multiedit. The nil receiver, the unset field and an explicit false
+// all mean the palette is the one it was before the option existed.
+func (o *Options) GetApplyPatch() bool {
+	return o != nil && o.ApplyPatch != nil && *o.ApplyPatch
 }
 
 // GetMaxBackgroundJobs returns the running-job ceiling, always positive.
@@ -1459,6 +1471,7 @@ func allToolNames() []string {
 		"agent_send",
 		"agent_status",
 		"agent_stop",
+		"apply_patch",
 		"bash",
 		"crush_info",
 		"crush_logs",
@@ -1574,6 +1587,7 @@ func SubAgentExcludedTools() []string {
 // subAgentWriteTools are the tools that change files. Only the read-write
 // subagent variant gets them.
 var subAgentWriteTools = []string{
+	"apply_patch",
 	"edit",
 	"multiedit",
 	"write",
