@@ -9,6 +9,7 @@ import './styles/shell.css';
 import './styles/stage.css';
 import './styles/log.css';
 import './styles/deck.css';
+import './styles/interrupt.css';
 import { render } from 'preact';
 import { App } from './ui/App';
 import { boot } from './state/store';

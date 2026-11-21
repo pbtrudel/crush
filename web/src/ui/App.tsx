@@ -11,8 +11,7 @@ import { Stage } from './stage/Stage';
 import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
-// Later tasks fill the layout slot below:
-// import { Interrupt } from './interrupt/Interrupt'; // Task 15
+import { Interrupt } from './interrupt/Interrupt';
 
 export function App() {
   const s = state.value;
@@ -46,7 +45,7 @@ export function App() {
       <div class="holodeck__deck" inert={modal}>
         <CommandDeck />
       </div>
-      {/* Task 15: <Interrupt /> */}
+      <Interrupt />
       <Toasts />
     </div>
   );

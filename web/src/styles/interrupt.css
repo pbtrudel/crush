@@ -1,0 +1,32 @@
+.interrupt-layer:empty { display: none; }
+.interrupt-layer { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; background: oklch(0.10 0.035 265 / 0.55); backdrop-filter: blur(3px); }
+.interrupt {
+  inline-size: min(40rem, calc(100vw - 32px)); max-block-size: calc(100dvh - 64px); overflow-y: auto;
+  display: grid; gap: 12px; padding: var(--space-9);
+  background: var(--surface-solid); border: 1px solid var(--magenta); border-radius: var(--radius); box-shadow: var(--glow-magenta);
+  animation: materialize 420ms var(--ease-out);
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 22px 100%, 0 calc(100% - 22px));
+}
+.interrupt[data-danger='high'] { animation: materialize 420ms var(--ease-out), danger 1.4s ease-in-out 420ms infinite; }
+.interrupt__title { margin: 0; font: 600 var(--step-2)/1.2 var(--font-hud); }
+.interrupt__danger { margin: 0; color: var(--magenta); font: 500 var(--step--1) var(--font-code); overflow-wrap: anywhere; }
+.interrupt__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
+.interrupt__path code { color: var(--cyan); overflow-wrap: anywhere; }
+.interrupt__params { margin: 0; max-block-size: 30vh; overflow: auto; padding: 10px; background: var(--void-deep); border: 1px solid var(--edge); border-radius: var(--radius); font-size: var(--step--1); white-space: pre-wrap; }
+.interrupt__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.interrupt kbd { font: 600 0.75rem var(--font-code); padding: 1px 5px; border: 1px solid currentColor; border-radius: 3px; margin-inline-end: 6px; }
+.qform { border-color: var(--violet); box-shadow: 0 0 0 1px var(--violet), 0 0 36px oklch(0.60 0.20 290 / 0.4); }
+.qform__body { display: contents; }
+.qform__field { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
+.qform__desc { color: var(--text-muted); margin: 0; }
+.qform__choices { display: grid; gap: 6px; }
+.qform__choice { display: flex; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--edge); border-radius: var(--radius); cursor: pointer; min-block-size: 44px; }
+.qform__choice:has(input:checked) { border-color: var(--cyan); background: var(--cyan-dim); }
+.qform__text { display: grid; gap: 4px; }
+.qform__text textarea { background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-prose); }
+.qform__tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.qform__tabs button { padding: 6px 12px; border: 1px solid var(--edge); border-radius: 999px; background: transparent; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px; }
+.qform__tabs button[aria-selected='true'] { border-color: var(--cyan); color: var(--cyan); }
+.qform__tabs button[data-done='true']::after { content: ' ✓'; color: var(--teal); }
+@keyframes materialize { from { transform: perspective(800px) rotateX(18deg) scale(0.92); opacity: 0; filter: blur(6px); } }
+@keyframes danger { 50% { box-shadow: 0 0 0 1px var(--magenta), 0 0 64px oklch(0.68 0.24 330 / 0.7); } }
