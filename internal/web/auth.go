@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const cookieName = "crush_web"
+// cookieNamePrefix prefixes the per-gateway cookie. Cookies ignore ports,
+// so a fixed name would let a second gateway overwrite the first tab's
+// cookie and log it out.
+const cookieNamePrefix = "crush_web_"
 
 const csp = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; " +
 	"connect-src 'self'; object-src 'none'; frame-ancestors 'none'"
@@ -71,7 +74,7 @@ func (g *Gateway) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden_origin", "cross-origin request rejected")
 			return
 		}
-		c, err := r.Cookie(cookieName)
+		c, err := r.Cookie(g.cookieName)
 		if err != nil || !g.tokenMatches(c.Value) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid session cookie")
 			return
@@ -93,7 +96,7 @@ func (g *Gateway) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     g.cookieName,
 		Value:    g.secret,
 		Path:     "/",
 		HttpOnly: true,

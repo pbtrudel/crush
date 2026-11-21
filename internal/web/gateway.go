@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -24,16 +25,17 @@ type Options struct {
 
 // Gateway is a running web mode server bound to the loopback interface.
 type Gateway struct {
-	ws      workspace.Workspace
-	secret  string
-	port    int
-	ln      net.Listener
-	srv     *http.Server
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	hub     *hub
-	pending *pending
+	ws         workspace.Workspace
+	secret     string
+	port       int
+	cookieName string
+	ln         net.Listener
+	srv        *http.Server
+	ctx        context.Context
+	cancel     context.CancelFunc
+	done       chan struct{}
+	hub        *hub
+	pending    *pending
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -54,16 +56,18 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		assets = embeddedAssets()
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	port := ln.Addr().(*net.TCPAddr).Port
 	g := &Gateway{
-		ws:      opts.Workspace,
-		secret:  secret,
-		port:    ln.Addr().(*net.TCPAddr).Port,
-		ln:      ln,
-		ctx:     gctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
-		hub:     newHub(),
-		pending: newPending(),
+		ws:         opts.Workspace,
+		secret:     secret,
+		port:       port,
+		cookieName: cookieNamePrefix + strconv.Itoa(port),
+		ln:         ln,
+		ctx:        gctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		hub:        newHub(),
+		pending:    newPending(),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),

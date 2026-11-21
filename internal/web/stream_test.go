@@ -30,7 +30,7 @@ func dialStream(t *testing.T, g *Gateway, query string) *websocket.Conn {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	h := http.Header{}
-	h.Set("Cookie", cookieName+"="+g.token())
+	h.Set("Cookie", g.cookieName+"="+g.token())
 	// The 101 body is the hijacked connection, so the websocket owns it.
 	c, _, err := websocket.Dial(ctx, strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream"+query, //nolint:bodyclose // See above.
 		&websocket.DialOptions{HTTPHeader: h})

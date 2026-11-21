@@ -109,8 +109,11 @@ The embed must live inside a Go package directory, so the build copies
 - Per-run token: 32 random bytes from `crypto/rand`, base64url encoded.
 - Launch URL is `http://127.0.0.1:<port>/#t=<token>`. The fragment never
   reaches server logs. The page POSTs the token to `/api/auth`, which sets
-  cookie `crush_web=<token>; HttpOnly; SameSite=Strict; Path=/`, then strips
-  the fragment with `history.replaceState`.
+  cookie `crush_web_<port>=<token>; HttpOnly; SameSite=Strict; Path=/`, then
+  strips the fragment with `history.replaceState`. The name carries the port
+  because cookies are not isolated by port: a fixed name would let a second
+  gateway overwrite the first tab's cookie and log that tab out. The
+  frontend never reads the cookie, so the name is free to vary.
 - Every `/api/*` request and the WebSocket upgrade require:
   - a valid cookie (constant-time compare),
   - `Host` equal to `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding),

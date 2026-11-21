@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,7 +59,8 @@ func authedClient(t *testing.T, g *Gateway) *http.Client {
 	cookies := rsp.Cookies()
 	require.Len(t, cookies, 1)
 	c := cookies[0]
-	require.Equal(t, "crush_web", c.Name)
+	require.Equal(t, g.cookieName, c.Name)
+	require.True(t, strings.HasPrefix(c.Name, cookieNamePrefix), "the cookie name is scoped per gateway")
 	require.True(t, c.HttpOnly)
 	require.Equal(t, http.SameSiteStrictMode, c.SameSite)
 	jar := &staticJar{c: c}
@@ -146,4 +149,32 @@ func TestStaticServedWithoutAuthAndHeaders(t *testing.T) {
 	require.Equal(t, "nosniff", rsp.Header.Get("X-Content-Type-Options"))
 	require.Equal(t, "no-referrer", rsp.Header.Get("Referrer-Policy"))
 	require.Equal(t, "no-cache", rsp.Header.Get("Cache-Control"))
+}
+
+// TestTwoGatewaysKeepTheirOwnCookies shares one browser cookie jar between
+// two gateways, as two tabs on loopback would. Cookies are not isolated by
+// port, so each gateway must read only the cookie it set.
+func TestTwoGatewaysKeepTheirOwnCookies(t *testing.T) {
+	t.Parallel()
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+	a, _ := startTest(t)
+	b, _ := startTest(t)
+	for _, g := range []*Gateway{a, b} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth",
+			strings.NewReader(`{"token":"`+g.token()+`"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", g.URL())
+		rsp := doReq(t, client, req)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusNoContent, rsp.StatusCode)
+	}
+	// The second login must not have taken the first tab's cookie away.
+	for _, g := range []*Gateway{a, b} {
+		rsp := do(t, client, http.MethodGet, g.URL()+"/api/health", nil)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusOK, rsp.StatusCode, "gateway on port %s lost its cookie", strconv.Itoa(g.port))
+	}
 }
