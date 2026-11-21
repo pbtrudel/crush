@@ -94,7 +94,7 @@ The embed must live inside a Go package directory, so the build copies
 
 - CLI flag `--web` on the root command (interactive mode only; rejected with
   a clear error for `crush run`).
-- Config option `options.web = true` (crushrc `options web true`, JSON
+- Config option `options.web = true` (crushrc `option web true`, JSON
   `"options": {"web": true}`).
 - TUI command `/web` (also in the commands dialog): starts the gateway if not
   running, otherwise re-opens the tab and shows the URL in a notification.
