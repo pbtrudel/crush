@@ -173,6 +173,11 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 	type sample struct {
 		sum float64
 		n   int
+		// refused and attempted pool the runs' edit counts, so the rate
+		// of a unit is refused over attempted rather than the mean of the
+		// runs' rates.
+		refused   int
+		attempted int
 	}
 	samples := make(map[unit]map[string]*sample)
 	for _, r := range runs {
@@ -194,6 +199,8 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 		}
 		s := samples[u][r.Variant]
 		s.sum += metricScore(r, opts.Metric)
+		s.refused += r.Edits.Refused
+		s.attempted += r.Edits.Attempted
 		s.n++
 	}
 
@@ -203,6 +210,18 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 		variant, variantOK := byVariant[opts.Variant]
 		if !controlOK || !variantOK {
 			cmp.Dropped++
+			continue
+		}
+		if opts.Metric == MetricEditRefusals {
+			// The refusal rate pools the unit's attempts, so many attempts
+			// weigh more than few; an arm that attempted no edit has no
+			// rate to compare and drops the unit.
+			if control.attempted == 0 || variant.attempted == 0 {
+				cmp.Dropped++
+				continue
+			}
+			diffs = append(diffs, float64(variant.refused)/float64(variant.attempted)-
+				float64(control.refused)/float64(control.attempted))
 			continue
 		}
 		diffs = append(diffs, variant.sum/float64(variant.n)-control.sum/float64(control.n))
@@ -228,8 +247,7 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 
 // metricScore is the per-run score of one metric: pass and false completion
 // are indicators, steps and tokens are counts, and tokens sums every kind.
-// The edit refusal rate is refused over attempted, and a run that attempted
-// no edit scores zero.
+// The edit refusal rate is pooled by the unit's counts instead, in Compare.
 func metricScore(r result.Result, m Metric) float64 {
 	switch m {
 	case MetricPassRate:
@@ -246,11 +264,6 @@ func metricScore(r result.Result, m Metric) float64 {
 		return float64(r.Steps)
 	case MetricTokens:
 		return float64(r.Tokens.Total())
-	case MetricEditRefusals:
-		if r.Edits.Attempted == 0 {
-			return 0
-		}
-		return float64(r.Edits.Refused) / float64(r.Edits.Attempted)
 	}
 	return 0
 }
