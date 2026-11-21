@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -141,10 +142,18 @@ func IsAudioPath(path string) bool {
 	})
 }
 
+// WebLauncher starts web mode and opens its browser tab. It is nil when
+// web mode is unavailable.
+type WebLauncher interface {
+	Open(ctx context.Context) (string, error)
+	Running() bool
+}
+
 // Common defines common UI options and configurations.
 type Common struct {
 	Workspace workspace.Workspace
 	Styles    *styles.Styles
+	Web       WebLauncher
 }
 
 // Config returns the pure-data configuration associated with this [Common] instance.

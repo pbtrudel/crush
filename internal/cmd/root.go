@@ -41,7 +41,9 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/exitbanner"
 	ui "github.com/charmbracelet/crush/internal/ui/model"
+	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/web"
 	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -66,6 +68,7 @@ func init() {
 	rootCmd.PersistentFlags().String("worktree", "", "Run in a new Git worktree with the given name")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	rootCmd.Flags().Bool("web", false, "Open this session in a browser tab (web mode)")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
 
 	rootCmd.AddCommand(
@@ -139,6 +142,15 @@ crush --continue
 		event.AppInitialized()
 
 		com := common.DefaultCommon(ws)
+		webCtl := web.NewController(ws)
+		com.Web = webCtl
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := webCtl.Shutdown(ctx); err != nil {
+				slog.Warn("Failed to stop web mode", "error", err)
+			}
+		}()
 		model := ui.New(com, sessionID, continueLast)
 
 		inputFilter := ui.NewFilter()
@@ -146,6 +158,17 @@ crush --continue
 		// Don't leak the errors to the TUI
 		browser.Stderr = nil
 		browser.Stdout = nil
+		var webNotice tea.Msg
+		if webOn, _ := cmd.Flags().GetBool("web"); webOn || ws.Config().Options.Web {
+			u, err := webCtl.Open(cmd.Context())
+			switch {
+			case u == "":
+				return fmt.Errorf("web mode: %w", err)
+			case err != nil:
+				slog.Info("Web mode could not open the browser", "error", err)
+				webNotice = util.NewWarnMsg("Web mode is running. Open " + u)
+			}
+		}
 		program := tea.NewProgram(
 			model,
 			tea.WithEnvironment(env),
@@ -153,6 +176,11 @@ crush --continue
 			tea.WithFilter(inputFilter.Filter),
 		)
 		model.SetProgram(program)
+		if webNotice != nil {
+			// Send blocks until the program loop is running, so deliver it
+			// from a goroutine.
+			go program.Send(webNotice)
+		}
 		go ws.Subscribe(program)
 
 		restoreStderr, err := detachStderr()

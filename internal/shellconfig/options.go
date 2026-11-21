@@ -211,6 +211,7 @@ type optionSpec struct {
 var optionSpecs = map[string]optionSpec{
 	// Boolean fields (stored as-is).
 	"debug":               {jsonKey: "debug", kind: optBool},
+	"web":                 {jsonKey: "web", kind: optBool},
 	"debug-lsp":           {jsonKey: "debug_lsp", kind: optBool},
 	"auto-lsp":            {jsonKey: "auto_lsp", kind: optBool},
 	"progress":            {jsonKey: "progress", kind: optBool},

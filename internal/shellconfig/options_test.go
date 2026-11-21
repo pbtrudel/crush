@@ -314,3 +314,17 @@ func TestOption_CompactTailTokensInvalid(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expects an integer")
 }
+
+func TestOption_Web(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte("option web"))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+	opts := result["options"].(map[string]any)
+	require.Equal(t, true, opts["web"])
+}
