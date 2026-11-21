@@ -304,7 +304,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		// The option is on here: with it off loadExistingFile returned the
 		// refusal already.
 		if !exact || !editWithoutReadEnabled(edit.withoutRead) {
-			return file.guard.refusal(true), nil
+			return refusedBatch(file.guard, failedEdits), nil
 		}
 		degraded = true
 	}
@@ -407,6 +407,23 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 			UnreadEdit:   degraded,
 		},
 	), nil
+}
+
+// refusedBatch is the refusal of a batch the read guard keeps: the guard's
+// sentence, and the edits of the batch that failed, so the model learns
+// which one did not match. When a match failure is why the batch was
+// refused, the refusal takes that failure's kind.
+func refusedBatch(guard readGuard, failed []FailedEdit) fantasy.ToolResponse {
+	resp := guard.refusal(true)
+	if text := failedEditsText(failed); text != "" {
+		resp.Content += "\n\n" + text
+	}
+	for _, edit := range failed {
+		if edit.Kind == ErrorKindTextNotFound || edit.Kind == ErrorKindMultipleMatches {
+			return withErrorKind(resp, edit.Kind)
+		}
+	}
+	return resp
 }
 
 // applyEditToContent applies a single edit, reporting whether it only matched

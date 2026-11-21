@@ -16,7 +16,7 @@ const unreadEditNote = "Note: the file had not been read in this session, or cha
 // unreadEditHint explains, on a refusal the guard kept, what the option
 // would have allowed. Reading the file stays the recommendation: only a
 // match that appears exactly once is edited this way.
-const unreadEditHint = "Reading the file first is still recommended: with edit_without_read on, a file not read in this session, or changed since it was read, is edited only when old_string matches exactly once."
+const unreadEditHint = "Reading the file first is still recommended: with edit_without_read on, every edit in the batch must match exactly once."
 
 // readGuard is what the file tracker says about a file an edit opened. The
 // zero value means the file was read in this session and has not changed
