@@ -7,11 +7,20 @@
   padding-inline: max(var(--space-4), env(safe-area-inset-left));
 }
 .hud {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(12rem, 1fr) auto auto;
   align-items: center;
   gap: var(--space-9);
   padding: var(--space-4) calc(var(--space-4) * 1.5);
+}
+/* The cut corners are painted by a decorative layer. Clipping the header
+   itself would also clip the Display menu that hangs below the strip. */
+.hud::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
   background: linear-gradient(180deg, var(--surface-raised), var(--surface));
   border: 1px solid var(--edge);
   border-radius: var(--radius);
