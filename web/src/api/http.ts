@@ -41,6 +41,7 @@ export const api = {
     return call<{ accepted: boolean }>('POST', `/api/sessions/${encodeURIComponent(sid)}/prompt`, form);
   },
   cancel: (sid: string) => call<void>('POST', `/api/sessions/${encodeURIComponent(sid)}/cancel`),
+  queue: (sid: string) => call<{ queued: string[] }>('GET', `/api/sessions/${encodeURIComponent(sid)}/queue`),
   clearQueue: (sid: string) => call<void>('DELETE', `/api/sessions/${encodeURIComponent(sid)}/queue`),
   grant: (id: string, action: GrantAction) => call<{ resolved: boolean }>('POST', '/api/permissions/grant', { id, action }),
   setMode: (mode: PermissionMode) => call<void>('POST', '/api/permissions/mode', { mode }),

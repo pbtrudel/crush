@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
-import type { PermissionRequest, QuestionRequest } from '../api/types';
+import type { Frame, PermissionRequest, QuestionRequest } from '../api/types';
 import { initialState } from './reducer';
-import { actions, state } from './store';
+import { actions, handleFrames, state } from './store';
+
+const fx = fixtures as unknown as Record<string, Frame>;
 
 function batch(): QuestionRequest {
   return {
@@ -87,5 +90,64 @@ describe('actions.answer', () => {
     await expect(actions.answer('b1', [])).resolves.toBeNull();
     expect(state.value.question).toBeNull();
     expect(state.value.toasts.map((t) => t.text)).toContain('Already answered in the terminal');
+  });
+});
+
+describe('prompt queue', () => {
+  it('clears the chips when the queue is cleared', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', queued: ['first', 'second'] };
+    const clear = vi.spyOn(api, 'clearQueue').mockResolvedValue(undefined);
+    await actions.clearQueue();
+    expect(clear).toHaveBeenCalledWith('s1');
+    expect(state.value.queued).toEqual([]);
+  });
+
+  it('keeps the chips when clearing fails', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', queued: ['first'] };
+    vi.spyOn(api, 'clearQueue').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await actions.clearQueue();
+    expect(state.value.queued).toEqual(['first']);
+    expect(state.value.toasts.map((t) => t.text)).toContain('gateway on fire');
+  });
+
+  it('reloads the queue after queueing a prompt during a run', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', busy: true };
+    vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+    const queue = vi.spyOn(api, 'queue').mockResolvedValue({ queued: ['next task'] });
+    await expect(actions.sendPrompt('next task', [])).resolves.toBeNull();
+    expect(queue).toHaveBeenCalledWith('s1');
+    expect(state.value.queued).toEqual(['next task']);
+  });
+
+  it('does not ask for the queue when the session is idle', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', busy: false };
+    vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+    const queue = vi.spyOn(api, 'queue').mockResolvedValue({ queued: [] });
+    await actions.sendPrompt('only task', []);
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('reloads the queue when a run completes', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', busy: true, queued: ['stale'] };
+    const queue = vi.spyOn(api, 'queue').mockResolvedValue({ queued: [] });
+    handleFrames([fx.run_complete]);
+    await vi.waitFor(() => expect(state.value.queued).toEqual([]));
+    expect(queue).toHaveBeenCalledWith('s1');
+  });
+
+  it('reloads the queue when a user message arrives', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', queued: [] };
+    vi.spyOn(api, 'queue').mockResolvedValue({ queued: ['queued task'] });
+    handleFrames([fx.message_user]);
+    await vi.waitFor(() => expect(state.value.queued).toEqual(['queued task']));
+  });
+
+  it('ignores frames that cannot change the queue', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', queued: ['kept'] };
+    const queue = vi.spyOn(api, 'queue').mockResolvedValue({ queued: [] });
+    handleFrames([fx.message_assistant]);
+    await Promise.resolve();
+    expect(queue).not.toHaveBeenCalled();
+    expect(state.value.queued).toEqual(['kept']);
   });
 });

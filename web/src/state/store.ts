@@ -1,7 +1,9 @@
 import { signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
-import type { PermissionMode, QuestionAnswer, Snapshot } from '../api/types';
+import type {
+  Frame, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
+} from '../api/types';
 import {
   dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
 } from './reducer';
@@ -42,6 +44,26 @@ function isNotPending(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'not_pending';
 }
 
+// queueChanged reports the frames after which the queue may have changed.
+// The event stream carries no queue events, so the deck asks for the list
+// at these points instead.
+function queueChanged(f: Frame): boolean {
+  if (f.type === 'run_complete') return true;
+  if (f.type !== 'message') return false;
+  return (f.payload as WireEvent<Message>).payload.role === 'user';
+}
+
+// refreshQueue reloads the queue chips. A failure is silent: the chips
+// stay as they are and the next snapshot or refresh repairs them.
+async function refreshQueue(sid: string) {
+  try {
+    const { queued } = await api.queue(sid);
+    dispatch((s) => (s.sessionId === sid ? { ...s, queued } : s));
+  } catch {
+    // Nothing to show; the deck already shows the last known queue.
+  }
+}
+
 async function reloadSession(id: string) {
   try {
     const snap: Snapshot = await api.snapshot(id);
@@ -61,17 +83,23 @@ export async function boot() {
     history.replaceState(null, '', location.pathname);
   }
   connectStream({
-    onFrames: (frames) => {
-      dispatch((s) => frames.reduce(reduce, s));
-      const id = state.value.needsReload;
-      if (id) {
-        dispatch((s) => ({ ...s, needsReload: null }));
-        void reloadSession(id);
-      }
-    },
+    onFrames: handleFrames,
     onConn: (c) => dispatch((s) => setConn(s, c)),
     lastSeq: () => state.value.lastSeq,
   });
+}
+
+// handleFrames applies a batch of stream frames and starts the follow-up
+// work the stream cannot express, such as reloading a session or the queue.
+export function handleFrames(frames: Frame[]) {
+  dispatch((s) => frames.reduce(reduce, s));
+  const id = state.value.needsReload;
+  if (id) {
+    dispatch((s) => ({ ...s, needsReload: null }));
+    void reloadSession(id);
+  }
+  const sid = state.value.sessionId;
+  if (sid && frames.some(queueChanged)) void refreshQueue(sid);
 }
 
 export const actions = {
@@ -84,6 +112,7 @@ export const actions = {
     if (!sid) return NO_SESSION_HINT;
     try {
       await api.sendPrompt(sid, prompt, files);
+      if (state.value.busy) await refreshQueue(sid);
       return null;
     } catch (err) {
       return `Prompt not sent: ${errorText(err)}`;
@@ -95,7 +124,13 @@ export const actions = {
   },
   async clearQueue() {
     const sid = state.value.sessionId;
-    if (sid) await api.clearQueue(sid).catch(report);
+    if (!sid) return;
+    try {
+      await api.clearQueue(sid);
+      dispatch((s) => (s.sessionId === sid ? { ...s, queued: [] } : s));
+    } catch (err) {
+      report(err);
+    }
   },
   // grant returns the error text for the dialog to show inline, or null.
   async grant(id: string, action: GrantAction): Promise<string | null> {
