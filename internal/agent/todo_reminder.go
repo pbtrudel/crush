@@ -24,11 +24,14 @@ const (
 // taskProgressToolNames are the tools whose use can finish a task. A step
 // that runs one of them without touching the todo list is the moment the
 // model is most likely to have completed work it should report.
+//
+// Reading a file, waiting for a teammate or reading a background job is not
+// in the map: those steps cannot finish an item, so an accurate list would
+// only be nagged. Bash is judged per command instead, see bashMadeProgress.
 var taskProgressToolNames = map[string]struct{}{
 	tools.EditToolName:          {},
 	tools.MultiEditToolName:     {},
 	tools.WriteToolName:         {},
-	tools.BashToolName:          {},
 	tools.ReplaceSymbolToolName: {},
 	tools.RenameToolName:        {},
 	// Delegation and team-task transitions can finish a task without the
@@ -38,8 +41,16 @@ var taskProgressToolNames = map[string]struct{}{
 	AgentSendToolName:      {},
 	AgentStopToolName:      {},
 	SpawnTeammateToolName:  {},
-	WaitAgentToolName:      {},
 	TeamTaskUpdateToolName: {},
+}
+
+// bashMadeProgress reports whether a bash call could have finished a task.
+// A command that is clearly read-only, or that only waits, cannot. A command
+// the classifier does not recognize counts as progress: the reminder is
+// worth one after a build or a test run, and guessing the other way would
+// let completed work go unreported.
+func bashMadeProgress(input string) bool {
+	return !tools.IsReadOnlyCommand(toolStringInput(input, "command"))
 }
 
 // stepMadeTaskProgress reports whether the step ran a tool that can finish a
@@ -59,10 +70,16 @@ func stepMadeTaskProgress(step fantasy.StepResult) bool {
 		if call.ToolName == tools.TodosToolName {
 			return false
 		}
-		if _, ok := taskProgressToolNames[call.ToolName]; !ok {
+		if _, ok := succeeded[call.ToolCallID]; !ok {
 			continue
 		}
-		if _, ok := succeeded[call.ToolCallID]; !ok {
+		if call.ToolName == tools.BashToolName {
+			if bashMadeProgress(call.Input) {
+				progress = true
+			}
+			continue
+		}
+		if _, ok := taskProgressToolNames[call.ToolName]; !ok {
 			continue
 		}
 		progress = true
@@ -113,9 +130,10 @@ func todoStillOpen(todos []session.Todo, content string) bool {
 // todoReminder renders the advisory message injected after a step that made
 // progress while the todo list still has open tasks. It is a user-role
 // system reminder so every provider accepts it. Once the model has ignored
-// reminders about the same item, it stops asking and states the consequence
-// instead: a final answer that reports the work as done while the list says
-// otherwise is the failure this guard exists to prevent.
+// reminders about the same item, it asks the model to verify the item rather
+// than to update it: a list that is right is better left alone, and a final
+// answer that reports the work as done while the list says otherwise is the
+// failure this guard exists to prevent.
 func todoReminder(todos []session.Todo, unanswered int) string {
 	stale := staleTodo(todos)
 	if stale == "" {
@@ -124,7 +142,7 @@ func todoReminder(todos []session.Todo, unanswered int) string {
 
 	if unanswered >= todoReminderEscalateAfter {
 		return fmt.Sprintf(
-			"<system_reminder>Your todo list still shows %q as unfinished, and %d reminders about it went unanswered. Do not end this turn claiming that work is complete: either mark it completed with the `todos` tool, or say plainly in your answer that it is unfinished. Do not mention this reminder to the user.</system_reminder>",
+			"<system_reminder>Your todo list still shows %q as unfinished, and %d reminders about it went unanswered. Check whether that item is actually done. If it is done, update the list now. If it is not done, leave the entry as it is and continue the work; do not mark it completed just to close this reminder. Do not mention this reminder to the user.</system_reminder>",
 			stale,
 			unanswered,
 		)
