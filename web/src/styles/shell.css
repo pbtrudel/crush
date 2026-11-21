@@ -1,0 +1,100 @@
+.holodeck {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100dvh;
+  padding: var(--space-4);
+  gap: var(--space-4);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left));
+}
+.hud {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-9);
+  padding: var(--space-4) calc(var(--space-4) * 1.5);
+  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: var(--glow-cyan);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+}
+.hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.hud__readouts { display: flex; gap: calc(var(--space-4) * 1.5); margin: 0; flex-wrap: wrap; }
+.hud__readouts dd { margin: 4px 0 0; font: 500 var(--step-1)/1.1 var(--font-hud); font-variant-numeric: tabular-nums; color: var(--cyan); }
+.hud__readouts meter { inline-size: 72px; block-size: 6px; vertical-align: middle; }
+.hud__controls { display: flex; align-items: center; gap: var(--space-4); }
+.hud__select {
+  background: var(--void-deep); color: var(--text); border: 1px solid var(--edge);
+  border-radius: var(--radius); padding: 6px 10px; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px;
+}
+.hud__select[data-mode='yolo'] { border-color: var(--amber); color: var(--amber); }
+.hud__select[data-mode='sysadmin'] { border-color: var(--magenta); color: var(--magenta); }
+.hud__link { display: inline-flex; gap: 6px; align-items: center; font: 500 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.12em; }
+.hud__link svg { fill: var(--teal); }
+.hud__link[data-conn='reconnecting'] svg { fill: var(--amber); animation: blink 1s steps(2) infinite; }
+.hud__link[data-conn='ended'] svg { fill: var(--magenta); }
+.motion-menu { position: relative; }
+.motion-menu summary { cursor: pointer; list-style: none; padding: 8px; }
+.motion-menu__panel {
+  position: absolute; inset-inline-end: 0; z-index: 30; display: grid; gap: 10px;
+  padding: var(--space-4); min-inline-size: 15rem;
+  background: var(--surface-solid); border: 1px solid var(--edge); border-radius: var(--radius);
+}
+.motion-menu fieldset { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.motion-menu label { display: flex; gap: 8px; align-items: center; min-block-size: 32px; }
+/* The banner is absent while linked, so the grid and deck are placed on
+   explicit rows; auto-placement would move them up and stretch the deck. */
+.holodeck__grid {
+  display: grid;
+  grid-template-columns: minmax(22rem, 34rem) 1fr;
+  grid-row: 3;
+  gap: var(--space-4);
+  min-block-size: 0;
+  perspective: 1400px;
+  perspective-origin: 50% 0%;
+}
+.holodeck__deck { grid-row: 4; }
+.panel {
+  min-block-size: 0;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: var(--glow-cyan);
+  backdrop-filter: blur(10px);
+}
+.panel--log { transform: rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+.stage { position: relative; min-block-size: 0; }
+.banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
+.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
+.banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
+.boot {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; gap: var(--space-9);
+  justify-items: center; background: var(--void); transition: opacity var(--dur-out) var(--ease-out), visibility 0s linear var(--dur-out);
+}
+.boot[data-done='true'] { opacity: 0; visibility: hidden; }
+.boot__rings { position: relative; inline-size: 160px; block-size: 160px; }
+.boot__rings span { position: absolute; inset: 0; border: 1px solid var(--cyan); border-radius: 50%; animation: boot-ring 1.6s var(--ease-out) infinite; }
+.boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }
+.boot__rings span:nth-child(3) { animation-delay: 0.53s; }
+@keyframes boot-ring { from { transform: scale(0.2); opacity: 1; } to { transform: scale(1); opacity: 0; } }
+.toasts { position: fixed; inset-block-end: 120px; inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
+.toast {
+  display: flex; gap: 10px; align-items: center; padding: 10px 12px; min-inline-size: 18rem; max-inline-size: 26rem;
+  background: var(--surface-solid); border: 1px solid var(--edge); border-radius: var(--radius); box-shadow: var(--glow-cyan);
+  animation: toast-in var(--dur-in) var(--ease-out);
+}
+.toast[data-tone='error'] { border-color: var(--magenta); }
+.toast[data-tone='warn'] { border-color: var(--amber); }
+.toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
+@keyframes toast-in { from { transform: translateX(24px); opacity: 0; } }
+.unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
+@media (max-width: 1023px) {
+  .hud { grid-template-columns: 1fr; gap: var(--space-4); }
+  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
+  .panel--log { transform: none; order: 2; }
+}
+/* Below 768px everything stacks and the constellation collapses to a strip. */
+@media (max-width: 767px) {
+  .holodeck__grid { grid-template-rows: 96px 1fr; }
+  .hud__readouts { display: none; }
+}

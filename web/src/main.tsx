@@ -5,7 +5,12 @@ import '@fontsource/ibm-plex-sans/500.css';
 import '@fontsource/jetbrains-mono/400.css';
 import './styles/tokens.css';
 import './styles/base.css';
+import './styles/shell.css';
 import { render } from 'preact';
 import { App } from './ui/App';
+import { boot } from './state/store';
 
 render(<App />, document.getElementById('app')!);
+
+// boot() has no double-invocation guard, so it runs here exactly once.
+void boot();
