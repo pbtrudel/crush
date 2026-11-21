@@ -276,3 +276,27 @@ func pairedRuns(n int) []result.Result {
 	}
 	return runs
 }
+
+// Refused edits per attempted edit is the metric the read guard is measured
+// with: a run that made no edit attempt scores zero rather than a division
+// by zero, and the margin rule stays the pass rate's.
+func TestCompareEditRefusals(t *testing.T) {
+	t.Parallel()
+
+	var runs []result.Result
+	for i := 1; i <= 3; i++ {
+		task := "t" + string(rune('0'+i))
+		control := run("control", task, result.KindPlain, 0, true)
+		control.Edits = result.Edits{Attempted: 10, Refused: 4}
+		variant := run("variant", task, result.KindPlain, 0, true)
+		variant.Edits = result.Edits{Attempted: 10, Refused: 1}
+		runs = append(runs, control, variant)
+	}
+	// A task where neither variant edited anything adds no difference.
+	runs = append(runs, run("control", "t4", result.KindPlain, 0, true), run("variant", "t4", result.KindPlain, 0, true))
+
+	cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricEditRefusals, Margin: 0.05})
+	require.Equal(t, 4, cmp.Units)
+	require.InDelta(t, -0.225, cmp.Estimate, 1e-9)
+	require.False(t, cmp.GuardPassed, "the margin rule is not applied to a refusal rate")
+}

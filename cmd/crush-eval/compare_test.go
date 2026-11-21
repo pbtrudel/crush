@@ -183,6 +183,8 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	}
 	runs[0].Gate = result.Gate{Continuations: 1, Claims: 2}
 	runs[1].Gate = result.Gate{Continuations: 2, Claims: 3, UnbackedClaims: 1}
+	runs[0].Edits = result.Edits{Attempted: 6, Refused: 1, NotRead: 1, UnreadApplied: 2}
+	runs[1].Edits = result.Edits{Attempted: 2, Refused: 1, MultipleMatches: 1}
 
 	rows := aggregateRows(runs)
 	var row aggregateRow
@@ -212,19 +214,24 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	require.Equal(t, 5, row.GateClaims)
 	require.Equal(t, 1, row.GateUnbacked)
 	require.Len(t, row.UnbackedRuns, 1)
+	require.Equal(t, 8, row.EditAttempted)
+	require.Equal(t, 2, row.EditRefused)
+	require.Equal(t, 2, row.EditUnreadApplied)
+	require.InDelta(t, 0.25, row.EditRefusalRate, 1e-9)
 
 	var printed bytes.Buffer
 	printCompare(&printed, compareReport{Batch: "b1", Suite: "tree1", Control: "control", Aggregates: rows})
 	for _, want := range []string{
 		"contaminated", "false/completed", "flagged", "completed", "tools",
 		"duration_s", "tok_in", "tok_read", "tok_write", "tok_out", "cost",
-		"continuations", "claims", "unbacked",
+		"continuations", "claims", "unbacked", "edits", "edit_refusals", "unread",
 	} {
 		require.Contains(t, printed.String(), want)
 	}
 	require.Contains(t, printed.String(), "unbacked claims: control "+row.UnbackedRuns[0])
 	require.Contains(t, printed.String(), "33%", "the false-completion rate over completed runs")
 	require.Contains(t, printed.String(), "1.00", "the total cost")
+	require.Contains(t, printed.String(), "25%", "refused edits per attempted edit")
 }
 
 // TestContaminatedRunsInTheReport checks that compare names every

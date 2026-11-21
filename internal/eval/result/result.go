@@ -65,6 +65,20 @@ type Gate struct {
 	UnbackedClaims int `json:"unbacked_claims"`
 }
 
+// Edits is what the run's edit and multiedit calls did, as `crush run
+// --json` reports it: the calls attempted, the refusals split by kind, and
+// the edits applied to a file the session did not read first.
+type Edits struct {
+	Attempted        int `json:"attempted"`
+	Refused          int `json:"refused"`
+	NotRead          int `json:"not_read"`
+	ChangedSinceRead int `json:"changed_since_read"`
+	NoMatch          int `json:"no_match"`
+	MultipleMatches  int `json:"multiple_matches"`
+	Other            int `json:"other"`
+	UnreadApplied    int `json:"unread_applied"`
+}
+
 // Contamination is one tool call whose input named a contamination marker:
 // the markers it matched, and a short excerpt of the input. It is what lets
 // a flagged run be diagnosed after its session database is gone.
@@ -105,7 +119,9 @@ type Result struct {
 	UndeliveredReports int `json:"undelivered_reports"`
 	// Gate is what the turn-end gate did: the continuations it added, and
 	// the checks the answer claimed but no tool call backed.
-	Gate            Gate           `json:"gate"`
+	Gate Gate `json:"gate"`
+	// Edits is what the run's edit and multiedit calls did.
+	Edits           Edits          `json:"edits"`
 	TurnEnds        map[string]int `json:"turn_ends"`
 	UsageLimited    bool           `json:"usage_limited"`
 	Grade           Grade          `json:"grade"`

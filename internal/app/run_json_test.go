@@ -268,3 +268,71 @@ func TestSummarizeRunReportsALimitInTheTree(t *testing.T) {
 	)
 	require.Equal(t, message.TurnEndTimeLimit, summarizeRun("root", rows).Reason, "the deadline is read first")
 }
+
+// editStep is an assistant row that called one tool and nothing else.
+func editStep(sessionID, id, name string) message.Message {
+	return message.Message{SessionID: sessionID, Role: message.Assistant, Parts: []message.ContentPart{
+		message.ToolCall{ID: id, Name: name, Input: `{"file_path":"a.go"}`, Finished: true},
+		message.Finish{Reason: message.FinishReasonEndTurn, TurnEnd: message.TurnEndCompleted},
+	}}
+}
+
+// editAnswer is the tool row that answered one call.
+func editAnswer(sessionID, id, name string, isError bool, metadata string) message.Message {
+	return message.Message{SessionID: sessionID, Role: message.Tool, Parts: []message.ContentPart{
+		message.ToolResult{ToolCallID: id, Name: name, IsError: isError, Metadata: metadata},
+	}}
+}
+
+// The edits object counts the run's edit and multiedit calls: how many were
+// attempted, how many were refused and by which kind, and how many applied
+// to a file not read first. Calls outside the run, and the write tool, are
+// not edits.
+func TestSummarizeRunCountsEdits(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix it.", false),
+		editStep("root", "e1", "edit"),
+		editAnswer("root", "e1", "edit", true, `{"error_kind":"not_read"}`),
+		editStep("root", "e2", "multiedit"),
+		editAnswer("root", "e2", "multiedit", true, `{"error_kind":"multiple_matches"}`),
+		editStep("root", "e3", "edit"),
+		editAnswer("root", "e3", "edit", false, `{"unread_edit":true}`),
+		editStep("root", "w1", "write"),
+		editAnswer("root", "w1", "write", true, `{"error_kind":"not_read"}`),
+		// A result whose call the command did not write is not counted.
+		editAnswer("root", "e9", "edit", true, `{"error_kind":"not_read"}`),
+		editStep("team-1", "e4", "edit"),
+		editAnswer("team-1", "e4", "edit", true, `{"error_kind":"text_not_found"}`),
+		editStep("root", "e5", "edit"),
+		editAnswer("root", "e5", "edit", true, ""),
+	}
+
+	result := summarizeRun("root", rows)
+
+	require.NotNil(t, result.Edits)
+	require.Equal(t, 5, result.Edits.Attempted)
+	require.Equal(t, 4, result.Edits.Refused)
+	require.Equal(t, 1, result.Edits.NotRead)
+	require.Equal(t, 1, result.Edits.MultipleMatches)
+	require.Equal(t, 1, result.Edits.NoMatch)
+	require.Equal(t, 1, result.Edits.Other, "a refusal without a known kind is other")
+	require.Equal(t, 1, result.Edits.UnreadApplied)
+}
+
+// A run that made no edit call prints no edits object, so the output is the
+// object it printed before the metric existed.
+func TestSummarizeRunOmitsTheEditsObjectWithoutCalls(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Run the tests.", false),
+		stepRow("root", "Done.", 1, message.TurnEndCompleted, nil),
+	}
+
+	result := summarizeRun("root", rows)
+	require.Nil(t, result.Edits)
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"edits"`)
+}

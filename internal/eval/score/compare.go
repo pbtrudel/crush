@@ -11,7 +11,9 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/result"
 )
 
-// Metric is the primary metric of an experiment, one of the four of 4.3.
+// Metric is the primary metric of an experiment, one of the metrics of
+// design 4.3 plus the edit refusal rate added with the task suite's edit
+// measurement.
 type Metric string
 
 // The primary metrics of an experiment.
@@ -20,12 +22,14 @@ const (
 	MetricFalseCompletions Metric = "false_completions"
 	MetricSteps            Metric = "steps"
 	MetricTokens           Metric = "tokens"
+	// MetricEditRefusals is refused edits per attempted edit.
+	MetricEditRefusals Metric = "edit_refusals"
 )
 
 // Valid reports whether m is an experiment metric.
 func (m Metric) Valid() bool {
 	switch m {
-	case MetricPassRate, MetricFalseCompletions, MetricSteps, MetricTokens:
+	case MetricPassRate, MetricFalseCompletions, MetricSteps, MetricTokens, MetricEditRefusals:
 		return true
 	}
 	return false
@@ -119,7 +123,7 @@ func catalogsOf(runs []result.Result) []string {
 // batch's final lines.
 func Compare(runs []result.Result, opts Options) (Comparison, error) {
 	if !opts.Metric.Valid() {
-		return Comparison{}, fmt.Errorf("metric %q: want pass_rate, false_completions, steps or tokens", opts.Metric)
+		return Comparison{}, fmt.Errorf("metric %q: want pass_rate, false_completions, steps, tokens or edit_refusals", opts.Metric)
 	}
 	if opts.Control == "" || opts.Variant == "" {
 		return Comparison{}, errors.New("compare needs a control and a variant")
@@ -224,6 +228,8 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 
 // metricScore is the per-run score of one metric: pass and false completion
 // are indicators, steps and tokens are counts, and tokens sums every kind.
+// The edit refusal rate is refused over attempted, and a run that attempted
+// no edit scores zero.
 func metricScore(r result.Result, m Metric) float64 {
 	switch m {
 	case MetricPassRate:
@@ -240,6 +246,11 @@ func metricScore(r result.Result, m Metric) float64 {
 		return float64(r.Steps)
 	case MetricTokens:
 		return float64(r.Tokens.Total())
+	case MetricEditRefusals:
+		if r.Edits.Attempted == 0 {
+			return 0
+		}
+		return float64(r.Edits.Refused) / float64(r.Edits.Attempted)
 	}
 	return 0
 }
