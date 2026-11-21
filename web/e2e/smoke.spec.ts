@@ -1,6 +1,15 @@
 import { test, expect } from './fixture';
 
 test('links, shows the session and streams a reply', async ({ page, gateway }) => {
+  // A violation means the CSP blocks the app itself. Collect every report
+  // so the assertions below fail with the directive that fired.
+  await page.addInitScript(() => {
+    const violations: string[] = [];
+    Object.assign(window, { __cspViolations: violations });
+    window.addEventListener('securitypolicyviolation', (e) => {
+      violations.push(`${e.violatedDirective} ${e.blockedURI}`);
+    });
+  });
   await page.goto(gateway.launch);
   await expect(page).toHaveURL(gateway.origin + '/');
   await expect(page.getByRole('heading', { name: 'Holodeck test' })).toBeVisible();
@@ -8,6 +17,7 @@ test('links, shows the session and streams a reply', async ({ page, gateway }) =
   await page.getByLabel('Transmit to crush').fill('hello');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('log')).toContainText('Signal received. hello');
+  expect(await page.evaluate(() => (window as unknown as { __cspViolations: string[] }).__cspViolations)).toEqual([]);
 });
 
 test('permission round trip with keyboard', async ({ page, gateway }) => {
