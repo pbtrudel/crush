@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -128,7 +127,7 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		}
 		atts = append(atts, message.Attachment{
 			FileName: filepath.Base(fh.Filename),
-			MimeType: attachmentMime(fh.Filename, data),
+			MimeType: attachmentMime(data),
 			Content:  data,
 		})
 	}
@@ -142,11 +141,12 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
 
-func attachmentMime(name string, data []byte) string {
-	if t := mime.TypeByExtension(strings.ToLower(filepath.Ext(name))); t != "" {
-		return strings.Split(t, ";")[0]
-	}
-	return strings.Split(http.DetectContentType(data), ";")[0]
+// attachmentMime classifies attachment content the way the TUI does: the
+// first 512 bytes decide, and the file name is ignored. Browser-supplied
+// types and extensions lie often enough (a .json holds text, a pasted PNG
+// can keep any name) that the bytes are the only trustworthy signal.
+func attachmentMime(data []byte) string {
+	return http.DetectContentType(data[:min(512, len(data))])
 }
 
 func (g *Gateway) handleCancel(w http.ResponseWriter, r *http.Request) {

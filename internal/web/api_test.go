@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,54 @@ func TestPromptMultipartRunsAgentDetached(t *testing.T) {
 		t.Fatal("AgentRun not called")
 	}
 	require.Contains(t, fake.CallLog(), "AgentRun:s1:fix the bug")
+}
+
+// TestPromptSniffsAttachmentTypes verifies attachments are classified the
+// way the TUI classifies them: by content, not by extension. A .json file
+// must land as text so it is inlined, and image bytes must stay images
+// whatever their name says.
+func TestPromptSniffsAttachmentTypes(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	got := make(chan runResult, 1)
+	fake.OnRun = func(_ context.Context, _, _ string, att []message.Attachment) error {
+		got <- runResult{att: att}
+		return nil
+	}
+	for _, tc := range []struct {
+		name  string
+		body  []byte
+		check func(t *testing.T, mime string)
+	}{
+		{"config.json", []byte(`{"answer": 42}`), func(t *testing.T, mime string) {
+			require.True(t, strings.HasPrefix(mime, "text/"), "json is text, got %q", mime)
+		}},
+		{"actually-a-png.json", []byte("\x89PNG\r\n\x1a\nrest"), func(t *testing.T, mime string) {
+			require.Equal(t, "image/png", mime)
+		}},
+	} {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		require.NoError(t, mw.WriteField("prompt", "look at this"))
+		fw, err := mw.CreateFormFile("attachments", tc.name)
+		require.NoError(t, err)
+		_, _ = fw.Write(tc.body)
+		require.NoError(t, mw.Close())
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rsp := doReq(t, authedClient(t, g), req)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+
+		select {
+		case res := <-got:
+			require.Len(t, res.att, 1)
+			tc.check(t, res.att[0].MimeType)
+		case <-time.After(2 * time.Second):
+			t.Fatal("AgentRun not called")
+		}
+	}
 }
 
 func TestPromptEmptyRejected(t *testing.T) {
