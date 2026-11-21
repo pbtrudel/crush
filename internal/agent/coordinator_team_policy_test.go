@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -23,10 +25,22 @@ var teamToolNames = []string{
 	"team_task_update",
 }
 
+// policyTestSetup is how a policy test wants its coordinator built.
+type policyTestSetup struct {
+	// interactive mirrors the TUI run mode, which is what decides whether
+	// delegation blocks or detaches.
+	interactive bool
+	// disabledTools mirrors the disabled_tools option.
+	disabledTools []string
+	// agentTeams forces the Agent Teams setting on or off. nil leaves the
+	// default, which is on.
+	agentTeams *bool
+}
+
 // newPolicyTestCoordinator builds a real coordinator against a hermetic config
 // so the coder's system prompt comes from the production path, the same one a
-// user gets. disabledTools mirrors the disabled_tools option.
-func newPolicyTestCoordinator(t *testing.T, disabledTools []string) *coordinator {
+// user gets.
+func newPolicyTestCoordinator(t *testing.T, setup policyTestSetup) *coordinator {
 	t.Helper()
 
 	env := testEnv(t)
@@ -48,7 +62,8 @@ func newPolicyTestCoordinator(t *testing.T, disabledTools []string) *coordinator
 		config.SelectedModel{Provider: providerID, Model: "model-a"})
 	cfg.OverridePreferredModel(config.SelectedModelTypeSmall,
 		config.SelectedModel{Provider: providerID, Model: "model-a"})
-	cfg.Config().Options.DisabledTools = disabledTools
+	cfg.Config().Options.DisabledTools = setup.disabledTools
+	cfg.Config().Options.AgentTeams = setup.agentTeams
 	cfg.SetupAgents()
 
 	coord, err := NewCoordinator(t.Context(), CoordinatorOptions{
@@ -56,7 +71,7 @@ func newPolicyTestCoordinator(t *testing.T, disabledTools []string) *coordinator
 		Sessions:    env.sessions,
 		Messages:    env.messages,
 		Permissions: env.permissions,
-		Interactive: true,
+		Interactive: setup.interactive,
 	})
 	require.NoError(t, err)
 
@@ -75,7 +90,7 @@ func newPolicyTestCoordinator(t *testing.T, disabledTools []string) *coordinator
 // pins: without that argument the policy is rendered for everyone.
 func TestCoderPromptRendersTeamPolicyOnlyWithTeamTools(t *testing.T) {
 	t.Run("default palette", func(t *testing.T) {
-		coord := newPolicyTestCoordinator(t, nil)
+		coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
 
 		coderCfg := coord.cfg.Config().Agents[config.AgentCoder]
 		require.Contains(t, coderCfg.AllowedTools, "spawn_teammate",
@@ -85,7 +100,7 @@ func TestCoderPromptRendersTeamPolicyOnlyWithTeamTools(t *testing.T) {
 	})
 
 	t.Run("team tools disabled", func(t *testing.T) {
-		coord := newPolicyTestCoordinator(t, teamToolNames)
+		coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true, disabledTools: teamToolNames})
 
 		coderCfg := coord.cfg.Config().Agents[config.AgentCoder]
 		for _, name := range teamToolNames {
@@ -100,10 +115,88 @@ func TestCoderPromptRendersTeamPolicyOnlyWithTeamTools(t *testing.T) {
 
 // Dropping the policy must not take the rest of the prompt with it.
 func TestCoderPromptWithDisabledTeamToolsKeepsTheRest(t *testing.T) {
-	coord := newPolicyTestCoordinator(t, teamToolNames)
+	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true, disabledTools: teamToolNames})
 
 	prompt := coord.agents[config.AgentCoder].SystemPrompt()
 	require.Contains(t, prompt, "<critical_rules>")
 	require.Contains(t, prompt, "<tool_usage>")
 	require.NotContains(t, prompt, "Use it by default: the Lead coordinates and delegates")
+}
+
+// delegationToolNames are the per-agent delegation tools the coder palette
+// drops when Agent Teams is off.
+var delegationToolNames = []string{
+	AgentDispatchToolName,
+	AgentSendToolName,
+	AgentStatusToolName,
+	AgentStopToolName,
+}
+
+// coderToolNames returns the tools the coder agent currently holds.
+func coderToolNames(t *testing.T, coord *coordinator) []string {
+	t.Helper()
+	agent, ok := coord.agents[config.AgentCoder].(*sessionAgent)
+	require.True(t, ok, "the coder agent is a session agent")
+	held := agent.tools.Copy()
+	names := make([]string, 0, len(held))
+	for _, tool := range held {
+		names = append(names, tool.Info().Name)
+	}
+	return names
+}
+
+// With Agent Teams off, nothing that hands work to another agent is attached.
+// agentic_fetch stays: it runs a read-only helper inside its own call.
+func TestAgentTeamsOffRemovesDelegationTools(t *testing.T) {
+	on := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
+	palette := coderToolNames(t, on)
+	for _, name := range append(slices.Clone(delegationToolNames), teamToolNames...) {
+		require.Contains(t, palette, name, "the default palette must hold the delegation surface")
+	}
+
+	off := false
+	disabled := newPolicyTestCoordinator(t, policyTestSetup{interactive: true, agentTeams: &off})
+	palette = coderToolNames(t, disabled)
+	for _, name := range append(slices.Clone(delegationToolNames), teamToolNames...) {
+		require.NotContains(t, palette, name, "turned-off agents must not be offered")
+	}
+	require.Contains(t, palette, tools.AgenticFetchToolName, "agentic_fetch is not a delegation tool")
+	require.Contains(t, palette, "bash")
+}
+
+// A headless run keeps the blocking agent tool while Agent Teams is on, and
+// loses it with the rest of the delegation surface when it is off.
+func TestAgentTeamsOffRemovesTheLegacyAgentToolInRunMode(t *testing.T) {
+	on := newPolicyTestCoordinator(t, policyTestSetup{})
+	require.Contains(t, coderToolNames(t, on), AgentToolName)
+
+	off := false
+	disabled := newPolicyTestCoordinator(t, policyTestSetup{agentTeams: &off})
+	require.NotContains(t, coderToolNames(t, disabled), AgentToolName)
+}
+
+// Turning Agent Teams off rebuilds the palette of the live agents, so the
+// change takes effect without a restart.
+func TestAgentTeamsOffRebuildsTheLivePalette(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
+	require.Contains(t, coderToolNames(t, coord), AgentDispatchToolName)
+
+	// Stand in for the toggle's config write: the reload reads the setting
+	// from the published config and rebuilds the palette from it.
+	off := false
+	coord.cfg.Config().Options.AgentTeams = &off
+	require.NoError(t, coord.RefreshModels(t.Context()))
+
+	palette := coderToolNames(t, coord)
+	require.NotContains(t, palette, AgentDispatchToolName)
+	require.NotContains(t, palette, SpawnTeammateToolName)
+	require.Contains(t, palette, tools.AgenticFetchToolName)
+
+	// Turning it back on restores the whole surface.
+	on := true
+	coord.cfg.Config().Options.AgentTeams = &on
+	require.NoError(t, coord.RefreshModels(t.Context()))
+	palette = coderToolNames(t, coord)
+	require.Contains(t, palette, AgentDispatchToolName)
+	require.Contains(t, palette, SpawnTeammateToolName)
 }

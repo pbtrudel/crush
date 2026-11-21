@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -78,6 +80,29 @@ func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.Co
 		DisableAutoSummarize: disableAutoSummarize,
 		Tools:                tools,
 		titles:               env.titles,
+	}).(*sessionAgent)
+}
+
+// newVisionCompactionAgent builds a compaction agent whose model can see
+// images and whose config caps the request image budget, so a test can drive
+// the media passes through a live step and a compaction alike.
+func newVisionCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.ConfigStore, tools ...fantasy.AgentTool) *sessionAgent {
+	large := Model{
+		Model: model,
+		CatwalkCfg: catwalk.Model{
+			ContextWindow:    200_000,
+			DefaultMaxTokens: 32_000,
+			Capabilities:     catwalk.Capabilities{Vision: true},
+		},
+	}
+	return NewSessionAgent(SessionAgentOptions{
+		Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },
+		SystemPrompt: "SYSTEM PROMPT",
+		Sessions:     env.sessions,
+		Messages:     env.messages,
+		Cfg:          cfg,
+		Tools:        tools,
+		titles:       env.titles,
 	}).(*sessionAgent)
 }
 
@@ -610,4 +635,168 @@ func TestSummarize_AttachesCompactionStats(t *testing.T) {
 	require.Equal(t, 2, stats.KeptMessages)
 	require.Equal(t, "manual", stats.Trigger)
 	require.Equal(t, version.BuildStamp(), summary.FinishPart().Build)
+}
+
+// toolRequestModel records every request that carries tools, which is every
+// step the agent itself sends (title generation sends none). It calls the
+// "probe" tool on its first toolSteps steps and then answers with a fixed
+// text, so a turn can be made to carry a tool result.
+type toolRequestModel struct {
+	fakeLanguageModel
+	text      string
+	toolSteps int
+	mu        sync.Mutex
+	calls     []fantasy.Call
+}
+
+func (m *toolRequestModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if len(call.Tools) == 0 {
+		return func(yield func(fantasy.StreamPart) bool) {
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+		}, nil
+	}
+	m.mu.Lock()
+	step := len(m.calls)
+	m.calls = append(m.calls, call)
+	m.mu.Unlock()
+	return func(yield func(fantasy.StreamPart) bool) {
+		if step < m.toolSteps {
+			if !yield(fantasy.StreamPart{
+				Type:          fantasy.StreamPartTypeToolCall,
+				ID:            fmt.Sprintf("call-%d", step+1),
+				ToolCallName:  "probe",
+				ToolCallInput: "{}",
+			}) {
+				return
+			}
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.text}) {
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+	}, nil
+}
+
+// toolsJSON renders a request's tools block, which is serialized ahead of the
+// messages and therefore decides whether the whole prompt cache is reused.
+func toolsJSON(t *testing.T, tools []fantasy.Tool) string {
+	t.Helper()
+	data, err := json.Marshal(tools)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// toolBreakpointJSON renders a request tool's provider options, where the
+// last-tool cache breakpoint lives. Test tools serialize as function tools.
+func toolBreakpointJSON(t *testing.T, tool fantasy.Tool) string {
+	t.Helper()
+	fn, ok := tool.(fantasy.FunctionTool)
+	require.True(t, ok)
+	data, err := json.Marshal(fn.ProviderOptions)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// TestSummarize_SendsTheToolListOfTheLastStep pins the frozen palette. The
+// tools block precedes the messages in every request, so a registry that
+// changed after the turn's last step (a server that connected, a server that
+// went away) must not rewrite it: the compaction has to re-send the list that
+// step sent or the provider re-reads the whole conversation.
+func TestSummarize_SendsTheToolListOfTheLastStep(t *testing.T) {
+	env := testEnv(t)
+	model := &toolRequestModel{text: "done"}
+	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: "alpha"}, &recordingTool{name: "beta"})
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	_, err = agent.Run(ctx, SessionAgentCall{Prompt: "hello", SessionID: sess.ID, MaxOutputTokens: 1000})
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	live := model.calls[0].Tools
+	require.Equal(t, []string{"alpha", "beta"}, fantasyToolNames(live))
+
+	// The registry changes after the step that filled the cache: one tool
+	// goes away and another is registered.
+	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "alpha"}, &recordingTool{name: "gamma"}})
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.Len(t, model.calls, 2)
+
+	require.Equal(t, toolsJSON(t, live), toolsJSON(t, model.calls[1].Tools),
+		"the compaction must send the tools block of the last step, byte for byte")
+}
+
+// fantasyToolNames lists the names of a request's tools, in order.
+func fantasyToolNames(tools []fantasy.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.GetName())
+	}
+	return names
+}
+
+// messagesJSON renders each message of a request on its own, without the
+// message-level cache-control markers (the only part of a message that a
+// breakpoint is allowed to move), so two requests can be compared on the
+// bytes the provider reads.
+func messagesJSON(t *testing.T, messages []fantasy.Message) []string {
+	t.Helper()
+	out := make([]string, len(messages))
+	for i, msg := range messages {
+		msg.ProviderOptions = nil
+		data, err := json.Marshal(msg)
+		require.NoError(t, err)
+		out[i] = string(data)
+	}
+	return out
+}
+
+// TestSummarize_AppliesTheLiveStepMediaPasses pins the media rewrites. Every
+// live step drops empty tool media and applies the request image budget, so a
+// compaction request that skips them sends different bytes at the first image
+// and re-reads everything behind it.
+func TestSummarize_AppliesTheLiveStepMediaPasses(t *testing.T) {
+	env := testEnv(t)
+	model := &toolRequestModel{text: "done"}
+	imageLimit := 1
+	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit}})
+	agent := newVisionCompactionAgent(env, model, cfg, &recordingTool{name: "alpha"})
+
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	// Two images, so the one-image budget has to drop the oldest.
+	for _, name := range []string{"first.png", "second.png"} {
+		_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role: message.User,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "look at " + name},
+				message.BinaryContent{Path: name, MIMEType: "image/png", Data: []byte("fake-png")},
+			},
+		})
+		require.NoError(t, err)
+	}
+
+	_, err = agent.Run(ctx, SessionAgentCall{Prompt: "carry on", SessionID: sess.ID, MaxOutputTokens: 1000})
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	live := messagesJSON(t, model.calls[0].Prompt)
+	require.Contains(t, strings.Join(live, "\n"), imageOmittedText,
+		"the live step must omit the oldest image")
+
+	require.NoError(t, agent.Summarize(ctx, sess.ID, nil, nil))
+	require.Len(t, model.calls, 2)
+
+	compaction := messagesJSON(t, model.calls[1].Prompt)
+	require.Greater(t, len(compaction), len(live))
+	require.Equal(t, live, compaction[:len(live)],
+		"the compaction must send the live step's messages unchanged")
+	require.Contains(t, compaction[len(compaction)-1], "Compact the conversation above")
 }

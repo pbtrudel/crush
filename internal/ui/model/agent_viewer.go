@@ -444,7 +444,7 @@ func (v *agentViewer) Draw(scr uv.Screen, area uv.Rectangle) {
 
 func (v *agentViewer) header() string {
 	styles := v.com.Styles
-	name := styles.Tool.AgentName.Render(v.descriptor.Name)
+	name := styles.Tool.AgentName.Render(v.descriptor.Name) + v.modelLabel()
 	if v.loading && v.chat.Len() == 0 {
 		icon := styles.Resource.WorkingIcon.Render(subAgentSpinner(time.Now()))
 		return fmt.Sprintf("%s Loading %s…  esc back", icon, name)
@@ -458,4 +458,17 @@ func (v *agentViewer) header() string {
 		status = agentrun.StatusDone
 	}
 	return fmt.Sprintf("%s %s · %s  esc back", styles.Resource.OfflineIcon.String(), name, status)
+}
+
+// modelLabel renders the model the viewed agent runs on, muted and empty when
+// it is not known.
+func (v *agentViewer) modelLabel() string {
+	if v.descriptor.Model == "" {
+		return ""
+	}
+	model := v.descriptor.Model
+	if v.descriptor.ModelProvider != "" {
+		model += " · " + v.descriptor.ModelProvider
+	}
+	return " · " + v.com.Styles.Tool.ParamMain.Render(model)
 }

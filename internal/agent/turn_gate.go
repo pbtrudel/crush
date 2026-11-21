@@ -302,7 +302,7 @@ func (a *sessionAgent) compactDroppedGate(ctx context.Context, call SessionAgent
 	}
 	threshold, _ := a.compactionConfig()
 	trigger := turnCompactionTrigger(false, false, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
-	if err := a.summarize(ctx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, false); err != nil {
+	if err := a.summarize(ctx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false); err != nil {
 		slog.Warn("Failed to compact a dropped turn-end continuation",
 			"session_id", call.SessionID, "error", err)
 	}

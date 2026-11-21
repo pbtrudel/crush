@@ -421,6 +421,11 @@ type sessionAgent struct {
 	// back to their sorted positions, which would rewrite the block and
 	// re-read the conversation from the first adopted tool.
 	adoptedTools *csync.Map[string, []string]
+	// stepTools records, per session, the tool list the last step actually
+	// sent. The tools block is serialized ahead of the messages, so a
+	// compaction re-sends that exact list instead of rebuilding it from a
+	// registry a server may have changed since (see toolsForStep).
+	stepTools *csync.Map[string, []fantasy.AgentTool]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
@@ -541,6 +546,7 @@ func NewSessionAgent(
 		promptHashes:           csync.NewMap[string, []string](),
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
+		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
@@ -1347,7 +1353,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactionTriggerFusionPreflight, false, false); err != nil {
+		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactionTriggerFusionPreflight, false); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -1521,6 +1527,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				a.applyToolCacheBreakpoint(stepTools)
 			}
 			prepared.Tools = stepTools
+			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
 			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
@@ -2113,7 +2120,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 		threshold, _ := a.compactionConfig()
 		trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
+		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false)
 		// Recorded before the returns below, which a failed compaction
 		// takes, and before a blocked one is cleared.
 		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
@@ -2364,15 +2371,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactionTriggerManual, false, false)
+	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactionTriggerManual, false)
 }
 
 // summarize runs one compaction request. active reports that the caller
 // already owns the session's active-run registration (the model-switch path
-// runs inside Run), so this call must not replace or clear it. atLimit
-// reports that the window, not the threshold, forced this compaction, which
-// is the only case that has to rewrite history the provider already cached.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger compactionTrigger, pinned, atLimit bool) error {
+// runs inside Run), so this call must not replace or clear it.
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger compactionTrigger, pinned bool) error {
 	if !active && a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
@@ -2394,11 +2399,17 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		return nil
 	}
 	// The compaction request must send the bytes the turn sent, or it
-	// misses the cache it exists to preserve.
-	// Slim with "now" as the trailing message's time, not zero: a preflight
-	// compaction runs before the prompt that triggered it is stored, and the
-	// request that follows measures the same trailing idle gap.
-	a.slimHistory(largeModel, msgs, a.now().Unix())
+	// misses the cache it exists to preserve. Slim from the trailing
+	// message's own time, the way the turn that filled the cache measured
+	// its idle gap from the prompt it had just stored: measuring from "now"
+	// would stub the whole history of a session that has simply been quiet
+	// for longer than the idle window. A preflight compaction still measures
+	// from "now", because its gap is the one the coming prompt will close.
+	anchor := a.now().Unix()
+	if !trigger.measuresFromNow() && len(msgs) > 0 && msgs[len(msgs)-1].CreatedAt > 0 {
+		anchor = msgs[len(msgs)-1].CreatedAt
+	}
+	a.slimHistory(largeModel, msgs, anchor)
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
@@ -2408,8 +2419,21 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// the prompt from a different system prompt or tool list — as this
 	// path once did — discards the cache for the entire context.
 	systemPrompt := a.systemPromptForSession(sessionID)
-	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
-	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	// The tools block is serialized ahead of the messages, so rebuilding it
+	// here from a registry that changed since the turn's last step would
+	// rewrite the cached prefix for the whole conversation. Re-send the list
+	// that step sent. Only a compaction with no live step behind it, such as
+	// a manual /compact in a fresh process, has to build one.
+	compactionTools, ok := a.stepTools.Get(sessionID)
+	if ok {
+		// The list may name a tool the registry has dropped since. That is
+		// intended: the guard refuses to run any tool, and re-sending the
+		// list the step sent is what keeps the prefix cacheable.
+		compactionTools = slices.Clone(compactionTools)
+	} else {
+		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
 	// keeps any text a tool did produce within the same budget the session
 	// log uses. Composing them means neither layer can be lost by editing
@@ -2454,12 +2478,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// compaction request stops matching the conversation from the first
 	// pruned result on and is billed in full, and the summarizer sees less.
 	// Keep the history byte-identical unless the request cannot fit
-	// otherwise. A compaction forced by the window always prunes: the
-	// session's token count predates the tool results that filled it.
-	// Decide from the larger of the reported context and an estimate of what
-	// this request will actually carry. The reported count is exact for the
-	// request it came from but predates anything stored afterwards, such as a
-	// large tool result, and preflight compaction decided to run from the
+	// otherwise, whatever trigger asked for it: the mid-turn guard fires
+	// while the request still fits, and rewriting there would throw away a
+	// warm cache for nothing. An overflow recovery is the exception, because
+	// the provider has already rejected that request as too large: the size
+	// below is a heuristic built from the last request's count and an
+	// estimate, and neither can be trusted against a rejection. Decide from
+	// the larger of the reported context and an estimate of what this
+	// request will actually carry. The reported count is exact for the
+	// request it came from but predates anything stored afterwards, such as
+	// a large tool result, and preflight compaction decided to run from the
 	// assembled prompt, not from that count. Zero reported usage still means
 	// the size is unknown, and an unknown size never fits.
 	contextTokens := tokensBefore
@@ -2468,7 +2496,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			contextTokens = estimate
 		}
 	}
-	if atLimit || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
+	if trigger == compactionTriggerOverflow || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
 		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
 			slog.Debug(
 				"Pruned tool results before compaction",
@@ -2551,7 +2579,13 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			}
 			a.normalizePromptMessages(prepared.Messages)
 			prepared.Tools = compactionTools
+			// Every live step rewrites empty tool media and applies the
+			// request image budget before sending. Skipping either here
+			// would change the bytes at the first rewritten part and
+			// re-read the conversation behind it.
+			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 			// The last-message marker lands on the message that closed
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
@@ -2796,7 +2830,7 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactionTriggerFusionRoute, true, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactionTriggerFusionRoute, true); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2924,7 +2958,7 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactionTriggerModelSwitch, false, false); err != nil {
+	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactionTriggerModelSwitch, false); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)

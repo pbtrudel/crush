@@ -111,7 +111,7 @@ func TestAgentViewerUIOpenSelectorAndReplacementGeneration(t *testing.T) {
 	_ = u.openAgentsDialog()
 	require.True(t, u.dialog.ContainsDialog(dialog.AgentsID))
 	cmd := u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	require.False(t, u.dialog.ContainsDialog(dialog.AgentsID))
+	require.False(t, u.dialog.HasDialogs(), "the viewer covers the list it came from")
 	require.NotNil(t, u.agentViewer)
 	require.Equal(t, "child", u.agentViewer.descriptor.SessionID)
 	require.Equal(t, uint64(1), u.agentViewerGeneration)
@@ -185,10 +185,53 @@ func TestAgentViewerUIClosePreservesMainAndDialogPriority(t *testing.T) {
 	_ = u.openAgentViewer(dialog.AgentDescriptor{SessionID: "child", Name: "researcher"})
 	u.dialog.OpenDialog(dialog.NewAgents(u.com, nil))
 	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	require.NotNil(t, u.agentViewer, "esc closes the front dialog before the viewer")
+	require.NotNil(t, u.agentViewer, "esc closes a dialog opened over the viewer first")
 	require.False(t, u.dialog.HasDialogs())
 	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	require.Nil(t, u.agentViewer)
+	require.Zero(t, ws.cancelCalls)
+	require.Zero(t, ws.setCurrentSessionCalls)
+}
+
+// Esc in an agent viewer goes back to the list it was opened from, with the
+// filter and the selection it had, and a second Esc leaves that list.
+func TestAgentViewerUIReturnsToTheAgentsList(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newAgentViewerUITest(t)
+	u.agentRuns = []agentrun.Run{
+		{
+			SessionID: "child-a", ParentSessionID: "main", Name: "researcher",
+			Kind: agentrun.KindSubagent, Status: agentrun.StatusDone,
+		},
+		{
+			SessionID: "child-b", ParentSessionID: "main", Name: "writer",
+			Kind: agentrun.KindSubagent, Status: agentrun.StatusDone,
+		},
+	}
+
+	_ = u.openAgentsDialog()
+	require.True(t, u.dialog.ContainsDialog(dialog.AgentsID))
+	// The filter leaves one row, so the list keeps both a filter and a
+	// selection worth restoring.
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: 'w', Text: "w"})
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.NotNil(t, u.agentViewer)
+	require.Equal(t, "child-b", u.agentViewer.descriptor.SessionID)
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.Nil(t, u.agentViewer, "esc leaves the viewer")
+	require.True(t, u.dialog.ContainsDialog(dialog.AgentsID), "esc returns to the agents list")
+
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.NotNil(t, u.agentViewer)
+	require.Equal(t, "child-b", u.agentViewer.descriptor.SessionID, "the list kept its filter and selection")
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.Nil(t, u.agentViewer)
+	require.True(t, u.dialog.ContainsDialog(dialog.AgentsID))
+	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.False(t, u.dialog.HasDialogs(), "a second esc closes the list")
 	require.Zero(t, ws.cancelCalls)
 	require.Zero(t, ws.setCurrentSessionCalls)
 }
@@ -555,4 +598,83 @@ func TestAgentViewerUITextRemainsReadableAtNarrowWidth(t *testing.T) {
 	require.Equal(t, max(0, viewer.height-2), viewer.chat.Height())
 	scr := uv.NewScreenBuffer(u.width, u.height)
 	require.NotPanics(t, func() { u.Draw(scr, scr.Bounds()) })
+}
+
+// The viewer header names the model the viewed agent runs on, and stays as it
+// was when the model is unknown.
+func TestAgentViewerUIHeaderShowsTheAgentModel(t *testing.T) {
+	t.Parallel()
+
+	u, _ := newAgentViewerUITest(t)
+	known := newAgentViewer(u.com, dialog.AgentDescriptor{
+		SessionID: "child", Name: "researcher", Status: agentrun.StatusDone,
+		Model: "glm-5", ModelProvider: "hyper",
+	}, config.ScrollbarDefault, 1)
+	require.Contains(t, ansi.Strip(known.header()), "researcher · glm-5 · hyper")
+
+	unknown := newAgentViewer(u.com, dialog.AgentDescriptor{
+		SessionID: "child", Name: "researcher", Status: agentrun.StatusDone,
+	}, config.ScrollbarDefault, 1)
+	require.NotContains(t, ansi.Strip(unknown.header()), " ·  · ")
+	require.Contains(t, ansi.Strip(unknown.header()), "researcher")
+}
+
+// Esc does not send the user back to a list that no longer exists: with Agent
+// Teams off, leaving the viewer leaves the session on screen.
+func TestAgentViewerUIEscDoesNotReopenTheListWhenAgentsAreOff(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newAgentTeamsTest(t)
+	u.agentRuns = []agentrun.Run{{
+		SessionID: "child", ParentSessionID: "main", Name: "researcher",
+		Kind: agentrun.KindSubagent, Status: agentrun.StatusDone,
+	}}
+	_ = u.openAgentsDialog()
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.NotNil(t, u.agentViewer)
+
+	ws.setGlobal(false)
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.Nil(t, u.agentViewer)
+	require.False(t, u.dialog.HasDialogs(), "a turned-off list is not reopened")
+}
+
+// The list comes back rebuilt, so a status or model that changed while the
+// viewer was open shows up, and it keeps the search and the selection.
+func TestAgentViewerUIReopensTheListWithFreshDescriptors(t *testing.T) {
+	t.Parallel()
+
+	u, _ := newAgentViewerUITest(t)
+	u.agentRuns = []agentrun.Run{
+		{
+			SessionID: "child-a", ParentSessionID: "main", Name: "researcher",
+			Kind: agentrun.KindSubagent, Status: agentrun.StatusDone,
+		},
+		{
+			SessionID: "child-b", ParentSessionID: "main", Name: "writer",
+			Kind: agentrun.KindSubagent, Status: agentrun.StatusDone,
+		},
+	}
+	_ = u.openAgentsDialog()
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: 'w', Text: "w"})
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.NotNil(t, u.agentViewer)
+
+	// A run appears while the viewer is open.
+	u.agentRuns = append(u.agentRuns, agentrun.Run{
+		SessionID: "child-c", ParentSessionID: "main", Name: "writer two",
+		Kind: agentrun.KindSubagent, Status: agentrun.StatusRunning, StartedAt: time.Now(),
+	})
+
+	_, _ = u.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.True(t, u.dialog.ContainsDialog(dialog.AgentsID))
+	scr := uv.NewScreenBuffer(100, 30)
+	u.dialog.Dialog(dialog.AgentsID).Draw(scr, scr.Bounds())
+	rendered := ansi.Strip(scr.Render())
+	require.Contains(t, rendered, "writer two", "the list is rebuilt from the current descriptors")
+
+	_ = u.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.NotNil(t, u.agentViewer)
+	require.Equal(t, "child-b", u.agentViewer.descriptor.SessionID, "the search and selection came back")
 }

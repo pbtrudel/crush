@@ -65,3 +65,26 @@ func selectCommand(t *testing.T, c *Commands, id string) Action {
 	require.Failf(t, "command not found in palette", "%s", id)
 	return nil
 }
+
+// View Agents is meaningless with Agent Teams off: nothing can be delegated,
+// so the palette does not offer it.
+func TestViewAgentsCommandHiddenWhenAgentTeamsOff(t *testing.T) {
+	t.Parallel()
+	sty := styles.CharmtonePantera()
+
+	t.Run("agents on", func(t *testing.T) {
+		t.Parallel()
+		com := &common.Common{Workspace: &teamCommandsWorkspace{enabled: true}, Styles: &sty}
+		c, err := NewCommands(com, "main", true, false, false, false, false, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, "View Agents", commandTitle(c, "view_agents"))
+	})
+
+	t.Run("agents off", func(t *testing.T) {
+		t.Parallel()
+		com := &common.Common{Workspace: &teamCommandsWorkspace{enabled: false}, Styles: &sty}
+		c, err := NewCommands(com, "main", true, false, false, false, false, nil, nil)
+		require.NoError(t, err)
+		require.Empty(t, commandTitle(c, "view_agents"))
+	})
+}

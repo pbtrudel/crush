@@ -169,6 +169,12 @@ type coordinator struct {
 	mainAgentName string
 	agents        map[string]SessionAgent
 	hookRunner    *hooks.Runner
+	// promptInputsMu guards promptInputs, which a run refreshes when its
+	// own agent's models are rebuilt.
+	promptInputsMu sync.Mutex
+	// promptInputs records what each lead agent's prompt was rendered from,
+	// so a reload only re-renders a prompt whose inputs changed.
+	promptInputs map[string]promptInput
 
 	// models is shared by every agent; rebuildMu serializes rebuilds of it.
 	models    csync.Value[coordinatorModels]
@@ -294,6 +300,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		notify:          opts.Notify,
 		runComplete:     opts.RunComplete,
 		agents:          make(map[string]SessionAgent),
+		promptInputs:    make(map[string]promptInput),
 		skillsMgr:       opts.Skills,
 		allSkills:       allSkills,
 		activeSkills:    activeSkills,
@@ -324,17 +331,11 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errCoderAgentNotConfigured
 	}
 
-	// The prompt has to know the palette the coder is really given: it is what
-	// decides whether the Agent Teams policy applies, and tools can be cut
-	// with disabled_tools. effectiveToolNames is the same list buildTools
-	// filters the palette by, so the prompt and the tool block agree.
-	coderPrompt, err := coderPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
-	)
+	coderPrompt, _, err := c.agentPrompt(config.AgentCoder, agentCfg)
 	if err != nil {
 		return nil, err
 	}
+	c.promptInputs[config.AgentCoder] = c.promptInputFor(agentCfg)
 
 	agent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
 	if err != nil {
@@ -347,13 +348,11 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errPlanAgentNotConfigured
 	}
 
-	planSystemPrompt, err := planPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(planCfg, roleLead)),
-	)
+	planSystemPrompt, _, err := c.agentPrompt(config.AgentPlan, planCfg)
 	if err != nil {
 		return nil, err
 	}
+	c.promptInputs[config.AgentPlan] = c.promptInputFor(planCfg)
 
 	planAgent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
 	if err != nil {
@@ -1167,6 +1166,45 @@ const (
 // isSubAgent reports whether the role bills as agent-initiated.
 func (r agentRole) isSubAgent() bool { return r != roleLead }
 
+// promptInput is everything the base system prompt of a lead agent is
+// rendered from, apart from the config and the environment it reads itself.
+// A reload re-renders only when this changes, so an unrelated edit cannot
+// rewrite the cached prompt prefix.
+type promptInput struct {
+	agentTeams bool
+	toolNames  string
+}
+
+// promptInputFor reports the inputs the prompt of a lead agent renders from.
+func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
+	return promptInput{
+		agentTeams: !c.agentsOff(),
+		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
+	}
+}
+
+// agentPrompt builds a lead agent's base system prompt from the current
+// config. ok is false for an agent whose prompt this coordinator does not
+// own. The prompt has to know the palette the agent is really given: it is
+// what decides whether the Agent Teams policy applies, and tools can be cut
+// with disabled_tools. effectiveToolNames is the same list buildTools filters
+// the palette by, so the prompt and the tool block agree.
+func (c *coordinator) agentPrompt(name string, agentCfg config.Agent) (_ *prompt.Prompt, ok bool, _ error) {
+	opts := []prompt.Option{
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
+	}
+	switch name {
+	case config.AgentCoder:
+		p, err := coderPrompt(opts...)
+		return p, true, err
+	case config.AgentPlan:
+		p, err := planPrompt(opts...)
+		return p, true, err
+	}
+	return nil, false, nil
+}
+
 // agentSystemPrompt is where buildAgent takes the base system prompt from.
 // Template is rendered against the current environment; Prebuilt is used
 // verbatim, which is how a teammate extends the Lead's already-built prompt
@@ -1269,19 +1307,28 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 // headless run exits before one could arrive, so delegation blocks there and
 // detaches here. Subagents get neither, since they can neither fan out nor
 // ask questions. A teammate keeps the Lead's palette for prompt-cache
-// parity and refuses at run time instead.
+// parity and refuses at run time instead. With Agent Teams off no delegation
+// tool is attached in either mode, since there is no agent left to delegate
+// to; agentic_fetch stays, as it runs its helper inside its own call.
 func (c *coordinator) effectiveToolNames(agentCfg config.Agent, role agentRole) []string {
+	agentsOff := c.agentsOff()
 	return slices.DeleteFunc(slices.Clone(agentCfg.AllowedTools), func(name string) bool {
 		switch name {
 		case tools.QuestionToolName:
 			return role == roleSubAgent || !c.interactive
 		case AgentToolName:
-			return role.isSubAgent() || c.interactive
+			return agentsOff || role.isSubAgent() || c.interactive
 		case AgentDispatchToolName, AgentSendToolName, AgentStatusToolName, AgentStopToolName:
-			return role == roleSubAgent || !c.interactive
+			return agentsOff || role == roleSubAgent || !c.interactive
 		}
 		return false
 	})
+}
+
+// agentsOff reports whether Agent Teams is turned off in the current config.
+// A coordinator without a config keeps the surface it was built for.
+func (c *coordinator) agentsOff() bool {
+	return c.cfg != nil && !c.cfg.Config().Options.GetAgentTeams()
 }
 
 // buildTools builds an agent's tools. parentModel reports the model the
@@ -2171,6 +2218,35 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 		return err
 	}
 	agent.SetTools(tools)
+
+	// The prompt is rendered from the tool palette and the Agent Teams
+	// setting, so a reload that changes either has to re-render it. Every
+	// other edit leaves the prompt, and its cached prefix, alone.
+	input := c.promptInputFor(agentCfg)
+	c.promptInputsMu.Lock()
+	rendered, renderedBefore := c.promptInputs[name]
+	c.promptInputsMu.Unlock()
+	if renderedBefore && rendered == input {
+		return nil
+	}
+	template, ok, err := c.agentPrompt(name, agentCfg)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	systemPrompt, err := template.Build(ctx, models.Large.Model.Provider(), models.Large.Model.Model(), c.cfg)
+	if err != nil {
+		return err
+	}
+	agent.SetSystemPrompt(systemPrompt)
+	c.promptInputsMu.Lock()
+	if c.promptInputs == nil {
+		c.promptInputs = make(map[string]promptInput)
+	}
+	c.promptInputs[name] = input
+	c.promptInputsMu.Unlock()
 	return nil
 }
 
