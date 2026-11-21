@@ -35,7 +35,13 @@ func todoTestCall(id, name string) fantasy.ToolCallContent {
 // todoTestBashCall builds a bash call carrying command as its parameter, so
 // the reminder can tell a read-only command from one that changes files.
 func todoTestBashCall(id, command string) fantasy.ToolCallContent {
-	input, err := json.Marshal(tools.BashParams{Command: command})
+	return todoTestBashParams(id, tools.BashParams{Command: command})
+}
+
+// todoTestBashParams builds a bash call from explicit parameters, for the
+// fields todoTestBashCall leaves alone.
+func todoTestBashParams(id string, params tools.BashParams) fantasy.ToolCallContent {
+	input, err := json.Marshal(params)
 	if err != nil {
 		panic(err)
 	}
@@ -121,6 +127,19 @@ func TestStepMadeTaskProgress(t *testing.T) {
 				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
 			),
 			want: false,
+		},
+		{
+			name: "backgrounded read-only bash",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashParams("1", tools.BashParams{
+					Command:         "tail -f log/app.log",
+					RunInBackground: true,
+				})},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
+			// A background call is doing work away from the step, so it
+			// counts even when its command only reads.
+			want: true,
 		},
 		{
 			name: "waiting for a teammate",

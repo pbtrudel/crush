@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"charm.land/fantasy"
@@ -48,9 +49,15 @@ var taskProgressToolNames = map[string]struct{}{
 // A command that is clearly read-only, or that only waits, cannot. A command
 // the classifier does not recognize counts as progress: the reminder is
 // worth one after a build or a test run, and guessing the other way would
-// let completed work go unreported.
+// let completed work go unreported. A call the model put in the background
+// counts too, whatever its command: it may be doing the work that finishes
+// the item, and the reminder is cheap next to missing that.
 func bashMadeProgress(input string) bool {
-	return !tools.IsReadOnlyCommand(toolStringInput(input, "command"))
+	var params tools.BashParams
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return true
+	}
+	return params.RunInBackground || !tools.IsReadOnlyCommand(params.Command)
 }
 
 // stepMadeTaskProgress reports whether the step ran a tool that can finish a
