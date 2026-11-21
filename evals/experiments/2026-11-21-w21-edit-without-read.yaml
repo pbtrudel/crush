@@ -10,7 +10,10 @@ routes: [deepseek-flash]
 repetitions: 3
 # Refused edits are the primary metric because the read guard exists to
 # refuse them; pass rate is the guard, and crush-eval compare reports it from
-# the same batch.
+# the same batch. Only the total refused compares across arms: with
+# edit_without_read on, the not_read and no_match kinds split differently.
+# Attempted counts calls, not the edits inside a multiedit, and a multiedit
+# that applied some of its edits is a success result.
 primary_metric: edit_refusals
 margin: 0.1
 baseline: evals/baselines/2026-11-19-deepseek-flash.json

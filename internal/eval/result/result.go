@@ -69,6 +69,11 @@ type Gate struct {
 // --json` reports it: the calls attempted, the refusals split by kind, the
 // failures outside those kinds, and the edits applied to a file the session
 // did not read first.
+//
+// Attempted counts calls, not the edits inside a multiedit, and a multiedit
+// that applied some of its edits is a success result. Only Refused compares
+// across arms: with edit_without_read on, the not_read and no_match kinds
+// split differently.
 type Edits struct {
 	Attempted        int `json:"attempted"`
 	Refused          int `json:"refused"`
