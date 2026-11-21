@@ -26,7 +26,7 @@ func call(t *testing.T, input string) string {
 func TestContaminatedCallsCommandMarkers(t *testing.T) {
 	t.Parallel()
 
-	merge := task.Source{Merge: "334c5d791d23"}
+	merge := task.Source{Merge: "334c5d791d23", Repo: "pbtrudel/crush"}
 	markers := contaminationMarkers(&task.Task{Source: merge}, Paths{})
 
 	tests := []struct {
@@ -67,7 +67,7 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 	t.Parallel()
 
 	markers := contaminationMarkers(
-		&task.Task{Source: task.Source{Merge: "334c5d791d23"}},
+		&task.Task{Source: task.Source{Merge: "334c5d791d23", Repo: "pbtrudel/crush"}},
 		Paths{Suite: "/suite/evals", Repo: "/repo", Checkout: "/repo"},
 	)
 
@@ -86,7 +86,10 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 func TestContaminatedCallsCountsEachCall(t *testing.T) {
 	t.Parallel()
 
-	markers := contaminationMarkers(&task.Task{}, Paths{Suite: "evals", Repo: "."})
+	markers := contaminationMarkers(
+		&task.Task{Source: task.Source{Repo: "pbtrudel/crush"}},
+		Paths{Suite: "evals", Repo: "."},
+	)
 	pr := `{"type":"tool_call","data":{"name":"bash","input":"gh pr view 1 -R pbtrudel/crush"}}`
 	text := `{"type":"text","data":{"text":"gh pr view 1"}}`
 	cat := `{"type":"tool_call","data":{"name":"bash","input":"git cat-file"}}`
@@ -140,7 +143,7 @@ func TestContaminatedCallsGhNeedsRepository(t *testing.T) {
 
 	markers := contaminationMarkers(
 		&task.Task{Source: task.Source{Repo: "pbtrudel/crush"}},
-		Paths{},
+		Paths{Remotes: []string{"someone/crush"}},
 	)
 
 	tests := []struct {
@@ -149,10 +152,13 @@ func TestContaminatedCallsGhNeedsRepository(t *testing.T) {
 		want  int
 	}{
 		{name: "the checkout's own recipe", input: "gh pr create --fill", want: 0},
-		{name: "another repository", input: "gh pr list -R charmbracelet/crush", want: 0},
+		{name: "an unrelated repository", input: "gh pr list -R someone-else/crush", want: 0},
 		{name: "the user's own account", input: "gh api user", want: 0},
 		{name: "this repository named by -R", input: "gh pr view 123 -R pbtrudel/crush", want: 1},
 		{name: "this repository named in the path", input: "gh api repos/pbtrudel/crush/pulls/5", want: 1},
+		{name: "the upstream repository", input: "gh pr view 1234 -R charmbracelet/crush", want: 1},
+		{name: "the upstream repository in the path", input: "gh api repos/charmbracelet/crush/pulls/9", want: 1},
+		{name: "a remote of the checkout", input: "gh pr view 7 -R someone/crush", want: 1},
 		{name: "git's object reader", input: "git cat-file -p HEAD", want: 1},
 	}
 	for _, test := range tests {
@@ -250,5 +256,32 @@ func TestContaminatedCallsCutOnlyTheRunsOwnPath(t *testing.T) {
 		"cd /state/crush-eval/batches/b1/runs/pr-0010-r1",
 	} {
 		require.Zero(t, len(contaminatedCalls(call(t, input), markers)), input)
+	}
+}
+
+// TestRepoName checks the owner/repo a git remote URL names, the way a
+// checkout of this repository writes origin and upstream.
+func TestRepoName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{name: "https", remote: "https://github.com/charmbracelet/crush.git", want: "charmbracelet/crush"},
+		{name: "https without the suffix", remote: "https://github.com/pbtrudel/crush", want: "pbtrudel/crush"},
+		{name: "scp-like", remote: "git@github.com:pbtrudel/crush.git", want: "pbtrudel/crush"},
+		{name: "ssh", remote: "ssh://git@github.com/charmbracelet/crush.git", want: "charmbracelet/crush"},
+		{name: "a trailing slash", remote: "https://github.com/pbtrudel/crush/", want: "pbtrudel/crush"},
+		{name: "a path of its own", remote: "/home/someone/crush.git", want: ""},
+		{name: "a subgroup", remote: "https://gitlab.com/group/sub/crush.git", want: ""},
+		{name: "nothing", remote: "", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, repoName(test.remote))
+		})
 	}
 }

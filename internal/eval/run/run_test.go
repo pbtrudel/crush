@@ -140,7 +140,7 @@ func newFixture(t *testing.T) *fixture {
 	f.task = &task.Task{
 		Schema: 1,
 		ID:     "pr-0010",
-		Source: task.Source{Base: base},
+		Source: task.Source{Repo: "pbtrudel/crush", Base: base},
 		Kind:   task.KindPlain,
 		Prompt: "Fix the bug.",
 		Grade: task.Grade{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/home"
@@ -29,6 +30,9 @@ type Paths struct {
 	// checkout, home, config and data there, so naming it is not contact
 	// with another batch.
 	Own string
+	// Remotes are the owner/repo names of the checkout's origin and
+	// upstream remotes, when they exist.
+	Remotes []string
 }
 
 // HostPaths derives the host paths of a run from the repository and suite it
@@ -42,10 +46,51 @@ func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runD
 	}
 	paths.Checkout = top
 	paths.Worktrees = worktreesParent(ctx, top)
+	paths.Remotes = repoRemotes(ctx, top)
 	if h != nil {
 		paths.Batches = filepath.Join(h.Dir(), "batches")
 	}
 	return paths, nil
+}
+
+// repoRemotes is the owner/repo name of the checkout's origin and upstream
+// remotes, when they exist: a gh command that names one of them counts as a
+// lookup too, since an upstream pull request can hold the fix.
+func repoRemotes(ctx context.Context, top string) []string {
+	var names []string
+	for _, remote := range []string{"origin", "upstream"} {
+		url, err := gitx.Output(ctx, top, "remote", "get-url", remote)
+		if err != nil {
+			continue
+		}
+		if name := repoName(url); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// repoName is the owner/repo a git remote URL names, or empty for a URL that
+// names none, such as a local path or a subgroup.
+func repoName(remote string) string {
+	url := strings.TrimSpace(remote)
+	if i := strings.Index(url, "://"); i >= 0 {
+		url = url[i+3:]
+		slash := strings.Index(url, "/")
+		if slash < 0 {
+			return ""
+		}
+		url = url[slash+1:]
+	} else if i := strings.Index(url, ":"); i >= 0 {
+		// The scp-like git@host:owner/repo form.
+		url = url[i+1:]
+	}
+	url = strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
+	parts := strings.Split(url, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // worktreesParent is the directory that holds the sibling worktrees of a

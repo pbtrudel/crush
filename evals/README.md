@@ -129,10 +129,12 @@ After a run, the runner opens the run's own session database read-only and
 scans the input of every tool call for the task's merge commit, the fork's
 pull request and repository URLs (`pbtrudel/crush/pull`,
 `github.com/pbtrudel/crush`), the `git cat-file` command, the `gh pr` and
-`gh api` commands when the same input also names the fork, the suite path,
-and the host paths a jailed run hides: the
-repository the runner resolves, the git toplevel of the checkout the tasks
-come from, the worktrees beside it and the eval home's `batches`. Naming one
+`gh api` commands when the same input also names a repository the fix can
+come from: the task's `source.repo`, the checkout's `origin` and `upstream`
+remotes, or the constant upstream `charmbracelet/crush`. It also scans for the
+suite path and the host paths a jailed run hides: the repository the runner
+resolves, the git toplevel of the checkout the tasks come from, the worktrees
+beside it and the eval home's `batches`. Naming one
 of them flags the run. The run's own directory under `batches` is not one of
 them, since the child names its own checkout all the time. A bare
 `gh pr create` flags nothing: the checkout's own bash tool description

@@ -31,10 +31,10 @@ type marker struct {
 	// and the child names it all the time, so it is not contact with
 	// another batch.
 	own string
-	// needs is the name of this repository, which the whole tool call must
-	// also name. A bare "gh pr create" is the recipe the checkout's own
-	// bash tool description shows, not a lookup at the fork.
-	needs string
+	// needs are the repositories the whole tool call must also name, any
+	// of them. A bare "gh pr create" is the recipe the checkout's own bash
+	// tool description shows, not a lookup at the fork.
+	needs []string
 }
 
 // commandPattern compiles the pattern of a command marker: the words of the
@@ -56,15 +56,12 @@ func commandPattern(text string) *regexp.Regexp {
 // paths a jailed run hides: the repository, the checkout the tasks come from,
 // the worktrees beside it and the eval home's batches.
 func contaminationMarkers(tk *task.Task, paths Paths) []marker {
-	fork := tk.Source.Repo
-	if fork == "" {
-		fork = "pbtrudel/crush"
-	}
+	repos := auditRepos(tk.Source.Repo, paths.Remotes)
 	markers := []marker{
 		{text: "pbtrudel/crush/pull"},
 		{text: "github.com/pbtrudel/crush"},
-		{text: "gh pr", command: commandPattern("gh pr"), needs: fork},
-		{text: "gh api", command: commandPattern("gh api"), needs: fork},
+		{text: "gh pr", command: commandPattern("gh pr"), needs: repos},
+		{text: "gh api", command: commandPattern("gh api"), needs: repos},
 		{text: "git cat-file", command: commandPattern("git cat-file")},
 	}
 	if tk.Source.Merge != "" {
@@ -84,9 +81,33 @@ func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
 		markers[i].own = strings.ToLower(m.own)
-		markers[i].needs = strings.ToLower(m.needs)
+		for j, name := range m.needs {
+			m.needs[j] = strings.ToLower(name)
+		}
 	}
 	return markers
+}
+
+// upstreamRepo is the upstream repository this fork tracks: a pull request
+// there can hold the fix a task asks for, so a gh command that names it
+// counts. It is the constant fallback when the task and the checkout name no
+// other repository.
+const upstreamRepo = "charmbracelet/crush"
+
+// auditRepos are the repositories a gh command may name and still count: the
+// task's repository, the checkout's remotes, and the upstream repository.
+func auditRepos(fork string, remotes []string) []string {
+	var repos []string
+	seen := make(map[string]bool, len(remotes)+2)
+	for _, name := range append([]string{fork}, append(remotes, upstreamRepo)...) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		repos = append(repos, name)
+	}
+	return repos
 }
 
 // appendPathMarker adds dir, as an absolute path, as a marker once. It skips
@@ -188,12 +209,14 @@ func matchedMarkers(input string, markers []marker) []string {
 		if m.text == "" {
 			continue
 		}
-		if m.needs != "" {
+		if len(m.needs) > 0 {
 			named := false
-			for _, text := range texts {
-				if strings.Contains(text, m.needs) {
-					named = true
-					break
+			for _, need := range m.needs {
+				for _, text := range texts {
+					if strings.Contains(text, need) {
+						named = true
+						break
+					}
 				}
 			}
 			if !named {

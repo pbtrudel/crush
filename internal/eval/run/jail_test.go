@@ -25,6 +25,9 @@ func TestHostPaths(t *testing.T) {
 	git(t, main, "add", "-A")
 	git(t, main, "commit", "-q", "-m", "base")
 
+	git(t, main, "remote", "add", "origin", "https://github.com/charmbracelet/crush.git")
+	git(t, main, "remote", "add", "upstream", "git@github.com:pbtrudel/crush.git")
+
 	worktree := filepath.Join(root, "worktrees", "task")
 	git(t, main, "worktree", "add", "-q", "--detach", worktree)
 
@@ -40,6 +43,8 @@ func TestHostPaths(t *testing.T) {
 		"the parent of a linked worktree holds its siblings")
 	require.Equal(t, filepath.Join(h.Dir(), "batches"), paths.Batches)
 	require.Equal(t, runDir, paths.Own)
+	require.Equal(t, []string{"charmbracelet/crush", "pbtrudel/crush"}, paths.Remotes,
+		"the checkout's origin and upstream remotes")
 
 	// The repository itself is not a linked worktree, so no directory of
 	// sibling worktrees sits beside it.
