@@ -17,6 +17,12 @@ Is directory a git repo: {{if .IsGitRepo}} yes {{else}} no {{end}}
 Platform: {{.Platform}}
 Today's date: {{.Date}}
 </env>
+{{/*
+The global chain (.GlobalContextFiles) is left out on purpose: it holds the
+user's commit, pull-request and delegation procedures for a top-level agent,
+which a subagent does not run, and the line above already says so. The coder
+prompt renders it; adding it here would hand those procedures to subagents.
+*/}}
 {{if .ContextFiles}}
 
 # Project-Specific Context
