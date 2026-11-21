@@ -2,10 +2,10 @@ date: 2026-11-21
 name: bg-compaction
 variants:
   - name: control
-    ref: TBD-bg-compaction-tip
+    ref: 7fa78e632750c0f0c8b33f27b66af1ff5fc55405
     overlay: {auto_compact_threshold: 0.2, compact_tail_tokens: 8000, compact_background_margin: 0}
   - name: background
-    ref: TBD-bg-compaction-tip
+    ref: 7fa78e632750c0f0c8b33f27b66af1ff5fc55405
     overlay: {auto_compact_threshold: 0.2, compact_tail_tokens: 8000, compact_background_margin: 0.1}
 routes: [deepseek-flash-ctx]
 # One repetition, 48 runs: this batch guards cost and harm, it does not test
