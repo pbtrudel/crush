@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/message"
 )
 
 // TestSiblingTeammatesShareSystemPrompt pins the prefix half of a fan-out. A
@@ -76,4 +77,40 @@ func TestSiblingSubAgentsShareSystemPrompt(t *testing.T) {
 
 	require.Equal(t, agentToolNames(t, firstRead), agentToolNames(t, secondRead),
 		"the tools block must serialise identically for sibling subagents")
+}
+
+// TestForkSiblingsShareInheritedContext pins the ordering inside a fork
+// teammate's message. The inherited turns of the Lead are the same bytes for
+// every fork sibling of that Lead, so they have to come first: with the
+// member's name in front of them, two fork siblings diverged on the first line
+// and the block (up to 16 KB) was reused for neither.
+func TestForkSiblingsShareInheritedContext(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+
+	lead, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	_, err = coord.messages.Create(t.Context(), lead.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "fix the failing tests"}},
+	})
+	require.NoError(t, err)
+
+	dbMember := agentteam.Member{ID: "member-1", Name: "db-layer", Role: agentteam.RoleTeammate, ParentID: lead.ID, Context: agentteam.ContextFork}
+	authMember := agentteam.Member{ID: "member-2", Name: "auth-review", Role: agentteam.RoleTeammate, ParentID: lead.ID, Context: agentteam.ContextFork}
+
+	inherited := runner.forkPrefix(t.Context(), dbMember)
+	require.Contains(t, inherited, "fix the failing tests", "the fork block must carry the Lead's turns")
+	require.Equal(t, inherited, runner.forkPrefix(t.Context(), authMember), "siblings of one Lead inherit the same block")
+
+	first := runner.teammatePrompt(t.Context(), dbMember, "Add the index the migration is missing.")
+	second := runner.teammatePrompt(t.Context(), authMember, "Review the login timeout change.")
+
+	require.True(t, strings.HasPrefix(first, inherited), "the inherited block must be the message's prefix")
+	require.True(t, strings.HasPrefix(second, inherited),
+		"a sibling's message must start with the same inherited block, or the shared prefix ends on its first line")
+
+	require.Contains(t, strings.TrimPrefix(first, inherited), `You are teammate "db-layer"`)
+	require.True(t, strings.HasSuffix(first, "Add the index the migration is missing."))
+	require.True(t, strings.HasSuffix(second, "Review the login timeout change."))
 }

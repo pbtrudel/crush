@@ -52,6 +52,20 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 	return fmt.Sprintf("You are teammate %q.\n\n%s", member.Name, task)
 }
 
+// teammatePrompt is the message a teammate turn starts from: the inherited
+// context a fork member gets, then its name, then the task.
+//
+// The inherited context goes first because it is the same bytes for every fork
+// sibling of one Lead: the per-sibling name in front of it would end the shared
+// prefix at the first line and cost each sibling the whole block.
+func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string) string {
+	task = teammateTaskMessage(member, task)
+	if member.Context == agentteam.ContextFork {
+		return r.forkPrefix(ctx, member) + task
+	}
+	return task
+}
+
 // teamRunner runs teammate turns with the coordinator's agent machinery.
 type teamRunner struct {
 	c *coordinator
@@ -168,10 +182,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		}
 	}
 
-	if member.Context == agentteam.ContextFork {
-		promptText = r.forkPrefix(memberCtx, member) + promptText
-	}
-	promptText = teammateTaskMessage(member, promptText)
+	promptText = r.teammatePrompt(memberCtx, member, promptText)
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
