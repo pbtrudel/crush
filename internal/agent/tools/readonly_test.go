@@ -73,6 +73,18 @@ func TestIsReadOnlyCommand_Denied(t *testing.T) {
 		// Both flags name a program and run it.
 		"sort --compress-program=gzip f",
 		"rg --hostname-bin=/tmp/evil x",
+		// Every spelling of an output flag has to be caught, not just the
+		// one this list happens to spell out.
+		"sort -o f x",
+		"sort -of x",
+		"sort --output=f x",
+		"find . -fprint f",
+		`find . -ok rm {} \;`,
+		"rg --pre=cmd x",
+		// A chain is only as read-only as its writer, however it is joined.
+		"cat go.mod | tee out.txt",
+		"ls && go build ./...",
+		"git status | sh",
 		// An unknown command still counts as progress, and so does
 		// anything the classifier cannot parse.
 		"",
