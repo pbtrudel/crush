@@ -344,6 +344,12 @@ func (app *App) ReportCurrentSession(sessionID string) {
 	app.herdrClient.SetSessionID(sessionID)
 }
 
+// CurrentSessionID returns the session last reported by the TUI.
+func (app *App) CurrentSessionID() string {
+	id, _ := app.currentSessionID.Load().(string)
+	return id
+}
+
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout. With asJSON it prints one JSON object
 // that describes the run instead of its text, and returns an [ExitError]

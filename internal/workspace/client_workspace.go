@@ -68,6 +68,11 @@ type ClientWorkspace struct {
 	// herdrClient reports agent state to herdr when running inside
 	// a herdr-managed pane. Nil when not in a herdr environment.
 	herdrClient *herdr.Client
+
+	// fanMu guards fanSubs, the non-TUI event subscribers fed from the
+	// same SSE stream the TUI consumes.
+	fanMu   sync.Mutex
+	fanSubs map[chan any]struct{}
 }
 
 // SSE reconnect backoff bounds for the workspace event stream. Declared
@@ -1170,11 +1175,73 @@ func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
 			w.refreshWorkspace()
 			continue
 		}
+		if e, ok := ev.(pubsub.Event[proto.PermissionModeEvent]); ok {
+			w.broadcast(pubsub.Event[permission.ModeChangedEvent]{
+				Type: e.Type,
+				Payload: permission.ModeChangedEvent{
+					Mode: proto.ProtoModeToPermission(e.Payload.Mode),
+				},
+			})
+		}
 		translated := w.translateEvent(ev)
+		if translated != nil {
+			w.broadcast(translated)
+		}
 		if translated != nil && send != nil {
 			send(translated)
 		}
 	}
+}
+
+// fanBuffer bounds each non-TUI subscriber; a full subscriber drops
+// events and is expected to resync from a snapshot.
+const fanBuffer = 512
+
+// SubscribeEvents returns a channel of domain events for a non-TUI
+// consumer. It fans out the same translated events consumeEvents hands
+// the TUI, plus permission mode changes, which translateEvent reports as
+// nil because it only refreshes the cached workspace.
+func (w *ClientWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
+	ch := make(chan any, fanBuffer)
+	w.fanMu.Lock()
+	if w.fanSubs == nil {
+		w.fanSubs = make(map[chan any]struct{})
+	}
+	w.fanSubs[ch] = struct{}{}
+	w.fanMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		w.fanMu.Lock()
+		// Shutdown may already have closed and removed the channel.
+		if _, ok := w.fanSubs[ch]; ok {
+			delete(w.fanSubs, ch)
+			close(ch)
+		}
+		w.fanMu.Unlock()
+	}()
+	return ch
+}
+
+// broadcast delivers ev to every non-TUI subscriber. A subscriber whose
+// buffer is full loses the event rather than blocking the SSE loop.
+func (w *ClientWorkspace) broadcast(ev any) {
+	w.fanMu.Lock()
+	defer w.fanMu.Unlock()
+	for ch := range w.fanSubs {
+		select {
+		case ch <- ev:
+		default:
+			slog.Warn("Dropped workspace event for slow subscriber", "type", fmt.Sprintf("%T", ev))
+		}
+	}
+}
+
+// CurrentSessionID returns the session last reported through
+// SetCurrentSession, or an empty string.
+func (w *ClientWorkspace) CurrentSessionID() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.lastSession
 }
 
 // shutdownDrainTimeout bounds how long Shutdown waits for the subscription
@@ -1184,6 +1251,13 @@ func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
 const shutdownDrainTimeout = 5 * time.Second
 
 func (w *ClientWorkspace) Shutdown() {
+	w.fanMu.Lock()
+	for ch := range w.fanSubs {
+		delete(w.fanSubs, ch)
+		close(ch)
+	}
+	w.fanMu.Unlock()
+
 	// Stop the reconnect/recovery loop first, then wait for it: cancelling
 	// alone does not unwind a workspace recovery that is already in
 	// flight, and we want to release the workspace that recovery ended up

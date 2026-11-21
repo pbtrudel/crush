@@ -286,6 +286,14 @@ type Workspace interface {
 	MCPAuthURL(name string) string
 
 	// Events
+	// SubscribeEvents returns workspace events for a non-TUI consumer,
+	// such as the web gateway. Values are the same domain events the TUI
+	// receives. The channel closes when ctx is done or the workspace
+	// shuts down.
+	SubscribeEvents(ctx context.Context) <-chan any
+	// CurrentSessionID returns the session last reported through
+	// SetCurrentSession, or an empty string.
+	CurrentSessionID() string
 	Subscribe(program *tea.Program)
 	Shutdown()
 }
