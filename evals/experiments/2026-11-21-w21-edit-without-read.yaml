@@ -1,0 +1,20 @@
+date: 2026-11-21
+name: w21-edit-without-read
+variants:
+  - name: control
+    ref: 67eb3c71
+  - name: edit
+    ref: 67eb3c71
+    overlay: {edit_without_read: true}
+routes: [deepseek-flash]
+repetitions: 3
+# Refused edits are the primary metric because the read guard exists to
+# refuse them; pass rate is the guard, and crush-eval compare reports it from
+# the same batch.
+primary_metric: edit_refusals
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453
+# Both variants run the same build, the ref below. The overlay reaches the
+# child through its generated config, not the environment, so only the
+# overlay differs between them.
