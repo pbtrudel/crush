@@ -235,6 +235,7 @@ var optionSpecs = map[string]optionSpec{
 	"notifications":  {jsonKey: "notifications", kind: optString},
 	"data-directory": {jsonKey: "data_directory", kind: optString},
 	"initialize-as":  {jsonKey: "initialize_as", kind: optString},
+	"prompt-profile": {jsonKey: "prompt_profile", kind: optString},
 
 	// Integer fields.
 	"request-timeout":        {jsonKey: "request_timeout", kind: optInt},

@@ -535,6 +535,10 @@ type Options struct {
 	// LazyTools sends only a small core tool palette on every request and
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
+	// PromptProfile selects the system prompt template set the coder agent
+	// renders. Full stays the default until an eval shows the lean profile
+	// solves as many tasks.
+	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills.,enum=full,enum=lean,default=full"`
 	// TurnEndMaxContinuations caps how many times the turn-end gate may
 	// continue one prompt. Zero turns continuations off: the checks still
 	// run and are observed.
@@ -770,6 +774,24 @@ func (o *Options) GetAgentTeams() bool {
 		return true
 	}
 	return *o.AgentTeams
+}
+
+// Prompt profiles select which system prompt template set an agent renders.
+// The full profile is the complete prompt; the lean one is a short shared
+// base plus an add-on for the model's family.
+const (
+	PromptProfileFull = "full"
+	PromptProfileLean = "lean"
+)
+
+// GetPromptProfile returns the system prompt profile. The nil receiver, the
+// unset field and any unrecognised name all mean the full profile: a typo
+// must not silently shrink the prompt every session is given.
+func (o *Options) GetPromptProfile() string {
+	if o == nil || o.PromptProfile != PromptProfileLean {
+		return PromptProfileFull
+	}
+	return PromptProfileLean
 }
 
 // GetRepeatToolReminders reports whether advisory repeat-tool reminders are
