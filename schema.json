@@ -1184,6 +1184,15 @@
           ],
           "description": "Exit banner style after quitting Crush",
           "default": "default"
+        },
+        "verbosity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "high"
+          ],
+          "description": "Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place",
+          "default": "high"
         }
       },
       "additionalProperties": false,

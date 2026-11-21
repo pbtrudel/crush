@@ -264,7 +264,7 @@ var optionSpecs = map[string]optionSpec{
 // that live under options.tui rather than as top-level options.
 func optionUI(options map[string]any, args []string, stderr io.Writer) error {
 	if len(args) != 4 {
-		return usage(stderr, "usage: option ui <compact|diff|transparent|mouse|scrollbar|completions-max-depth|completions-max-items|exit-banner> <value>")
+		return usage(stderr, "usage: option ui <compact|diff|transparent|mouse|scrollbar|verbosity|completions-max-depth|completions-max-items|exit-banner> <value>")
 	}
 
 	key := args[2]
@@ -297,6 +297,11 @@ func optionUI(options map[string]any, args []string, stderr io.Writer) error {
 			return usage(stderr, fmt.Sprintf("option ui exit-banner expects default, compact, or none, got %q", value))
 		}
 		ui["exit_banner"] = value
+	case "verbosity":
+		if value != "low" && value != "high" {
+			return usage(stderr, fmt.Sprintf("option ui verbosity expects low or high, got %q", value))
+		}
+		ui["verbosity"] = value
 	case "completions-max-depth", "completions-max-items":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 0 {

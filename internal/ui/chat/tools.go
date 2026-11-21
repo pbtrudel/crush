@@ -432,6 +432,11 @@ func (t *baseToolMessageItem) SetResult(res *message.ToolResult) {
 	t.Bump()
 }
 
+// itemStyles returns the shared styles pointer the item renders with.
+func (t *baseToolMessageItem) itemStyles() *styles.Styles {
+	return t.sty
+}
+
 // MessageID returns the ID of the message containing this tool call.
 func (t *baseToolMessageItem) MessageID() string {
 	return t.messageID

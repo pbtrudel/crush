@@ -314,3 +314,21 @@ func TestOption_CompactTailTokensInvalid(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expects an integer")
 }
+
+func TestOption_UIVerbosity(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option ui verbosity low`))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	ui := result["options"].(map[string]any)["tui"].(map[string]any)
+	require.Equal(t, "low", ui["verbosity"])
+
+	_, err = LoadShellConfig(t.Context(), path, []byte(`option ui verbosity sometimes`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expects low or high")
+}

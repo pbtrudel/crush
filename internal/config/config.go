@@ -334,13 +334,34 @@ type TUIOptions struct {
 	Scrollbar   string      `json:"scrollbar,omitempty" jsonschema:"description=Chat scrollbar visibility,enum=default,enum=always,enum=never,default=default"`
 	Mouse       *bool       `json:"mouse,omitempty" jsonschema:"description=Enable terminal mouse capture for selection\\, clicks\\, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste,default=true"`
 	ExitBanner  ExitBanner  `json:"exit_banner,omitempty" jsonschema:"description=Exit banner style after quitting Crush,enum=default,enum=compact,enum=none,default=default"`
+	Verbosity   string      `json:"verbosity,omitempty" jsonschema:"description=Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place,enum=low,enum=high,default=high"`
 }
+
+// Transcript verbosity levels for options.tui.verbosity.
+const (
+	// TUIVerbosityLow collapses each run of consecutive tool calls into a
+	// single expandable activity row.
+	TUIVerbosityLow = "low"
+	// TUIVerbosityHigh renders every tool call in place. It is the default
+	// and the behavior before the option existed.
+	TUIVerbosityHigh = "high"
+)
 
 // IsTransparent reports whether the TUI draws a transparent background. The
 // nil receiver and the unset pointer both mean opaque, so callers can ask
 // without unwrapping either.
 func (t *TUIOptions) IsTransparent() bool {
 	return t != nil && t.Transparent != nil && *t.Transparent
+}
+
+// GetVerbosity returns the transcript verbosity. The nil receiver, an unset
+// field and an unrecognized value all mean high, so existing configs keep
+// rendering the full transcript and only an explicit low opts in.
+func (t *TUIOptions) GetVerbosity() string {
+	if t == nil || t.Verbosity != TUIVerbosityLow {
+		return TUIVerbosityHigh
+	}
+	return TUIVerbosityLow
 }
 
 // UnmarshalJSON tolerates the legacy string form of the "theme" field.

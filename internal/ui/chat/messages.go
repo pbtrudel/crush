@@ -52,6 +52,15 @@ type KeyEventHandler interface {
 	HandleKeyEvent(key tea.KeyMsg) (bool, tea.Cmd)
 }
 
+// ItemContainer is an interface for items that render tool calls inside
+// themselves, such as a collapsed run of tool calls. The chat keeps the
+// owned tool calls reachable by their own ID, so a live result addressed to
+// a hidden tool call still lands on it.
+type ItemContainer interface {
+	// ChildItems returns the tool calls this item owns.
+	ChildItems() []ToolMessageItem
+}
+
 // MessageItem represents a [message.Message] item that can be displayed in the
 // UI and be part of a [list.List] identifiable by a unique ID.
 type MessageItem interface {
