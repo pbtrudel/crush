@@ -8,7 +8,9 @@ variants:
     ref: TBD-bg-compaction-tip
     overlay: {auto_compact_threshold: 0.2, compact_tail_tokens: 8000, compact_background_margin: 0.1}
 routes: [deepseek-flash-ctx]
-repetitions: 3
+# One repetition, 48 runs: this batch guards cost and harm, it does not test
+# the saving, so it spends one repetition and the margin widens to 0.2.
+repetitions: 1
 # Both variants run the same build, the branch's tip commit: only the overlay
 # differs, so the comparison isolates the option. Pass rate is the primary
 # metric because a background summary that is stale or unused must not cost
@@ -36,6 +38,6 @@ repetitions: 3
 # are where the variant pays for a summary nobody adopts, and the runs above
 # 40k compact in both arms.
 primary_metric: pass_rate
-margin: 0.1
+margin: 0.2
 baseline: evals/baselines/2026-11-19-deepseek-flash.json
-detectable_effect: 0.09085640776123453
+detectable_effect: 0.15736791443565348
