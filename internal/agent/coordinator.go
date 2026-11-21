@@ -668,6 +668,19 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	if c.sessions.IsAgentToolSession(sessionID) {
 		return
 	}
+	// A teammate session is not the main agent's either. Waking it here
+	// ran the teammate's session on the Lead's model, alongside its own
+	// run when it was busy, so the Team delivers the notice to the
+	// teammate's own run instead.
+	if c.team != nil {
+		owned, err := c.team.NotifySession(ctx, sessionID, notice)
+		if err != nil {
+			slog.Warn("Failed to wake teammate for background completion", "session_id", sessionID, "error", err)
+		}
+		if owned {
+			return
+		}
+	}
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		return
 	}
