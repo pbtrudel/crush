@@ -540,6 +540,11 @@ type Options struct {
 	// turn that changed files ends. Experimental until the task suite has
 	// measured whether it prevents false completions.
 	TurnEndCompletionCheck bool `json:"turn_end_completion_check,omitempty" jsonschema:"description=Experimental: ask the model to verify its work\\, with the commands it ran\\, before ending a turn that changed files. Off by default until the task suite measures whether it prevents false completions.,default=false"`
+	// EditWithoutRead lets edit and multiedit apply a match to a file the
+	// session did not read first, or that changed since it was read, when
+	// old_string matches the file exactly once. Experimental until the task
+	// suite has measured whether it lowers the edit refusal rate.
+	EditWithoutRead bool `json:"edit_without_read,omitempty" jsonschema:"description=Experimental: let edit and multiedit apply an edit to a file that was not read first or changed since it was read\\, when old_string matches the file exactly once. The file is then not marked as read. Off by default until the task suite measures how many edits it stops refusing.,default=false"`
 	// PinentryIntegrated renders GPG passphrase/PIN prompts as a native
 	// Crush dialog (loopback pinentry) instead of handing the terminal
 	// over to an external pinentry program. No GPG or git configuration
@@ -775,6 +780,14 @@ func (o *Options) GetRepeatToolReminders() bool {
 // the task suite has measured it.
 func (o *Options) GetTurnEndCompletionCheck() bool {
 	return o != nil && o.TurnEndCompletionCheck
+}
+
+// GetEditWithoutRead reports whether edit and multiedit may apply an exact,
+// unique match to a file the session did not read first. The nil receiver
+// and an unset field both mean off: it is an experiment until the task
+// suite has measured it.
+func (o *Options) GetEditWithoutRead() bool {
+	return o != nil && o.EditWithoutRead
 }
 
 // DefaultTurnEndMaxContinuations is how many times one prompt may be
