@@ -177,3 +177,24 @@ func TestLeanPromptIsSmallerThanFull(t *testing.T) {
 		require.Less(t, len(lean), len(full)/2, "the lean prompt for %s has to be less than half the full one", test.model)
 	}
 }
+
+// A config reload applies a profile change to the live agent, the way the
+// Agent Teams setting does: the option is written at runtime, so a session
+// must not need a restart to pick it up.
+func TestPromptProfileReloadRerendersTheLivePrompt(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
+	before := coord.agents[config.AgentCoder].SystemPrompt()
+	require.Contains(t, before, "<proactiveness>", "the live prompt is the full one")
+	require.NotContains(t, before, "<family_notes>")
+
+	coord.cfg.Config().Options.PromptProfile = config.PromptProfileLean
+	require.NoError(t, coord.RefreshModels(t.Context()))
+
+	after := coord.agents[config.AgentCoder].SystemPrompt()
+	require.NotContains(t, after, "<proactiveness>")
+	require.Contains(t, after, "<family_notes>")
+
+	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
+	require.NoError(t, coord.RefreshModels(t.Context()))
+	require.Equal(t, before, coord.agents[config.AgentCoder].SystemPrompt())
+}

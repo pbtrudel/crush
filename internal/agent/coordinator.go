@@ -1193,6 +1193,7 @@ func (r agentRole) isSubAgent() bool { return r != roleLead }
 type promptInput struct {
 	agentTeams bool
 	toolNames  string
+	profile    string
 }
 
 // promptInputFor reports the inputs the prompt of a lead agent renders from.
@@ -1200,6 +1201,7 @@ func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
 	return promptInput{
 		agentTeams: !c.agentsOff(),
 		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
+		profile:    c.cfg.Config().Options.GetPromptProfile(),
 	}
 }
 
