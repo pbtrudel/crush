@@ -1889,6 +1889,11 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 			baseTransport = httpClient.Transport
 		}
 		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
+	} else {
+		// The prompt cache key these requests carry is optional: an endpoint
+		// that does not know the field drops it after one retry instead of
+		// failing the turn. Mistral keeps its own transport and behaviour.
+		httpClient = withPromptCacheKeyRetry(httpClient)
 	}
 	if wireType == catwalk.TypeResponses {
 		httpClient = c.withResponsesReasoningReplay(httpClient)
