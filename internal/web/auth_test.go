@@ -178,3 +178,29 @@ func TestTwoGatewaysKeepTheirOwnCookies(t *testing.T) {
 		require.Equal(t, http.StatusOK, rsp.StatusCode, "gateway on port %s lost its cookie", strconv.Itoa(g.port))
 	}
 }
+
+func TestAssetDirectoryPathsAreNotFound(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	// The build output contains an assets/ directory; it must not become a
+	// file listing.
+	rsp := do(t, nil, http.MethodGet, g.URL()+"/assets/", nil)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	body, err := io.ReadAll(rsp.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), "<a href")
+
+	rsp = do(t, nil, http.MethodGet, g.URL()+"/", nil)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+}
+
+func TestAPIResponsesAreNotStored(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	rsp := do(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/health", nil)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, "no-store", rsp.Header.Get("Cache-Control"))
+}

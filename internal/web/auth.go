@@ -55,6 +55,11 @@ func (g *Gateway) guard(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// API answers carry session state and change with every
+			// action, so no cache may keep them.
+			h.Set("Cache-Control", "no-store")
+		}
 		if !g.hostAllowed(r.Host) {
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				writeError(w, http.StatusForbidden, "forbidden_host", "host not allowed")
