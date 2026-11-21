@@ -204,7 +204,8 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	// no work tree.
 	var masks []netjail.Mask
 	if line.Network == netjail.ModeJail {
-		paths, err = HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
+		paths, err = HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir,
+			visiblePaths(opts.Home, env)...)
 		if err != nil {
 			return line, err
 		}

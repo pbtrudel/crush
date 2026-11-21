@@ -111,7 +111,9 @@ worktrees beside it when it is a linked worktree (`.crush-worktrees`, for
 example), and the eval home's `batches`. The run's own directory under
 `batches` is bind mounted back over the mask, so the child keeps writing its
 checkout, home, config and data while other runs and other batches stay out
-of reach. What the child reads stays readable: the eval home's `data`, with
+of reach. A worktrees parent that would hide the eval home, the go toolchain
+or its build and module caches is left alone, with a warning: the jail then
+masks the checkout by itself. What the child reads stays readable: the eval home's `data`, with
 the route's token in `crush.json` and the `providers.json` and `hyper.json`
 catalog, the binary under `bin`, and the go toolchain with its build and
 module caches.

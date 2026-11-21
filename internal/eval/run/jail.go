@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -47,16 +49,22 @@ func basePaths(repoDir, suiteDir string, h *home.Home, runDir string) Paths {
 // HostPaths derives the host paths of a jailed run from the repository and
 // suite it uses, its eval home and its own run directory. Only a jailed run
 // needs them: a repository without a work tree has no checkout to hide, and a
-// run on the host must not fail on one. The scan of a finished batch rebuilds
-// them from the same arguments.
-func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runDir string) (Paths, error) {
+// run on the host must not fail on one. protect names the directories the run
+// reads, which a worktrees parent must not hide. The scan of a finished batch
+// rebuilds them from the same arguments.
+func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runDir string, protect ...string) (Paths, error) {
 	paths := basePaths(repoDir, suiteDir, h, runDir)
 	top, err := gitx.Output(ctx, repoDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return Paths{}, fmt.Errorf("locate the host checkout: %w", err)
 	}
 	paths.Checkout = top
-	paths.Worktrees = worktreesParent(ctx, top)
+	if parent, refused := worktreesParent(ctx, top, protect); refused {
+		slog.Warn("Netjail: the worktrees parent holds a directory the run reads, so the checkout is masked alone",
+			"parent", parent)
+	} else {
+		paths.Worktrees = parent
+	}
 	paths.Remotes = repoRemotes(ctx, top)
 	return paths, nil
 }
@@ -101,26 +109,78 @@ func repoName(remote string) string {
 	return parts[0] + "/" + parts[1]
 }
 
+// visiblePaths are the directories a jailed run reads from the eval home and
+// from go, which a worktrees parent must not hide: the eval home, the go
+// toolchain and its caches.
+func visiblePaths(h *home.Home, env []string) []string {
+	var paths []string
+	if h != nil {
+		paths = append(paths, h.Dir())
+	}
+	for _, name := range []string{"GOROOT", "GOCACHE", "GOMODCACHE"} {
+		for _, kv := range env {
+			if value, ok := strings.CutPrefix(kv, name+"="); ok && value != "" {
+				paths = append(paths, value)
+			}
+		}
+	}
+	// The child's PATH starts with the bin directory of the toolchain it
+	// selected, whose parent is the GOROOT it reads.
+	for _, kv := range env {
+		if path, ok := strings.CutPrefix(kv, "PATH="); ok {
+			first, _, _ := strings.Cut(path, string(os.PathListSeparator))
+			if first != "" {
+				paths = append(paths, filepath.Dir(first))
+			}
+		}
+	}
+	return paths
+}
+
 // worktreesParent is the directory that holds the sibling worktrees of a
 // linked worktree, and empty for the repository itself: only a linked
 // worktree has a git directory apart from the common one, and only there do
-// siblings sit beside the checkout.
-func worktreesParent(ctx context.Context, top string) string {
+// siblings sit beside the checkout. refused reports a parent the jail must
+// not hide.
+func worktreesParent(ctx context.Context, top string, protect []string) (parent string, refused bool) {
 	gitDir, err := gitx.Output(ctx, top, "rev-parse", "--absolute-git-dir")
 	if err != nil {
-		return ""
+		return "", false
 	}
 	common, err := gitx.Output(ctx, top, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return ""
+		return "", false
 	}
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(top, common)
 	}
 	if filepath.Clean(gitDir) == filepath.Clean(common) {
-		return ""
+		return "", false
 	}
-	return filepath.Dir(top)
+	parent = filepath.Dir(top)
+	return parent, unsafeParent(parent, protect)
+}
+
+// unsafeParent reports whether parent is a directory the jail must not hide:
+// the root, the home directory, or a directory that holds one of protect, the
+// paths the run reads.
+func unsafeParent(parent string, protect []string) bool {
+	clean := filepath.Clean(parent)
+	if clean == string(filepath.Separator) {
+		return true
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil && filepath.Clean(homeDir) == clean {
+		return true
+	}
+	for _, path := range protect {
+		if path == "" {
+			continue
+		}
+		if filepath.Clean(path) == clean || strings.HasPrefix(filepath.Clean(path), clean+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // jailMasks is what a jailed run hides: the jail's own masks, the host

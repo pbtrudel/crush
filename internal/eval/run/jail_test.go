@@ -1,7 +1,9 @@
 package run
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,4 +111,77 @@ func TestRunOnTheHostNeedsNoCheckoutPath(t *testing.T) {
 	line, err := Run(context.Background(), opts)
 	require.NoError(t, err, "a host run does not need the checkout path")
 	require.True(t, line.Pass)
+}
+
+// TestUnsafeParent checks which directories a worktrees parent may not be:
+// the root, the home directory, or a directory that holds something the run
+// reads.
+func TestUnsafeParent(t *testing.T) {
+	t.Parallel()
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+	tests := []struct {
+		name    string
+		parent  string
+		protect []string
+		want    bool
+	}{
+		{name: "the root", parent: "/", want: true},
+		{name: "the home directory", parent: homeDir, want: true},
+		{
+			name:    "a parent holding the eval home",
+			parent:  "/work/.crush-worktrees",
+			protect: []string{"/work/.crush-worktrees/state/crush-eval"},
+			want:    true,
+		},
+		{
+			name:    "a parent holding the toolchain",
+			parent:  "/work/.crush-worktrees",
+			protect: []string{"/work/.crush-worktrees/go"},
+			want:    true,
+		},
+		{
+			name:    "a parent beside the protected paths",
+			parent:  "/work/.crush-worktrees",
+			protect: []string{"/work/.crush-worktrees-2/state", "/work/cache"},
+			want:    false,
+		},
+		{name: "a plain parent", parent: "/work/.crush-worktrees", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, unsafeParent(test.parent, test.protect))
+		})
+	}
+}
+
+// TestHostPathsRefusesUnsafeWorktreesParent checks that a worktrees parent
+// that holds a directory the run reads is not returned, so the jail masks the
+// checkout alone, and that the refusal is logged at Warn.
+func TestHostPathsRefusesUnsafeWorktreesParent(t *testing.T) {
+	// Not parallel: it swaps the default logger.
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
+
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	require.NoError(t, os.MkdirAll(main, 0o700))
+	git(t, main, "init", "-q", "-b", "main")
+	write(t, filepath.Join(main, "go.mod"), "module example.com/main\n\ngo 1.21\n")
+	git(t, main, "add", "-A")
+	git(t, main, "commit", "-q", "-m", "base")
+	worktree := filepath.Join(root, "worktrees", "task")
+	git(t, main, "worktree", "add", "-q", "--detach", worktree)
+
+	paths, err := HostPaths(context.Background(), worktree, "", nil, "",
+		filepath.Join(root, "worktrees", "toolchain"))
+	require.NoError(t, err)
+	require.Equal(t, worktree, paths.Checkout, "the checkout is still masked alone")
+	require.Empty(t, paths.Worktrees, "the parent holds a directory the run reads")
+	require.Contains(t, logged.String(), "level=WARN")
+	require.Contains(t, logged.String(), "worktrees parent")
 }
