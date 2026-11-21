@@ -2,9 +2,9 @@ date: 2026-11-21
 name: w21-edit-without-read
 variants:
   - name: control
-    ref: 67eb3c71
+    ref: e9aa2d89
   - name: edit
-    ref: 67eb3c71
+    ref: e9aa2d89
     overlay: {edit_without_read: true}
 routes: [deepseek-flash]
 repetitions: 3
