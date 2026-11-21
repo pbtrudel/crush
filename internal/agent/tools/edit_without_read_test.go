@@ -78,6 +78,27 @@ func TestEditWithoutReadAppliesAnExactUniqueMatch(t *testing.T) {
 	}
 }
 
+// An unread file with CRLF line endings keeps them, and the edit is still
+// counted as one made without a read.
+func TestEditWithoutReadKeepsCRLF(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "a.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("alpha\r\nbeta\r\n"), 0o644))
+	edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+	resp, err := replaceContent(edit, filePath, "beta", "BETA", false, fantasy.ToolCall{ID: "call"})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	require.Equal(t, "alpha\r\nBETA\r\n", string(content))
+	require.True(t, gjson.Get(resp.Metadata, "unread_edit").Bool())
+	require.Zero(t, tracker.recorded)
+}
+
 // A match the guard cannot prove unique and exact keeps today's refusal,
 // and the refusal says why the option did not apply.
 func TestEditWithoutReadRefusesTheRest(t *testing.T) {

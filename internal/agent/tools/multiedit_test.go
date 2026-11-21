@@ -423,6 +423,32 @@ func TestProcessMultiEditExistingFileWithoutRead(t *testing.T) {
 		require.Zero(t, tracker.recorded, "an unread batch must not claim a read")
 	})
 
+	t.Run("a later edit may match the text an earlier edit wrote", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		// "marker" is only in the first edit's new_string, so the second
+		// edit matches the content as the first one leaves it, and nothing
+		// in the file the session never read.
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "two", NewString: "inserted\nmarker"},
+				{OldString: "marker", NewString: "MARKER"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.False(t, resp.IsError, resp.Content)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "one\ninserted\nMARKER\n", string(content))
+		require.Zero(t, tracker.recorded)
+	})
+
 	t.Run("a whitespace-only edit refuses the batch", func(t *testing.T) {
 		t.Parallel()
 

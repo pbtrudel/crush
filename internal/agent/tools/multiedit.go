@@ -295,18 +295,16 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 	// an exact, single match as the content evolves there. One edit that
 	// fails, needs the whitespace fallback or asks for replace_all refuses
 	// the whole call, with the guard's own refusal.
-	degraded := false
+	var degraded, refused bool
 	if file.guard.refused() {
-		exact := len(failedEdits) == 0 && !whitespaceCorrected
+		replaceAll := false
 		for _, op := range params.Edits {
-			exact = exact && !op.ReplaceAll
+			replaceAll = replaceAll || op.ReplaceAll
 		}
-		// The option is on here: with it off loadExistingFile returned the
-		// refusal already.
-		if !exact || !editWithoutReadEnabled(edit.withoutRead) {
+		degraded, refused = edit.mayEditUnread(file.guard, replaceAll, whitespaceCorrected || len(failedEdits) > 0)
+		if refused {
 			return refusedBatch(file.guard, failedEdits), nil
 		}
-		degraded = true
 	}
 
 	// Check if content actually changed

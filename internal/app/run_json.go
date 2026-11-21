@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/tidwall/gjson"
@@ -57,13 +58,6 @@ type runGate struct {
 	UnbackedClaims int `json:"unbacked_claims"`
 }
 
-// The tools the edits object counts. They are the names the session log
-// records, as the log report reads them.
-const (
-	editToolName      = "edit"
-	multiEditToolName = "multiedit"
-)
-
 // runEdits is what the edit and multiedit calls of the command did: how
 // many it attempted, how many the read guard or the matcher refused and by
 // which kind, how many failed for another reason, and how many applied to a
@@ -92,7 +86,7 @@ func editCounts(rows []message.Message) *runEdits {
 		switch m.Role {
 		case message.Assistant:
 			for _, tc := range m.ToolCalls() {
-				if tc.Name != editToolName && tc.Name != multiEditToolName {
+				if tc.Name != tools.EditToolName && tc.Name != tools.MultiEditToolName {
 					continue
 				}
 				edits.Attempted++

@@ -60,13 +60,13 @@ func editWithoutReadEnabled(option bool) bool {
 // mayEditUnread reports whether an edit takes the path that applies to a
 // file the guard refuses, and whether the guard refuses the file at all.
 // The path needs the option and a match that is exact, single and not
-// replace_all: a whitespace-tolerant match is not exact, and replace_all
-// cannot prove a match is unique.
-func (edit editContext) mayEditUnread(guard readGuard, replaceAll, whitespaceCorrected bool) (degraded, refused bool) {
+// replace_all: notExact says the match failed, only matched through the
+// whitespace fallback, or could not prove itself unique.
+func (edit editContext) mayEditUnread(guard readGuard, replaceAll, notExact bool) (degraded, refused bool) {
 	if !guard.refused() {
 		return false, false
 	}
-	if !editWithoutReadEnabled(edit.withoutRead) || replaceAll || whitespaceCorrected {
+	if !editWithoutReadEnabled(edit.withoutRead) || replaceAll || notExact {
 		return false, true
 	}
 	return true, false
