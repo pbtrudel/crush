@@ -5,12 +5,12 @@ import { motion, lowPower } from '../state/motion';
 import { BootSequence } from './BootSequence';
 import { ConnectionBanner } from './ConnectionBanner';
 import { Hud } from './Hud';
+import { TransmissionLog } from './log/TransmissionLog';
 import { Stage } from './stage/Stage';
 import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
 // Later tasks fill the layout slots below:
-// import { TransmissionLog } from './log/TransmissionLog'; // Task 13
 // import { CommandDeck } from './deck/CommandDeck'; // Task 14
 // import { Interrupt } from './interrupt/Interrupt'; // Task 15
 
@@ -36,8 +36,9 @@ export function App() {
       <Hud />
       <ConnectionBanner />
       <main class="holodeck__grid" inert={modal}>
-        {/* Task 13: <TransmissionLog /> */}
-        <section class="panel panel--log" aria-label="Transmission log" />
+        <section class="panel panel--log" aria-label="Transmission log">
+          <TransmissionLog />
+        </section>
         <section class="stage" aria-label="Agent constellation">
           <Stage />
         </section>

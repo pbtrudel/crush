@@ -7,6 +7,7 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/shell.css';
 import './styles/stage.css';
+import './styles/log.css';
 import { render } from 'preact';
 import { App } from './ui/App';
 import { boot } from './state/store';
