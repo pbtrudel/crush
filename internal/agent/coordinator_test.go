@@ -35,6 +35,9 @@ type mockSessionAgent struct {
 	notices []string
 	// busy controls IsSessionBusy.
 	busy bool
+	// summarizeOpts records the provider options of the most recent
+	// Summarize call.
+	summarizeOpts fantasy.ProviderOptions
 }
 
 func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -70,7 +73,8 @@ func (m *mockSessionAgent) QueuedPromptsList(sessionID string) []string { return
 func (m *mockSessionAgent) ClearQueue(sessionID string)                 {}
 func (m *mockSessionAgent) EnqueueNotice(sessionID, text string)        { m.notices = append(m.notices, text) }
 func (m *mockSessionAgent) AddNote(sessionID, text string)              {}
-func (m *mockSessionAgent) Summarize(context.Context, string, fantasy.ProviderOptions, func(context.Context, *fantasy.ProviderError) error) error {
+func (m *mockSessionAgent) Summarize(_ context.Context, _ string, opts fantasy.ProviderOptions, _ func(context.Context, *fantasy.ProviderError) error) error {
+	m.summarizeOpts = opts
 	return nil
 }
 func (m *mockSessionAgent) GenerateTitle(context.Context, string, string) {}
@@ -494,6 +498,206 @@ func TestWithPromptCacheKeySessionScoped(t *testing.T) {
 	assert.Equal(t, session.HashID("session-a"), keyFor(t, "session-a"), "one conversation keeps one key")
 	assert.Equal(t, session.HashID(coord.cfg.WorkingDir()), keyFor(t, ""),
 		"an unknown conversation falls back to the workspace key")
+}
+
+// TestWithPromptCacheKeyOpenaiCompatProvider pins the key on every plain
+// OpenAI-compatible provider: it travels in extra_body as a top-level request
+// field, one key per conversation, with the workspace key when the caller has
+// no session.
+func TestWithPromptCacheKeyOpenaiCompatProvider(t *testing.T) {
+	env := testEnv(t)
+
+	providerCfg := config.ProviderConfig{
+		ID:      "neuralwatt",
+		Type:    catwalk.TypeCompletions,
+		BaseURL: "https://api.neuralwatt.com/v1",
+	}
+	coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+	model := Model{
+		CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+		ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "glm-5.3"},
+	}
+
+	keyFor := func(t *testing.T, sessionID string) any {
+		t.Helper()
+		opts := coord.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, sessionID)
+		return gatewayExtraBody(t, opts)["prompt_cache_key"]
+	}
+
+	first, second := keyFor(t, "session-a"), keyFor(t, "session-b")
+	require.Equal(t, session.HashID("session-a"), first)
+	require.NotEqual(t, first, second, "two conversations must not share a cache key")
+	require.Equal(t, session.HashID("session-a"), keyFor(t, "session-a"), "one conversation keeps one key")
+	require.Equal(t, session.HashID(coord.cfg.WorkingDir()), keyFor(t, ""),
+		"an unknown conversation falls back to the workspace key")
+}
+
+// TestWithPromptCacheKeyKeepsUserValue pins that a prompt_cache_key the user
+// set in the provider's extra_body always wins, on OpenAI-compatible
+// providers and on Mistral, which overwrote it.
+func TestWithPromptCacheKeyKeepsUserValue(t *testing.T) {
+	env := testEnv(t)
+
+	providers := []config.ProviderConfig{
+		{ID: "neuralwatt", Type: catwalk.TypeCompletions, BaseURL: "https://api.neuralwatt.com/v1"},
+		{ID: "mistral", Type: catwalk.TypeCompletions, BaseURL: "https://api.mistral.ai"},
+	}
+	for _, providerCfg := range providers {
+		t.Run(providerCfg.ID, func(t *testing.T) {
+			coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+			model := withExtraBody(Model{
+				CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+				ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "glm-5.3"},
+			}, map[string]any{"prompt_cache_key": "user-key"})
+
+			opts := coord.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, "session-a")
+
+			require.Equal(t, "user-key", gatewayExtraBody(t, opts)["prompt_cache_key"])
+		})
+	}
+}
+
+// TestWithPromptCacheKeyProviderExtraBodyWins pins that a prompt_cache_key
+// configured in the provider's own extra_body wins too. That map is applied
+// to the request body after the call options, so setting the key here would
+// only fight it.
+func TestWithPromptCacheKeyProviderExtraBodyWins(t *testing.T) {
+	env := testEnv(t)
+
+	providers := []config.ProviderConfig{
+		{ID: "neuralwatt", Type: catwalk.TypeCompletions, BaseURL: "https://api.neuralwatt.com/v1"},
+		{ID: "mistral", Type: catwalk.TypeCompletions, BaseURL: "https://api.mistral.ai"},
+	}
+	for _, providerCfg := range providers {
+		providerCfg.ExtraBody = map[string]any{"prompt_cache_key": "provider-key"}
+		t.Run(providerCfg.ID, func(t *testing.T) {
+			coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+			model := Model{
+				CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+				ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "glm-5.3"},
+			}
+
+			opts := coord.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, "session-a")
+
+			compat, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
+			if ok {
+				require.NotContains(t, compat.ExtraBody, "prompt_cache_key")
+			}
+		})
+	}
+}
+
+// TestWithPromptCacheKeyProviderSelection pins which providers get the
+// extra_body key: hyper takes it, while official OpenAI on the Responses API
+// and OpenRouter keep their own options namespaces and get nothing.
+func TestWithPromptCacheKeyProviderSelection(t *testing.T) {
+	env := testEnv(t)
+
+	modelFor := func(providerID string) Model {
+		return Model{
+			CatwalkCfg: catwalk.Model{ID: "glm-5.3"},
+			ModelCfg:   config.SelectedModel{Provider: providerID, Model: "glm-5.3"},
+		}
+	}
+	tests := []struct {
+		name    string
+		cfg     config.ProviderConfig
+		wantKey bool
+	}{
+		{"hyper", config.ProviderConfig{ID: hyper.Name, Type: openaicompat.Name}, true},
+		{
+			"openai responses",
+			config.ProviderConfig{
+				ID:      string(catwalk.InferenceProviderOpenAI),
+				Type:    catwalk.TypeResponses,
+				BaseURL: "https://api.openai.com/v1",
+			},
+			false,
+		},
+		{
+			"openrouter",
+			config.ProviderConfig{
+				ID:      string(catwalk.InferenceProviderOpenRouter),
+				Type:    catwalk.TypeCompletions,
+				BaseURL: "https://openrouter.ai/api/v1",
+			},
+			false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			coord := newTestCoordinator(t, env, tc.cfg.ID, tc.cfg)
+
+			opts := coord.withPromptCacheKey(getProviderOptions(modelFor(tc.cfg.ID), tc.cfg), tc.cfg, "session-a")
+
+			compat, ok := opts[openaicompat.Name].(*openaicompat.ProviderOptions)
+			if !tc.wantKey {
+				require.False(t, ok, "provider must not get the extra_body key")
+				return
+			}
+			require.True(t, ok)
+			require.Equal(t, session.HashID("session-a"), compat.ExtraBody["prompt_cache_key"])
+		})
+	}
+}
+
+// TestWithPromptCacheKeyStableAcrossCompaction pins the key across a
+// compaction: the summarize call must send the same value as the turn that
+// filled the context, or the provider can reuse nothing.
+func TestWithPromptCacheKeyStableAcrossCompaction(t *testing.T) {
+	env := testEnv(t)
+
+	providerCfg := config.ProviderConfig{
+		ID:      "neuralwatt",
+		Type:    catwalk.TypeCompletions,
+		BaseURL: "https://api.neuralwatt.com/v1",
+	}
+	coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+	sess, err := env.sessions.Create(t.Context(), "Test")
+	require.NoError(t, err)
+
+	model := Model{
+		CatwalkCfg: catwalk.Model{ID: "glm-5.3", DefaultMaxTokens: 4096},
+		ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "glm-5.3"},
+	}
+	mock := newMockAgent(providerCfg.ID, 4096, nil)
+	mock.model = model
+	coord.mainAgent = mock
+
+	turnOptions, _, _, _, _, _ := mergeCallOptions(model, providerCfg)
+	turnKey := gatewayExtraBody(t, coord.withPromptCacheKey(turnOptions, providerCfg, sess.ID))["prompt_cache_key"]
+	require.Equal(t, session.HashID(sess.ID), turnKey)
+
+	require.NoError(t, coord.Summarize(t.Context(), sess.ID))
+
+	require.Equal(t, turnKey, gatewayExtraBody(t, mock.summarizeOpts)["prompt_cache_key"])
+}
+
+// TestWithPromptCacheKeyOpenaiUnchanged pins the official OpenAI provider: it
+// carries the key on its own options and never gets the top-level extra_body
+// field, whichever spelling of its type the config used.
+func TestWithPromptCacheKeyOpenaiUnchanged(t *testing.T) {
+	env := testEnv(t)
+
+	for _, providerType := range []catwalk.Type{catwalk.TypeResponses, openai.Name} {
+		t.Run(string(providerType), func(t *testing.T) {
+			providerCfg := config.ProviderConfig{
+				ID:      string(catwalk.InferenceProviderOpenAI),
+				Type:    providerType,
+				BaseURL: "https://api.openai.com/v1",
+			}
+			coord := newTestCoordinator(t, env, providerCfg.ID, providerCfg)
+			model := Model{
+				CatwalkCfg: catwalk.Model{ID: "gpt-6.1-sol"},
+				ModelCfg:   config.SelectedModel{Provider: providerCfg.ID, Model: "gpt-6.1-sol"},
+			}
+
+			opts := coord.withPromptCacheKey(getProviderOptions(model, providerCfg), providerCfg, "session-a")
+
+			_, hasCompat := opts[openaicompat.Name]
+			require.False(t, hasCompat, "the official provider must not get a top-level prompt_cache_key")
+		})
+	}
 }
 
 func TestGetProviderOptionsReasoningEffort(t *testing.T) {
