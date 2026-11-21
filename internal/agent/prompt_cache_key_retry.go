@@ -76,7 +76,7 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 	if err != nil || !bytes.Contains(bytes.ToLower(rejection), []byte(promptCacheKeyField)) {
 		// Hand the rejection on with the bytes already read, and let the
 		// caller's Close reach the original body through this one.
-		resp.Body = &promptCacheKeyBody{
+		resp.Body = &bufferedBody{
 			Reader:   io.MultiReader(bytes.NewReader(rejection), original),
 			original: original,
 		}
@@ -97,14 +97,14 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body)))
 }
 
-// promptCacheKeyBody replays a buffered response body and closes the original
-// body when the caller is done with it.
-type promptCacheKeyBody struct {
+// bufferedBody replays the bytes already read from a response body, then the
+// rest of it, and closes the original body when the caller is done with it.
+type bufferedBody struct {
 	io.Reader
 	original io.ReadCloser
 }
 
-func (b *promptCacheKeyBody) Close() error {
+func (b *bufferedBody) Close() error {
 	return b.original.Close()
 }
 
