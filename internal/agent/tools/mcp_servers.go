@@ -48,7 +48,11 @@ func NewMCPServersTool(cfg *config.ConfigStore) fantasy.AgentTool {
 			case "", "list":
 				return fantasy.NewTextResponse(listInactiveMCPServers(cfg)), nil
 			case "activate":
-				return activateMCPServer(ctx, cfg, strings.TrimSpace(params.Server))
+				response, err := activateMCPServer(ctx, cfg, strings.TrimSpace(params.Server))
+				if err == nil && !response.IsError {
+					response.Content = withLazyActivationHint(response.Content, cfg.Config().Options.GetLazyTools())
+				}
+				return response, err
 			default:
 				return fantasy.NewTextErrorResponse(
 					fmt.Sprintf("unknown action %q: use \"list\" or \"activate\"", params.Action),
@@ -56,6 +60,22 @@ func NewMCPServersTool(cfg *config.ConfigStore) fantasy.AgentTool {
 			}
 		},
 	)
+}
+
+// lazyActivationHint is appended to a successful activation reply when
+// options.lazy_tools is on. The server's schemas are deferred, so a model that
+// calls one straight away gets "tool not found" and blames the server; the
+// reply has to point at tool_search instead.
+const lazyActivationHint = "\n\nLazy tool schemas are on, so these tools are not in your palette yet: " +
+	"call tool_search with the tool's name to load its schema before you call it."
+
+// withLazyActivationHint leaves a full-palette reply untouched and tells a lazy
+// session how to load the schemas it just unlocked.
+func withLazyActivationHint(reply string, lazy bool) string {
+	if !lazy {
+		return reply
+	}
+	return reply + lazyActivationHint
 }
 
 func listInactiveMCPServers(cfg *config.ConfigStore) string {

@@ -330,15 +330,17 @@ func (t namedTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse,
 	return fantasy.NewTextResponse(t.name), nil
 }
 
-// mcpNamedTool is an MCP-backed tool, which lazy mode must never defer.
+// mcpNamedTool is an MCP-backed tool. Lazy mode defers it like any other
+// non-core tool: its schema costs the same per request as a built-in's.
 type mcpNamedTool struct{ namedTool }
 
 func (t mcpNamedTool) MCP() string { return "server" }
 
-// TestLazyPaletteKeepsDelegationAndMCPTools pins what the core palette is for:
-// a Lead can always delegate, teammates can always talk, and an MCP server's
-// tools are the server's business (mcp_servers owns activating them).
-func TestLazyPaletteKeepsDelegationAndMCPTools(t *testing.T) {
+// TestLazyPaletteKeepsDelegationAndEditingTools pins what the core palette is
+// for: a Lead can always delegate, teammates can always talk, and the tools a
+// turn needs to touch the codebase and ask the user stay. Everything else,
+// MCP tools included, is held back until tool_search reveals it.
+func TestLazyPaletteKeepsDelegationAndEditingTools(t *testing.T) {
 	registry := tools.NewLazyRegistry(lazyCoreTools)
 	full := []fantasy.AgentTool{
 		namedTool{name: AgentToolName},
@@ -366,14 +368,13 @@ func TestLazyPaletteKeepsDelegationAndMCPTools(t *testing.T) {
 		AgentDispatchToolName,
 		SendMessageToolName,
 		TeamTaskCreateToolName,
-		"github_create_issue",
 		tools.WorktreeToolName,
 		tools.WriteToolName,
 		tools.MultiEditToolName,
 		tools.JobOutputToolName,
 		tools.JobKillToolName,
 		tools.QuestionToolName,
-	}, names, "delegation, MCP and the editing/job/question tools stay; other built-ins are held back")
+	}, names, "delegation and the editing/job/question tools stay; other built-ins and MCP tools are held back")
 }
 
 // TestLazyCompactionFallbackSendsTheLazyPalette covers the one compaction path

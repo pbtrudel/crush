@@ -77,10 +77,11 @@ func (c *coordinator) lazyRegistryIfEnabled() *tools.LazyRegistry {
 }
 
 // lazyToolsForSession narrows a session's tool list to what lazy mode allows:
-// the core palette, MCP tools (their schemas are the server's business, and
-// mcp_servers already owns activating them) and whatever this session revealed
-// with tool_search. It is a no-op unless the option is on, which is what keeps
-// lazy mode off byte-identical to the full palette.
+// the core palette and whatever this session revealed with tool_search. MCP
+// tools are deferred like any other non-core tool, since a connected server's
+// schemas cost the same tokens on every request. It is a no-op unless the
+// option is on, which is what keeps lazy mode off byte-identical to the full
+// palette.
 func (a *sessionAgent) lazyToolsForSession(sessionID string, list []fantasy.AgentTool) []fantasy.AgentTool {
 	if a.lazyTools == nil {
 		return list
