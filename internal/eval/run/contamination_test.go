@@ -211,6 +211,11 @@ func TestExcerpt(t *testing.T) {
 			want:  `curl -H 'Authorization: Basic [redacted]' https://api.example.com`,
 		},
 		{
+			name:  "an ordinary word after basic",
+			input: "basic usage of the tool",
+			want:  "basic usage of the tool",
+		},
+		{
 			name:  "an api key field",
 			input: `{"api_key":"sk-abcdefghijklmnopqrst"}`,
 			want:  `{"api_key":"[redacted]"}`,
@@ -252,6 +257,13 @@ func TestExcerpt(t *testing.T) {
 		t.Parallel()
 		got := excerpt(strings.Repeat("a", 3*maxExcerpt), nil)
 		require.Len(t, got, maxExcerpt)
+	})
+
+	t.Run("a match at the end", func(t *testing.T) {
+		t.Parallel()
+		got := excerpt(strings.Repeat("y", 300)+" gh pr", []string{"gh pr"})
+		require.Len(t, got, maxExcerpt)
+		require.Contains(t, got, "gh pr")
 	})
 
 	t.Run("a long input centred on the match", func(t *testing.T) {

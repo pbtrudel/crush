@@ -246,7 +246,7 @@ var redactions = []struct {
 	replace string
 }{
 	{regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/-]{8,}=*`), "${1}[redacted]"},
-	{regexp.MustCompile(`(?i)(basic\s+)[a-z0-9+/=._~-]{4,}`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(authorization\s*:\s*basic\s+)[a-z0-9+/=._~-]{4,}`), "${1}[redacted]"},
 	{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@`), "${1}[redacted]@"},
 	{regexp.MustCompile(`(?i)((?:^|\s)(?:-u|--user)[= ]\s*)[^\s:]+:[^\s]+`), "${1}[redacted]"},
 	{regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}`), "${1}[redacted]"},
@@ -278,7 +278,7 @@ func excerpt(input string, markers []string) string {
 		start--
 	}
 	end := start + maxExcerpt
-	for end > start && !utf8.RuneStart(text[end]) {
+	for end > start && end < len(text) && !utf8.RuneStart(text[end]) {
 		end--
 	}
 	return text[start:end]
@@ -291,8 +291,11 @@ func firstMatch(text string, markers []string) int {
 	lower := strings.ToLower(text)
 	at, found := 0, false
 	for _, m := range markers {
+		if m == "" {
+			continue
+		}
 		i := strings.Index(lower, m)
-		if i < 0 || found && i >= at {
+		if i < 0 || (found && i >= at) {
 			continue
 		}
 		at, found = i, true
