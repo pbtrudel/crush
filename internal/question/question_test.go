@@ -1,6 +1,7 @@
 package question
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -109,4 +110,38 @@ func TestCancelNotificationCarriesSessionID(t *testing.T) {
 	ev := <-notifications
 	assert.Equal(t, pending.ID, ev.Payload.BatchID)
 	assert.Equal(t, "s-cancel", ev.Payload.SessionID)
+}
+
+// TestContextCancelNotification verifies that a question abandoned because
+// its run was cancelled publishes the same resolution notification as an
+// answer or a cancel, so every client drops its form.
+func TestContextCancelNotification(t *testing.T) {
+	t.Parallel()
+	svc := NewService()
+	notifications := svc.SubscribeNotifications(t.Context())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Ask(ctx, freeTextRequest("s-ctx"))
+		done <- err
+	}()
+
+	var pending Request
+	require.Eventually(t, func() bool {
+		var ok bool
+		pending, ok = svc.Pending()
+		return ok
+	}, 2*time.Second, 5*time.Millisecond, "question must be pending")
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	select {
+	case ev := <-notifications:
+		require.Equal(t, pending.ID, ev.Payload.BatchID)
+		require.Equal(t, "s-ctx", ev.Payload.SessionID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("no resolution notification")
+	}
 }
