@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,9 +145,15 @@ func Main(args []string) int {
 		}
 	}
 	if len(masks) == 0 {
-		masks = DefaultMasks
+		// A copy: filtering must never rewrite the package global.
+		masks = append([]string(nil), DefaultMasks...)
 	}
-	masks = unmaskExecutables(masks, argv...)
+	masks, blocked := unmaskExecutables(masks, DefaultMasks, argv...)
+	if len(blocked) > 0 {
+		fmt.Fprintf(os.Stderr, "Netjail: refuse the mask %s: it holds %s, the binary the jail has to run\n",
+			blocked[0], argv[0])
+		return 1
+	}
 	// The kept directories are opened before a mask hides the directory
 	// above them: the bind mount that puts them back names the host
 	// directory through the handle, not through the path the tmpfs now
@@ -264,29 +271,38 @@ func parseArgs(args []string) (sock string, port int, masks, keeps []string, arg
 	return "", 0, nil, nil, nil, errors.New("netjail: no command after --")
 }
 
-// unmaskExecutables drops from masks every directory that holds a binary
+// unmaskExecutables drops from masks the default masks that hold a binary
 // the jail still has to run: masking that directory would hide the binary
 // from the helper's own exec. The model's binary and the go toolchain live
 // outside the default masks, so this only matters for a binary built under
-// /tmp, as tests are.
-func unmaskExecutables(masks []string, binaries ...string) []string {
-	kept := masks[:0]
+// /tmp, as tests are. A mask a caller asked for gets no such pass: it comes
+// back in blocked, so Main refuses the run rather than hiding the binary it
+// execs. The slice it is given is never rewritten.
+func unmaskExecutables(masks, defaults []string, binaries ...string) (kept, blocked []string) {
 	for _, mask := range masks {
-		hide := true
-		for _, binary := range binaries {
-			if binary == "" || !filepath.IsAbs(binary) {
-				continue
-			}
-			if binary == mask || strings.HasPrefix(binary, mask+string(filepath.Separator)) {
-				hide = false
-				break
-			}
-		}
-		if hide {
+		binary := hiddenBinary(mask, binaries...)
+		switch {
+		case binary == "":
 			kept = append(kept, mask)
+		case !slices.Contains(defaults, mask):
+			blocked = append(blocked, mask)
 		}
 	}
-	return kept
+	return kept, blocked
+}
+
+// hiddenBinary is the binary one mask would hide, or empty when it hides
+// none.
+func hiddenBinary(mask string, binaries ...string) string {
+	for _, binary := range binaries {
+		if binary == "" || !filepath.IsAbs(binary) {
+			continue
+		}
+		if binary == mask || strings.HasPrefix(binary, mask+string(filepath.Separator)) {
+			return binary
+		}
+	}
+	return ""
 }
 
 // privateMounts keeps every mount the jail makes out of the host and out of

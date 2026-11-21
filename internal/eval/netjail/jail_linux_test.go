@@ -494,3 +494,24 @@ func TestJailExitCode(t *testing.T) {
 	require.ErrorAs(t, err, &exit)
 	require.Equal(t, 7, exit.ExitCode())
 }
+
+// TestJailRefusesToMaskTheBinary checks that a mask the caller asked for
+// that holds the binary the jail runs stops the jail with a message, instead
+// of running the child with that mask dropped.
+func TestJailRefusesToMaskTheBinary(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: filepath.Dir(self)}))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "the jail must not run unmasked")
+	require.Contains(t, string(out), "Netjail: refuse")
+	require.Contains(t, string(out), filepath.Dir(self))
+}
