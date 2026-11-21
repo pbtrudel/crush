@@ -11,7 +11,9 @@ import (
 	"github.com/charmbracelet/crush/internal/eval/result"
 )
 
-// Metric is the primary metric of an experiment, one of the four of 4.3.
+// Metric is the primary metric of an experiment, one of the metrics of
+// design 4.3 plus the edit refusal rate added with the task suite's edit
+// measurement.
 type Metric string
 
 // The primary metrics of an experiment.
@@ -20,12 +22,14 @@ const (
 	MetricFalseCompletions Metric = "false_completions"
 	MetricSteps            Metric = "steps"
 	MetricTokens           Metric = "tokens"
+	// MetricEditRefusals is refused edits per attempted edit.
+	MetricEditRefusals Metric = "edit_refusals"
 )
 
 // Valid reports whether m is an experiment metric.
 func (m Metric) Valid() bool {
 	switch m {
-	case MetricPassRate, MetricFalseCompletions, MetricSteps, MetricTokens:
+	case MetricPassRate, MetricFalseCompletions, MetricSteps, MetricTokens, MetricEditRefusals:
 		return true
 	}
 	return false
@@ -119,7 +123,7 @@ func catalogsOf(runs []result.Result) []string {
 // batch's final lines.
 func Compare(runs []result.Result, opts Options) (Comparison, error) {
 	if !opts.Metric.Valid() {
-		return Comparison{}, fmt.Errorf("metric %q: want pass_rate, false_completions, steps or tokens", opts.Metric)
+		return Comparison{}, fmt.Errorf("metric %q: want pass_rate, false_completions, steps, tokens or edit_refusals", opts.Metric)
 	}
 	if opts.Control == "" || opts.Variant == "" {
 		return Comparison{}, errors.New("compare needs a control and a variant")
@@ -169,6 +173,11 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 	type sample struct {
 		sum float64
 		n   int
+		// refused and attempted pool the runs' edit counts, so the rate
+		// of a unit is refused over attempted rather than the mean of the
+		// runs' rates.
+		refused   int
+		attempted int
 	}
 	samples := make(map[unit]map[string]*sample)
 	for _, r := range runs {
@@ -190,6 +199,8 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 		}
 		s := samples[u][r.Variant]
 		s.sum += metricScore(r, opts.Metric)
+		s.refused += r.Edits.Refused
+		s.attempted += r.Edits.Attempted
 		s.n++
 	}
 
@@ -199,6 +210,18 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 		variant, variantOK := byVariant[opts.Variant]
 		if !controlOK || !variantOK {
 			cmp.Dropped++
+			continue
+		}
+		if opts.Metric == MetricEditRefusals {
+			// The refusal rate pools the unit's attempts, so many attempts
+			// weigh more than few; an arm that attempted no edit has no
+			// rate to compare and drops the unit.
+			if control.attempted == 0 || variant.attempted == 0 {
+				cmp.Dropped++
+				continue
+			}
+			diffs = append(diffs, float64(variant.refused)/float64(variant.attempted)-
+				float64(control.refused)/float64(control.attempted))
 			continue
 		}
 		diffs = append(diffs, variant.sum/float64(variant.n)-control.sum/float64(control.n))
@@ -224,6 +247,7 @@ func Compare(runs []result.Result, opts Options) (Comparison, error) {
 
 // metricScore is the per-run score of one metric: pass and false completion
 // are indicators, steps and tokens are counts, and tokens sums every kind.
+// The edit refusal rate is pooled by the unit's counts instead, in Compare.
 func metricScore(r result.Result, m Metric) float64 {
 	switch m {
 	case MetricPassRate:

@@ -209,7 +209,7 @@ func (e *Experiment) Validate() error {
 		return fmt.Errorf("repetitions %d: want at least 1", e.Repetitions)
 	}
 	if !e.PrimaryMetric.Valid() {
-		return fmt.Errorf("primary metric %q: want pass_rate, false_completions, steps or tokens", e.PrimaryMetric)
+		return fmt.Errorf("primary metric %q: want pass_rate, false_completions, steps, tokens or edit_refusals", e.PrimaryMetric)
 	}
 	if e.Margin < 0 {
 		return fmt.Errorf("margin %v: want zero or more", e.Margin)

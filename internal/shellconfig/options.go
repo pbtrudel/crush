@@ -224,6 +224,7 @@ var optionSpecs = map[string]optionSpec{
 	"lazy-tools":                   {jsonKey: "lazy_tools", kind: optBool},
 	"history-slim-reasoning":       {jsonKey: "history_slim_reasoning", kind: optBool},
 	"responses-reasoning-replay":   {jsonKey: "responses_reasoning_replay", kind: optBool},
+	"edit-without-read":            {jsonKey: "edit_without_read", kind: optBool},
 
 	// Boolean fields exposed positively but stored as their negation.
 	"metrics":              {jsonKey: "disable_metrics", kind: optBool, inverted: true},

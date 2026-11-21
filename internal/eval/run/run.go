@@ -243,6 +243,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		line.TurnEnds = out.Tree.TurnEnds
 		line.UndeliveredReports = out.Tree.UndeliveredReports
 		line.Gate = out.Gate
+		if out.Edits != nil {
+			line.Edits = *out.Edits
+		}
 		line.Estimated = out.Estimated
 		line.Cost = out.Cost
 		line.DurationMS = out.DurationMS
@@ -393,9 +396,11 @@ type runOutput struct {
 		Claims         int `json:"claims"`
 		UnbackedClaims int `json:"unbacked_claims"`
 	} `json:"gate"`
-	Estimated bool    `json:"estimated"`
-	Cost      float64 `json:"cost"`
-	Error     string  `json:"error"`
+	// Edits is set only for a run that called edit or multiedit.
+	Edits     *result.Edits `json:"edits,omitempty"`
+	Estimated bool          `json:"estimated"`
+	Cost      float64       `json:"cost"`
+	Error     string        `json:"error"`
 }
 
 // parseOutput reads the object and reports whether the file holds exactly

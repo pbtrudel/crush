@@ -63,6 +63,7 @@ func TestAggregates(t *testing.T) {
 	pass.Tokens = result.Tokens{Input: 5, Output: 1}
 	pass.Cost = 0.1
 	pass.Gate = result.Gate{Continuations: 1, Claims: 2}
+	pass.Edits = result.Edits{Attempted: 4, Refused: 1, NotRead: 1, UnreadApplied: 2}
 
 	falseCompletion := run("main", "pr-0001", result.KindPlain, 0, false)
 	falseCompletion.Rep = 2
@@ -71,21 +72,25 @@ func TestAggregates(t *testing.T) {
 	falseCompletion.UndeliveredReports = 3
 	falseCompletion.Cost = 0.2
 	falseCompletion.Gate = result.Gate{Continuations: 2, Claims: 3, UnbackedClaims: 1}
+	falseCompletion.Edits = result.Edits{Attempted: 2, Refused: 1, NoMatch: 1}
 
 	stopped := run("main", "pr-0002", result.KindInterface, 2, false)
 	stopped.Steps, stopped.ToolCalls, stopped.DurationMS = 30, 3, 300
 	stopped.Tokens = result.Tokens{Input: 20, Output: 3}
 	stopped.Cost = 0.3
 	stopped.Gate = result.Gate{Continuations: 1, Claims: 4, UnbackedClaims: 1}
+	stopped.Edits = result.Edits{Attempted: 3, UnreadApplied: 1}
 
 	invalid := run("main", "pr-0002", result.KindInterface, 1, false)
 	invalid.Rep = 2
 	invalid.Steps = 999
 	// An invalid run is excluded from every figure, the gate's included.
 	invalid.Gate = result.Gate{Continuations: 9, Claims: 9, UnbackedClaims: 9}
+	invalid.Edits = result.Edits{Attempted: 99, Refused: 99}
 
 	contaminated := run("main", "pr-0003", result.KindPlain, 0, true)
 	contaminated.Steps = 888
+	contaminated.Edits = result.Edits{Attempted: 88, Refused: 88}
 	contaminated.Contaminated = true
 
 	runs := []result.Result{pass, falseCompletion, stopped, invalid, contaminated}
@@ -120,12 +125,21 @@ func TestAggregates(t *testing.T) {
 	require.Equal(t, 2, all.GateUnbacked)
 	require.Equal(t, []string{"pr-0001/main/deepseek-flash#2", "pr-0002/main/deepseek-flash#1"}, all.UnbackedRuns)
 
+	// The edit counts cover the valid runs only, and the refusal rate is
+	// refused over attempted.
+	require.Equal(t, 9, all.EditAttempted)
+	require.Equal(t, 2, all.EditRefused)
+	require.Equal(t, 3, all.EditUnreadApplied)
+	require.InDelta(t, 2.0/9.0, all.EditRefusalRate, 1e-9)
+
 	plain := find(t, score.Aggregates(runs), "main", "deepseek-flash", result.KindPlain)
 	require.Equal(t, 3, plain.Runs)
 	require.Equal(t, 1, plain.Contaminated)
 	require.Equal(t, 2, plain.Valid)
 	require.InDelta(t, 0.5, plain.PassRate, 1e-9)
 	require.Equal(t, 1, plain.FlaggedFalseCompletions)
+	require.Equal(t, 6, plain.EditAttempted)
+	require.InDelta(t, 1.0/3.0, plain.EditRefusalRate, 1e-9)
 
 	iface := find(t, score.Aggregates(runs), "main", "deepseek-flash", result.KindInterface)
 	require.Equal(t, 2, iface.Runs)
@@ -133,6 +147,8 @@ func TestAggregates(t *testing.T) {
 	require.Equal(t, 1, iface.Valid)
 	require.Equal(t, 1, iface.StoppedShort)
 	require.Zero(t, iface.Passes)
+	require.Equal(t, 3, iface.EditAttempted)
+	require.Zero(t, iface.EditRefusalRate, "a group with no refused edit scores zero")
 }
 
 func TestAggregateCostNeedsEveryRun(t *testing.T) {

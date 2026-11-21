@@ -276,3 +276,92 @@ func pairedRuns(n int) []result.Result {
 	}
 	return runs
 }
+
+// editRun is a passed run with an edit count.
+func editRun(variant, task string, attempted, refused int) result.Result {
+	r := run(variant, task, result.KindPlain, 0, true)
+	r.Edits = result.Edits{Attempted: attempted, Refused: refused}
+	return r
+}
+
+// Refused edits per attempted edit is the metric the read guard is measured
+// with: a unit whose one arm attempted no edit has no rate and is dropped,
+// and the margin rule stays the pass rate's.
+func TestCompareEditRefusals(t *testing.T) {
+	t.Parallel()
+
+	var runs []result.Result
+	for i := 1; i <= 3; i++ {
+		task := "t" + string(rune('0'+i))
+		runs = append(runs, editRun("control", task, 10, 4), editRun("variant", task, 10, 1))
+	}
+	// A task where neither variant edited anything has no rate to compare.
+	runs = append(runs, editRun("control", "t4", 0, 0), editRun("variant", "t4", 0, 0))
+
+	cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricEditRefusals, Margin: 0.05})
+	require.Equal(t, 3, cmp.Units)
+	require.Equal(t, 1, cmp.Dropped)
+	require.InDelta(t, -0.3, cmp.Estimate, 1e-9)
+	require.False(t, cmp.GuardPassed, "the margin rule is not applied to a refusal rate")
+}
+
+// The rate of a unit is refused over attempted, not the mean of the runs'
+// rates: a unit with many attempts weighs more than one with few, and with
+// one unit the estimate is the difference of the aggregates.
+func TestCompareEditRefusalsPoolAttempts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("many attempts weigh more than few", func(t *testing.T) {
+		t.Parallel()
+
+		// The repetitions of one task: the first refused its only edit, a
+		// rate of 1, the second refused none of nine. Pooled, the variant
+		// refused 1 of 10 and the control none of 10.
+		control := editRun("control", "t1", 1, 0)
+		controlSecond := editRun("control", "t1", 9, 0)
+		controlSecond.Rep = 2
+		variant := editRun("variant", "t1", 1, 1)
+		variantSecond := editRun("variant", "t1", 9, 0)
+		variantSecond.Rep = 2
+		runs := []result.Result{control, controlSecond, variant, variantSecond}
+
+		cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricEditRefusals})
+		require.Equal(t, 1, cmp.Units)
+		require.InDelta(t, 0.1, cmp.Estimate, 1e-9, "the mean of the two runs' rates would be 0.5")
+	})
+
+	t.Run("the estimate is the aggregates' difference", func(t *testing.T) {
+		t.Parallel()
+
+		runs := []result.Result{
+			editRun("control", "t1", 4, 1),
+			editRun("control", "t1", 6, 3),
+			editRun("variant", "t1", 4, 0),
+			editRun("variant", "t1", 6, 2),
+		}
+		aggs := score.Aggregates(runs)
+		control := find(t, aggs, "control", "deepseek-flash", "")
+		variant := find(t, aggs, "variant", "deepseek-flash", "")
+
+		cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricEditRefusals})
+		require.Equal(t, 1, cmp.Units)
+		require.Zero(t, cmp.Dropped)
+		require.InDelta(t, variant.EditRefusalRate-control.EditRefusalRate, cmp.Estimate, 1e-9)
+	})
+
+	t.Run("one arm with no attempt drops the unit", func(t *testing.T) {
+		t.Parallel()
+
+		runs := []result.Result{
+			editRun("control", "t1", 5, 1),
+			editRun("variant", "t1", 5, 2),
+			editRun("control", "t2", 5, 1),
+			editRun("variant", "t2", 0, 0),
+		}
+
+		cmp := comparison(runs, score.Options{Control: "control", Variant: "variant", Metric: score.MetricEditRefusals})
+		require.Equal(t, 1, cmp.Units)
+		require.Equal(t, 1, cmp.Dropped, "a unit where one arm attempted no edit is dropped")
+		require.InDelta(t, 0.2, cmp.Estimate, 1e-9)
+	})
+}
