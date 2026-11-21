@@ -85,10 +85,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 func (g *Gateway) routes(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
-	api.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	})
-	api.HandleFunc("GET /api/stream", g.handleStream)
+	g.registerAPI(api)
 	mux.HandleFunc("POST /api/auth", g.handleAuth)
 	mux.Handle("/api/", g.requireAuth(api))
 	mux.Handle("/", assetHandler(assets))
