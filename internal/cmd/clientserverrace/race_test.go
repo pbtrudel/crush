@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,24 @@ const numClients = 8
 // subscribing to server events) and we'll cancel it. The race we care
 // about is observable strictly within ensureServer.
 const clientTimeout = 15 * time.Second
+
+// childEnvAllowlist names the only variables the spawned clients inherit.
+// Each client runs `crush run "hi"`, and with an empty config Crush
+// configures any provider whose API key it finds in the environment, so
+// passing the developer's environment through sent eight real prompts to
+// their provider on every run of this test.
+var childEnvAllowlist = []string{"PATH", "TMPDIR", "LANG", "LC_ALL", "TERM"}
+
+func childEnv(environ []string) []string {
+	var env []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(childEnvAllowlist, name) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
 
 func TestClientServerSpawnRace(t *testing.T) {
 	if testing.Short() {
@@ -83,7 +102,7 @@ func TestClientServerSpawnRace(t *testing.T) {
 	}
 
 	env := append(
-		os.Environ(),
+		childEnv(os.Environ()),
 		"CRUSH_CLIENT_SERVER=1",
 		"XDG_CACHE_HOME="+cacheHome,
 		"XDG_DATA_HOME="+dataHome,
