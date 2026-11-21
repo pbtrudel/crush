@@ -502,8 +502,9 @@ func sampleTurn(ctx context.Context, dbPath, sessionID string, sinceRowID int64,
 	return s, sinceRowID, nil
 }
 
-// sessionContext is the session's total context tokens as the session row
-// records them, which is the number the compaction limit is compared against.
+// sessionContext is the number the auto-compaction limit is compared against:
+// the last request's prompt and completion tokens, as the session row keeps
+// them. total_context_tokens is cumulative spend, not the window's fill.
 func sessionContext(ctx context.Context, dbPath, sessionID string) (int64, error) {
 	conn, err := db.ConnectReadOnly(ctx, dbPath)
 	if err != nil {
@@ -511,10 +512,12 @@ func sessionContext(ctx context.Context, dbPath, sessionID string) (int64, error
 	}
 	defer conn.Close() //nolint:errcheck // Read-only connection.
 	var total int64
+	var prompt, completion int64
 	if err := conn.QueryRowContext(ctx,
-		`select total_context_tokens from sessions where id = ?`, sessionID).Scan(&total); err != nil {
+		`select prompt_tokens, completion_tokens from sessions where id = ?`, sessionID).Scan(&prompt, &completion); err != nil {
 		return 0, err
 	}
+	total = prompt + completion
 	return total, nil
 }
 
