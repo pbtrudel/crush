@@ -216,8 +216,8 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	var printed bytes.Buffer
 	printCompare(&printed, compareReport{Batch: "b1", Suite: "tree1", Control: "control", Aggregates: rows})
 	for _, want := range []string{
-		"false/completed", "flagged", "completed", "tools", "duration_s",
-		"tok_in", "tok_read", "tok_write", "tok_out", "cost",
+		"contaminated", "false/completed", "flagged", "completed", "tools",
+		"duration_s", "tok_in", "tok_read", "tok_write", "tok_out", "cost",
 		"continuations", "claims", "unbacked",
 	} {
 		require.Contains(t, printed.String(), want)
@@ -225,6 +225,36 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	require.Contains(t, printed.String(), "unbacked claims: control "+row.UnbackedRuns[0])
 	require.Contains(t, printed.String(), "33%", "the false-completion rate over completed runs")
 	require.Contains(t, printed.String(), "1.00", "the total cost")
+}
+
+// TestContaminatedRunsInTheReport checks that compare names every
+// contaminated run and the markers it matched, beside the count of the
+// per-variant table.
+func TestContaminatedRunsInTheReport(t *testing.T) {
+	t.Parallel()
+
+	runs := []result.Result{passedLine("control", "pr-0001")}
+	dirty := passedLine("control", "pr-0002")
+	dirty.Contaminated = true
+	dirty.ContaminatedMatches = 2
+	dirty.ContaminatedEvidence = []result.Contamination{
+		{Markers: []string{"gh pr"}, Excerpt: "gh pr view 5 -R pbtrudel/crush"},
+		{Markers: []string{"/host/crush", "git cat-file"}, Excerpt: "git cat-file -p /host/crush/internal/x.go"},
+	}
+	runs = append(runs, dirty)
+
+	report := compareReport{
+		Batch:        "b1",
+		Suite:        "tree1",
+		Control:      "control",
+		Aggregates:   aggregateRows(runs),
+		Contaminated: contaminatedRows(runs),
+	}
+	var printed bytes.Buffer
+	printCompare(&printed, report)
+	require.Contains(t, printed.String(), "contaminated: control pr-0002/control/r1#1  markers: gh pr, /host/crush, git cat-file")
+	require.Contains(t, printed.String(), "gh pr view 5 -R pbtrudel/crush")
+	require.Contains(t, printed.String(), "git cat-file -p /host/crush/internal/x.go")
 }
 
 // passedLine is a completed run that passed, with the figures the aggregate

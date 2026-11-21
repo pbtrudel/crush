@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -64,6 +65,13 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 	for _, tk := range tasks {
 		byID[tk.ID] = tk
 	}
+	// The checkout, the worktrees and the batches are the same for every
+	// line; only the run's own directory changes.
+	paths, err := evalrun.HostPaths(context.Background(), repoDir, suiteDir, h, "")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 
 	// Only the final attempt of a key left its database behind: the run
 	// directory is cleared when an attempt starts.
@@ -91,18 +99,20 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		name := evalrun.DirName(line.Task, line.Variant, line.Route, line.Rep)
-		db := filepath.Join(batchDir, "runs", name, "data", "crush.db")
-		matches := 0
+		runDir := filepath.Join(batchDir, "runs", name)
+		paths.Own = runDir
+		db := filepath.Join(runDir, "data", "crush.db")
 		switch _, err := os.Stat(db); {
 		case err == nil:
-			matches, err = evalrun.Matches(db, tk, suiteDir, repoDir)
+			found, err := evalrun.Matches(db, tk, paths)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
 			scanned++
-			line.Contaminated = matches > 0
-			line.ContaminatedMatches = matches
+			line.ContaminatedEvidence = found
+			line.ContaminatedMatches = len(found)
+			line.Contaminated = line.ContaminatedMatches > 0
 		case !errors.Is(err, fs.ErrNotExist):
 			fmt.Fprintln(stderr, err)
 			return 1

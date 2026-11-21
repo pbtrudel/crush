@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	evalrun "github.com/charmbracelet/crush/internal/eval/run"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,11 @@ const rescanSchema = `CREATE TABLE messages (
 func TestRescanRewritesContamination(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	// rescan derives the contamination markers of the checkout from this
+	// directory, as its documentation says it is run from the suite's
+	// repository root.
+	_, err := gitx.Output(context.Background(), dir, "init", "-q")
+	require.NoError(t, err)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	writeTestFile(t, filepath.Join("evals", "tasks", "pr-0001.yaml"),
 		"schema: 1\nid: pr-0001\nsource:\n  repo: pbtrudel/crush\n  pr: 1\n"+
@@ -51,7 +57,7 @@ func TestRescanRewritesContamination(t *testing.T) {
 	})
 	require.NoError(t, os.Chmod(filepath.Join(batchDir, "results.jsonl"), 0o640))
 	writeSessionDB(t, runDB(batchDir, 1), `grep -n "through prefix" pkg.go`)
-	writeSessionDB(t, runDB(batchDir, 2), `cd x && gh pr list`)
+	writeSessionDB(t, runDB(batchDir, 2), `cd x && gh pr list -R pbtrudel/crush`)
 	writeSessionDB(t, runDB(batchDir, 4), `ls pkg`)
 
 	var stdout, stderr bytes.Buffer

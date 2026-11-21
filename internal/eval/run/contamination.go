@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -24,6 +26,15 @@ type marker struct {
 	// only a whole command, so "gh pr" no longer matches inside "through
 	// prefix". A nil command makes the marker a substring.
 	command *regexp.Regexp
+	// own is a path that is cut out of the text before the marker is
+	// matched. The run's own directory sits under the eval home's batches,
+	// and the child names it all the time, so it is not contact with
+	// another batch.
+	own string
+	// needs are the repositories the whole tool call must also name, any
+	// of them. A bare "gh pr create" is the recipe the checkout's own bash
+	// tool description shows, not a lookup at the fork.
+	needs []string
 }
 
 // commandPattern compiles the pattern of a command marker: the words of the
@@ -40,73 +51,130 @@ func commandPattern(text string) *regexp.Regexp {
 }
 
 // contaminationMarkers are the strings design 3.7 scans tool calls for: the
-// task's merge commit, the fork's pull request and repository URLs, gh
-// commands, the suite path, the repository path and git's object reader.
-func contaminationMarkers(tk *task.Task, suiteDir, repoDir string) []marker {
+// task's merge commit, the fork's pull request and repository URLs, the gh
+// commands that name it, git's object reader, the suite path, and the host
+// paths a jailed run hides: the repository, the checkout the tasks come from,
+// the worktrees beside it and the eval home's batches.
+func contaminationMarkers(tk *task.Task, paths Paths) []marker {
+	repos := auditRepos(tk.Source.Repo, paths.Remotes)
 	markers := []marker{
 		{text: "pbtrudel/crush/pull"},
 		{text: "github.com/pbtrudel/crush"},
-		{text: "gh pr", command: commandPattern("gh pr")},
-		{text: "gh api", command: commandPattern("gh api")},
+		{text: "gh pr", command: commandPattern("gh pr"), needs: repos},
+		{text: "gh api", command: commandPattern("gh api"), needs: repos},
 		{text: "git cat-file", command: commandPattern("git cat-file")},
 	}
 	if tk.Source.Merge != "" {
 		markers = append(markers, marker{text: tk.Source.Merge})
 	}
-	for _, dir := range []string{suiteDir, repoDir} {
-		if dir == "" {
-			continue
-		}
-		if abs, err := filepath.Abs(dir); err == nil {
-			markers = append(markers, marker{text: abs})
-		}
+	seen := make(map[string]bool, len(markers))
+	for _, dir := range []string{paths.Suite, paths.Repo, paths.Checkout, paths.Worktrees} {
+		markers = appendPathMarker(markers, seen, dir, "")
 	}
+	// Only a run directory under the batches is cut out of the batch
+	// marker: anything else it names is contact with another batch.
+	own := absPath(paths.Own)
+	if own != "" && !strings.HasPrefix(own, absPath(paths.Batches)+string(filepath.Separator)) {
+		own = ""
+	}
+	markers = appendPathMarker(markers, seen, paths.Batches, own)
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
+		markers[i].own = strings.ToLower(m.own)
+		for j, name := range m.needs {
+			m.needs[j] = strings.ToLower(name)
+		}
 	}
 	return markers
 }
 
-// Matches opens the session database at path and counts the tool calls whose
-// input names one of the task's contamination markers. It keeps no text.
-func Matches(path string, tk *task.Task, suiteDir, repoDir string) (int, error) {
-	return scanDatabase(path, contaminationMarkers(tk, suiteDir, repoDir))
+// upstreamRepo is the upstream repository this fork tracks: a pull request
+// there can hold the fix a task asks for, so a gh command that names it
+// counts. It is the constant fallback when the task and the checkout name no
+// other repository.
+const upstreamRepo = "charmbracelet/crush"
+
+// auditRepos are the repositories a gh command may name and still count: the
+// task's repository, the checkout's remotes, and the upstream repository.
+func auditRepos(fork string, remotes []string) []string {
+	var repos []string
+	seen := make(map[string]bool, len(remotes)+2)
+	for _, name := range append([]string{fork}, append(remotes, upstreamRepo)...) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		repos = append(repos, name)
+	}
+	return repos
 }
 
-// scanDatabase opens the run's own session database read-only and counts
-// the tool calls whose input names one of the markers. It keeps no text.
-func scanDatabase(path string, markers []marker) (int, error) {
+// appendPathMarker adds dir, as an absolute path, as a marker once. It skips
+// an empty path and one that another marker already names.
+func appendPathMarker(markers []marker, seen map[string]bool, dir, own string) []marker {
+	abs := absPath(dir)
+	if abs == "" || seen[abs] {
+		return markers
+	}
+	seen[abs] = true
+	return append(markers, marker{text: abs, own: own})
+}
+
+// absPath is dir as an absolute path, or empty when it has none to give.
+func absPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+// Matches opens the session database at path and describes every tool call
+// whose input names one of the task's contamination markers: the markers and
+// a short, redacted excerpt of the input. The excerpt is the only text the
+// result line keeps.
+func Matches(path string, tk *task.Task, paths Paths) ([]result.Contamination, error) {
+	return scanDatabase(path, contaminationMarkers(tk, paths))
+}
+
+// scanDatabase opens the run's own session database read-only and collects
+// the tool calls whose input names one of the markers.
+func scanDatabase(path string, markers []marker) ([]result.Contamination, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
+			return nil, nil
 		}
-		return 0, fmt.Errorf("stat session database: %w", err)
+		return nil, fmt.Errorf("stat session database: %w", err)
 	}
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_txlock=immediate")
 	if err != nil {
-		return 0, fmt.Errorf("open session database: %w", err)
+		return nil, fmt.Errorf("open session database: %w", err)
 	}
 	defer db.Close() //nolint:errcheck // Read-only.
 	rows, err := db.QueryContext(context.Background(), "SELECT parts FROM messages")
 	if err != nil {
-		return 0, fmt.Errorf("query session messages: %w", err)
+		return nil, fmt.Errorf("query session messages: %w", err)
 	}
 	defer rows.Close() //nolint:errcheck // Read-only.
 
-	count := 0
+	var found []result.Contamination
 	for rows.Next() {
 		var parts string
 		if err := rows.Scan(&parts); err != nil {
-			return 0, err
+			return nil, err
 		}
-		count += contaminatedCalls(parts, markers)
+		found = append(found, contaminatedCalls(parts, markers)...)
 	}
-	return count, rows.Err()
+	return found, rows.Err()
 }
 
-// contaminatedCalls counts the tool calls of one message whose input names a
-// marker: design 3.7 counts tool calls, not messages.
-func contaminatedCalls(parts string, markers []marker) int {
+// contaminatedCalls collects the tool calls of one message whose input names
+// a marker: design 3.7 counts tool calls, not messages.
+func contaminatedCalls(parts string, markers []marker) []result.Contamination {
 	var list []struct {
 		Type string `json:"type"`
 		Data struct {
@@ -114,34 +182,153 @@ func contaminatedCalls(parts string, markers []marker) int {
 		} `json:"data"`
 	}
 	if json.Unmarshal([]byte(parts), &list) != nil {
-		return 0
+		return nil
 	}
-	count := 0
+	var found []result.Contamination
 	for _, part := range list {
 		if part.Type != "tool_call" || part.Data.Input == "" {
 			continue
 		}
-		if namesMarker(part.Data.Input, markers) {
-			count++
+		if names := matchedMarkers(part.Data.Input, markers); len(names) > 0 {
+			found = append(found, result.Contamination{
+				Markers: names,
+				Excerpt: excerpt(part.Data.Input, names),
+			})
 		}
 	}
-	return count
+	return found
 }
 
-// namesMarker reports whether one tool call's input names a marker.
-func namesMarker(input string, markers []marker) bool {
+// matchedMarkers is the markers one tool call's input names, in the order of
+// the marker list. A marker that needs the repository's name is reported only
+// when the same input names it too.
+func matchedMarkers(input string, markers []marker) []string {
 	texts := inputTexts(input)
+	var names []string
 	for _, m := range markers {
 		if m.text == "" {
 			continue
 		}
+		if len(m.needs) > 0 {
+			named := false
+			for _, need := range m.needs {
+				for _, text := range texts {
+					if strings.Contains(text, need) {
+						named = true
+						break
+					}
+				}
+			}
+			if !named {
+				continue
+			}
+		}
 		for _, text := range texts {
 			if m.matches(text) {
-				return true
+				names = append(names, m.text)
+				break
 			}
 		}
 	}
-	return false
+	return names
+}
+
+// maxExcerpt is how much of a contaminated tool call's input the result line
+// keeps. It is enough to name the command, and small enough to leave a
+// results.jsonl readable.
+const maxExcerpt = 200
+
+// redactions are the shapes of a credential an excerpt must not keep: a
+// bearer or basic authorization, credentials in a URL or a curl command, a
+// named credential, and the token formats of the providers the suite runs.
+var redactions = []struct {
+	pattern *regexp.Regexp
+	replace string
+}{
+	{regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/-]{8,}=*`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(authorization\s*:\s*basic\s+)[a-z0-9+/=._~-]{4,}`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@`), "${1}[redacted]@"},
+	{regexp.MustCompile(`(?i)((?:^|\s)(?:-u|--user)[= ]\s*)[^\s:]+:[^\s]+`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}`), "${1}[redacted]"},
+	{regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`), "[redacted]"},
+	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35,}`), "[redacted]"},
+	{regexp.MustCompile(`\b(?:sk|xox[baprs])-[A-Za-z0-9_-]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "[redacted]"},
+}
+
+// excerpt is about maxExcerpt characters of one contaminated tool call's
+// input, centred on the first marker it matched, with anything that looks
+// like a credential replaced.
+func excerpt(input string, markers []string) string {
+	text := input
+	for _, redaction := range redactions {
+		text = redaction.pattern.ReplaceAllString(text, redaction.replace)
+	}
+	if len(text) <= maxExcerpt {
+		return text
+	}
+	start := firstMatch(text, markers) - maxExcerpt/2
+	start = min(max(start, 0), len(text)-maxExcerpt)
+	// Both ends move back to a rune boundary, so the excerpt stays valid
+	// UTF-8 and never splits a character.
+	for start > 0 && !utf8.RuneStart(text[start]) {
+		start--
+	}
+	end := start + maxExcerpt
+	for end > start && end < len(text) && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[start:end]
+}
+
+// firstMatch is where the first of the matched markers appears in text, or 0
+// when none of them is found: a command marker matches a whole command, so
+// its words may not sit in the text exactly as the marker writes them.
+func firstMatch(text string, markers []string) int {
+	lower := strings.ToLower(text)
+	at, found := 0, false
+	for _, m := range markers {
+		if m == "" {
+			continue
+		}
+		i := strings.Index(lower, m)
+		if i < 0 || (found && i >= at) {
+			continue
+		}
+		at, found = i, true
+	}
+	return at
+}
+
+// cutOwn removes the run's own directory from text, where text names a path
+// inside it. An occurrence only counts when the end of the text or a
+// separator follows it, and never when "/.." follows, which climbs back out
+// of the run into another directory: "pr-0010-r1" is a prefix of the sibling
+// "pr-0010-r10".
+func cutOwn(text, own string) string {
+	if own == "" {
+		return text
+	}
+	var out strings.Builder
+	for {
+		i := strings.Index(text, own)
+		if i < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		rest := text[i+len(own):]
+		ends := rest == "" ||
+			(os.IsPathSeparator(rest[0]) && !strings.HasPrefix(rest, string(os.PathSeparator)+".."))
+		if ends {
+			out.WriteString(text[:i])
+		} else {
+			out.WriteString(text[:i+len(own)])
+		}
+		text = rest
+	}
 }
 
 // inputTexts is the text a marker is matched against. A tool call's input is
@@ -176,8 +363,13 @@ func collectStrings(value any, texts *[]string) {
 }
 
 // matches reports whether text names the marker. A command marker must name a
-// whole command; every other marker matches anywhere.
+// whole command; every other marker matches anywhere. The run's own directory
+// is cut out first, so a tool call that names its own checkout matches
+// nothing.
 func (m marker) matches(text string) bool {
+	if m.own != "" {
+		text = cutOwn(text, m.own)
+	}
 	if m.command == nil {
 		return strings.Contains(text, m.text)
 	}

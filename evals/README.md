@@ -103,13 +103,53 @@ On Linux, `crush-eval run`, `batch` and `grade` put the model's process and the
 grading `go test` in a network, mount and user namespace with only loopback.
 The mount namespace hides `/run`, `/var/run`, `/tmp`, `/mnt/wslg` and
 `/run/user` behind empty tmpfs mounts, so filesystem unix sockets are out of
-reach, and the child keeps your uid and gid without capabilities. The one host
-it may reach is the route's `base_url` host, through an HTTP proxy on a per-run
-unix socket. `--network host` turns this off; on other systems it is the
-default and the jail refuses to start. A machine where user namespaces are
-blocked fails with a message that says to use `--network host`. A result line
-records `network`, and in jail mode `net_denied` with the sorted
-`net_denied_hosts` the proxy refused.
+reach, and the child keeps your uid and gid without capabilities.
+
+A run also hides the directories that hold the answers. It masks the git
+toplevel of the repository the tasks come from, the directory of sibling
+worktrees beside it when it is a linked worktree (`.crush-worktrees`, for
+example), and the eval home's `batches`. The run's own directory under
+`batches` is bind mounted back over the mask, so the child keeps writing its
+checkout, home, config and data while other runs and other batches stay out
+of reach. A worktrees parent that would hide the eval home, the go toolchain
+or its build and module caches is left alone, with a warning: the jail then
+masks the checkout by itself. What the child reads stays readable: the eval home's `data`, with
+the route's token in `crush.json` and the `providers.json` and `hyper.json`
+catalog, the binary under `bin`, and the go toolchain with its build and
+module caches.
+
+The one host it may reach is the route's `base_url` host, through an HTTP
+proxy on a per-run unix socket. `--network host` turns this off; on other
+systems it is the default and the jail refuses to start. A machine where user
+namespaces are blocked fails with a message that says to use `--network
+host`. A result line records `network`, and in jail mode `net_denied` with the
+sorted `net_denied_hosts` the proxy refused.
+
+## Contamination check
+
+After a run, the runner opens the run's own session database read-only and
+scans the input of every tool call for the task's merge commit, the fork's
+pull request and repository URLs (`pbtrudel/crush/pull`,
+`github.com/pbtrudel/crush`), the `git cat-file` command, the `gh pr` and
+`gh api` commands when the same input also names a repository the fix can
+come from: the task's `source.repo`, the checkout's `origin` and `upstream`
+remotes, or the constant upstream `charmbracelet/crush`. It also scans for the
+suite path and the host paths a jailed run hides: the repository the runner
+resolves, the git toplevel of the checkout the tasks come from, the worktrees
+beside it and the eval home's `batches`. Naming one
+of them flags the run. The run's own directory under `batches` is not one of
+them, since the child names its own checkout all the time. A bare
+`gh pr create` flags nothing: the checkout's own bash tool description
+carries that recipe, so it is how a model publishes, not how it looks at the
+fork. A contaminated run is reported and left out of the comparisons; a rate
+above 2% of a batch stops the comparison until the cause is found.
+
+Every result line keeps `contaminated_evidence`: for each contaminated tool
+call, the markers it matched and about 200 characters of its input around the
+first match, with anything that looks like a credential redacted. `crush-eval compare`
+prints the contaminated count per variant, then one line per contaminated run
+with its markers and those excerpts, so a void comparison can be diagnosed
+after the session databases are gone.
 
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).

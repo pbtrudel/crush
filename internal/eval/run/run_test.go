@@ -78,8 +78,8 @@ func TestAdd(t *testing.T) {
 );`
 	// twoContaminatedCalls is one message with three tool calls, two of them
 	// naming a marker: design 3.7 counts tool calls.
-	twoContaminatedCalls = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}"}},{"type":"tool_call","data":{"id":"t2","name":"bash","input":"{\"command\":\"gh api repos/x\"}"}},{"type":"tool_call","data":{"id":"t3","name":"bash","input":"{\"command\":\"ls\"}"}}]`
-	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51\"}","provider_executed":false,"finished":true}}]`
+	twoContaminatedCalls = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51 -R pbtrudel/crush\"}"}},{"type":"tool_call","data":{"id":"t2","name":"bash","input":"{\"command\":\"gh api repos/pbtrudel/crush/pulls/5\"}"}},{"type":"tool_call","data":{"id":"t3","name":"bash","input":"{\"command\":\"ls\"}"}}]`
+	contaminatedPart     = `[{"type":"tool_call","data":{"id":"t1","name":"bash","input":"{\"command\":\"gh pr view 51 -R pbtrudel/crush\"}","provider_executed":false,"finished":true}}]`
 )
 
 // fixtureCatalog is the provider catalog the fixture's eval home serves.
@@ -140,7 +140,7 @@ func newFixture(t *testing.T) *fixture {
 	f.task = &task.Task{
 		Schema: 1,
 		ID:     "pr-0010",
-		Source: task.Source{Base: base},
+		Source: task.Source{Repo: "pbtrudel/crush", Base: base},
 		Kind:   task.KindPlain,
 		Prompt: "Fix the bug.",
 		Grade: task.Grade{
@@ -374,6 +374,10 @@ func TestRunContamination(t *testing.T) {
 	require.True(t, line.Contaminated)
 	require.Equal(t, 1, line.ContaminatedMatches)
 	require.True(t, line.Pass)
+	require.Equal(t, []result.Contamination{{
+		Markers: []string{"gh pr"},
+		Excerpt: `{"command":"gh pr view 51 -R pbtrudel/crush"}`,
+	}}, line.ContaminatedEvidence, "the line keeps what matched")
 }
 
 // TestTreeStats is the diff against the task base and the worktrees the

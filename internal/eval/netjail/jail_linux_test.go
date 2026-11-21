@@ -5,8 +5,10 @@ package netjail_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +102,41 @@ func probe() int {
 			return fail("the masked socket %s was reachable", masked)
 		}
 		fmt.Println("masked ok")
+		return 0
+	}
+
+	// The masks hide the entries below them, and whatever the run keeps
+	// stays readable and writable. A masked path that no longer exists is
+	// reported as absent: a mask over its parent hid it.
+	if dirs := os.Getenv("NETJAIL_LIST"); dirs != "" {
+		for _, dir := range strings.Split(dirs, ",") {
+			entries, err := os.ReadDir(dir)
+			if errors.Is(err, fs.ErrNotExist) {
+				fmt.Printf("absent %s\n", filepath.Base(dir))
+				continue
+			}
+			if err != nil {
+				return fail("read %s: %v", dir, err)
+			}
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			fmt.Printf("entries %s=%s\n", filepath.Base(dir), strings.Join(names, ","))
+		}
+		if read := os.Getenv("NETJAIL_KEEP_READ"); read != "" {
+			data, err := os.ReadFile(read)
+			if err != nil {
+				return fail("read %s: %v", read, err)
+			}
+			fmt.Printf("content=%s\n", strings.TrimSpace(string(data)))
+		}
+		if write := os.Getenv("NETJAIL_KEEP_WRITE"); write != "" {
+			if err := os.WriteFile(write, []byte("written\n"), 0o600); err != nil {
+				return fail("write %s: %v", write, err)
+			}
+			fmt.Println("write ok")
+		}
 		return 0
 	}
 
@@ -329,10 +366,57 @@ func TestJailMasksSockets(t *testing.T) {
 	require.NoError(t, err)
 	cmd := exec.CommandContext(context.Background(), self)
 	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_MASK_SOCK="+path)
-	require.NoError(t, netjail.Wrap(cmd, "", 0, dir))
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: dir}))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "masked ok")
+}
+
+// TestJailMaskKeepsTheRunDirectory checks a mask with a kept path, in the
+// layout of the eval home's batches: the masked directory reads as empty,
+// the run's own directory stays readable and writable, and the host still
+// sees both.
+func TestJailMaskKeepsTheRunDirectory(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	batches := filepath.Join(root, "batches")
+	sibling := filepath.Join(batches, "other", "runs", "pr-0010")
+	run := filepath.Join(batches, "b1", "runs", "pr-0010")
+	require.NoError(t, os.MkdirAll(sibling, 0o700))
+	require.NoError(t, os.MkdirAll(run, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sibling, "results.jsonl"), []byte("secret\n"), 0o600))
+	kept := filepath.Join(run, "src", "pkg.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(kept), 0o700))
+	require.NoError(t, os.WriteFile(kept, []byte("kept\n"), 0o600))
+	written := filepath.Join(run, "written.txt")
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(),
+		"NETJAIL_PROBE=1",
+		"NETJAIL_LIST="+batches,
+		"NETJAIL_KEEP_READ="+kept,
+		"NETJAIL_KEEP_WRITE="+written,
+	)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: batches, Keep: []string{run}}))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "entries batches=b1", "the masked batches hold only the run's own batch")
+	require.Contains(t, string(out), "content=kept")
+	require.Contains(t, string(out), "write ok")
+	// The kept path is the host directory itself, so a child's write lands
+	// in it, and the host still sees what the jail hid.
+	data, err := os.ReadFile(written)
+	require.NoError(t, err)
+	require.Equal(t, "written\n", string(data))
+	require.FileExists(t, filepath.Join(sibling, "results.jsonl"))
 }
 
 // TestWrapMergesSysProcAttr checks that Wrap keeps the process group the
@@ -418,4 +502,160 @@ func TestJailExitCode(t *testing.T) {
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit)
 	require.Equal(t, 7, exit.ExitCode())
+}
+
+// TestJailRefusesToMaskTheBinary checks that a mask the caller asked for
+// that holds the binary the jail runs stops the jail with a message, instead
+// of running the child with that mask dropped.
+func TestJailRefusesToMaskTheBinary(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: filepath.Dir(self)}))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "the jail must not run unmasked")
+	require.Contains(t, string(out), "Netjail: refuse")
+	require.Contains(t, string(out), filepath.Dir(self))
+}
+
+// TestJailNestedMasks checks two masks, one inside the other like a worktrees
+// parent and the checkout under it: neither exposes what the host sees, in
+// either order, and the host keeps both.
+func TestJailNestedMasks(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	parent := filepath.Join(root, "worktrees")
+	checkout := filepath.Join(parent, "eval-jail-fs")
+	require.NoError(t, os.MkdirAll(filepath.Join(checkout, "internal"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(checkout, "internal", "x.go"), []byte("answer\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(parent, "other"), 0o700))
+
+	tests := []struct {
+		name  string
+		masks []netjail.Mask
+	}{
+		{name: "the checkout masked first", masks: []netjail.Mask{{Path: checkout}, {Path: parent}}},
+		{name: "the parent masked first", masks: []netjail.Mask{{Path: parent}, {Path: checkout}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			self, err := os.Executable()
+			require.NoError(t, err)
+			cmd := exec.CommandContext(context.Background(), self)
+			cmd.Env = append(os.Environ(),
+				"NETJAIL_PROBE=1",
+				"NETJAIL_LIST="+parent+","+checkout,
+			)
+			require.NoError(t, netjail.Wrap(cmd, "", 0, test.masks...))
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			require.Contains(t, string(out), "entries worktrees=", "the parent reads empty")
+			require.Contains(t, string(out), "absent eval-jail-fs", "the checkout is unreachable")
+			require.FileExists(t, filepath.Join(checkout, "internal", "x.go"),
+				"the host still sees the checkout")
+		})
+	}
+}
+
+// TestJailMaskFailure checks that a mask the jail cannot mount stops it with a
+// Netjail message and a nonzero exit, instead of running the child unmasked.
+func TestJailMaskFailure(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: file}))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err)
+	require.NotZero(t, cmd.ProcessState.ExitCode())
+	require.Contains(t, string(out), "Netjail: mask")
+}
+
+// TestJailKeepOutsideEveryMask checks a kept path that no mask covers: the
+// child still reads and writes it, and the mask beside it is empty.
+func TestJailKeepOutsideEveryMask(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	masked := filepath.Join(root, "masked")
+	visible := filepath.Join(root, "visible")
+	require.NoError(t, os.MkdirAll(masked, 0o700))
+	require.NoError(t, os.MkdirAll(visible, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(masked, "secret.txt"), []byte("secret\n"), 0o600))
+	kept := filepath.Join(visible, "keep.txt")
+	require.NoError(t, os.WriteFile(kept, []byte("kept\n"), 0o600))
+	written := filepath.Join(visible, "written.txt")
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(),
+		"NETJAIL_PROBE=1",
+		"NETJAIL_LIST="+masked,
+		"NETJAIL_KEEP_READ="+kept,
+		"NETJAIL_KEEP_WRITE="+written,
+	)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: masked, Keep: []string{visible}}))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "entries masked=")
+	require.Contains(t, string(out), "content=kept")
+	require.Contains(t, string(out), "write ok")
+	require.FileExists(t, written)
+}
+
+// TestJailKeepThatDoesNotExist checks a kept path that is missing: the jail
+// skips it, the mask still hides its directory, and the run succeeds.
+func TestJailKeepThatDoesNotExist(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	masked := filepath.Join(root, "masked")
+	require.NoError(t, os.MkdirAll(filepath.Join(masked, "run"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(masked, "secret.txt"), []byte("secret\n"), 0o600))
+	missing := filepath.Join(masked, "no-such-run")
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(), "NETJAIL_PROBE=1", "NETJAIL_LIST="+masked)
+	require.NoError(t, netjail.Wrap(cmd, "", 0, netjail.Mask{Path: masked, Keep: []string{missing}}))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "entries masked=", "a missing keep is skipped, not an error")
+	require.FileExists(t, filepath.Join(masked, "secret.txt"))
 }

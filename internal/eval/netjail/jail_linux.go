@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +24,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// DefaultMasks are the directories the jail replaces with empty tmpfs
-// mounts, so a filesystem unix socket under one of them cannot be reached.
-// /var/run is skipped when it is a symlink into /run.
-var DefaultMasks = []string{"/run", "/var/run", "/tmp", "/mnt/wslg", "/run/user"}
-
 // executable is this binary, resolved once: a rebuilt or deleted executable
 // starts reporting a "(deleted)" path mid-batch otherwise.
 var executable = sync.OnceValues(os.Executable)
@@ -36,10 +32,10 @@ var executable = sync.OnceValues(os.Executable)
 // re-executed through the hidden __jail subcommand, cloned into new user,
 // network and mount namespaces. sock, when not empty, is the unix socket of
 // the host proxy and port the local port the jail forwards to it. masks are
-// the directories the jail hides behind an empty tmpfs; none means
-// DefaultMasks. Fields the caller already set on cmd.SysProcAttr, such as
-// the process group, are kept.
-func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
+// the directories the jail hides behind an empty tmpfs, with the paths under
+// each one that stay visible; none means DefaultMasks. Fields the caller
+// already set on cmd.SysProcAttr, such as the process group, are kept.
+func Wrap(cmd *exec.Cmd, sock string, port int, masks ...Mask) error {
 	self, err := executable()
 	if err != nil {
 		return fmt.Errorf("locate the jail binary: %w", err)
@@ -49,7 +45,10 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...string) error {
 		args = append(args, "--sock", sock, "--port", strconv.Itoa(port))
 	}
 	for _, mask := range masks {
-		args = append(args, "--mask", mask)
+		args = append(args, "--mask", mask.Path)
+		for _, keep := range mask.Keep {
+			args = append(args, "--keep", keep)
+		}
 	}
 	args = append(args, "--")
 	args = append(args, cmd.Args...)
@@ -135,25 +134,46 @@ func Main(args []string) int {
 	var sock string
 	var port int
 	var masks []string
+	var keeps []string
 	var argv []string
 	if !check {
 		var err error
-		sock, port, masks, argv, err = parseArgs(args)
+		sock, port, masks, keeps, argv, err = parseArgs(args)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 	}
 	if len(masks) == 0 {
-		masks = DefaultMasks
+		// A copy: filtering must never rewrite the package global.
+		masks = append([]string(nil), DefaultMasks...)
 	}
-	masks = unmaskExecutables(masks, argv...)
+	masks, blocked := unmaskExecutables(masks, DefaultMasks, argv...)
+	if len(blocked) > 0 {
+		fmt.Fprintf(os.Stderr, "Netjail: refuse the mask %s: it holds %s, the binary the jail has to run\n",
+			blocked[0], argv[0])
+		return 1
+	}
+	// The kept directories are opened before a mask hides the directory
+	// above them: the bind mount that puts them back names the host
+	// directory through the handle, not through the path the tmpfs now
+	// covers.
+	fds, err := openKeeps(keeps)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: open the paths to keep: %v\n", err)
+		return 1
+	}
+	defer closeKeeps(fds)
 	if err := privateMounts(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: make the mount tree private: %v\n", err)
 		return 1
 	}
 	if err := maskPaths(masks); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: mask the filesystem sockets: %v\n", err)
+		return 1
+	}
+	if err := bindKeeps(keeps, fds); err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: keep the run's own directory: %v\n", err)
 		return 1
 	}
 	if err := loopbackUp(); err != nil {
@@ -205,69 +225,84 @@ func dropPrivileges() error {
 
 // parseArgs reads the jail's own flags up to the -- that starts the child's
 // command line.
-func parseArgs(args []string) (sock string, port int, masks []string, argv []string, err error) {
+func parseArgs(args []string) (sock string, port int, masks, keeps []string, argv []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
 			argv = args[i+1:]
 			if len(argv) == 0 {
-				return "", 0, nil, nil, errors.New("netjail: no command after --")
+				return "", 0, nil, nil, nil, errors.New("netjail: no command after --")
 			}
 			if sock != "" && port <= 0 {
-				return "", 0, nil, nil, errors.New("netjail: --sock needs a positive --port")
+				return "", 0, nil, nil, nil, errors.New("netjail: --sock needs a positive --port")
 			}
-			return sock, port, masks, argv, nil
+			return sock, port, masks, keeps, argv, nil
 		case "--sock":
 			i++
 			if i >= len(args) {
-				return "", 0, nil, nil, errors.New("netjail: --sock needs a path")
+				return "", 0, nil, nil, nil, errors.New("netjail: --sock needs a path")
 			}
 			sock = args[i]
 		case "--port":
 			i++
 			if i >= len(args) {
-				return "", 0, nil, nil, errors.New("netjail: --port needs a number")
+				return "", 0, nil, nil, nil, errors.New("netjail: --port needs a number")
 			}
 			port, err = strconv.Atoi(args[i])
 			if err != nil {
-				return "", 0, nil, nil, fmt.Errorf("netjail: --port %q: %w", args[i], err)
+				return "", 0, nil, nil, nil, fmt.Errorf("netjail: --port %q: %w", args[i], err)
 			}
 		case "--mask":
 			i++
 			if i >= len(args) {
-				return "", 0, nil, nil, errors.New("netjail: --mask needs a path")
+				return "", 0, nil, nil, nil, errors.New("netjail: --mask needs a path")
 			}
 			masks = append(masks, args[i])
+		case "--keep":
+			i++
+			if i >= len(args) {
+				return "", 0, nil, nil, nil, errors.New("netjail: --keep needs a path")
+			}
+			keeps = append(keeps, args[i])
 		default:
-			return "", 0, nil, nil, fmt.Errorf("netjail: unexpected argument %q", args[i])
+			return "", 0, nil, nil, nil, fmt.Errorf("netjail: unexpected argument %q", args[i])
 		}
 	}
-	return "", 0, nil, nil, errors.New("netjail: no command after --")
+	return "", 0, nil, nil, nil, errors.New("netjail: no command after --")
 }
 
-// unmaskExecutables drops from masks every directory that holds a binary
+// unmaskExecutables drops from masks the default masks that hold a binary
 // the jail still has to run: masking that directory would hide the binary
 // from the helper's own exec. The model's binary and the go toolchain live
 // outside the default masks, so this only matters for a binary built under
-// /tmp, as tests are.
-func unmaskExecutables(masks []string, binaries ...string) []string {
-	kept := masks[:0]
+// /tmp, as tests are. A mask a caller asked for gets no such pass: it comes
+// back in blocked, so Main refuses the run rather than hiding the binary it
+// execs. The slice it is given is never rewritten.
+func unmaskExecutables(masks, defaults []string, binaries ...string) (kept, blocked []string) {
 	for _, mask := range masks {
-		hide := true
-		for _, binary := range binaries {
-			if binary == "" || !filepath.IsAbs(binary) {
-				continue
-			}
-			if binary == mask || strings.HasPrefix(binary, mask+string(filepath.Separator)) {
-				hide = false
-				break
-			}
-		}
-		if hide {
+		binary := hiddenBinary(mask, binaries...)
+		switch {
+		case binary == "":
 			kept = append(kept, mask)
+		case !slices.Contains(defaults, mask):
+			blocked = append(blocked, mask)
 		}
 	}
-	return kept
+	return kept, blocked
+}
+
+// hiddenBinary is the binary one mask would hide, or empty when it hides
+// none.
+func hiddenBinary(mask string, binaries ...string) string {
+	for _, binary := range binaries {
+		if binary == "" || !filepath.IsAbs(binary) {
+			continue
+		}
+		if binary == mask || strings.HasPrefix(binary, mask+string(filepath.Separator)) {
+			return binary
+		}
+	}
+	return ""
 }
 
 // privateMounts keeps every mount the jail makes out of the host and out of
@@ -304,6 +339,56 @@ func maskPaths(paths []string) error {
 		}
 	}
 	return nil
+}
+
+// openKeeps opens the paths a mask keeps visible as directory handles,
+// before the masks land: after them, the path names the empty tmpfs and not
+// the host directory. A path that does not exist gets -1, since there is
+// nothing to put back.
+func openKeeps(paths []string) ([]int, error) {
+	fds := make([]int, len(paths))
+	for i, path := range paths {
+		fd, err := unix.Open(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		switch {
+		case errors.Is(err, unix.ENOENT):
+			fds[i] = -1
+		case err != nil:
+			return nil, fmt.Errorf("open %s: %w", path, err)
+		default:
+			fds[i] = fd
+		}
+	}
+	return fds, nil
+}
+
+// bindKeeps puts each kept path back after its mask hid the host directory:
+// the empty tmpfs gets the directories that lead to the path, and the host
+// directory, still reachable through the handle openKeeps took, is bind
+// mounted there. The bind mount stays writable, so a run writes to the host
+// files it wrote to before.
+func bindKeeps(paths []string, fds []int) error {
+	for i, path := range paths {
+		if fds[i] < 0 {
+			continue
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", path, err)
+		}
+		source := "/proc/self/fd/" + strconv.Itoa(fds[i])
+		if err := unix.Mount(source, path, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind %s back: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// closeKeeps closes the handles openKeeps took.
+func closeKeeps(fds []int) {
+	for _, fd := range fds {
+		if fd >= 0 {
+			_ = unix.Close(fd)
+		}
+	}
 }
 
 // loopbackUp sets IFF_UP on lo. A fresh network namespace has the interface

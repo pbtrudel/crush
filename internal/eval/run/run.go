@@ -143,6 +143,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return line, fmt.Errorf("create run directory: %w", err)
 	}
+	paths := basePaths(opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
 	blob, err := checkout.Prepare(ctx, opts.RepoDir, opts.Task.Source.Base, runDir)
 	if err != nil {
 		return line, err
@@ -198,11 +199,24 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 	env = append(env, networkEnv(line.Network, jailPort)...)
 
+	// Only a jailed run hides paths, and only it needs git to say where the
+	// checkout is: a run on the host must not fail on a repository that has
+	// no work tree.
+	var masks []netjail.Mask
+	if line.Network == netjail.ModeJail {
+		paths, err = HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir,
+			visiblePaths(opts.Home, env)...)
+		if err != nil {
+			return line, err
+		}
+		masks = jailMasks(paths)
+	}
 	stdoutPath := filepath.Join(runDir, "stdout.json")
-	exit, killed, err := execute(ctx, opts.BinPath,
+	exit, killed, err := execute(ctx, opts.BinPath, src,
 		commandArgs(opts, src, filepath.Join(runDir, "data"), maxSteps, timeout),
 		env, task.Prompt(opts.Task, opts.Footer), stdoutPath,
-		filepath.Join(runDir, "stderr.log"), timeout+grace, jailSock, jailPort)
+		filepath.Join(runDir, "stderr.log"), timeout+grace, jailSock, jailPort,
+		masks)
 	if err != nil {
 		return line, err
 	}
@@ -244,13 +258,13 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 
 	line.Diff, line.Worktrees = treeStats(ctx, src, base)
-	line.ContaminatedMatches, err = Matches(
-		filepath.Join(runDir, "data", "crush.db"),
-		opts.Task, opts.SuiteDir, opts.RepoDir,
+	line.ContaminatedEvidence, err = Matches(
+		filepath.Join(runDir, "data", "crush.db"), opts.Task, paths,
 	)
 	if err != nil {
 		return line, err
 	}
+	line.ContaminatedMatches = len(line.ContaminatedEvidence)
 	line.Contaminated = line.ContaminatedMatches > 0
 
 	if line.Exit == 0 || line.Exit == 2 {
@@ -290,10 +304,11 @@ func commandArgs(opts Options, src, dataDir string, maxSteps int, timeout time.D
 	return append(args, "--max-steps", strconv.Itoa(maxSteps), "--timeout", timeout.String())
 }
 
-// execute runs the binary with limit as its deadline and kills its process
-// group when the deadline passes. It returns the process exit code and
-// whether the watchdog fired.
-func execute(ctx context.Context, bin string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration, jailSock string, jailPort int) (int, bool, error) {
+// execute runs the binary in dir, the checkout it works on, with limit as
+// its deadline and kills its process group when the deadline passes. It
+// returns the process exit code and whether the watchdog fired. masks are
+// what the jail hides; a run on the host ignores them.
+func execute(ctx context.Context, bin, dir string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration, jailSock string, jailPort int, masks []netjail.Mask) (int, bool, error) {
 	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, false, fmt.Errorf("create stdout: %w", err)
@@ -306,6 +321,10 @@ func execute(ctx context.Context, bin string, args, env []string, prompt, stdout
 	defer stderr.Close() //nolint:errcheck // Read-only log.
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// The child starts in the checkout it works on, which is not one of
+	// the directories the jail hides: a working directory the masks cover
+	// fails a child that resolves it before it reads --cwd.
+	cmd.Dir = dir
 	// Holding a killed process's output pipe open must not keep Wait
 	// waiting after the group is gone.
 	cmd.WaitDelay = 5 * time.Second
@@ -315,7 +334,7 @@ func execute(ctx context.Context, bin string, args, env []string, prompt, stdout
 	cmd.Stderr = stderr
 	kill := processGroup(cmd)
 	if jailSock != "" {
-		if err := netjail.Wrap(cmd, jailSock, jailPort); err != nil {
+		if err := netjail.Wrap(cmd, jailSock, jailPort, masks...); err != nil {
 			return 0, false, err
 		}
 	}

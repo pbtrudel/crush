@@ -76,13 +76,23 @@ type comparisonRow struct {
 	ContaminationRate float64        `json:"contamination_rate"`
 }
 
+// contaminationRow is one contaminated run of the batch: the markers its
+// tool calls matched and the excerpts the result line kept.
+type contaminationRow struct {
+	Variant  string   `json:"variant"`
+	Run      string   `json:"run"`
+	Markers  []string `json:"markers"`
+	Excerpts []string `json:"excerpts"`
+}
+
 // compareReport is what compare prints with --json.
 type compareReport struct {
-	Batch       string          `json:"batch"`
-	Suite       string          `json:"suite"`
-	Control     string          `json:"control"`
-	Aggregates  []aggregateRow  `json:"aggregates"`
-	Comparisons []comparisonRow `json:"comparisons"`
+	Batch        string             `json:"batch"`
+	Suite        string             `json:"suite"`
+	Control      string             `json:"control"`
+	Aggregates   []aggregateRow     `json:"aggregates"`
+	Comparisons  []comparisonRow    `json:"comparisons"`
+	Contaminated []contaminationRow `json:"contaminated,omitempty"`
 }
 
 // compareCmd prints the per-variant tables of a batch and the paired
@@ -133,10 +143,11 @@ func compareCmd(args []string, stdout, stderr io.Writer) int {
 	control := labels[exp.Variants[0].Name]
 
 	report := compareReport{
-		Batch:      record.ID,
-		Suite:      record.Suite,
-		Control:    control,
-		Aggregates: aggregateRows(runs),
+		Batch:        record.ID,
+		Suite:        record.Suite,
+		Control:      control,
+		Aggregates:   aggregateRows(runs),
+		Contaminated: contaminatedRows(runs),
 	}
 
 	comparisons, failed, err := compareRows(exp, runs, control, labels)
@@ -220,6 +231,34 @@ func compareRows(exp *score.Experiment, runs []result.Result, control string, la
 	return rows, failed, nil
 }
 
+// contaminatedRows is one row per contaminated final run, in the order of
+// the lines, so a comparison that a contamination rate voids can be
+// diagnosed without the session databases.
+func contaminatedRows(runs []result.Result) []contaminationRow {
+	var rows []contaminationRow
+	for _, r := range runs {
+		if !r.Contaminated {
+			continue
+		}
+		row := contaminationRow{
+			Variant: r.Variant,
+			Run:     fmt.Sprintf("%s/%s/%s#%d", r.Task, r.Variant, r.Route, r.Rep),
+		}
+		seen := make(map[string]bool, len(r.ContaminatedEvidence))
+		for _, evidence := range r.ContaminatedEvidence {
+			for _, name := range evidence.Markers {
+				if !seen[name] {
+					seen[name] = true
+					row.Markers = append(row.Markers, name)
+				}
+			}
+			row.Excerpts = append(row.Excerpts, evidence.Excerpt)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 // aggregateRows is the per-variant table of 4.2, one row per variant, route
 // and task kind.
 func aggregateRows(runs []result.Result) []aggregateRow {
@@ -266,12 +305,12 @@ func printCompare(stdout io.Writer, report compareReport) {
 	fmt.Fprintf(stdout, "batch %s  suite %s  control %s\n\n", report.Batch, report.Suite, report.Control)
 
 	rates := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(rates, "variant\troute\tkind\truns\tvalid\tinvalid\tpass\tfalse\tshort\tsteps\ttokens")
+	fmt.Fprintln(rates, "variant\troute\tkind\truns\tvalid\tinvalid\tcontaminated\tpass\tfalse\tshort\tsteps\ttokens")
 	for _, row := range report.Aggregates {
-		fmt.Fprintf(rates, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%.0f\t%d\n",
+		fmt.Fprintf(rates, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%.0f\t%d\n",
 			row.Variant, row.Route, kindName(row.Kind), row.Runs, row.Valid, row.Invalid,
-			percent(row.PassRate), percent(row.FalseCompletion), percent(row.StoppedShort),
-			row.Steps, row.Tokens)
+			row.Contaminated, percent(row.PassRate), percent(row.FalseCompletion),
+			percent(row.StoppedShort), row.Steps, row.Tokens)
 	}
 	if err := rates.Flush(); err != nil {
 		return
@@ -306,6 +345,13 @@ func printCompare(stdout io.Writer, report compareReport) {
 	for _, row := range report.Aggregates {
 		for _, id := range row.UnbackedRuns {
 			fmt.Fprintf(stdout, "unbacked claims: %s %s\n", row.Variant, id)
+		}
+	}
+	for _, row := range report.Contaminated {
+		fmt.Fprintf(stdout, "contaminated: %s %s  markers: %s\n",
+			row.Variant, row.Run, strings.Join(row.Markers, ", "))
+		for _, text := range row.Excerpts {
+			fmt.Fprintf(stdout, "  %s\n", text)
 		}
 	}
 
