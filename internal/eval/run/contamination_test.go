@@ -2,6 +2,7 @@ package run
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/eval/task"
@@ -54,7 +55,7 @@ func TestContaminatedCallsCommandMarkers(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := contaminatedCalls(call(t, test.input), markers)
+			got := len(contaminatedCalls(call(t, test.input), markers))
 			require.Equal(t, test.want, got, test.input)
 		})
 	}
@@ -76,7 +77,7 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 		"ls /suite/evals/tasks",
 		`{"command":"git show 334c5d791d23"}`,
 	} {
-		require.Equal(t, 1, contaminatedCalls(call(t, input), markers), input)
+		require.Equal(t, 1, len(contaminatedCalls(call(t, input), markers)), input)
 	}
 }
 
@@ -90,7 +91,7 @@ func TestContaminatedCallsCountsEachCall(t *testing.T) {
 	text := `{"type":"text","data":{"text":"gh pr view 1"}}`
 	cat := `{"type":"tool_call","data":{"name":"bash","input":"git cat-file"}}`
 	parts := "[" + pr + "," + text + "," + cat + "]"
-	require.Equal(t, 2, contaminatedCalls(parts, markers),
+	require.Equal(t, 2, len(contaminatedCalls(parts, markers)),
 		"text parts do not count")
 }
 
@@ -116,7 +117,7 @@ func TestContaminatedCallsHostPaths(t *testing.T) {
 		"cat /state/crush-eval/batches/b2/results.jsonl",
 		`{"command":"cat /state/crush-eval/batches/b2/runs/pr-0010/src/x.go"}`,
 	} {
-		require.Equal(t, 1, contaminatedCalls(call(t, input), markers), input)
+		require.Equal(t, 1, len(contaminatedCalls(call(t, input), markers)), input)
 	}
 
 	// The run's own directory sits under the batches marker and stays out
@@ -126,7 +127,7 @@ func TestContaminatedCallsHostPaths(t *testing.T) {
 		`{"command":"cd /state/crush-eval/batches/b1/runs/pr-0010-r1/src && go test ./pkg"}`,
 		"go build ./...",
 	} {
-		require.Zero(t, contaminatedCalls(call(t, input), markers), input)
+		require.Zero(t, len(contaminatedCalls(call(t, input), markers)), input)
 	}
 }
 
@@ -157,8 +158,68 @@ func TestContaminatedCallsGhNeedsRepository(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := contaminatedCalls(call(t, test.input), markers)
+			got := len(contaminatedCalls(call(t, test.input), markers))
 			require.Equal(t, test.want, got, test.input)
 		})
 	}
+}
+
+// TestContaminatedCallsKeepTheMarkers checks that a contaminated call records
+// which markers it named and a short excerpt of its input, so a flagged run
+// can be diagnosed after its session database is gone.
+func TestContaminatedCallsKeepTheMarkers(t *testing.T) {
+	t.Parallel()
+
+	markers := contaminationMarkers(
+		&task.Task{Source: task.Source{Repo: "pbtrudel/crush"}},
+		Paths{Checkout: "/host/crush"},
+	)
+	found := contaminatedCalls(
+		call(t, `{"command":"git cat-file -p /host/crush/internal/agent/x.go"}`),
+		markers,
+	)
+	require.Len(t, found, 1)
+	require.Equal(t, []string{"git cat-file", "/host/crush"}, found[0].Markers)
+	require.Equal(t, `{"command":"git cat-file -p /host/crush/internal/agent/x.go"}`, found[0].Excerpt)
+}
+
+// TestExcerpt checks the excerpt a contaminated call keeps: it is short, and
+// a token or a key never enters it.
+func TestExcerpt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "a short command", input: "git cat-file -p HEAD", want: "git cat-file -p HEAD"},
+		{
+			name:  "a bearer token",
+			input: `curl -H 'Authorization: Bearer abcdefghijklmnop'`,
+			want:  `curl -H 'Authorization: Bearer [redacted]'`,
+		},
+		{
+			name:  "an api key field",
+			input: `{"api_key":"sk-abcdefghijklmnopqrst"}`,
+			want:  `{"api_key":"[redacted]"}`,
+		},
+		{
+			name:  "a github token in a url",
+			input: "git clone https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x",
+			want:  "git clone https://[redacted]@github.com/x",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, excerpt(test.input))
+		})
+	}
+
+	t.Run("a long input", func(t *testing.T) {
+		t.Parallel()
+		got := excerpt(strings.Repeat("a", 3*maxExcerpt))
+		require.Len(t, got, maxExcerpt)
+	})
 }

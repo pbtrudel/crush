@@ -102,17 +102,17 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		runDir := filepath.Join(batchDir, "runs", name)
 		paths.Own = runDir
 		db := filepath.Join(runDir, "data", "crush.db")
-		matches := 0
 		switch _, err := os.Stat(db); {
 		case err == nil:
-			matches, err = evalrun.Matches(db, tk, paths)
+			found, err := evalrun.Matches(db, tk, paths)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
 			scanned++
-			line.Contaminated = matches > 0
-			line.ContaminatedMatches = matches
+			line.ContaminatedEvidence = found
+			line.ContaminatedMatches = len(found)
+			line.Contaminated = line.ContaminatedMatches > 0
 		case !errors.Is(err, fs.ErrNotExist):
 			fmt.Fprintln(stderr, err)
 			return 1

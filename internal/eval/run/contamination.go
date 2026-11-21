@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/charmbracelet/crush/internal/eval/result"
 	"github.com/charmbracelet/crush/internal/eval/task"
 )
 
@@ -72,7 +74,13 @@ func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 	for _, dir := range []string{paths.Suite, paths.Repo, paths.Checkout, paths.Worktrees} {
 		markers = appendPathMarker(markers, seen, dir, "")
 	}
-	markers = appendPathMarker(markers, seen, paths.Batches, absPath(paths.Own))
+	// Only a run directory under the batches is cut out of the batch
+	// marker: anything else it names is contact with another batch.
+	own := absPath(paths.Own)
+	if own != "" && !strings.HasPrefix(own, absPath(paths.Batches)+string(filepath.Separator)) {
+		own = ""
+	}
+	markers = appendPathMarker(markers, seen, paths.Batches, own)
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
 		markers[i].own = strings.ToLower(m.own)
@@ -104,46 +112,48 @@ func absPath(dir string) string {
 	return abs
 }
 
-// Matches opens the session database at path and counts the tool calls whose
-// input names one of the task's contamination markers. It keeps no text.
-func Matches(path string, tk *task.Task, paths Paths) (int, error) {
+// Matches opens the session database at path and describes every tool call
+// whose input names one of the task's contamination markers: the markers and
+// a short, redacted excerpt of the input. The excerpt is the only text the
+// result line keeps.
+func Matches(path string, tk *task.Task, paths Paths) ([]result.Contamination, error) {
 	return scanDatabase(path, contaminationMarkers(tk, paths))
 }
 
-// scanDatabase opens the run's own session database read-only and counts
-// the tool calls whose input names one of the markers. It keeps no text.
-func scanDatabase(path string, markers []marker) (int, error) {
+// scanDatabase opens the run's own session database read-only and collects
+// the tool calls whose input names one of the markers.
+func scanDatabase(path string, markers []marker) ([]result.Contamination, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
+			return nil, nil
 		}
-		return 0, fmt.Errorf("stat session database: %w", err)
+		return nil, fmt.Errorf("stat session database: %w", err)
 	}
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_txlock=immediate")
 	if err != nil {
-		return 0, fmt.Errorf("open session database: %w", err)
+		return nil, fmt.Errorf("open session database: %w", err)
 	}
 	defer db.Close() //nolint:errcheck // Read-only.
 	rows, err := db.QueryContext(context.Background(), "SELECT parts FROM messages")
 	if err != nil {
-		return 0, fmt.Errorf("query session messages: %w", err)
+		return nil, fmt.Errorf("query session messages: %w", err)
 	}
 	defer rows.Close() //nolint:errcheck // Read-only.
 
-	count := 0
+	var found []result.Contamination
 	for rows.Next() {
 		var parts string
 		if err := rows.Scan(&parts); err != nil {
-			return 0, err
+			return nil, err
 		}
-		count += contaminatedCalls(parts, markers)
+		found = append(found, contaminatedCalls(parts, markers)...)
 	}
-	return count, rows.Err()
+	return found, rows.Err()
 }
 
-// contaminatedCalls counts the tool calls of one message whose input names a
-// marker: design 3.7 counts tool calls, not messages.
-func contaminatedCalls(parts string, markers []marker) int {
+// contaminatedCalls collects the tool calls of one message whose input names
+// a marker: design 3.7 counts tool calls, not messages.
+func contaminatedCalls(parts string, markers []marker) []result.Contamination {
 	var list []struct {
 		Type string `json:"type"`
 		Data struct {
@@ -151,25 +161,29 @@ func contaminatedCalls(parts string, markers []marker) int {
 		} `json:"data"`
 	}
 	if json.Unmarshal([]byte(parts), &list) != nil {
-		return 0
+		return nil
 	}
-	count := 0
+	var found []result.Contamination
 	for _, part := range list {
 		if part.Type != "tool_call" || part.Data.Input == "" {
 			continue
 		}
-		if namesMarker(part.Data.Input, markers) {
-			count++
+		if names := matchedMarkers(part.Data.Input, markers); len(names) > 0 {
+			found = append(found, result.Contamination{
+				Markers: names,
+				Excerpt: excerpt(part.Data.Input),
+			})
 		}
 	}
-	return count
+	return found
 }
 
-// namesMarker reports whether one tool call's input names a marker. A marker
-// that needs the repository's name matches only when the same input names it
-// too.
-func namesMarker(input string, markers []marker) bool {
+// matchedMarkers is the markers one tool call's input names, in the order of
+// the marker list. A marker that needs the repository's name is reported only
+// when the same input names it too.
+func matchedMarkers(input string, markers []marker) []string {
 	texts := inputTexts(input)
+	var names []string
 	for _, m := range markers {
 		if m.text == "" {
 			continue
@@ -188,11 +202,50 @@ func namesMarker(input string, markers []marker) bool {
 		}
 		for _, text := range texts {
 			if m.matches(text) {
-				return true
+				names = append(names, m.text)
+				break
 			}
 		}
 	}
-	return false
+	return names
+}
+
+// maxExcerpt is how much of a contaminated tool call's input the result line
+// keeps. It is enough to name the command, and small enough to leave a
+// results.jsonl readable.
+const maxExcerpt = 200
+
+// redactions are the shapes of a token or a key an excerpt must not keep: a
+// bearer token, a named credential, and the token formats of the providers
+// the suite runs.
+var redactions = []struct {
+	pattern *regexp.Regexp
+	replace string
+}{
+	{regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/-]{8,}=*`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}`), "${1}[redacted]"},
+	{regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\b(?:sk|xox[baprs])-[A-Za-z0-9_-]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "[redacted]"},
+}
+
+// excerpt is the input of one contaminated tool call, with anything that
+// looks like a token or a key replaced and cut to maxExcerpt characters.
+func excerpt(input string) string {
+	text := input
+	for _, redaction := range redactions {
+		text = redaction.pattern.ReplaceAllString(text, redaction.replace)
+	}
+	if len(text) <= maxExcerpt {
+		return text
+	}
+	cut := maxExcerpt
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // inputTexts is the text a marker is matched against. A tool call's input is

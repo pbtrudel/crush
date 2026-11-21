@@ -140,5 +140,12 @@ carries that recipe, so it is how a model publishes, not how it looks at the
 fork. A contaminated run is reported and left out of the comparisons; a rate
 above 2% of a batch stops the comparison until the cause is found.
 
+Every result line keeps `contaminated_evidence`: for each contaminated tool
+call, the markers it matched and up to 200 characters of its input, with
+anything that looks like a token or a key redacted. `crush-eval compare`
+prints the contaminated count per variant, then one line per contaminated run
+with its markers and those excerpts, so a void comparison can be diagnosed
+after the session databases are gone.
+
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).

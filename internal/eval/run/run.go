@@ -249,12 +249,13 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 
 	line.Diff, line.Worktrees = treeStats(ctx, src, base)
-	line.ContaminatedMatches, err = Matches(
+	line.ContaminatedEvidence, err = Matches(
 		filepath.Join(runDir, "data", "crush.db"), opts.Task, paths,
 	)
 	if err != nil {
 		return line, err
 	}
+	line.ContaminatedMatches = len(line.ContaminatedEvidence)
 	line.Contaminated = line.ContaminatedMatches > 0
 
 	if line.Exit == 0 || line.Exit == 2 {

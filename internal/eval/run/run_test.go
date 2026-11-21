@@ -374,6 +374,10 @@ func TestRunContamination(t *testing.T) {
 	require.True(t, line.Contaminated)
 	require.Equal(t, 1, line.ContaminatedMatches)
 	require.True(t, line.Pass)
+	require.Equal(t, []result.Contamination{{
+		Markers: []string{"gh pr"},
+		Excerpt: `{"command":"gh pr view 51 -R pbtrudel/crush"}`,
+	}}, line.ContaminatedEvidence, "the line keeps what matched")
 }
 
 // TestTreeStats is the diff against the task base and the worktrees the

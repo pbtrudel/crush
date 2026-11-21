@@ -65,8 +65,17 @@ type Gate struct {
 	UnbackedClaims int `json:"unbacked_claims"`
 }
 
+// Contamination is one tool call whose input named a contamination marker:
+// the markers it matched, and a short excerpt of the input. It is what lets
+// a flagged run be diagnosed after its session database is gone.
+type Contamination struct {
+	Markers []string `json:"markers"`
+	Excerpt string   `json:"excerpt"`
+}
+
 // Result is one attempt of one run. It holds no prompt, answer, file content
-// or path from the session.
+// or path from the session, beyond the short contamination excerpts that name
+// a marker.
 type Result struct {
 	Schema     int       `json:"schema"`
 	Batch      string    `json:"batch"`
@@ -106,9 +115,11 @@ type Result struct {
 	Worktrees       int            `json:"worktrees"`
 	Contaminated    bool           `json:"contaminated"`
 	// ContaminatedMatches counts the tool calls whose input named one of
-	// the contamination markers.
-	ContaminatedMatches int    `json:"contaminated_matches"`
-	ProjectConfig       string `json:"project_config"`
+	// the contamination markers, and ContaminatedEvidence names the
+	// markers each of them matched, with a short excerpt of its input.
+	ContaminatedMatches  int             `json:"contaminated_matches"`
+	ContaminatedEvidence []Contamination `json:"contaminated_evidence,omitempty"`
+	ProjectConfig        string          `json:"project_config"`
 	// Network is the network mode of the run, jail or host.
 	Network string `json:"network"`
 	// Catalog is the sha256 of the model catalogs the run's child read from
