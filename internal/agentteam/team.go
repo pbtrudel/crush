@@ -45,6 +45,8 @@ Agent Teams is available in this session. Use it by default: the Lead coordinate
 
 Work solo only for a single trivial action (one command, one file read, a direct factual answer) or when the user explicitly asks you to. Everything else goes to the Team: create shared tasks, spawn at least one teammate, and delegate. Requests with two or more steps, multiple files, investigation, or tests must use the Team. Reuse existing teammates before spawning new ones. When in doubt, delegate.
 
+One teammate per concrete, self-contained brief, never a wave. Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small. Cap a fan-out at what the task actually needs.
+
 The Team Lead and all teammates share the same working directory and filesystem. Edits are immediately visible to every member. Split write work into disjoint scopes, record expected write scopes on shared tasks, and use task dependencies when work must be ordered. Write-scope overlap is advisory, not a lock.
 
 The Lead owns the task worktree. Create it with the worktree tool before delegating, include its absolute path in every task description, and have every teammate work inside that path. Remove it only after the branch is pushed and merged.

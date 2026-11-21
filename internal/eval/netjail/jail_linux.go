@@ -277,15 +277,26 @@ func parseArgs(args []string) (sock string, port int, masks, keeps []string, arg
 // outside the default masks, so this only matters for a binary built under
 // /tmp, as tests are. A mask a caller asked for gets no such pass: it comes
 // back in blocked, so Main refuses the run rather than hiding the binary it
-// execs. The slice it is given is never rewritten.
-func unmaskExecutables(masks, defaults []string, binaries ...string) (kept, blocked []string) {
+// execs. Only the executable, argv[0], can block a requested mask: the other
+// arguments name the run's own directories, which sit under the masked
+// batches directory and are bound back. The slice it is given is never
+// rewritten.
+func unmaskExecutables(masks, defaults []string, argv ...string) (kept, blocked []string) {
+	var executable []string
+	if len(argv) > 0 {
+		executable = argv[:1]
+	}
 	for _, mask := range masks {
-		binary := hiddenBinary(mask, binaries...)
-		switch {
-		case binary == "":
+		if !slices.Contains(defaults, mask) {
+			if hiddenBinary(mask, executable...) != "" {
+				blocked = append(blocked, mask)
+			} else {
+				kept = append(kept, mask)
+			}
+			continue
+		}
+		if hiddenBinary(mask, argv...) == "" {
 			kept = append(kept, mask)
-		case !slices.Contains(defaults, mask):
-			blocked = append(blocked, mask)
 		}
 	}
 	return kept, blocked

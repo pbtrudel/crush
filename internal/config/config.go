@@ -532,6 +532,9 @@ type Options struct {
 	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
+	// LazyTools sends only a small core tool palette on every request and
+	// holds the rest back until tool_search reveals them for the session.
+	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
 	// TurnEndMaxContinuations caps how many times the turn-end gate may
 	// continue one prompt. Zero turns continuations off: the checks still
 	// run and are observed.
@@ -570,6 +573,14 @@ func (o *Options) GetShowAllProviders() bool {
 // DefaultMaxBackgroundJobs is how many background shell jobs may run at once
 // when the user has not set max_background_jobs.
 const DefaultMaxBackgroundJobs = 50
+
+// GetLazyTools reports whether requests carry only the core tool palette plus
+// tool_search. The nil receiver, the unset field and an explicit false all
+// mean the full palette is sent, byte-identical to the behavior before the
+// option existed.
+func (o *Options) GetLazyTools() bool {
+	return o != nil && o.LazyTools != nil && *o.LazyTools
+}
 
 // GetMaxBackgroundJobs returns the running-job ceiling, always positive.
 func (o *Options) GetMaxBackgroundJobs() int {
