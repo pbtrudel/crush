@@ -4,14 +4,14 @@ import { needsAttention } from '../state/reducer';
 import { motion, lowPower } from '../state/motion';
 import { BootSequence } from './BootSequence';
 import { ConnectionBanner } from './ConnectionBanner';
+import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
 import { TransmissionLog } from './log/TransmissionLog';
 import { Stage } from './stage/Stage';
 import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
-// Later tasks fill the layout slots below:
-// import { CommandDeck } from './deck/CommandDeck'; // Task 14
+// Later tasks fill the layout slot below:
 // import { Interrupt } from './interrupt/Interrupt'; // Task 15
 
 export function App() {
@@ -43,8 +43,9 @@ export function App() {
           <Stage />
         </section>
       </main>
-      {/* Task 14: <CommandDeck /> */}
-      <div class="holodeck__deck" inert={modal} />
+      <div class="holodeck__deck" inert={modal}>
+        <CommandDeck />
+      </div>
       {/* Task 15: <Interrupt /> */}
       <Toasts />
     </div>
