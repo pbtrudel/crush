@@ -430,6 +430,10 @@ type sessionAgent struct {
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
 	limits *runLimits
+	// lazyTools resolves the registry behind options.lazy_tools, the one the
+	// coordinator's tool_search tool reveals through. Nil sends the full
+	// palette.
+	lazyTools func() *tools.LazyRegistry
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -511,6 +515,10 @@ type SessionAgentOptions struct {
 	// limits is shared by a coordinator's agents, so every run in a session
 	// tree draws on the limits set on it.
 	limits *runLimits
+	// LazyTools resolves the registry behind options.lazy_tools. It is nil
+	// when no coordinator owns the agent (tests, the agentic-fetch subagent),
+	// and returning nil means the full palette is sent.
+	LazyTools func() *tools.LazyRegistry
 }
 
 func NewSessionAgent(
@@ -549,6 +557,7 @@ func NewSessionAgent(
 		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
+		lazyTools:              opts.LazyTools,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:           csync.NewMap[string, int](),
 		cancelMark:             csync.NewMap[string, uint64](),
@@ -1262,6 +1271,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// server cannot drop them from the palette either. Tools the session
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
+	agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
@@ -3356,6 +3366,10 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
 // cache breakpoint has to move.
 func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
+	// A tool this session revealed with tool_search during the last step
+	// passes the lazy filter now, so the adoption below is what adds it to
+	// the palette; a still-unrevealed one stays out of the request.
+	current = a.lazyToolsForSession(sessionID, current)
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
 		known[tool.Info().Name] = struct{}{}

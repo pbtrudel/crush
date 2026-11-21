@@ -253,6 +253,13 @@ type coordinator struct {
 	// limits are the limits callers set on session trees, shared by every
 	// agent this coordinator builds.
 	limits runLimits
+
+	// lazyMu guards lazyTools, the shared registry behind options.lazy_tools.
+	// It is created on first use and kept for the coordinator's life, so the
+	// tool rebuild a config reload triggers does not re-defer a tool a
+	// session already revealed.
+	lazyMu    sync.Mutex
+	lazyTools *tools.LazyRegistry
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -1259,6 +1266,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		Hooks:                c.hookRunner,
 		titles:               &c.titles,
 		limits:               &c.limits,
+		LazyTools:            c.lazyRegistryIfEnabled,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -1472,6 +1480,15 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 			}
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
+	}
+	// Lazy tool mode sends a small core palette and holds the rest of these
+	// schemas back until the model reveals them. The registry learns the full
+	// palette here, which is what tool_search hands back, and the reveal tool
+	// itself joins the list; registration is skipped entirely when the option
+	// is off, so nothing about the palette changes.
+	if registry := c.lazyRegistryIfEnabled(); registry != nil {
+		registry.Register(filteredTools)
+		filteredTools = append(filteredTools, registry.Tool())
 	}
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
