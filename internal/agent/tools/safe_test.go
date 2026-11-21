@@ -241,3 +241,23 @@ func TestFlagDenied(t *testing.T) {
 	assert.False(t, flagDenied("--utc", deny), "a long flag is not read character by character")
 	assert.False(t, flagDenied("--iso-8601=seconds", deny))
 }
+
+// TestIsSafeReadOnly_IgnoresTheReminderList pins the two lists apart. The
+// todo reminder treats commands that only read as progress-free, which is
+// why they are declared next to this list; none of them may become
+// auto-approved, because reading any file the user can read is a
+// permission question the reminder list has no say in.
+func TestIsSafeReadOnly_IgnoresTheReminderList(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		"cat go.mod",
+		"sleep 1",
+		"grep x f",
+		"find .",
+		"head -n 1 go.mod",
+		"uniq",
+	} {
+		assert.Falsef(t, isSafeReadOnly(command, nil), "expected %q to need a permission prompt", command)
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -29,6 +30,22 @@ func todoTestStep(calls []fantasy.ToolCallContent, results []fantasy.ToolResultC
 
 func todoTestCall(id, name string) fantasy.ToolCallContent {
 	return fantasy.ToolCallContent{ToolCallID: id, ToolName: name}
+}
+
+// todoTestBashCall builds a bash call carrying command as its parameter, so
+// the reminder can tell a read-only command from one that changes files.
+func todoTestBashCall(id, command string) fantasy.ToolCallContent {
+	return todoTestBashParams(id, tools.BashParams{Command: command})
+}
+
+// todoTestBashParams builds a bash call from explicit parameters, for the
+// fields todoTestBashCall leaves alone.
+func todoTestBashParams(id string, params tools.BashParams) fantasy.ToolCallContent {
+	input, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	return fantasy.ToolCallContent{ToolCallID: id, ToolName: tools.BashToolName, Input: string(input)}
 }
 
 func todoTestOK(id, name string) fantasy.ToolResultContent {
@@ -80,12 +97,65 @@ func TestStepMadeTaskProgress(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "successful bash",
+			name: "bash that changes files",
 			step: todoTestStep(
-				[]fantasy.ToolCallContent{todoTestCall("1", tools.BashToolName)},
+				[]fantasy.ToolCallContent{todoTestBashCall("1", "go test ./internal/agent/...")},
 				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
 			),
 			want: true,
+		},
+		{
+			name: "bash with an unrecognized command",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashCall("1", "make lint")},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
+			want: true,
+		},
+		{
+			name: "read-only bash",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashCall("1", "git status --short && rg -n TODO internal")},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
+			want: false,
+		},
+		{
+			name: "sleep-only bash",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashCall("1", "sleep 30")},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
+			want: false,
+		},
+		{
+			name: "backgrounded read-only bash",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashParams("1", tools.BashParams{
+					Command:         "tail -f log/app.log",
+					RunInBackground: true,
+				})},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
+			// A background call is doing work away from the step, so it
+			// counts even when its command only reads.
+			want: true,
+		},
+		{
+			name: "waiting for a teammate",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestCall("1", WaitAgentToolName)},
+				[]fantasy.ToolResultContent{todoTestOK("1", WaitAgentToolName)},
+			),
+			want: false,
+		},
+		{
+			name: "reading a background job",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestCall("1", tools.JobOutputToolName)},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.JobOutputToolName)},
+			),
+			want: false,
 		},
 		{
 			name: "successful lsp replace symbol",
@@ -202,7 +272,14 @@ func TestTodoReminder(t *testing.T) {
 		escalated := todoReminder(todos, todoReminderEscalateAfter)
 		require.Contains(t, escalated, "Deploy it")
 		require.Contains(t, escalated, "went unanswered")
-		require.Contains(t, escalated, "Do not end this turn claiming that work is complete")
+		// The escalation asks the model to check the item, and leaves the
+		// list alone when the work is not done. Marking it completed is
+		// not offered as a way to close the reminder.
+		require.Contains(t, escalated, "Check whether that item is actually done")
+		require.Contains(t, escalated, "leave the entry as it is and continue")
+		require.Contains(t, escalated, "say so in your answer if you cannot finish it this turn")
+		require.NotContains(t, escalated, "either mark it completed with the `todos` tool")
+		require.NotContains(t, escalated, "Do not end this turn claiming that work is complete")
 		require.NotContains(t, escalated, "If you finished that task in the previous step")
 	})
 }
@@ -293,6 +370,16 @@ func TestTodoReminderDue(t *testing.T) {
 		{
 			name:           "not due without task progress",
 			step:           todoTestStep(nil, nil),
+			todos:          openTodos,
+			stepsSinceLast: todoReminderMinGap,
+			want:           false,
+		},
+		{
+			name: "not due after a read-only step",
+			step: todoTestStep(
+				[]fantasy.ToolCallContent{todoTestBashCall("1", "git diff --stat")},
+				[]fantasy.ToolResultContent{todoTestOK("1", tools.BashToolName)},
+			),
 			todos:          openTodos,
 			stepsSinceLast: todoReminderMinGap,
 			want:           false,
