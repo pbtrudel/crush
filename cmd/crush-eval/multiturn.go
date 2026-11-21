@@ -35,6 +35,7 @@ func multiturnCmd(args []string, stdout, stderr io.Writer) int {
 	turnTimeout := flags.Duration("turn-timeout", multiturn.DefaultTurnTimeout, "time limit of one prompt")
 	maxSteps := flags.Int("max-steps", multiturn.DefaultMaxSteps, "step budget of one session, across its turns")
 	threshold := flags.Float64("threshold", multiturn.DefaultThreshold, "auto-compaction threshold both arms share")
+	transport := flags.String("transport", multiturn.TransportRun, "how prompts reach the agent: run (one process each) or server (one process per run)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -106,6 +107,7 @@ func multiturnCmd(args []string, stdout, stderr io.Writer) int {
 		TurnTimeout: *turnTimeout,
 		MaxSteps:    *maxSteps,
 		Threshold:   *threshold,
+		Transport:   *transport,
 	}
 	fmt.Fprintf(stderr, "multiturn %s: %d tasks, %d arms, %d reps, build %s\n",
 		*id, len(tks), len(parsed), *reps, batch.ShortSHA(bin))
@@ -113,6 +115,9 @@ func multiturnCmd(args []string, stdout, stderr io.Writer) int {
 	for _, r := range runs {
 		fmt.Fprintf(stdout, "%s %s rep%d: pass=%v turns=%d wall=%dms tokens=%d compactions=%v grade_touched=%v\n",
 			r.Task, r.Arm, r.Rep, r.Pass, len(r.Turns), r.Wall, r.Tokens.Total(), r.Compacted.ByTrigger, r.Grade.Touched)
+		if r.Error != "" {
+			fmt.Fprintf(stdout, "  error: %s\n", r.Error)
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)

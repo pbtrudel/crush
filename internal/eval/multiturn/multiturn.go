@@ -91,6 +91,10 @@ type Options struct {
 	// Threshold is the auto-compaction threshold both arms share. Zero means
 	// DefaultThreshold.
 	Threshold float64
+	// Transport is how the prompts reach the agent: TransportRun (the default)
+	// gives each prompt its own process, TransportServer sends them all to one
+	// `crush server` so a background summary can outlive its turn.
+	Transport string
 	ParentEnv []string
 }
 
@@ -232,58 +236,130 @@ func RunOne(ctx context.Context, opts Options, tk *task.Task, arm Arm, rep int) 
 	prompts := append([]string{task.Prompt(tk, opts.Footer)}, FollowUps...)
 	lastRow := int64(0)
 	sessionID := ""
-	for i, prompt := range prompts {
-		if err := ctx.Err(); err != nil {
-			return run, err
-		}
-		started := time.Now()
-		stdout := filepath.Join(runDir, fmt.Sprintf("turn-%d.json", i+1))
-		args := turnArgs(opts.Route, src, dataDir, sessionID, maxSteps, turnTimeout)
-		exit, err := execute(ctx, opts.BinPath, src, args, env, prompt, stdout,
-			filepath.Join(runDir, fmt.Sprintf("turn-%d.log", i+1)), turnTimeout+2*time.Minute)
-		turn := Turn{Index: i + 1, Wall: time.Since(started).Milliseconds(), Exit: exit}
-		if err != nil {
-			turn.Error = err.Error()
-			run.Turns = append(run.Turns, turn)
-			break
-		}
-		out, ok := parseOutput(stdout)
-		if !ok {
-			turn.Error = "bad_output"
-			run.Turns = append(run.Turns, turn)
-			break
-		}
-		if i == 0 {
-			sessionID = out.SessionID
-		}
-		turn.Reason = out.Reason
-		turn.Steps = out.Session.Steps
-		turn.Tools = out.Session.ToolCalls
-		turn.Tokens = out.Session.Tokens
-		contextDB := filepath.Join(dataDir, "crush.db")
+	contextDB := filepath.Join(dataDir, "crush.db")
+	// sampleTurn reads what the turn wrote: the delay to its first assistant
+	// row, the summary rows, and (for the server transport, which has no
+	// printed report) its steps and tokens.
+	sampleTurnInto := func(turn *Turn, started time.Time) sample {
 		if c, err := sessionContext(ctx, contextDB, sessionID); err == nil {
 			turn.Context = c
 		}
-		if sampled, rows, err := sampleTurn(ctx, contextDB, sessionID, lastRow, started); err == nil {
-			turn.FirstOutputMS = sampled.firstAssistantMS
-			turn.Summaries = len(sampled.summaries)
-			if len(sampled.summaries) > 0 {
-				turn.SummaryMS = sampled.summaries[0]
-			}
-			lastRow = rows
+		sampled, rows, err := sampleTurn(ctx, contextDB, sessionID, lastRow, started)
+		if err != nil {
+			return sample{}
 		}
+		lastRow = rows
+		turn.FirstOutputMS = sampled.firstAssistantMS
+		turn.Summaries = len(sampled.summaries)
+		if len(sampled.summaries) > 0 {
+			turn.SummaryMS = sampled.summaries[0]
+		}
+		return sampled
+	}
+	record := func(turn Turn) {
 		run.Tokens.Input += turn.Tokens.Input
 		run.Tokens.CacheRead += turn.Tokens.CacheRead
 		run.Tokens.CacheWrite += turn.Tokens.CacheWrite
 		run.Tokens.Output += turn.Tokens.Output
 		run.Wall += turn.Wall
 		run.Turns = append(run.Turns, turn)
-		if exit != 0 && exit != 2 {
-			turn.Error = fmt.Sprintf("exit %d", exit)
-			break
-		}
 	}
-	run.SessionID = sessionID
+
+	if opts.Transport == TransportServer {
+		// One process serves every prompt, so a summary written in the
+		// background survives the turn that started it and the turn that
+		// reaches the limit can adopt it.
+		if err := writeServerModels(filepath.Join(dirs.Config, "crush.json"), opts.Route); err != nil {
+			return run, err
+		}
+		server, err := startServer(ctx, opts, src, dataDir, runDir, env)
+		if err != nil {
+			run.Error = err.Error()
+			writeResult(opts, run)
+			return run, nil
+		}
+		defer server.close() //nolint:errcheck // Best effort on every path.
+		if err := server.createWorkspace(ctx, src); err != nil {
+			run.Error = err.Error()
+			writeResult(opts, run)
+			return run, nil
+		}
+		if err := server.initAgent(ctx); err != nil {
+			run.Error = err.Error()
+			writeResult(opts, run)
+			return run, nil
+		}
+		if err := server.attach(ctx); err != nil {
+			run.Error = err.Error()
+			writeResult(opts, run)
+			return run, nil
+		}
+		if err := server.createSession(ctx); err != nil {
+			run.Error = err.Error()
+			writeResult(opts, run)
+			return run, nil
+		}
+		sessionID = server.sessID
+		for i, prompt := range prompts {
+			if err := ctx.Err(); err != nil {
+				return run, err
+			}
+			started := time.Now()
+			wall, err := server.prompt(ctx, prompt, turnTimeout)
+			turn := Turn{Index: i + 1, Wall: wall, Exit: 0}
+			if err != nil {
+				turn.Error = err.Error()
+				sampled := sampleTurnInto(&turn, started)
+				turn.Steps, turn.Tools, turn.Tokens = sampled.steps, sampled.toolCalls, sampled.tokens
+				record(turn)
+				break
+			}
+			sampled := sampleTurnInto(&turn, started)
+			turn.Reason = "completed"
+			turn.Steps, turn.Tools, turn.Tokens = sampled.steps, sampled.toolCalls, sampled.tokens
+			record(turn)
+		}
+		if err := server.close(); err != nil {
+			_ = err // The server is stopped either way; grading follows.
+		}
+		run.SessionID = sessionID
+	} else {
+		for i, prompt := range prompts {
+			if err := ctx.Err(); err != nil {
+				return run, err
+			}
+			started := time.Now()
+			stdout := filepath.Join(runDir, fmt.Sprintf("turn-%d.json", i+1))
+			args := turnArgs(opts.Route, src, dataDir, sessionID, maxSteps, turnTimeout)
+			exit, err := execute(ctx, opts.BinPath, src, args, env, prompt, stdout,
+				filepath.Join(runDir, fmt.Sprintf("turn-%d.log", i+1)), turnTimeout+2*time.Minute)
+			turn := Turn{Index: i + 1, Wall: time.Since(started).Milliseconds(), Exit: exit}
+			if err != nil {
+				turn.Error = err.Error()
+				record(turn)
+				break
+			}
+			out, ok := parseOutput(stdout)
+			if !ok {
+				turn.Error = "bad_output"
+				record(turn)
+				break
+			}
+			if i == 0 {
+				sessionID = out.SessionID
+			}
+			turn.Reason = out.Reason
+			turn.Steps = out.Session.Steps
+			turn.Tools = out.Session.ToolCalls
+			turn.Tokens = out.Session.Tokens
+			sampleTurnInto(&turn, started)
+			record(turn)
+			if exit != 0 && exit != 2 {
+				break
+			}
+		}
+		run.SessionID = sessionID
+	}
 
 	emptyHome, err := os.MkdirTemp(runDir, "grade-home-")
 	if err != nil {
@@ -300,13 +376,23 @@ func RunOne(ctx context.Context, opts Options, tk *task.Task, arm Arm, rep int) 
 	if c, err := compactionCounts(ctx, filepath.Join(dataDir, "crush.db")); err == nil {
 		run.Compacted = c
 	}
-	if line, err := json.Marshal(run); err == nil {
-		if f, ferr := os.OpenFile(ResultPath(opts.Home, opts.Batch), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); ferr == nil {
-			_, _ = f.Write(append(line, '\n'))
-			_ = f.Close()
-		}
-	}
+	writeResult(opts, run)
 	return run, nil
+}
+
+// writeResult appends one run to the batch's result lines, so a run that
+// aborted before grading is still on the record with its error.
+func writeResult(opts Options, run Run) {
+	line, err := json.Marshal(run)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(ResultPath(opts.Home, opts.Batch), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(line, '\n'))
+	_ = f.Close()
 }
 
 // RunAll runs every task, arm and repetition, at most Concurrency at once.
@@ -450,6 +536,44 @@ func parseOutput(path string) (runOutput, bool) {
 type sample struct {
 	firstAssistantMS int64
 	summaries        []int64
+	// steps, toolCalls and tokens are read from the rows the turn wrote,
+	// which is the only source when the prompts go through the server API
+	// and no `crush run` prints a report.
+	steps     int
+	toolCalls int
+	tokens    result.Tokens
+}
+
+// countParts adds the tool calls one assistant row made and the usage its
+// final part reports, so a turn driven over the API still has its step and
+// token counts.
+func countParts(parts string, calls int, tokens result.Tokens) (int, result.Tokens) {
+	var parsed []struct {
+		Type string `json:"type"`
+		Data struct {
+			Usage struct {
+				Input      int64 `json:"input_tokens"`
+				CacheRead  int64 `json:"cache_read_tokens"`
+				CacheWrite int64 `json:"cache_write_tokens"`
+				Output     int64 `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(parts), &parsed); err != nil {
+		return calls, tokens
+	}
+	for _, part := range parsed {
+		switch part.Type {
+		case "tool_call":
+			calls++
+		case "finish":
+			tokens.Input += part.Data.Usage.Input
+			tokens.CacheRead += part.Data.Usage.CacheRead
+			tokens.CacheWrite += part.Data.Usage.CacheWrite
+			tokens.Output += part.Data.Usage.Output
+		}
+	}
+	return calls, tokens
 }
 
 // sampleTurn reads the rows the turn wrote in the top-level session: when the
@@ -463,7 +587,7 @@ func sampleTurn(ctx context.Context, dbPath, sessionID string, sinceRowID int64,
 	}
 	defer conn.Close() //nolint:errcheck // Read-only connection.
 	rows, err := conn.QueryContext(ctx,
-		`select role, is_summary_message, updated_at from messages
+		`select role, is_summary_message, updated_at, parts from messages
 		 where session_id = ? and rowid > ? order by rowid`, sessionID, sinceRowID)
 	if err != nil {
 		return s, sinceRowID, err
@@ -474,7 +598,8 @@ func sampleTurn(ctx context.Context, dbPath, sessionID string, sinceRowID int64,
 		var role string
 		var summary int
 		var updated int64
-		if err := rows.Scan(&role, &summary, &updated); err != nil {
+		var parts string
+		if err := rows.Scan(&role, &summary, &updated, &parts); err != nil {
 			return s, sinceRowID, err
 		}
 		offset := (updated - started.Unix()) * 1000
@@ -482,8 +607,12 @@ func sampleTurn(ctx context.Context, dbPath, sessionID string, sinceRowID int64,
 			s.summaries = append(s.summaries, offset)
 			continue
 		}
-		if role == "assistant" && first < 0 {
-			first = offset
+		if role == "assistant" {
+			if first < 0 {
+				first = offset
+			}
+			s.steps++
+			s.toolCalls, s.tokens = countParts(parts, s.toolCalls, s.tokens)
 		}
 	}
 	if err := rows.Err(); err != nil {
