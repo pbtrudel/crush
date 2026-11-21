@@ -327,6 +327,10 @@ type Model struct {
 	OAuth bool
 	// ProviderName is the provider's display name, such as "GitHub Copilot".
 	ProviderName string
+	// ServingProvider is the provider the request travels through (see
+	// servingProvider), such as "anthropic" for a Claude model behind a
+	// gateway. It decides the prompt-cache breakpoint layout.
+	ServingProvider string
 }
 
 // activeCancel wraps a context.CancelFunc with a unique pointer identity.
@@ -926,6 +930,7 @@ const sideQuestionRetrySuffix = "\n\nAnswer from the conversation above only. Do
 // history without persisting anything or exposing tools to the model.
 func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 	largeModel := a.largeModel.Get()
+	policy := cachePolicyForModel(largeModel)
 	promptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
@@ -975,7 +980,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 				}
 				a.normalizePromptMessages(prepared.Messages)
 				prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
-				a.applyCacheBreakpoints(prepared.Messages)
+				a.applyCacheBreakpoints(prepared.Messages, policy)
 				if promptPrefix != "" {
 					prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 				}
@@ -1274,6 +1279,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	// Copy mutable fields under lock to avoid races with SetTools.
 	promptPrefix := a.systemPromptPrefix.Get()
+	policy := cachePolicyForModel(largeModel)
 
 	// Resolve the tool list and the MCP instruction block once per turn and
 	// reuse them for every step (see the PrepareStep closure below).
@@ -1289,7 +1295,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
 
-	a.applyToolCacheBreakpoint(agentTools)
+	a.applyToolCacheBreakpoint(agentTools, policy)
 
 	// Copilot Fusion resolves its plan per turn, so the phase runner is built
 	// here where the turn's prompt and the read-only review tools are known.
@@ -1554,7 +1560,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// move the tools block and its cache breakpoint.
 			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools)
 			if adopted {
-				a.applyToolCacheBreakpoint(stepTools)
+				a.applyToolCacheBreakpoint(stepTools, policy)
 			}
 			prepared.Tools = stepTools
 			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
@@ -1611,7 +1617,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
 			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 
-			a.applyCacheBreakpoints(prepared.Messages)
+			a.applyCacheBreakpoints(prepared.Messages, policy)
 
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
@@ -2468,6 +2474,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		return nil, ErrSessionBusy
 	}
 	systemPromptPrefix := a.systemPromptPrefix.Get()
+	policy := cachePolicyForModel(largeModel)
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -2545,7 +2552,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 			bound: a.truncateToolOutput,
 		}
 	}
-	a.applyToolCacheBreakpoint(compactionTools)
+	a.applyToolCacheBreakpoint(compactionTools, policy)
 
 	// Everything before the cut is summarized; the matching suffix is
 	// kept verbatim so recent reads, command outputs, and edits survive
@@ -2689,7 +2696,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 			// The last-message marker lands on the message that closed
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
-			a.applyCacheBreakpoints(prepared.Messages)
+			a.applyCacheBreakpoints(prepared.Messages, policy)
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
@@ -3469,9 +3476,10 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 // applyToolCacheBreakpoint puts the cache breakpoint on the last tool
 // definition and clears it from every other tool in the list, so the tool
 // block caches independently of the conversation while the request stays
-// within the provider's breakpoint limit.
-func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
-	if len(tools) == 0 {
+// within the provider's breakpoint limit. A policy without tool breakpoints
+// leaves the definitions alone; no other caller ever sets one.
+func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool, policy cachePolicy) {
+	if len(tools) == 0 || !policy.Tools {
 		return
 	}
 	cacheOptions := a.getCacheControlOptions()
@@ -3585,19 +3593,20 @@ func stableToolOrder(toolList []fantasy.AgentTool, adopted []string) []fantasy.A
 	return ordered
 }
 
-// applyCacheBreakpoints marks the prompt-cache boundaries for providers with
-// explicit caching (Anthropic, Bedrock, and Claude models served through
-// Vercel). The layout matches what Anthropic's own clients use: one breakpoint
-// on the last system message (covering the system prompt and, in providers
-// that serialize them ahead of it, the tool definitions) and one on each of
-// the final two messages. The tail breakpoints are what let a turn extend the
-// cached prefix instead of rewriting it, so they must land on messages that
-// the next turn replays unchanged.
+// applyCacheBreakpoints marks the prompt-cache boundaries the policy asks
+// for. The full layout matches what Anthropic's own clients use: one
+// breakpoint on the last system message (covering the system prompt and, in
+// providers that serialize them ahead of it, the tool definitions) and one
+// on each of the final two messages. The tail breakpoints are what let a
+// turn extend the cached prefix instead of rewriting it, so they must land
+// on messages that the next turn replays unchanged.
 //
-// Providers that cache automatically (OpenAI, DeepSeek, Gemini) ignore these
-// markers entirely; for them only prefix stability matters.
-func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message) {
-	if len(messages) == 0 {
+// Providers that cache automatically (OpenAI, DeepSeek) ignore these markers
+// entirely and get none; Gemini and Qwen get the smaller layouts their
+// upstreams actually honour, because a tail marker they do not understand
+// writes a fresh cache on every step.
+func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message, policy cachePolicy) {
+	if len(messages) == 0 || (!policy.System && policy.Tail == 0) {
 		return
 	}
 	lastSystemRoleInx := -1
@@ -3607,16 +3616,16 @@ func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message) {
 			lastSystemRoleInx = i
 			continue
 		}
-		if !systemMarked && lastSystemRoleInx >= 0 {
+		if policy.System && !systemMarked && lastSystemRoleInx >= 0 {
 			messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
 			systemMarked = true
 		}
-		if i >= len(messages)-2 {
+		if i >= len(messages)-policy.Tail {
 			messages[i].ProviderOptions = a.getCacheControlOptions()
 		}
 	}
 	// A prompt made up only of system messages still gets its breakpoint.
-	if !systemMarked && lastSystemRoleInx >= 0 {
+	if policy.System && !systemMarked && lastSystemRoleInx >= 0 {
 		messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
 	}
 }

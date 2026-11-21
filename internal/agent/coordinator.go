@@ -1592,12 +1592,13 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 	}
 
 	model := Model{
-		Model:        languageModel,
-		CatwalkCfg:   *catwalkModel,
-		ModelCfg:     modelCfg,
-		FlatRate:     providerCfg.FlatRate,
-		OAuth:        providerCfg.OAuthToken != nil,
-		ProviderName: providerCfg.Name,
+		Model:           languageModel,
+		CatwalkCfg:      *catwalkModel,
+		ModelCfg:        modelCfg,
+		FlatRate:        providerCfg.FlatRate,
+		OAuth:           providerCfg.OAuthToken != nil,
+		ProviderName:    providerCfg.Name,
+		ServingProvider: servingProvider(providerCfg, *catwalkModel),
 	}
 	// A Fusion entry stands for a router, not a concrete model: every path
 	// that uses it has to resolve a real model first. The session agent
