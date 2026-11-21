@@ -41,6 +41,13 @@ const (
 	compactionTriggerFusionRoute compactionTrigger = "fusion_route"
 	// The user asked for the compaction.
 	compactionTriggerManual compactionTrigger = "manual"
+	// A finished turn crossed the pre-threshold, so the summary was
+	// written ahead of the limit and adopted when the limit was reached.
+	compactionTriggerBackground compactionTrigger = "background"
+	// A background summary was written but never adopted, because its
+	// snapshot no longer matched the history or the session went away. It
+	// cost tokens, so it is counted apart from the compactions that ran.
+	compactionTriggerBackgroundUnused compactionTrigger = "background_unused"
 )
 
 // hookTrigger is the trigger as PreCompact and PostCompact hooks receive it.

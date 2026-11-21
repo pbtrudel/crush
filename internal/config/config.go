@@ -521,6 +521,11 @@ type Options struct {
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
+	// CompactBackgroundMargin starts the compaction summary ahead of the
+	// auto-compaction limit, as a fraction of the context window below it,
+	// so the next prompt does not wait for the summary. Off by default,
+	// because a summary the session never uses still costs tokens.
+	CompactBackgroundMargin *float64 `json:"compact_background_margin,omitempty" jsonschema:"description=Fraction of the context window below the auto-compaction limit at which the summary is written in the background\\, so the next prompt does not wait for it. A summary the session never uses still costs tokens. 0 (the default) keeps compaction blocking.,default=0,example=0.1"`
 	// CompactionPruneChars is the per-tool-result character budget used
 	// before a compaction request is built. Oversized results keep their
 	// head and tail, which shrinks the summarizer input without changing
@@ -663,6 +668,13 @@ const DefaultHistorySlimIdleMinutes = 60
 // has not configured one.
 const DefaultCompactTailTokens = 24576
 
+// DefaultCompactBackgroundMargin is the share of the context window below
+// the auto-compaction limit at which a summary would be written in the
+// background. It is zero, which keeps compaction blocking: a background
+// summary that a session never uses still costs tokens, and the saving has
+// not been measured yet.
+const DefaultCompactBackgroundMargin = 0
+
 // DefaultContextMaxBytes bounds each context chain (project and global
 // separately) when the user has not configured a budget.
 const DefaultContextMaxBytes = 64 * 1024
@@ -729,6 +741,19 @@ func (o *Options) GetCompactTailTokens() int64 {
 		return DefaultCompactTailTokens
 	}
 	return max(0, int64(*o.CompactTailTokens))
+}
+
+// GetCompactBackgroundMargin returns the share of the context window below
+// the auto-compaction limit at which a summary is written in the
+// background. The nil receiver, the unset field and an explicit 0 or
+// negative value all mean DefaultCompactBackgroundMargin, which keeps
+// compaction blocking; a value above 1 is capped at 1 because a margin
+// wider than the window would start the summary at the very first turn.
+func (o *Options) GetCompactBackgroundMargin() float64 {
+	if o == nil || o.CompactBackgroundMargin == nil || *o.CompactBackgroundMargin <= 0 {
+		return DefaultCompactBackgroundMargin
+	}
+	return min(*o.CompactBackgroundMargin, 1)
 }
 
 // GetContextMaxBytes returns the per-chain context budget in bytes. The nil

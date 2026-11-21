@@ -282,6 +282,7 @@ func TestOption_CompactionTuning(t *testing.T) {
 	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option auto-compact-threshold 0.5
 option auto-compact-max-tokens 250000
 option compact-tail-tokens 16384
+option compact-background-margin 0.1
 option history-slim-idle-minutes 30
 option history-slim-reasoning`))
 	require.NoError(t, err)
@@ -293,6 +294,7 @@ option history-slim-reasoning`))
 	require.Equal(t, float64(0.5), opts["auto_compact_threshold"])
 	require.Equal(t, float64(250000), opts["auto_compact_max_tokens"])
 	require.Equal(t, float64(16384), opts["compact_tail_tokens"])
+	require.Equal(t, 0.1, opts["compact_background_margin"])
 	require.Equal(t, float64(30), opts["history_slim_idle_minutes"])
 	require.Equal(t, true, opts["history_slim_reasoning"])
 }

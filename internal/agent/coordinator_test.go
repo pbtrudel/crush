@@ -66,6 +66,7 @@ func (m *mockSessionAgent) Cancel(sessionID string) {
 	m.cancelled = append(m.cancelled, sessionID)
 }
 func (m *mockSessionAgent) CancelAll()                                  {}
+func (m *mockSessionAgent) CancelBackgroundCompaction(string)           {}
 func (m *mockSessionAgent) IsSessionBusy(sessionID string) bool         { return m.busy }
 func (m *mockSessionAgent) IsBusy() bool                                { return false }
 func (m *mockSessionAgent) QueuedPrompts(sessionID string) int          { return 0 }

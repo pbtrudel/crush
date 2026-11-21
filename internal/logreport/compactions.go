@@ -21,6 +21,10 @@ type Compactions struct {
 	// Failed counts the summaries that ended with an error and carry no
 	// statistics. A failed compaction records no trigger.
 	Failed int `json:"failed"`
+	// UnusedBackground counts the summaries written ahead of the limit
+	// that were never adopted. They compacted nothing, so they are not in
+	// Count, but each still cost a summary request.
+	UnusedBackground int `json:"unused_background"`
 }
 
 // Compaction is the compactions one trigger started.
@@ -35,8 +39,9 @@ type compactionsSection struct {
 	before map[string][]int
 	// unmeasured counts, by trigger, the compactions written before
 	// statistics were recorded; they count but have no tokens before.
-	unmeasured map[string]int
-	failed     int
+	unmeasured       map[string]int
+	failed           int
+	unusedBackground int
 }
 
 func (s *compactionsSection) message(_ *pass, m *message.Message) {
@@ -59,6 +64,10 @@ func (s *compactionsSection) message(_ *pass, m *message.Message) {
 		s.unmeasured["unstamped"]++
 		return
 	}
+	if stats.Trigger == "background_unused" {
+		s.unusedBackground++
+		return
+	}
 	trigger := cmp.Or(stats.Trigger, "unstamped")
 	s.before[trigger] = append(s.before[trigger], int(stats.TokensBefore))
 }
@@ -66,7 +75,7 @@ func (s *compactionsSection) message(_ *pass, m *message.Message) {
 func (s *compactionsSection) endSession(*pass) {}
 
 func (s *compactionsSection) finish(_ *pass, r *Report) {
-	c := Compactions{ByTrigger: []Compaction{}, Failed: s.failed}
+	c := Compactions{ByTrigger: []Compaction{}, Failed: s.failed, UnusedBackground: s.unusedBackground}
 	triggers := map[string]bool{}
 	for trigger := range s.before {
 		triggers[trigger] = true
@@ -100,5 +109,6 @@ func (c Compactions) writeText(out io.Writer) {
 		fmt.Fprintf(out, "  trigger %s\t%d\tmedian tokens before %d\n", t.Trigger, t.Count, t.MedianTokensBefore)
 	}
 	fmt.Fprintf(out, "  failed\t%d\n", c.Failed)
+	fmt.Fprintf(out, "  unused background summaries\t%d\n", c.UnusedBackground)
 	fmt.Fprintln(out)
 }

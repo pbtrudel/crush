@@ -75,6 +75,11 @@ const (
 	// edits — is worth far more to the model than more summary prose.
 	defaultCompactTailTokens = config.DefaultCompactTailTokens
 
+	// defaultCompactBackgroundMargin is how far below the auto-compaction
+	// limit a finished turn starts the summary when the user has not
+	// configured a margin. Zero keeps compaction blocking.
+	defaultCompactBackgroundMargin = config.DefaultCompactBackgroundMargin
+
 	// defaultCompactionMaxOutputTokens bounds the summary a compaction
 	// request may generate. Reasoning models spend part of this budget on
 	// reasoning, and the summary must fit entirely inside it: an 8k cap
@@ -287,6 +292,9 @@ type SessionAgent interface {
 	SetAdoptedToolOrder(sessionID string, names []string)
 	Cancel(sessionID string)
 	CancelAll()
+	// CancelBackgroundCompaction stops the summary written ahead of the
+	// auto-compaction limit without touching the session's runs.
+	CancelBackgroundCompaction(sessionID string)
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
 	// ListSettledMessages reads a session's transcript, first settling any
@@ -426,6 +434,10 @@ type sessionAgent struct {
 	// compaction re-sends that exact list instead of rebuilding it from a
 	// registry a server may have changed since (see toolsForStep).
 	stepTools *csync.Map[string, []fantasy.AgentTool]
+	// bgCompactions records, per session, the summary being written ahead of
+	// the auto-compaction limit, or the one already written and waiting for
+	// the limit. See startBackgroundCompaction.
+	bgCompactions *csync.Map[string, *backgroundCompaction]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
@@ -555,6 +567,7 @@ func NewSessionAgent(
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
 		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
+		bgCompactions:          csync.NewMap[string, *backgroundCompaction](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
 		lazyTools:              opts.LazyTools,
@@ -1363,7 +1376,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactionTriggerFusionPreflight, false); err != nil {
+		if _, err := a.summarize(genCtx, compactionRequest{
+			sessionID:     call.SessionID,
+			largeModel:    largeModel,
+			opts:          call.ProviderOptions,
+			onAuthRefresh: call.OnAuthRefresh,
+			trigger:       compactionTriggerFusionPreflight,
+			active:        true,
+		}); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -2116,7 +2136,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// model a summary in place of the work it is asked to check. Its own
 	// ending runs the threshold check.
 	continued := false
-	if gateNext == nil && (shouldSummarize || a.shouldAutoCompact(largeModel, currentSession)) {
+	autoCompacting := a.shouldAutoCompact(largeModel, currentSession)
+	if gateNext == nil && !shouldSummarize && !autoCompacting {
+		// The turn stopped short of the limit but inside the margin the
+		// user configured, so the summary is written now, while the next
+		// prompt runs, instead of making it wait at the limit.
+		a.startBackgroundCompaction(genCtx, call, largeModel, currentSession)
+	}
+	if gateNext == nil && (shouldSummarize || autoCompacting) {
 		a.activeRequests.Del(call.SessionID)
 		summarizeCtx := genCtx
 		if overflowRecovery {
@@ -2128,9 +2155,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		threshold, _ := a.compactionConfig()
-		trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false)
+		var summarizeErr error
+		if shouldSummarize || !a.adoptBackgroundCompaction(summarizeCtx, call.SessionID) {
+			// The limit needs space now: any summary written ahead of it
+			// is superseded by the blocking compaction.
+			a.cancelBackgroundCompaction(call.SessionID)
+			threshold, _ := a.compactionConfig()
+			trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
+			_, summarizeErr = a.summarize(summarizeCtx, compactionRequest{
+				sessionID:     call.SessionID,
+				largeModel:    largeModel,
+				opts:          call.ProviderOptions,
+				onAuthRefresh: call.OnAuthRefresh,
+				trigger:       trigger,
+				active:        true,
+			})
+		}
 		// Recorded before the returns below, which a failed compaction
 		// takes, and before a blocked one is cleared.
 		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
@@ -2381,32 +2421,77 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactionTriggerManual, false)
+	// The user asked for a compaction now: a summary written ahead of the
+	// limit is superseded by this one.
+	a.cancelBackgroundCompaction(sessionID)
+	_, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    a.largeModel.Get(),
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerManual,
+	})
+	return err
 }
 
-// summarize runs one compaction request. active reports that the caller
-// already owns the session's active-run registration (the model-switch path
-// runs inside Run), so this call must not replace or clear it.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger compactionTrigger, pinned bool) error {
+// compactionRequest is one compaction run: what to summarize, what started
+// it, and how its result reaches the session.
+type compactionRequest struct {
+	sessionID     string
+	largeModel    Model
+	opts          fantasy.ProviderOptions
+	onAuthRefresh func(context.Context, *fantasy.ProviderError) error
+	trigger       compactionTrigger
+	// active reports that the caller already owns the session's active-run
+	// registration (the model-switch path runs inside Run), so this call
+	// must not replace or clear it.
+	active bool
+	pinned bool
+	// snapshot, when non-nil, is the history to summarize instead of the
+	// stored one. A background summary passes the history as it stood at
+	// the turn that crossed the pre-threshold.
+	snapshot []message.Message
+	// deferred writes the summary without adopting it: the session keeps
+	// its context, its step fingerprints, and its queue until the caller
+	// splices the result in. A deferred run happens beside a live turn, so
+	// it must leave every piece of live state alone.
+	deferred bool
+}
+
+// summarize runs one compaction request and returns what it wrote. The
+// outcome is nil unless the request is deferred, because a compaction that
+// adopts its own summary needs nothing back.
+func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*compactionOutcome, error) {
+	sessionID, largeModel, opts, onAuthRefresh := req.sessionID, req.largeModel, req.opts, req.onAuthRefresh
+	trigger, active, pinned := req.trigger, req.active, req.pinned
 	if !active && a.IsSessionBusy(sessionID) {
-		return ErrSessionBusy
+		return nil, ErrSessionBusy
 	}
 	systemPromptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	// The previous summary's stats carry the skills its state block listed;
 	// this compaction must list again whatever nothing has read since.
 	previousSummaryID := currentSession.SummaryMessageID
-	msgs, err := a.getSessionMessages(ctx, currentSession)
-	if err != nil {
-		return err
+	msgs := req.snapshot
+	// The message a deferred summary ends on, which is what the splice
+	// checks against the history before adopting it.
+	snapshotEnd := ""
+	if len(msgs) > 0 {
+		snapshotEnd = msgs[len(msgs)-1].ID
+	}
+	if msgs == nil {
+		msgs, err = a.getSessionMessages(ctx, currentSession)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(msgs) == 0 {
 		// Nothing to summarize.
-		return nil
+		return nil, nil
 	}
 	// The compaction request must send the bytes the turn sent, or it
 	// misses the cache it exists to preserve. Slim from the trailing
@@ -2523,7 +2608,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	}
 
 	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()}); pre.Blocked() {
-		return fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
+		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
@@ -2546,7 +2631,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		var err error
 		summaryModel, err = fusion.stepModel(ctx, fusion.plan.Steps[0])
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	agent := fantasy.NewAgent(
@@ -2564,7 +2649,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		IsSummaryMessage: true,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var (
@@ -2610,9 +2695,13 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			}
 			// The compaction prompt is what the provider cached last, so the
 			// next turn's shared-prefix count has to be measured against it,
-			// not against the turn that came before the compaction.
-			previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
-			toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			// not against the turn that came before the compaction. A
+			// deferred run happens beside a live turn and must leave the
+			// fingerprints that turn is measured against alone.
+			if !req.deferred {
+				previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
+				toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			}
 			promptMessages = len(prepared.Messages)
 			return callContext, prepared, nil
 		},
@@ -2640,16 +2729,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		if isCancelErr {
 			// User cancelled summarize we need to remove the summary message.
 			deleteErr := a.messages.Delete(ctx, summaryMessage.ID)
-			return deleteErr
+			return nil, deleteErr
 		}
 		// Mark the summary message as finished with an error so the UI
 		// stops spinning.
 		summaryMessage.AddFinish(message.FinishReasonError, "Summarization Error", err.Error())
 		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(ctx, summaryMessage); updateErr != nil {
-			return updateErr
+			return nil, updateErr
 		}
-		return err
+		return nil, err
 	}
 
 	if strings.TrimSpace(summaryMessage.Content().Text) == "" {
@@ -2660,9 +2749,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		summaryMessage.AddFinish(message.FinishReasonError, "Compaction Error", emptyErr.Error())
 		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(genCtx, summaryMessage); updateErr != nil {
-			return updateErr
+			return nil, updateErr
 		}
-		return emptyErr
+		return nil, emptyErr
 	}
 
 	// The measured outcome rides on the summary message itself so it
@@ -2730,7 +2819,31 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	// A deferred run leaves the session alone: the caller adopts the
+	// summary when the limit is reached, and a summary that is never
+	// adopted must not have reset the context of a live session. Its cost
+	// is still recorded, with an incrementing write that cannot lose a
+	// concurrent step or rollup, so the tokens it spent stay visible.
+	if req.deferred {
+		step := a.stepUsageFor(largeModel, currentSession, resp.TotalUsage, overrideCost, false)
+		if usageErr := a.sessions.AddSessionUsage(genCtx, sessionID, step.CacheReadTokens, step.ContextTokens, step.Cost); usageErr != nil {
+			slog.Warn("Failed to record the background compaction usage", "session_id", sessionID, "error", usageErr)
+		}
+		return &compactionOutcome{
+			summaryID:     summaryMessage.ID,
+			cutID:         cutID,
+			snapshotEnd:   snapshotEnd,
+			stateText:     stateText,
+			summaryTokens: summaryTokens,
+			tokensBefore:  tokensBefore,
+			tailTokens:    tailTokens,
+			savedTokens:   savedTokens,
+			keptMessages:  keptMessages,
+			estimated:     usageIsZero(resp.TotalUsage),
+		}, nil
 	}
 
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, overrideCost, false)
@@ -2742,7 +2855,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	currentSession.EstimatedUsage = usageIsZero(resp.TotalUsage)
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The state block lands after the summary and the preserved tail, which
 	// is where it is also true: it describes the session at compaction time.
@@ -2773,12 +2886,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// Process any messages that were queued while summarizing.
 	queuedMessages, ok := a.messageQueue.Get(sessionID)
 	if !ok || len(queuedMessages) == 0 {
-		return nil
+		return nil, nil
 	}
 	firstQueuedMessage := queuedMessages[0]
 	a.messageQueue.Set(sessionID, queuedMessages[1:])
 	_, qErr := a.Run(ctx, firstQueuedMessage)
-	return qErr
+	return nil, qErr
 }
 
 // compactionConfig returns the auto-compaction threshold (as a fraction of
@@ -2845,7 +2958,15 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactionTriggerFusionRoute, true); err != nil {
+	if _, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    previous.model,
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerFusionRoute,
+		active:        true,
+		pinned:        true,
+	}); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2973,7 +3094,14 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactionTriggerModelSwitch, false); err != nil {
+	if _, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    previousLarge,
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerModelSwitch,
+		active:        true,
+	}); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
@@ -3801,7 +3929,7 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			out = append(out, summary)
 			out = append(out, cutMsgs[:i]...)
 			out = append(out, cutMsgs[i+1:]...)
-			return out, nil
+			return dropDetachedSummaries(out, session.SummaryMessageID), nil
 		}
 		// The summary or the cut message no longer exists: fall back to
 		// the summary-only view rather than re-sending the full
@@ -3829,7 +3957,17 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			msgs[0] = labelCompactedSummary(msgs[0])
 		}
 	}
-	return msgs, nil
+	return dropDetachedSummaries(msgs, session.SummaryMessageID), nil
+}
+
+// dropDetachedSummaries removes the summaries the session has not adopted:
+// one written ahead of the compaction limit, while it is pending or after it
+// went unused, sits in the history it summarizes and must not be read as
+// part of it.
+func dropDetachedSummaries(msgs []message.Message, summaryID string) []message.Message {
+	return slices.DeleteFunc(msgs, func(msg message.Message) bool {
+		return msg.IsSummaryMessage && msg.ID != summaryID
+	})
 }
 
 // labelCompactedSummary wraps the summary in the label that tells the
@@ -4338,6 +4476,11 @@ func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message
 }
 
 func (a *sessionAgent) Cancel(sessionID string) {
+	// A summary written ahead of the limit has nothing left to compact into
+	// once the turn it followed is cancelled. It is stopped before the
+	// dispatch lock, because discarding a finished one writes.
+	a.cancelBackgroundCompaction(sessionID)
+
 	// Serialize against the dispatch handoff in Run so the accepted ->
 	// (cancel-on-entry | queued | active) transition is atomic against
 	// this cancel. Every cancel observes at least one of: an active
@@ -4446,6 +4589,11 @@ func (a *sessionAgent) CancelAll() {
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
+	}
+	// Background summaries belong to no active run, so the loop above does
+	// not reach them and they have to be stopped on their own.
+	for sessionID := range a.bgCompactions.Seq2() {
+		a.cancelBackgroundCompaction(sessionID)
 	}
 	if !a.titles.wait(time.Until(deadline)) {
 		slog.Warn("Gave up waiting for session title generation to finish")

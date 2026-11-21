@@ -247,6 +247,7 @@ var optionSpecs = map[string]optionSpec{
 	"auto-compact-threshold":    {jsonKey: "auto_compact_threshold", kind: optFloat},
 	"auto-compact-max-tokens":   {jsonKey: "auto_compact_max_tokens", kind: optInt},
 	"compact-tail-tokens":       {jsonKey: "compact_tail_tokens", kind: optInt},
+	"compact-background-margin": {jsonKey: "compact_background_margin", kind: optFloat},
 	"history-slim-idle-minutes": {jsonKey: "history_slim_idle_minutes", kind: optInt},
 	"compaction-prune-chars":    {jsonKey: "compaction_prune_chars", kind: optInt},
 	"context-max-bytes":         {jsonKey: "context_max_bytes", kind: optInt},

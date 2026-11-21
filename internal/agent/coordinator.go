@@ -2204,6 +2204,13 @@ func (c *coordinator) Cancel(sessionID string) {
 	c.currentAgent().Cancel(sessionID)
 }
 
+// CancelBackgroundCompaction stops the summary a session wrote ahead of the
+// auto-compaction limit, and leaves its runs alone. It is called when the
+// session goes away, since the summary has nothing left to compact into.
+func (c *coordinator) CancelBackgroundCompaction(sessionID string) {
+	c.currentAgent().CancelBackgroundCompaction(sessionID)
+}
+
 // CancelAll stops everything, detached subagents included. It is the
 // shutdown path, so the subagents are stopped without reporting: nobody is
 // left to read a report, and the next run on each parent session reports
