@@ -5,9 +5,10 @@ class FakeSocket {
   static last: FakeSocket;
   onopen?: () => void; onmessage?: (e: { data: string }) => void; onclose?: (e: { code: number }) => void;
   sent: string[] = [];
+  closed = false;
   constructor(public url: string) { FakeSocket.last = this; }
   send(d: string) { this.sent.push(d); }
-  close() {}
+  close() { this.closed = true; }
 }
 
 function env(over: Partial<StreamEnv> = {}): StreamEnv {
@@ -21,6 +22,23 @@ function env(over: Partial<StreamEnv> = {}): StreamEnv {
     clearInterval: () => {},
     ...over,
   };
+}
+
+// queued returns an env whose timers run only when the test advances them, so
+// a retry or probe chain never spins inside a synchronous stub.
+function queued(over: Partial<StreamEnv> = {}) {
+  const timers: { fn: () => void; ms: number }[] = [];
+  const e = env({
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    ...over,
+  });
+  const next = async () => {
+    await vi.waitFor(() => expect(timers.length).toBeGreaterThan(0));
+    const t = timers.shift()!;
+    t.fn();
+    return t.ms;
+  };
+  return { env: e, timers, next };
 }
 
 describe('connectStream', () => {
@@ -53,6 +71,23 @@ describe('connectStream', () => {
     expect(conns.at(-1)).toBe('ended');
   });
 
+  it('returns to live after a ring resume that sends no snapshot', async () => {
+    const conns: string[] = [];
+    connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 5 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const first = FakeSocket.last;
+    first.onopen?.();
+    first.onclose?.({ code: 1006 });
+    await vi.waitFor(() => expect(FakeSocket.last).not.toBe(first));
+    expect(FakeSocket.last.url).toBe('ws://x/api/stream?since=5');
+
+    const second = FakeSocket.last;
+    second.onopen?.();
+    second.onmessage?.({ data: JSON.stringify({ seq: 6, type: 'message', payload: {} }) });
+    expect(conns).toEqual(['live', 'reconnecting', 'live']);
+    expect(conns.at(-1)).toBe('live');
+  });
+
   it('reports unauthorized when health returns 401', async () => {
     const conns: string[] = [];
     connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 0 },
@@ -62,9 +97,82 @@ describe('connectStream', () => {
 
   it('ends after repeated network failures', async () => {
     const conns: string[] = [];
-    connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 0 },
-      env({ health: async () => 'down' }));
+    const q = queued({ health: async () => 'down' });
+    const stop = connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 0 }, q.env);
+    for (let i = 0; i < 4; i++) await q.next();
     await vi.waitFor(() => expect(conns.at(-1)).toBe('ended'));
+    expect(conns.filter((c) => c === 'ended')).toHaveLength(1);
+    expect(q.timers).toHaveLength(1);
+    expect(q.timers[0].ms).toBe(10_000);
+    stop();
+  });
+
+  it('keeps probing after ending and returns to live when health recovers', async () => {
+    let status: 'ok' | 'down' = 'down';
+    const conns: string[] = [];
+    const q = queued({ health: async () => status });
+    const stop = connectStream({
+      onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 4,
+    }, q.env);
+    for (let i = 0; i < 4; i++) await q.next();
+    await vi.waitFor(() => expect(conns.at(-1)).toBe('ended'));
+
+    status = 'ok';
+    await q.next();
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    expect(FakeSocket.last.url).toBe('ws://x/api/stream?since=4');
+    FakeSocket.last.onopen?.();
+    expect(conns.at(-1)).toBe('live');
+    stop();
+  });
+
+  it('does not probe health after gateway_closing', async () => {
+    let calls = 0;
+    const conns: string[] = [];
+    const q = queued({ health: async () => { calls++; return 'ok'; } });
+    connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 0 }, q.env);
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const sock = FakeSocket.last;
+    sock.onopen?.();
+    sock.onmessage?.({ data: JSON.stringify({ seq: 6, type: 'gateway_closing', payload: {} }) });
+    sock.onclose?.({ code: 1001 });
+    expect(conns.at(-1)).toBe('ended');
+    expect(q.timers).toHaveLength(0);
+    expect(calls).toBe(1);
+  });
+
+  it('backs off when a socket opens and closes without a frame', async () => {
+    const q = queued();
+    const stop = connectStream({ onFrames: () => {}, onConn: () => {}, lastSeq: () => 0 }, q.env);
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const first = FakeSocket.last;
+    first.onopen?.();
+    first.onclose?.({ code: 1006 });
+    expect(q.timers.at(-1)?.ms).toBe(500);
+
+    await q.next();
+    await vi.waitFor(() => expect(FakeSocket.last).not.toBe(first));
+    const second = FakeSocket.last;
+    second.onopen?.();
+    second.onclose?.({ code: 1006 });
+    expect(q.timers.at(-1)?.ms).toBe(1000);
+    stop();
+  });
+
+  it('stop clears the ping and closes the socket', async () => {
+    const cleared: unknown[] = [];
+    let pings = 0;
+    const stop = connectStream({ onFrames: () => {}, onConn: () => {}, lastSeq: () => 0 }, env({
+      setInterval: () => { pings++; return 7; },
+      clearInterval: (id) => { cleared.push(id); },
+    }));
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const sock = FakeSocket.last;
+    sock.onopen?.();
+    expect(pings).toBe(1);
+    stop();
+    expect(cleared).toEqual([7]);
+    expect(sock.closed).toBe(true);
   });
 
   it('resync close 4001 reconnects without since', async () => {
