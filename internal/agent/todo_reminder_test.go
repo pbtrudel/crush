@@ -277,6 +277,7 @@ func TestTodoReminder(t *testing.T) {
 		// not offered as a way to close the reminder.
 		require.Contains(t, escalated, "Check whether that item is actually done")
 		require.Contains(t, escalated, "leave the entry as it is and continue")
+		require.Contains(t, escalated, "say so in your answer if you cannot finish it this turn")
 		require.NotContains(t, escalated, "either mark it completed with the `todos` tool")
 		require.NotContains(t, escalated, "Do not end this turn claiming that work is complete")
 		require.NotContains(t, escalated, "If you finished that task in the previous step")

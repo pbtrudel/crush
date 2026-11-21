@@ -149,7 +149,7 @@ func todoReminder(todos []session.Todo, unanswered int) string {
 
 	if unanswered >= todoReminderEscalateAfter {
 		return fmt.Sprintf(
-			"<system_reminder>Your todo list still shows %q as unfinished, and %d reminders about it went unanswered. Check whether that item is actually done. If it is done, update the list now. If it is not done, leave the entry as it is and continue the work; do not mark it completed just to close this reminder. Do not mention this reminder to the user.</system_reminder>",
+			"<system_reminder>Your todo list still shows %q as unfinished, and %d reminders about it went unanswered. Check whether that item is actually done. If it is done, update the list now. If it is not done, leave the entry as it is and continue the work, say so in your answer if you cannot finish it this turn, and do not mark it completed just to close this reminder. Do not mention this reminder to the user.</system_reminder>",
 			stale,
 			unanswered,
 		)
