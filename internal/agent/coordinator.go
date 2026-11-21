@@ -1633,20 +1633,23 @@ func (c *coordinator) hyperAPIKey() string {
 // provider) because the value depends on the caller, while the rest of the
 // provider options come from static config.
 //
-// The two providers documented here want different scopes, and the reason is
-// what each one caches. OpenAI matches a prefix across conversations, so the
-// hint is derived from the workspace: every session, sub-agent, and
-// compaction run in this workspace shares the same tool and system-prompt
-// prefixes and routes to one cache shard. Mistral matches per conversation
-// and asks for a conversation or session ID; a single workspace key was in
-// practice shared by the Lead and every concurrent sub-agent and teammate,
-// and far more requests missed than with one key per session. The session
-// hash used here is the same value sent as the x-session-affinity header, so
-// routing and caching agree.
+// OpenAI wants a different scope from everything else, and the reason is what
+// it caches. It matches a prefix across conversations, so the hint is derived
+// from the workspace: every session, sub-agent, and compaction run in this
+// workspace shares the same tool and system-prompt prefixes and routes to one
+// cache shard.
 //
-// Only providers with documented support get the hint here. For other
-// OpenAI-compatible providers (Hyper, Command Code, custom endpoints) a static
-// key can be set through the provider's extra_body config instead.
+// Every other OpenAI-compatible endpoint matches per conversation, so it gets
+// the session hash as a top-level prompt_cache_key request field through
+// extra_body. A single workspace key was in practice shared by the Lead and
+// every concurrent sub-agent and teammate, and far more requests missed than
+// with one key per session. The session hash used here is the same value sent
+// as the x-session-affinity header, so routing and caching agree; an unknown
+// session falls back to the workspace key.
+//
+// A key the user set in the provider's extra_body always wins, since a wrong
+// key only misroutes a cache and never changes the completion. An endpoint
+// that rejects the field gets one retry without it rather than a failed turn.
 func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig, sessionID string) fantasy.ProviderOptions {
 	workingDir := c.cfg.WorkingDir()
 	if workingDir == "" {
@@ -1665,8 +1668,7 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		)
 	}
 
-	switch {
-	case providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI):
+	if providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI) {
 		// The Responses API and Chat Completions carry the key on different
 		// option structs; mutating the existing entry keeps whatever else
 		// getProviderOptions put there (reasoning summary, include, ...).
@@ -1678,21 +1680,32 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		default:
 			options[openai.Name] = &openai.ProviderOptions{PromptCacheKey: &key}
 		}
-	case isMistralBaseURL(baseURL):
-		opts, _ := options[openaicompat.Name].(*openaicompat.ProviderOptions)
-		if opts == nil {
-			opts = &openaicompat.ProviderOptions{}
-		}
-		if opts.ExtraBody == nil {
-			opts.ExtraBody = map[string]any{}
-		}
-		cacheKey := key
-		if sessionID != "" {
-			cacheKey = session.HashID(sessionID)
-		}
-		opts.ExtraBody["prompt_cache_key"] = cacheKey
-		options[openaicompat.Name] = opts
+		return options
 	}
+
+	// Providers served by their own SDK (Anthropic, Google, OpenRouter,
+	// Azure) have no openai-compat options, and a field they never read is
+	// not worth adding. Mistral is matched by host because its type and ID
+	// vary between configs.
+	opts, ok := options[openaicompat.Name].(*openaicompat.ProviderOptions)
+	if !ok && !isMistralBaseURL(baseURL) {
+		return options
+	}
+	if opts == nil {
+		opts = &openaicompat.ProviderOptions{}
+	}
+	if opts.ExtraBody == nil {
+		opts.ExtraBody = map[string]any{}
+	}
+	if _, exists := opts.ExtraBody["prompt_cache_key"]; exists {
+		return options
+	}
+	cacheKey := key
+	if sessionID != "" {
+		cacheKey = session.HashID(sessionID)
+	}
+	opts.ExtraBody["prompt_cache_key"] = cacheKey
+	options[openaicompat.Name] = opts
 	return options
 }
 
