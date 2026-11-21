@@ -4,14 +4,19 @@ on:
     paths: ['web/**', 'internal/web/**', 'internal/wire/**', '.github/workflows/web.yml']
   push:
     branches: [main]
-    paths: ['web/**', 'internal/web/**', 'internal/wire/**']
+    paths: ['web/**', 'internal/web/**', 'internal/wire/**', '.github/workflows/web.yml']
 
 permissions:
   contents: read
 
+concurrency:
+  group: web-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     runs-on: ubuntu-26.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,7 +26,7 @@ jobs:
           go-version-file: go.mod
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: web/.nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
