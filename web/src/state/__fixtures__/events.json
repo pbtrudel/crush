@@ -1,0 +1,228 @@
+{
+  "lsp_event": {
+    "seq": 1,
+    "type": "lsp_event",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "type": "state_changed",
+        "name": "gopls",
+        "state": 0,
+        "diagnostic_count": 2
+      }
+    }
+  },
+  "message_assistant": {
+    "seq": 1,
+    "type": "message",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "parts": [
+          {
+            "type": "reasoning",
+            "data": {
+              "thinking": "Look at parser.go first.",
+              "signature": ""
+            }
+          },
+          {
+            "type": "text",
+            "data": {
+              "text": "Reading **parser.go**."
+            }
+          },
+          {
+            "type": "tool_call",
+            "data": {
+              "id": "tc-1",
+              "name": "view",
+              "input": "{\"file_path\":\"parser.go\"}",
+              "finished": true
+            }
+          },
+          {
+            "type": "finish",
+            "data": {
+              "reason": "tool_use",
+              "time": 102
+            }
+          }
+        ],
+        "id": "a-1",
+        "role": "assistant",
+        "session_id": "s1",
+        "model": "claude",
+        "provider": "anthropic",
+        "created_at": 101,
+        "updated_at": 102
+      }
+    }
+  },
+  "message_tool_result": {
+    "seq": 1,
+    "type": "message",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "parts": [
+          {
+            "type": "tool_result",
+            "data": {
+              "tool_call_id": "tc-1",
+              "name": "view",
+              "content": "package parser",
+              "metadata": "",
+              "is_error": false
+            }
+          }
+        ],
+        "id": "t-1",
+        "role": "tool",
+        "session_id": "s1",
+        "model": "",
+        "provider": "",
+        "created_at": 103,
+        "updated_at": 103
+      }
+    }
+  },
+  "message_user": {
+    "seq": 1,
+    "type": "message",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "parts": [
+          {
+            "type": "text",
+            "data": {
+              "text": "Refactor the parser"
+            }
+          }
+        ],
+        "id": "u-1",
+        "role": "user",
+        "session_id": "s1",
+        "model": "",
+        "provider": "",
+        "created_at": 100,
+        "updated_at": 100
+      }
+    }
+  },
+  "permission_mode_changed": {
+    "seq": 1,
+    "type": "permission_mode_changed",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "mode": "yolo"
+      }
+    }
+  },
+  "permission_notification": {
+    "seq": 1,
+    "type": "permission_notification",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "session_id": "s1",
+        "tool_call_id": "tc-2",
+        "granted": true,
+        "denied": false,
+        "cancelled": false
+      }
+    }
+  },
+  "permission_request": {
+    "seq": 1,
+    "type": "permission_request",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "id": "p-1",
+        "session_id": "s1",
+        "tool_call_id": "tc-2",
+        "tool_name": "bash",
+        "description": "Run tests",
+        "action": "execute",
+        "params": {
+          "command": "go test ./..."
+        },
+        "path": "/repo",
+        "danger": "matches block list: rm -rf"
+      }
+    }
+  },
+  "question_batch_notification": {
+    "seq": 1,
+    "type": "question_batch_notification",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "batch_id": "q-1",
+        "session_id": "s1"
+      }
+    }
+  },
+  "question_batch_request": {
+    "seq": 1,
+    "type": "question_batch_request",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "id": "q-1",
+        "session_id": "s1",
+        "tool_call_id": "tc-3",
+        "questions": [
+          {
+            "id": "flavor",
+            "type": "single_choice",
+            "question": "Which theme?",
+            "choices": [
+              {
+                "id": "cyan",
+                "label": "Cyan"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "run_complete": {
+    "seq": 1,
+    "type": "run_complete",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "session_id": "s1",
+        "run_id": "r-1",
+        "message_id": "a-1",
+        "text": "done"
+      }
+    }
+  },
+  "session": {
+    "seq": 1,
+    "type": "session",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "id": "s1",
+        "parent_session_id": "",
+        "title": "Parser refactor",
+        "message_count": 0,
+        "prompt_tokens": 52000,
+        "completion_tokens": 4100,
+        "summary_message_id": "",
+        "cost": 0.42,
+        "created_at": 0,
+        "updated_at": 0,
+        "is_busy": false,
+        "attached_clients": 0
+      }
+    }
+  }
+}

@@ -5,11 +5,13 @@ package webtest
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -44,6 +46,12 @@ type Fake struct {
 	mode     permission.PermissionMode
 	queued   map[string][]string
 	busy     map[string]bool
+	seq      int
+
+	// decisions and answers carry resolutions to a running scripted
+	// agent, so a test or webfake can play the user's part.
+	decisions chan permission.PermissionNotification
+	answers   chan []question.Answer
 
 	// WorkDir is what WorkingDir returns; webfake points it at the repo
 	// so @ completion has real files.
@@ -62,14 +70,16 @@ type Fake struct {
 // NewFake returns a fake with one current session "s1".
 func NewFake() *Fake {
 	f := &Fake{
-		subs:     make(map[*subscriber]struct{}),
-		sessions: map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
-		messages: make(map[string][]message.Message),
-		queued:   make(map[string][]string),
-		busy:     make(map[string]bool),
-		current:  "s1",
-		WorkDir:  "/tmp/project",
-		Resolve:  true,
+		subs:      make(map[*subscriber]struct{}),
+		sessions:  map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
+		messages:  make(map[string][]message.Message),
+		queued:    make(map[string][]string),
+		busy:      make(map[string]bool),
+		current:   "s1",
+		decisions: make(chan permission.PermissionNotification, 16),
+		answers:   make(chan []question.Answer, 16),
+		WorkDir:   "/tmp/project",
+		Resolve:   true,
 	}
 	return f
 }
@@ -234,19 +244,34 @@ func (f *Fake) AgentClearQueue(id string) {
 	f.record("AgentClearQueue:" + id)
 }
 
+// resolvePermission publishes the outcome the UI would publish and hands
+// it to a running scripted agent. It reports whether the fake answered.
+func (f *Fake) resolvePermission(p permission.PermissionRequest, granted bool) bool {
+	if !f.Resolve {
+		return false
+	}
+	n := permission.PermissionNotification{SessionID: p.SessionID, ToolCallID: p.ToolCallID, Granted: granted, Denied: !granted}
+	f.Emit(pubsub.Event[permission.PermissionNotification]{Type: pubsub.UpdatedEvent, Payload: n})
+	select {
+	case f.decisions <- n:
+	default:
+	}
+	return true
+}
+
 func (f *Fake) PermissionGrant(p permission.PermissionRequest) bool {
 	f.record("PermissionGrant:" + p.ID)
-	return f.Resolve
+	return f.resolvePermission(p, true)
 }
 
 func (f *Fake) PermissionGrantPersistent(p permission.PermissionRequest) bool {
 	f.record("PermissionGrantPersistent:" + p.ID)
-	return f.Resolve
+	return f.resolvePermission(p, true)
 }
 
 func (f *Fake) PermissionDeny(p permission.PermissionRequest) bool {
 	f.record("PermissionDeny:" + p.ID)
-	return f.Resolve
+	return f.resolvePermission(p, false)
 }
 
 func (f *Fake) QuestionAnswer(a []question.Answer) bool {
@@ -254,12 +279,28 @@ func (f *Fake) QuestionAnswer(a []question.Answer) bool {
 	f.Answers = append(f.Answers, a)
 	f.mu.Unlock()
 	f.record("QuestionAnswer")
-	return f.Resolve
+	if !f.Resolve {
+		return false
+	}
+	select {
+	case f.answers <- a:
+	default:
+	}
+	return true
 }
 
 func (f *Fake) QuestionCancel() bool {
 	f.record("QuestionCancel")
 	return f.Resolve
+}
+
+// nextID returns a deterministic, per-fake unique ID. The scripted agent
+// uses it so fixture and smoke-test output stays stable.
+func (f *Fake) nextID(prefix string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	return prefix + "-" + strconv.Itoa(f.seq)
 }
 
 // CallLog returns a copy of the recorded calls.
