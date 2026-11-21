@@ -14,7 +14,10 @@ export function TransmissionLog() {
   const visible = messages.filter((m) => m.role !== 'tool');
   const shown = visible.slice(-limit);
 
-  useEffect(() => setLimit(WINDOW), [sessionId]);
+  useEffect(() => {
+    setLimit(WINDOW);
+    pinned.current = true;
+  }, [sessionId]);
   useEffect(() => {
     const el = scroller.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;

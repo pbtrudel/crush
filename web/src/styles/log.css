@@ -19,6 +19,8 @@
 .tool[data-status='running'] .tool__glyph { color: var(--cyan); animation: blink 0.9s steps(2) infinite; }
 .tool[data-status='error'] { border-color: var(--magenta); }
 .tool[data-status='error'] .tool__glyph { color: var(--magenta); }
+.tool[data-status='canceled'] { border-color: var(--edge); opacity: 0.8; }
+.tool[data-status='canceled'] .tool__glyph { color: var(--text-muted); }
 .tool__body { padding: 0 10px 10px; }
 .tool__body pre { margin: 0 0 8px; max-block-size: 320px; overflow: auto; font-size: var(--step--1); white-space: pre-wrap; }
 .log__earlier { justify-self: center; }

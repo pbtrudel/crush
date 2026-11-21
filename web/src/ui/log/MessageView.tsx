@@ -1,11 +1,17 @@
-import type { Message, ToolResultData } from '../../api/types';
+import type { Message, Part, ToolResultData } from '../../api/types';
 import { Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 
+type FinishPart = Extract<Part, { type: 'finish' }>;
+
 export function MessageView({ m, results }: { m: Message; results: Map<string, ToolResultData> }) {
   if (m.role === 'tool') return null;
-  const finish = m.parts.find((p) => p.type === 'finish');
+  const finish = m.parts.find((p): p is FinishPart => p.type === 'finish');
   const streaming = m.role === 'assistant' && !finish;
+  // A tool call with no result stays running while the turn is open. Once the
+  // turn is finished it was canceled or interrupted, unless the finish reason
+  // is tool_use, which is the normal moment tools start executing.
+  const settled = finish !== undefined && finish.data.reason !== 'tool_use';
   return (
     <article class="msg" data-role={m.role} data-streaming={streaming}>
       <header class="hud-label msg__who">{m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coder' : 'System'}</header>
@@ -21,7 +27,14 @@ export function MessageView({ m, results }: { m: Message; results: Map<string, T
           case 'text':
             return p.data.hidden ? null : <Markdown key={i} text={p.data.text} />;
           case 'tool_call':
-            return <ToolCard key={p.data.id} call={p.data} result={results.get(p.data.id)} />;
+            return (
+              <ToolCard
+                key={p.data.id}
+                call={p.data}
+                result={results.get(p.data.id)}
+                settled={settled}
+              />
+            );
           case 'image_url':
             return <img key={i} class="msg__image" src={p.data.url} alt="Attached image" />;
           case 'binary':

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { render } from 'preact';
+import { act } from 'preact/test-utils';
 import { initialState } from '../../state/reducer';
 import { state } from '../../state/store';
 import type { Message, Part } from '../../api/types';
@@ -23,20 +24,33 @@ function seed(sessionId: string, count: number) {
 
 const root = document.createElement('div');
 
-// Preact flushes the mount effect that resets the window on a later tick, so
-// let it land before clicking, as it would before a real user could.
 async function mount() {
-  render(<TransmissionLog />, root);
-  await new Promise((r) => setTimeout(r, 30));
+  await act(() => {
+    render(<TransmissionLog />, root);
+  });
 }
 
-function clickEarlier() {
-  root.querySelector<HTMLButtonElement>('.log__earlier')!
-    .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+async function clickEarlier() {
+  await act(() => {
+    root.querySelector<HTMLButtonElement>('.log__earlier')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
 }
 
-afterEach(() => {
-  render(null, root);
+async function update(next: typeof state.value) {
+  await act(() => {
+    state.value = next;
+  });
+}
+
+function toolCall(id = 'tc-1'): Part {
+  return { type: 'tool_call', data: { id, name: 'bash', input: '{"command":"echo"}', finished: true } };
+}
+
+afterEach(async () => {
+  await act(() => {
+    render(null, root);
+  });
 });
 
 describe('TransmissionLog', () => {
@@ -45,29 +59,73 @@ describe('TransmissionLog', () => {
     await mount();
     expect(root.querySelectorAll('article.msg')).toHaveLength(200);
     expect(root.querySelector('.log__earlier')?.textContent).toBe('Show 50 earlier messages');
-    clickEarlier();
-    await vi.waitFor(() => expect(root.querySelectorAll('article.msg')).toHaveLength(250));
+    await clickEarlier();
+    expect(root.querySelectorAll('article.msg')).toHaveLength(250);
     expect(root.querySelector('.log__earlier')).toBeNull();
   });
 
   it('resets the window when the session changes', async () => {
     seed('s1', 250);
     await mount();
-    clickEarlier();
-    await vi.waitFor(() => expect(root.querySelectorAll('article.msg')).toHaveLength(250));
-    state.value = {
+    await clickEarlier();
+    expect(root.querySelectorAll('article.msg')).toHaveLength(250);
+    await update({
       ...state.value, sessionId: 's2',
       messages: Array.from({ length: 205 }, (_, i) => message(`m${i}`, 's2')),
-    };
-    await vi.waitFor(() => expect(root.querySelectorAll('article.msg')).toHaveLength(200));
+    });
+    expect(root.querySelectorAll('article.msg')).toHaveLength(200);
     expect(root.querySelector('.log__earlier')?.textContent).toBe('Show 5 earlier messages');
+  });
+
+  it('pins to the bottom when the session changes', async () => {
+    seed('s1', 3);
+    await mount();
+    const log = root.querySelector<HTMLDivElement>('.log')!;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 200 });
+    await act(() => {
+      log.scrollTop = 0;
+      log.dispatchEvent(new Event('scroll'));
+    });
+    // 1000 - 0 - 200 is far from the bottom, so the log is unpinned here.
+    await update({ ...state.value, sessionId: 's2', messages: [message('m0', 's2')] });
+    expect(log.scrollTop).toBe(1000);
+  });
+
+  it('settles an unanswered tool card when the turn finished', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', messages: [
+      message('m1', 's1', [
+        toolCall(),
+        { type: 'finish', data: { reason: 'canceled', time: 2 } },
+      ]),
+    ] };
+    await mount();
+    expect(root.querySelector('.tool')?.getAttribute('data-status')).toBe('canceled');
+    expect(root.querySelector('.tool__status')?.textContent).toBe('Canceled');
+  });
+
+  it('keeps an unanswered tool card running while the turn is unfinished', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', messages: [
+      message('m1', 's1', [toolCall()]),
+    ] };
+    await mount();
+    expect(root.querySelector('.tool')?.getAttribute('data-status')).toBe('running');
+  });
+
+  it('keeps a tool card running after a tool_use finish while the result is pending', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', messages: [
+      message('m1', 's1', [
+        toolCall(),
+        { type: 'finish', data: { reason: 'tool_use', time: 2 } },
+      ]),
+    ] };
+    await mount();
+    expect(root.querySelector('.tool')?.getAttribute('data-status')).toBe('running');
   });
 
   it('shows tool output as text, never as HTML', async () => {
     state.value = { ...initialState(), conn: 'live', sessionId: 's1', messages: [
-      message('m1', 's1', [
-        { type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{"command":"echo"}', finished: true } },
-      ]),
+      message('m1', 's1', [toolCall()]),
       { ...message('t1', 's1', [
         { type: 'tool_result', data: {
           tool_call_id: 'tc-1', name: 'bash', content: '<img src=x onerror="alert(1)">',
