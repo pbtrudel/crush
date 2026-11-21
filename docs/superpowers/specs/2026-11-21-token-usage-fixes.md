@@ -42,10 +42,11 @@ siblings.
 2. `perf(agent): share the prompt prefix across sibling dispatches`. Anything
    task-specific belongs after the shared system prompt and tools, so a wave
    of siblings pays the cold prefix once.
-3. `perf(agent): keep the summarize request prefix-stable`. Compaction used
-   to assemble a different request and drop the warm prefix (observed
-   "70,144 cached tokens dropped"). The summarize instruction is now appended
-   to the unchanged transcript instead.
+3. Prefix-stable compaction needs no change here: it already landed on main
+   in PR #128 (`78c6effe`). `TestCompaction_RequestExtendsTheLastStep` proves
+   the summarize request re-sends the last step's system prompt, tools and
+   history and appends the instruction last, which is exactly the fix for the
+   observed "70,144 cached tokens dropped". Verified again on this base.
 4. `feat(tools): add opt-in lazy tool schemas with tool_search`. Off by
    default; when on, requests carry a small core palette and deferred schemas
    are revealed on demand.
