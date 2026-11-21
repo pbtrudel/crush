@@ -16,7 +16,11 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 )
 
-// teamIdentity renders the member identity section.
+// teamIdentity renders the member identity section appended to a teammate's
+// system prompt. It carries no member name: N teammates spawned in one
+// fan-out send this same text, and the provider only reuses a cached prefix
+// when the bytes match. The name arrives in the task message instead, after
+// every shared field.
 func teamIdentity(member agentteam.Member) string {
 	if member.Role == agentteam.RoleLead {
 		return `## Team identity
@@ -25,9 +29,9 @@ You are the Team Lead named "lead".
 Use list_agents({}) to find your teammates and their names.
 To message a teammate, use send_message({ target: "<teammate name>", message: "..." }).`
 	}
-	return fmt.Sprintf(`## Team identity
+	return `## Team identity
 
-You are teammate %q. You are not the Lead.
+You are a teammate. You are not the Lead. The message you were given names you.
 The Agent Teams section above is the Lead's coordination brief. Its
 instructions to delegate, spawn teammates, create worktrees, and wait for
 reports do not apply to you: you do the work yourself with your own tools,
@@ -37,7 +41,15 @@ is done, you are blocked, or you need the Lead to decide something.
 Your Team Lead is named "lead".
 To message your Team Lead, use send_message({ target: "lead", message: "..." }).
 Use list_agents({}) to find your teammates and their names.
-To message another teammate, use send_message({ target: "<teammate name>", message: "..." }).`, member.Name)
+To message another teammate, use send_message({ target: "<teammate name>", message: "..." }).`
+}
+
+// teammateTaskMessage is the message a teammate turn starts from: its name,
+// then the task. The name is the only per-sibling value in the request that
+// used to sit in the system prompt, so it lives here, where it follows the
+// whole shared prefix rather than interrupting it.
+func teammateTaskMessage(member agentteam.Member, task string) string {
+	return fmt.Sprintf("You are teammate %q.\n\n%s", member.Name, task)
 }
 
 // teamRunner runs teammate turns with the coordinator's agent machinery.
@@ -159,6 +171,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 	if member.Context == agentteam.ContextFork {
 		promptText = r.forkPrefix(memberCtx, member) + promptText
 	}
+	promptText = teammateTaskMessage(member, promptText)
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
