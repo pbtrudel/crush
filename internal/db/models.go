@@ -65,4 +65,5 @@ type Session struct {
 	TotalCacheReadTokens int64          `json:"total_cache_read_tokens"`
 	TotalContextTokens   int64          `json:"total_context_tokens"`
 	SummaryCutMessageID  sql.NullString `json:"summary_cut_message_id"`
+	Archived             int64          `json:"archived"`
 }

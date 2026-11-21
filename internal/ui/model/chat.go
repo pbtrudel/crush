@@ -141,6 +141,11 @@ type Chat struct {
 	// bottom on new messages.
 	follow bool
 
+	// verbosity is the transcript verbosity from options.tui.verbosity.
+	// Only "low" collapses runs of tool calls into activity rows; the
+	// empty default renders every item in place, as before the option.
+	verbosity string
+
 	// drawCache memoizes the decoded form of the last list.Render output so
 	// repeat frames with byte-identical content skip the per-cell ANSI
 	// reparse that uv.StyledString.Draw performs every call. See F9
@@ -197,6 +202,7 @@ func NewChat(com *common.Common, scrollbarMode string) *Chat {
 		idInxMap:      make(map[string]int),
 		scrollbarMode: scrollbarMode,
 		animAllowed:   true,
+		verbosity:     transcriptVerbosity(com),
 	}
 	l := list.NewList()
 	l.SetGap(1)
@@ -206,6 +212,19 @@ func NewChat(com *common.Common, scrollbarMode string) *Chat {
 	c.mouseDownItem = -1
 	c.mouseDragItem = -1
 	return c
+}
+
+// transcriptVerbosity reads options.tui.verbosity, tolerating the partial
+// workspace the UI is built with in tests.
+func transcriptVerbosity(com *common.Common) string {
+	if com == nil || com.Workspace == nil {
+		return config.TUIVerbosityHigh
+	}
+	cfg := com.Config()
+	if cfg == nil || cfg.Options == nil {
+		return config.TUIVerbosityHigh
+	}
+	return cfg.Options.TUI.GetVerbosity()
 }
 
 // SetRevealSecrets controls whether credentials in user messages are
@@ -462,9 +481,26 @@ func (m *Chat) InvalidateVisibleRenderCaches() {
 	}
 }
 
+// SetVerbosity sets how much of the transcript the chat renders. Only
+// [config.TUIVerbosityLow] changes anything: it collapses each run of
+// consecutive tool calls into one activity row. Every other value, the
+// default included, renders every item in place as before.
+func (m *Chat) SetVerbosity(verbosity string) {
+	m.verbosity = verbosity
+}
+
+// groupsActivity reports whether tool calls collapse into activity rows.
+func (m *Chat) groupsActivity() bool {
+	return m.verbosity == config.TUIVerbosityLow
+}
+
 // SetMessages sets the chat messages to the provided list of message items.
 func (m *Chat) SetMessages(msgs ...chat.MessageItem) tea.Cmd {
 	m.resetScrollbar() // Reset scrollbar visibility on new session load
+
+	if m.groupsActivity() {
+		msgs = chat.GroupToolActivity(msgs)
+	}
 
 	items := make([]list.Item, len(msgs))
 	for i, msg := range msgs {
@@ -490,16 +526,79 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 		msgs = append(append(make([]chat.MessageItem, 0, len(msgs)+1), msgs...), pending)
 	}
 
-	items := make([]list.Item, len(msgs))
+	if m.groupsActivity() {
+		// The tool calls of one assistant message arrive together, so the
+		// batch collapses the same way a loaded transcript does.
+		msgs = chat.GroupToolActivity(msgs)
+	}
+
+	items := make([]list.Item, 0, len(msgs))
 	indexOffset := m.list.Len()
-	for i, msg := range msgs {
-		m.registerMessageItemIDs(msg, indexOffset+i)
+	for _, msg := range msgs {
 		if sr, ok := msg.(chat.SecretRevealable); ok {
 			sr.SetRevealSecrets(m.revealSecrets)
 		}
-		items[i] = msg
+		// A tool call arriving while the last row is still an open run
+		// joins it, so a live turn keeps one row instead of one per call.
+		if m.groupsActivity() && m.mergeActivityRow(msg) {
+			continue
+		}
+		m.registerMessageItemIDs(msg, indexOffset+len(items))
+		items = append(items, msg)
 	}
 	m.list.AppendItems(items...)
+}
+
+// mergeActivityRow folds the tool calls in msg into the row they continue,
+// and reports whether it did.
+//
+// A live turn appends tool calls one message at a time, so the run has to
+// grow in place: appending a second call must not leave the first one's row
+// behind, and appending to an expanded row must not collapse it again.
+func (m *Chat) mergeActivityRow(msg chat.MessageItem) bool {
+	incoming, ok := activityTools(msg)
+	if !ok || len(incoming) == 0 || m.list.Len() == 0 {
+		return false
+	}
+	last := m.list.Len() - 1
+	switch tail := m.list.ItemAt(last).(type) {
+	case *chat.ActivityGroupItem:
+		for _, tool := range incoming {
+			tail.Append(tool, time.Now())
+		}
+	case chat.ToolMessageItem:
+		existing, ok := activityTools(tail)
+		if !ok {
+			return false
+		}
+		// The first two calls of a run turn the earlier row into the
+		// collapsed one, so a run never leaves a stray row behind.
+		if !m.list.ReplaceItem(last, chat.NewActivityGroupItem(m.com.Styles, append(existing, incoming...)...)) {
+			return false
+		}
+	default:
+		return false
+	}
+	m.rebuildMessageIndex()
+	return true
+}
+
+// activityTools returns the tool calls an item contributes to an activity
+// row. A subagent, an agentic fetch or anything else that owns nested
+// content contributes nothing: its own row is live progress the user is
+// meant to watch.
+func activityTools(item chat.MessageItem) ([]chat.ToolMessageItem, bool) {
+	if group, ok := item.(*chat.ActivityGroupItem); ok {
+		return group.ChildItems(), true
+	}
+	tool, ok := item.(chat.ToolMessageItem)
+	if !ok {
+		return nil, false
+	}
+	if _, container := tool.(chat.NestedToolContainer); container {
+		return nil, false
+	}
+	return []chat.ToolMessageItem{tool}, true
 }
 
 // LastPromptID returns the id of the last stored prompt in view, or "".
@@ -1049,6 +1148,11 @@ func (m *Chat) rebuildMessageIndex() {
 
 func (m *Chat) registerMessageItemIDs(item chat.MessageItem, idx int) {
 	m.idInxMap[item.ID()] = idx
+	if container, ok := item.(chat.ItemContainer); ok {
+		for _, child := range container.ChildItems() {
+			m.registerMessageItemIDs(child, idx)
+		}
+	}
 	container, ok := item.(chat.NestedToolContainer)
 	if !ok {
 		return
@@ -1059,32 +1163,41 @@ func (m *Chat) registerMessageItemIDs(item chat.MessageItem, idx int) {
 }
 
 // MessageItem returns the message item with the given ID, or nil if not found.
+//
+// An item a container owns (a tool call inside a collapsed activity row, a
+// tool a subagent ran) is returned as itself: live updates address the tool
+// call by ID, not the row standing in for it.
 func (m *Chat) MessageItem(id string) chat.MessageItem {
 	idx, ok := m.idInxMap[id]
 	if !ok {
 		return nil
 	}
 	item, ok := m.list.ItemAt(idx).(chat.MessageItem)
-	if !ok || !messageItemHasID(item, id) {
+	if !ok {
 		return nil
 	}
-	return item
+	return findMessageItem(item, id)
 }
 
-func messageItemHasID(item chat.MessageItem, id string) bool {
+// findMessageItem returns the item with the given ID, descending into the
+// items a container owns.
+func findMessageItem(item chat.MessageItem, id string) chat.MessageItem {
 	if item.ID() == id {
-		return true
+		return item
 	}
-	container, ok := item.(chat.NestedToolContainer)
-	if !ok {
-		return false
+	var children []chat.ToolMessageItem
+	if container, ok := item.(chat.ItemContainer); ok {
+		children = container.ChildItems()
 	}
-	for _, nested := range container.NestedTools() {
-		if messageItemHasID(nested, id) {
-			return true
+	if container, ok := item.(chat.NestedToolContainer); ok {
+		children = append(children, container.NestedTools()...)
+	}
+	for _, child := range children {
+		if found := findMessageItem(child, id); found != nil {
+			return found
 		}
 	}
-	return false
+	return nil
 }
 
 // MessageItemAt returns the message item at index i, or nil if i is out of

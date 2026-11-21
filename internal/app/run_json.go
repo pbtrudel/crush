@@ -83,6 +83,9 @@ type runResult struct {
 	Estimated bool     `json:"estimated"`
 	Cost      float64  `json:"cost"`
 	Error     string   `json:"error,omitempty"`
+	// Worktree is the Git worktree the --worktree flag created, so the
+	// caller of a scripted run knows where the run happened.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // summarizeRun builds the object from the rows the command wrote in the

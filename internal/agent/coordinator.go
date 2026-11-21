@@ -668,6 +668,19 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	if c.sessions.IsAgentToolSession(sessionID) {
 		return
 	}
+	// A teammate session is not the main agent's either. Waking it here
+	// ran the teammate's session on the Lead's model, alongside its own
+	// run when it was busy, so the Team delivers the notice to the
+	// teammate's own run instead.
+	if c.team != nil {
+		owned, err := c.team.NotifySession(ctx, sessionID, notice)
+		if err != nil {
+			slog.Warn("Failed to wake teammate for background completion", "session_id", sessionID, "error", err)
+		}
+		if owned {
+			return
+		}
+	}
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		return
 	}
@@ -1180,6 +1193,7 @@ func (r agentRole) isSubAgent() bool { return r != roleLead }
 type promptInput struct {
 	agentTeams bool
 	toolNames  string
+	profile    string
 }
 
 // promptInputFor reports the inputs the prompt of a lead agent renders from.
@@ -1187,6 +1201,7 @@ func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
 	return promptInput{
 		agentTeams: !c.agentsOff(),
 		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
+		profile:    c.cfg.Config().Options.GetPromptProfile(),
 	}
 }
 
@@ -1417,6 +1432,18 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
 
+	// A GPT model gets apply_patch instead of edit and multiedit: it was
+	// trained on the *** Begin Patch format, and exact-string matching is
+	// where its edits most often fail. The option is off by default and
+	// changes nothing for any other model family.
+	if c.applyPatchFor(agent) {
+		allTools = slices.DeleteFunc(allTools, func(tool fantasy.AgentTool) bool {
+			name := tool.Info().Name
+			return name == tools.EditToolName || name == tools.MultiEditToolName
+		})
+		allTools = append(allTools, tools.NewApplyPatchTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()))
+	}
+
 	// Interactive-only, and never given to subagents; effectiveToolNames
 	// is what decides both.
 	if slices.Contains(allowed, tools.QuestionToolName) {
@@ -1565,12 +1592,13 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 	}
 
 	model := Model{
-		Model:        languageModel,
-		CatwalkCfg:   *catwalkModel,
-		ModelCfg:     modelCfg,
-		FlatRate:     providerCfg.FlatRate,
-		OAuth:        providerCfg.OAuthToken != nil,
-		ProviderName: providerCfg.Name,
+		Model:           languageModel,
+		CatwalkCfg:      *catwalkModel,
+		ModelCfg:        modelCfg,
+		FlatRate:        providerCfg.FlatRate,
+		OAuth:           providerCfg.OAuthToken != nil,
+		ProviderName:    providerCfg.Name,
+		ServingProvider: servingProvider(providerCfg, *catwalkModel),
 	}
 	// A Fusion entry stands for a router, not a concrete model: every path
 	// that uses it has to resolve a real model first. The session agent
@@ -2175,6 +2203,13 @@ func (c *coordinator) Cancel(sessionID string) {
 		}
 	}
 	c.currentAgent().Cancel(sessionID)
+}
+
+// CancelBackgroundCompaction stops the summary a session wrote ahead of the
+// auto-compaction limit, and leaves its runs alone. It is called when the
+// session goes away, since the summary has nothing left to compact into.
+func (c *coordinator) CancelBackgroundCompaction(sessionID string) {
+	c.currentAgent().CancelBackgroundCompaction(sessionID)
 }
 
 // CancelAll stops everything, detached subagents included. It is the

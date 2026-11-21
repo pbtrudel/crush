@@ -1,0 +1,29 @@
+  ▾ ✓ Ran 7 tools (3 edits, 2 reads, 2 bash)
+
+  ✓ Edit main.go
+  
+     ok                                                                         
+
+  ✓ Edit api.go
+  
+     ok                                                                         
+
+  ✓ Edit ui.go
+  
+     ok                                                                         
+
+  ✓ View README.md
+  
+     1   contents                                                               
+
+  ✓ View go.mod
+  
+     1   contents                                                               
+
+  ✓ Bash go build ./...
+  
+     ok                                                                       
+
+  ✓ Bash go test ./...
+  
+     ok                                                                       

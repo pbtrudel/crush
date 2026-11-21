@@ -20,12 +20,12 @@ func TestRunRefusesLimitsAgainstAServer(t *testing.T) {
 	}
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "1")
-	require.EqualError(t, refuseOnServer(false, agent.RunLimits{MaxSteps: 3}), "the --max-steps flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
-	require.EqualError(t, refuseOnServer(false, agent.RunLimits{Timeout: time.Minute}), "the --timeout flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
-	require.NoError(t, refuseOnServer(false, agent.RunLimits{}))
+	require.EqualError(t, refuseOnServer(false, agent.RunLimits{MaxSteps: 3}, false), "the --max-steps flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+	require.EqualError(t, refuseOnServer(false, agent.RunLimits{Timeout: time.Minute}, false), "the --timeout flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+	require.NoError(t, refuseOnServer(false, agent.RunLimits{}, false))
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "0")
-	require.NoError(t, refuseOnServer(true, agent.RunLimits{MaxSteps: 3, Timeout: time.Minute}))
+	require.NoError(t, refuseOnServer(true, agent.RunLimits{MaxSteps: 3, Timeout: time.Minute}, false))
 }
 
 func TestCheckRunLimits(t *testing.T) {

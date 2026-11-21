@@ -28,6 +28,13 @@ func (app *App) CreateSession(ctx context.Context, title string) (session.Sessio
 	return sess, nil
 }
 
+// archiveRunSession hides the session a scripted run created from the
+// session lists without deleting it, so CI runs do not bury the sessions a
+// person works in. The rows stay readable by id.
+func (app *App) archiveRunSession(ctx context.Context, sess session.Session) (session.Session, error) {
+	return app.Sessions.SetArchived(ctx, sess.ID, true)
+}
+
 // resolveSession resolves which session to use for a non-interactive
 // run: the given session, the most recent top-level one, or a new one.
 // Resumed sessions fire SessionStart with source "resume".

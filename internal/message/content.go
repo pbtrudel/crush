@@ -264,8 +264,10 @@ type CompactionStats struct {
 	SavedTokens   int64 `json:"saved_tokens"`
 	KeptMessages  int   `json:"kept_messages"`
 	// Trigger names what started the compaction: threshold, ceiling,
-	// guard, overflow, model_switch, fusion_preflight, fusion_route or
-	// manual. Empty on compactions recorded before triggers were.
+	// guard, overflow, model_switch, fusion_preflight, fusion_route,
+	// manual or background, or background_unused for a summary written
+	// ahead of the limit that was never adopted. Empty on compactions
+	// recorded before triggers were.
 	Trigger string `json:"trigger,omitempty"`
 	// ReloadSkills names the skills the state message created after this
 	// compaction listed, so the next compaction can list them again even

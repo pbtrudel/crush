@@ -129,9 +129,12 @@ func TestSummarize_PrunesOnlyWhenTheRequestCannotFit(t *testing.T) {
 		_, err = env.sessions.Save(ctx, sess)
 		require.NoError(t, err)
 
-		require.NoError(t, agent.summarize(
-			ctx, sess.ID, agent.largeModel.Get(), nil, nil, false, trigger, false,
-		))
+		_, err = agent.summarize(ctx, compactionRequest{
+			sessionID:  sess.ID,
+			largeModel: agent.largeModel.Get(),
+			trigger:    trigger,
+		})
+		require.NoError(t, err)
 		require.Len(t, stub.calls, 1)
 		return toolResultTextIn(t, stub.calls[0].Prompt)
 	}
@@ -272,9 +275,12 @@ func TestSummarize_PrunesAtTheFitBoundary(t *testing.T) {
 		_, err = env.sessions.Save(ctx, sess)
 		require.NoError(t, err)
 
-		require.NoError(t, agent.summarize(
-			ctx, sess.ID, model, nil, nil, false, compactionTriggerGuard, false,
-		))
+		_, err = agent.summarize(ctx, compactionRequest{
+			sessionID:  sess.ID,
+			largeModel: model,
+			trigger:    compactionTriggerGuard,
+		})
+		require.NoError(t, err)
 		require.Len(t, stub.calls, 1)
 		return toolResultTextIn(t, stub.calls[0].Prompt)
 	}

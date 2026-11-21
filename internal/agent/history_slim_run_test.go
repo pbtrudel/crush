@@ -291,9 +291,12 @@ func TestSummarizeStubsWithoutAPromptInTheLog(t *testing.T) {
 	model := &compactionTalkingModel{}
 	agent := newWindowAgent(env, model, 200_000)
 
-	require.NoError(t, agent.summarize(
-		t.Context(), sess.ID, agent.largeModel.Get(), nil, nil, false, compactionTriggerFusionPreflight, false,
-	))
+	_, err := agent.summarize(t.Context(), compactionRequest{
+		sessionID:  sess.ID,
+		largeModel: agent.largeModel.Get(),
+		trigger:    compactionTriggerFusionPreflight,
+	})
+	require.NoError(t, err)
 	require.Len(t, model.prompts, 1)
 
 	compaction := promptWithResults(model.prompts[0])
@@ -302,7 +305,7 @@ func TestSummarizeStubsWithoutAPromptInTheLog(t *testing.T) {
 	require.NotContains(t, compaction, movedReadContent, "the stale contents must not be sent")
 
 	// The turn that follows rebuilds from the summary and the retained tail.
-	_, err := agent.Run(t.Context(), SessionAgentCall{Prompt: "finish it", SessionID: sess.ID, MaxOutputTokens: 1000})
+	_, err = agent.Run(t.Context(), SessionAgentCall{Prompt: "finish it", SessionID: sess.ID, MaxOutputTokens: 1000})
 	require.NoError(t, err)
 	require.Len(t, model.prompts, 2)
 

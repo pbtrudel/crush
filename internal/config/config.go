@@ -334,13 +334,34 @@ type TUIOptions struct {
 	Scrollbar   string      `json:"scrollbar,omitempty" jsonschema:"description=Chat scrollbar visibility,enum=default,enum=always,enum=never,default=default"`
 	Mouse       *bool       `json:"mouse,omitempty" jsonschema:"description=Enable terminal mouse capture for selection\\, clicks\\, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste,default=true"`
 	ExitBanner  ExitBanner  `json:"exit_banner,omitempty" jsonschema:"description=Exit banner style after quitting Crush,enum=default,enum=compact,enum=none,default=default"`
+	Verbosity   string      `json:"verbosity,omitempty" jsonschema:"description=Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place,enum=low,enum=high,default=high"`
 }
+
+// Transcript verbosity levels for options.tui.verbosity.
+const (
+	// TUIVerbosityLow collapses each run of consecutive tool calls into a
+	// single expandable activity row.
+	TUIVerbosityLow = "low"
+	// TUIVerbosityHigh renders every tool call in place. It is the default
+	// and the behavior before the option existed.
+	TUIVerbosityHigh = "high"
+)
 
 // IsTransparent reports whether the TUI draws a transparent background. The
 // nil receiver and the unset pointer both mean opaque, so callers can ask
 // without unwrapping either.
 func (t *TUIOptions) IsTransparent() bool {
 	return t != nil && t.Transparent != nil && *t.Transparent
+}
+
+// GetVerbosity returns the transcript verbosity. The nil receiver, an unset
+// field and an unrecognized value all mean high, so existing configs keep
+// rendering the full transcript and only an explicit low opts in.
+func (t *TUIOptions) GetVerbosity() string {
+	if t == nil || t.Verbosity != TUIVerbosityLow {
+		return TUIVerbosityHigh
+	}
+	return TUIVerbosityLow
 }
 
 // UnmarshalJSON tolerates the legacy string form of the "theme" field.
@@ -500,6 +521,11 @@ type Options struct {
 	// CompactTailTokens is how many tokens of recent conversation a
 	// compaction keeps verbatim next to its summary.
 	CompactTailTokens *int `json:"compact_tail_tokens,omitempty" jsonschema:"description=Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.,default=24576,example=16384"`
+	// CompactBackgroundMargin starts the compaction summary ahead of the
+	// auto-compaction limit, as a fraction of the context window below it,
+	// so the next prompt does not wait for the summary. Off by default,
+	// because a summary the session never uses still costs tokens.
+	CompactBackgroundMargin *float64 `json:"compact_background_margin,omitempty" jsonschema:"description=Fraction of the context window below the auto-compaction limit at which the summary is written in the background\\, so the next prompt does not wait for it. A summary the session never uses still costs tokens. 0 (the default) keeps compaction blocking.,default=0,example=0.1"`
 	// CompactionPruneChars is the per-tool-result character budget used
 	// before a compaction request is built. Oversized results keep their
 	// head and tail, which shrinks the summarizer input without changing
@@ -535,6 +561,15 @@ type Options struct {
 	// LazyTools sends only a small core tool palette on every request and
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
+	// PromptProfile selects the system prompt template set the coder agent
+	// renders. Full stays the default until an eval shows the lean profile
+	// solves as many tasks.
+	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills.,enum=full,enum=lean,default=full"`
+	// ApplyPatch offers GPT models the apply_patch tool in place of edit
+	// and multiedit. Those models are trained on the *** Begin Patch
+	// format, and exact-string matching is where their edits most often
+	// fail.
+	ApplyPatch *bool `json:"apply_patch,omitempty" jsonschema:"description=Offer GPT and other OpenAI-family models the apply_patch tool (the *** Begin Patch format) instead of edit and multiedit. Off by default\\, and it changes nothing for models from other families.,default=false"`
 	// TurnEndMaxContinuations caps how many times the turn-end gate may
 	// continue one prompt. Zero turns continuations off: the checks still
 	// run and are observed.
@@ -575,6 +610,13 @@ const DefaultMaxBackgroundJobs = 50
 // option existed.
 func (o *Options) GetLazyTools() bool {
 	return o != nil && o.LazyTools != nil && *o.LazyTools
+}
+
+// GetApplyPatch reports whether GPT models are offered apply_patch instead of
+// edit and multiedit. The nil receiver, the unset field and an explicit false
+// all mean the palette is the one it was before the option existed.
+func (o *Options) GetApplyPatch() bool {
+	return o != nil && o.ApplyPatch != nil && *o.ApplyPatch
 }
 
 // GetMaxBackgroundJobs returns the running-job ceiling, always positive.
@@ -625,6 +667,13 @@ const DefaultHistorySlimIdleMinutes = 60
 // DefaultCompactTailTokens is the verbatim tail budget used when the user
 // has not configured one.
 const DefaultCompactTailTokens = 24576
+
+// DefaultCompactBackgroundMargin is the share of the context window below
+// the auto-compaction limit at which a summary would be written in the
+// background. It is zero, which keeps compaction blocking: a background
+// summary that a session never uses still costs tokens, and the saving has
+// not been measured yet.
+const DefaultCompactBackgroundMargin = 0
 
 // DefaultContextMaxBytes bounds each context chain (project and global
 // separately) when the user has not configured a budget.
@@ -692,6 +741,19 @@ func (o *Options) GetCompactTailTokens() int64 {
 		return DefaultCompactTailTokens
 	}
 	return max(0, int64(*o.CompactTailTokens))
+}
+
+// GetCompactBackgroundMargin returns the share of the context window below
+// the auto-compaction limit at which a summary is written in the
+// background. The nil receiver, the unset field and an explicit 0 or
+// negative value all mean DefaultCompactBackgroundMargin, which keeps
+// compaction blocking; a value above 1 is capped at 1 because a margin
+// wider than the window would start the summary at the very first turn.
+func (o *Options) GetCompactBackgroundMargin() float64 {
+	if o == nil || o.CompactBackgroundMargin == nil || *o.CompactBackgroundMargin <= 0 {
+		return DefaultCompactBackgroundMargin
+	}
+	return min(*o.CompactBackgroundMargin, 1)
 }
 
 // GetContextMaxBytes returns the per-chain context budget in bytes. The nil
@@ -770,6 +832,24 @@ func (o *Options) GetAgentTeams() bool {
 		return true
 	}
 	return *o.AgentTeams
+}
+
+// Prompt profiles select which system prompt template set an agent renders.
+// The full profile is the complete prompt; the lean one is a short shared
+// base plus an add-on for the model's family.
+const (
+	PromptProfileFull = "full"
+	PromptProfileLean = "lean"
+)
+
+// GetPromptProfile returns the system prompt profile. The nil receiver, the
+// unset field and any unrecognised name all mean the full profile: a typo
+// must not silently shrink the prompt every session is given.
+func (o *Options) GetPromptProfile() string {
+	if o == nil || o.PromptProfile != PromptProfileLean {
+		return PromptProfileFull
+	}
+	return PromptProfileLean
 }
 
 // GetRepeatToolReminders reports whether advisory repeat-tool reminders are
@@ -1416,6 +1496,7 @@ func allToolNames() []string {
 		"agent_send",
 		"agent_status",
 		"agent_stop",
+		"apply_patch",
 		"bash",
 		"crush_info",
 		"crush_logs",
@@ -1531,6 +1612,7 @@ func SubAgentExcludedTools() []string {
 // subAgentWriteTools are the tools that change files. Only the read-write
 // subagent variant gets them.
 var subAgentWriteTools = []string{
+	"apply_patch",
 	"edit",
 	"multiedit",
 	"write",

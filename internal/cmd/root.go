@@ -332,7 +332,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		return nil, nil, err
 	}
 
-	cwd, err = applyWorktreeFlag(cmd, cwd)
+	cwd, worktree, err := applyWorktreeFlag(cmd, cwd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -393,6 +393,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		slog.Error("Failed to create app instance", "error", err)
 		return nil, nil, err
 	}
+	appInstance.SetRunWorktree(worktree)
 
 	if shouldEnableMetrics(cfg) {
 		event.Init()
