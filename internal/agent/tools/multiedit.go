@@ -50,6 +50,8 @@ type MultiEditResponseMetadata struct {
 	NewContent   string       `json:"new_content,omitempty"`
 	EditsApplied int          `json:"edits_applied"`
 	EditsFailed  []FailedEdit `json:"edits_failed,omitempty"`
+	// UnreadEdit marks a batch applied to a file the read guard refused.
+	UnreadEdit bool `json:"unread_edit,omitempty"`
 }
 
 const MultiEditToolName = "multiedit"
@@ -63,6 +65,7 @@ func NewMultiEditTool(
 	files history.Service,
 	filetracker filetracker.Service,
 	workingDir string,
+	editWithoutRead bool,
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		MultiEditToolName,
@@ -86,7 +89,14 @@ func NewMultiEditTool(
 			var response fantasy.ToolResponse
 			var err error
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{
+				ctx:         ctx,
+				permissions: permissions,
+				files:       files,
+				filetracker: filetracker,
+				workingDir:  workingDir,
+				withoutRead: editWithoutRead,
+			}
 			// Handle file creation case (first edit has empty old_string)
 			if len(params.Edits) > 0 && params.Edits[0].OldString == "" {
 				response, err = processMultiEditWithCreation(editCtx, params, call)
@@ -270,15 +280,34 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 }
 
 func processMultiEditExistingFile(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
+	file, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	if resp.Content != "" || resp.IsError {
 		return resp, nil
 	}
+	sessionID, oldContent, isCrlf := file.sessionID, file.content, file.isCrlf
 
 	currentContent, failedEdits, whitespaceCorrected := applyEditsToContent(oldContent, params.Edits, 0)
+
+	// A batch applies to a file the guard refuses only when every edit is
+	// an exact, single match as the content evolves there. One edit that
+	// fails, needs the whitespace fallback or asks for replace_all refuses
+	// the whole call, with the guard's own refusal.
+	degraded := false
+	if file.guard.refused() {
+		exact := len(failedEdits) == 0 && !whitespaceCorrected
+		for _, op := range params.Edits {
+			exact = exact && !op.ReplaceAll
+		}
+		// The option is on here: with it off loadExistingFile returned the
+		// refusal already.
+		if !exact || !editWithoutReadEnabled(edit.withoutRead) {
+			return file.guard.refusal(true), nil
+		}
+		degraded = true
+	}
 
 	// Check if content actually changed
 	if oldContent == currentContent {
@@ -348,7 +377,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		writeContent, _ = fsext.ToWindowsLineEndings(writeContent)
 	}
 
-	if err := commitFileChange(edit, sessionID, params.FilePath, oldContent, writeContent); err != nil {
+	if err := commitFileChange(edit, sessionID, params.FilePath, oldContent, writeContent, !degraded); err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to write file: %s", err)), nil
 	}
 
@@ -359,6 +388,9 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		message = fmt.Sprintf("Applied %d edits to file: %s", len(params.Edits), params.FilePath)
 	}
 	message = withWhitespaceNote(message, whitespaceCorrected)
+	if degraded {
+		message += "\n" + unreadEditNote
+	}
 	if text := failedEditsText(failedEdits); text != "" {
 		message += "\n\n" + text
 	}
@@ -372,6 +404,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 			Removals:     removals,
 			EditsApplied: editsApplied,
 			EditsFailed:  failedEdits,
+			UnreadEdit:   degraded,
 		},
 	), nil
 }

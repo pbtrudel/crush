@@ -388,3 +388,61 @@ func TestProcessMultiEditWithCreationPartialFailure(t *testing.T) {
 	require.Equal(t, "", meta.OldContent)
 	require.Equal(t, "one\nTWO\nthree\n", meta.NewContent)
 }
+
+// A batch applies to a file the guard would refuse only when every edit is
+// an exact, single match against the content as it evolves there, and the
+// file is then not recorded as read.
+func TestProcessMultiEditExistingFileWithoutRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an exact batch applies", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "one", NewString: "ONE"},
+				{OldString: "ONE\ntwo", NewString: "ONE\nTWO"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.False(t, resp.IsError, resp.Content)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "ONE\nTWO\nthree\n", string(content))
+		var meta MultiEditResponseMetadata
+		require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+		require.True(t, meta.UnreadEdit)
+		require.Equal(t, 2, meta.EditsApplied)
+		require.Zero(t, tracker.recorded, "an unread batch must not claim a read")
+	})
+
+	t.Run("one edit the guard cannot prove exact refuses the batch", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "one", NewString: "ONE"},
+				{OldString: "missing", NewString: "MISSING"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, todayNotRead)
+		require.Zero(t, tracker.recorded)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "one\ntwo\nthree\n", string(content))
+	})
+}

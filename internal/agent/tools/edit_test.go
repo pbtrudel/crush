@@ -18,10 +18,14 @@ import (
 type mockEditFileTracker struct {
 	lastRead time.Time
 	reads    []string
+	// recorded counts RecordRead calls, so a test can assert an edit did
+	// not claim a read it never made.
+	recorded int
 }
 
 func (m *mockEditFileTracker) RecordRead(ctx context.Context, sessionID, path string) {
 	m.reads = append(m.reads, path)
+	m.recorded++
 }
 
 func (m *mockEditFileTracker) LastReadTime(ctx context.Context, sessionID, path string) time.Time {
@@ -70,7 +74,7 @@ func TestEditToolExpandsHomeDirectory(t *testing.T) {
 	filePath := filepath.Join(home.Dir(), "tilde-edit.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("alpha"), 0o644))
 
-	tool := NewEditTool(nil, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, t.TempDir())
+	tool := NewEditTool(nil, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, t.TempDir(), false)
 	input, err := json.Marshal(EditParams{FilePath: "~/tilde-edit.txt", OldString: "alpha", NewString: "beta"})
 	require.NoError(t, err)
 
