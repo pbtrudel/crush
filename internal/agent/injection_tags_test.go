@@ -20,4 +20,5 @@ func TestInjectedRowsCarryTheReportTags(t *testing.T) {
 	require.Equal(t, "system_reminder", logreport.InjectionTag(todoReminder(todos, todoReminderEscalateAfter)))
 	require.Equal(t, "system_reminder", logreport.InjectionTag(repeatToolReminder("bash", 3)))
 	require.Equal(t, "background_job_notice", logreport.InjectionTag(backgroundJobNotice(shell.BackgroundJobEvent{ShellID: "001", Command: "make", ExitCode: 2})))
+	require.Equal(t, "turn_end_gate", logreport.InjectionTag(gateMessage([]gateReason{{label: "check: completion", text: "check it"}})))
 }

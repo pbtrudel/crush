@@ -45,6 +45,7 @@ import (
 	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/gitutil"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
@@ -216,6 +217,27 @@ type SessionAgentCall struct {
 	// context-overflow recovery, so a second overflow fails normally
 	// instead of looping between summarize and retry.
 	overflowRetried bool
+	// gateContinuations counts the turn-end continuations this prompt
+	// already used. It is carried on the call, so a compaction
+	// continuation, which copies the call, keeps the count.
+	gateContinuations int
+	// gateContinued marks a call the turn-end gate started, so its run
+	// does not fire TurnStart again.
+	gateContinued bool
+	// gateBaseline is the working tree at the prompt's start, so the gate
+	// can see a change no tool call made. Nil when nothing reads it, or
+	// when it could not be taken.
+	gateBaseline *gitutil.WorktreeState
+	// gateBaselineErr records that the baseline could not be taken, so the
+	// prompt falls back to tool-call detection and does not retry.
+	gateBaselineErr bool
+	// gateRoot is the repository root resolved with the baseline, so the
+	// tool paths and git's paths compare as one. Empty outside a
+	// repository.
+	gateRoot string
+	// gateChangedFiles are the files this prompt's tools changed, from
+	// every run of it.
+	gateChangedFiles []string
 }
 
 // filterToolsForChannel scopes the tool list for a turn. A channel-originated
@@ -353,6 +375,17 @@ type sessionAgent struct {
 	notify      pubsub.Publisher[notify.Notification]
 	runComplete pubsub.Publisher[notify.RunComplete]
 	hooks       *hooks.Runner
+	// gateChecks are extra built-in checks a test registers ahead of the
+	// completion check; production leaves the list nil. It is a test seam,
+	// like snapshotState.
+	gateChecks []gateCheck
+	// snapshotState reads the working tree for the gate. It is a field so
+	// a test can count the calls; nil means gitutil.Snapshot.
+	snapshotState func(ctx context.Context, dir string) (gitutil.WorktreeState, error)
+	// beforeHandoff, when set, runs once between the gate's decision and
+	// the hand-off. It is a test seam for the window in between, where a
+	// prompt or a cancel can arrive.
+	beforeHandoff func()
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -1385,9 +1418,35 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
+	// The gate compares the working tree at the prompt's start with the
+	// tree at its end, so a change made by a shell command or by a
+	// teammate in the same tree counts too. A compaction continuation and
+	// a gate continuation both copy the call, so this is taken once per
+	// prompt.
+	// Only a Lead turn can continue, so only a Lead turn pays for the
+	// baseline.
+	if call.gateBaseline == nil && !call.gateBaselineErr && a.gateNeedsChangedFiles() &&
+		!call.NonInteractive && !call.Ephemeral && !a.isSubAgent {
+		state, snapErr := a.snapshotWorktree(genCtx, a.gateWorkingDir())
+		if snapErr != nil {
+			call.gateBaselineErr = true
+			slog.Debug("Turn-end gate: no working-tree baseline; only tool calls are compared",
+				"session_id", call.SessionID, "error", snapErr)
+		} else {
+			call.gateBaseline = &state
+			// Resolved once, here, so the tool paths can be expressed
+			// against the root the porcelain paths use.
+			call.gateRoot, _ = gitutil.RepoRoot(genCtx, a.gateWorkingDir())
+		}
+	}
+
 	startTime := time.Now()
 	a.eventPromptSent(call.SessionID)
-	a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
+	// A continuation is the same prompt, as Claude Code's Stop
+	// continuation is: it does not submit a new prompt.
+	if !call.gateContinued {
+		a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
+	}
 
 	var stepMessages []fantasy.Message
 	// What the request being sent carried, and how much of it the session
@@ -1755,6 +1814,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			currentSession = updatedSession
 
 			stepResults = append(stepResults, stepResult)
+			// Free to collect, and it catches an edit the working tree
+			// cannot tell apart from one made before the prompt.
+			call.gateChangedFiles = append(call.gateChangedFiles, stepChangedFiles(stepResult)...)
 			if a.repeatToolRemindersEnabled() {
 				signature := getToolInteractionSignature(stepResult.Content)
 				if signature != lastRepeatSignature {
@@ -2020,6 +2082,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			slog.Warn("Failed to record how the turn ended", "session_id", call.SessionID, "error", updateErr)
 		}
 	}
+	// The turn-end gate decides whether the prompt gets one more run
+	// before the turn ends. It runs with the run context, so a cancel
+	// interrupts a slow check, and before the reply, so a continued turn
+	// is answered once.
+	var gateNext *SessionAgentCall
+	gateRan := false
+	if !overflowRecovery && !shouldSummarize && currentAssistant != nil &&
+		!call.NonInteractive && !call.Ephemeral {
+		gateRan = true
+		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID))
+	}
 	// Compact when the mid-turn overflow guard tripped, when a provider
 	// context overflow is being recovered, or when the finished turn left
 	// the session at or above the configured threshold. The guard and
@@ -2027,8 +2100,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// rejected mid-work and has to resume, while the threshold path
 	// compacted a turn that already completed, and re-running the prompt
 	// would repeat finished work.
+	//
+	// A turn the gate continues is not compacted here: the continuation is
+	// about to work on the same question, and a summary would hand the
+	// model a summary in place of the work it is asked to check. Its own
+	// ending runs the threshold check.
 	continued := false
-	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
+	if gateNext == nil && (shouldSummarize || a.shouldAutoCompact(largeModel, currentSession)) {
 		a.activeRequests.Del(call.SessionID)
 		summarizeCtx := genCtx
 		if overflowRecovery {
@@ -2108,53 +2186,40 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	} else {
 		recordTurnEnd()
 	}
-	finished := currentAssistant != nil && !continued
+	finished := currentAssistant != nil && !continued && gateNext == nil
 
-	// A turn that ends with the list still behind the work is reported to
-	// the user by Crush, not by the model. By the time execution reaches
-	// here the model has ignored repeated reminders about the same item, so
-	// a further reminder would not help; the note keeps the user from
-	// discovering the stale list only when they open it.
-	if finished && !a.isSubAgent && todoStaleItem != "" {
-		// A compaction can outlast cleanupCtx, so the note gets its own
-		// short deadline, detached from the run like the other final
-		// writes.
-		noteCtx, cancelNote := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancelNote()
-		if latest, getErr := a.sessions.Get(noteCtx, call.SessionID); getErr != nil {
-			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
-		} else if staleTodoAtTurnEnd(todoStaleItem, todoReminderUnanswered, latest.Todos) {
-			currentAssistant.AppendContent(staleTodoNote(todoStaleItem, todoReminderUnanswered+1))
-			if updateErr := a.messages.Update(noteCtx, *currentAssistant); updateErr != nil {
-				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
-			}
-		}
+	// What the turn still owes the user. A continued turn owes it from its
+	// continuation, and a continuation the hand-off drops owes it then.
+	finish := gateFinish{
+		assistant:   currentAssistant,
+		summarized:  shouldSummarize,
+		overflow:    overflowRecovery,
+		finished:    finished,
+		turnEndHook: finished && !gateRan,
+		cancel:      cancel,
+		staleItem:   todoStaleItem,
+		staleN:      todoReminderUnanswered,
+		completed:   completedToolCalls.Copy(),
+		title:       currentSession.Title,
 	}
-
-	// Route the finished turn's response back to the channel it came
-	if currentAssistant != nil && (!shouldSummarize || (!overflowRecovery && len(currentAssistant.ToolCalls()) == 0)) {
-		a.sendChannelReply(ctx, call, channelReplyText(currentAssistant), completedToolCalls.Copy())
+	if gateNext == nil {
+		a.finishWithoutGate(ctx, call, finish)
 	}
-
-	// Release active request before publishing the notification.
-	// TUI handlers poll IsSessionBusy() and only re-evaluate when a
-	// tea.Msg arrives, so the cleanup must precede the notify or
-	// subscribers see stale busy state at the moment of receipt.
-	a.activeRequests.Del(call.SessionID)
-	cancel()
-
-	if finished {
-		a.fireTurnHook(ctx, call, turnEndEvent(nil, currentAssistant))
+	// A continuation the hand-off drops leaves a turn that ended here
+	// after all, so it owes the stale note and the notification, and it
+	// runs the threshold compaction the gate put off.
+	dropContinuation := func() {
+		finish.finished = true
+		finish.released = true
+		a.compactDroppedGate(ctx, call, largeModel, currentSession)
+		a.finishWithoutGate(ctx, call, finish)
 	}
-
-	// Send notification that agent has finished its turn (skip for
-	// nested/non-interactive sessions).
-	if !call.NonInteractive && a.notify != nil {
-		a.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-			SessionID:    call.SessionID,
-			SessionTitle: currentSession.Title,
-			Type:         notify.TypeAgentFinished,
-		})
+	// A continued turn keeps the session registered until the hand-off
+	// reads the queue, so a prompt typed in between is queued rather than
+	// started, and drops the continuation. The seam lets a test stand in
+	// that window.
+	if gateNext != nil && a.beforeHandoff != nil {
+		a.beforeHandoff()
 	}
 
 	// Hand off to the next queued prompt (if any) under dispatchMu so
@@ -2203,7 +2268,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		a.settleDroppedCalls(queuedMessages)
 		queuedMessages = nil
 	}
-	if len(queuedMessages) == 0 {
+	// The gate's continuation is dropped by a cancel, a limit or a prompt
+	// the user typed while the checks ran. Its prompt then ends as it
+	// stands, and the user's prompt runs next. The cancel reaches the run
+	// through its context: genCtx is cancelled here for the last time, so
+	// anything set before now is a cancel the gate must respect.
+	gateDropped := false
+	if gateNext != nil {
+		mark, marked := a.cancelMark.Get(call.SessionID)
+		if (marked && mark > 0) || call.limits.reached() || genCtx.Err() != nil || hasUserPrompt(queuedMessages) {
+			gateNext, gateDropped = nil, true
+		}
+	}
+	if gateNext != nil || gateDropped {
+		// Give up the session here, under the lock a new prompt must take
+		// to start: anything typed before now was queued, and the
+		// decision above saw it.
+		a.activeRequests.Del(call.SessionID)
+		cancel()
+	}
+	if gateNext == nil && len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
 		// run remains in flight that it might still cover; otherwise a
 		// sibling prompt (sequence at or below the mark) waiting to
@@ -2218,9 +2302,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			a.cancelMark.Del(call.SessionID)
 		}
 		mu.Unlock()
+		if gateDropped {
+			dropContinuation()
+		}
 		return result, err
 	}
-	// There are queued messages, restart the loop. Suppress the outer
+	// There is work to run next, so restart the loop. Suppress the outer
 	// defer's emit: it would otherwise observe the recursive Run's retErr
 	// (named-return clobbering through the return below) against this
 	// turn's MessageID/Text and publish a mixed, racing event.
@@ -2230,11 +2317,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// that is finished and handing off to a *different* queued prompt must
 	// publish its own RunComplete here — leaving it to the recursive turn
 	// (which carries a different RunID) would hang a caller waiting on
-	// this turn's RunID. The exception is the summarize-continuation path,
-	// which re-queues this same call (same RunID) to resume after a
-	// summary; in that case the eventual terminal turn for this RunID
+	// this turn's RunID. The exceptions are the summarize-continuation
+	// path, which re-queues this same call (same RunID) to resume after a
+	// summary, and the gate's continuation, which carries this call's
+	// RunID; in both cases the eventual terminal turn for this RunID
 	// publishes, so publishing now would double-emit.
 	outerOwesRunComplete := call.RunID != ""
+	if gateNext != nil {
+		outerOwesRunComplete = false
+	}
 	if outerOwesRunComplete {
 		for _, q := range queuedMessages {
 			if q.RunID == call.RunID {
@@ -2243,8 +2334,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 		}
 	}
-	firstQueuedMessage := queuedMessages[0]
-	a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	var firstQueuedMessage SessionAgentCall
+	if gateNext != nil {
+		// Queued reports and wake-ups stay behind the continuation and
+		// are folded into its first step.
+		firstQueuedMessage = *gateNext
+	} else {
+		firstQueuedMessage = queuedMessages[0]
+		a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	}
 	// Reserve a fresh accept for the dequeued prompt before dropping the
 	// lock so acceptedRuns > 0 across the handoff into the recursive
 	// Run. This closes the window between this dequeue and the recursive
@@ -2253,6 +2351,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the recursive Run's accepted path observes as cancel-on-entry.
 	firstQueuedMessage.Accepted = a.BeginAccepted(call.SessionID)
 	mu.Unlock()
+	if gateDropped {
+		dropContinuation()
+	}
 	if outerOwesRunComplete {
 		complete := notify.RunComplete{SessionID: call.SessionID, RunID: call.RunID}
 		if currentAssistant != nil {

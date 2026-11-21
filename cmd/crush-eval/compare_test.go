@@ -118,6 +118,31 @@ func TestCompareRowsGuardIsThePassRate(t *testing.T) {
 		require.True(t, rows[0].GuardPassed)
 	})
 
+	t.Run("fewer false completions keep the guard", func(t *testing.T) {
+		t.Parallel()
+
+		var runs []result.Result
+		for i := 1; i <= 8; i++ {
+			task := fmt.Sprintf("pr-%04d", i)
+			control := runLine("control", task, true)
+			if i <= 2 {
+				// Two tasks the control claimed to finish and did not.
+				control.Grade = result.Grade{}
+			}
+			variant := runLine("variant", task, true)
+			runs = append(runs, control, variant)
+		}
+
+		rows, failed, err := compareRows(guardExperiment(score.MetricFalseCompletions), runs, "control", labels)
+		require.NoError(t, err)
+		require.False(t, failed, "the variant removed two false completions and lost nothing")
+		require.Len(t, rows, 1)
+		require.Equal(t, score.MetricFalseCompletions, rows[0].Metric)
+		require.InDelta(t, -0.25, rows[0].Estimate, 1e-9, "two false completions of eight tasks")
+		require.InDelta(t, 0.25, rows[0].Guard.Estimate, 1e-9, "the guard is the pass rate")
+		require.True(t, rows[0].GuardPassed)
+	})
+
 	t.Run("a pass-rate loss fails the guard", func(t *testing.T) {
 		t.Parallel()
 
@@ -156,6 +181,8 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	for i := range runs {
 		runs[i].Cost = 0.25
 	}
+	runs[0].Gate = result.Gate{Continuations: 1, Claims: 2}
+	runs[1].Gate = result.Gate{Continuations: 2, Claims: 3, UnbackedClaims: 1}
 
 	rows := aggregateRows(runs)
 	var row aggregateRow
@@ -181,15 +208,21 @@ func TestAggregateRowsReportTheFigures(t *testing.T) {
 	require.InDelta(t, 68, row.Tokens, 1e-9)
 	require.NotNil(t, row.Cost)
 	require.InDelta(t, 1.0, *row.Cost, 1e-9)
+	require.Equal(t, 3, row.GateContinuations)
+	require.Equal(t, 5, row.GateClaims)
+	require.Equal(t, 1, row.GateUnbacked)
+	require.Len(t, row.UnbackedRuns, 1)
 
 	var printed bytes.Buffer
 	printCompare(&printed, compareReport{Batch: "b1", Suite: "tree1", Control: "control", Aggregates: rows})
 	for _, want := range []string{
 		"false/completed", "flagged", "completed", "tools", "duration_s",
 		"tok_in", "tok_read", "tok_write", "tok_out", "cost",
+		"continuations", "claims", "unbacked",
 	} {
 		require.Contains(t, printed.String(), want)
 	}
+	require.Contains(t, printed.String(), "unbacked claims: control "+row.UnbackedRuns[0])
 	require.Contains(t, printed.String(), "33%", "the false-completion rate over completed runs")
 	require.Contains(t, printed.String(), "1.00", "the total cost")
 }

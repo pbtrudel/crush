@@ -62,6 +62,7 @@ func TestAggregates(t *testing.T) {
 	pass.Steps, pass.ToolCalls, pass.DurationMS = 10, 1, 100
 	pass.Tokens = result.Tokens{Input: 5, Output: 1}
 	pass.Cost = 0.1
+	pass.Gate = result.Gate{Continuations: 1, Claims: 2}
 
 	falseCompletion := run("main", "pr-0001", result.KindPlain, 0, false)
 	falseCompletion.Rep = 2
@@ -69,15 +70,19 @@ func TestAggregates(t *testing.T) {
 	falseCompletion.Tokens = result.Tokens{Input: 10, Output: 2}
 	falseCompletion.UndeliveredReports = 3
 	falseCompletion.Cost = 0.2
+	falseCompletion.Gate = result.Gate{Continuations: 2, Claims: 3, UnbackedClaims: 1}
 
 	stopped := run("main", "pr-0002", result.KindInterface, 2, false)
 	stopped.Steps, stopped.ToolCalls, stopped.DurationMS = 30, 3, 300
 	stopped.Tokens = result.Tokens{Input: 20, Output: 3}
 	stopped.Cost = 0.3
+	stopped.Gate = result.Gate{Continuations: 1, Claims: 4, UnbackedClaims: 1}
 
 	invalid := run("main", "pr-0002", result.KindInterface, 1, false)
 	invalid.Rep = 2
 	invalid.Steps = 999
+	// An invalid run is excluded from every figure, the gate's included.
+	invalid.Gate = result.Gate{Continuations: 9, Claims: 9, UnbackedClaims: 9}
 
 	contaminated := run("main", "pr-0003", result.KindPlain, 0, true)
 	contaminated.Steps = 888
@@ -107,6 +112,13 @@ func TestAggregates(t *testing.T) {
 	require.Equal(t, score.Distribution{Median: 2, Total: 6}, all.Tokens.Output)
 	require.NotNil(t, all.Cost)
 	require.InDelta(t, 0.6, *all.Cost, 1e-9)
+
+	// The gate's counts cover the valid runs only, and the runs whose
+	// answer claimed a check it never ran are named.
+	require.Equal(t, 4, all.GateContinuations)
+	require.Equal(t, 9, all.GateClaims)
+	require.Equal(t, 2, all.GateUnbacked)
+	require.Equal(t, []string{"pr-0001/main/deepseek-flash#2", "pr-0002/main/deepseek-flash#1"}, all.UnbackedRuns)
 
 	plain := find(t, score.Aggregates(runs), "main", "deepseek-flash", result.KindPlain)
 	require.Equal(t, 3, plain.Runs)

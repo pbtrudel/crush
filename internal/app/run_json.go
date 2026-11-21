@@ -47,6 +47,15 @@ func (c *runCounts) add(m message.Message) bool {
 	return finish.Usage.Estimated
 }
 
+// runGate is what the turn-end gate did during the command's prompt:
+// the continuations it added, and the checks the answer claimed but no tool
+// call backed.
+type runGate struct {
+	Continuations  int `json:"continuations"`
+	Claims         int `json:"claims"`
+	UnbackedClaims int `json:"unbacked_claims"`
+}
+
 // runTree is the command's session and every session started from it.
 type runTree struct {
 	Sessions int `json:"sessions"`
@@ -68,9 +77,12 @@ type runResult struct {
 	Build      string          `json:"build"`
 	Session    runCounts       `json:"session"`
 	Tree       runTree         `json:"tree"`
-	Estimated  bool            `json:"estimated"`
-	Cost       float64         `json:"cost"`
-	Error      string          `json:"error,omitempty"`
+	// Gate is set only for a run the turn-end gate continued, so a run
+	// without the gate prints the object it printed before it existed.
+	Gate      *runGate `json:"gate,omitempty"`
+	Estimated bool     `json:"estimated"`
+	Cost      float64  `json:"cost"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // summarizeRun builds the object from the rows the command wrote in the
@@ -142,20 +154,38 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		}
 	}
 	result.Tree.Sessions = len(sessions)
+	// Only a run the gate continued has anything to report, and only then
+	// is the answer worth scanning for claims it never backed.
+	if continuations := gateRowCount(rows, sessionID); continuations > 0 {
+		claims, unbacked := gateClaims(rows, sessionID)
+		result.Gate = &runGate{
+			Continuations:  continuations,
+			Claims:         claims,
+			UnbackedClaims: unbacked,
+		}
+	}
 	return result
 }
 
 // opensRun reports whether a user row of the session starts a run that can
-// decide the command's reason: the visible prompt, or its continuation
-// after a compaction. Rows the harness writes do not: hidden notices and
-// reminders, and subagent reports, which a non-interactive run cannot
-// produce and which may be recorded without starting a run.
+// decide the command's reason: the visible prompt, its continuation after a
+// compaction, or the turn-end gate's row, whose run ends the prompt. Other
+// rows the harness writes do not: hidden notices and reminders, and subagent
+// reports, which a non-interactive run cannot produce and which may be
+// recorded without starting a run.
 func opensRun(m message.Message) bool {
 	if len(m.SubAgentReports()) > 0 {
 		return false
 	}
-	return !m.Content().Hidden
+	if m.Content().Hidden {
+		return strings.HasPrefix(m.Content().Text, gateOpenTag)
+	}
+	return true
 }
+
+// gateOpenTag opens the hidden row the turn-end gate writes. It is the same
+// tag the log report knows, and the row that reopens the prompt's run.
+const gateOpenTag = "<turn_end_gate>"
 
 // treeSessionsQuery lists a session and every session started from it.
 // UNION skips a session already listed, so a parent cycle cannot loop.

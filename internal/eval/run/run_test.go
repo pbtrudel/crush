@@ -215,6 +215,7 @@ func TestRunCompletedPass(t *testing.T) {
 	require.Equal(t, 20, line.ToolCalls)
 	require.Equal(t, result.Tokens{Input: 100, CacheRead: 10, CacheWrite: 20, Output: 30}, line.Tokens)
 	require.Equal(t, map[string]int{"completed": 2}, line.TurnEnds)
+	require.Equal(t, result.Gate{Continuations: 1, Claims: 3, UnbackedClaims: 1}, line.Gate)
 	require.InDelta(t, 0.25, line.Cost, 0.0001)
 	require.Equal(t, int64(412000), line.DurationMS)
 	require.Equal(t, 5, line.TextLength)
@@ -528,6 +529,11 @@ func outputLine(reason, errText string) string {
 			"tokens":              map[string]int64{"input": 100, "cache_read": 10, "cache_write": 20, "output": 30},
 			"turn_ends":           map[string]int{"completed": 2},
 			"undelivered_reports": 0,
+		},
+		"gate": map[string]any{
+			"continuations":   1,
+			"claims":          3,
+			"unbacked_claims": 1,
 		},
 		"estimated": false,
 		"cost":      0.25,

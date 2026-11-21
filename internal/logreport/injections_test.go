@@ -58,6 +58,7 @@ func TestClassifyUser(t *testing.T) {
 		{"report beside visible text", []message.ContentPart{message.SubAgentReport{Label: "l"}, message.TextContent{Text: "fix it"}}, injectionRow, "subagent_report", 47},
 		{"reminder", []message.ContentPart{message.TextContent{Text: "<system_reminder>x", Hidden: true}}, injectionRow, "system_reminder", 18},
 		{"retired notice", []message.ContentPart{message.TextContent{Text: "<background_subagent_notice>x", Hidden: true}}, injectionRow, "background_subagent_notice", 29},
+		{"turn-end gate", []message.ContentPart{message.TextContent{Text: "<turn_end_gate>x", Hidden: true}}, injectionRow, "turn_end_gate", 16},
 		{"report", []message.ContentPart{message.SubAgentReport{Label: "l"}}, injectionRow, "subagent_report", 47},
 		{"plan handoff", []message.ContentPart{message.TextContent{Text: "Implement the plan.", Hidden: true}}, hiddenTurnRow, "", 0},
 		{"tag not at the start", []message.ContentPart{message.TextContent{Text: "see <system_reminder>", Hidden: true}}, hiddenTurnRow, "", 0},

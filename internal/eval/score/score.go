@@ -2,6 +2,7 @@
 package score
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/charmbracelet/crush/internal/eval/result"
@@ -78,6 +79,15 @@ type Aggregate struct {
 	FalseCompletionRate          float64
 	FalseCompletionRateCompleted float64
 	StoppedShortRate             float64
+
+	// GateContinuations, GateClaims and GateUnbacked sum what the turn-end
+	// gate did over the valid runs of the group.
+	GateContinuations int
+	GateClaims        int
+	GateUnbacked      int
+	// UnbackedRuns names the runs whose answer claimed a check it never
+	// ran, sorted, so a batch report can list them.
+	UnbackedRuns []string
 
 	Steps      Distribution
 	ToolCalls  Distribution
@@ -166,6 +176,12 @@ func aggregate(variant, route, kind string, runs []result.Result) Aggregate {
 		case StoppedShort:
 			agg.StoppedShort++
 		}
+		agg.GateContinuations += r.Gate.Continuations
+		agg.GateClaims += r.Gate.Claims
+		agg.GateUnbacked += r.Gate.UnbackedClaims
+		if r.Gate.UnbackedClaims > 0 {
+			agg.UnbackedRuns = append(agg.UnbackedRuns, runID(r))
+		}
 		steps = append(steps, int64(r.Steps))
 		tools = append(tools, int64(r.ToolCalls))
 		durations = append(durations, r.DurationMS)
@@ -200,7 +216,13 @@ func aggregate(variant, route, kind string, runs []result.Result) Aggregate {
 		total := costTotal
 		agg.Cost = &total
 	}
+	sort.Strings(agg.UnbackedRuns)
 	return agg
+}
+
+// runID names one run in a report: its task, variant, route and repetition.
+func runID(r result.Result) string {
+	return fmt.Sprintf("%s/%s/%s#%d", r.Task, r.Variant, r.Route, r.Rep)
 }
 
 // distribution returns the median and total of values, which it sorts.

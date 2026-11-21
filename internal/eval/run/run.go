@@ -228,6 +228,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		line.Tokens = out.Tree.Tokens
 		line.TurnEnds = out.Tree.TurnEnds
 		line.UndeliveredReports = out.Tree.UndeliveredReports
+		line.Gate = out.Gate
 		line.Estimated = out.Estimated
 		line.Cost = out.Cost
 		line.DurationMS = out.DurationMS
@@ -368,6 +369,11 @@ type runOutput struct {
 		TurnEnds           map[string]int `json:"turn_ends"`
 		UndeliveredReports int            `json:"undelivered_reports"`
 	} `json:"tree"`
+	Gate struct {
+		Continuations  int `json:"continuations"`
+		Claims         int `json:"claims"`
+		UnbackedClaims int `json:"unbacked_claims"`
+	} `json:"gate"`
 	Estimated bool    `json:"estimated"`
 	Cost      float64 `json:"cost"`
 	Error     string  `json:"error"`
