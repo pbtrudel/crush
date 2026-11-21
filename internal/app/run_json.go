@@ -65,9 +65,10 @@ const (
 )
 
 // runEdits is what the edit and multiedit calls of the command did: how
-// many it attempted, how many it refused and by which kind, and how many
-// applied to a file not read first. The kinds split Refused, and a kind
-// outside the log's closed list is other.
+// many it attempted, how many the read guard or the matcher refused and by
+// which kind, how many failed for another reason, and how many applied to a
+// file not read first. The kinds split Refused; a failure outside them is
+// an error, not a refusal.
 type runEdits struct {
 	Attempted        int `json:"attempted"`
 	Refused          int `json:"refused"`
@@ -75,7 +76,7 @@ type runEdits struct {
 	ChangedSinceRead int `json:"changed_since_read"`
 	NoMatch          int `json:"no_match"`
 	MultipleMatches  int `json:"multiple_matches"`
-	Other            int `json:"other"`
+	Errors           int `json:"errors"`
 	UnreadApplied    int `json:"unread_applied"`
 }
 
@@ -108,18 +109,23 @@ func editCounts(rows []message.Message) *runEdits {
 					}
 					continue
 				}
-				edits.Refused++
 				switch gjson.Get(tr.Metadata, "error_kind").String() {
 				case "not_read":
 					edits.NotRead++
+					edits.Refused++
 				case "changed_since_read":
 					edits.ChangedSinceRead++
+					edits.Refused++
 				case "text_not_found":
 					edits.NoMatch++
+					edits.Refused++
 				case "multiple_matches":
 					edits.MultipleMatches++
+					edits.Refused++
 				default:
-					edits.Other++
+					// A call that failed for another reason, such as a
+					// refused permission, is not a refusal.
+					edits.Errors++
 				}
 			}
 		}

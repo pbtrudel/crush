@@ -66,8 +66,9 @@ type Gate struct {
 }
 
 // Edits is what the run's edit and multiedit calls did, as `crush run
-// --json` reports it: the calls attempted, the refusals split by kind, and
-// the edits applied to a file the session did not read first.
+// --json` reports it: the calls attempted, the refusals split by kind, the
+// failures outside those kinds, and the edits applied to a file the session
+// did not read first.
 type Edits struct {
 	Attempted        int `json:"attempted"`
 	Refused          int `json:"refused"`
@@ -75,7 +76,7 @@ type Edits struct {
 	ChangedSinceRead int `json:"changed_since_read"`
 	NoMatch          int `json:"no_match"`
 	MultipleMatches  int `json:"multiple_matches"`
-	Other            int `json:"other"`
+	Errors           int `json:"errors"`
 	UnreadApplied    int `json:"unread_applied"`
 }
 

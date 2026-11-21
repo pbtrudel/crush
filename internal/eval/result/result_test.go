@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const specLine = `{"schema":1,"batch":"2026-12-01","suite":"tree1","task":"pr-0051","kind":"plain","variant":"main@3f18401c","route":"deepseek-flash","family":"deepseek","rep":2,"attempt":1,"started":"2026-12-01T10:00:00Z","exit":0,"reason":"completed","build":"3f18401c","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","steps":38,"tool_calls":71,"tokens":{"input":1000,"cache_read":2000,"cache_write":3000,"output":400},"estimated":false,"cost":0.25,"duration_ms":412000,"text_length":5,"undelivered_reports":0,"gate":{"continuations":1,"claims":3,"unbacked_claims":1},"edits":{"attempted":4,"refused":1,"not_read":1,"unread_applied":2},"turn_ends":{"completed":2},"usage_limited":false,"grade":{"touched":true,"packages":true,"compile_error":false,"model_tests_removed":0},"pass":true,"false_completion":false,"diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"contaminated_matches":0,"project_config":"blob1","catalog":{"providers":"aa11","hyper":"bb22"}}`
+const specLine = `{"schema":1,"batch":"2026-12-01","suite":"tree1","task":"pr-0051","kind":"plain","variant":"main@3f18401c","route":"deepseek-flash","family":"deepseek","rep":2,"attempt":1,"started":"2026-12-01T10:00:00Z","exit":0,"reason":"completed","build":"3f18401c","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","steps":38,"tool_calls":71,"tokens":{"input":1000,"cache_read":2000,"cache_write":3000,"output":400},"estimated":false,"cost":0.25,"duration_ms":412000,"text_length":5,"undelivered_reports":0,"gate":{"continuations":1,"claims":3,"unbacked_claims":1},"edits":{"attempted":4,"refused":1,"not_read":1,"errors":1,"unread_applied":2},"turn_ends":{"completed":2},"usage_limited":false,"grade":{"touched":true,"packages":true,"compile_error":false,"model_tests_removed":0},"pass":true,"false_completion":false,"diff":{"files":3,"added":41,"deleted":6},"worktrees":0,"contaminated":false,"contaminated_matches":0,"project_config":"blob1","catalog":{"providers":"aa11","hyper":"bb22"}}`
 
 func keys(t *testing.T, v any) []string {
 	t.Helper()
@@ -53,7 +53,7 @@ func TestLineShape(t *testing.T) {
 	require.Equal(t, int64(412000), r.DurationMS)
 	require.Equal(t, 5, r.TextLength)
 	require.Equal(t, result.Gate{Continuations: 1, Claims: 3, UnbackedClaims: 1}, r.Gate)
-	require.Equal(t, result.Edits{Attempted: 4, Refused: 1, NotRead: 1, UnreadApplied: 2}, r.Edits)
+	require.Equal(t, result.Edits{Attempted: 4, Refused: 1, NotRead: 1, Errors: 1, UnreadApplied: 2}, r.Edits)
 	require.Equal(t, map[string]int{"completed": 2}, r.TurnEnds)
 	require.Equal(t, result.Grade{Touched: true, Packages: true}, r.Grade)
 	require.True(t, r.Grade.Passed())
@@ -71,7 +71,7 @@ func TestLineShape(t *testing.T) {
 		"worktrees"), keys(t, r))
 	require.Equal(t, sorted("cache_read", "cache_write", "input", "output"), keys(t, r.Tokens))
 	require.Equal(t, sorted("claims", "continuations", "unbacked_claims"), keys(t, r.Gate))
-	require.Equal(t, sorted("attempted", "changed_since_read", "multiple_matches", "no_match", "not_read", "other", "refused", "unread_applied"), keys(t, r.Edits))
+	require.Equal(t, sorted("attempted", "changed_since_read", "errors", "multiple_matches", "no_match", "not_read", "refused", "unread_applied"), keys(t, r.Edits))
 	require.Equal(t, sorted("compile_error", "model_tests_removed", "packages", "touched"), keys(t, r.Grade))
 	require.Equal(t, sorted("added", "deleted", "files"), keys(t, r.Diff))
 }
