@@ -430,6 +430,10 @@ type sessionAgent struct {
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
 	limits *runLimits
+	// lazyTools resolves the registry behind options.lazy_tools, the one the
+	// coordinator's tool_search tool reveals through. Nil sends the full
+	// palette.
+	lazyTools func() *tools.LazyRegistry
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -511,6 +515,10 @@ type SessionAgentOptions struct {
 	// limits is shared by a coordinator's agents, so every run in a session
 	// tree draws on the limits set on it.
 	limits *runLimits
+	// LazyTools resolves the registry behind options.lazy_tools. It is nil
+	// when no coordinator owns the agent (tests, the agentic-fetch subagent),
+	// and returning nil means the full palette is sent.
+	LazyTools func() *tools.LazyRegistry
 }
 
 func NewSessionAgent(
@@ -549,6 +557,7 @@ func NewSessionAgent(
 		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
+		lazyTools:              opts.LazyTools,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:           csync.NewMap[string, int](),
 		cancelMark:             csync.NewMap[string, uint64](),
@@ -1262,6 +1271,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// server cannot drop them from the palette either. Tools the session
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
+	agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
@@ -2432,6 +2442,11 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		compactionTools = slices.Clone(compactionTools)
 	} else {
 		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+		// Lazy mode filters here too: a compaction that has to rebuild the
+		// tools block must send the list the next step would send, or this
+		// one request carries every deferred schema and rewrites the cached
+		// prefix for nothing.
+		compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
 		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
@@ -3356,6 +3371,10 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
 // cache breakpoint has to move.
 func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
+	// A tool this session revealed with tool_search during the last step
+	// passes the lazy filter now, so the adoption below is what adds it to
+	// the palette; a still-unrevealed one stays out of the request.
+	current = a.lazyToolsForSession(sessionID, current)
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
 		known[tool.Info().Name] = struct{}{}
@@ -3908,6 +3927,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	if userPrompt == "" {
 		return
 	}
+	// A subagent run is never shown as a session of its own, so a title
+	// for it would be a billed model request nobody reads.
+	if a.isSubAgent {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, titleTimeout)
 	defer cancel()
 
@@ -3916,6 +3940,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	// while generation runs is not clobbered.
 	var initialTitle string
 	if sess, err := a.sessions.Get(ctx, sessionID); err == nil {
+		// Child sessions (teammates, agent tool runs) sit behind their
+		// parent and keep the title they were created with.
+		if sess.ParentSessionID != "" {
+			return
+		}
 		initialTitle = sess.Title
 	} else {
 		slog.Warn("Failed to read session for title generation", "session_id", sessionID, "error", err)
