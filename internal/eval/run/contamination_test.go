@@ -26,7 +26,7 @@ func TestContaminatedCallsCommandMarkers(t *testing.T) {
 	t.Parallel()
 
 	merge := task.Source{Merge: "334c5d791d23"}
-	markers := contaminationMarkers(&task.Task{Source: merge}, "", "")
+	markers := contaminationMarkers(&task.Task{Source: merge}, Paths{})
 
 	tests := []struct {
 		name  string
@@ -67,8 +67,7 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 
 	markers := contaminationMarkers(
 		&task.Task{Source: task.Source{Merge: "334c5d791d23"}},
-		"/suite/evals",
-		"/repo",
+		Paths{Suite: "/suite/evals", Repo: "/repo", Checkout: "/repo"},
 	)
 
 	for _, input := range []string{
@@ -86,11 +85,47 @@ func TestContaminatedCallsSubstringMarkers(t *testing.T) {
 func TestContaminatedCallsCountsEachCall(t *testing.T) {
 	t.Parallel()
 
-	markers := contaminationMarkers(&task.Task{}, "evals", ".")
+	markers := contaminationMarkers(&task.Task{}, Paths{Suite: "evals", Repo: "."})
 	pr := `{"type":"tool_call","data":{"name":"bash","input":"gh pr view 1"}}`
 	text := `{"type":"text","data":{"text":"gh pr view 1"}}`
 	cat := `{"type":"tool_call","data":{"name":"bash","input":"git cat-file"}}`
 	parts := "[" + pr + "," + text + "," + cat + "]"
 	require.Equal(t, 2, contaminatedCalls(parts, markers),
 		"text parts do not count")
+}
+
+// TestContaminatedCallsHostPaths checks the markers of the paths a jailed
+// run hides: naming the host checkout, a sibling worktree or another batch
+// counts, while naming the run's own directory does not.
+func TestContaminatedCallsHostPaths(t *testing.T) {
+	t.Parallel()
+
+	paths := Paths{
+		Suite:     "/host/crush/evals",
+		Repo:      "/host/crush",
+		Checkout:  "/host/crush",
+		Worktrees: "/host/.crush-worktrees",
+		Batches:   "/state/crush-eval/batches",
+		Own:       "/state/crush-eval/batches/b1/runs/pr-0010-r1",
+	}
+	markers := contaminationMarkers(&task.Task{}, paths)
+
+	for _, input := range []string{
+		"ls /host/crush/internal/agent",
+		"cd /host/.crush-worktrees/crush-other && git log --all",
+		"cat /state/crush-eval/batches/b2/results.jsonl",
+		`{"command":"cat /state/crush-eval/batches/b2/runs/pr-0010/src/x.go"}`,
+	} {
+		require.Equal(t, 1, contaminatedCalls(call(t, input), markers), input)
+	}
+
+	// The run's own directory sits under the batches marker and stays out
+	// of the scan, since the child names its own checkout all the time.
+	for _, input := range []string{
+		"ls /state/crush-eval/batches/b1/runs/pr-0010-r1/src",
+		`{"command":"cd /state/crush-eval/batches/b1/runs/pr-0010-r1/src && go test ./pkg"}`,
+		"go build ./...",
+	} {
+		require.Zero(t, contaminatedCalls(call(t, input), markers), input)
+	}
 }

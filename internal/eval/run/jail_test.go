@@ -31,12 +31,7 @@ func TestHostPaths(t *testing.T) {
 	h := home.At(filepath.Join(root, "home"))
 	runDir := filepath.Join(h.BatchDir("b1"), "runs", "pr-0010-main-fake-r1")
 
-	paths, err := hostPaths(context.Background(), Options{
-		RepoDir:  worktree,
-		SuiteDir: filepath.Join(worktree, "evals"),
-		Home:     h,
-		Batch:    "b1",
-	}, runDir)
+	paths, err := HostPaths(context.Background(), worktree, filepath.Join(worktree, "evals"), h, runDir)
 	require.NoError(t, err)
 	require.Equal(t, worktree, paths.Repo)
 	require.Equal(t, worktree, paths.Checkout)
@@ -48,7 +43,7 @@ func TestHostPaths(t *testing.T) {
 
 	// The repository itself is not a linked worktree, so no directory of
 	// sibling worktrees sits beside it.
-	plain, err := hostPaths(context.Background(), Options{RepoDir: main, Home: h, Batch: "b1"}, runDir)
+	plain, err := HostPaths(context.Background(), main, "", h, runDir)
 	require.NoError(t, err)
 	require.Equal(t, main, plain.Checkout)
 	require.Empty(t, plain.Worktrees)

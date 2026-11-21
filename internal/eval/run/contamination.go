@@ -24,6 +24,11 @@ type marker struct {
 	// only a whole command, so "gh pr" no longer matches inside "through
 	// prefix". A nil command makes the marker a substring.
 	command *regexp.Regexp
+	// own is a path that is cut out of the text before the marker is
+	// matched. The run's own directory sits under the eval home's batches,
+	// and the child names it all the time, so it is not contact with
+	// another batch.
+	own string
 }
 
 // commandPattern compiles the pattern of a command marker: the words of the
@@ -41,8 +46,10 @@ func commandPattern(text string) *regexp.Regexp {
 
 // contaminationMarkers are the strings design 3.7 scans tool calls for: the
 // task's merge commit, the fork's pull request and repository URLs, gh
-// commands, the suite path, the repository path and git's object reader.
-func contaminationMarkers(tk *task.Task, suiteDir, repoDir string) []marker {
+// commands, git's object reader, the suite path, and the host paths a jailed
+// run hides: the repository, the checkout the tasks come from, the worktrees
+// beside it and the eval home's batches.
+func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 	markers := []marker{
 		{text: "pbtrudel/crush/pull"},
 		{text: "github.com/pbtrudel/crush"},
@@ -53,24 +60,45 @@ func contaminationMarkers(tk *task.Task, suiteDir, repoDir string) []marker {
 	if tk.Source.Merge != "" {
 		markers = append(markers, marker{text: tk.Source.Merge})
 	}
-	for _, dir := range []string{suiteDir, repoDir} {
-		if dir == "" {
-			continue
-		}
-		if abs, err := filepath.Abs(dir); err == nil {
-			markers = append(markers, marker{text: abs})
-		}
+	seen := make(map[string]bool, len(markers))
+	for _, dir := range []string{paths.Suite, paths.Repo, paths.Checkout, paths.Worktrees} {
+		markers = appendPathMarker(markers, seen, dir, "")
 	}
+	markers = appendPathMarker(markers, seen, paths.Batches, absPath(paths.Own))
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
+		markers[i].own = strings.ToLower(m.own)
 	}
 	return markers
 }
 
+// appendPathMarker adds dir, as an absolute path, as a marker once. It skips
+// an empty path and one that another marker already names.
+func appendPathMarker(markers []marker, seen map[string]bool, dir, own string) []marker {
+	abs := absPath(dir)
+	if abs == "" || seen[abs] {
+		return markers
+	}
+	seen[abs] = true
+	return append(markers, marker{text: abs, own: own})
+}
+
+// absPath is dir as an absolute path, or empty when it has none to give.
+func absPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 // Matches opens the session database at path and counts the tool calls whose
 // input names one of the task's contamination markers. It keeps no text.
-func Matches(path string, tk *task.Task, suiteDir, repoDir string) (int, error) {
-	return scanDatabase(path, contaminationMarkers(tk, suiteDir, repoDir))
+func Matches(path string, tk *task.Task, paths Paths) (int, error) {
+	return scanDatabase(path, contaminationMarkers(tk, paths))
 }
 
 // scanDatabase opens the run's own session database read-only and counts
@@ -176,8 +204,13 @@ func collectStrings(value any, texts *[]string) {
 }
 
 // matches reports whether text names the marker. A command marker must name a
-// whole command; every other marker matches anywhere.
+// whole command; every other marker matches anywhere. The run's own directory
+// is cut out first, so a tool call that names its own checkout matches
+// nothing.
 func (m marker) matches(text string) bool {
+	if m.own != "" {
+		text = strings.ReplaceAll(text, m.own, "")
+	}
 	if m.command == nil {
 		return strings.Contains(text, m.text)
 	}

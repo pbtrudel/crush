@@ -143,7 +143,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return line, fmt.Errorf("create run directory: %w", err)
 	}
-	paths, err := hostPaths(ctx, opts, runDir)
+	paths, err := HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
 	if err != nil {
 		return line, err
 	}
@@ -250,8 +250,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 
 	line.Diff, line.Worktrees = treeStats(ctx, src, base)
 	line.ContaminatedMatches, err = Matches(
-		filepath.Join(runDir, "data", "crush.db"),
-		opts.Task, opts.SuiteDir, opts.RepoDir,
+		filepath.Join(runDir, "data", "crush.db"), opts.Task, paths,
 	)
 	if err != nil {
 		return line, err

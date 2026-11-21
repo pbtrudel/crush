@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/charmbracelet/crush/internal/eval/gitx"
+	"github.com/charmbracelet/crush/internal/eval/home"
 	"github.com/charmbracelet/crush/internal/eval/netjail"
 )
 
@@ -30,17 +31,19 @@ type Paths struct {
 	Own string
 }
 
-// hostPaths derives Paths from the run's options and its run directory.
-func hostPaths(ctx context.Context, opts Options, runDir string) (Paths, error) {
-	paths := Paths{Suite: opts.SuiteDir, Repo: opts.RepoDir, Own: runDir}
-	top, err := gitx.Output(ctx, opts.RepoDir, "rev-parse", "--show-toplevel")
+// HostPaths derives the host paths of a run from the repository and suite it
+// uses, its eval home and its own run directory. The scan of a finished batch
+// rebuilds them from the same arguments.
+func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runDir string) (Paths, error) {
+	paths := Paths{Suite: suiteDir, Repo: repoDir, Own: runDir}
+	top, err := gitx.Output(ctx, repoDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return Paths{}, fmt.Errorf("locate the host checkout: %w", err)
 	}
 	paths.Checkout = top
 	paths.Worktrees = worktreesParent(ctx, top)
-	if opts.Home != nil {
-		paths.Batches = filepath.Join(opts.Home.Dir(), "batches")
+	if h != nil {
+		paths.Batches = filepath.Join(h.Dir(), "batches")
 	}
 	return paths, nil
 }

@@ -123,5 +123,19 @@ namespaces are blocked fails with a message that says to use `--network
 host`. A result line records `network`, and in jail mode `net_denied` with the
 sorted `net_denied_hosts` the proxy refused.
 
+## Contamination check
+
+After a run, the runner opens the run's own session database read-only and
+scans the input of every tool call for the task's merge commit, the fork's
+pull request and repository URLs (`pbtrudel/crush/pull`,
+`github.com/pbtrudel/crush`), the `gh pr`, `gh api` and `git cat-file`
+commands, the suite path, and the host paths a jailed run hides: the
+repository the runner resolves, the git toplevel of the checkout the tasks
+come from, the worktrees beside it and the eval home's `batches`. Naming one
+of them flags the run. The run's own directory under `batches` is not one of
+them, since the child names its own checkout all the time. A contaminated run
+is reported and left out of the comparisons; a rate above 2% of a batch stops
+the comparison until the cause is found.
+
 The design is
 [docs/superpowers/specs/2026-11-19-task-suite-design.md](../docs/superpowers/specs/2026-11-19-task-suite-design.md).
