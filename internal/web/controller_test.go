@@ -49,3 +49,28 @@ func TestControllerShutdownIdempotent(t *testing.T) {
 	require.False(t, c.Running())
 	require.NoError(t, c.Shutdown(t.Context()))
 }
+
+func TestControllerStartDoesNotOpenBrowser(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	var opened []string
+	c.open = func(u string) error { opened = append(opened, u); return nil }
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+
+	u, err := c.Start(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, opened, "Start must not open the browser")
+	require.Equal(t, u, c.LaunchURL())
+	require.NoError(t, c.OpenBrowser())
+	require.Equal(t, []string{u}, opened)
+}
+
+func TestControllerOpenBrowserRequiresGateway(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	called := false
+	c.open = func(string) error { called = true; return nil }
+
+	require.Error(t, c.OpenBrowser())
+	require.False(t, called)
+}

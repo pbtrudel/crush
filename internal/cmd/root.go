@@ -158,16 +158,19 @@ crush --continue
 		// Don't leak the errors to the TUI
 		browser.Stderr = nil
 		browser.Stdout = nil
-		var webNotice tea.Msg
-		if webOn, _ := cmd.Flags().GetBool("web"); webOn || ws.Config().Options.Web {
-			u, err := webCtl.Open(cmd.Context())
-			switch {
-			case u == "":
+		webOn, _ := cmd.Flags().GetBool("web")
+		if !cmd.Flags().Changed("web") {
+			// An explicit --web wins over the config option, so --web=false
+			// turns off a configured default.
+			webOn = ws.Config().Options.Web
+		}
+		var webURL string
+		if webOn {
+			u, err := webCtl.Start(cmd.Context())
+			if err != nil {
 				return fmt.Errorf("web mode: %w", err)
-			case err != nil:
-				slog.Info("Web mode could not open the browser", "error", err)
-				webNotice = util.NewWarnMsg("Web mode is running. Open " + u)
 			}
+			webURL = u
 		}
 		program := tea.NewProgram(
 			model,
@@ -176,10 +179,17 @@ crush --continue
 			tea.WithFilter(inputFilter.Filter),
 		)
 		model.SetProgram(program)
-		if webNotice != nil {
-			// Send blocks until the program loop is running, so deliver it
-			// from a goroutine.
-			go program.Send(webNotice)
+		if webURL != "" {
+			// Open the browser only once the TUI is starting, so a slow or
+			// missing opener cannot delay startup. Send blocks until the
+			// program loop runs, so deliver the notice from the same
+			// goroutine.
+			go func() {
+				if err := webCtl.OpenBrowser(); err != nil {
+					slog.Info("Web mode could not open the browser", "error", err)
+					program.Send(util.NewWarnMsg("Web mode is running. Open " + webURL))
+				}
+			}()
 		}
 		go ws.Subscribe(program)
 
