@@ -13,31 +13,29 @@ import (
 // promptCacheKeyField is the request field an endpoint may reject.
 const promptCacheKeyField = "prompt_cache_key"
 
-// promptCacheKeyScope is the endpoint and model a rejected prompt cache key
-// belongs to. A gateway in front of several models can reject the field for
-// one of them and accept it for another, so the model is part of the scope.
-type promptCacheKeyScope struct {
-	endpoint string
-	model    string
-}
+// promptCacheKeyRejections holds the "endpoint\x00model" scopes that rejected
+// prompt_cache_key, for the life of the process. Providers are rebuilt often,
+// so the record cannot live on one transport. A gateway in front of several
+// models can reject the field for one of them and accept it for another, so
+// the model is part of the scope.
+var promptCacheKeyRejections sync.Map
 
-// promptCacheKeyRejections records the scopes that rejected the field for the
-// life of the process. Providers are rebuilt often, so the record cannot live
-// on one transport.
-var promptCacheKeyRejections = struct {
-	mu     sync.Mutex
-	scopes map[promptCacheKeyScope]bool
-}{scopes: map[promptCacheKeyScope]bool{}}
-
-// newPromptCacheKeyTransport wraps base with a transport that retries a
+// withPromptCacheKeyRetry wraps the client with a transport that retries a
 // request once without its prompt cache key when the endpoint rejects the
 // field, then stops sending it to that endpoint and model. Dropping the key
-// only costs cache routing, so a rejection is never worth failing a turn.
-func newPromptCacheKeyTransport(base http.RoundTripper) http.RoundTripper {
+// only costs cache routing, so a rejection is never worth failing a turn. A
+// provider that had no client of its own gets one, so the transport has
+// somewhere to sit.
+func withPromptCacheKeyRetry(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	base := client.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &promptCacheKeyTransport{base: base}
+	client.Transport = &promptCacheKeyTransport{base: base}
+	return client
 }
 
 type promptCacheKeyTransport struct {
@@ -58,8 +56,9 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 		// from the bytes held here.
 		return t.base.RoundTrip(requestWithBody(req, body))
 	}
-	scope := promptCacheKeyScope{endpoint: responsesEndpoint(req), model: responsesModel(body)}
-	if promptCacheKeyRejected(scope) {
+	model := responsesModel(body)
+	scope := responsesEndpoint(req) + "\x00" + model
+	if _, rejected := promptCacheKeyRejections.Load(scope); rejected {
 		return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body)))
 	}
 
@@ -87,11 +86,11 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 	// connection is reused, then retry once without the field.
 	_, _ = io.Copy(io.Discard, original)
 	_ = original.Close()
-	if rejectPromptCacheKey(scope) {
+	if _, loaded := promptCacheKeyRejections.LoadOrStore(scope, struct{}{}); !loaded {
 		slog.Info(
 			"Endpoint rejected prompt_cache_key, retrying without it",
 			"url", req.URL.Redacted(),
-			"model", scope.model,
+			"model", model,
 			"body", logBody(rejection),
 		)
 	}
@@ -125,35 +124,4 @@ func stripPromptCacheKey(body []byte) []byte {
 		return body
 	}
 	return stripped
-}
-
-// promptCacheKeyRejected reports whether an endpoint and model already
-// rejected the field.
-func promptCacheKeyRejected(scope promptCacheKeyScope) bool {
-	promptCacheKeyRejections.mu.Lock()
-	defer promptCacheKeyRejections.mu.Unlock()
-	return promptCacheKeyRejections.scopes[scope]
-}
-
-// rejectPromptCacheKey records a rejection and reports whether it is new, so
-// the fallback is logged once per endpoint and model.
-func rejectPromptCacheKey(scope promptCacheKeyScope) bool {
-	promptCacheKeyRejections.mu.Lock()
-	defer promptCacheKeyRejections.mu.Unlock()
-	if promptCacheKeyRejections.scopes[scope] {
-		return false
-	}
-	promptCacheKeyRejections.scopes[scope] = true
-	return true
-}
-
-// withPromptCacheKeyRetry installs the fallback on a provider client. A
-// provider that had no client of its own gets one, so the transport has
-// somewhere to sit.
-func withPromptCacheKeyRetry(client *http.Client) *http.Client {
-	if client == nil {
-		client = &http.Client{}
-	}
-	client.Transport = newPromptCacheKeyTransport(client.Transport)
-	return client
 }

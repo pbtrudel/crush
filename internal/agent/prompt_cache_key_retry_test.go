@@ -85,7 +85,7 @@ func TestPromptCacheKeyRetryDropsRejectedField(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","choices":[]}`)
 	})
 
-	client := &http.Client{Transport: newPromptCacheKeyTransport(http.DefaultTransport)}
+	client := withPromptCacheKeyRetry(&http.Client{})
 	resp := postChatCompletion(t, client, srv.server.URL, model)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	_ = resp.Body.Close()
@@ -97,7 +97,7 @@ func TestPromptCacheKeyRetryDropsRejectedField(t *testing.T) {
 
 	// A transport built later, as a provider rebuild would install, must
 	// not send the field either.
-	fresh := &http.Client{Transport: newPromptCacheKeyTransport(http.DefaultTransport)}
+	fresh := withPromptCacheKeyRetry(&http.Client{})
 	resp = postChatCompletion(t, fresh, srv.server.URL, model)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	_ = resp.Body.Close()
@@ -118,7 +118,7 @@ func TestPromptCacheKeyRetryIgnoresOtherRejections(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"message":"messages: field required","type":"invalid_request_error"}}`)
 	})
 
-	client := &http.Client{Transport: newPromptCacheKeyTransport(http.DefaultTransport)}
+	client := withPromptCacheKeyRetry(&http.Client{})
 	for range 2 {
 		resp := postChatCompletion(t, client, srv.server.URL, model)
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
