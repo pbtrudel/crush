@@ -70,6 +70,9 @@ func TestIsReadOnlyCommand_Denied(t *testing.T) {
 		"uniq in.txt out.txt",
 		"file -C -m magic",
 		"file --compile -m magic",
+		// Both flags name a program and run it.
+		"sort --compress-program=gzip f",
+		"rg --hostname-bin=/tmp/evil x",
 		// An unknown command still counts as progress, and so does
 		// anything the classifier cannot parse.
 		"",

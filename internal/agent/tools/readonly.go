@@ -23,11 +23,13 @@ var readOnlyCommands = []safeCommand{
 	{argv: []string{"grep"}, allowOperands: true},
 	{argv: []string{"head"}, allowOperands: true},
 	{argv: []string{"pgrep"}, allowOperands: true},
-	// --pre runs a program on every searched file.
-	{argv: []string{"rg"}, denyFlags: []string{"--pre"}, allowOperands: true},
+	// --pre runs a program on every searched file, and --hostname-bin
+	// names the program used for hostname expansion.
+	{argv: []string{"rg"}, denyFlags: []string{"--pre", "--hostname-bin"}, allowOperands: true},
 	{argv: []string{"sleep"}, allowOperands: true},
-	// -o writes the sorted output to a file.
-	{argv: []string{"sort"}, denyFlags: []string{"-o", "--output"}, allowOperands: true},
+	// -o writes the sorted output to a file, and --compress-program names
+	// a program run on the temporary files.
+	{argv: []string{"sort"}, denyFlags: []string{"-o", "--output", "--compress-program"}, allowOperands: true},
 	{argv: []string{"stat"}, allowOperands: true},
 	{argv: []string{"tail"}, allowOperands: true},
 	// A second operand is an output file, which uniq writes.
