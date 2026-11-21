@@ -14,12 +14,26 @@ var lazyCoreTools = map[string]struct{}{
 	tools.ViewToolName:       {},
 	tools.ReadToolName:       {},
 	tools.EditToolName:       {},
+	tools.WriteToolName:      {},
+	tools.MultiEditToolName:  {},
 	tools.BashToolName:       {},
 	tools.GrepToolName:       {},
 	tools.GlobToolName:       {},
 	tools.LSToolName:         {},
 	tools.TodosToolName:      {},
+	tools.WorktreeToolName:   {},
 	tools.ToolSearchToolName: {},
+
+	// A shell command returns job ids, so the tools that read and kill those
+	// jobs have to be there when it does; deferring them would strand every
+	// background run behind a search.
+	tools.JobOutputToolName: {},
+	tools.JobKillToolName:   {},
+
+	// question is how a turn asks the user to choose. A deferred question
+	// would make the model guess instead of asking, which is the one cost
+	// this option must not add.
+	tools.QuestionToolName: {},
 
 	// Delegation and team tools stay in the core palette: they are how a turn
 	// hands work off, and a Lead that has to search before it can spawn a
@@ -79,4 +93,15 @@ func (a *sessionAgent) lazyToolsForSession(sessionID string, list []fantasy.Agen
 		return list
 	}
 	return registry.Filter(sessionID, list)
+}
+
+// lazyPaletteNames collects the tool names an agent's built palette carries.
+// tool_search takes them as its scope: the shared registry knows every tool any
+// agent built, and only these can enter this agent's requests.
+func lazyPaletteNames(list []fantasy.AgentTool) []string {
+	names := make([]string, 0, len(list))
+	for _, tool := range list {
+		names = append(names, tool.Info().Name)
+	}
+	return names
 }

@@ -1488,7 +1488,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	// is off, so nothing about the palette changes.
 	if registry := c.lazyRegistryIfEnabled(); registry != nil {
 		registry.Register(filteredTools)
-		filteredTools = append(filteredTools, registry.Tool())
+		filteredTools = append(filteredTools, registry.Tool(lazyPaletteNames(filteredTools)))
 	}
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)

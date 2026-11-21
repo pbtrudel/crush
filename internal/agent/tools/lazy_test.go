@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -41,6 +42,12 @@ func toolNames(list []fantasy.AgentTool) []string {
 		names = append(names, tool.Info().Name)
 	}
 	return names
+}
+
+// searchTool binds a tool_search to the palette an agent was built with, the
+// way buildTools does.
+func searchTool(registry *LazyRegistry, palette []fantasy.AgentTool) fantasy.AgentTool {
+	return registry.Tool(toolNames(palette))
 }
 
 func sessionCtx(sessionID string) context.Context {
@@ -94,7 +101,7 @@ func TestToolSearchRevealsToolForTheSessionOnly(t *testing.T) {
 	t.Parallel()
 
 	registry, full := lazyFixture()
-	search := registry.Tool()
+	search := searchTool(registry, full)
 	require.Equal(t, ToolSearchToolName, search.Info().Name)
 
 	response, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"diagnostics"}`})
@@ -135,7 +142,7 @@ func TestToolSearchUnknownQueryRevealsNothing(t *testing.T) {
 
 	registry, full := lazyFixture()
 
-	response, err := registry.Tool().Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"zzz-nothing"}`})
+	response, err := searchTool(registry, full).Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"zzz-nothing"}`})
 	require.NoError(t, err)
 	require.True(t, response.IsError)
 	require.Contains(t, response.Content, DiagnosticsToolName,
@@ -148,9 +155,9 @@ func TestToolSearchUnknownQueryRevealsNothing(t *testing.T) {
 func TestToolSearchRequiresAQuery(t *testing.T) {
 	t.Parallel()
 
-	registry, _ := lazyFixture()
+	registry, full := lazyFixture()
 
-	response, err := registry.Tool().Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{}`})
+	response, err := searchTool(registry, full).Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, response.IsError)
 }
@@ -165,7 +172,7 @@ func TestRegisterIsCumulativeAcrossAgents(t *testing.T) {
 	registry, full := lazyFixture()
 	registry.Register([]fantasy.AgentTool{full[0]})
 
-	response, err := registry.Tool().Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
+	response, err := searchTool(registry, full).Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
 	require.NoError(t, err)
 	require.False(t, response.IsError)
 	require.Contains(t, response.Content, DiagnosticsToolName)
@@ -175,7 +182,7 @@ func TestRevealSurvivesCatalogRebuild(t *testing.T) {
 	t.Parallel()
 
 	registry, full := lazyFixture()
-	_, err := registry.Tool().Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
+	_, err := searchTool(registry, full).Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
 	require.NoError(t, err)
 
 	registry.Register(full)
@@ -188,7 +195,7 @@ func TestToolSearchRevealByNameIsStableOnRepeat(t *testing.T) {
 	t.Parallel()
 
 	registry, full := lazyFixture()
-	search := registry.Tool()
+	search := searchTool(registry, full)
 
 	first, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
 	require.NoError(t, err)
@@ -200,4 +207,121 @@ func TestToolSearchRevealByNameIsStableOnRepeat(t *testing.T) {
 	require.Equal(t, []string{ReadToolName, GrepToolName, DiagnosticsToolName, "github_create_issue"},
 		toolNames(registry.Filter("session-1", full)),
 		"a repeated reveal must not duplicate the tool")
+}
+
+// TestToolSearchMatchesMultiWordQueries covers how a model actually searches:
+// it has never seen the identifier, so it describes the job. Matching the
+// whole query as one substring answers "no tool matches" to every phrase.
+func TestToolSearchMatchesMultiWordQueries(t *testing.T) {
+	t.Parallel()
+
+	references := fakeTool(ReferencesToolName, "Find all references to a symbol through the language server")
+	webFetch := fakeTool(WebFetchToolName, "Fetch a URL and return its content")
+	servers := fakeTool(MCPServersToolName, "List MCP servers and activate one")
+
+	registry := NewLazyRegistry(map[string]struct{}{ReadToolName: {}})
+	full := []fantasy.AgentTool{fakeTool(ReadToolName, "read a file"), references, webFetch, servers}
+	registry.Register(full)
+	search := searchTool(registry, full)
+
+	response, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"language server references"}`})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Contains(t, response.Content, ReferencesToolName)
+	require.NotContains(t, response.Content, WebFetchToolName)
+
+	response, err = search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"fetch a URL"}`})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Contains(t, response.Content, WebFetchToolName)
+}
+
+// TestToolSearchRanksAnExactNameFirst keeps a known identifier ahead of every
+// tool that merely mentions the word.
+func TestToolSearchRanksAnExactNameFirst(t *testing.T) {
+	t.Parallel()
+
+	registry := NewLazyRegistry(map[string]struct{}{ReadToolName: {}})
+	full := []fantasy.AgentTool{
+		fakeTool(ReadToolName, "read a file"),
+		fakeTool("aaa_tool", "grep internals for search operators"),
+		fakeTool(GrepToolName, "search file contents"),
+	}
+	registry.Register(full)
+	search := searchTool(registry, full)
+
+	response, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"grep"}`})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+
+	exact := strings.Index(response.Content, "- "+GrepToolName+":")
+	require.GreaterOrEqual(t, exact, 0, "the exact name must be revealed")
+	loose := strings.Index(response.Content, "- aaa_tool:")
+	require.Greater(t, loose, exact, "the exact name must be listed before a description-only match")
+}
+
+// TestToolSearchCapsHowManyToolsOneSearchReveals is the guard against the
+// option defeating itself: a generic word used to reveal the whole deferred
+// half of the palette, permanently, on one thoughtless query.
+func TestToolSearchCapsHowManyToolsOneSearchReveals(t *testing.T) {
+	t.Parallel()
+
+	names := []string{"alpha", "beta", "delta", "gamma", "omega"}
+	full := []fantasy.AgentTool{fakeTool(ReadToolName, "read a file")}
+	for _, name := range names {
+		full = append(full, fakeTool(name, "search the repository"))
+	}
+	registry := NewLazyRegistry(map[string]struct{}{ReadToolName: {}})
+	registry.Register(full)
+	search := searchTool(registry, full)
+
+	response, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"repository search"}`})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+
+	revealed := toolNames(registry.Filter("session-1", full))
+	require.Equal(t, append([]string{ReadToolName}, names[:lazyRevealLimit]...), revealed,
+		"one search reveals at most the best few matches, in name order among equals")
+	require.Contains(t, response.Content, "more",
+		"the reply must say that matches were left out, so the model can narrow the query")
+}
+
+// TestToolSearchDoesNotPromiseToolsOutsideTheAgentPalette covers the shared
+// registry: the deferred catalog holds every tool any agent in the process
+// built, but a reveal only means something if the calling agent's own palette
+// has the tool. Promising it would send the model after a tool that never
+// arrives.
+func TestToolSearchDoesNotPromiseToolsOutsideTheAgentPalette(t *testing.T) {
+	t.Parallel()
+
+	registry, full := lazyFixture()
+	// Another agent (a subagent) registered a smaller palette afterwards; the
+	// catalog is cumulative, so the diagnostics tool is still known.
+	registry.Register([]fantasy.AgentTool{full[0]})
+
+	// This agent's own palette: the core tools plus the MCP one, no diagnostics.
+	subPalette := []fantasy.AgentTool{full[0], full[1], full[3]}
+	search := searchTool(registry, subPalette)
+
+	response, err := search.Run(sessionCtx("sub-session"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
+	require.NoError(t, err)
+	require.Contains(t, response.Content, DiagnosticsToolName,
+		"an unavailable match is still named, so the model learns it exists")
+	require.Contains(t, response.Content, "not part of this agent's palette")
+	require.NotContains(t, response.Content, "Callable from your next step",
+		"an unavailable tool must not be promised")
+
+	require.NotContains(t, toolNames(registry.Filter("sub-session", full)), DiagnosticsToolName,
+		"and it must not be marked revealed for the session")
+}
+
+// TestLazyQueryTokens pins the tokenizer: words and identifiers, no one-letter
+// noise, punctuation dropped.
+func TestLazyQueryTokens(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, []string{"fetch", "url"}, lazyQueryTokens("Fetch a URL"))
+	require.Equal(t, []string{"lsp_references"}, lazyQueryTokens("  lsp_references  "))
+	require.Equal(t, []string{"language", "server", "references"}, lazyQueryTokens("language-server references"))
+	require.Empty(t, lazyQueryTokens("  a  "))
 }

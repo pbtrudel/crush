@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,12 +52,15 @@ func lazyTestAgent() config.Agent {
 			tools.FetchToolName,
 			tools.GlobToolName,
 			tools.GrepToolName,
+			tools.JobKillToolName,
+			tools.JobOutputToolName,
 			tools.LSToolName,
 			tools.MultiEditToolName,
 			tools.SourcegraphToolName,
 			tools.SymbolsToolName,
 			tools.TodosToolName,
 			tools.ViewToolName,
+			tools.WorktreeToolName,
 			tools.WriteToolName,
 		},
 	}
@@ -103,10 +107,15 @@ func TestLazyToolsReduceThePalette(t *testing.T) {
 		tools.EditToolName,
 		tools.GlobToolName,
 		tools.GrepToolName,
+		tools.JobKillToolName,
+		tools.JobOutputToolName,
 		tools.LSToolName,
+		tools.MultiEditToolName,
 		tools.TodosToolName,
 		tools.ToolSearchToolName,
 		tools.ViewToolName,
+		tools.WorktreeToolName,
+		tools.WriteToolName,
 	}, toolListNames(filtered),
 		"the request carries the core palette and tool_search, and nothing deferred")
 }
@@ -307,6 +316,8 @@ func TestLazyToolsThroughTheRequestPath(t *testing.T) {
 	require.Contains(t, steps[1], tools.SymbolsToolName,
 		"the tool revealed in the previous step must be callable in the next request")
 	require.Len(t, steps[1], len(steps[0])+1, "the reveal adds exactly the tool that was asked for")
+	require.Equal(t, steps[0], steps[1][:len(steps[0])],
+		"the first request stays an exact prefix of the next, so the provider's cached tools block still covers it")
 }
 
 // namedTool is a tool that exists only to be named.
@@ -335,6 +346,14 @@ func TestLazyPaletteKeepsDelegationAndMCPTools(t *testing.T) {
 		namedTool{name: SendMessageToolName},
 		namedTool{name: TeamTaskCreateToolName},
 		mcpNamedTool{namedTool{name: "github_create_issue"}},
+		// Palette members the review asked for: worktree first, the write
+		// path, the job tools bash hands out ids for, and question.
+		namedTool{name: tools.WorktreeToolName},
+		namedTool{name: tools.WriteToolName},
+		namedTool{name: tools.MultiEditToolName},
+		namedTool{name: tools.JobOutputToolName},
+		namedTool{name: tools.JobKillToolName},
+		namedTool{name: tools.QuestionToolName},
 		namedTool{name: tools.SymbolsToolName},
 		namedTool{name: tools.FetchToolName},
 	}
@@ -348,5 +367,164 @@ func TestLazyPaletteKeepsDelegationAndMCPTools(t *testing.T) {
 		SendMessageToolName,
 		TeamTaskCreateToolName,
 		"github_create_issue",
-	}, names, "delegation and MCP tools stay in the request; built-in extras are held back")
+		tools.WorktreeToolName,
+		tools.WriteToolName,
+		tools.MultiEditToolName,
+		tools.JobOutputToolName,
+		tools.JobKillToolName,
+		tools.QuestionToolName,
+	}, names, "delegation, MCP and the editing/job/question tools stay; other built-ins are held back")
+}
+
+// TestLazyCompactionFallbackSendsTheLazyPalette covers the one compaction path
+// that has no live step behind it (a manual /compact in a fresh process): it
+// rebuilds the tools block, and in lazy mode it must rebuild the lazy one. A
+// full palette there would send every deferred schema once and rewrite the
+// cached prefix for nothing.
+func TestLazyCompactionFallbackSendsTheLazyPalette(t *testing.T) {
+	env := testEnv(t)
+	c := lazyTestCoordinator(t, true)
+	built := buildLazyPalette(t, c)
+
+	model := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
+	sa := newCompactionAgent(env, model, c.cfg, true, built...)
+	sa.lazyTools = c.lazyRegistryIfEnabled
+
+	sess, err := env.sessions.Create(t.Context(), "lazy compaction")
+	require.NoError(t, err)
+	_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, sa.Summarize(t.Context(), sess.ID, nil, nil))
+
+	model.mu.Lock()
+	calls := slices.Clone(model.calls)
+	model.mu.Unlock()
+	require.NotEmpty(t, calls, "the compaction must have sent a request")
+
+	names := make([]string, 0, len(calls[0].Tools))
+	for _, tool := range calls[0].Tools {
+		names = append(names, tool.GetName())
+	}
+	require.Contains(t, names, tools.ToolSearchToolName)
+	require.Contains(t, names, tools.BashToolName)
+	require.NotContains(t, names, tools.SymbolsToolName,
+		"a compaction that rebuilds the palette must not re-send a deferred schema")
+	require.Less(t, len(names), len(built), "and it must send the lazy palette, not the full one")
+}
+
+// unrevealedCallModel calls a deferred tool the turn never revealed, then
+// records what the tool result said.
+type unrevealedCallModel struct {
+	mu      sync.Mutex
+	steps   int
+	results []string
+}
+
+func (m *unrevealedCallModel) Provider() string { return "fake" }
+func (m *unrevealedCallModel) Model() string    { return "fake-model" }
+
+func (m *unrevealedCallModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *unrevealedCallModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if len(call.Tools) == 0 {
+		return func(yield func(fantasy.StreamPart) bool) {
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+		}, nil
+	}
+
+	m.mu.Lock()
+	step := m.steps
+	m.steps++
+	if step > 0 {
+		m.results = append(m.results, lastToolResultText(call.Prompt))
+	}
+	m.mu.Unlock()
+
+	return func(yield func(fantasy.StreamPart) bool) {
+		if step == 0 {
+			if !yield(fantasy.StreamPart{
+				Type:          fantasy.StreamPartTypeToolCall,
+				ID:            "diagnostics-1",
+				ToolCallName:  tools.DiagnosticsToolName,
+				ToolCallInput: `{"path":"main.go"}`,
+			}) {
+				return
+			}
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
+			return
+		}
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"}) {
+			return
+		}
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: "done"}) {
+			return
+		}
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"}) {
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+	}, nil
+}
+
+func (m *unrevealedCallModel) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *unrevealedCallModel) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+// lastToolResultText returns the text of the newest tool result in a prompt,
+// which is how the model sees what a tool answered.
+func lastToolResultText(prompt fantasy.Prompt) string {
+	for i := len(prompt) - 1; i >= 0; i-- {
+		for _, part := range prompt[i].Content {
+			result, ok := part.(fantasy.ToolResultPart)
+			if !ok {
+				continue
+			}
+			switch output := result.Output.(type) {
+			case fantasy.ToolResultOutputContentError:
+				if output.Error != nil {
+					return output.Error.Error()
+				}
+			case fantasy.ToolResultOutputContentText:
+				return output.Text
+			}
+		}
+	}
+	return ""
+}
+
+// TestUnrevealedToolCallIsRefused pins the safety property: a deferred tool is
+// not in the request, so calling it is answered as an unknown tool and never
+// executed. Silently running it would undo the reveal protocol.
+func TestUnrevealedToolCallIsRefused(t *testing.T) {
+	env := testEnv(t)
+	c := lazyTestCoordinator(t, true)
+	built := buildLazyPalette(t, c)
+
+	model := &unrevealedCallModel{}
+	sa := testSessionAgent(env, model, model, "system", built...).(*sessionAgent)
+	sa.cfg = c.cfg
+	sa.lazyTools = c.lazyRegistryIfEnabled
+
+	sess, err := env.sessions.Create(t.Context(), "lazy refused")
+	require.NoError(t, err)
+	_, err = sa.Run(t.Context(), SessionAgentCall{Prompt: "go", SessionID: sess.ID, MaxOutputTokens: 1000})
+	require.NoError(t, err)
+
+	model.mu.Lock()
+	results := slices.Clone(model.results)
+	model.mu.Unlock()
+
+	require.Len(t, results, 1)
+	require.Contains(t, results[0], "tool not found",
+		"an unrevealed tool call must be refused, not executed")
 }

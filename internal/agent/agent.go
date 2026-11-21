@@ -2442,6 +2442,11 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		compactionTools = slices.Clone(compactionTools)
 	} else {
 		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+		// Lazy mode filters here too: a compaction that has to rebuild the
+		// tools block must send the list the next step would send, or this
+		// one request carries every deferred schema and rewrites the cached
+		// prefix for nothing.
+		compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
 		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
