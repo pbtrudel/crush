@@ -153,6 +153,21 @@ func TestDeleteContentWithoutRead(t *testing.T) {
 		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
 		require.Zero(t, tracker.recorded)
 	})
+
+	t.Run("replace_all stays refused", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "alpha\nbeta\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		resp, err := deleteContent(edit, filePath, "alpha\n", true, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, todayNotRead)
+		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
+		require.Zero(t, tracker.recorded)
+	})
 }
 
 // With the option off, both refusals keep the exact text they have today.
