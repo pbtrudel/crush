@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
+	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,6 +109,9 @@ func TestGrantPermissionActions(t *testing.T) {
 	}
 }
 
+// TestGrantAlreadyResolved covers a service that no longer holds the
+// request: the gateway must answer not_pending, the same as for an unknown
+// id, and must forget the stale entry so reloads do not restore the dialog.
 func TestGrantAlreadyResolved(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
@@ -114,8 +120,10 @@ func TestGrantAlreadyResolved(t *testing.T) {
 	g.pending.observe(pubsub.Event[permission.PermissionRequest]{Payload: permission.PermissionRequest{ID: "p1", ToolCallID: "tc1"}})
 	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/grant", `{"id":"p1","action":"allow"}`)
 	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	require.JSONEq(t, `{"resolved":false}`, string(body))
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.Contains(t, string(body), "not_pending")
+	_, ok := g.pending.permission("p1")
+	require.False(t, ok)
 
 	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/grant", `{"id":"gone","action":"allow"}`)
 	rsp.Body.Close()
@@ -270,4 +278,60 @@ func TestCompleteFilesIgnoresGlobSyntax(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &out))
 	require.ElementsMatch(t, []string{"a[b.go", "abc.go"}, out.Files)
 	require.False(t, out.Truncated)
+}
+
+// emitPermission publishes a permission request and waits until the
+// gateway's pending set has it.
+func emitPermission(t *testing.T, g *Gateway, fake *webtest.Fake, req permission.PermissionRequest) {
+	t.Helper()
+	fake.Emit(pubsub.Event[permission.PermissionRequest]{Type: pubsub.CreatedEvent, Payload: req})
+	require.Eventually(t, func() bool {
+		_, ok := g.pending.permission(req.ID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestAnswerNotPendingForgetsQuestion(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.Resolve = false
+	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
+	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/answer", `{"answers":[]}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.JSONEq(t, `{"error":"question batch is no longer pending","code":"not_pending"}`, string(body))
+	require.Nil(t, g.pending.question(), "a batch the service no longer holds must not stay pending")
+}
+
+func TestQuestionCancelNotPendingForgetsQuestion(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.Resolve = false
+	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
+	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/cancel", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.JSONEq(t, `{"error":"question batch is no longer pending","code":"not_pending"}`, string(body))
+	require.Nil(t, g.pending.question())
+}
+
+func TestRunCompleteClearsPending(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	emitPermission(t, g, fake, permission.PermissionRequest{ID: "p1", SessionID: "s1", ToolCallID: "tc1"})
+	emitPermission(t, g, fake, permission.PermissionRequest{ID: "p2", SessionID: "s2", ToolCallID: "tc2"})
+	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
+	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+
+	fake.Emit(pubsub.Event[notify.RunComplete]{Type: pubsub.UpdatedEvent, Payload: notify.RunComplete{SessionID: "s1"}})
+	require.Eventually(t, func() bool {
+		_, ok := g.pending.permission("p1")
+		return !ok && g.pending.question() == nil
+	}, 2*time.Second, 10*time.Millisecond)
+	_, ok := g.pending.permission("p2")
+	require.True(t, ok, "another session's pending request must survive")
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"sync"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
@@ -44,6 +45,25 @@ func (p *pending) observe(ev any) {
 		if p.q != nil && p.q.ID == e.Payload.BatchID {
 			p.q = nil
 		}
+	case pubsub.Event[notify.RunComplete]:
+		// The run that asked is over, so nothing it asked can be answered
+		// any more. Leaving these entries behind would keep dialogs open
+		// across reloads.
+		p.forgetSessionLocked(e.Payload.SessionID)
+	}
+}
+
+// forgetSessionLocked drops the permissions and question of a session whose
+// run has finished. The caller holds the lock.
+func (p *pending) forgetSessionLocked(sessionID string) {
+	for id, req := range p.perms {
+		if req.SessionID == sessionID {
+			delete(p.perms, id)
+		}
+	}
+	p.compact()
+	if p.q != nil && p.q.SessionID == sessionID {
+		p.q = nil
 	}
 }
 
@@ -88,5 +108,12 @@ func (p *pending) forget(id string) {
 	p.mu.Lock()
 	delete(p.perms, id)
 	p.compact()
+	p.mu.Unlock()
+}
+
+// forgetQuestion drops the pending question, if any.
+func (p *pending) forgetQuestion() {
+	p.mu.Lock()
+	p.q = nil
 	p.mu.Unlock()
 }

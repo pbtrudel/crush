@@ -22,6 +22,26 @@ export const NO_SESSION_HINT = 'Start or open a session in the terminal';
 const report = (err: unknown) => dispatch((s) => pushToast(s, 'error', errorText(err)));
 const answeredElsewhere = () => dispatch((s) => pushToast(s, 'info', 'Already answered in the terminal'));
 
+// dropPermission removes a request the service no longer holds. The toast
+// says why the dialog vanished, the same way an answer from the terminal
+// does.
+function dropPermission(id: string) {
+  answeredElsewhere();
+  dispatch((s) => ({ ...s, permissions: s.permissions.filter((p) => p.id !== id) }));
+}
+
+// dropQuestion removes a batch the service no longer holds.
+function dropQuestion(batchId: string) {
+  answeredElsewhere();
+  dispatch((s) => (s.question && s.question.id === batchId ? { ...s, question: null } : s));
+}
+
+// isNotPending reports the gateway error for a request the workspace has
+// already resolved.
+function isNotPending(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'not_pending';
+}
+
 async function reloadSession(id: string) {
   try {
     const snap: Snapshot = await api.snapshot(id);
@@ -82,12 +102,11 @@ export const actions = {
     dispatch((s) => markAnswered(s, id));
     try {
       const { resolved } = await api.grant(id, action);
-      if (!resolved) answeredElsewhere();
+      if (!resolved) dropPermission(id);
       return null;
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'not_pending') {
-        answeredElsewhere();
-        dispatch((s) => ({ ...s, permissions: s.permissions.filter((p) => p.id !== id) }));
+      if (isNotPending(err)) {
+        dropPermission(id);
         return null;
       }
       return errorText(err);
@@ -101,9 +120,13 @@ export const actions = {
     dispatch((s) => markAnswered(s, batchId));
     try {
       const { resolved } = await api.answer(answers);
-      if (!resolved) answeredElsewhere();
+      if (!resolved) dropQuestion(batchId);
       return null;
     } catch (err) {
+      if (isNotPending(err)) {
+        dropQuestion(batchId);
+        return null;
+      }
       return errorText(err);
     }
   },
@@ -114,12 +137,11 @@ export const actions = {
     dispatch((s) => markAnswered(s, batchId));
     try {
       const { resolved } = await api.cancelQuestion();
-      if (!resolved) answeredElsewhere();
+      if (!resolved) dropQuestion(batchId);
       return null;
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'not_pending') {
-        answeredElsewhere();
-        dispatch((s) => (s.question && s.question.id === batchId ? { ...s, question: null } : s));
+      if (isNotPending(err)) {
+        dropQuestion(batchId);
         return null;
       }
       return errorText(err);

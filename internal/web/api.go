@@ -192,10 +192,15 @@ func (g *Gateway) handleGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_action", "action must be allow, allow_session or deny")
 		return
 	}
-	if resolved {
+	if !resolved {
+		// The service no longer holds the request, so it can never be
+		// answered from the browser.
 		g.pending.forget(body.ID)
+		writeError(w, http.StatusNotFound, "not_pending", "permission request is no longer pending")
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"resolved": resolved})
+	g.pending.forget(body.ID)
+	writeJSON(w, http.StatusOK, map[string]bool{"resolved": true})
 }
 
 func (g *Gateway) handleMode(w http.ResponseWriter, r *http.Request) {
@@ -222,11 +227,21 @@ func (g *Gateway) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"resolved": g.ws.QuestionAnswer(body.Answers)})
+	if g.ws.QuestionAnswer(body.Answers) {
+		writeJSON(w, http.StatusOK, map[string]bool{"resolved": true})
+		return
+	}
+	g.pending.forgetQuestion()
+	writeError(w, http.StatusNotFound, "not_pending", "question batch is no longer pending")
 }
 
 func (g *Gateway) handleQuestionCancel(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"resolved": g.ws.QuestionCancel()})
+	if g.ws.QuestionCancel() {
+		writeJSON(w, http.StatusOK, map[string]bool{"resolved": true})
+		return
+	}
+	g.pending.forgetQuestion()
+	writeError(w, http.StatusNotFound, "not_pending", "question batch is no longer pending")
 }
 
 func (g *Gateway) handleCompleteFiles(w http.ResponseWriter, r *http.Request) {
