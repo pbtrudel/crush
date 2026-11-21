@@ -35,11 +35,22 @@ type Paths struct {
 	Remotes []string
 }
 
-// HostPaths derives the host paths of a run from the repository and suite it
-// uses, its eval home and its own run directory. The scan of a finished batch
-// rebuilds them from the same arguments.
-func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runDir string) (Paths, error) {
+// basePaths are the host paths of a run that no repository is needed for.
+func basePaths(repoDir, suiteDir string, h *home.Home, runDir string) Paths {
 	paths := Paths{Suite: suiteDir, Repo: repoDir, Own: runDir}
+	if h != nil {
+		paths.Batches = filepath.Join(h.Dir(), "batches")
+	}
+	return paths
+}
+
+// HostPaths derives the host paths of a jailed run from the repository and
+// suite it uses, its eval home and its own run directory. Only a jailed run
+// needs them: a repository without a work tree has no checkout to hide, and a
+// run on the host must not fail on one. The scan of a finished batch rebuilds
+// them from the same arguments.
+func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runDir string) (Paths, error) {
+	paths := basePaths(repoDir, suiteDir, h, runDir)
 	top, err := gitx.Output(ctx, repoDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return Paths{}, fmt.Errorf("locate the host checkout: %w", err)
@@ -47,9 +58,6 @@ func HostPaths(ctx context.Context, repoDir, suiteDir string, h *home.Home, runD
 	paths.Checkout = top
 	paths.Worktrees = worktreesParent(ctx, top)
 	paths.Remotes = repoRemotes(ctx, top)
-	if h != nil {
-		paths.Batches = filepath.Join(h.Dir(), "batches")
-	}
 	return paths, nil
 }
 

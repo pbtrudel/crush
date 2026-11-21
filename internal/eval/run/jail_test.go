@@ -87,3 +87,26 @@ func TestJailMasks(t *testing.T) {
 		require.Empty(t, mask.Keep)
 	}
 }
+
+// TestRunOnTheHostNeedsNoCheckoutPath checks that a run on the host does not
+// ask git where the checkout is: a bare repository has no work tree, and only
+// a jailed run needs the path to hide.
+func TestRunOnTheHostNeedsNoCheckoutPath(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	git(t, filepath.Dir(bare), "clone", "-q", "--bare", f.repo, bare)
+	// A clone copies the reachable objects only, so the hidden test's blob
+	// is written into the bare repository again.
+	require.Equal(t, f.blob, blobOf(t, bare, hiddenTest))
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.env["FAKE_WRITE"] = "pkg/pkg.go"
+	f.env["FAKE_CONTENT"] = fixedSource
+
+	opts := f.options()
+	opts.RepoDir = bare
+	line, err := Run(context.Background(), opts)
+	require.NoError(t, err, "a host run does not need the checkout path")
+	require.True(t, line.Pass)
+}

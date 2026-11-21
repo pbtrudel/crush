@@ -143,10 +143,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return line, fmt.Errorf("create run directory: %w", err)
 	}
-	paths, err := HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
-	if err != nil {
-		return line, err
-	}
+	paths := basePaths(opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
 	blob, err := checkout.Prepare(ctx, opts.RepoDir, opts.Task.Source.Base, runDir)
 	if err != nil {
 		return line, err
@@ -202,12 +199,23 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 	env = append(env, networkEnv(line.Network, jailPort)...)
 
+	// Only a jailed run hides paths, and only it needs git to say where the
+	// checkout is: a run on the host must not fail on a repository that has
+	// no work tree.
+	var masks []netjail.Mask
+	if line.Network == netjail.ModeJail {
+		paths, err = HostPaths(ctx, opts.RepoDir, opts.SuiteDir, opts.Home, runDir)
+		if err != nil {
+			return line, err
+		}
+		masks = jailMasks(paths)
+	}
 	stdoutPath := filepath.Join(runDir, "stdout.json")
 	exit, killed, err := execute(ctx, opts.BinPath, src,
 		commandArgs(opts, src, filepath.Join(runDir, "data"), maxSteps, timeout),
 		env, task.Prompt(opts.Task, opts.Footer), stdoutPath,
 		filepath.Join(runDir, "stderr.log"), timeout+grace, jailSock, jailPort,
-		jailMasks(paths))
+		masks)
 	if err != nil {
 		return line, err
 	}
