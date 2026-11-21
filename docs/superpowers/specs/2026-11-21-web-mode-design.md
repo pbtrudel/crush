@@ -128,6 +128,14 @@ The embed must live inside a Go package directory, so the build copies
   request bodies, never echoed in events, never logged; the frontend clears the
   input immediately after submit.
 
+#### Threat model
+
+Web mode assumes a single-user host. The token is visible in the browser
+opener's process arguments to other local users, and the cookie is sent to
+other `127.0.0.1` ports (the `Origin` and `Host` checks still protect
+state-changing calls). A strict `0600` redirect file and header-based auth are
+deferred to M4.
+
 ### 2.4 Event stream
 
 New method on `workspace.Workspace`:
