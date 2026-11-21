@@ -248,6 +248,34 @@ func excerpt(input string) string {
 	return text[:cut]
 }
 
+// cutOwn removes the run's own directory from text, where text names a path
+// inside it. An occurrence only counts when the end of the text or a
+// separator follows it, and never when "/.." follows, which climbs back out
+// of the run into another directory: "pr-0010-r1" is a prefix of the sibling
+// "pr-0010-r10".
+func cutOwn(text, own string) string {
+	if own == "" {
+		return text
+	}
+	var out strings.Builder
+	for {
+		i := strings.Index(text, own)
+		if i < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		rest := text[i+len(own):]
+		ends := rest == "" ||
+			(os.IsPathSeparator(rest[0]) && !strings.HasPrefix(rest, string(os.PathSeparator)+".."))
+		if ends {
+			out.WriteString(text[:i])
+		} else {
+			out.WriteString(text[:i+len(own)])
+		}
+		text = rest
+	}
+}
+
 // inputTexts is the text a marker is matched against. A tool call's input is
 // the JSON object of its arguments, so its string values are decoded and
 // matched one by one: an escaped newline or the closing quote of the object
@@ -285,7 +313,7 @@ func collectStrings(value any, texts *[]string) {
 // nothing.
 func (m marker) matches(text string) bool {
 	if m.own != "" {
-		text = strings.ReplaceAll(text, m.own, "")
+		text = cutOwn(text, m.own)
 	}
 	if m.command == nil {
 		return strings.Contains(text, m.text)

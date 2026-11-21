@@ -223,3 +223,32 @@ func TestExcerpt(t *testing.T) {
 		require.Len(t, got, maxExcerpt)
 	})
 }
+
+// TestContaminatedCallsCutOnlyTheRunsOwnPath checks that the run's own
+// directory is cut out of the input only where it ends: a sibling run whose
+// name starts the same way, and a path that climbs back out of the run with
+// "..", both count.
+func TestContaminatedCallsCutOnlyTheRunsOwnPath(t *testing.T) {
+	t.Parallel()
+
+	paths := Paths{
+		Batches: "/state/crush-eval/batches",
+		Own:     "/state/crush-eval/batches/b1/runs/pr-0010-r1",
+	}
+	markers := contaminationMarkers(&task.Task{}, paths)
+
+	for _, input := range []string{
+		"ls /state/crush-eval/batches/b1/runs/pr-0010-r10/src",
+		"cat /state/crush-eval/batches/b1/runs/pr-0010-r1/../../b2/x",
+		`{"command":"cd /state/crush-eval/batches/b1/runs/pr-0010-r1/../pr-0010-r2 && go test"}`,
+	} {
+		require.Equal(t, 1, len(contaminatedCalls(call(t, input), markers)), input)
+	}
+
+	for _, input := range []string{
+		"ls /state/crush-eval/batches/b1/runs/pr-0010-r1/src",
+		"cd /state/crush-eval/batches/b1/runs/pr-0010-r1",
+	} {
+		require.Zero(t, len(contaminatedCalls(call(t, input), markers)), input)
+	}
+}
