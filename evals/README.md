@@ -143,8 +143,8 @@ fork. A contaminated run is reported and left out of the comparisons; a rate
 above 2% of a batch stops the comparison until the cause is found.
 
 Every result line keeps `contaminated_evidence`: for each contaminated tool
-call, the markers it matched and up to 200 characters of its input, with
-anything that looks like a token or a key redacted. `crush-eval compare`
+call, the markers it matched and about 200 characters of its input around the
+first match, with anything that looks like a credential redacted. `crush-eval compare`
 prints the contaminated count per variant, then one line per contaminated run
 with its markers and those excerpts, so a void comparison can be diagnosed
 after the session databases are gone.

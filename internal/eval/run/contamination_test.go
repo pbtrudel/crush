@@ -189,8 +189,8 @@ func TestContaminatedCallsKeepTheMarkers(t *testing.T) {
 	require.Equal(t, `{"command":"git cat-file -p /host/crush/internal/agent/x.go"}`, found[0].Excerpt)
 }
 
-// TestExcerpt checks the excerpt a contaminated call keeps: it is short, and
-// a token or a key never enters it.
+// TestExcerpt checks the excerpt a contaminated call keeps: it is short, it
+// is centred on the match, and a credential never enters it.
 func TestExcerpt(t *testing.T) {
 	t.Parallel()
 
@@ -206,6 +206,11 @@ func TestExcerpt(t *testing.T) {
 			want:  `curl -H 'Authorization: Bearer [redacted]'`,
 		},
 		{
+			name:  "a basic authorization",
+			input: `curl -H 'Authorization: Basic dXNlcjpwYXNzd29yZA==' https://api.example.com`,
+			want:  `curl -H 'Authorization: Basic [redacted]' https://api.example.com`,
+		},
+		{
 			name:  "an api key field",
 			input: `{"api_key":"sk-abcdefghijklmnopqrst"}`,
 			want:  `{"api_key":"[redacted]"}`,
@@ -215,18 +220,48 @@ func TestExcerpt(t *testing.T) {
 			input: "git clone https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x",
 			want:  "git clone https://[redacted]@github.com/x",
 		},
+		{
+			name:  "a user and password in a url",
+			input: "git clone https://user:s3cret@github.com/x/y.git",
+			want:  "git clone https://[redacted]@github.com/x/y.git",
+		},
+		{
+			name:  "curl user and password",
+			input: "curl -u user:pass https://x.example/pulls",
+			want:  "curl -u [redacted] https://x.example/pulls",
+		},
+		{
+			name:  "a google api key",
+			input: "echo AIzaSyA1234567890abcdefghijklmnopqrstuv",
+			want:  "echo [redacted]",
+		},
+		{
+			name:  "a gitlab token",
+			input: "echo glpat-abcdefghij1234567890",
+			want:  "echo [redacted]",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, test.want, excerpt(test.input))
+			require.Equal(t, test.want, excerpt(test.input, nil))
 		})
 	}
 
 	t.Run("a long input", func(t *testing.T) {
 		t.Parallel()
-		got := excerpt(strings.Repeat("a", 3*maxExcerpt))
+		got := excerpt(strings.Repeat("a", 3*maxExcerpt), nil)
 		require.Len(t, got, maxExcerpt)
+	})
+
+	t.Run("a long input centred on the match", func(t *testing.T) {
+		t.Parallel()
+		input := strings.Repeat("x", 300) + " gh pr view 5 -R pbtrudel/crush " + strings.Repeat("y", 300)
+		got := excerpt(input, []string{"gh pr"})
+		require.Len(t, got, maxExcerpt)
+		require.Equal(t, maxExcerpt/2, strings.Index(got, "gh pr"),
+			"the match sits in the middle of the excerpt")
+		require.Contains(t, got, "gh pr view 5")
 	})
 }
 

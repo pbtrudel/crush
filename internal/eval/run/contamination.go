@@ -192,7 +192,7 @@ func contaminatedCalls(parts string, markers []marker) []result.Contamination {
 		if names := matchedMarkers(part.Data.Input, markers); len(names) > 0 {
 			found = append(found, result.Contamination{
 				Markers: names,
-				Excerpt: excerpt(part.Data.Input),
+				Excerpt: excerpt(part.Data.Input, names),
 			})
 		}
 	}
@@ -238,25 +238,31 @@ func matchedMarkers(input string, markers []marker) []string {
 // results.jsonl readable.
 const maxExcerpt = 200
 
-// redactions are the shapes of a token or a key an excerpt must not keep: a
-// bearer token, a named credential, and the token formats of the providers
-// the suite runs.
+// redactions are the shapes of a credential an excerpt must not keep: a
+// bearer or basic authorization, credentials in a URL or a curl command, a
+// named credential, and the token formats of the providers the suite runs.
 var redactions = []struct {
 	pattern *regexp.Regexp
 	replace string
 }{
 	{regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/-]{8,}=*`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(basic\s+)[a-z0-9+/=._~-]{4,}`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@`), "${1}[redacted]@"},
+	{regexp.MustCompile(`(?i)((?:^|\s)(?:-u|--user)[= ]\s*)[^\s:]+:[^\s]+`), "${1}[redacted]"},
 	{regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}`), "${1}[redacted]"},
 	{regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}`), "[redacted]"},
 	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{16,}`), "[redacted]"},
+	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`), "[redacted]"},
+	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35,}`), "[redacted]"},
 	{regexp.MustCompile(`\b(?:sk|xox[baprs])-[A-Za-z0-9_-]{16,}`), "[redacted]"},
 	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16,}`), "[redacted]"},
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "[redacted]"},
 }
 
-// excerpt is the input of one contaminated tool call, with anything that
-// looks like a token or a key replaced and cut to maxExcerpt characters.
-func excerpt(input string) string {
+// excerpt is about maxExcerpt characters of one contaminated tool call's
+// input, centred on the first marker it matched, with anything that looks
+// like a credential replaced.
+func excerpt(input string, markers []string) string {
 	text := input
 	for _, redaction := range redactions {
 		text = redaction.pattern.ReplaceAllString(text, redaction.replace)
@@ -264,11 +270,34 @@ func excerpt(input string) string {
 	if len(text) <= maxExcerpt {
 		return text
 	}
-	cut := maxExcerpt
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
+	start := firstMatch(text, markers) - maxExcerpt/2
+	start = min(max(start, 0), len(text)-maxExcerpt)
+	// Both ends move back to a rune boundary, so the excerpt stays valid
+	// UTF-8 and never splits a character.
+	for start > 0 && !utf8.RuneStart(text[start]) {
+		start--
 	}
-	return text[:cut]
+	end := start + maxExcerpt
+	for end > start && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[start:end]
+}
+
+// firstMatch is where the first of the matched markers appears in text, or 0
+// when none of them is found: a command marker matches a whole command, so
+// its words may not sit in the text exactly as the marker writes them.
+func firstMatch(text string, markers []string) int {
+	lower := strings.ToLower(text)
+	at, found := 0, false
+	for _, m := range markers {
+		i := strings.Index(lower, m)
+		if i < 0 || found && i >= at {
+			continue
+		}
+		at, found = i, true
+	}
+	return at
 }
 
 // cutOwn removes the run's own directory from text, where text names a path
