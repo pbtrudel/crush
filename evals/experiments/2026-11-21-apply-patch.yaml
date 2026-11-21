@@ -1,0 +1,26 @@
+date: 2026-11-21
+name: apply-patch
+variants:
+  - name: control
+    ref: TBD-apply-patch-tip
+    overlay: {apply_patch: false}
+  - name: patch
+    ref: TBD-apply-patch-tip
+    overlay: {apply_patch: true}
+routes: [gpt-5.4-nano]
+repetitions: 3
+# Both variants run the same build, the branch's tip commit: only the overlay
+# differs, so the comparison isolates the tool. The option is gated on the
+# model id inside Crush (a "gpt-" prefix), so the control keeps edit and
+# multiedit and the variant is offered apply_patch instead. Pass rate is the
+# primary metric because the item's acceptance is that solving does not get
+# worse; the edit failure rate by kind comes from `crush stats report --json`
+# ("how edits fail") over each run's data directory, and steps per task is the
+# steps median compare prints.
+primary_metric: pass_rate
+margin: 0.1
+# Planning stand-in: there is no gpt-5.4-nano baseline yet, so the standard
+# error comes from the deepseek-flash baseline of the same 24 tasks, as w12 and
+# w13 did for their own routes.
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453

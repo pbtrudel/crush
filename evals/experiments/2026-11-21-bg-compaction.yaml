@@ -1,0 +1,32 @@
+date: 2026-11-21
+name: bg-compaction
+variants:
+  - name: control
+    ref: TBD-bg-compaction-tip
+    overlay: {auto_compact_threshold: 0.15, compact_tail_tokens: 8000, compact_background_margin: 0}
+  - name: background
+    ref: TBD-bg-compaction-tip
+    overlay: {auto_compact_threshold: 0.15, compact_tail_tokens: 8000, compact_background_margin: 0.02}
+routes: [deepseek-flash-ctx]
+repetitions: 3
+# Both variants run the same build, the branch's tip commit: only the overlay
+# differs, so the comparison isolates the option. Pass rate is the primary
+# metric because a background summary that is stale or unused must not cost
+# solved tasks; wall time per task, steps and tokens are read from the same
+# batch (compare prints them per variant), and the compaction counts by
+# trigger come from `crush stats report --json` over each run's data
+# directory.
+#
+# Threshold deviation, stated before the run: no task of the suite crosses
+# the default limit on this route. On the deepseek-flash route the window is
+# unknown (0) and Crush then compacts never; on a route that declares a real
+# window, a run's largest step reached about 60k tokens against a
+# 0.5 * 200k = 100k limit, and the 14 run directories of w21-edit-2 hold no
+# summary at all. Both arms therefore compact at 0.15 * 200k = 30k with an
+# 8k verbatim tail, so most runs compact at least once. auto_compact_threshold
+# is a share of the window, so the background margin of 0.02 starts the
+# summary 4k tokens below the 30k limit (26k).
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453
