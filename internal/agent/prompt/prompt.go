@@ -171,10 +171,10 @@ func processFile(filePath string) *ContextFile {
 // the working directory, broadest first: a session started in a subdirectory
 // still reads the instructions kept at the repository root. An absolute path
 // names one file or directory and is read there only.
-func processContextPath(p string, store *config.ConfigStore) []ContextFile {
+func processContextPath(p, workingDir string) []ContextFile {
 	var contexts []ContextFile
 	seen := make(map[string]bool)
-	for _, dir := range contextSearchDirs(store.WorkingDir(), filepathext.SmartIsAbs(p)) {
+	for _, dir := range contextSearchDirs(workingDir, filepathext.SmartIsAbs(p)) {
 		for _, found := range processContextPathAt(filepathext.SmartJoin(dir, p)) {
 			// Two files whose names differ only in case are two files
 			// on a case-sensitive filesystem, so the key keeps the case.
@@ -276,7 +276,11 @@ func expandPath(path string, store *config.ConfigStore) string {
 // When maxBytes is positive, the chain is bounded: broader files are omitted
 // before the most specific file is truncated, so a large project chain
 // cannot evict the user's global instructions.
-func loadContextFiles(paths []string, store *config.ConfigStore, maxBytes int) ([]ContextFile, *ContextBudget) {
+//
+// Relative paths resolve against workingDir, the directory the prompt names,
+// so a prompt built for a directory other than the session's reads that
+// directory's instructions.
+func loadContextFiles(paths []string, workingDir string, store *config.ConfigStore, maxBytes int) ([]ContextFile, *ContextBudget) {
 	var files []ContextFile
 	seen := make(map[string]bool, len(paths))
 	for _, pth := range paths {
@@ -286,7 +290,7 @@ func loadContextFiles(paths []string, store *config.ConfigStore, maxBytes int) (
 			continue
 		}
 		seen[pathKey] = true
-		files = append(files, processContextPath(expanded, store)...)
+		files = append(files, processContextPath(expanded, workingDir)...)
 	}
 	return budgetContextFiles(files, maxBytes)
 }
@@ -443,8 +447,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
 	cfg := store.Config()
-	contextFiles, contextBudget := loadContextFiles(cfg.Options.ContextPaths, store, cfg.Options.GetContextMaxBytes())
-	globalContextFiles, globalContextBudget := loadContextFiles(cfg.Options.GlobalContextPaths, store, cfg.Options.GetContextMaxBytes())
+	contextFiles, contextBudget := loadContextFiles(cfg.Options.ContextPaths, workingDir, store, cfg.Options.GetContextMaxBytes())
+	globalContextFiles, globalContextBudget := loadContextFiles(cfg.Options.GlobalContextPaths, workingDir, store, cfg.Options.GetContextMaxBytes())
 
 	// Discover and load skills metadata.
 	var availSkillXML string
