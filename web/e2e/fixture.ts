@@ -100,7 +100,7 @@ export interface Gateway {
   origin: string;
 }
 
-async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<void> {
+async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
   // `go run` does not forward SIGTERM to the program it starts, which
   // would orphan webfake. Build once and run the binary directly.
   const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
@@ -110,7 +110,7 @@ async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<
     execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, stdio: 'inherit' });
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
-    proc = spawn(bin, [], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderrText = '';
     proc.stderr!.on('data', (chunk: Buffer) => {
       stderrText = (stderrText + chunk.toString()).slice(-4096);
@@ -124,14 +124,14 @@ async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<
 }
 
 export const test = base.extend<{}, { gateway: Gateway }>({
-  gateway: [async ({}, use) => launchGateway(use), { scope: 'worker', timeout: 180_000 }],
+  gateway: [async ({}, use) => launchGateway({}, use), { scope: 'worker', timeout: 180_000 }],
 });
 
 // Visual tests get their own webfake: the worker's shared session keeps every
 // message an earlier test sent, and the log and token counts in a screenshot
 // must not depend on which tests ran first.
 export const visualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway(use),
+  gateway: async ({}, use) => launchGateway({ WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
 export { expect } from '@playwright/test';
