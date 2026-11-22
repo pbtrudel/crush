@@ -7,6 +7,7 @@ import type {
 import {
   adoptSession, dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
 } from './reducer';
+import { effectsLevel, type EffectsLevel } from './effects';
 import { observe, telemetry } from './telemetry';
 
 export const state = signal<State>(initialState());
@@ -204,4 +205,9 @@ export const actions = {
     }
   },
   dismissToast: (id: number) => dispatch((s) => dismissToast(s, id)),
+  // effectsReduced records a frame-time step down and offers the way back.
+  effectsReduced(level: EffectsLevel) {
+    effectsLevel.value = level;
+    dispatch((s) => pushToast(s, 'warn', 'Reduced effects to keep things smooth', 'restore-effects'));
+  },
 };

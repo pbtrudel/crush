@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
 import type { Frame, PermissionRequest, QuestionRequest, Session } from '../api/types';
+import { effectsLevel } from './effects';
 import { adoptSession, initialState } from './reducer';
 import { actions, dispatch, handleFrames, state } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
@@ -248,5 +249,19 @@ describe('telemetry from the stream', () => {
     expect(telemetry.value.tools).toHaveLength(1);
     dispatch((s) => adoptSession(s, 's2'));
     expect(telemetry.value).toEqual(emptyTelemetry());
+  });
+});
+
+describe('actions.effectsReduced', () => {
+  it('records the step down and offers to restore the effects', () => {
+    state.value = initialState();
+    effectsLevel.value = 0;
+    actions.effectsReduced(2);
+    expect(effectsLevel.value).toBe(2);
+    const toast = state.value.toasts.at(-1)!;
+    expect(toast.tone).toBe('warn');
+    expect(toast.text).toBe('Reduced effects to keep things smooth');
+    expect(toast.action).toBe('restore-effects');
+    effectsLevel.value = 0;
   });
 });

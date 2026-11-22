@@ -28,6 +28,17 @@ describe('palette', () => {
     expect(parseOklch('oklch(1 0 0)')!.getHexString()).toBe('ffffff');
   });
 
+  it('parses the percentage form a browser returns for a custom property', () => {
+    const percent = parseOklch('oklch(12% .05 275)')!;
+    const plain = parseOklch('oklch(0.12 0.05 275)')!;
+    expect(percent.getHexString()).toBe(plain.getHexString());
+    // The void token is nearly black; reading 12 as a lightness would clamp
+    // every channel to white.
+    expect(percent.r).toBeLessThan(0.1);
+    // A percentage chroma is relative to 0.4.
+    expect(parseOklch('oklch(12% 12.5% 275)')!.getHexString()).toBe(plain.getHexString());
+  });
+
   it('falls back when the token is missing, as in jsdom', () => {
     expect(token('--missing', '#52d8ff').getHexString()).toBe('52d8ff');
   });

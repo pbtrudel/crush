@@ -1,36 +1,50 @@
 import { useEffect, useRef } from 'preact/hooks';
-import { state } from '../../state/store';
-import { contextFill, needsAttention } from '../../state/reducer';
-import { motion } from '../../state/motion';
-import { sceneFailed, use3D } from '../../state/effects';
+import type { SceneHandle, SceneInput } from '../../scene/mount';
+import { effectFlags, effectsLevel, sceneFailed, use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
-import type { SceneState } from '../../scene/constellation';
-
-type Scene = { update(s: SceneState): void; dispose(): void };
+import { coreMode } from '../../state/levels';
+import { lowPower, motion } from '../../state/motion';
+import { contextFill } from '../../state/reducer';
+import { actions, state } from '../../state/store';
+import { telemetry } from '../../state/telemetry';
 
 export function SceneLayer() {
   const s = state.value;
-  const fill = contextFill(s);
-  const attention = needsAttention(s);
   const enabled = use3D();
-  // Task 4 centers the projector on the stage box; reading it here keeps the
-  // layer subscribed so a layout change re-runs the update below.
-  const rect = stageRect.value;
+  const tools = telemetry.value.tools;
+  const input: SceneInput = {
+    mode: coreMode(s),
+    fill: contextFill(s),
+    motion: motion.value,
+    effects: effectFlags(effectsLevel.value, lowPower.value),
+    booting: s.conn === 'booting',
+    focus: stageRect.value,
+  };
   const canvas = useRef<HTMLCanvasElement>(null);
-  const scene = useRef<Scene | null>(null);
-  const sceneState: SceneState = { busy: s.busy, contextFill: fill, attention, motion: motion.value };
+  const scene = useRef<SceneHandle | null>(null);
+  const lastBurst = useRef<string | undefined>(undefined);
   // The 3D chunk loads asynchronously, so remember the latest state rather
   // than the state captured when the mount effect ran.
-  const latest = useRef(sceneState);
-  latest.current = sceneState;
+  const latest = useRef(input);
+  latest.current = input;
 
   useEffect(() => {
     if (!enabled || !canvas.current) return;
     let disposed = false;
-    import('../../scene/constellation')
-      .then(({ mountConstellation }) => {
+    import('../../scene/mount')
+      .then(({ mountScene }) => {
         if (disposed || !canvas.current) return;
-        scene.current = mountConstellation(canvas.current, latest.current);
+        const handle = mountScene(canvas.current, latest.current, {
+          onStepDown: (level) => actions.effectsReduced(level),
+          onFail: () => {
+            sceneFailed.value = true;
+          },
+        });
+        scene.current = handle;
+        // Seed from the window so the 15 minutes it holds never replay as
+        // a storm of rings.
+        lastBurst.current = telemetry.peek().tools.at(-1)?.id;
+        handle.update(latest.current);
       })
       .catch(() => {
         if (!disposed) sceneFailed.value = true;
@@ -44,7 +58,17 @@ export function SceneLayer() {
 
   useEffect(() => {
     scene.current?.update(latest.current);
-  }, [s.busy, fill, attention, motion.value, rect]);
+  }, [s, motion.value, effectsLevel.value, lowPower.value, stageRect.value]);
+
+  useEffect(() => {
+    const handle = scene.current;
+    if (!handle) return;
+    const last = lastBurst.current;
+    // A pruned id means everything left in the window is newer than it.
+    const start = last === undefined ? 0 : tools.findIndex((e) => e.id === last) + 1;
+    for (const event of tools.slice(start)) handle.burst(event.category);
+    if (tools.length > start) lastBurst.current = tools[tools.length - 1].id;
+  }, [tools]);
 
   if (!enabled) return null;
   return <canvas ref={canvas} class="scene-layer__canvas" aria-hidden="true" />;

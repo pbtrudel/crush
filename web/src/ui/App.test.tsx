@@ -5,7 +5,7 @@ import { initialState } from '../state/reducer';
 import { state } from '../state/store';
 import { App } from './App';
 
-vi.mock('../scene/constellation', () => ({ mountConstellation: () => { throw new Error('no webgl'); } }));
+vi.mock('../scene/mount', () => ({ mountScene: () => { throw new Error('no webgl'); } }));
 
 describe('App layout', () => {
   it('puts reading surfaces on glass and glanceable ones on hologram, in the same DOM order', async () => {

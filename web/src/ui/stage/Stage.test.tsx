@@ -1,15 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { Stage } from './Stage';
 import { lowPower } from '../../state/motion';
 import { resetWebglProbe, sceneFailed, use3D } from '../../state/effects';
-
-vi.mock('../../scene/constellation', () => ({
-  mountConstellation: () => {
-    throw new Error('no webgl');
-  },
-}));
 
 describe('Stage', () => {
   it('renders the 2D constellation and an accessible agent list without WebGL', () => {
