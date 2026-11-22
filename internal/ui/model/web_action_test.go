@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/stretchr/testify/require"
 )
+
+const webTestURL = "http://127.0.0.1:1/#t=x"
 
 // stubWeb is a configurable web launcher for the web mode message tests.
 type stubWeb struct {
@@ -56,6 +59,52 @@ func runOpenWeb(t *testing.T, web common.WebLauncher) util.InfoMsg {
 	return msg
 }
 
+// sequenceCmds returns the commands inside a tea.Sequence result. Bubble Tea
+// keeps the sequence type unexported, so read the slice reflectively.
+func sequenceCmds(t *testing.T, msg tea.Msg) ([]tea.Cmd, bool) {
+	t.Helper()
+	value := reflect.ValueOf(msg)
+	if !value.IsValid() || value.Kind() != reflect.Slice {
+		return nil, false
+	}
+	cmds := make([]tea.Cmd, value.Len())
+	for i := range cmds {
+		cmd, ok := value.Index(i).Interface().(tea.Cmd)
+		if !ok {
+			return nil, false
+		}
+		cmds[i] = cmd
+	}
+	return cmds, true
+}
+
+// runWebCmds executes a command tree in runtime order, including the
+// unexported tea.Sequence slice, and returns the messages it produced.
+func runWebCmds(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, runWebCmds(c)...)
+		}
+		return out
+	}
+	value := reflect.ValueOf(msg)
+	if value.IsValid() && value.Kind() == reflect.Slice {
+		var out []tea.Msg
+		for i := 0; i < value.Len(); i++ {
+			if c, ok := value.Index(i).Interface().(tea.Cmd); ok {
+				out = append(out, runWebCmds(c)...)
+			}
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
 func TestOpenWebReturnsStartedMessage(t *testing.T) {
 	t.Parallel()
 
@@ -70,9 +119,32 @@ func TestOpenWebReturnsStartedMessage(t *testing.T) {
 	require.Zero(t, web.opens, "openWeb must not open the browser itself")
 }
 
-func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
+func TestWebStartedShowsNoticeBeforeOpening(t *testing.T) {
 	// This test replaces a package-level clipboard seam, so it must not
 	// run in parallel with the other tests in this package.
+	original := copyWebLinkToClipboard
+	t.Cleanup(func() { copyWebLinkToClipboard = original })
+	copyWebLinkToClipboard = func(_, successMessage, _ string) tea.Cmd {
+		return util.ReportInfo(successMessage)
+	}
+
+	web := &stubWeb{url: webTestURL}
+	m := newWebUI(web)
+
+	cmds, ok := sequenceCmds(t, m.webStarted(WebStartedMsg{URL: webTestURL})())
+	require.True(t, ok, "webStarted must sequence the notice before the rest")
+	require.Len(t, cmds, 2)
+	require.Zero(t, web.opens, "the opener must not run before the notice")
+
+	require.Equal(t, util.NewInfoMsg("Opening browser: "+webTestURL), cmds[0]())
+	require.Zero(t, web.opens, "the opener must run only after the notice")
+
+	msgs := runWebCmds(cmds[1])
+	require.Equal(t, 1, web.opens)
+	require.Contains(t, msgs, util.NewInfoMsg("Opening browser. Web link copied: "+webTestURL))
+}
+
+func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
 	original := copyWebLinkToClipboard
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
 
@@ -82,16 +154,17 @@ func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
 		return util.ReportInfo(successMessage)
 	}
 
-	web := &stubWeb{url: "http://127.0.0.1:1/#t=x"}
+	web := &stubWeb{url: webTestURL}
 	m := newWebUI(web)
 
-	_, cmd := m.Update(WebStartedMsg{URL: "http://127.0.0.1:1/#t=x"})
+	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
 	require.NotNil(t, cmd)
 
-	msgs := runCmdCollect(cmd)
-	require.Equal(t, []string{"http://127.0.0.1:1/#t=x"}, copied)
+	msgs := runWebCmds(cmd)
+	require.Equal(t, []string{webTestURL}, copied)
 	require.Equal(t, 1, web.opens, "the browser must be opened in the background")
-	require.Contains(t, msgs, util.NewInfoMsg("Opening browser. Web link copied: http://127.0.0.1:1/#t=x"))
+	require.Contains(t, msgs, util.NewInfoMsg("Opening browser: "+webTestURL))
+	require.Contains(t, msgs, util.NewInfoMsg("Opening browser. Web link copied: "+webTestURL))
 }
 
 func TestWebStartedWarnsWhenBrowserFails(t *testing.T) {
@@ -101,14 +174,14 @@ func TestWebStartedWarnsWhenBrowserFails(t *testing.T) {
 		return util.ReportInfo(successMessage)
 	}
 
-	web := &stubWeb{url: "http://127.0.0.1:1/#t=x", openErr: errors.New("no browser")}
+	web := &stubWeb{url: webTestURL, openErr: errors.New("no browser")}
 	m := newWebUI(web)
 
-	_, cmd := m.Update(WebStartedMsg{URL: "http://127.0.0.1:1/#t=x"})
-	msgs := runCmdCollect(cmd)
+	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
+	msgs := runWebCmds(cmd)
 
 	require.Equal(t, 1, web.opens)
-	require.Contains(t, msgs, util.NewWarnMsg("Web mode is running. Open http://127.0.0.1:1/#t=x"))
+	require.Contains(t, msgs, util.NewWarnMsg("Web mode is running. Open "+webTestURL))
 }
 
 func TestWebStartedCopyFailureKeepsLink(t *testing.T) {
@@ -118,13 +191,30 @@ func TestWebStartedCopyFailureKeepsLink(t *testing.T) {
 		return util.ReportWarn(failureMessage)
 	}
 
-	web := &stubWeb{url: "http://127.0.0.1:1/#t=x"}
+	web := &stubWeb{url: webTestURL}
 	m := newWebUI(web)
 
-	_, cmd := m.Update(WebStartedMsg{URL: "http://127.0.0.1:1/#t=x"})
-	msgs := runCmdCollect(cmd)
+	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
+	msgs := runWebCmds(cmd)
 
-	require.Contains(t, msgs, util.NewWarnMsg("Failed to copy the web link to the clipboard. Open http://127.0.0.1:1/#t=x"))
+	require.Contains(t, msgs, util.NewWarnMsg("Failed to copy the web link to the clipboard. Open "+webTestURL))
+}
+
+func TestWebStartedWithoutWebLauncher(t *testing.T) {
+	original := copyWebLinkToClipboard
+	t.Cleanup(func() { copyWebLinkToClipboard = original })
+	copyWebLinkToClipboard = func(_, successMessage, _ string) tea.Cmd {
+		return util.ReportInfo(successMessage)
+	}
+
+	m := newWebUI(nil)
+
+	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
+	require.NotNil(t, cmd)
+
+	msgs := runWebCmds(cmd)
+	require.Contains(t, msgs, util.NewInfoMsg("Opening browser: "+webTestURL))
+	require.NotContains(t, msgs, util.NewWarnMsg("Web mode is running. Open "+webTestURL))
 }
 
 func TestOpenWebReportsStartFailure(t *testing.T) {

@@ -97,13 +97,14 @@ The embed must live inside a Go package directory, so the build copies
 - Config option `options.web = true` (crushrc `option web true`, JSON
   `"options": {"web": true}`).
 - TUI command `/web` (also in the commands dialog): starts the gateway if not
-  running, then copies the launch link and opens the tab in the background.
-- As soon as the gateway is up, the launch link is copied to the clipboard and
-  shown in a TUI notification, and `internal/browser.OpenURL` runs off the
-  render path so a slow or missing opener cannot stall the TUI or hide the
-  link. On failure, the URL is shown in a TUI notification and logged at info
-  level (token included only in the notification, never in logs). A failed
-  copy also reports the URL.
+  running, then shows the launch link, copies it and opens the tab in the
+  background.
+- As soon as the gateway is up, the launch link is shown in a TUI
+  notification, then copied to the clipboard, and `internal/browser.OpenURL`
+  runs off the render path so a slow clipboard or opener cannot stall the TUI
+  or hide the link. On failure, the URL is shown in a TUI notification (token
+  included only in the notification, never in logs). A failed copy also
+  reports the URL.
 - TUI status bar shows a `web` indicator while the gateway runs.
 
 ### 2.3 Security

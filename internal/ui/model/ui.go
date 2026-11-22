@@ -7332,13 +7332,16 @@ type WebStartedMsg struct {
 	URL string
 }
 
-// webStarted copies the launch link and opens a browser tab in the
-// background. The link is never lost: the copy failure and the opener
-// failure both carry it.
+// webStarted shows the launch link at once, then copies it and opens a
+// browser tab in the background. The notice comes first so a slow clipboard
+// or opener cannot hide the link; the copy and the opener then run
+// concurrently so the clipboard cannot delay the browser. The link is never
+// lost: the copy failure and the opener failure both carry it.
 func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
 	if msg.URL == "" {
 		return nil
 	}
+	notice := util.ReportInfo("Opening browser: " + msg.URL)
 	cmds := []tea.Cmd{
 		copyWebLinkToClipboard(
 			msg.URL,
@@ -7346,7 +7349,7 @@ func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
 			"Failed to copy the web link to the clipboard. Open "+msg.URL,
 		),
 	}
-	if m.com.Web != nil {
+	if m.com != nil && m.com.Web != nil {
 		web := m.com.Web
 		cmds = append(cmds, func() tea.Msg {
 			if err := web.OpenBrowser(); err != nil {
@@ -7355,7 +7358,7 @@ func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
 			return nil
 		})
 	}
-	return tea.Batch(cmds...)
+	return tea.Sequence(notice, tea.Batch(cmds...))
 }
 
 // openWeb starts web mode if needed and hands the launch link to the
