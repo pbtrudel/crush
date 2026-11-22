@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { effectsLevel, sceneFailed } from '../state/effects';
@@ -7,10 +7,15 @@ import { MotionMenu } from './MotionMenu';
 
 const root = document.createElement('div');
 
+beforeEach(() => {
+  document.body.append(root);
+});
+
 afterEach(async () => {
   await act(() => {
     render(null, root);
   });
+  root.remove();
   effectsLevel.value = 0;
   sceneFailed.value = false;
   lowPower.value = false;
@@ -57,5 +62,23 @@ describe('Display menu recovery', () => {
     expect(effectsLevel.value).toBe(0);
     expect(sceneFailed.value).toBe(false);
     expect(restore()).toBeUndefined();
+  });
+
+  it('keeps focus in the menu when the restore button goes away', async () => {
+    effectsLevel.value = 1;
+    await mount();
+    const button = restore()!;
+    await act(() => {
+      button.focus();
+    });
+    expect(document.activeElement).toBe(button);
+
+    await act(() => {
+      button.click();
+    });
+    expect(restore()).toBeUndefined();
+    // The button unmounts with the recovery; focus lands on the Display
+    // summary instead of dropping to the body.
+    expect(document.activeElement).toBe(root.querySelector('summary'));
   });
 });

@@ -1,10 +1,20 @@
+import { useRef } from 'preact/hooks';
 import { effectsLevel, restoreEffects, sceneFailed } from '../state/effects';
 import { lowPower, motion, setLowPower, setMotion, type Motion } from '../state/motion';
 
 export function MotionMenu() {
+  const summary = useRef<HTMLElement>(null);
+  const restore = () => {
+    restoreEffects();
+    // The button unmounts with the recovery, so focus moves to the menu
+    // header instead of dropping to the body.
+    summary.current?.focus();
+  };
   return (
     <details class="motion-menu">
-      <summary class="hud-label">Display</summary>
+      {/* tabIndex keeps the summary programmatically focusable after the
+          restore button is gone. */}
+      <summary ref={summary} tabIndex={0} class="hud-label">Display</summary>
       <div class="motion-menu__panel">
       <fieldset>
         <legend class="hud-label">Motion</legend>
@@ -22,7 +32,7 @@ export function MotionMenu() {
       {/* The step-down toast dismisses itself, so the menu is the lasting
           way back from reduced effects and from a failed scene. */}
       {(effectsLevel.value > 0 || sceneFailed.value) && (
-        <button type="button" class="btn btn--ghost" onClick={() => restoreEffects()}>Restore effects</button>
+        <button type="button" class="btn btn--ghost" onClick={restore}>Restore effects</button>
       )}
       </div>
     </details>
