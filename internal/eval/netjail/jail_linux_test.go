@@ -419,6 +419,47 @@ func TestJailMaskKeepsTheRunDirectory(t *testing.T) {
 	require.FileExists(t, filepath.Join(sibling, "results.jsonl"))
 }
 
+// TestJailMaskThroughASymlinkedHome checks that a batches mask named through
+// a symlinked eval home also hides the siblings at the symlink's target, and
+// the other way round: the eval home is often a symlink to a larger disk.
+func TestJailMaskThroughASymlinkedHome(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	root := t.TempDir()
+	real := filepath.Join(root, "disk", "crush-eval")
+	link := filepath.Join(root, "state", "crush-eval")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "batches", "b1", "runs", "pr-0010-r2"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "batches", "b1", "runs", "pr-0010-r1"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
+	require.NoError(t, os.Symlink(real, link))
+
+	for _, tc := range []struct{ name, maskHome, listHome string }{
+		{"mask link list real", link, real},
+		{"mask link list link", link, link},
+		{"mask real list link", real, link},
+	} {
+		self, err := os.Executable()
+		require.NoError(t, err)
+		run := filepath.Join(tc.maskHome, "batches", "b1", "runs", "pr-0010-r1")
+		cmd := exec.CommandContext(context.Background(), self)
+		cmd.Env = append(os.Environ(),
+			"NETJAIL_PROBE=1",
+			"NETJAIL_LIST="+filepath.Join(tc.listHome, "batches", "b1", "runs"),
+		)
+		require.NoError(t, netjail.Wrap(cmd, "", 0,
+			netjail.Mask{Path: filepath.Join(tc.maskHome, "batches"), Keep: []string{run}}))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, tc.name+": "+string(out))
+		require.Contains(t, string(out), "entries runs=pr-0010-r1", tc.name+": "+string(out))
+		require.NotContains(t, string(out), "pr-0010-r2", tc.name)
+	}
+}
+
 // TestWrapMergesSysProcAttr checks that Wrap keeps the process group the
 // run sets and adds the two namespaces and the identity mappings.
 func TestWrapMergesSysProcAttr(t *testing.T) {
