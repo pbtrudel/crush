@@ -425,19 +425,32 @@ func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.Diag
 // -- Team --
 
 func (w *AppWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
-	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
-	if !ok {
-		return agent.ErrAgentTeamsDisabled
+	tc, err := w.teamController()
+	if err != nil {
+		return err
 	}
 	return tc.TeamSendMessage(ctx, sessionID, member, text)
 }
 
 func (w *AppWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
-	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
-	if !ok {
-		return agent.ErrAgentTeamsDisabled
+	tc, err := w.teamController()
+	if err != nil {
+		return err
 	}
 	return tc.TeamInterrupt(ctx, sessionID, member)
+}
+
+// teamController returns the coordinator as a TeamController, or the
+// reason it cannot steer a team.
+func (w *AppWorkspace) teamController() (agent.TeamController, error) {
+	if w.app.AgentCoordinator == nil {
+		return nil, ErrAgentNotInitialized
+	}
+	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
+	if !ok {
+		return nil, agent.ErrAgentTeamsDisabled
+	}
+	return tc, nil
 }
 
 // -- Config (read-only) --

@@ -644,11 +644,11 @@ func mapTeamError(err error) error {
 	if !errors.As(err, &apiErr) {
 		return err
 	}
-	if apiErr.Code == proto.TeamCodeDisabled {
-		if apiErr.Message == "" {
-			return agent.ErrAgentTeamsDisabled
-		}
-		return fmt.Errorf("%w: %s", agent.ErrAgentTeamsDisabled, apiErr.Message)
+	switch apiErr.Code {
+	case proto.TeamCodeDisabled:
+		return agent.ErrAgentTeamsDisabled
+	case proto.TeamCodeAgentNotInitialized:
+		return ErrAgentNotInitialized
 	}
 	return &agentteam.Error{Code: apiErr.Code, Message: apiErr.Message}
 }

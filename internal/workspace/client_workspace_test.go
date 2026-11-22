@@ -1352,16 +1352,16 @@ func TestClientWorkspaceTeamErrorsKeepIdentity(t *testing.T) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/message"):
 			w.WriteHeader(http.StatusConflict)
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{
+			_ = json.NewEncoder(w).Encode(proto.Error{
 				Message: "agent teams are not enabled",
 				Code:    proto.TeamCodeDisabled,
-			}))
+			})
 		case strings.HasSuffix(r.URL.Path, "/interrupt"):
 			w.WriteHeader(http.StatusBadRequest)
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{
+			_ = json.NewEncoder(w).Encode(proto.Error{
 				Message: `Team member "alice" not found`,
 				Code:    agentteam.CodeMemberNotFound,
-			}))
+			})
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -1375,8 +1375,19 @@ func TestClientWorkspaceTeamErrorsKeepIdentity(t *testing.T) {
 
 	err = ws.TeamSendMessage(t.Context(), "s1", "alice", "hi")
 	require.ErrorIs(t, err, agent.ErrAgentTeamsDisabled)
+	require.EqualError(t, err, agent.ErrAgentTeamsDisabled.Error())
 
 	err = ws.TeamInterrupt(t.Context(), "s1", "alice")
 	require.Equal(t, agentteam.CodeMemberNotFound, agentteam.ErrorCode(err))
 	require.EqualError(t, err, `Team member "alice" not found`)
+}
+
+// TestAppWorkspaceTeamWithoutCoordinator keeps local and client/server
+// mode reporting the same error for the same state: a workspace with no
+// coordinator is not initialized, not a disabled team.
+func TestAppWorkspaceTeamWithoutCoordinator(t *testing.T) {
+	t.Parallel()
+	w := NewAppWorkspace(&app.App{}, nil)
+	require.ErrorIs(t, w.TeamSendMessage(t.Context(), "s1", "alice", "hi"), ErrAgentNotInitialized)
+	require.ErrorIs(t, w.TeamInterrupt(t.Context(), "s1", "alice"), ErrAgentNotInitialized)
 }

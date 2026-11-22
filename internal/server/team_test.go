@@ -84,6 +84,7 @@ func TestTeamRoutesMapErrors(t *testing.T) {
 			name:    "no coordinator is not initialized",
 			prepare: func(*e2eHarness) {},
 			status:  http.StatusBadRequest,
+			code:    proto.TeamCodeAgentNotInitialized,
 			message: backend.ErrAgentNotInitialized.Error(),
 		},
 		{
