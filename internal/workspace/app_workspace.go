@@ -672,6 +672,10 @@ func (w *AppWorkspace) Subscribe(program *tea.Program) {
 	w.app.Subscribe(program)
 }
 
+// SubscribeEvents returns the app's events for a non-TUI consumer such as
+// the web gateway. A stalled consumer blocks only this bridge; the broker
+// keeps buffering and drops for this subscriber once its buffer is full.
+// The channel closes when ctx is done or the app shuts down.
 func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	in := w.app.Events(ctx)
 	out := make(chan any, 256)
@@ -688,6 +692,7 @@ func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	return out
 }
 
+// CurrentSessionID returns the session the TUI last reported.
 func (w *AppWorkspace) CurrentSessionID() string {
 	return w.app.CurrentSessionID()
 }

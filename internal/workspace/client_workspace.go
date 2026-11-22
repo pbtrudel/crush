@@ -35,6 +35,7 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/wire"
 )
 
 // ClientWorkspace implements the Workspace interface by delegating all
@@ -71,9 +72,14 @@ type ClientWorkspace struct {
 	herdrClient *herdr.Client
 
 	// fanMu guards fanSubs, the non-TUI event subscribers fed from the
-	// same SSE stream the TUI consumes.
-	fanMu   sync.Mutex
-	fanSubs map[chan any]struct{}
+	// same SSE stream the TUI consumes, and fanClosed, which stops new
+	// subscriptions once the workspace shuts down.
+	fanMu     sync.Mutex
+	fanSubs   map[chan any]struct{}
+	fanClosed bool
+	// fanDrops counts events dropped for slow subscribers and spaces the
+	// warnings about them.
+	fanDrops dropWarner
 }
 
 // SSE reconnect backoff bounds for the workspace event stream. Declared
@@ -170,7 +176,7 @@ func (w *ClientWorkspace) ListSessions(ctx context.Context) ([]session.Session, 
 }
 
 func (w *ClientWorkspace) SaveSession(ctx context.Context, sess session.Session) (session.Session, error) {
-	saved, err := w.client.SaveSession(ctx, w.workspaceID(), sessionToProto(sess))
+	saved, err := w.client.SaveSession(ctx, w.workspaceID(), wire.SessionToProto(sess))
 	if err != nil {
 		return session.Session{}, err
 	}
@@ -1255,6 +1261,11 @@ const fanBuffer = 512
 func (w *ClientWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	ch := make(chan any, fanBuffer)
 	w.fanMu.Lock()
+	if w.fanClosed {
+		w.fanMu.Unlock()
+		close(ch)
+		return ch
+	}
 	if w.fanSubs == nil {
 		w.fanSubs = make(map[chan any]struct{})
 	}
@@ -1282,8 +1293,21 @@ func (w *ClientWorkspace) broadcast(ev any) {
 		select {
 		case ch <- ev:
 		default:
-			slog.Warn("Dropped workspace event for slow subscriber", "type", fmt.Sprintf("%T", ev))
+			if total, warn := w.fanDrops.drop(time.Now()); warn {
+				slog.Warn("Dropped workspace events for a slow subscriber", "type", fmt.Sprintf("%T", ev), "dropped_total", total)
+			}
 		}
+	}
+}
+
+// closeFan closes every non-TUI subscription and refuses new ones.
+func (w *ClientWorkspace) closeFan() {
+	w.fanMu.Lock()
+	defer w.fanMu.Unlock()
+	w.fanClosed = true
+	for ch := range w.fanSubs {
+		delete(w.fanSubs, ch)
+		close(ch)
 	}
 }
 
@@ -1302,12 +1326,7 @@ func (w *ClientWorkspace) CurrentSessionID() string {
 const shutdownDrainTimeout = 5 * time.Second
 
 func (w *ClientWorkspace) Shutdown() {
-	w.fanMu.Lock()
-	for ch := range w.fanSubs {
-		delete(w.fanSubs, ch)
-		close(ch)
-	}
-	w.fanMu.Unlock()
+	w.closeFan()
 
 	// Stop the reconnect/recovery loop first, then wait for it: cancelling
 	// alone does not unwind a workspace recovery that is already in
@@ -1731,24 +1750,6 @@ func protoToFiles(files []proto.File) []history.File {
 	return out
 }
 
-func sessionToProto(s session.Session) proto.Session {
-	return proto.Session{
-		ID:                  s.ID,
-		ParentSessionID:     s.ParentSessionID,
-		Title:               s.Title,
-		SummaryMessageID:    s.SummaryMessageID,
-		SummaryCutMessageID: s.SummaryCutMessageID,
-		MessageCount:        s.MessageCount,
-		PromptTokens:        s.PromptTokens,
-		CompletionTokens:    s.CompletionTokens,
-		Cost:                s.Cost,
-		Todos:               todosToProto(s.Todos),
-		Channel:             s.Channel,
-		CreatedAt:           s.CreatedAt,
-		UpdatedAt:           s.UpdatedAt,
-	}
-}
-
 // protoToSkillStates reconstructs internal skill state slices from
 // their wire representation. Non-empty Error strings are turned into
 // synthetic error values; the TUI never type-asserts on Err.
@@ -1767,21 +1768,6 @@ func protoToSkillStates(in []proto.SkillState) []*skills.SkillState {
 			state.Err = errors.New(s.Error)
 		}
 		out[i] = state
-	}
-	return out
-}
-
-func todosToProto(todos []session.Todo) []proto.Todo {
-	if len(todos) == 0 {
-		return nil
-	}
-	out := make([]proto.Todo, len(todos))
-	for i, t := range todos {
-		out[i] = proto.Todo{
-			Content:    t.Content,
-			Status:     string(t.Status),
-			ActiveForm: t.ActiveForm,
-		}
 	}
 	return out
 }

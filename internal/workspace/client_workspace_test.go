@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/stretchr/testify/require"
@@ -1390,4 +1391,33 @@ func TestAppWorkspaceTeamWithoutCoordinator(t *testing.T) {
 	w := NewAppWorkspace(&app.App{}, nil)
 	require.ErrorIs(t, w.TeamSendMessage(t.Context(), "s1", "alice", "hi"), ErrAgentNotInitialized)
 	require.ErrorIs(t, w.TeamInterrupt(t.Context(), "s1", "alice"), ErrAgentNotInitialized)
+}
+
+// TestClientWorkspaceSaveSessionSendsTodos pins the wire converter the
+// SDK uses to save a session: the todos must reach the server.
+func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
+	t.Parallel()
+	sent := make(chan proto.Session, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got proto.Session
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sent <- got
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(got)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+	_, err = ws.SaveSession(t.Context(), session.Session{ID: "s1", Todos: []session.Todo{
+		{Content: "ship", Status: session.TodoStatusInProgress, ActiveForm: "Shipping"},
+	}})
+	require.NoError(t, err)
+	got := <-sent
+	require.Equal(t, []proto.Todo{{Content: "ship", Status: "in_progress", ActiveForm: "Shipping"}}, got.Todos)
 }

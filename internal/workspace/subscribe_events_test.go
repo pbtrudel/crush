@@ -120,3 +120,30 @@ func TestAppWorkspaceSubscribeEventsCoexistsWithTUISubscription(t *testing.T) {
 		t.Fatal("TUI subscription starved by the gateway subscription")
 	}
 }
+
+func TestClientWorkspaceSubscribeAfterShutdownIsClosed(t *testing.T) {
+	t.Parallel()
+	w := &ClientWorkspace{}
+	w.closeFan()
+	ch := w.SubscribeEvents(t.Context())
+	select {
+	case _, open := <-ch:
+		require.False(t, open, "a subscription after shutdown must be closed at once")
+	case <-time.After(time.Second):
+		t.Fatal("subscription after shutdown stayed open")
+	}
+}
+
+func TestDropWarnerThrottles(t *testing.T) {
+	t.Parallel()
+	var d dropWarner
+	start := time.Unix(1000, 0)
+	total, warn := d.drop(start)
+	require.True(t, warn)
+	require.EqualValues(t, 1, total)
+	_, warn = d.drop(start.Add(time.Second))
+	require.False(t, warn, "a second drop inside the interval stays quiet")
+	total, warn = d.drop(start.Add(dropWarnInterval + time.Second))
+	require.True(t, warn)
+	require.EqualValues(t, 3, total, "the warning carries every drop since the start")
+}
