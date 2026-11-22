@@ -1984,7 +1984,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if item := m.chat.MessageItem(msg.PendingID); item != nil {
 			if shellItem, ok := item.(*chat.ShellItem); ok {
 				shellItem.AppendOutput(msg.Chunk)
-				m.chat.ScrollToBottom()
+				if m.chat.Follow() {
+					m.chat.ScrollToBottom()
+				}
 			}
 		}
 		// Continue draining the stream channel.
@@ -2011,7 +2013,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if item := m.chat.MessageItem(msg.PendingID); item != nil {
 				if shellItem, ok := item.(*chat.ShellItem); ok {
 					shellItem.Complete(msg.Output, msg.ExitCode)
-					m.chat.ScrollToBottom()
+					if m.chat.Follow() {
+						m.chat.ScrollToBottom()
+					}
 					completed = true
 				}
 			}
@@ -2019,7 +2023,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !completed {
 			item := chat.NewShellItem(m.com.Styles, msg.Command, msg.Output, msg.ExitCode)
 			m.chat.AppendMessages(item)
-			m.chat.ScrollToBottom()
+			if m.chat.Follow() {
+				m.chat.ScrollToBottom()
+			}
 		}
 		cmds = append(cmds, m.loadPromptHistory())
 	case hyperRefreshDoneMsg:
@@ -2448,7 +2454,11 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		}
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
 		m.chat.AppendMessages(items...)
-		m.chat.ScrollToBottom()
+		// Reports and teammate messages land here unprompted; jumping to
+		// the bottom regardless would pull a reader out of the history.
+		if m.chat.Follow() {
+			m.chat.ScrollToBottom()
+		}
 	case message.Assistant:
 		m.beginLiveTPS(msg)
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
