@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { FADE_MS, FLIGHT_MS } from '../state/cinematic';
 import type { Motion } from '../state/motion';
 import { HOME, WIDE } from './camera';
-import { cameraCSS, objectCSS } from './cssProjection';
+import { cameraCSS, objectCSS, viewCSS } from './cssProjection';
 import { expoOut } from './ease';
 import type { SceneHandle } from './mount';
 
@@ -104,6 +104,9 @@ export function startCinematic(scene: SceneHandle, els: CinematicEls, motion: Mo
     // The CSS reads both matrices and the mount renders after the driver,
     // so they are brought up to date here rather than a frame late.
     camera.updateMatrixWorld();
+    // The view offset is this frame's (the mount moves it before the driver),
+    // so the log follows the stage while the offset eases away.
+    els.view.style.transform = viewCSS(camera, width, height);
     els.camera.style.transform = cameraCSS(camera, width, height);
     els.panels.forEach((panel, i) => {
       panel.style.transform = objectCSS(anchors[i]);
@@ -143,6 +146,7 @@ export function startCinematic(scene: SceneHandle, els: CinematicEls, motion: Mo
       { position: HOME.position.clone(), target: HOME.target.clone() },
       { snap: motion !== 'full' },
     );
+    els.view.style.transform = '';
     els.camera.style.transform = '';
     for (const panel of els.panels) panel.style.transform = '';
     els.view.style.opacity = '';

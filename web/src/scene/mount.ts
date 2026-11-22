@@ -296,13 +296,16 @@ function mountWith(
     burstsAlive = bursts.update(dt);
     // The core runs first so the reflection copies this frame's pose.
     world.update(dt * motionScale(motion), elapsed);
+    // The offset moves before the driver runs: a cinematic driver projects
+    // the log from the projection matrix inside its own frame, so it has to
+    // read this frame's offset rather than the last frame's.
+    viewEasing = stepViewBlend(dt);
+    applyViewOffset();
     if (driver) driverBusy = driver(camera, dt);
     else {
       driverBusy = false;
       followCamera(dt);
     }
-    viewEasing = stepViewBlend(dt);
-    applyViewOffset();
     if (input.effects.bloom) composer.render();
     else renderer.render(scene, camera);
     const workMs = performance.now() - workStart;

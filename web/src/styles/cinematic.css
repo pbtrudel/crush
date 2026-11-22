@@ -7,8 +7,10 @@
 .cine-view,
 .cine-camera { display: contents; }
 
-/* The fixed view is the renderer's stage; the camera element carries the
-   perspective in its own transform, so the origin stays at its center. */
+/* The fixed view is the renderer's stage: the view offset transform lands on
+   it, so its origin sits at the top-left corner as three's own view element
+   has it. The camera element carries the perspective in its own transform,
+   so the origin stays at its center. */
 .holodeck[data-cinematic='true'] .cine-view {
   display: block;
   position: fixed;

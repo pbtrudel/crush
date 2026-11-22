@@ -1,17 +1,19 @@
 import type * as THREE from 'three';
 
-// A port of the camera and object matrix functions in three's
+// A port of the camera, view and object matrix functions in three's
 // examples/jsm/renderers/CSS3DRenderer.js (MIT license, Copyright 2010-2025
 // three.js authors). The renderer itself would append each object's element
 // to its own camera element, which moves the log out of its place in the
 // DOM; this applies the same matrices to wrapper elements that stay where
 // Preact renders them.
 //
-// The renderer's `camera.view` branch is left out on purpose: the offset
-// belongs to the normal layout, and the scene mount eases it to zero over
-// the cinematic flight, so the projected log is placed by the camera
-// matrices alone while the offset fades. The camera matrices must be up to
-// date when these are called, as they are inside the renderer's render().
+// The view offset branch is ported too: the renderer puts the offset and its
+// full-frame scale on a parent element (viewCSS, for the mount's view
+// wrapper) and the view's share of the perspective on the camera element
+// (cameraCSS). The scene mount moves the offset while the cinematic flight
+// eases it away, so the log has to follow it instead of the camera alone.
+// The camera matrices must be up to date when these are called, as they are
+// inside the renderer's render().
 
 function epsilon(value: number): number {
   return Math.abs(value) < 1e-10 ? 0 : value;
@@ -65,6 +67,14 @@ function objectMatrix(matrix: THREE.Matrix4): string {
   );
 }
 
+// A view narrower than its full frame widens the projection matrix, so the
+// renderer divides that back out before the translate, keeping the
+// perspective distance at the un-offset fov.
+function viewScale(camera: THREE.PerspectiveCamera): number {
+  const view = camera.view;
+  return view && view.enabled ? view.height / view.fullHeight : 1;
+}
+
 // The camera element carries the perspective, the camera's inverse world
 // matrix and the half-viewport translation that puts the origin at the
 // center of the view.
@@ -72,7 +82,7 @@ export function cameraCSS(camera: THREE.PerspectiveCamera, width: number, height
   const fov = camera.projectionMatrix.elements[5] * (height / 2);
   return (
     `perspective(${fov}px) ` +
-    'scale( 1 )' +
+    `scale( ${viewScale(camera)} )` +
     `translateZ(${fov}px)` +
     cameraMatrix(camera.matrixWorldInverse) +
     `translate(${width / 2}px,${height / 2}px)`
@@ -81,4 +91,17 @@ export function cameraCSS(camera: THREE.PerspectiveCamera, width: number, height
 
 export function objectCSS(object: THREE.Object3D): string {
   return 'translate(-50%,-50%)' + objectMatrix(object.matrixWorld);
+}
+
+// The view wrapper carries the offset to the stage and the full-frame scale,
+// as the renderer's own view element does. It is empty when no offset is set.
+// The wrapper needs `transform-origin: 0 0`, which three sets on its own view
+// element, so the translate moves the stage from its top-left corner.
+export function viewCSS(camera: THREE.PerspectiveCamera, width: number, height: number): string {
+  const view = camera.view;
+  if (!view || !view.enabled) return '';
+  return (
+    `translate(${-view.offsetX * (width / view.width)}px,${-view.offsetY * (height / view.height)}px)` +
+    `scale(${view.fullWidth / view.width},${view.fullHeight / view.height})`
+  );
 }

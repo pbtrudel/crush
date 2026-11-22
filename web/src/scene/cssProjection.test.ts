@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { CSS3DObject, CSS3DRenderer } from 'three/addons/renderers/CSS3DRenderer.js';
-import { cameraCSS, objectCSS } from './cssProjection';
+import { cameraCSS, objectCSS, viewCSS } from './cssProjection';
 
 // jsdom stores style.transform through CSSStyleDeclaration, which parses the
 // string and writes it back with spaces between the functions and six
@@ -10,8 +10,10 @@ import { cameraCSS, objectCSS } from './cssProjection';
 function parse(css: string): { name: string; args: number[] }[] {
   return (css.match(/[a-z0-9]+\([^)]*\)/g) ?? []).map((fn) => {
     const name = fn.slice(0, fn.indexOf('('));
-    const args = fn.slice(fn.indexOf('(') + 1, -1).match(/-?[\d.]+(?:e[-+]?\d+)?/g) ?? [];
-    return { name, args: args.map(Number) };
+    const args = (fn.slice(fn.indexOf('(') + 1, -1).match(/-?[\d.]+(?:e[-+]?\d+)?/g) ?? []).map(Number);
+    // jsdom writes an equal pair back as one argument.
+    if (name === 'scale' && args.length === 1) args.push(args[0]);
+    return { name, args };
   });
 }
 
@@ -46,5 +48,42 @@ describe('css projection', () => {
     expectSameTransform(cameraCSS(camera, 1440, 860), cameraEl.style.transform);
     expectSameTransform(objectCSS(obj), el.style.transform);
     expect(objectCSS(obj)).toMatch(/^translate\(-50%,-50%\)matrix3d\(/);
+  });
+
+  it('matches CSS3DRenderer while a view offset is set', () => {
+    const camera = new THREE.PerspectiveCamera(42, 1440 / 860, 0.1, 100);
+    camera.position.set(0, 4.6, 11.5);
+    camera.lookAt(0, 1.2, 0);
+    camera.updateMatrixWorld();
+    const scene = new THREE.Scene();
+    const el = document.createElement('div');
+    const obj = new CSS3DObject(el);
+    obj.position.set(-3, 1.5, 0);
+    obj.rotation.y = 0.6;
+    obj.scale.setScalar(0.004);
+    scene.add(obj);
+    const r = new CSS3DRenderer();
+    r.setSize(1440, 860);
+    const viewEl = r.domElement.firstElementChild as HTMLElement;
+    const cameraEl = viewEl.firstElementChild as HTMLElement;
+
+    // What the mount sets while the cinematic flight eases the stage offset
+    // away: the view element shifts by the offset and no scaling is involved.
+    camera.setViewOffset(1440, 860, 255, -40, 1440, 860);
+    r.render(scene, camera);
+    expect(viewEl.style.transform).toContain('translate');
+    expectSameTransform(viewCSS(camera, 1440, 860), viewEl.style.transform);
+    expectSameTransform(cameraCSS(camera, 1440, 860), cameraEl.style.transform);
+
+    // A view smaller than its full frame scales the stage and divides the
+    // perspective back out, as the renderer does.
+    camera.setViewOffset(1440, 860, 255, -40, 1200, 700);
+    r.render(scene, camera);
+    expectSameTransform(viewCSS(camera, 1440, 860), viewEl.style.transform);
+    expectSameTransform(cameraCSS(camera, 1440, 860), cameraEl.style.transform);
+
+    camera.clearViewOffset();
+    r.render(scene, camera);
+    expect(viewEl.style.transform).toBe('');
   });
 });

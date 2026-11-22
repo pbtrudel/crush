@@ -345,6 +345,26 @@ describe('mountScene', () => {
     expect(scene.camera.view?.enabled).toBe(false);
   });
 
+  it('moves the focus offset before the driver runs, so a frame reads its own offset', () => {
+    const focus = { x: 0, y: 0, width: 700, height: 800 };
+    const scene = start({ motion: 'full', focus });
+    advance(1);
+    expect(scene.camera.view?.offsetX).toBeCloseTo(50);
+
+    // The cinematic driver projects the log from the camera inside its own
+    // call, so it must see the offset this frame moved, not last frame's.
+    const seen: number[] = [];
+    scene.setCameraDriver((cam) => {
+      seen.push(cam.view?.offsetX ?? 0);
+      return true;
+    });
+    advance(17);
+    expect(seen[0]).toBeLessThan(50);
+    expect(seen[0]).toBeCloseTo(49.06, 1);
+    advance(17);
+    expect(seen[1]).toBeLessThan(seen[0]);
+  });
+
   it('keeps the camera heading when the driver hands it back', () => {
     const scene = start({ motion: 'off' });
     advance(1);
