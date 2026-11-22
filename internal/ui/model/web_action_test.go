@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/discord"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -34,6 +35,7 @@ type stubWeb struct {
 	startErr error
 	openErr  error
 	opens    int
+	modes    []bool
 }
 
 func (s *stubWeb) Start(context.Context) (string, error) { return s.url, s.startErr }
@@ -44,6 +46,8 @@ func (s *stubWeb) OpenBrowser() error {
 }
 
 func (s *stubWeb) Running() bool { return true }
+
+func (s *stubWeb) SetInputMode(plan bool) { s.modes = append(s.modes, plan) }
 
 func newWebUI(web common.WebLauncher) *UI {
 	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
@@ -128,6 +132,7 @@ func TestOpenWebReturnsStartedMessage(t *testing.T) {
 	require.True(t, ok, "openWeb must hand the link to the update loop")
 	require.Equal(t, "http://127.0.0.1:1/#t=x", msg.URL)
 	require.Zero(t, web.opens, "openWeb must not open the browser itself")
+	require.Equal(t, []bool{false}, web.modes, "the gateway starts with the terminal's code mode")
 }
 
 func TestWebStartedShowsNoticeBeforeOpening(t *testing.T) {
@@ -269,4 +274,87 @@ func TestWebSessionCreatedLoadsSession(t *testing.T) {
 	require.Equal(t, "browser-session", load.session.ID)
 	require.Equal(t, calls+1, ws.setCurrentSessionCalls,
 		"the workspace must report the new current session so the tab follows")
+}
+
+// TestWebInputModeMsgSwitchesPlan checks that the browser request goes
+// through the regular agent switch and reports the settled mode back to the
+// gateway.
+func TestWebInputModeMsgSwitchesPlan(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newPlanUI(t, "sess-1")
+	u.mode = uiInputModeCode
+	warmCaches(u, false)
+	web := &stubWeb{}
+	u.com.Web = web
+
+	_, cmd := u.Update(WebInputModeMsg{Plan: true})
+	require.NotNil(t, cmd)
+	var switched modeSwitchedMsg
+	for _, msg := range runCmdCollect(cmd) {
+		if s, ok := msg.(modeSwitchedMsg); ok {
+			switched = s
+		}
+	}
+	require.Equal(t, uiInputModePlan, switched.mode)
+	require.NoError(t, switched.err)
+
+	_, cmd = u.Update(switched)
+	require.NotNil(t, cmd)
+	runCmdCollect(cmd)
+	require.Equal(t, uiInputModePlan, u.mode)
+	require.Equal(t, config.AgentPlan, ws.setMainCalledWith)
+	require.Equal(t, []bool{true}, web.modes)
+}
+
+// TestWebInputModeMsgRefusedWhileBusy checks that a browser request cannot
+// switch the agent while the terminal is busy, and that a request for the
+// current mode is a no-op even then.
+func TestWebInputModeMsgRefusedWhileBusy(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newPlanUI(t, "sess-1")
+	u.mode = uiInputModeCode
+	warmCaches(u, false)
+	u.agentBusyCache.set(true)
+	web := &stubWeb{}
+	u.com.Web = web
+
+	_, cmd := u.Update(WebInputModeMsg{Plan: true})
+	msgs := runCmdCollect(cmd)
+	var warning *util.InfoMsg
+	for i := range msgs {
+		if msg, ok := msgs[i].(util.InfoMsg); ok {
+			warning = &msg
+		}
+	}
+	require.NotNil(t, warning)
+	require.Equal(t, util.InfoTypeWarn, warning.Type)
+	require.Equal(t, "Agent is busy, please wait before switching input mode...", warning.Msg)
+	require.Equal(t, uiInputModeCode, u.mode)
+	require.Empty(t, ws.setMainCalledWith)
+	require.Empty(t, web.modes)
+
+	u.mode = uiInputModePlan
+	_, cmd = u.Update(WebInputModeMsg{Plan: true})
+	require.Nil(t, cmd, "asking for the current mode must do nothing")
+	require.Empty(t, ws.setMainCalledWith)
+}
+
+// TestDiscordModeChangedReportsToWeb checks the other path that changes
+// m.mode directly: remote control already switched the agent, and the
+// gateway still needs the new mode.
+func TestDiscordModeChangedReportsToWeb(t *testing.T) {
+	t.Parallel()
+
+	u, _ := newPlanUI(t, "sess-1")
+	u.mode = uiInputModeCode
+	warmCaches(u, false)
+	web := &stubWeb{}
+	u.com.Web = web
+
+	_, cmd := u.Update(discord.ModeChangedMsg{Plan: true})
+	require.Equal(t, uiInputModePlan, u.mode)
+	runCmdCollect(cmd)
+	require.Equal(t, []bool{true}, web.modes)
 }

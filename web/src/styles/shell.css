@@ -38,6 +38,14 @@
 }
 .hud__select[data-mode='yolo'] { border-color: var(--amber); color: var(--amber); }
 .hud__select[data-mode='sysadmin'] { border-color: var(--magenta); color: var(--magenta); }
+.hud__mode { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+.hud__mode[data-mode='plan'] { border-color: var(--amber); }
+.hud__mode-btn {
+  background: transparent; color: var(--text-muted); border: 0; padding: 6px 10px;
+  min-block-size: 36px; font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__mode-btn[data-active='true'] { background: var(--cyan-dim); color: var(--cyan); }
+.hud__mode[data-mode='plan'] .hud__mode-btn[data-active='true'] { background: var(--void-deep); color: var(--amber); }
 .hud__link { display: inline-flex; gap: 6px; align-items: center; font: 500 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.12em; }
 .hud__link svg { fill: var(--teal); }
 .hud__link[data-conn='reconnecting'] svg { fill: var(--amber); animation: blink 1s steps(2) infinite; }

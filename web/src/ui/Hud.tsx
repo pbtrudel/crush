@@ -43,6 +43,22 @@ export function Hud() {
           <option value="yolo">Yolo</option>
           <option value="sysadmin">Sysadmin</option>
         </select>
+        <div class="hud__mode" role="group" aria-label="Input mode" data-mode={s.inputMode}>
+          <button
+            type="button"
+            class="hud__mode-btn"
+            data-active={s.inputMode === 'plan'}
+            aria-pressed={s.inputMode === 'plan'}
+            onClick={() => void actions.setInputMode('plan')}
+          >Plan</button>
+          <button
+            type="button"
+            class="hud__mode-btn"
+            data-active={s.inputMode === 'code'}
+            aria-pressed={s.inputMode === 'code'}
+            onClick={() => void actions.setInputMode('code')}
+          >Code</button>
+        </div>
         <MotionMenu />
         <span class="hud__link" data-conn={s.conn} role="status">
           <svg aria-hidden="true" viewBox="0 0 12 12" width="12" height="12"><polygon points="6,1 11,3.5 11,8.5 6,11 1,8.5 1,3.5" /></svg>

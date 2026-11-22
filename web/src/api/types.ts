@@ -53,12 +53,13 @@ export interface QuestionAnswer {
   notes?: Record<string, string>;
 }
 export type PermissionMode = 'normal' | 'yolo' | 'sysadmin';
+export type InputMode = 'plan' | 'code';
 export interface ModelInfo { id: string; name: string; provider: string; context_window: number }
 export interface ServerInfo { state: string; diagnostic_count?: number; tool_count?: number; error?: string }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
-  question?: QuestionRequest; permission_mode: PermissionMode; model: ModelInfo;
+  question?: QuestionRequest; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;
 }

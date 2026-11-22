@@ -150,6 +150,9 @@ type WebLauncher interface {
 	Start(ctx context.Context) (string, error)
 	// OpenBrowser opens a browser tab for the running gateway.
 	OpenBrowser() error
+	// SetInputMode reports the terminal's plan or code mode to the
+	// gateway. It is a pure in-memory call.
+	SetInputMode(plan bool)
 	Running() bool
 }
 

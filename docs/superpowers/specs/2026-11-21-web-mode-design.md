@@ -179,6 +179,8 @@ dependency in `go.mod`, pure Go):
   - `team_state`: `agentteam.State` (members, tasks), emitted on change.
   - `agent_runs`: `[]agentrun.Run`, emitted on change.
   - `session_follow`: the terminal's current session changed.
+  - `input_mode_changed`: `{"mode":"plan"|"code"}`, sent when the terminal's
+    input mode changes or the gateway is told a new one.
   - `gateway_closing`: sent on shutdown so the page shows "Session ended".
 
 ### 2.5 Session follow
@@ -210,6 +212,7 @@ implementation plan.
 | sessions | `GET/POST /sessions`, `GET/PUT/DELETE /sessions/{sid}`, `GET /sessions/{sid}/messages`, `POST /follow` |
 | agent | `POST /sessions/{sid}/prompt` (multipart for attachments), `POST /sessions/{sid}/cancel`, `GET/DELETE /sessions/{sid}/queue`, `POST /sessions/{sid}/summarize`, `POST /sessions/{sid}/ask`, `POST /sessions/{sid}/shell`, `POST /sessions/{sid}/notes` |
 | permissions | `POST /permissions/grant`, `POST /permissions/mode` |
+| input mode | `POST /input-mode` |
 | questions | `POST /questions/answer`, `POST /questions/cancel` |
 | secure prompts | `POST /pinentry/{answer,cancel}`, `POST /ssh/{answer,cancel}` |
 | files | `GET /sessions/{sid}/files`, `GET /sessions/{sid}/files/diff?path=` |
@@ -234,6 +237,13 @@ The terminal follows the most recently browser-created session even when it
 was showing another session. In the TUI status bar, config-stale and update
 notices wait behind a notice that is already visible instead of replacing it,
 and appear when that notice clears.
+
+`POST /input-mode` takes `{"mode":"plan"|"code"}` and returns 202. The gateway
+validates the mode, keeps no agent state, and asks the terminal to switch
+through a callback. The terminal applies its usual busy and mode-switching
+checks; a request for the mode already active is a no-op. When the mode
+settles, the terminal reports it back to the gateway, which includes it in the
+snapshot and publishes `input_mode_changed`.
 
 Errors use `{"error": "...", "code": "..."}` with proper HTTP status codes.
 Any operation the TUI performs by reaching into internals instead of through
@@ -394,6 +404,7 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 | Send, queue, cancel, attachments, file picker, `@` completion | Command deck | M1 |
 | Start a session from the landing screen (first prompt) | Command deck, `POST /sessions` | M1 |
 | Permission dialog, permission mode | Interrupt hologram, HUD toggle | M1 |
+| Plan mode | HUD Plan/Code toggle, deck badge, `POST /input-mode` | M1 |
 | Question forms | Holographic form | M1 |
 | Subagents, teammates, agents dialog | Constellation, inspector, agent list | M2 |
 | Team tasks | Task board | M2 |

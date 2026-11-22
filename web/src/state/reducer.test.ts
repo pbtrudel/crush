@@ -11,7 +11,7 @@ const snapshot = (over: Partial<Snapshot> = {}): Frame => ({
   type: 'snapshot',
   payload: {
     version: 'v1', working_dir: '/repo/holodeck', current_session_id: 's1',
-    messages: [], permissions: [], permission_mode: 'normal',
+    messages: [], permissions: [], permission_mode: 'normal', input_mode: 'code',
     model: { id: 'm', name: 'Model', provider: 'p', context_window: 200000 },
     busy: false, queued: [], ...over,
   },
@@ -136,6 +136,13 @@ describe('reduce', () => {
     expect(contextFill(s)).toBeCloseTo(56100 / 200000);
     s = reduce(s, fx.lsp_event);
     expect(s.lsp.gopls.diagnostics).toBe(2);
+  });
+
+  it('input mode comes from the snapshot and its live frame', () => {
+    let s = reduce(initialState(), snapshot({ input_mode: 'plan' }));
+    expect(s.inputMode).toBe('plan');
+    s = reduce(s, { seq: 11, type: 'input_mode_changed', payload: { mode: 'code' } });
+    expect(s.inputMode).toBe('code');
   });
 
   it('snapshot seeds lsp and mcp, and mcp_event updates them', () => {

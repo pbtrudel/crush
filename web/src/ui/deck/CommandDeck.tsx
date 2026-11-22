@@ -148,6 +148,7 @@ export function CommandDeck() {
           ))}
         </ul>
       )}
+      {s.inputMode === 'plan' && <p class="deck__plan-badge" role="status">Plan mode</p>}
       <label class="hud-label" for="deck-input">Transmit to crush</label>
       <div class="deck__row">
         <textarea

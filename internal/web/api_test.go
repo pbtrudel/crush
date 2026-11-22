@@ -427,6 +427,75 @@ func TestCreateSessionStartsOneSessionInTerminal(t *testing.T) {
 	require.Len(t, sessions, 2, "exactly one session was created")
 }
 
+// TestInputModeEndpointForwardsValidModes checks that a browser toggle
+// reaches the terminal callback and that a mode the gateway already runs
+// does not notify it again.
+func TestInputModeEndpointForwardsValidModes(t *testing.T) {
+	t.Parallel()
+	fake := webtest.NewFake()
+	modes := make(chan bool, 2)
+	g, err := Start(t.Context(), Options{
+		Workspace:            fake,
+		OnInputModeRequested: func(plan bool) { modes <- plan },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	rsp, _ := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"turbo"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+
+	rsp, _ = doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"plan"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	select {
+	case plan := <-modes:
+		require.True(t, plan)
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnInputModeRequested not called")
+	}
+
+	// The terminal reports the switch, then a repeated request is a no-op.
+	g.SetInputMode(true)
+	rsp, _ = doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"plan"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	select {
+	case plan := <-modes:
+		t.Fatalf("repeated plan mode notified the terminal: %v", plan)
+	default:
+	}
+
+	rsp, _ = doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"code"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	select {
+	case plan := <-modes:
+		require.False(t, plan)
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnInputModeRequested not called for code mode")
+	}
+}
+
+// TestInputModeRejectsUnauthenticatedAndForeignOrigin checks the route sits
+// behind the same guards as every other state-changing route.
+func TestInputModeRejectsUnauthenticatedAndForeignOrigin(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+
+	rsp := do(t, nil, http.MethodPost, g.URL()+"/api/input-mode", strings.NewReader(`{"mode":"plan"}`))
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/input-mode", strings.NewReader(`{"mode":"plan"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	rsp = doReq(t, authedClient(t, g), req)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+}
+
 // TestCreateSessionRejectsUnauthenticatedAndForeignOrigin checks that the
 // route sits behind the same guards as every other state-changing route.
 func TestCreateSessionRejectsUnauthenticatedAndForeignOrigin(t *testing.T) {

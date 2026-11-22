@@ -1,4 +1,4 @@
-import type { PermissionMode, QuestionAnswer, Snapshot, Session, Message } from './types';
+import type { InputMode, PermissionMode, QuestionAnswer, Snapshot, Session, Message } from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -45,6 +45,7 @@ export const api = {
   clearQueue: (sid: string) => call<void>('DELETE', `/api/sessions/${encodeURIComponent(sid)}/queue`),
   grant: (id: string, action: GrantAction) => call<{ resolved: boolean }>('POST', '/api/permissions/grant', { id, action }),
   setMode: (mode: PermissionMode) => call<void>('POST', '/api/permissions/mode', { mode }),
+  setInputMode: (mode: InputMode) => call<void>('POST', '/api/input-mode', { mode }),
   answer: (answers: QuestionAnswer[]) => call<{ resolved: boolean }>('POST', '/api/questions/answer', { answers }),
   cancelQuestion: () => call<{ resolved: boolean }>('POST', '/api/questions/cancel'),
   completeFiles: (q: string) => call<{ files: string[]; truncated: boolean }>('GET', `/api/complete/files?q=${encodeURIComponent(q)}`),

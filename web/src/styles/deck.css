@@ -21,5 +21,10 @@
 .deck__suggest li { padding: 8px 10px; font: 400 var(--step--1) var(--font-code); border-radius: 4px; cursor: pointer; }
 .deck__suggest li[aria-selected='true'] { background: var(--cyan-dim); }
 .deck__help { margin: 0; font-size: var(--step--1); color: var(--text-muted); }
+.deck__plan-badge {
+  margin: 0; justify-self: start; padding: 4px 10px; border: 1px solid var(--amber);
+  border-radius: var(--radius); color: var(--amber); font: 600 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.12em;
+}
 .deck__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
 @media (max-width: 640px) { .deck__row { grid-template-columns: 1fr; } .deck__actions { justify-content: end; } }

@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
+  Frame, InputMode, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
 } from '../api/types';
 import {
   adoptSession, dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
@@ -152,6 +152,12 @@ export const actions = {
   },
   async setMode(mode: PermissionMode) {
     await api.setMode(mode).catch(report);
+  },
+  // setInputMode asks the terminal to switch. The frame it publishes back
+  // updates the state, so the toggle follows the terminal rather than
+  // guessing.
+  async setInputMode(mode: InputMode) {
+    await api.setInputMode(mode).catch(report);
   },
   // answer returns the error text for the form to show inline, or null.
   async answer(batchId: string, answers: QuestionAnswer[]): Promise<string | null> {

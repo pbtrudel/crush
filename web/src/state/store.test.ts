@@ -193,3 +193,24 @@ describe('prompt queue', () => {
     expect(state.value.queued).toEqual(['kept']);
   });
 });
+
+describe('actions.setInputMode', () => {
+  it('posts the requested mode and leaves the state to the frame', async () => {
+    state.value = { ...initialState(), conn: 'live', inputMode: 'code' };
+    const set = vi.spyOn(api, 'setInputMode').mockResolvedValue(undefined);
+
+    await actions.setInputMode('plan');
+
+    expect(set).toHaveBeenCalledWith('plan');
+    expect(state.value.inputMode).toBe('code');
+  });
+
+  it('reports a failed switch', async () => {
+    state.value = { ...initialState(), conn: 'live', inputMode: 'code' };
+    vi.spyOn(api, 'setInputMode').mockRejectedValue(new ApiError(400, 'invalid_mode', 'unknown mode'));
+
+    await actions.setInputMode('plan');
+
+    expect(state.value.toasts.map((t) => t.text)).toContain('unknown mode');
+  });
+});

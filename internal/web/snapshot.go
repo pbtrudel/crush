@@ -44,6 +44,7 @@ type Snapshot struct {
 	Permissions      []json.RawMessage     `json:"permissions"`
 	Question         json.RawMessage       `json:"question,omitempty"`
 	PermissionMode   string                `json:"permission_mode"`
+	InputMode        string                `json:"input_mode"`
 	Model            ModelInfo             `json:"model"`
 	Busy             bool                  `json:"busy"`
 	Queued           []string              `json:"queued"`
@@ -62,6 +63,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		LSP:              map[string]ServerInfo{},
 		MCP:              map[string]ServerInfo{},
 		PermissionMode:   string(proto.PermissionModeToProto(g.ws.PermissionMode())),
+		InputMode:        g.InputMode(),
 		Model:            modelInfo(g),
 	}
 	if branch, err := g.ws.GitBranch(ctx); err == nil {

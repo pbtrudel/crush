@@ -183,6 +183,9 @@ crush --continue
 			// goroutine and keep the HTTP response prompt.
 			go func() { program.Send(ui.WebSessionCreatedMsg{ID: id}) }()
 		})
+		webCtl.SetOnInputModeRequested(func(plan bool) {
+			go func() { program.Send(ui.WebInputModeMsg{Plan: plan}) }()
+		})
 		if webURL != "" {
 			// Hand the link to the TUI once it is starting, so the UI
 			// copies it and opens the browser off the render path. Send

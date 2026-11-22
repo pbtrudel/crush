@@ -25,6 +25,13 @@ type Options struct {
 	// OnSessionCreated is called with the id of a session the browser
 	// started, so the terminal can open it. It may be nil.
 	OnSessionCreated func(id string)
+	// OnInputModeRequested is called when the browser asks to switch
+	// between plan and code mode. The terminal performs the switch. It
+	// may be nil.
+	OnInputModeRequested func(plan bool)
+	// InputMode is the terminal's mode when the gateway starts. Empty
+	// means code.
+	InputMode string
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -41,10 +48,14 @@ type Gateway struct {
 	hub        *hub
 	pending    *pending
 
-	// onMu guards onSessionCreated, which the controller may replace while
+	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
-	onMu             sync.RWMutex
-	onSessionCreated func(string)
+	onMu                 sync.RWMutex
+	onSessionCreated     func(string)
+	onInputModeRequested func(bool)
+
+	modeMu    sync.RWMutex
+	inputMode string
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -78,7 +89,9 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		hub:        newHub(),
 		pending:    newPending(),
 
-		onSessionCreated: opts.OnSessionCreated,
+		onSessionCreated:     opts.OnSessionCreated,
+		onInputModeRequested: opts.OnInputModeRequested,
+		inputMode:            normalizeInputMode(opts.InputMode),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
@@ -136,6 +149,60 @@ func (g *Gateway) notifySessionCreated(id string) {
 	if fn != nil {
 		fn(id)
 	}
+}
+
+// setOnInputModeRequested replaces the callback for browser mode switches.
+// It is safe to call while a handler is notifying.
+func (g *Gateway) setOnInputModeRequested(fn func(bool)) {
+	g.onMu.Lock()
+	g.onInputModeRequested = fn
+	g.onMu.Unlock()
+}
+
+// notifyInputModeRequested asks the terminal to switch modes. No callback
+// means no terminal is attached, which is fine.
+func (g *Gateway) notifyInputModeRequested(plan bool) {
+	g.onMu.RLock()
+	fn := g.onInputModeRequested
+	g.onMu.RUnlock()
+	if fn != nil {
+		fn(plan)
+	}
+}
+
+// InputMode returns the mode the terminal last reported.
+func (g *Gateway) InputMode() string {
+	g.modeMu.RLock()
+	defer g.modeMu.RUnlock()
+	return g.inputMode
+}
+
+// SetInputMode records the terminal's mode and tells every tab. It is a
+// pure in-memory call: the hub only queues the frame.
+func (g *Gateway) SetInputMode(plan bool) {
+	mode := inputModeCode
+	if plan {
+		mode = inputModePlan
+	}
+	g.modeMu.Lock()
+	changed := g.inputMode != mode
+	g.inputMode = mode
+	g.modeMu.Unlock()
+	if changed {
+		g.hub.publishJSON(frameInputMode, map[string]string{"mode": mode})
+	}
+}
+
+const (
+	inputModeCode = "code"
+	inputModePlan = "plan"
+)
+
+func normalizeInputMode(mode string) string {
+	if mode == inputModePlan {
+		return inputModePlan
+	}
+	return inputModeCode
 }
 
 // Shutdown tells every tab the session ended, drains their queues and

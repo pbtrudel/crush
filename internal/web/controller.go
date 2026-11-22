@@ -20,7 +20,9 @@ type Controller struct {
 	mu sync.Mutex
 	gw *Gateway
 
-	onSessionCreated func(string)
+	onSessionCreated     func(string)
+	onInputModeRequested func(bool)
+	inputMode            bool
 }
 
 // NewController returns a controller for ws that opens tabs with the
@@ -34,9 +36,15 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.gw == nil {
+		mode := inputModeCode
+		if c.inputMode {
+			mode = inputModePlan
+		}
 		gw, err := Start(ctx, Options{
-			Workspace:        c.ws,
-			OnSessionCreated: c.onSessionCreated,
+			Workspace:            c.ws,
+			InputMode:            mode,
+			OnSessionCreated:     c.onSessionCreated,
+			OnInputModeRequested: c.onInputModeRequested,
 		})
 		if err != nil {
 			return "", err
@@ -56,6 +64,30 @@ func (c *Controller) SetOnSessionCreated(fn func(string)) {
 	c.mu.Unlock()
 	if gw != nil {
 		gw.setOnSessionCreated(fn)
+	}
+}
+
+// SetOnInputModeRequested sets the callback for browser mode switches. It
+// may be called after Start; the running gateway is updated too.
+func (c *Controller) SetOnInputModeRequested(fn func(bool)) {
+	c.mu.Lock()
+	c.onInputModeRequested = fn
+	gw := c.gw
+	c.mu.Unlock()
+	if gw != nil {
+		gw.setOnInputModeRequested(fn)
+	}
+}
+
+// SetInputMode records the terminal's input mode for the snapshot and
+// updates a running gateway. It is pure in-memory state.
+func (c *Controller) SetInputMode(plan bool) {
+	c.mu.Lock()
+	c.inputMode = plan
+	gw := c.gw
+	c.mu.Unlock()
+	if gw != nil {
+		gw.SetInputMode(plan)
 	}
 }
 

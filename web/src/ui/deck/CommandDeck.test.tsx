@@ -107,6 +107,18 @@ afterEach(async () => {
 });
 
 describe('CommandDeck', () => {
+  it('badges the deck while plan mode is on', async () => {
+    seed({ inputMode: 'plan' });
+    await mount();
+    expect(root.querySelector('.deck__plan-badge')!.textContent).toContain('Plan mode');
+  });
+
+  it('hides the plan badge in code mode', async () => {
+    seed({ inputMode: 'code' });
+    await mount();
+    expect(root.querySelector('.deck__plan-badge')).toBeNull();
+  });
+
   it('starts a session from the landing screen', async () => {
     seed({ sessionId: '' });
     const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue(null);

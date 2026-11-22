@@ -14,6 +14,10 @@ test('links, shows the session and streams a reply', async ({ page, gateway }) =
   await expect(page).toHaveURL(gateway.origin + '/');
   await expect(page.getByRole('heading', { name: 'Holodeck test' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  await page.getByRole('button', { name: 'Plan', exact: true }).click();
+  await expect(page.locator('.deck__plan-badge')).toBeVisible();
+  await page.getByRole('button', { name: 'Code', exact: true }).click();
+  await expect(page.locator('.deck__plan-badge')).toBeHidden();
   await page.getByLabel('Transmit to crush').fill('hello');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('log')).toContainText('Signal received. hello');

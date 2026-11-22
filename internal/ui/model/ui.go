@@ -1211,6 +1211,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.webStarted(msg))
 	case WebSessionCreatedMsg:
 		cmds = append(cmds, m.selectSession(msg.ID)...)
+	case WebInputModeMsg:
+		cmds = append(cmds, m.webInputMode(msg))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -1227,10 +1229,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discord.ModeChangedMsg:
 		// Remote control already switched the agent; mirror the local mode
 		// so the badge and editor prompt track it.
+		changed := (m.mode == uiInputModePlan) != msg.Plan
 		if msg.Plan {
 			m.mode = uiInputModePlan
 		} else {
 			m.mode = uiInputModeCode
+		}
+		if changed {
+			if cmd := m.reportWebInputMode(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		m.setEditorPrompt(m.permModeCached())
 		m.invalidateBusyCaches()
@@ -5864,6 +5872,7 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 	if msg.err != nil {
 		return []tea.Cmd{util.ReportError(msg.err)}
 	}
+	changed := m.mode != msg.mode
 	m.mode = msg.mode
 	m.setEditorPrompt(m.permModeCached())
 	if m.rc != nil {
@@ -5872,6 +5881,11 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 		m.rc.SetMode(msg.mode == uiInputModePlan)
 	}
 	var cmds []tea.Cmd
+	if changed {
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 	}
@@ -7341,6 +7355,29 @@ type WebSessionCreatedMsg struct {
 	ID string
 }
 
+// WebInputModeMsg asks the terminal to switch input mode on behalf of the
+// browser. The terminal still owns the busy check and the agent switch.
+type WebInputModeMsg struct {
+	Plan bool
+}
+
+// webInputMode routes a browser switch through the regular agent switch.
+// Asking for the mode already active is a no-op; a busy or switching agent
+// gets the same warning as Shift+Tab.
+func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
+	target := uiInputModeCode
+	if msg.Plan {
+		target = uiInputModePlan
+	}
+	if target == m.mode {
+		return nil
+	}
+	if m.isAgentBusy() || m.modeSwitching {
+		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
+	}
+	return m.setInputMode(target)
+}
+
 // webStatusTTL keeps the web link on screen long enough to read and copy,
 // including when a startup notice would otherwise replace it.
 const webStatusTTL = 30 * time.Second
@@ -7386,12 +7423,30 @@ func (m *UI) openWeb() tea.Cmd {
 		return util.ReportWarn("Web mode is not available here")
 	}
 	web := m.com.Web
+	plan := m.mode == uiInputModePlan
 	return func() tea.Msg {
+		// Seed a gateway that starts later with the mode already on
+		// screen, so its first snapshot is correct.
+		web.SetInputMode(plan)
 		u, err := web.Start(context.Background())
 		if err != nil {
 			return util.ReportError(fmt.Errorf("web mode: %w", err))()
 		}
 		return WebStartedMsg{URL: u}
+	}
+}
+
+// reportWebInputMode tells the gateway the settled input mode. It runs off
+// the update loop like the other gateway reports.
+func (m *UI) reportWebInputMode() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	plan := m.mode == uiInputModePlan
+	return func() tea.Msg {
+		web.SetInputMode(plan)
+		return nil
 	}
 }
 

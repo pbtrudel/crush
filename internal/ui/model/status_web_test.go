@@ -26,6 +26,8 @@ func (f *fakeWeb) OpenBrowser() error {
 
 func (f *fakeWeb) Running() bool { return f.running }
 
+func (f *fakeWeb) SetInputMode(bool) {}
+
 func TestStatusBadgesIncludeWebWhenRunning(t *testing.T) {
 	t.Parallel()
 	com := common.DefaultCommon(nil)

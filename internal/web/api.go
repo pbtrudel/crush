@@ -41,6 +41,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	api.HandleFunc("DELETE /api/sessions/{sid}/queue", g.handleClearQueue)
 	api.HandleFunc("POST /api/permissions/grant", g.handleGrant)
 	api.HandleFunc("POST /api/permissions/mode", g.handleMode)
+	api.HandleFunc("POST /api/input-mode", g.handleInputMode)
 	api.HandleFunc("POST /api/questions/answer", g.handleAnswer)
 	api.HandleFunc("POST /api/questions/cancel", g.handleQuestionCancel)
 	api.HandleFunc("GET /api/complete/files", g.handleCompleteFiles)
@@ -101,6 +102,28 @@ func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// conversation. The callback is nil when no terminal is attached.
 	g.notifySessionCreated(s.ID)
 	writeJSON(w, http.StatusCreated, innerPayload(pubsub.Event[session.Session]{Type: pubsub.CreatedEvent, Payload: s}))
+}
+
+// handleInputMode asks the terminal to switch between plan and code mode.
+// The gateway never switches the agent itself: the terminal owns the busy
+// check and the agent switch.
+func (g *Gateway) handleInputMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Mode != inputModePlan && body.Mode != inputModeCode {
+		writeError(w, http.StatusBadRequest, "invalid_mode", "mode must be plan or code")
+		return
+	}
+	if body.Mode == g.InputMode() {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	g.notifyInputModeRequested(body.Mode == inputModePlan)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {

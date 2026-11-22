@@ -106,3 +106,46 @@ func TestControllerForwardsSessionsCreatedInBrowser(t *testing.T) {
 		t.Fatal("the controller did not forward the created session")
 	}
 }
+
+// TestControllerForwardsInputModeRequests checks that the callback set
+// after Start reaches the running gateway.
+func TestControllerForwardsInputModeRequests(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	plan := make(chan bool, 1)
+	c.SetOnInputModeRequested(func(v bool) { plan <- v })
+
+	rsp, _ := doJSON(t, authedClient(t, c.gw), http.MethodPost, c.gw.URL()+"/api/input-mode", `{"mode":"plan"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	select {
+	case v := <-plan:
+		require.True(t, v)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the controller did not forward the input mode request")
+	}
+}
+
+// TestControllerReportsInputModeBeforeStart checks that a mode reported
+// before the gateway exists is in the snapshot the first tab receives.
+func TestControllerReportsInputModeBeforeStart(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	c.SetInputMode(true)
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	rsp, data := doJSON(t, authedClient(t, c.gw), http.MethodGet, c.gw.URL()+"/api/snapshot", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	var snap struct {
+		InputMode string `json:"input_mode"`
+	}
+	require.NoError(t, json.Unmarshal(data, &snap))
+	require.Equal(t, "plan", snap.InputMode)
+}

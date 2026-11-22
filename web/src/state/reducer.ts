@@ -1,5 +1,5 @@
 import type {
-  Frame, Message, ModelInfo, PermissionMode, PermissionNotification, PermissionRequest,
+  Frame, InputMode, Message, ModelInfo, PermissionMode, PermissionNotification, PermissionRequest,
   QuestionRequest, ServerInfo, Session, Snapshot, ToolResultData, WireEvent,
 } from '../api/types';
 
@@ -17,6 +17,7 @@ export interface State {
   branch: string;
   model: ModelInfo;
   permissionMode: PermissionMode;
+  inputMode: InputMode;
   sessionId: string;
   session: Session | null;
   messages: Message[];
@@ -36,7 +37,7 @@ export function initialState(): State {
   return {
     conn: 'booting', lastSeq: 0, version: '', workingDir: '', project: '', branch: '',
     model: { id: '', name: '', provider: '', context_window: 0 },
-    permissionMode: 'normal', sessionId: '', session: null, messages: [],
+    permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
     permissions: [], question: null, busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
   };
@@ -141,6 +142,7 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     branch: snap.branch ?? '',
     model: snap.model,
     permissionMode: snap.permission_mode,
+    inputMode: snap.input_mode,
     sessionId: snap.current_session_id,
     session: snap.session ?? null,
     messages,
@@ -164,6 +166,8 @@ export function reduce(s: State, f: Frame): State {
       const id = (f.payload as { session_id: string }).session_id;
       return id === s.sessionId ? next : { ...adoptSession(next, id), needsReload: id || null };
     }
+    case 'input_mode_changed':
+      return { ...next, inputMode: (f.payload as { mode: InputMode }).mode };
     case 'gateway_closing':
       return { ...next, conn: 'ended', busy: false };
     case 'web_error':

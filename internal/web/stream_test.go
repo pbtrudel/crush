@@ -72,6 +72,7 @@ func TestStreamStartsWithSnapshotThenLive(t *testing.T) {
 	require.NoError(t, json.Unmarshal(snap.Payload, &s))
 	require.Equal(t, "s1", s.CurrentSessionID)
 	require.Equal(t, "/tmp/project", s.WorkingDir)
+	require.Equal(t, "code", s.InputMode)
 
 	fake.Emit(msgEvent("m1", "s1", "hello"))
 	f := readFrame(t, c)
@@ -207,6 +208,23 @@ func TestSessionFollowPublished(t *testing.T) {
 	f := readFrame(t, c)
 	require.Equal(t, "session_follow", f.Type)
 	require.JSONEq(t, `{"session_id":"s2"}`, string(f.Payload))
+}
+
+func TestInputModePublished(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c)
+	g.SetInputMode(true)
+	f := readFrame(t, c)
+	require.Equal(t, "input_mode_changed", f.Type)
+	require.JSONEq(t, `{"mode":"plan"}`, string(f.Payload))
+
+	g.SetInputMode(true)
+	g.SetInputMode(false)
+	f = readFrame(t, c)
+	require.Equal(t, "input_mode_changed", f.Type)
+	require.JSONEq(t, `{"mode":"code"}`, string(f.Payload))
 }
 
 func TestShutdownSendsClosing(t *testing.T) {
