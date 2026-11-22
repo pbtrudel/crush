@@ -1,6 +1,6 @@
 import type {
-  Frame, InputMode, Message, ModelInfo, PermissionMode, PermissionNotification, PermissionRequest,
-  QuestionRequest, ServerInfo, Session, Snapshot, ToolResultData, WireEvent,
+  AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, PermissionMode, PermissionNotification,
+  PermissionRequest, QuestionRequest, ServerInfo, Session, Snapshot, TeamState, ToolResultData, WireEvent,
 } from '../api/types';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
@@ -8,6 +8,8 @@ export type Tone = 'info' | 'success' | 'warn' | 'error';
 export type ToastAction = 'restore-effects';
 export interface Toast { id: number; tone: Tone; text: string; action?: ToastAction }
 export interface ServerState { state: string; diagnostics: number; tools: number }
+export interface AgentCall { callId: string; tool: string }
+export interface Inspected { sessionId: string; session: Session | null; messages: Message[]; loading: boolean }
 
 export interface State {
   conn: Conn;
@@ -32,6 +34,12 @@ export interface State {
   lsp: Record<string, ServerState>;
   mcp: Record<string, ServerState>;
   needsReload: string | null;
+  files: FileSummary[];
+  filesStale: boolean;
+  team: TeamState;
+  runs: AgentRun[];
+  activity: Record<string, AgentCall>;
+  inspected: Inspected | null;
 }
 
 export function initialState(): State {
@@ -41,6 +49,7 @@ export function initialState(): State {
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
     permissions: [], question: null, busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
+    files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null,
   };
 }
 
@@ -64,7 +73,56 @@ export function markAnswered(s: State, id: string): State {
 }
 
 export function adoptSession(s: State, id: string): State {
-  return { ...s, sessionId: id, session: null, messages: [], busy: false, needsReload: id };
+  return {
+    ...s,
+    sessionId: id,
+    session: null,
+    messages: [],
+    busy: false,
+    needsReload: id,
+    files: [],
+    filesStale: false,
+    activity: {},
+    inspected: null,
+  };
+}
+
+export function emptyTeam(): TeamState {
+  return { team_id: '', members: [], tasks: [] };
+}
+
+// inspect selects the agent the inspector shows. The main session's
+// transcript is already in the state, so only a child session loads.
+export function inspect(s: State, sid: string | null): State {
+  if (!sid) return s.inspected ? { ...s, inspected: null } : s;
+  if (s.inspected?.sessionId === sid) return s;
+  return { ...s, inspected: { sessionId: sid, session: null, messages: [], loading: sid !== s.sessionId } };
+}
+
+// mergeMessages lays the frames that arrived while a transcript loaded over
+// the fetched copy: for one id the newer update wins, and a tie goes to the
+// live frame.
+export function mergeMessages(fetched: Message[], live: Message[]): Message[] {
+  let out = fetched;
+  for (const m of live) {
+    const old = out.find((x) => x.id === m.id);
+    if (!old || old.updated_at <= m.updated_at) out = upsertMessage(out, m);
+  }
+  return out;
+}
+
+export function mergeInspected(s: State, sid: string, fetched: Message[], session: Session | null): State {
+  const ins = s.inspected;
+  if (!ins || ins.sessionId !== sid) return s;
+  return {
+    ...s,
+    inspected: {
+      sessionId: sid,
+      session: ins.session ?? session,
+      messages: mergeMessages(fetched, ins.messages),
+      loading: false,
+    },
+  };
 }
 
 export function contextFill(s: State): number {
@@ -130,6 +188,14 @@ function upsertPermission(list: PermissionRequest[], req: PermissionRequest): Pe
   return next;
 }
 
+function lastToolCall(m: Message): { id: string; name: string } | null {
+  for (let i = m.parts.length - 1; i >= 0; i--) {
+    const p = m.parts[i];
+    if (p.type === 'tool_call') return p.data;
+  }
+  return null;
+}
+
 function applySnapshot(s: State, seq: number, snap: Snapshot): State {
   const messages = snap.messages ?? [];
   const last = messages.at(-1);
@@ -154,6 +220,10 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     lsp: serverMap(snap.lsp),
     mcp: serverMap(snap.mcp),
     needsReload: null,
+    files: snap.files ?? [],
+    filesStale: false,
+    team: snap.team ?? emptyTeam(),
+    runs: snap.agent_runs ?? [],
   };
 }
 
@@ -175,16 +245,32 @@ export function reduce(s: State, f: Frame): State {
       return pushToast(next, 'error', (f.payload as { error: string }).error);
     case 'message': {
       const m = ev.payload as Message;
-      if (m.session_id !== s.sessionId) return next;
-      if (ev.type === 'deleted') return { ...next, messages: s.messages.filter((x) => x.id !== m.id) };
+      let base: State = next;
+      if (m.session_id !== s.sessionId && m.role === 'assistant') {
+        const call = lastToolCall(m);
+        if (call && s.activity[m.session_id]?.callId !== call.id) {
+          base = { ...base, activity: { ...s.activity, [m.session_id]: { callId: call.id, tool: call.name } } };
+        }
+      }
+      const ins = s.inspected;
+      if (ins && m.session_id === ins.sessionId && m.session_id !== s.sessionId) {
+        const messages = ev.type === 'deleted' ? ins.messages.filter((x) => x.id !== m.id) : upsertMessage(ins.messages, m);
+        base = { ...base, inspected: { ...ins, messages } };
+      }
+      if (m.session_id !== s.sessionId) return base;
+      if (ev.type === 'deleted') return { ...base, messages: s.messages.filter((x) => x.id !== m.id) };
       const messages = upsertMessage(s.messages, m);
       const busy = m.role === 'assistant' ? isOpenAssistant(m) : s.busy || m.role === 'user';
-      return { ...next, messages, busy };
+      return { ...base, messages, busy };
     }
     case 'session': {
       const sess = ev.payload as Session;
-      if (sess.id !== s.sessionId) return next;
-      return { ...next, session: sess, busy: sess.is_busy || s.busy };
+      let base = next;
+      if (s.inspected && s.inspected.sessionId === sess.id) {
+        base = { ...base, inspected: { ...s.inspected, session: sess } };
+      }
+      if (sess.id !== s.sessionId) return base;
+      return { ...base, session: sess, busy: sess.is_busy || s.busy };
     }
     case 'run_complete': {
       const rc = ev.payload as { session_id: string };
@@ -221,6 +307,12 @@ export function reduce(s: State, f: Frame): State {
       if (!e.name) return next;
       return { ...next, mcp: { ...s.mcp, [e.name]: { state: String(e.state), diagnostics: 0, tools: e.tool_count ?? 0 } } };
     }
+    case 'team_state':
+      return { ...next, team: f.payload as TeamState };
+    case 'agent_runs':
+      return { ...next, runs: f.payload as AgentRun[] };
+    case 'file':
+      return next.filesStale ? next : { ...next, filesStale: true };
     default:
       return next;
   }

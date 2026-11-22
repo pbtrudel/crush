@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import type { Frame, Snapshot } from '../api/types';
 import {
-  adoptSession, contextFill, initialState, markAnswered, needsAttention, reduce, setConn, toolResults,
+  adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, reduce,
+  setConn, toolResults,
 } from './reducer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -182,5 +183,66 @@ describe('reduce', () => {
     expect(needsAttention(s)).toBe(false);
     expect(needsAttention(reduce(s, fx.permission_request))).toBe(true);
     expect(needsAttention(reduce(s, fx.question_batch_request))).toBe(true);
+  });
+});
+
+describe('M2 state', () => {
+  const fromSnapshot = () => reduce(initialState(), fx.snapshot);
+
+  it('applies the team, the runs and the files from the snapshot', () => {
+    const s = fromSnapshot();
+    expect(s.team.members.map((m) => m.name)).toEqual(['alice']);
+    expect(s.runs.map((r) => r.session_id)).toEqual(['sub-1', 'team-m-1']);
+    expect(s.files[0]).toMatchObject({ path: '/repo/parser.go', additions: 3, removals: 1 });
+  });
+
+  it('replaces the roster and the runs from their frames', () => {
+    const s = reduce(reduce(live(), fx.team_state), fx.agent_runs);
+    expect(s.team.tasks.map((t) => t.id)).toEqual(['task-1', 'task-2']);
+    expect(s.runs).toHaveLength(2);
+  });
+
+  it('marks the file list stale on a file frame', () => {
+    expect(reduce(live(), fx.file).filesStale).toBe(true);
+  });
+
+  it('records the newest call of another session without touching the log', () => {
+    const s = reduce(live(), fx.message_child);
+    expect(s.activity['sub-1']).toEqual({ callId: 'sub-tc-1', tool: 'grep' });
+    expect(s.messages).toEqual([]);
+  });
+
+  it('keeps the inspected transcript live', () => {
+    const s = reduce(inspect(live(), 'sub-1'), fx.message_child);
+    expect(s.inspected?.messages.map((m) => m.id)).toEqual(['sub-a-1']);
+    expect(s.inspected?.loading).toBe(true);
+  });
+
+  it('merges live frames that arrived during the transcript fetch', () => {
+    let s = reduce(inspect(live(), 'sub-1'), fx.message_child);
+    const liveMsg = s.inspected!.messages[0];
+    const stale = { ...liveMsg, updated_at: liveMsg.updated_at - 1, parts: [] };
+    const earlier = { ...liveMsg, id: 'sub-u-0', role: 'user' as const, created_at: 1, updated_at: 1, parts: [] };
+    s = mergeInspected(s, 'sub-1', [earlier, stale], null);
+    expect(s.inspected?.messages.map((m) => m.id)).toEqual(['sub-u-0', 'sub-a-1']);
+    expect(s.inspected?.messages[1].parts).toHaveLength(2);
+    expect(s.inspected?.loading).toBe(false);
+  });
+
+  it('ignores a fetch for an agent that is no longer inspected', () => {
+    const s = inspect(inspect(live(), 'sub-1'), 'team-m-1');
+    expect(mergeInspected(s, 'sub-1', [], null)).toBe(s);
+  });
+
+  it('inspecting the main session needs no fetch', () => {
+    expect(inspect(live(), 's1').inspected).toMatchObject({ sessionId: 's1', loading: false });
+    expect(inspect(inspect(live(), 's1'), null).inspected).toBeNull();
+  });
+
+  it('forgets agents and files when the terminal switches session', () => {
+    const s = adoptSession(reduce(inspect(fromSnapshot(), 'sub-1'), fx.message_child), 's2');
+    expect(s.inspected).toBeNull();
+    expect(s.activity).toEqual({});
+    expect(s.files).toEqual([]);
   });
 });

@@ -62,4 +62,32 @@ export interface Snapshot {
   question?: QuestionRequest; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;
+  files?: FileSummary[]; team?: TeamState; agent_runs?: AgentRun[];
+}
+
+export interface FileSummary {
+  path: string; versions: number; version_ids: number[]; additions: number; removals: number;
+  diagnostics: { error: number; warning: number }; updated_at: number; session_ids: string[];
+  stats_unknown?: boolean;
+}
+export interface FileDiff {
+  path: string; from: number; to: number; old: string; new: string; unified: string;
+  language: string; truncated: boolean;
+}
+export type MemberStatus = 'running' | 'inactive' | 'provisioning' | 'failed';
+export interface TeamMember {
+  id: string; name: string; role: 'lead' | 'teammate'; description?: string; model?: string;
+  model_provider?: string; session_id?: string; parent_session_id?: string; status?: MemberStatus;
+  failed?: boolean; diagnostics?: string[];
+}
+export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+export interface TeamTask {
+  id: string; revision: number; subject: string; description: string; status: TaskStatus;
+  owner_id?: string; owner_name?: string; blocked_by: string[]; ready: boolean; session_id?: string;
+}
+export interface TeamState { team_id: string; members: TeamMember[]; tasks: TeamTask[] }
+export type RunStatus = 'running' | 'done' | 'failed';
+export interface AgentRun {
+  id: string; kind: 'subagent' | 'teammate'; name: string; session_id?: string;
+  parent_session_id?: string; status: RunStatus; started_at: string; finished_at?: string;
 }

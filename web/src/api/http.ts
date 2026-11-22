@@ -1,4 +1,6 @@
-import type { InputMode, PermissionMode, QuestionAnswer, Snapshot, Session, Message } from './types';
+import type {
+  FileDiff, FileSummary, InputMode, Message, PermissionMode, QuestionAnswer, Session, Snapshot,
+} from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -49,4 +51,16 @@ export const api = {
   answer: (answers: QuestionAnswer[]) => call<{ resolved: boolean }>('POST', '/api/questions/answer', { answers }),
   cancelQuestion: () => call<{ resolved: boolean }>('POST', '/api/questions/cancel'),
   completeFiles: (q: string) => call<{ files: string[]; truncated: boolean }>('GET', `/api/complete/files?q=${encodeURIComponent(q)}`),
+  session: (sid: string) => call<Session>('GET', `/api/sessions/${encodeURIComponent(sid)}`),
+  files: (sid: string) => call<FileSummary[]>('GET', `/api/sessions/${encodeURIComponent(sid)}/files`),
+  diff(sid: string, path: string, from?: number, to?: number) {
+    const q = new URLSearchParams({ path });
+    if (from !== undefined) q.set('from', String(from));
+    if (to !== undefined) q.set('to', String(to));
+    return call<FileDiff>('GET', `/api/sessions/${encodeURIComponent(sid)}/files/diff?${q}`);
+  },
+  teamMessage: (member: string, sessionId: string, text: string) =>
+    call<void>('POST', `/api/team/members/${encodeURIComponent(member)}/message`, { session_id: sessionId, text }),
+  teamInterrupt: (member: string, sessionId: string) =>
+    call<void>('POST', `/api/team/members/${encodeURIComponent(member)}/interrupt`, { session_id: sessionId }),
 };
