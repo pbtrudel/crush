@@ -3,6 +3,7 @@ import { render } from 'preact';
 import { ContextGauge } from './ContextGauge';
 import { Numeral } from './Numeral';
 import { ServerHexes } from './ServerHexes';
+import { Sparkline } from './Sparkline';
 
 const mount = (vnode: preact.VNode) => {
   const root = document.createElement('div');
@@ -35,6 +36,17 @@ describe('Numeral', () => {
     expect(root.querySelector('.visually-hidden')!.textContent).toBe('Tokens 1.5k');
     expect(Array.from(root.querySelectorAll('.roll')).map((e) => e.getAttribute('data-d'))).toEqual(['1', '5']);
     expect(root.innerHTML).not.toContain('style=');
+  });
+});
+
+describe('Sparkline', () => {
+  it('stays decorative because the numeral speaks the value', () => {
+    const root = mount(<Sparkline values={[0, 5, 10]} />);
+    const spark = root.querySelector('.spark')!;
+    expect(spark.getAttribute('aria-hidden')).toBe('true');
+    expect(spark.getAttribute('role')).toBeNull();
+    expect(spark.getAttribute('aria-label')).toBeNull();
+    expect(spark.querySelector('polyline')!.getAttribute('points')).toBe('0,16 30,8 60,0');
   });
 });
 
