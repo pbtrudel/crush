@@ -243,7 +243,9 @@ export function reduce(s: State, f: Frame): State {
       return { ...next, conn: 'ended', busy: false };
     case 'web_error': {
       const text = (f.payload as { error: string }).error;
-      return s.toasts.some((t) => t.tone === 'error' && t.text === text) ? next : pushToast(next, 'error', text);
+      // A replay after a reconnect repeats a seq the state already holds;
+      // only a new frame is a new error.
+      return f.seq <= s.lastSeq ? next : pushToast(next, 'error', text);
     }
     case 'message': {
       const m = ev.payload as Message;

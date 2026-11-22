@@ -334,7 +334,11 @@ describe('stream and boot hardening', () => {
     history.replaceState(null, '', '/?debug=1#t=abc');
     vi.spyOn(api, 'auth').mockResolvedValue(undefined);
     const replace = vi.spyOn(history, 'replaceState');
-    await boot();
-    expect(replace).toHaveBeenCalledWith(null, '', '/?debug=1');
+    try {
+      await boot();
+      expect(replace).toHaveBeenCalledWith(null, '', '/?debug=1');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
   });
 });

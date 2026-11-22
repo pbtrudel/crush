@@ -129,10 +129,18 @@ describe('reduce', () => {
     expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'agent busy' });
   });
 
-  it('does not repeat an error toast that is still shown', () => {
+  it('does not repeat an error toast for a replayed frame', () => {
+    const f = { seq: 11, type: 'web_error', payload: { error: 'Prompt failed' } };
+    const s = reduce(reduce(live(), f), f);
+    expect(s.toasts.filter((t) => t.text === 'Prompt failed')).toHaveLength(1);
+    expect(s.lastSeq).toBe(11);
+  });
+
+  it('toasts a new error that happens to repeat the same text', () => {
     const f = { seq: 11, type: 'web_error', payload: { error: 'Prompt failed' } };
     const s = reduce(reduce(live(), f), { ...f, seq: 12 });
-    expect(s.toasts.filter((t) => t.text === 'Prompt failed')).toHaveLength(1);
+    expect(s.toasts.filter((t) => t.text === 'Prompt failed')).toHaveLength(2);
+    expect(s.lastSeq).toBe(12);
   });
 
   it('input mode refusal toasts with the terminal reason', () => {

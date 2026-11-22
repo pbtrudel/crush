@@ -125,8 +125,13 @@ export function connectStream(h: StreamHandlers, env: StreamEnv = browserEnv()):
       try {
         f = JSON.parse(e.data) as Frame;
       } catch {
-        // A frame the page cannot read is dropped; the stream stays up and
-        // the next snapshot repairs whatever it carried.
+        // A frame the page cannot read is dropped.
+        console.warn('Dropped a frame the page could not read');
+        return;
+      }
+      // Valid JSON of the wrong shape is not a frame either.
+      if (!f || typeof f !== 'object' || typeof f.seq !== 'number' || typeof f.type !== 'string') {
+        console.warn('Dropped a frame the page could not read');
         return;
       }
       if (f.type === 'gateway_closing') terminal = true;
