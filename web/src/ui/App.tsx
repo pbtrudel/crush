@@ -8,6 +8,7 @@ import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
 import { TransmissionLog } from './log/TransmissionLog';
 import { Stage } from './stage/Stage';
+import { SceneLayer } from './stage/SceneLayer';
 import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
@@ -31,11 +32,12 @@ export function App() {
   const modal = attention && s.conn === 'live';
   return (
     <div class="holodeck" data-motion={motion.value} data-low-power={lowPower.value} data-conn={s.conn}>
+      <SceneLayer />
       <BootSequence done={s.conn !== 'booting'} />
       <Hud />
       <ConnectionBanner />
       <main class="holodeck__grid" inert={modal}>
-        <section class="panel panel--log" aria-label="Transmission log">
+        <section class="panel panel--log glass scanlines" aria-label="Transmission log">
           <TransmissionLog />
         </section>
         <section class="stage" aria-label="Agent constellation">

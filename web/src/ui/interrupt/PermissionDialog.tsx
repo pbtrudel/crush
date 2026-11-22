@@ -102,7 +102,7 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
   return (
     <div
       ref={root}
-      class="interrupt"
+      class="interrupt glass glass--alert enter"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="perm-title"

@@ -1,4 +1,7 @@
 .holodeck {
+  /* The stacking context the fixed scene canvas's z-index -1 lives in. */
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   height: 100dvh;
@@ -14,28 +17,24 @@
   gap: var(--space-9);
   padding: var(--space-4) calc(var(--space-4) * 1.5);
 }
-/* The cut corners are painted by a decorative layer. Clipping the header
-   itself would also clip the Display menu that hangs below the strip. */
-.hud::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
-  border: 1px solid var(--edge);
-  border-radius: var(--radius);
-  box-shadow: var(--glow-cyan);
-  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
-}
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .hud__readouts { display: flex; gap: calc(var(--space-4) * 1.5); margin: 0; flex-wrap: wrap; }
 .hud__readouts dd { margin: 4px 0 0; font: 500 var(--step-1)/1.1 var(--font-hud); font-variant-numeric: tabular-nums; color: var(--cyan); }
 .hud__readouts meter { inline-size: 72px; block-size: 6px; vertical-align: middle; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
 .hud__select {
-  background: var(--void-deep); color: var(--text); border: 1px solid var(--edge);
-  border-radius: var(--radius); padding: 6px 10px; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px;
+  appearance: none; color: var(--text); background-color: var(--glass-solid);
+  /* The chevron is two 45 degree strokes side by side, so no data URI. */
+  background-image:
+    linear-gradient(45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%);
+  background-size: 7px 7px;
+  background-position: calc(100% - 17px) 50%, calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 6px 28px 6px 10px; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px;
 }
+.hud__select option { background: var(--void-deep); color: var(--text); }
 .hud__select[data-mode='yolo'] { border-color: var(--amber); color: var(--amber); }
 .hud__select[data-mode='sysadmin'] { border-color: var(--magenta); color: var(--magenta); }
 .hud__mode { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
@@ -67,20 +66,14 @@
   grid-row: 3;
   gap: var(--space-4);
   min-block-size: 0;
-  perspective: 1400px;
-  perspective-origin: 50% 0%;
 }
 .holodeck__deck { grid-row: 4; }
-.panel {
-  min-block-size: 0;
-  background: var(--surface);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius);
-  box-shadow: var(--glow-cyan);
-  backdrop-filter: blur(10px);
-}
-.panel--log { transform: rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
-.stage { position: relative; min-block-size: 0; }
+.panel { min-block-size: 0; }
+/* The curve is drawn on the panel itself: a perspective on an ancestor
+   would make it the containing block of the fixed scene canvas. */
+.panel--log { transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+/* The scene shows through the stage; only the agent list takes input. */
+.stage { position: relative; min-block-size: 0; pointer-events: none; }
 .banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
 .banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
 .banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
@@ -94,19 +87,21 @@
 .boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }
 .boot__rings span:nth-child(3) { animation-delay: 0.53s; }
 @keyframes boot-ring { from { transform: scale(0.2); opacity: 1; } to { transform: scale(1); opacity: 0; } }
-.toasts { position: fixed; inset-block-end: 120px; inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
+/* Toasts sit top right, below the HUD strip. */
+.toasts { position: fixed; inset-block-start: 112px; inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
 .toast {
   display: flex; gap: 10px; align-items: center; padding: 10px 12px; min-inline-size: 18rem; max-inline-size: 26rem;
-  background: var(--surface-solid); border: 1px solid var(--edge); border-radius: var(--radius); box-shadow: var(--glow-cyan);
-  animation: toast-in var(--dur-in) var(--ease-out);
+  border-radius: var(--radius);
 }
-.toast[data-tone='error'] { border-color: var(--magenta); }
-.toast[data-tone='warn'] { border-color: var(--amber); }
+/* A toast is a hologram: the tone colors its corner brackets, not a fill. */
+.toast[data-tone='error'] { --bracket: var(--magenta); }
+.toast[data-tone='warn'] { --bracket: var(--amber); }
 .toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
-@keyframes toast-in { from { transform: translateX(24px); opacity: 0; } }
 .unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
 @media (max-width: 1023px) {
   .hud { grid-template-columns: 1fr; gap: var(--space-4); }
+  /* The stacked HUD is taller, so the toasts start below it. */
+  .toasts { inset-block-start: 216px; }
   .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
   .panel--log { transform: none; order: 2; }
 }

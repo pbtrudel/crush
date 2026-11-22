@@ -125,7 +125,7 @@ export function CommandDeck() {
 
   return (
     <form
-      class="deck"
+      class="deck glass"
       data-busy={s.busy}
       onSubmit={(e) => { e.preventDefault(); void submit(); }}
       onDragOver={(e) => e.preventDefault()}

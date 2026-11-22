@@ -38,12 +38,16 @@ code, pre, kbd { font-family: var(--font-code); }
 /* Shared by the shell, log, deck and interrupt tasks, so no task depends on
    another task's stylesheet. */
 @keyframes blink { 50% { opacity: 0.3; } }
-.btn { min-block-size: 44px; padding: 0 18px; border-radius: 999px; font: 600 var(--step--1) var(--font-hud); letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid var(--edge); background: var(--surface-raised); transition: transform var(--dur-out) var(--ease-out), box-shadow var(--dur-out) var(--ease-out); }
-.btn:hover { transform: translateY(-1px); box-shadow: 0 0 18px oklch(0.82 0.14 210 / 0.25); }
+/* Secondary controls are a cyan outline that fills on hover; the primary is
+   solid glowing cyan (spec 3.5). */
+.btn { min-block-size: 44px; padding: 0 18px; border-radius: 999px; font: 600 var(--step--1) var(--font-hud); letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid var(--cyan); background: transparent; color: var(--cyan); transition: transform var(--dur-out) var(--ease-out), box-shadow var(--dur-out) var(--ease-out), background-color var(--dur-out) var(--ease-out); }
+.btn:hover { transform: translateY(-1px); background: var(--cyan-dim); box-shadow: var(--glow-cyan); }
 .btn:active { transform: translateY(0); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
-.btn--primary { background: var(--cyan); color: var(--void-deep); border-color: var(--cyan); }
+.btn--primary { background: var(--cyan); color: var(--void-deep); border-color: var(--cyan); box-shadow: var(--glow-cyan); }
+.btn--primary:hover { background: var(--cyan); }
 .btn--danger { border-color: var(--magenta); color: var(--magenta); background: transparent; }
+.btn--danger:hover { background: var(--magenta-dim); box-shadow: var(--glow-magenta); }
 .btn--ghost { background: transparent; }
 .chip { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border: 1px solid var(--edge); border-radius: 999px; font: 400 var(--step--1) var(--font-code); }
 .chip button { background: none; border: 0; min-inline-size: 28px; min-block-size: 28px; }

@@ -13,7 +13,7 @@ export function Hud() {
   const mcpUp = Object.values(s.mcp).filter((m) => m.state === 'connected').length;
   const link = s.conn === 'live' ? 'Linked' : s.conn === 'reconnecting' ? 'Reconnecting' : s.conn === 'ended' ? 'Ended' : 'Linking';
   return (
-    <header class="hud">
+    <header class="hud holo scanlines flicker-once">
       <div class="hud__id">
         <span class="hud-label">{s.project || 'crush'}</span>
         <h1 class="hud__title">{s.session?.title || 'New session'}</h1>

@@ -1,73 +1,41 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../../state/store';
 import { contextFill, needsAttention } from '../../state/reducer';
-import { lowPower, motion } from '../../state/motion';
-import type { SceneState } from '../../scene/constellation';
+import { use3D } from '../../state/effects';
+import { stageRect } from '../../state/layout';
 import { ConstellationSvg } from './ConstellationSvg';
-
-function webglAvailable(): boolean {
-  try {
-    const gl = document.createElement('canvas').getContext('webgl2');
-    // Release the probe context: browsers cap how many may exist at once.
-    gl?.getExtension('WEBGL_lose_context')?.loseContext();
-    return !!gl;
-  } catch {
-    return false;
-  }
-}
-
-type Scene = { update(s: SceneState): void; dispose(): void };
 
 export function Stage() {
   const s = state.value;
   const fill = contextFill(s);
   const attention = needsAttention(s);
-  // Probe once per mount: every probe creates a WebGL context, and browsers
-  // cap how many may exist at the same time.
-  const [webgl] = useState(webglAvailable);
-  const [failed, setFailed] = useState(false);
-  const use3D = webgl && !lowPower.value && !failed;
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const scene = useRef<Scene | null>(null);
-  const sceneState: SceneState = { busy: s.busy, contextFill: fill, attention, motion: motion.value };
-  // The 3D chunk loads asynchronously, so remember the latest state rather
-  // than the state captured when the mount effect ran.
-  const latest = useRef(sceneState);
-  latest.current = sceneState;
+  const threeD = use3D();
+  const root = useRef<HTMLDivElement>(null);
 
-  // Leaving low power must retry the scene its own toggle disposed.
+  // The projector is centered on this box. jsdom has no ResizeObserver, so
+  // there the window listener alone publishes it.
   useEffect(() => {
-    setFailed(false);
-  }, [lowPower.value]);
-
-  useEffect(() => {
-    if (!use3D || !canvas.current) return;
-    let disposed = false;
-    import('../../scene/constellation')
-      .then(({ mountConstellation }) => {
-        if (disposed || !canvas.current) return;
-        scene.current = mountConstellation(canvas.current, latest.current);
-      })
-      .catch(() => {
-        if (!disposed) setFailed(true);
-      });
+    const el = root.current;
+    if (!el) return;
+    // Keep the window itself: Preact may run this cleanup after a test
+    // environment has dropped the global.
+    const target = window;
+    const publish = () => { stageRect.value = el.getBoundingClientRect(); };
+    publish();
+    target.addEventListener('resize', publish);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
+    observer?.observe(el);
     return () => {
-      disposed = true;
-      scene.current?.dispose();
-      scene.current = null;
+      target.removeEventListener('resize', publish);
+      observer?.disconnect();
+      stageRect.value = null;
     };
-  }, [use3D]);
-
-  useEffect(() => {
-    scene.current?.update(latest.current);
-  }, [s.busy, fill, attention, motion.value]);
+  }, []);
 
   const status = attention ? 'Waiting for you' : s.busy ? 'Working' : 'Idle';
   return (
-    <div class="stage__inner">
-      {use3D
-        ? <canvas ref={canvas} class="stage__canvas" aria-hidden="true" />
-        : <ConstellationSvg fill={fill} busy={s.busy} attention={attention} />}
+    <div class="stage__inner" ref={root}>
+      {!threeD && <ConstellationSvg fill={fill} busy={s.busy} attention={attention} />}
       <ul class="agent-list" aria-label="Agents">
         <li tabIndex={0} data-status={attention ? 'attention' : s.busy ? 'running' : 'idle'}>
           <span class="agent-list__glyph" aria-hidden="true">⬡</span>

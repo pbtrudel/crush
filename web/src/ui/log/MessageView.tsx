@@ -13,7 +13,7 @@ export function MessageView({ m, results }: { m: Message; results: Map<string, T
   // is tool_use, which is the normal moment tools start executing.
   const settled = finish !== undefined && finish.data.reason !== 'tool_use';
   return (
-    <article class="msg" data-role={m.role} data-streaming={streaming}>
+    <article class="msg enter" data-role={m.role} data-streaming={streaming}>
       <header class="hud-label msg__who">{m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coder' : 'System'}</header>
       {m.parts.map((p, i) => {
         switch (p.type) {

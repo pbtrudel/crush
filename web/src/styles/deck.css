@@ -1,8 +1,5 @@
 .deck {
   position: relative; display: grid; gap: 8px; padding: var(--space-4);
-  background: linear-gradient(0deg, var(--surface-raised), var(--surface));
-  border: 1px solid var(--edge); border-radius: var(--radius); box-shadow: var(--glow-cyan);
-  clip-path: polygon(18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%, 0 18px);
 }
 .deck[data-busy='true'] { box-shadow: 0 0 0 1px var(--edge-strong), 0 0 32px oklch(0.82 0.14 210 / 0.28); }
 .deck__row { display: grid; grid-template-columns: 1fr auto; gap: var(--space-4); align-items: end; }

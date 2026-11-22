@@ -1,5 +1,5 @@
 .stage__inner { position: absolute; inset: 0; display: grid; }
-.stage__canvas, .constellation-svg { inline-size: 100%; block-size: 100%; display: block; }
+.constellation-svg { inline-size: 100%; block-size: 100%; display: block; }
 .constellation-svg { overflow: visible; }
 .cs-ring { fill: none; stroke: var(--cyan); stroke-opacity: 0.5; }
 .cs-ring--violet { stroke: var(--violet); }
@@ -14,6 +14,7 @@
 .agent-list {
   position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
   margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
+  pointer-events: auto;
 }
 .agent-list li {
   display: flex; gap: 10px; align-items: center; padding: 6px 12px;

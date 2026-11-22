@@ -168,7 +168,7 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
   return (
     <div
       ref={root}
-      class="interrupt qform"
+      class="interrupt qform glass glass--alert enter"
       role="dialog"
       aria-modal="true"
       aria-labelledby="q-title"

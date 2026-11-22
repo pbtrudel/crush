@@ -5,7 +5,8 @@ import type {
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
 export type Tone = 'info' | 'success' | 'warn' | 'error';
-export interface Toast { id: number; tone: Tone; text: string }
+export type ToastAction = 'restore-effects';
+export interface Toast { id: number; tone: Tone; text: string; action?: ToastAction }
 export interface ServerState { state: string; diagnostics: number; tools: number }
 
 export interface State {
@@ -45,8 +46,8 @@ export function initialState(): State {
 
 const MAX_TOASTS = 4;
 
-export function pushToast(s: State, tone: Tone, text: string): State {
-  const toasts = [...s.toasts, { id: s.nextToastId, tone, text }].slice(-MAX_TOASTS);
+export function pushToast(s: State, tone: Tone, text: string, action?: ToastAction): State {
+  const toasts = [...s.toasts, { id: s.nextToastId, tone, text, action }].slice(-MAX_TOASTS);
   return { ...s, toasts, nextToastId: s.nextToastId + 1 };
 }
 
