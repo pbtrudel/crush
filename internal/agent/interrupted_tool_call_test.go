@@ -376,7 +376,7 @@ func TestListSettledMessages_LeavesALiveSubagentAlone(t *testing.T) {
 
 	// Marked busy the same way a dispatched run does, on the coordinator
 	// rather than on the agent instance the reader holds.
-	untrack := c.trackSubSession(child.ID)
+	untrack := c.trackSubSession(child.ID, nil)
 
 	msgs, err := c.ListSettledMessages(ctx, child.ID)
 	require.NoError(t, err)

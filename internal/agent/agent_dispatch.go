@@ -502,7 +502,9 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 func (c *coordinator) runDispatched(ctx context.Context, entry *dispatchedAgent, gen uint64, run func(context.Context) (fantasy.ToolResponse, error)) {
 	// Tracked from here, not from when the session starts, so the busy
 	// check never sees a claimed run as idle.
-	untrack := c.trackSubSession(entry.SessionID)
+	// The dispatched entry above already routes its own cancel, so the
+	// run needs no agent recorded here.
+	untrack := c.trackSubSession(entry.SessionID, nil)
 	go func() {
 		resp, err := run(ctx)
 		untrack()
@@ -977,20 +979,50 @@ func (c *coordinator) stopAllDispatched(reason string, timeout time.Duration) {
 	}
 }
 
+// subSessionRun is the in-flight state of one subagent session: the run
+// count the busy check reads, and the agent instance every run executes on
+// so a cancel by session id reaches it.
+type subSessionRun struct {
+	count  int
+	agents map[uint64]SessionAgent
+}
+
 // trackSubSession marks a subagent session as live until the returned func
 // is called. The coordinator's busy check consults this, so a reader settling
 // half-finished sessions never mistakes a working subagent for a dead one.
-func (c *coordinator) trackSubSession(sessionID string) func() {
+// The agent is recorded too, so cancelling the session reaches the instance
+// that runs it; pass nil when the run needs no such routing.
+func (c *coordinator) trackSubSession(sessionID string, agent SessionAgent) func() {
 	c.subSessionsMu.Lock()
 	if c.subSessions == nil {
-		c.subSessions = map[string]int{}
+		c.subSessions = map[string]*subSessionRun{}
 	}
-	c.subSessions[sessionID]++
+	run := c.subSessions[sessionID]
+	if run == nil {
+		run = &subSessionRun{}
+		c.subSessions[sessionID] = run
+	}
+	run.count++
+	var runID uint64
+	if agent != nil {
+		if run.agents == nil {
+			run.agents = map[uint64]SessionAgent{}
+		}
+		c.subSessionSeq++
+		runID = c.subSessionSeq
+		run.agents[runID] = agent
+	}
 	c.subSessionsMu.Unlock()
 	return func() {
 		c.subSessionsMu.Lock()
 		defer c.subSessionsMu.Unlock()
-		if c.subSessions[sessionID]--; c.subSessions[sessionID] <= 0 {
+		run, ok := c.subSessions[sessionID]
+		if !ok {
+			return
+		}
+		run.count--
+		delete(run.agents, runID)
+		if run.count <= 0 {
 			delete(c.subSessions, sessionID)
 		}
 	}
@@ -999,5 +1031,6 @@ func (c *coordinator) trackSubSession(sessionID string) func() {
 func (c *coordinator) subSessionBusy(sessionID string) bool {
 	c.subSessionsMu.Lock()
 	defer c.subSessionsMu.Unlock()
-	return c.subSessions[sessionID] > 0
+	run := c.subSessions[sessionID]
+	return run != nil && run.count > 0
 }
