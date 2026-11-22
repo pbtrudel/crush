@@ -722,8 +722,8 @@ func (c *Client) ListChildSessions(ctx context.Context, id string, sessionID str
 		return nil, fmt.Errorf("failed to get child sessions: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get child sessions: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get child sessions: %w", err)
 	}
 	var sessions []proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sessions); err != nil {

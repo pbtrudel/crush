@@ -113,6 +113,7 @@ WHERE id = ?;
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
+
 -- name: ListChildSessions :many
 SELECT *
 FROM sessions

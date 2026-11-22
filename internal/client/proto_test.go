@@ -280,3 +280,19 @@ func TestSendHiddenContinuation(t *testing.T) {
 	require.True(t, msg.HiddenUserMessage)
 	require.Equal(t, "Implement the plan.", msg.Prompt)
 }
+
+func TestListChildSessionsMapsNotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(proto.Error{Message: "workspace not found"})
+	}))
+	defer srv.Close()
+	c := captureClient(t, srv)
+
+	_, err := c.ListChildSessions(t.Context(), "ws1", "s1")
+	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorContains(t, err, "workspace not found")
+}

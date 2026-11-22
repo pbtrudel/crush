@@ -77,17 +77,18 @@ type Fake struct {
 // NewFake returns a fake with one current session "s1".
 func NewFake() *Fake {
 	f := &Fake{
-		subs:      make(map[*subscriber]struct{}),
-		sessions:  map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
-		messages:  make(map[string][]message.Message),
-		queued:    make(map[string][]string),
-		busy:      make(map[string]bool),
-		history:   make(map[string][]history.File),
-		current:   "s1",
-		decisions: make(chan permission.PermissionNotification, 16),
-		answers:   make(chan []question.Answer, 16),
-		WorkDir:   "/tmp/project",
-		Resolve:   true,
+		subs:        make(map[*subscriber]struct{}),
+		sessions:    map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
+		messages:    make(map[string][]message.Message),
+		queued:      make(map[string][]string),
+		busy:        make(map[string]bool),
+		history:     make(map[string][]history.File),
+		diagnostics: make(map[string]lsp.DiagnosticCounts),
+		current:     "s1",
+		decisions:   make(chan permission.PermissionNotification, 16),
+		answers:     make(chan []question.Answer, 16),
+		WorkDir:     "/tmp/project",
+		Resolve:     true,
 	}
 	return f
 }
@@ -264,6 +265,9 @@ func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.
 		if s.ParentSessionID == parentID {
 			out = append(out, s)
 		}
+	}
+	if out == nil {
+		out = []session.Session{}
 	}
 	slices.SortFunc(out, func(a, b session.Session) int {
 		return cmp.Or(cmp.Compare(a.CreatedAt, b.CreatedAt), cmp.Compare(a.ID, b.ID))
