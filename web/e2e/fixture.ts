@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
+import { redact, stderrBuffer } from './stderr';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -13,10 +14,6 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const LAUNCH_LINE = /^http:\/\/127\.0\.0\.1:\d+\/#t=\S+$/;
 const LAUNCH_TIMEOUT_MS = 60_000;
 const EXIT_TIMEOUT_MS = 5_000;
-
-function redact(text: string): string {
-  return text.replace(/#t=\S+/g, '#t=<redacted>').trim();
-}
 
 // waitForLaunch resolves with the first stdout line webfake prints and
 // rejects when the process goes away before printing one.
@@ -111,11 +108,9 @@ async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => 
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
     proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderrText = '';
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      stderrText = (stderrText + chunk.toString()).slice(-4096);
-    });
-    const launch = await waitForLaunch(proc, () => stderrText);
+    const stderr = stderrBuffer();
+    proc.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk.toString()));
+    const launch = await waitForLaunch(proc, () => stderr.text());
     await use({ launch, origin: launch.split('/#')[0] });
   } finally {
     if (proc) await stop(proc);

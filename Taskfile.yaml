@@ -232,6 +232,7 @@ tasks:
     cmds:
       - task: web:build
       - git diff --exit-code -- internal/web/dist
+      - test -z "$(git status --porcelain --untracked-files=all -- internal/web/dist)"
 
   web:dev:
     desc: Serve the fake gateway; it prints how to start the Vite dev server
