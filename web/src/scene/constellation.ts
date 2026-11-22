@@ -38,10 +38,10 @@ export function stepColor(current: THREE.Color, target: THREE.Color, motion: Sce
 export function mountConstellation(canvas: HTMLCanvasElement, initial: SceneState) {
   let state = initial;
   const palette: Palette = {
-    cyan: token('--cyan', '#52d8ff'),
-    violet: token('--violet', '#8b6cff'),
-    magenta: token('--magenta', '#ff4fd8'),
-    amber: token('--amber', '#ffb547'),
+    cyan: token('--cyan', '#00efff'),
+    violet: token('--violet', '#9754ff'),
+    magenta: token('--magenta', '#ff24d5'),
+    amber: token('--amber', '#ffb51c'),
   };
   const { cyan: CYAN, violet: VIOLET, magenta: MAGENTA } = palette;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });

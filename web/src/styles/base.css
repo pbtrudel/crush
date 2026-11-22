@@ -1,25 +1,11 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
-  background:
-    radial-gradient(120% 80% at 50% 110%, oklch(0.30 0.12 230 / 0.35), transparent 60%),
-    radial-gradient(80% 60% at 50% -10%, oklch(0.25 0.12 300 / 0.25), transparent 70%),
-    var(--void);
+  background: linear-gradient(180deg, var(--void) 0%, var(--void) 45%, var(--haze) 100%) fixed;
   color: var(--text);
   font: 400 var(--step-0)/1.6 var(--font-prose);
   letter-spacing: 0.01em;
   -webkit-font-smoothing: antialiased;
-}
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(oklch(0.82 0.14 210 / 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, oklch(0.82 0.14 210 / 0.05) 1px, transparent 1px);
-  background-size: 36px 36px;
-  mask-image: radial-gradient(ellipse at 50% 60%, black 20%, transparent 75%);
 }
 :where(button, input, textarea, select, summary, [tabindex]):focus-visible {
   outline: 2px dashed var(--cyan);
