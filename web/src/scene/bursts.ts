@@ -41,7 +41,7 @@ export function createBursts(colors: SceneColors, origin: THREE.Vector3): Bursts
   const group = new THREE.Group();
   group.position.copy(origin);
 
-  // The whole pool shares one geometry; only the colour and the age differ.
+  // The whole pool shares one geometry; only the color and the age differ.
   const geometry = new THREE.RingGeometry(0.96, 1, 96);
   const rings: Ring[] = [];
   for (let i = 0; i < MAX_BURSTS; i++) {
@@ -95,6 +95,8 @@ export function createBursts(colors: SceneColors, origin: THREE.Vector3): Bursts
   const dispose = () => {
     geometry.dispose();
     for (const ring of rings) ring.material.dispose();
+    // A disposed pool must not leave its meshes behind in the scene graph.
+    group.clear();
   };
 
   return { group, spawn, update, active, dispose };

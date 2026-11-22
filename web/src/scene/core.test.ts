@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { coreLook, createCore, stepColor } from './core';
 import { readColors } from './colors';
@@ -41,6 +41,17 @@ describe('coreLook', () => {
 
 describe('createCore', () => {
   const ring = (c: ReturnType<typeof createCore>) => c.group.getObjectByName('context-ring') as THREE.Mesh;
+
+  it('disposes the geometries and materials in its group', () => {
+    const c = createCore(readColors());
+    const crystal = c.group.getObjectByName('crystal') as THREE.Mesh;
+    const geometry = vi.spyOn(crystal.geometry, 'dispose');
+    const material = vi.spyOn(crystal.material as THREE.Material, 'dispose');
+
+    c.dispose();
+    expect(geometry).toHaveBeenCalled();
+    expect(material).toHaveBeenCalled();
+  });
 
   it('stacks three projector rings under a light cone', () => {
     const c = createCore(readColors());
@@ -101,7 +112,7 @@ describe('createCore', () => {
     expect(spun('off')).toBe(0);
   });
 
-  it('settles a full motion colour change in bounded time', () => {
+  it('settles a full motion color change in bounded time', () => {
     const colors = readColors();
     const c = createCore(colors);
     c.setMode('attention');

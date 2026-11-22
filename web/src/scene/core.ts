@@ -35,7 +35,7 @@ function settled(current: THREE.Color, target: THREE.Color): boolean {
   );
 }
 
-// stepColor moves a colour toward the attention target. Full motion blends
+// stepColor moves a color toward the attention target. Full motion blends
 // over several frames, but reduced and off render one frame per update, so
 // they snap: the user who asked for less motion still sees the cue at once.
 export function stepColor(current: THREE.Color, target: THREE.Color, motion: Motion): void {
@@ -232,7 +232,7 @@ export function createCore(colors: SceneColors): Core {
     if (flashTime < FLASH_SECONDS) flashTime += dt;
 
     // A flash brightens the heart through its opacity and tints the crystal
-    // body, so the heart keeps the exact state colour while a flash lives.
+    // body, so the heart keeps the exact state color while a flash lives.
     crystalMaterial.color.lerp(flashColor, 0.6 * flashLeft);
     crystalMaterial.opacity = CRYSTAL_OPACITY * look.intensity * ignite;
     rimMaterial.opacity = Math.min(1, RIM_OPACITY * look.intensity) * ignite;

@@ -10,7 +10,9 @@ import type { SceneHandle } from './mount';
 // The log hangs to the left of the projector, turned toward the wide orbit,
 // with one CSS pixel standing for 0.008 world units: at the wide camera the
 // panel lands at about 0.87x of its CSS size, so body text stays legible.
-const LOG_ANCHOR = { x: -3.2, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.008 };
+// The anchor clears the stage column, which keeps the agent chip off the
+// panel's top-right corner.
+const LOG_ANCHOR = { x: -3.5, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.008 };
 
 // The mount snaps its own pose easing inside this distance, so the fly-back
 // is over by then.

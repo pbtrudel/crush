@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { BURST_MS, categoryColor, createBursts, MAX_BURSTS } from './bursts';
 import { readColors } from './colors';
@@ -27,6 +27,19 @@ describe('createBursts', () => {
     b.update(BURST_MS / 1000);
     expect(b.active()).toBe(0);
     expect(b.update(0.016)).toBe(false);
+  });
+
+  it('disposes the shared geometry and the materials, and empties the group', () => {
+    const b = createBursts(colors, new THREE.Vector3());
+    b.spawn('read');
+    const ring = b.group.children[0] as THREE.Mesh;
+    const geometry = vi.spyOn(ring.geometry, 'dispose');
+    const material = vi.spyOn(ring.material as THREE.Material, 'dispose');
+
+    b.dispose();
+    expect(geometry).toHaveBeenCalled();
+    expect(material).toHaveBeenCalled();
+    expect(b.group.children).toHaveLength(0);
   });
 
   it('recycles the oldest ring past the cap', () => {

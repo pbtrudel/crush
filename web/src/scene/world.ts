@@ -32,6 +32,15 @@ interface ColoredMaterial extends THREE.Material {
 }
 
 const PARTICLE_TOP = 6;
+// The camera sits at z 7.4, so dust beyond z 5 would drift behind it and
+// pop through the near plane as a large blob.
+const PARTICLE_FAR_Z = 5;
+const PARTICLE_NEAR_Z = -12;
+// Particles keep one screen size whatever their depth. A size that grows
+// with proximity turns a mote near the camera into a square the size of the
+// core; a constant few pixels reads as dust.
+const PARTICLE_SIZE = 5;
+const PARTICLE_TEXTURE_SIZE = 64;
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 // The sky reaches void this high on the backdrop sphere, and stays void
@@ -115,7 +124,7 @@ function createFloor(colors: SceneColors): THREE.Mesh {
         float glow = line * near * reveal;
 
         // A dark glossy base that thickens into the haze at the horizon, so
-        // the far floor and the sky under it are the same colour.
+        // the far floor and the sky under it are the same color.
         vec3 base = mix(uHaze * 0.05, uHaze, smoothstep(6.0, 38.0, radius));
         vec3 color = base + mix(uHaze, uCyan, near) * glow;
         float alpha = mix(0.55, 0.95, smoothstep(2.0, 26.0, radius)) + glow * 0.35;
@@ -132,6 +141,26 @@ function createFloor(colors: SceneColors): THREE.Mesh {
   return mesh;
 }
 
+// A radial falloff turns each point into a soft mote. A plain point sprite
+// is a hard square, which reads as debris instead of dust.
+function particleTexture(): THREE.CanvasTexture {
+  const size = PARTICLE_TEXTURE_SIZE;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (context) {
+    const half = size / 2;
+    const gradient = context.createRadialGradient(half, half, 0, half, half, half);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');
+    gradient.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, size, size);
+  }
+  return new THREE.CanvasTexture(canvas);
+}
+
 function createParticles(colors: SceneColors, seed: number): THREE.Points {
   const random = mulberry32(seed);
   const positions = new Float32Array(PARTICLE_COUNT * 3);
@@ -140,7 +169,7 @@ function createParticles(colors: SceneColors, seed: number): THREE.Points {
   for (let i = 0; i < PARTICLE_COUNT; i++) {
     positions[i * 3] = random() * 24 - 12;
     positions[i * 3 + 1] = random() * PARTICLE_TOP;
-    positions[i * 3 + 2] = random() * 24 - 12;
+    positions[i * 3 + 2] = PARTICLE_NEAR_Z + random() * (PARTICLE_FAR_Z - PARTICLE_NEAR_Z);
     tint.copy(colors.cyan).lerp(colors.violet, random());
     tints[i * 3] = tint.r;
     tints[i * 3 + 1] = tint.g;
@@ -150,7 +179,9 @@ function createParticles(colors: SceneColors, seed: number): THREE.Points {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(tints, 3));
   const material = new THREE.PointsMaterial({
-    size: 0.035,
+    size: PARTICLE_SIZE,
+    sizeAttenuation: false,
+    map: particleTexture(),
     vertexColors: true,
     transparent: true,
     opacity: 0.8,
@@ -165,7 +196,7 @@ function createBeams(colors: SceneColors, seed: number): { group: THREE.Group; l
   const random = mulberry32(seed ^ 0x9e3779b9);
   const list: Beam[] = [];
   for (let i = 0; i < BEAM_COUNT; i++) {
-    // Four width segments let the colour fall off at both sides, so the
+    // Four width segments let the color fall off at both sides, so the
     // shaft has soft edges instead of a visible rectangle.
     const geometry = new THREE.PlaneGeometry(1.2, 9, 4, 1);
     const position = geometry.getAttribute('position');
@@ -233,12 +264,19 @@ export function createWorld(colors: SceneColors, seed: number): World {
   const group = new THREE.Group();
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+
+  const trackMaterial = (material: THREE.Material) => {
+    materials.add(material);
+    const map = (material as THREE.MeshBasicMaterial).map;
+    if (map) textures.add(map);
+  };
 
   const trackMaterials = (root: THREE.Object3D) => {
     root.traverse((object) => {
       const material = (object as THREE.Mesh).material;
-      if (Array.isArray(material)) material.forEach((m) => materials.add(m));
-      else if (material) materials.add(material);
+      if (Array.isArray(material)) material.forEach(trackMaterial);
+      else if (material) trackMaterial(material);
     });
   };
 
@@ -268,6 +306,9 @@ export function createWorld(colors: SceneColors, seed: number): World {
   // update can copy one onto the other without searching.
   const links: Array<Array<[THREE.Object3D, THREE.Object3D]>> = [];
   let mirrorFade = 1;
+  // Only the drawn prefix of the particle buffer moves, so only it is
+  // uploaded each frame.
+  let activeParticles = PARTICLE_COUNT;
 
   const mirror = (source: THREE.Object3D) => {
     const copy = source.clone(true);
@@ -295,7 +336,8 @@ export function createWorld(colors: SceneColors, seed: number): World {
     floor,
     setEffects(f: EffectFlags) {
       beams.group.visible = f.beams;
-      particles.geometry.setDrawRange(0, Math.round(PARTICLE_COUNT * f.particleShare));
+      activeParticles = Math.round(PARTICLE_COUNT * f.particleShare);
+      particles.geometry.setDrawRange(0, activeParticles);
     },
     setReveal(radius: number) {
       (floor.material as THREE.ShaderMaterial).uniforms.uReveal.value = radius;
@@ -306,11 +348,16 @@ export function createWorld(colors: SceneColors, seed: number): World {
 
       const position = particles.geometry.getAttribute('position') as THREE.BufferAttribute;
       const array = position.array as Float32Array;
-      for (let i = 1; i < array.length; i += 3) {
+      const drawn = activeParticles * 3;
+      for (let i = 1; i < drawn; i += 3) {
         array[i] += 0.05 * dt;
         if (array[i] > PARTICLE_TOP) array[i] -= PARTICLE_TOP;
       }
-      position.needsUpdate = true;
+      if (drawn > 0) {
+        position.clearUpdateRanges();
+        position.addUpdateRange(0, drawn);
+        position.needsUpdate = true;
+      }
 
       for (const beam of beams.list) {
         beam.material.opacity = 0.05 + 0.07 * (0.5 + 0.5 * Math.sin((2 * Math.PI * t) / beam.period + beam.phase));
@@ -324,8 +371,10 @@ export function createWorld(colors: SceneColors, seed: number): World {
     dispose() {
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());
+      textures.forEach((texture) => texture.dispose());
       geometries.clear();
       materials.clear();
+      textures.clear();
     },
   };
 }

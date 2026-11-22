@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { BEAM_COUNT, createWorld, PARTICLE_COUNT, REVEAL_FULL, SKY_HEIGHT, skyMix } from './world';
 import { readColors } from './colors';
@@ -10,6 +10,34 @@ describe('createWorld', () => {
     w.group.traverse((o) => { if ((o as THREE.Points).isPoints) points++; });
     expect(points).toBe(1);
     expect(w.particles.geometry.getAttribute('position').count).toBe(PARTICLE_COUNT);
+  });
+
+  it('draws the dust as soft round motes on the near side of the camera', () => {
+    const w = createWorld(readColors(), 7);
+    const material = w.particles.material as THREE.PointsMaterial;
+    expect(material.map).toBeInstanceOf(THREE.CanvasTexture);
+    // A size that grows with proximity turns a near mote into a square; a
+    // fixed sprite size is the clamp.
+    expect(material.sizeAttenuation).toBe(false);
+    expect(material.size).toBeLessThanOrEqual(8);
+    const position = w.particles.geometry.getAttribute('position');
+    for (let i = 0; i < position.count; i++) {
+      expect(position.getZ(i)).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('moves and uploads only the particles in the active draw range', () => {
+    const w = createWorld(readColors(), 7);
+    const position = w.particles.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const array = position.array as Float32Array;
+    w.setEffects({ bloom: true, beams: true, particleShare: 0.25, cinematic: true });
+    const drawn = PARTICLE_COUNT / 4;
+    const tail = Array.from(array.slice(drawn * 3));
+
+    w.update(0.016, 1);
+    expect(Array.from(array.slice(drawn * 3))).toEqual(tail);
+    expect(array[1]).toBeGreaterThan(0);
+    expect(position.updateRanges).toEqual([{ start: 0, count: drawn * 3 }]);
   });
 
   it('places particles the same way for the same seed', () => {
@@ -59,6 +87,18 @@ describe('createWorld', () => {
     mat.opacity = 0.8;
     w.update(0.016, 2);
     expect(opacity(copy)).toBeCloseTo(0.2);
+  });
+
+  it('disposes every geometry, material and texture it owns', () => {
+    const w = createWorld(readColors(), 7);
+    const geometry = vi.spyOn(w.floor.geometry, 'dispose');
+    const material = vi.spyOn(w.floor.material as THREE.Material, 'dispose');
+    const texture = vi.spyOn((w.particles.material as THREE.PointsMaterial).map!, 'dispose');
+
+    w.dispose();
+    expect(geometry).toHaveBeenCalled();
+    expect(material).toHaveBeenCalled();
+    expect(texture).toHaveBeenCalled();
   });
 
   it('fades the reflection in with the boot reveal', () => {

@@ -59,10 +59,11 @@ const POSE_EPSILON = 0.002;
 // The pointer turn follows the pointer at this rate rather than snapping.
 const POINTER_RATE = 6;
 
-// Bloom is tuned for a dark scene: a low threshold blooms the whole floor
-// and the sky along with the core, which washes the frame out. Only the
-// core and the ring edges are hot enough to pass this threshold.
-const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.9 };
+// Bloom is tuned for a dark scene. This threshold sits below the core and
+// the ring edges, so they halo, and above the floor grid and the sky, which
+// would wash the frame out if they bloomed. Lower it and the grid lines
+// start to glow.
+const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.7 };
 
 // The power-up is a page-load event, not a scene-instance one: a scene that
 // remounts after a step down, an effects restore or a recovered context
