@@ -43,14 +43,16 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...Mask) error {
 // jail, with the child started in bind.Dir. A run uses it to give its child a
 // working directory that names none of the batch layout.
 func WrapBound(cmd *exec.Cmd, sock string, port int, bind Bind, masks ...Mask) error {
-	return wrap(cmd, jailSpec{Sock: sock, Port: port, Binds: []Bind{bind}}, masks...)
+	return wrap(cmd, jailSpec{Sock: sock, Port: port, Bind: &bind}, masks...)
 }
 
 // jailSpec is what the jail sets up besides its masks.
 type jailSpec struct {
-	Sock  string
-	Port  int
-	Binds []Bind
+	Sock string
+	Port int
+	// Bind is the host directory to show at its jail path, nil when the
+	// jail shows none.
+	Bind *Bind
 }
 
 func wrap(cmd *exec.Cmd, spec jailSpec, masks ...Mask) error {
@@ -68,10 +70,10 @@ func wrap(cmd *exec.Cmd, spec jailSpec, masks ...Mask) error {
 			args = append(args, "--keep", keep)
 		}
 	}
-	for _, bind := range spec.Binds {
-		args = append(args, "--bind", bind.Host, bind.Jail)
-		if bind.Dir != "" {
-			args = append(args, "--chdir", bind.Dir)
+	if spec.Bind != nil {
+		args = append(args, "--bind", spec.Bind.Host, spec.Bind.Jail)
+		if spec.Bind.Dir != "" {
+			args = append(args, "--chdir", spec.Bind.Dir)
 		}
 	}
 	args = append(args, "--")
@@ -187,12 +189,15 @@ func Main(args []string) int {
 		return 1
 	}
 	defer closeKeeps(fds)
-	bindFds, err := openBinds(parsed.binds)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Netjail: open the bound directories: %v\n", err)
-		return 1
+	bindFd := -1
+	if parsed.bind != nil {
+		bindFd, err = openBind(parsed.bind)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Netjail: open the bound directory: %v\n", err)
+			return 1
+		}
+		defer closeKeeps([]int{bindFd})
 	}
-	defer closeKeeps(bindFds)
 	if err := privateMounts(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: make the mount tree private: %v\n", err)
 		return 1
@@ -205,9 +210,11 @@ func Main(args []string) int {
 		fmt.Fprintf(os.Stderr, "Netjail: keep the run's own directory: %v\n", err)
 		return 1
 	}
-	if err := bindBinds(parsed.binds, bindFds); err != nil {
-		fmt.Fprintf(os.Stderr, "Netjail: show the bound directory: %v\n", err)
-		return 1
+	if parsed.bind != nil {
+		if err := bindBind(parsed.bind, bindFd); err != nil {
+			fmt.Fprintf(os.Stderr, "Netjail: show the bound directory: %v\n", err)
+			return 1
+		}
 	}
 	if err := loopbackUp(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: bring loopback up: %v\n", err)
@@ -270,7 +277,7 @@ type jailArgs struct {
 	port  int
 	masks []string
 	keeps []string
-	binds []Bind
+	bind  *Bind
 	dir   string
 	argv  []string
 }
@@ -328,10 +335,13 @@ func parseArgs(args []string) (jailArgs, error) {
 			}
 			parsed.keeps = append(parsed.keeps, path)
 		case "--bind":
+			if parsed.bind != nil {
+				return jailArgs{}, errors.New("netjail: one --bind per jail")
+			}
 			if i+2 >= len(args) {
 				return jailArgs{}, errors.New("netjail: --bind needs a host path and a jail path")
 			}
-			parsed.binds = append(parsed.binds, Bind{Host: args[i+1], Jail: args[i+2]})
+			parsed.bind = &Bind{Host: args[i+1], Jail: args[i+2]}
 			i += 2
 		case "--chdir":
 			i++
@@ -478,34 +488,28 @@ func closeKeeps(fds []int) {
 	}
 }
 
-// openBinds opens the host directory of every bind as a handle, before the
+// openBind opens the host directory of the bind as a handle, before the
 // masks land: a host directory under a masked path no longer names itself
 // afterwards.
-func openBinds(binds []Bind) ([]int, error) {
-	fds := make([]int, len(binds))
-	for i, bind := range binds {
-		fd, err := unix.Open(bind.Host, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", bind.Host, err)
-		}
-		fds[i] = fd
+func openBind(bind *Bind) (int, error) {
+	fd, err := unix.Open(bind.Host, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open %s: %w", bind.Host, err)
 	}
-	return fds, nil
+	return fd, nil
 }
 
-// bindBinds shows each bind's host directory at its jail path. The jail path
+// bindBind shows the bind's host directory at its jail path. The jail path
 // names a directory that does not exist before the call, such as the empty
 // tmpfs over /tmp, so it is created first; the mount stays private to the
 // jail, and a write the child makes lands in the host directory.
-func bindBinds(binds []Bind, fds []int) error {
-	for i, bind := range binds {
-		if err := os.MkdirAll(bind.Jail, 0o700); err != nil {
-			return fmt.Errorf("create %s: %w", bind.Jail, err)
-		}
-		source := "/proc/self/fd/" + strconv.Itoa(fds[i])
-		if err := unix.Mount(source, bind.Jail, "", unix.MS_BIND, ""); err != nil {
-			return fmt.Errorf("bind %s at %s: %w", bind.Host, bind.Jail, err)
-		}
+func bindBind(bind *Bind, fd int) error {
+	if err := os.MkdirAll(bind.Jail, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", bind.Jail, err)
+	}
+	source := "/proc/self/fd/" + strconv.Itoa(fd)
+	if err := unix.Mount(source, bind.Jail, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("bind %s at %s: %w", bind.Host, bind.Jail, err)
 	}
 	return nil
 }

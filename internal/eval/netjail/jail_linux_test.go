@@ -572,6 +572,27 @@ func TestWrapMergesSysProcAttr(t *testing.T) {
 	require.Contains(t, cmd.SysProcAttr.AmbientCaps, uintptr(unix.CAP_SYS_ADMIN))
 }
 
+// TestWrapBoundEmitsOneBind checks the command line of a bound jail: one
+// bind, and the working directory that goes with it.
+func TestWrapBoundEmitsOneBind(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(context.Background(), "true")
+	require.NoError(t, netjail.WrapBound(cmd, "", 0, netjail.Bind{
+		Host: "/host/run",
+		Jail: netjail.JailRunPath,
+		Dir:  filepath.Join(netjail.JailRunPath, "src"),
+	}))
+	self, err := os.Executable()
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		self, "__jail",
+		"--bind", "/host/run", netjail.JailRunPath,
+		"--chdir", filepath.Join(netjail.JailRunPath, "src"),
+		"--", "true",
+	}, cmd.Args)
+}
+
 // TestWrapWithoutProxy checks the grading command line: no socket, no port.
 func TestWrapWithoutProxy(t *testing.T) {
 	t.Parallel()
