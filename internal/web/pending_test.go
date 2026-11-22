@@ -38,6 +38,14 @@ func TestPendingTracksQuestion(t *testing.T) {
 	require.Nil(t, p.question())
 }
 
+func TestPendingIgnoresNotificationWithoutToolCall(t *testing.T) {
+	t.Parallel()
+	p := newPending()
+	p.observe(pubsub.Event[permission.PermissionRequest]{Type: pubsub.CreatedEvent, Payload: permission.PermissionRequest{ID: "p1", SessionID: "s1"}})
+	p.observe(pubsub.Event[permission.PermissionNotification]{Type: pubsub.UpdatedEvent, Payload: permission.PermissionNotification{SessionID: "s1"}})
+	require.Len(t, p.permissions(), 1, "an empty tool call id matches nothing")
+}
+
 func TestPendingForgetsFinishedSession(t *testing.T) {
 	t.Parallel()
 	p := newPending()

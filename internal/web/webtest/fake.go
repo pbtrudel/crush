@@ -68,8 +68,9 @@ type Fake struct {
 	WorkDir string
 	// LSP and MCP are what LSPGetStates and MCPGetStates return. Set them
 	// before the gateway starts.
-	LSP     map[string]workspace.LSPClientInfo
-	MCP     map[string]mcp.ClientInfo
+	LSP map[string]workspace.LSPClientInfo
+	MCP map[string]mcp.ClientInfo
+	// Calls is guarded by mu; read it through CallLog.
 	Calls   []string
 	Granted []string
 	Answers [][]question.Answer
@@ -176,11 +177,33 @@ func (f *Fake) SubscribeEvents(ctx context.Context) <-chan any {
 		delete(f.subs, s)
 		f.subsMu.Unlock()
 		s.mu.Lock()
-		s.closed = true
-		close(s.ch)
+		if !s.closed {
+			s.closed = true
+			close(s.ch)
+		}
 		s.mu.Unlock()
 	}()
 	return s.ch
+}
+
+// CloseSubscribers closes every SubscribeEvents channel, the way a
+// workspace that shut down does.
+func (f *Fake) CloseSubscribers() {
+	f.subsMu.Lock()
+	subs := make([]*subscriber, 0, len(f.subs))
+	for s := range f.subs {
+		subs = append(subs, s)
+		delete(f.subs, s)
+	}
+	f.subsMu.Unlock()
+	for _, s := range subs {
+		s.mu.Lock()
+		if !s.closed {
+			s.closed = true
+			close(s.ch)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (f *Fake) CurrentSessionID() string {

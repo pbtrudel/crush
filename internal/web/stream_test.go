@@ -178,11 +178,63 @@ func TestEncodeStripsAttachmentData(t *testing.T) {
 func TestRingIsBounded(t *testing.T) {
 	t.Parallel()
 	h := newHub()
-	for range ringSize * 3 {
+	for range ringSize*3 + 5 {
 		h.publish("message", json.RawMessage(`{}`))
 	}
-	require.Len(t, h.ring, ringSize)
-	require.Equal(t, uint64(ringSize*3), h.ring[len(h.ring)-1].Seq)
+	frames := h.frames()
+	require.Len(t, frames, ringSize)
+	require.Equal(t, uint64(ringSize*2+6), frames[0].Seq)
+	require.Equal(t, uint64(ringSize*3+5), frames[len(frames)-1].Seq)
+	for i := 1; i < len(frames); i++ {
+		require.Equal(t, frames[i-1].Seq+1, frames[i].Seq)
+	}
+}
+
+func TestReplayAfterTheRingWraps(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	for range ringSize + 10 {
+		h.publish("message", json.RawMessage(`{}`))
+	}
+	_, replay, snap, head := h.attach(int64(ringSize + 5))
+	require.False(t, snap)
+	require.Equal(t, uint64(ringSize+10), head)
+	require.Len(t, replay, 5)
+	require.Equal(t, uint64(ringSize+6), replay[0].Seq)
+}
+
+func TestSinceAheadOfHeadOrMalformedGetsSnapshot(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	for _, q := range []string{"?since=999", "?since=abc", "?since=-4"} {
+		c := dialStream(t, g, q)
+		require.Equal(t, "snapshot", readFrame(t, c).Type, q)
+	}
+}
+
+func TestIdleConnectionIsClosed(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: 150 * time.Millisecond})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	c := dialStream(t, g, "")
+	readFrame(t, c)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	_, _, err = c.Read(ctx)
+	require.Error(t, err, "a client that never pings must be dropped")
+	require.NoError(t, ctx.Err(), "the gateway closed it, not the test deadline")
+}
+
+func TestFollowContinuesAfterEventsClose(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c)
+	fake.CloseSubscribers()
+	fake.SetCurrent("s2")
+	f := readFrame(t, c)
+	require.Equal(t, "session_follow", f.Type)
 }
 
 func TestSlowClientClosed4001(t *testing.T) {
@@ -256,13 +308,14 @@ func TestSnapshotShowsReportedInputMode(t *testing.T) {
 
 func TestShutdownSendsClosing(t *testing.T) {
 	t.Parallel()
-	fake := webtestFake()
-	g, err := Start(t.Context(), Options{Workspace: fake})
+	g, err := Start(t.Context(), Options{Workspace: webtestFake()})
 	require.NoError(t, err)
 	c := dialStream(t, g, "")
 	readFrame(t, c)
-	go func() { _ = g.Shutdown(context.Background()) }()
+	done := make(chan error, 1)
+	go func() { done <- g.Shutdown(context.Background()) }()
 	require.Equal(t, "gateway_closing", readFrame(t, c).Type)
+	require.NoError(t, <-done)
 }
 
 func TestStreamRequiresCookie(t *testing.T) {

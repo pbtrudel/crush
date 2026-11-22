@@ -3,6 +3,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type Options struct {
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
+	// idleTimeout overrides the idle read deadline in tests.
+	idleTimeout time.Duration
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -47,6 +50,7 @@ type Gateway struct {
 	done       chan struct{}
 	hub        *hub
 	pending    *pending
+	idle       time.Duration
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -88,6 +92,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		done:       make(chan struct{}),
 		hub:        newHub(),
 		pending:    newPending(),
+		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
 
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
@@ -238,7 +243,10 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			return
 		case ev, ok := <-events:
 			if !ok {
-				return
+				// The workspace stopped sending events, but the terminal
+				// can still switch sessions; keep following it.
+				events = nil
+				continue
 			}
 			g.pending.observe(ev)
 			if typ, raw, ok := encode(ev); ok {

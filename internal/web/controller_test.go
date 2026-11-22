@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -180,4 +181,40 @@ func TestControllerReportsInputModeRefusal(t *testing.T) {
 	f := readFrame(t, conn)
 	require.Equal(t, frameError, f.Type)
 	require.JSONEq(t, `{"error":"Can't switch while Crush is busy"}`, string(f.Payload))
+}
+
+func TestControllerConcurrentStartsShareOneGateway(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	urls := make(chan string, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, err := c.Start(t.Context())
+			if err == nil {
+				urls <- u
+			}
+		}()
+	}
+	wg.Wait()
+	close(urls)
+	first := <-urls
+	for u := range urls {
+		require.Equal(t, first, u)
+	}
+}
+
+func TestControllerRestartsAfterShutdown(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	first, err := c.Start(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, c.Shutdown(context.Background()))
+	second, err := c.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	require.NotEqual(t, first, second, "a restart gets a new port and token")
 }
