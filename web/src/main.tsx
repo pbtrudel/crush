@@ -8,6 +8,7 @@ import './styles/base.css';
 import './styles/shell.css';
 import './styles/hud.css';
 import './styles/stage.css';
+import './styles/agents.css';
 import './styles/log.css';
 import './styles/deck.css';
 import './styles/interrupt.css';

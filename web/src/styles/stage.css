@@ -13,16 +13,3 @@
 [data-attention='true'] .cs-core, [data-attention='true'] .cs-core-glow { stroke: var(--magenta); fill: var(--magenta); fill-opacity: 0.15; }
 @keyframes cs-spin { to { transform: rotate(360deg); } }
 [data-motion='reduced'] .cs-core { animation: none; }
-.agent-list {
-  position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
-  margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
-  pointer-events: auto;
-}
-.agent-list li {
-  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
-  background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius);
-  font: 500 var(--step--1) var(--font-hud);
-}
-.agent-list li[data-status='running'] .agent-list__glyph { color: var(--cyan); }
-.agent-list li[data-status='attention'] { border-color: var(--magenta); }
-.agent-list li[data-status='attention'] .agent-list__glyph { color: var(--magenta); }

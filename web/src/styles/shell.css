@@ -65,6 +65,7 @@
 .holodeck__grid {
   display: grid;
   grid-template-columns: minmax(22rem, 34rem) 1fr;
+  grid-template-areas: 'log stage';
   grid-row: 3;
   gap: var(--space-4);
   min-block-size: 0;
@@ -73,9 +74,9 @@
 .panel { min-block-size: 0; }
 /* The curve is drawn on the panel itself: a perspective on an ancestor
    would make it the containing block of the fixed scene canvas. */
-.panel--log { transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
-/* The scene shows through the stage; only the agent list takes input. */
-.stage { position: relative; min-block-size: 0; pointer-events: none; }
+.panel--log { grid-area: log; transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+/* The scene shows through the stage; only the agent list and the nodes take input. */
+.stage { grid-area: stage; position: relative; min-block-size: 0; pointer-events: none; }
 .banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
 .banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
 .banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
@@ -127,7 +128,7 @@
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
 }
 @media (max-width: 1023px) {
-  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
+  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; grid-template-areas: 'stage' 'log'; }
   .panel--log { transform: none; order: 2; }
 }
 /* Below 768px everything stacks and the constellation collapses to a strip. */

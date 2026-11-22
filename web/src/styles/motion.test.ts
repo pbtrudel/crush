@@ -11,6 +11,7 @@ const STYLES_DIR = '.';
 
 // Every stylesheet must be read, so a new one cannot slip past the rule.
 const EXPECTED_SHEETS = [
+  'agents.css',
   'base.css',
   'cinematic.css',
   'deck.css',

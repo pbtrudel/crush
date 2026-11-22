@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { Stage } from './Stage';
 import { lowPower } from '../../state/motion';
 import { resetWebglProbe, sceneFailed, use3D } from '../../state/effects';
+import { stageRect } from '../../state/layout';
+import { initialState, reduce } from '../../state/reducer';
+import { actions, state } from '../../state/store';
+import fixtures from '../../state/__fixtures__/events.json';
+import type { Frame } from '../../api/types';
+
+const fx = fixtures as unknown as Record<string, Frame>;
 
 describe('Stage', () => {
   it('renders the 2D constellation and an accessible agent list without WebGL', () => {
@@ -13,10 +20,9 @@ describe('Stage', () => {
     const root = document.createElement('div');
     render(<Stage />, root);
     expect(root.querySelector('svg.constellation-svg')).not.toBeNull();
-    const agent = root.querySelector<HTMLElement>('[aria-label="Agents"] li');
+    const agent = root.querySelector<HTMLElement>('[role="listbox"][aria-label="Agents"] [role="option"]');
     expect(agent?.textContent).toContain('Coder');
-    // M1 has one agent node; it must be keyboard focusable. Roving tabindex
-    // across several agents lands with the M2 inspector.
+    // The list is one tab stop; the arrows move the roving focus inside it.
     expect(agent?.tabIndex).toBe(0);
   });
 
@@ -46,6 +52,33 @@ describe('Stage', () => {
       HTMLCanvasElement.prototype.getContext = original;
       sceneFailed.value = false;
       resetWebglProbe();
+    }
+  });
+
+  it('publishes the stage box for the projector', async () => {
+    const root = document.createElement('div');
+    await act(() => { render(<Stage />, root); });
+    expect(stageRect.value).not.toBeNull();
+    await act(() => { render(null, root); });
+    expect(stageRect.value).toBeNull();
+  });
+
+  it('draws one 2D node per agent and selects it on click', async () => {
+    resetWebglProbe();
+    lowPower.value = true;
+    state.value = reduce(initialState(), fx.snapshot);
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<Stage />, root); });
+      const nodes = root.querySelectorAll('[data-agent-node]');
+      expect(nodes).toHaveLength(2);
+      await act(() => { (root.querySelector('[data-agent-node="team-m-1"]') as SVGGElement).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(inspect).toHaveBeenCalledWith('team-m-1');
+    } finally {
+      render(null, root);
+      lowPower.value = false;
+      vi.restoreAllMocks();
     }
   });
 });

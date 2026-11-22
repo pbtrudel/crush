@@ -58,7 +58,7 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await page.getByText('Display').click();
   await page.getByLabel('Low power (2D constellation)').check();
   await expect(page.locator('svg.constellation-svg')).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Agents' })).toContainText('Coder');
+  await expect(page.getByRole('listbox', { name: 'Agents' })).toContainText('Coder');
 });
 
 test('cinematic mode works with motion off', async ({ page, gateway }) => {

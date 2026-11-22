@@ -1,0 +1,29 @@
+.agent-list {
+  position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
+  margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
+  pointer-events: auto;
+}
+.agent-list li {
+  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 500 var(--step--1) var(--font-hud);
+  cursor: pointer;
+}
+.agent-list li[data-status='running'] .agent-list__glyph { color: var(--cyan); }
+.agent-list li[data-status='attention'] { border-color: var(--magenta); }
+.agent-list li[data-status='attention'] .agent-list__glyph { color: var(--magenta); }
+.agent-list li[aria-selected='true'] { border-color: var(--cyan); box-shadow: var(--glow-cyan); }
+.agent-list li[data-kind='subagent'] .agent-list__glyph { color: var(--violet); }
+.agent-list li[data-kind='teammate'] .agent-list__glyph { color: var(--cyan); }
+.agent-list li[data-status='inactive'], .agent-list li[data-status='done'] { opacity: 0.7; }
+.agent-list li[data-status='failed'] { border-color: var(--magenta); }
+.agent-list__status { margin-inline-start: auto; }
+.cs-node { cursor: pointer; pointer-events: auto; }
+.cs-node__hex { fill: var(--void-deep); stroke: var(--cyan); stroke-width: 1.5; }
+.cs-node[data-kind='subagent'] .cs-node__hex { stroke: var(--violet); }
+.cs-node[data-status='inactive'] .cs-node__hex, .cs-node[data-status='done'] .cs-node__hex { opacity: 0.4; }
+.cs-node[data-status='failed'] .cs-node__hex { stroke: var(--magenta); }
+.cs-node[data-selected='true'] .cs-node__hex { stroke-width: 3; }
+.cs-node__icon { fill: var(--magenta); font: 700 10px var(--font-hud); text-anchor: middle; }
+.cs-filament { stroke: var(--cyan); stroke-opacity: 0.35; }
+.cs-node[data-kind='subagent'] .cs-filament { stroke: var(--violet); }
