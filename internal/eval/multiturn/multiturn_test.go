@@ -168,7 +168,7 @@ func outputLine(reason string) string {
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
@@ -178,7 +178,7 @@ func git(t *testing.T, dir string, args ...string) string {
 
 func blobOf(t *testing.T, dir, content string) string {
 	t.Helper()
-	cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	cmd := exec.CommandContext(t.Context(), "git", "hash-object", "-w", "--stdin")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	cmd.Stdin = strings.NewReader(content)

@@ -73,7 +73,7 @@ func startServer(ctx context.Context, opts Options, src, dataDir, runDir string,
 	if err != nil {
 		return nil, err
 	}
-	port, err := freePort()
+	port, err := freePort(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("pick a server port: %w", err)
 	}
@@ -107,8 +107,9 @@ func startServer(ctx context.Context, opts Options, src, dataDir, runDir string,
 // freePort asks the kernel for an unused loopback port. The listener is
 // closed before the server binds it, so a collision is possible in principle
 // and impossible in practice on an idle host.
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+func freePort(ctx context.Context) (int, error) {
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -239,7 +240,8 @@ func (s *serverTransport) attach(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := s.stream.Do(req)
+	// The body stays open for the whole run; the reader goroutine closes it.
+	resp, err := s.stream.Do(req) //nolint:bodyclose
 	if err != nil {
 		cancel()
 		return fmt.Errorf("open event stream: %w", err)
