@@ -5,9 +5,11 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { FLIGHT_MS } from '../state/cinematic';
 import { effectsLevel, type EffectFlags, type EffectsLevel } from '../state/effects';
+import type { AgentScreen } from '../state/layout';
 import type { CoreMode } from '../state/levels';
 import type { Motion } from '../state/motion';
 import type { ToolCategory } from '../state/toolCategory';
+import { createAgentNodes, type SceneAgent } from './agents';
 import { BOOT_IGNITE_MS, BOOT_MS, bootFrame } from './boot';
 import { categoryColor, createBursts } from './bursts';
 import { HOME, parallax, viewOffset } from './camera';
@@ -15,7 +17,7 @@ import { readColors } from './colors';
 import { watchContextLoss } from './contextLoss';
 import { createCore } from './core';
 import { FrameGuard } from './guard';
-import { sameSceneInput } from './input';
+import { sameAgentList, sameSceneInput } from './input';
 import { clampStep, frameInterval } from './loop';
 import { motionScale } from './motionScale';
 import { sceneSeed } from './rng';
@@ -28,6 +30,14 @@ export interface SceneInput {
   effects: EffectFlags;
   booting: boolean;
   focus: { x: number; y: number; width: number; height: number } | null;
+  agents: SceneAgent[];
+  selected: string | null;
+}
+
+export interface SceneHooks {
+  onStepDown(level: EffectsLevel): void;
+  onFail(): void;
+  onAgentScreens?(screens: AgentScreen[]): void;
 }
 
 // A driver returns true while it is still flying or fading, so the mount
@@ -41,7 +51,7 @@ export interface CameraPoseOptions {
 
 export interface SceneHandle {
   update(s: SceneInput): void;
-  burst(c: ToolCategory): void;
+  burst(c: ToolCategory, target?: string): void;
   dispose(): void;
   camera: THREE.PerspectiveCamera;
   world: THREE.Scene;
@@ -78,7 +88,7 @@ export function resetBootLatch(): void {
 export function mountScene(
   canvas: HTMLCanvasElement,
   initial: SceneInput,
-  hooks: { onStepDown(level: EffectsLevel): void; onFail(): void },
+  hooks: SceneHooks,
 ): SceneHandle {
   const renderer = new THREE.WebGLRenderer({
     canvas,
@@ -101,7 +111,7 @@ function mountWith(
   renderer: THREE.WebGLRenderer,
   canvas: HTMLCanvasElement,
   initial: SceneInput,
-  hooks: { onStepDown(level: EffectsLevel): void; onFail(): void },
+  hooks: SceneHooks,
 ): SceneHandle {
   const colors = readColors();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -120,6 +130,9 @@ function mountWith(
   scene.add(world.group, core.group);
   const bursts = createBursts(colors, core.emissive.getWorldPosition(new THREE.Vector3()));
   scene.add(bursts.group);
+  const agents = createAgentNodes(colors, core.emissive.getWorldPosition(new THREE.Vector3()));
+  scene.add(agents.group);
+  agents.sync(initial.agents, initial.selected);
   world.mirror(core.emissive);
 
   const composer = new EffectComposer(renderer);
@@ -175,6 +188,7 @@ function mountWith(
   let driverBusy = false;
   let coreAnimating = false;
   let burstsAlive = false;
+  let nodesAnimating = false;
   let eventActive = false;
   let needsRender = false;
   let disposed = false;
@@ -261,6 +275,31 @@ function mountWith(
     return frameInterval({ hidden: document.hidden, motion: input.motion, eventActive });
   };
 
+  let lastScreenKey = '';
+  const projected = new THREE.Vector3();
+  // publishScreens projects every node after a render and reports only a
+  // change of at least a pixel, so idle frames cost the page nothing.
+  const publishScreens = () => {
+    if (!hooks.onAgentScreens) return;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const screens: AgentScreen[] = [];
+    for (const id of agents.ids()) {
+      if (!agents.position(id, projected)) continue;
+      projected.project(camera);
+      screens.push({
+        id,
+        x: Math.round(((projected.x + 1) / 2) * width),
+        y: Math.round(((1 - projected.y) / 2) * height),
+        visible: projected.z < 1,
+      });
+    }
+    const key = JSON.stringify(screens);
+    if (key === lastScreenKey) return;
+    lastScreenKey = key;
+    hooks.onAgentScreens(screens);
+  };
+
   function frame(now: number) {
     raf = 0;
     if (disposed) return;
@@ -294,6 +333,7 @@ function mountWith(
     const workStart = performance.now();
     coreAnimating = core.update(dt, elapsed, motion);
     burstsAlive = bursts.update(dt);
+    nodesAnimating = agents.update(dt, elapsed, motion);
     // The core runs first so the reflection copies this frame's pose.
     world.update(dt * motionScale(motion), elapsed);
     // The offset moves before the driver runs: a cinematic driver projects
@@ -308,6 +348,7 @@ function mountWith(
     }
     if (input.effects.bloom) composer.render();
     else renderer.render(scene, camera);
+    publishScreens();
     const workMs = performance.now() - workStart;
 
     // Sampling after the last step is pointless: no flag is left to lower.
@@ -318,6 +359,7 @@ function mountWith(
 
     eventActive =
       burstsAlive ||
+      nodesAnimating ||
       coreAnimating ||
       input.mode === 'working' ||
       poseEasing ||
@@ -357,17 +399,31 @@ function mountWith(
     // Bloom is only off when the level stepped down, so this edge is the
     // restore and the cooldown restarts from here.
     const restored = next.effects.bloom && !input.effects.bloom;
+    const rosterChanged = next.selected !== input.selected || !sameAgentList(next.agents, input.agents);
     if (next.mode !== input.mode) core.setMode(next.mode);
     if (next.fill !== input.fill) core.setFill(next.fill);
     input = next;
     world.setEffects(next.effects);
+    if (rosterChanged) agents.sync(next.agents, next.selected);
     if (restored) guard.reset(0, performance.now());
     kick();
   };
 
-  const burst = (c: ToolCategory) => {
-    if (input.motion === 'full') bursts.spawn(c);
-    else if (input.motion === 'reduced') core.flash(categoryColor(colors, c));
+  const burstTarget = new THREE.Vector3();
+  const burst = (c: ToolCategory, agentId?: string) => {
+    const color = categoryColor(colors, c);
+    if (agentId && agents.position(agentId, burstTarget)) {
+      if (input.motion === 'full') {
+        bursts.spawnAt(c, burstTarget);
+        agents.pulse(agentId, color);
+      } else if (input.motion === 'reduced') {
+        agents.flash(agentId, color);
+      }
+    } else if (input.motion === 'full') {
+      bursts.spawn(c);
+    } else if (input.motion === 'reduced') {
+      core.flash(color);
+    }
     kick();
   };
 
@@ -412,6 +468,7 @@ function mountWith(
     window.removeEventListener('pointermove', onPointerMove);
     stopWatching();
     bursts.dispose();
+    agents.dispose();
     core.dispose();
     world.dispose();
     bloom.dispose();

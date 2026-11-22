@@ -27,3 +27,21 @@
 .cs-node__icon { fill: var(--magenta); font: 700 10px var(--font-hud); text-anchor: middle; }
 .cs-filament { stroke: var(--cyan); stroke-opacity: 0.35; }
 .cs-node[data-kind='subagent'] .cs-filament { stroke: var(--violet); }
+
+/* The 3D tags are DOM labels the scene moves with a transform written
+   through the CSSOM. The layer covers the viewport but takes no input; each
+   tag does, so a click reaches the agent instead of the scene. */
+.agent-tags { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+.agent-tag {
+  position: absolute; inset-block-start: 0; inset-inline-start: 0;
+  display: grid; gap: 2px; padding: 4px 8px; pointer-events: auto; cursor: pointer;
+  font: 500 var(--step--1) var(--font-hud); white-space: nowrap;
+}
+/* .holo sets position: relative for its brackets, so the tag needs the
+   compound selector to stay on the scene's coordinates. */
+.agent-tag.holo { position: absolute; }
+.agent-tag[data-visible='false'] { opacity: 0; pointer-events: none; }
+.agent-tag[data-kind='subagent'] { --bracket: var(--violet); }
+.agent-tag[data-status='failed'] { --bracket: var(--magenta); }
+.agent-tag[data-selected='true'] { filter: brightness(1.4); }
+.agent-tag__status { color: var(--text-muted); font-size: 0.85em; }

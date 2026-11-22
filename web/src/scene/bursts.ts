@@ -32,6 +32,7 @@ interface Ring {
 export interface Bursts {
   group: THREE.Group;
   spawn(c: ToolCategory): void;
+  spawnAt(c: ToolCategory, at: THREE.Vector3): void;
   update(dt: number): boolean;
   active(): number;
   dispose(): void;
@@ -70,7 +71,16 @@ export function createBursts(colors: SceneColors, origin: THREE.Vector3): Bursts
     ring.material.color.copy(categoryColor(colors, c));
     ring.material.opacity = START_OPACITY;
     ring.mesh.scale.setScalar(START_SCALE);
+    ring.mesh.position.set(0, 0, 0);
     ring.mesh.visible = true;
+  };
+
+  // spawnAt rings a node instead of the core. The pool lives in the core's
+  // frame, so the node position is made relative to it.
+  const spawnAt = (c: ToolCategory, at: THREE.Vector3) => {
+    spawn(c);
+    const ring = rings.reduce((a, b) => (b.born > a.born ? b : a));
+    ring.mesh.position.copy(at).sub(group.position);
   };
 
   const update = (dt: number): boolean => {
@@ -99,5 +109,5 @@ export function createBursts(colors: SceneColors, origin: THREE.Vector3): Bursts
     group.clear();
   };
 
-  return { group, spawn, update, active, dispose };
+  return { group, spawn, spawnAt, update, active, dispose };
 }

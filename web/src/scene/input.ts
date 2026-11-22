@@ -13,7 +13,18 @@ export function sameSceneInput(a: SceneInput, b: SceneInput): boolean {
     a.effects.beams === b.effects.beams &&
     a.effects.particleShare === b.effects.particleShare &&
     a.effects.cinematic === b.effects.cinematic &&
-    sameFocus(a.focus, b.focus)
+    sameFocus(a.focus, b.focus) &&
+    a.selected === b.selected &&
+    sameAgentList(a.agents, b.agents)
+  );
+}
+
+// sameAgentList compares the roster a frame draws: an agent that kept its
+// id, kind and status needs no new node.
+export function sameAgentList(a: SceneInput['agents'], b: SceneInput['agents']): boolean {
+  return (
+    a.length === b.length &&
+    a.every((x, i) => x.id === b[i].id && x.kind === b[i].kind && x.status === b[i].status)
   );
 }
 

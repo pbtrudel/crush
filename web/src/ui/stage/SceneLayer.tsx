@@ -1,14 +1,17 @@
 import { useEffect, useRef } from 'preact/hooks';
+import type { SceneAgent } from '../../scene/agents';
 import { sameSceneInput } from '../../scene/input';
 import type { SceneHandle, SceneInput } from '../../scene/mount';
+import { deriveAgents } from '../../state/agents';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { effectFlags, effectsLevel, sceneFailed, use3D } from '../../state/effects';
-import { stageRect } from '../../state/layout';
+import { publishAgentScreens, stageRect } from '../../state/layout';
 import { coreMode } from '../../state/levels';
 import { lowPower, motion } from '../../state/motion';
 import { contextFill } from '../../state/reducer';
 import { actions, state } from '../../state/store';
 import { telemetry } from '../../state/telemetry';
+import { toolCategory } from '../../state/toolCategory';
 
 interface ElementRef {
   readonly current: HTMLElement | null;
@@ -33,10 +36,15 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
     effects: effectFlags(effectsLevel.value, lowPower.value),
     booting: s.conn === 'booting',
     focus: stageRect.value,
+    agents: deriveAgents(s.sessionId, s.team, s.runs).map((a) => ({ id: a.sessionId, kind: a.kind as SceneAgent['kind'], status: a.status })),
+    selected: s.inspected?.sessionId ?? null,
   };
   const canvas = useRef<HTMLCanvasElement>(null);
   const scene = useRef<SceneHandle | null>(null);
   const lastBurst = useRef<string | undefined>(undefined);
+  // The call id each agent was last seen running, so a burst fires once per
+  // call rather than on every frame that repeats it.
+  const lastCalls = useRef<Record<string, string>>({});
   // The 3D chunk loads asynchronously, so remember the latest state rather
   // than the state captured when the mount effect ran.
   const latest = useRef(input);
@@ -57,12 +65,14 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
           onFail: () => {
             sceneFailed.value = true;
           },
+          onAgentScreens: publishAgentScreens,
         });
         scene.current = handle;
         applied.current = latest.current;
         // Seed from the window so the 15 minutes it holds never replay as
         // a storm of rings.
         lastBurst.current = telemetry.peek().tools.at(-1)?.id;
+        lastCalls.current = Object.fromEntries(Object.entries(state.peek().activity).map(([sid, c]) => [sid, c.callId]));
         handle.update(latest.current);
       })
       .catch(() => {
@@ -123,6 +133,18 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
     for (const event of tools.slice(start)) handle.burst(event.category);
     if (tools.length > start) lastBurst.current = tools[tools.length - 1].id;
   }, [tools]);
+
+  // A child agent's call is not in the main transcript, so its ring is
+  // spawned at its node from the activity map instead.
+  useEffect(() => {
+    const handle = scene.current;
+    const seen = lastCalls.current;
+    lastCalls.current = Object.fromEntries(Object.entries(s.activity).map(([sid, c]) => [sid, c.callId]));
+    if (!handle) return;
+    for (const [sid, call] of Object.entries(s.activity)) {
+      if (seen[sid] !== call.callId) handle.burst(toolCategory(call.tool), sid);
+    }
+  }, [s.activity]);
 
   if (!enabled) return null;
   return <canvas ref={canvas} class="scene-layer__canvas" aria-hidden="true" />;
