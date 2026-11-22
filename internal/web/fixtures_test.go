@@ -69,6 +69,30 @@ func fixtureEvents() map[string]any {
 	}
 }
 
+// snapshotFrame builds the snapshot the gateway sends before any live frame.
+// A snapshot carries the hub head as its seq, which is 0 for a fresh hub.
+func snapshotFrame(t *testing.T) frame {
+	t.Helper()
+	msg := innerPayload(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
+		ID: "a-0", SessionID: "s1", Role: message.Assistant, CreatedAt: 1, UpdatedAt: 2,
+		Model: "claude", Provider: "anthropic",
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "tc-0", Name: "bash", Input: "{}", Finished: true},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: 2},
+		},
+	}})
+	require.NotNil(t, msg)
+	raw, err := json.Marshal(Snapshot{
+		Version: "test", WorkingDir: "/repo", CurrentSessionID: "s1",
+		Messages: []json.RawMessage{msg}, Permissions: []json.RawMessage{},
+		PermissionMode: "normal", InputMode: "code",
+		Model:  ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
+		Queued: []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
+	})
+	require.NoError(t, err)
+	return frame{Seq: 0, Type: frameSnapshot, Payload: raw}
+}
+
 // TestWireFixtures keeps the frontend fixture in sync with real wire output.
 // Regenerate with CRUSH_WEB_FIXTURES=1 go test ./internal/web -run TestWireFixtures.
 func TestWireFixtures(t *testing.T) {
@@ -79,6 +103,7 @@ func TestWireFixtures(t *testing.T) {
 		require.True(t, ok, name)
 		out[name] = frame{Seq: 1, Type: typ, Payload: raw}
 	}
+	out["snapshot"] = snapshotFrame(t)
 	got, err := json.MarshalIndent(out, "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')

@@ -234,13 +234,6 @@
       "current_session_id": "s1",
       "messages": [
         {
-          "id": "a-0",
-          "role": "assistant",
-          "session_id": "s1",
-          "model": "claude",
-          "provider": "anthropic",
-          "created_at": 1,
-          "updated_at": 2,
           "parts": [
             {
               "type": "tool_call",
@@ -258,7 +251,14 @@
                 "time": 2
               }
             }
-          ]
+          ],
+          "id": "a-0",
+          "role": "assistant",
+          "session_id": "s1",
+          "model": "claude",
+          "provider": "anthropic",
+          "created_at": 1,
+          "updated_at": 2
         }
       ],
       "permissions": [],
@@ -271,7 +271,9 @@
         "context_window": 200000
       },
       "busy": false,
-      "queued": []
+      "queued": [],
+      "lsp": {},
+      "mcp": {}
     }
   }
 }
