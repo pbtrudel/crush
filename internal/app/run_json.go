@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/tidwall/gjson"
 )
 
 // runSchema numbers the object `crush run --json` prints. Within one schema
@@ -56,6 +58,78 @@ type runGate struct {
 	UnbackedClaims int `json:"unbacked_claims"`
 }
 
+// runEdits is what the edit and multiedit calls of the command did: how
+// many it attempted, how many the read guard or the matcher refused and by
+// which kind, how many failed for another reason, and how many applied to a
+// file not read first. The kinds split Refused; a failure outside them is
+// an error, not a refusal.
+type runEdits struct {
+	Attempted        int `json:"attempted"`
+	Refused          int `json:"refused"`
+	NotRead          int `json:"not_read"`
+	ChangedSinceRead int `json:"changed_since_read"`
+	NoMatch          int `json:"no_match"`
+	MultipleMatches  int `json:"multiple_matches"`
+	Errors           int `json:"errors"`
+	UnreadApplied    int `json:"unread_applied"`
+}
+
+// editCounts counts the edit and multiedit calls of the run and their
+// results, or returns nil when the run made no such call: a run without an
+// edit prints the object it printed before the metric existed.
+func editCounts(rows []message.Message) *runEdits {
+	var edits runEdits
+	// calls holds the ids of the run's edit calls, so a result whose call
+	// is outside the run is not counted.
+	calls := map[string]bool{}
+	for _, m := range rows {
+		switch m.Role {
+		case message.Assistant:
+			for _, tc := range m.ToolCalls() {
+				if tc.Name != tools.EditToolName && tc.Name != tools.MultiEditToolName {
+					continue
+				}
+				edits.Attempted++
+				calls[tc.ID] = true
+			}
+		case message.Tool:
+			for _, tr := range m.ToolResults() {
+				if !calls[tr.ToolCallID] {
+					continue
+				}
+				if !tr.IsError {
+					if gjson.Get(tr.Metadata, "unread_edit").Bool() {
+						edits.UnreadApplied++
+					}
+					continue
+				}
+				switch gjson.Get(tr.Metadata, "error_kind").String() {
+				case "not_read":
+					edits.NotRead++
+					edits.Refused++
+				case "changed_since_read":
+					edits.ChangedSinceRead++
+					edits.Refused++
+				case "text_not_found":
+					edits.NoMatch++
+					edits.Refused++
+				case "multiple_matches":
+					edits.MultipleMatches++
+					edits.Refused++
+				default:
+					// A call that failed for another reason, such as a
+					// refused permission, is not a refusal.
+					edits.Errors++
+				}
+			}
+		}
+	}
+	if edits.Attempted == 0 {
+		return nil
+	}
+	return &edits
+}
+
 // runTree is the command's session and every session started from it.
 type runTree struct {
 	Sessions int `json:"sessions"`
@@ -79,10 +153,13 @@ type runResult struct {
 	Tree       runTree         `json:"tree"`
 	// Gate is set only for a run the turn-end gate continued, so a run
 	// without the gate prints the object it printed before it existed.
-	Gate      *runGate `json:"gate,omitempty"`
-	Estimated bool     `json:"estimated"`
-	Cost      float64  `json:"cost"`
-	Error     string   `json:"error,omitempty"`
+	Gate *runGate `json:"gate,omitempty"`
+	// Edits is set only for a run that called edit or multiedit, so a run
+	// without one prints the object it printed before the metric existed.
+	Edits     *runEdits `json:"edits,omitempty"`
+	Estimated bool      `json:"estimated"`
+	Cost      float64   `json:"cost"`
+	Error     string    `json:"error,omitempty"`
 	// Worktree is the Git worktree the --worktree flag created, so the
 	// caller of a scripted run knows where the run happened.
 	Worktree string `json:"worktree,omitempty"`
@@ -157,6 +234,7 @@ func summarizeRun(sessionID string, rows []message.Message) runResult {
 		}
 	}
 	result.Tree.Sessions = len(sessions)
+	result.Edits = editCounts(rows)
 	// Only a run the gate continued has anything to report, and only then
 	// is the answer worth scanning for claims it never backed.
 	if continuations := gateRowCount(rows, sessionID); continuations > 0 {

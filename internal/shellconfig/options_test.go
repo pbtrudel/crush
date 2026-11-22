@@ -334,3 +334,32 @@ func TestOption_UIVerbosity(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expects low or high")
 }
+
+// The edit-without-read option is a plain boolean: the key alone turns the
+// experiment on, and false turns it off.
+func TestOption_EditWithoutRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		script string
+		want   bool
+	}{
+		{name: "key alone turns it on", script: "option edit-without-read", want: true},
+		{name: "false turns it off", script: "option edit-without-read false", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "crushrc")
+			jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(tt.script))
+			require.NoError(t, err)
+
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(jsonBytes, &result))
+			opts := result["options"].(map[string]any)
+			require.Equal(t, tt.want, opts["edit_without_read"])
+		})
+	}
+}

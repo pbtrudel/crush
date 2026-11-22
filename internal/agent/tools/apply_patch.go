@@ -62,7 +62,7 @@ func NewApplyPatchTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for applying a patch")
 			}
 
-			edit := editContext{ctx, permissions, files, filetracker, workingDir}
+			edit := editContext{ctx: ctx, permissions: permissions, files: files, filetracker: filetracker, workingDir: workingDir}
 			resp, written, err := applyPatch(edit, sessionID, params.Patch, call)
 			if err != nil || resp.IsError {
 				return resp, err
@@ -204,19 +204,19 @@ func planPatch(edit editContext, sessionID string, ops []patchOp) ([]patchPlan, 
 			}
 			plan.newContent = patchContent(op.content)
 		case patchOpUpdate, patchOpDelete:
-			_, oldContent, isCrlf, resp, err := loadExistingFile(edit, path, "session ID is required for patching a file")
+			file, resp, err := loadExistingFile(edit, path, "session ID is required for patching a file")
 			if err != nil {
 				return nil, err
 			}
 			if resp.Content != "" {
 				return nil, &editMatchError{kind: MetadataErrorKind(resp.Metadata), msg: resp.Content}
 			}
-			plan.oldContent, plan.isCrlf = oldContent, isCrlf
+			plan.oldContent, plan.isCrlf = file.content, file.isCrlf
 			if op.kind == patchOpDelete {
 				plans = append(plans, plan)
 				continue
 			}
-			newContent, err := applyPatchHunks(path, oldContent, op.hunks)
+			newContent, err := applyPatchHunks(path, file.content, op.hunks)
 			if err != nil {
 				return nil, err
 			}
@@ -229,7 +229,7 @@ func planPatch(edit editContext, sessionID string, ops []patchOp) ([]patchPlan, 
 				} else if !os.IsNotExist(err) {
 					return nil, fmt.Errorf("failed to access file: %w", err)
 				}
-			} else if newContent == oldContent {
+			} else if newContent == file.content {
 				return nil, fmt.Errorf("patch made no changes to %s", path)
 			}
 		}
@@ -270,7 +270,7 @@ func writePatchPlans(edit editContext, sessionID string, plans []patchPlan) (App
 				if err := writeFileWithParents(plan.moveTo, []byte(writeContent)); err != nil {
 					return meta, written, err
 				}
-				if err := commitFileChange(edit, sessionID, plan.moveTo, "", writeContent); err != nil {
+				if err := commitFileChange(edit, sessionID, plan.moveTo, "", writeContent, true); err != nil {
 					return meta, written, err
 				}
 				if err := os.Remove(plan.path); err != nil {
@@ -278,7 +278,7 @@ func writePatchPlans(edit editContext, sessionID string, plans []patchPlan) (App
 				}
 				written = append(written, plan.moveTo)
 			} else {
-				if err := commitFileChange(edit, sessionID, plan.path, plan.oldContent, writeContent); err != nil {
+				if err := commitFileChange(edit, sessionID, plan.path, plan.oldContent, writeContent, true); err != nil {
 					return meta, written, err
 				}
 				written = append(written, plan.path)

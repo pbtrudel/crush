@@ -56,19 +56,28 @@ func TestErrorKindOf(t *testing.T) {
 	require.Equal(t, ErrorKindTextNotFound, errorKindOf(wrapped))
 }
 
+// A file not read first whose text matches zero or several times keeps the
+// match error: the read guard is not the reason the edit failed, and the
+// refusal must not invite a read that would change nothing.
 func TestEditMatchFailureKinds(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		delete bool
-		old    string
-		want   ErrorKind
+		name        string
+		delete      bool
+		withoutRead bool
+		old         string
+		want        ErrorKind
+		message     string
 	}{
 		{name: "replace, not found", old: "gamma", want: ErrorKindTextNotFound},
 		{name: "replace, multiple matches", old: "alpha\n", want: ErrorKindMultipleMatches},
 		{name: "delete, not found", delete: true, old: "gamma", want: ErrorKindTextNotFound},
 		{name: "delete, multiple matches", delete: true, old: "alpha\n", want: ErrorKindMultipleMatches},
+		{name: "replace, not found, not read", withoutRead: true, old: "gamma", want: ErrorKindTextNotFound, message: notFoundMessage},
+		{name: "replace, multiple matches, not read", withoutRead: true, old: "alpha\n", want: ErrorKindMultipleMatches, message: multipleMatchMessage},
+		{name: "delete, not found, not read", withoutRead: true, delete: true, old: "gamma", want: ErrorKindTextNotFound, message: notFoundMessage},
+		{name: "delete, multiple matches, not read", withoutRead: true, delete: true, old: "alpha\n", want: ErrorKindMultipleMatches, message: multipleMatchMessage},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,7 +86,13 @@ func TestEditMatchFailureKinds(t *testing.T) {
 			dir := t.TempDir()
 			filePath := filepath.Join(dir, "a.txt")
 			require.NoError(t, os.WriteFile(filePath, []byte("alpha\nbeta\nalpha\n"), 0o644))
-			edit := editContextForKind(t, dir, time.Now().Add(time.Second))
+			// A zero last-read time is a file the session never read.
+			lastRead := time.Now().Add(time.Second)
+			if tt.withoutRead {
+				lastRead = time.Time{}
+			}
+			edit := editContextForKind(t, dir, lastRead)
+			edit.withoutRead = tt.withoutRead
 
 			var resp fantasy.ToolResponse
 			var err error
@@ -89,6 +104,10 @@ func TestEditMatchFailureKinds(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, resp.IsError)
 			require.Equal(t, string(tt.want), gjson.Get(resp.Metadata, "error_kind").String())
+			if tt.message != "" {
+				require.True(t, strings.HasPrefix(resp.Content, tt.message), resp.Content)
+				require.NotContains(t, resp.Content, "Use the View tool first", "a match error must not send the model to read")
+			}
 		})
 	}
 }

@@ -103,6 +103,6 @@ func TestProcessContextPathKeepsCaseDifferingFiles(t *testing.T) {
 		t.Skip("this filesystem is case-insensitive")
 	}
 
-	contexts := processContextPath("notes", initIsolatedConfig(t, dir))
+	contexts := processContextPath("notes", initIsolatedConfig(t, dir).WorkingDir())
 	require.Len(t, contexts, 2, "both files are real and both must be read")
 }

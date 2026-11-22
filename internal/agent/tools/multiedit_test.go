@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type mockPermissionService struct {
@@ -387,4 +388,149 @@ func TestProcessMultiEditWithCreationPartialFailure(t *testing.T) {
 	require.Equal(t, 3, meta.EditsFailed[0].Index)
 	require.Equal(t, "", meta.OldContent)
 	require.Equal(t, "one\nTWO\nthree\n", meta.NewContent)
+}
+
+// A batch applies to a file the guard would refuse only when every edit is
+// an exact, single match against the content as it evolves there, and the
+// file is then not recorded as read.
+func TestProcessMultiEditExistingFileWithoutRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an exact batch applies", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "one", NewString: "ONE"},
+				{OldString: "ONE\ntwo", NewString: "ONE\nTWO"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.False(t, resp.IsError, resp.Content)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "ONE\nTWO\nthree\n", string(content))
+		var meta MultiEditResponseMetadata
+		require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+		require.True(t, meta.UnreadEdit)
+		require.Equal(t, 2, meta.EditsApplied)
+		require.Zero(t, tracker.recorded, "an unread batch must not claim a read")
+	})
+
+	t.Run("a later edit may match the text an earlier edit wrote", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		// "marker" is only in the first edit's new_string, so the second
+		// edit matches the content as the first one leaves it, and nothing
+		// in the file the session never read.
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "two", NewString: "inserted\nmarker"},
+				{OldString: "marker", NewString: "MARKER"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.False(t, resp.IsError, resp.Content)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "one\ninserted\nMARKER\n", string(content))
+		require.Zero(t, tracker.recorded)
+	})
+
+	t.Run("a whitespace-only edit refuses the batch", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		filePath := writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+		edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+		resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+			FilePath: filePath,
+			Edits: []MultiEditOperation{
+				{OldString: "one", NewString: "ONE"},
+				{OldString: "  two", NewString: "TWO"},
+			},
+		}, fantasy.ToolCall{ID: "call"})
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, todayNotRead)
+		require.Contains(t, resp.Content, "every edit in the batch must match exactly once")
+		require.NotContains(t, resp.Content, "Failed edits:", "no edit of the batch failed to match")
+		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
+		require.Zero(t, tracker.recorded)
+
+		content, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		require.Equal(t, "one\ntwo\nthree\n", string(content))
+	})
+}
+
+// A batch the guard refuses names the edits that failed, and takes the
+// match kind when that is why it was refused.
+func TestProcessMultiEditExistingFileWithoutReadReportsFailedEdits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		edits    []MultiEditOperation
+		wantKind ErrorKind
+		wantEdit string
+	}{
+		{
+			name:     "no match",
+			edits:    []MultiEditOperation{{OldString: "one", NewString: "ONE"}, {OldString: "missing", NewString: "MISSING"}},
+			wantKind: ErrorKindTextNotFound,
+			wantEdit: "- edit 2: old_string not found",
+		},
+		{
+			name:     "several matches",
+			edits:    []MultiEditOperation{{OldString: "o", NewString: "O"}},
+			wantKind: ErrorKindMultipleMatches,
+			wantEdit: "- edit 1: old_string appears multiple times",
+		},
+		{
+			name:     "replace_all with no match",
+			edits:    []MultiEditOperation{{OldString: "missing", NewString: "MISSING", ReplaceAll: true}},
+			wantKind: ErrorKindTextNotFound,
+			wantEdit: "- edit 1: old_string not found",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			filePath := writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+			edit, tracker := unreadEditContext(t, dir, time.Time{}, true)
+
+			resp, err := processMultiEditExistingFile(edit, MultiEditParams{
+				FilePath: filePath,
+				Edits:    tt.edits,
+			}, fantasy.ToolCall{ID: "call"})
+			require.NoError(t, err)
+			require.True(t, resp.IsError)
+			require.Contains(t, resp.Content, todayNotRead)
+			require.Contains(t, resp.Content, "every edit in the batch must match exactly once")
+			require.Contains(t, resp.Content, "Failed edits:")
+			require.Contains(t, resp.Content, tt.wantEdit)
+			require.Equal(t, string(tt.wantKind), gjson.Get(resp.Metadata, "error_kind").String())
+			require.Zero(t, tracker.recorded)
+
+			content, err := os.ReadFile(filePath)
+			require.NoError(t, err)
+			require.Equal(t, "one\ntwo\nthree\n", string(content))
+		})
+	}
 }
