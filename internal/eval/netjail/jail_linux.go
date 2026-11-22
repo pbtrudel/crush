@@ -36,18 +36,42 @@ var executable = sync.OnceValues(os.Executable)
 // each one that stay visible; none means DefaultMasks. Fields the caller
 // already set on cmd.SysProcAttr, such as the process group, are kept.
 func Wrap(cmd *exec.Cmd, sock string, port int, masks ...Mask) error {
+	return wrap(cmd, jailSpec{Sock: sock, Port: port}, masks...)
+}
+
+// WrapBound wraps cmd like Wrap and shows bind.Host at bind.Jail inside the
+// jail, with the child started in bind.Dir. A run uses it to give its child a
+// working directory that names none of the batch layout.
+func WrapBound(cmd *exec.Cmd, sock string, port int, bind Bind, masks ...Mask) error {
+	return wrap(cmd, jailSpec{Sock: sock, Port: port, Binds: []Bind{bind}}, masks...)
+}
+
+// jailSpec is what the jail sets up besides its masks.
+type jailSpec struct {
+	Sock  string
+	Port  int
+	Binds []Bind
+}
+
+func wrap(cmd *exec.Cmd, spec jailSpec, masks ...Mask) error {
 	self, err := executable()
 	if err != nil {
 		return fmt.Errorf("locate the jail binary: %w", err)
 	}
 	args := []string{self, "__jail"}
-	if sock != "" {
-		args = append(args, "--sock", sock, "--port", strconv.Itoa(port))
+	if spec.Sock != "" {
+		args = append(args, "--sock", spec.Sock, "--port", strconv.Itoa(spec.Port))
 	}
 	for _, mask := range masks {
 		args = append(args, "--mask", mask.Path)
 		for _, keep := range mask.Keep {
 			args = append(args, "--keep", keep)
+		}
+	}
+	for _, bind := range spec.Binds {
+		args = append(args, "--bind", bind.Host, bind.Jail)
+		if bind.Dir != "" {
+			args = append(args, "--chdir", bind.Dir)
 		}
 	}
 	args = append(args, "--")
@@ -126,24 +150,23 @@ func KillGroup(cmd *exec.Cmd) {
 
 // Main runs the jail side of the hidden __jail subcommand: it makes the
 // mount tree private, masks the directories that can hold filesystem
-// sockets, brings loopback up, forwards the proxy port when one is given,
-// runs the child with the same environment, streams and directory, and
-// returns its exit code.
+// sockets, shows each bound host directory at its jail path, brings loopback
+// up, forwards the proxy port when one is given, runs the child with the same
+// environment and streams, in the directory the caller named when it gave one
+// and otherwise in the one it inherited, and returns its exit code.
 func Main(args []string) int {
 	check := len(args) == 1 && args[0] == "--check"
-	var sock string
-	var port int
-	var masks []string
-	var keeps []string
-	var argv []string
+	var parsed jailArgs
 	if !check {
 		var err error
-		sock, port, masks, keeps, argv, err = parseArgs(args)
+		parsed, err = parseArgs(args)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 	}
+	masks := parsed.masks
+	argv := parsed.argv
 	if len(masks) == 0 {
 		// A copy: filtering must never rewrite the package global.
 		masks = append([]string(nil), DefaultMasks...)
@@ -157,13 +180,19 @@ func Main(args []string) int {
 	// The kept directories are opened before a mask hides the directory
 	// above them: the bind mount that puts them back names the host
 	// directory through the handle, not through the path the tmpfs now
-	// covers.
-	fds, err := openKeeps(keeps)
+	// covers. A bound host directory is opened for the same reason.
+	fds, err := openKeeps(parsed.keeps)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: open the paths to keep: %v\n", err)
 		return 1
 	}
 	defer closeKeeps(fds)
+	bindFds, err := openBinds(parsed.binds)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: open the bound directories: %v\n", err)
+		return 1
+	}
+	defer closeKeeps(bindFds)
 	if err := privateMounts(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: make the mount tree private: %v\n", err)
 		return 1
@@ -172,17 +201,29 @@ func Main(args []string) int {
 		fmt.Fprintf(os.Stderr, "Netjail: mask the filesystem sockets: %v\n", err)
 		return 1
 	}
-	if err := bindKeeps(keeps, fds); err != nil {
+	if err := bindKeeps(parsed.keeps, fds); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: keep the run's own directory: %v\n", err)
+		return 1
+	}
+	if err := bindBinds(parsed.binds, bindFds); err != nil {
+		fmt.Fprintf(os.Stderr, "Netjail: show the bound directory: %v\n", err)
 		return 1
 	}
 	if err := loopbackUp(); err != nil {
 		fmt.Fprintf(os.Stderr, "Netjail: bring loopback up: %v\n", err)
 		return 1
 	}
-	if sock != "" {
-		if err := forward(sock, port); err != nil {
+	if parsed.sock != "" {
+		if err := forward(parsed.sock, parsed.port); err != nil {
 			fmt.Fprintf(os.Stderr, "Netjail: forward the proxy port: %v\n", err)
+			return 1
+		}
+	}
+	if parsed.dir != "" {
+		// The child inherits this directory, and the path the caller named
+		// only names the run once the binds are in place.
+		if err := os.Chdir(parsed.dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Netjail: enter %s: %v\n", parsed.dir, err)
 			return 1
 		}
 	}
@@ -223,52 +264,87 @@ func dropPrivileges() error {
 	return nil
 }
 
+// jailArgs are the jail's own flags, as the caller passed them.
+type jailArgs struct {
+	sock  string
+	port  int
+	masks []string
+	keeps []string
+	binds []Bind
+	dir   string
+	argv  []string
+}
+
 // parseArgs reads the jail's own flags up to the -- that starts the child's
 // command line.
-func parseArgs(args []string) (sock string, port int, masks, keeps []string, argv []string, err error) {
+func parseArgs(args []string) (jailArgs, error) {
+	var parsed jailArgs
+	value := func(i int, flag string) (string, error) {
+		if i >= len(args) {
+			return "", fmt.Errorf("netjail: %s needs a path", flag)
+		}
+		return args[i], nil
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
-			argv = args[i+1:]
-			if len(argv) == 0 {
-				return "", 0, nil, nil, nil, errors.New("netjail: no command after --")
+			parsed.argv = args[i+1:]
+			if len(parsed.argv) == 0 {
+				return jailArgs{}, errors.New("netjail: no command after --")
 			}
-			if sock != "" && port <= 0 {
-				return "", 0, nil, nil, nil, errors.New("netjail: --sock needs a positive --port")
+			if parsed.sock != "" && parsed.port <= 0 {
+				return jailArgs{}, errors.New("netjail: --sock needs a positive --port")
 			}
-			return sock, port, masks, keeps, argv, nil
+			return parsed, nil
 		case "--sock":
 			i++
-			if i >= len(args) {
-				return "", 0, nil, nil, nil, errors.New("netjail: --sock needs a path")
+			sock, err := value(i, "--sock")
+			if err != nil {
+				return jailArgs{}, err
 			}
-			sock = args[i]
+			parsed.sock = sock
 		case "--port":
 			i++
-			if i >= len(args) {
-				return "", 0, nil, nil, nil, errors.New("netjail: --port needs a number")
-			}
-			port, err = strconv.Atoi(args[i])
+			raw, err := value(i, "--port")
 			if err != nil {
-				return "", 0, nil, nil, nil, fmt.Errorf("netjail: --port %q: %w", args[i], err)
+				return jailArgs{}, err
+			}
+			parsed.port, err = strconv.Atoi(raw)
+			if err != nil {
+				return jailArgs{}, fmt.Errorf("netjail: --port %q: %w", raw, err)
 			}
 		case "--mask":
 			i++
-			if i >= len(args) {
-				return "", 0, nil, nil, nil, errors.New("netjail: --mask needs a path")
+			path, err := value(i, "--mask")
+			if err != nil {
+				return jailArgs{}, err
 			}
-			masks = append(masks, args[i])
+			parsed.masks = append(parsed.masks, path)
 		case "--keep":
 			i++
-			if i >= len(args) {
-				return "", 0, nil, nil, nil, errors.New("netjail: --keep needs a path")
+			path, err := value(i, "--keep")
+			if err != nil {
+				return jailArgs{}, err
 			}
-			keeps = append(keeps, args[i])
+			parsed.keeps = append(parsed.keeps, path)
+		case "--bind":
+			if i+2 >= len(args) {
+				return jailArgs{}, errors.New("netjail: --bind needs a host path and a jail path")
+			}
+			parsed.binds = append(parsed.binds, Bind{Host: args[i+1], Jail: args[i+2]})
+			i += 2
+		case "--chdir":
+			i++
+			dir, err := value(i, "--chdir")
+			if err != nil {
+				return jailArgs{}, err
+			}
+			parsed.dir = dir
 		default:
-			return "", 0, nil, nil, nil, fmt.Errorf("netjail: unexpected argument %q", args[i])
+			return jailArgs{}, fmt.Errorf("netjail: unexpected argument %q", args[i])
 		}
 	}
-	return "", 0, nil, nil, nil, errors.New("netjail: no command after --")
+	return jailArgs{}, errors.New("netjail: no command after --")
 }
 
 // unmaskExecutables drops from masks the default masks that hold a binary
@@ -400,6 +476,38 @@ func closeKeeps(fds []int) {
 			_ = unix.Close(fd)
 		}
 	}
+}
+
+// openBinds opens the host directory of every bind as a handle, before the
+// masks land: a host directory under a masked path no longer names itself
+// afterwards.
+func openBinds(binds []Bind) ([]int, error) {
+	fds := make([]int, len(binds))
+	for i, bind := range binds {
+		fd, err := unix.Open(bind.Host, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", bind.Host, err)
+		}
+		fds[i] = fd
+	}
+	return fds, nil
+}
+
+// bindBinds shows each bind's host directory at its jail path. The jail path
+// names a directory that does not exist before the call, such as the empty
+// tmpfs over /tmp, so it is created first; the mount stays private to the
+// jail, and a write the child makes lands in the host directory.
+func bindBinds(binds []Bind, fds []int) error {
+	for i, bind := range binds {
+		if err := os.MkdirAll(bind.Jail, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", bind.Jail, err)
+		}
+		source := "/proc/self/fd/" + strconv.Itoa(fds[i])
+		if err := unix.Mount(source, bind.Jail, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind %s at %s: %w", bind.Host, bind.Jail, err)
+		}
+	}
+	return nil
 }
 
 // loopbackUp sets IFF_UP on lo. A fresh network namespace has the interface

@@ -16,6 +16,11 @@ func Wrap(cmd *exec.Cmd, sock string, port int, masks ...Mask) error {
 	return errors.New("network jail needs Linux")
 }
 
+// WrapBound reports that the jail needs Linux.
+func WrapBound(cmd *exec.Cmd, sock string, port int, bind Bind, masks ...Mask) error {
+	return errors.New("network jail needs Linux")
+}
+
 // Preflight reports that the jail needs Linux.
 func Preflight() error {
 	return errors.New("network jail needs Linux; use --network host")

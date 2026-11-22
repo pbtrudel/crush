@@ -40,7 +40,33 @@ func TestMain(m *testing.M) {
 	if os.Getenv("NETJAIL_PROBE") == "1" {
 		os.Exit(probe())
 	}
+	if os.Getenv("NETJAIL_BIND_PROBE") == "1" {
+		os.Exit(bindProbe())
+	}
 	os.Exit(m.Run())
+}
+
+// bindProbe runs inside the jail: it works in the directory the jail gives
+// it, reads the host file the bind exposes and writes one back, so the host
+// sees where the write landed.
+func bindProbe() int {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getwd: %v\n", err)
+		return 1
+	}
+	fmt.Printf("cwd=%s\n", wd)
+	data, err := os.ReadFile("input.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read the bound file: %v\n", err)
+		return 1
+	}
+	fmt.Printf("input=%s\n", data)
+	if err := os.WriteFile("written.txt", []byte("from-jail"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "write through the bind: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // canJail reports whether this machine lets an unprivileged process start
@@ -136,6 +162,26 @@ func probe() int {
 				return fail("write %s: %v", write, err)
 			}
 			fmt.Println("write ok")
+		}
+		return 0
+	}
+
+	// The bind probe works in the directory the jail gives it, reads the host
+	// file the bind exposes and writes one back, so the host sees where the
+	// write landed.
+	if os.Getenv("NETJAIL_BIND_PROBE") != "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail("getwd: %v", err)
+		}
+		fmt.Printf("cwd=%s\n", wd)
+		data, err := os.ReadFile("input.txt")
+		if err != nil {
+			return fail("read the bound file: %v", err)
+		}
+		fmt.Printf("input=%s\n", data)
+		if err := os.WriteFile("written.txt", []byte("from-jail"), 0o600); err != nil {
+			return fail("write through the bind: %v", err)
 		}
 		return 0
 	}
@@ -458,6 +504,44 @@ func TestJailMaskThroughASymlinkedHome(t *testing.T) {
 		require.Contains(t, string(out), "entries runs=pr-0010-r1", tc.name+": "+string(out))
 		require.NotContains(t, string(out), "pr-0010-r2", tc.name)
 	}
+}
+
+// A bind shows a host directory at a path inside the jail, so a run can work
+// at a path that names no batch, and what it writes there lands in the host
+// directory.
+func TestJailBindShowsAHostDirectoryAtANeutralPath(t *testing.T) {
+	t.Parallel()
+
+	ok, reason := canJail(t)
+	if !ok {
+		t.Skipf("user namespaces are unavailable: %s", reason)
+	}
+
+	host := t.TempDir()
+	work := filepath.Join(host, "work")
+	require.NoError(t, os.MkdirAll(work, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(work, "input.txt"), []byte("host-content"), 0o600))
+	jailDir := filepath.Join(netjail.JailRunPath, "work")
+
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(context.Background(), self)
+	cmd.Env = append(os.Environ(), "NETJAIL_BIND_PROBE=1")
+	require.NoError(t, netjail.WrapBound(cmd, "", 0, netjail.Bind{
+		Host: host,
+		Jail: netjail.JailRunPath,
+		Dir:  jailDir,
+	}))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "cwd="+jailDir,
+		"the child starts in the directory the bind names")
+	require.Contains(t, string(out), "input=host-content",
+		"the host directory is readable at the jail path")
+
+	written, err := os.ReadFile(filepath.Join(work, "written.txt"))
+	require.NoError(t, err, "a write inside the jail must land in the host directory")
+	require.Equal(t, "from-jail", string(written))
 }
 
 // TestWrapMergesSysProcAttr checks that Wrap keeps the process group the

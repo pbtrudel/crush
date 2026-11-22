@@ -15,3 +15,22 @@ type Mask struct {
 	// stays readable and writable under a masked parent.
 	Keep []string
 }
+
+// JailRunPath is where a jailed run shows its own run directory. /tmp is one
+// of DefaultMasks, so the mount point lives in the jail's private tmpfs, and
+// no path the child is given names the batch layout that advertises the
+// sibling runs of the same batch.
+const JailRunPath = "/tmp/crush-run"
+
+// Bind is a host directory the jail shows at another path inside it.
+type Bind struct {
+	// Host is the directory on the host, opened before the masks land: a
+	// path under a mask no longer names it afterwards.
+	Host string
+	// Jail is where the host directory appears inside the jail.
+	Jail string
+	// Dir is the child's working directory, a path inside Jail. The helper
+	// starts in Host, so it has to move the child after the mount for the
+	// path it inherits to name the jail's own tree.
+	Dir string
+}
