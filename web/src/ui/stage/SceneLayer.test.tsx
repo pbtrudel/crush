@@ -3,12 +3,15 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { lowPower } from '../../state/motion';
 import { resetWebglProbe, sceneFailed, use3D } from '../../state/effects';
+import { initialState } from '../../state/reducer';
+import { state } from '../../state/store';
 import { emptyTelemetry, telemetry, type ToolEvent } from '../../state/telemetry';
 
 const mount = vi.hoisted(() => ({
   calls: 0,
   throwOnMount: false,
   burst: vi.fn(),
+  update: vi.fn(),
   onFail: undefined as undefined | (() => void),
 }));
 vi.mock('../../scene/mount', () => ({
@@ -17,7 +20,7 @@ vi.mock('../../scene/mount', () => ({
     if (mount.throwOnMount) throw new Error('no webgl');
     mount.onFail = h.onFail;
     return {
-      update() {}, burst: mount.burst, dispose() {}, requestFrame() {},
+      update: mount.update, burst: mount.burst, dispose() {}, requestFrame() {},
       setCameraPose() {}, setCameraDriver() {},
     };
   },
@@ -33,9 +36,11 @@ beforeEach(() => {
   lowPower.value = false;
   sceneFailed.value = false;
   telemetry.value = emptyTelemetry();
+  state.value = initialState();
   mount.calls = 0;
   mount.throwOnMount = false;
   mount.burst.mockClear();
+  mount.update.mockClear();
 });
 
 afterEach(() => {
@@ -77,6 +82,22 @@ describe('SceneLayer', () => {
     await act(() => {});
     expect(root.querySelector('canvas.scene-layer__canvas')).toBeNull();
     expect(use3D()).toBe(false);
+    render(null, root);
+  });
+
+  it('leaves the scene alone when a re-render carries the same input', async () => {
+    const root = await mountLayer();
+    expect(mount.update).toHaveBeenCalledTimes(1);
+
+    await act(() => {
+      state.value = { ...state.value };
+    });
+    expect(mount.update).toHaveBeenCalledTimes(1);
+
+    await act(() => {
+      state.value = { ...state.value, busy: true };
+    });
+    expect(mount.update).toHaveBeenCalledTimes(2);
     render(null, root);
   });
 
