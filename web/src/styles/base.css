@@ -1,0 +1,60 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: linear-gradient(180deg, var(--void) 0%, var(--void) 45%, var(--haze) 100%) fixed;
+  color: var(--text);
+  font: 400 var(--step-0)/1.6 var(--font-prose);
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+:where(button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px dashed var(--cyan);
+  outline-offset: 2px;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+code, pre, kbd { font-family: var(--font-code); }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.hud-label {
+  font: 500 var(--step--1)/1.1 var(--font-hud);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+[data-motion='off'] *, [data-motion='off'] *::before, [data-motion='off'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+/* The motion setting (Task 11) owns this, not the OS media query: choosing
+   "Reduced" must work on a machine without the OS preference too. */
+[data-motion='reduced'] *, [data-motion='reduced'] *::before, [data-motion='reduced'] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+}
+
+/* Shared by the shell, log, deck and interrupt tasks, so no task depends on
+   another task's stylesheet. */
+@keyframes blink { 50% { opacity: 0.3; } }
+/* Secondary controls are a cyan outline that fills on hover; the primary is
+   solid glowing cyan (spec 3.5). The hover fill and its glow live on one
+   layer so only its opacity animates (spec 3.9); z-index paints that layer
+   over the button's own background and under its label. */
+.btn { position: relative; isolation: isolate; min-block-size: 44px; padding: 0 18px; border-radius: 999px; font: 600 var(--step--1) var(--font-hud); letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid var(--cyan); background: transparent; color: var(--cyan); transition: transform var(--dur-out) var(--ease-out); }
+.btn::before { content: ''; position: absolute; inset: -1px; z-index: -1; border-radius: inherit; background: var(--cyan-dim); box-shadow: var(--glow-cyan); opacity: 0; transition: opacity var(--dur-out) var(--ease-out); }
+.btn:hover { transform: translateY(-1px); }
+.btn:hover::before { opacity: 1; }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn:disabled::before { box-shadow: none; opacity: 0; }
+.btn--primary { background: var(--cyan); color: var(--void-deep); border-color: var(--cyan); }
+/* The primary button carries its glow at rest, so its layer stays lit. */
+.btn--primary::before { background: none; opacity: 1; }
+.btn--danger { border-color: var(--magenta); color: var(--magenta); background: transparent; }
+.btn--danger::before { background: var(--magenta-dim); box-shadow: var(--glow-magenta); }
+.btn--ghost { background: transparent; }
+.chip { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border: 1px solid var(--edge); border-radius: 999px; font: 400 var(--step--1) var(--font-code); }
+.chip button { background: none; border: 0; min-inline-size: 28px; min-block-size: 28px; }
+.link-button { background: none; border: 0; color: var(--cyan); text-decoration: underline; padding: 8px 0; min-block-size: 36px; }

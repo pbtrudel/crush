@@ -722,6 +722,27 @@ down. There is a short grace window right after `POST /v1/workspaces` so a
 client that has created the workspace but not yet opened its event stream
 does not get reaped before it can attach.
 
+### Web mode
+
+`crush --web` starts the session with a browser tab that mirrors the
+terminal: same chat, same prompts, same permission requests, same files. The
+TUI keeps working next to it, and either side can drive the session. In a
+running session, `/web` copies the link and opens another tab in the
+background, and shows the link in a notification so a slow or missing browser
+never hides it. To turn it on by default, use `option web true` in your
+`crushrc`, or `"options": {"web": true}` in `crush.json`.
+
+Each Crush process serves its own tab on `127.0.0.1` at a random port, so two
+terminals give two independent tabs, one per session. The gateway is loopback
+only: every request needs a per-run token exchanged for a cookie, plus
+same-origin `Host` and `Origin` checks.
+
+Web mode assumes a single-user host. The token rides in the browser opener's
+process arguments, where other local users can read it, and browser cookies
+are not isolated by port, so the tab's cookie is sent to other `127.0.0.1`
+ports (their `Origin` and `Host` checks still reject state-changing calls). A
+strict `0600` redirect file and header-based auth are planned.
+
 ### Global context files
 
 Crush automatically includes two files for cross-project instructions. Think of

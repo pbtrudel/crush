@@ -270,6 +270,9 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 
 	select {
 	case <-ctx.Done():
+		// The run is gone, so the form can never be answered. Tell
+		// clients to close it, the same as an answer or a cancel does.
+		s.publishResolved(req.ID, req.SessionID)
 		return nil, ctx.Err()
 	case <-s.cancelled:
 		return nil, ErrCancelled
@@ -294,13 +297,19 @@ func (s *questionService) Answer(answers []Answer) bool {
 
 	// Publish a notification so non-answering clients can dismiss
 	// their open question forms.
-	if batchID != "" {
-		s.notificationBroker.Publish(pubsub.CreatedEvent, Notification{
-			BatchID:   batchID,
-			SessionID: sessionID,
-		})
-	}
+	s.publishResolved(batchID, sessionID)
 	return true
+}
+
+// publishResolved tells every client the batch is no longer open.
+func (s *questionService) publishResolved(batchID, sessionID string) {
+	if batchID == "" {
+		return
+	}
+	s.notificationBroker.Publish(pubsub.CreatedEvent, Notification{
+		BatchID:   batchID,
+		SessionID: sessionID,
+	})
 }
 
 // Cancel cancels the pending question. Returns false if no
@@ -319,12 +328,7 @@ func (s *questionService) Cancel() bool {
 
 	// Publish a notification so non-answering clients can dismiss
 	// their open question forms.
-	if batchID != "" {
-		s.notificationBroker.Publish(pubsub.CreatedEvent, Notification{
-			BatchID:   batchID,
-			SessionID: sessionID,
-		})
-	}
+	s.publishResolved(batchID, sessionID)
 	return true
 }
 

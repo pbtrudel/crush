@@ -42,6 +42,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/exitbanner"
 	ui "github.com/charmbracelet/crush/internal/ui/model"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/web"
 	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -66,6 +67,7 @@ func init() {
 	rootCmd.PersistentFlags().String("worktree", "", "Run in a new Git worktree with the given name")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	rootCmd.Flags().Bool("web", false, "Open this session in a browser tab (web mode)")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
 
 	rootCmd.AddCommand(
@@ -139,6 +141,15 @@ crush --continue
 		event.AppInitialized()
 
 		com := common.DefaultCommon(ws)
+		webCtl := web.NewController(ws)
+		com.Web = webCtl
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := webCtl.Shutdown(ctx); err != nil {
+				slog.Warn("Failed to stop web mode", "error", err)
+			}
+		}()
 		model := ui.New(com, sessionID, continueLast)
 
 		inputFilter := ui.NewFilter()
@@ -146,6 +157,20 @@ crush --continue
 		// Don't leak the errors to the TUI
 		browser.Stderr = nil
 		browser.Stdout = nil
+		webOn, _ := cmd.Flags().GetBool("web")
+		if !cmd.Flags().Changed("web") {
+			// An explicit --web wins over the config option, so --web=false
+			// turns off a configured default.
+			webOn = ws.Config().Options.Web
+		}
+		var webURL string
+		if webOn {
+			u, err := webCtl.Start(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("web mode: %w", err)
+			}
+			webURL = u
+		}
 		program := tea.NewProgram(
 			model,
 			tea.WithEnvironment(env),
@@ -153,6 +178,23 @@ crush --continue
 			tea.WithFilter(inputFilter.Filter),
 		)
 		model.SetProgram(program)
+		webCtl.SetOnSessionCreated(func(id string) {
+			// Send blocks until the program loop runs, so deliver from a
+			// goroutine and keep the HTTP response prompt.
+			go func() { program.Send(ui.WebSessionCreatedMsg{ID: id}) }()
+		})
+		webCtl.SetOnInputModeRequested(func(plan bool) {
+			go func() { program.Send(ui.WebInputModeMsg{Plan: plan}) }()
+		})
+		if webURL != "" {
+			// Hand the link to the TUI once it is starting, so the UI
+			// copies it and opens the browser off the render path. Send
+			// blocks until the program loop runs, so deliver it from a
+			// goroutine.
+			go func() {
+				program.Send(ui.WebStartedMsg{URL: webURL})
+			}()
+		}
 		go ws.Subscribe(program)
 
 		restoreStderr, err := detachStderr()

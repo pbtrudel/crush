@@ -677,6 +677,8 @@ type Styles struct {
 		ModeBadgePlan     lipgloss.Style
 		ModeBadgeYolo     lipgloss.Style
 		ModeBadgeSysadmin lipgloss.Style
+		// WebBadge marks that web mode is serving this session.
+		WebBadge lipgloss.Style
 
 		// Full-width banners shown when switching modes.
 		ModeBannerPlan          lipgloss.Style

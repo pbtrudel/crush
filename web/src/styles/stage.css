@@ -1,0 +1,28 @@
+.stage__inner { position: absolute; inset: 0; display: grid; }
+.constellation-svg { inline-size: 100%; block-size: 100%; display: block; }
+.constellation-svg { overflow: visible; }
+.cs-ring { fill: none; stroke: var(--cyan); stroke-opacity: 0.5; }
+.cs-ring--violet { stroke: var(--violet); }
+.cs-beam { fill: var(--cyan); opacity: 0.07; }
+/* The 2D fallback's context arc snaps to its new length: a dash transition
+   would animate a paint property (spec 3.9). */
+.cs-context { fill: none; stroke: var(--cyan); stroke-width: 4; stroke-linecap: round; }
+.cs-core { fill: none; stroke: var(--cyan); stroke-width: 2; transform-origin: 0 -20px; }
+.cs-core-glow { fill: var(--cyan); opacity: 0.4; }
+[data-busy='true'] .cs-core { animation: cs-spin 6s linear infinite; }
+[data-attention='true'] .cs-core, [data-attention='true'] .cs-core-glow { stroke: var(--magenta); fill: var(--magenta); fill-opacity: 0.15; }
+@keyframes cs-spin { to { transform: rotate(360deg); } }
+[data-motion='reduced'] .cs-core { animation: none; }
+.agent-list {
+  position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
+  margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
+  pointer-events: auto;
+}
+.agent-list li {
+  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 500 var(--step--1) var(--font-hud);
+}
+.agent-list li[data-status='running'] .agent-list__glyph { color: var(--cyan); }
+.agent-list li[data-status='attention'] { border-color: var(--magenta); }
+.agent-list li[data-status='attention'] .agent-list__glyph { color: var(--magenta); }

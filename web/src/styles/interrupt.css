@@ -1,0 +1,40 @@
+.interrupt-layer:empty { display: none; }
+.interrupt-layer { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; background: oklch(0.09 0.04 275 / 0.55); backdrop-filter: blur(3px); }
+/* The frame only draws the glass: the padding and the scrollbar live in the
+   inner layer, so the danger glow on the frame can paint outside it. */
+.interrupt { inline-size: min(40rem, calc(100vw - 32px)); overflow: visible; }
+/* 2px is the frame's border, so the frame stays within the viewport margin
+   the dialog had when it scrolled itself. */
+.interrupt__scroll {
+  display: grid; gap: 12px; padding: var(--space-9);
+  max-block-size: calc(100dvh - 64px - 2px); overflow-y: auto;
+  border-radius: calc(var(--radius) - 1px);
+}
+/* The power-up still plays under the pulsing danger glow. */
+.interrupt[data-danger='high'] { animation: power-up 280ms var(--ease-out) both; }
+/* The glow pulses on a layer of its own: a box-shadow keyframe on the
+   blurred glass would repaint that backdrop every frame (spec 3.9). */
+.interrupt[data-danger='high']::before {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 1px var(--magenta), 0 0 64px oklch(0.68 0.24 330 / 0.7);
+  opacity: 0; animation: danger-pulse 1.4s ease-in-out 280ms infinite;
+}
+.interrupt__title { margin: 0; font: 600 var(--step-2)/1.2 var(--font-hud); }
+.interrupt__danger { margin: 0; color: var(--magenta); font: 500 var(--step--1) var(--font-code); overflow-wrap: anywhere; }
+.interrupt__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
+.interrupt__path code { color: var(--cyan); overflow-wrap: anywhere; }
+.interrupt__params { margin: 0; max-block-size: 30vh; overflow: auto; padding: 10px; background: var(--void-deep); border: 1px solid var(--edge); border-radius: var(--radius); font-size: var(--step--1); white-space: pre-wrap; }
+.interrupt__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.interrupt kbd { font: 600 0.75rem var(--font-code); padding: 1px 5px; border: 1px solid currentColor; border-radius: 3px; margin-inline-end: 6px; }
+.qform__field { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
+.qform__desc { color: var(--text-muted); margin: 0; }
+.qform__choices { display: grid; gap: 6px; }
+.qform__choice { display: flex; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--edge); border-radius: var(--radius); cursor: pointer; min-block-size: 44px; }
+.qform__choice:has(input:checked) { border-color: var(--cyan); background: var(--cyan-dim); }
+.qform__text { display: grid; gap: 4px; }
+.qform__text textarea { background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-prose); }
+.qform__tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.qform__tabs button { padding: 6px 12px; border: 1px solid var(--edge); border-radius: 999px; background: transparent; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px; }
+.qform__tabs button[aria-selected='true'] { border-color: var(--cyan); color: var(--cyan); }
+.qform__tabs button[data-done='true']::after { content: ' ✓'; color: var(--teal); }
+@keyframes danger-pulse { 50% { opacity: 1; } }

@@ -1,0 +1,319 @@
+// Package webtest provides a scriptable fake workspace for web gateway
+// tests, Playwright smoke tests and frontend development.
+package webtest
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"sync"
+
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
+	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/workspace"
+)
+
+// ErrSessionNotFound is returned by GetSession for unknown IDs.
+var ErrSessionNotFound = errors.New("session not found")
+
+// subscriber is one SubscribeEvents channel. mu serialises Emit's send
+// against the cleanup close so an event can never race with close(ch).
+type subscriber struct {
+	ch     chan any
+	done   <-chan struct{}
+	mu     sync.Mutex
+	closed bool
+}
+
+// Fake implements workspace.Workspace for tests. Methods not overridden
+// panic through the nil embedded interface, which flags unexpected calls.
+type Fake struct {
+	workspace.Workspace
+
+	// subsMu guards subs and is never taken by the getters the gateway
+	// polls, so a blocked Emit cannot stall CurrentSessionID.
+	subsMu sync.Mutex
+	subs   map[*subscriber]struct{}
+
+	mu       sync.Mutex
+	current  string
+	sessions map[string]session.Session
+	messages map[string][]message.Message
+	mode     permission.PermissionMode
+	queued   map[string][]string
+	busy     map[string]bool
+	seq      int
+
+	// decisions and answers carry resolutions to a running scripted
+	// agent, so a test or webfake can play the user's part.
+	decisions chan permission.PermissionNotification
+	answers   chan []question.Answer
+
+	// WorkDir is what WorkingDir returns; webfake points it at the repo
+	// so @ completion has real files.
+	WorkDir string
+	// LSP and MCP are what LSPGetStates and MCPGetStates return. Set them
+	// before the gateway starts.
+	LSP     map[string]workspace.LSPClientInfo
+	MCP     map[string]mcp.ClientInfo
+	Calls   []string
+	Granted []string
+	Answers [][]question.Answer
+	Resolve bool
+	OnRun   func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+}
+
+// NewFake returns a fake with one current session "s1".
+func NewFake() *Fake {
+	f := &Fake{
+		subs:      make(map[*subscriber]struct{}),
+		sessions:  map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
+		messages:  make(map[string][]message.Message),
+		queued:    make(map[string][]string),
+		busy:      make(map[string]bool),
+		current:   "s1",
+		decisions: make(chan permission.PermissionNotification, 16),
+		answers:   make(chan []question.Answer, 16),
+		WorkDir:   "/tmp/project",
+		Resolve:   true,
+	}
+	return f
+}
+
+func (f *Fake) record(call string) {
+	f.mu.Lock()
+	f.Calls = append(f.Calls, call)
+	f.mu.Unlock()
+}
+
+// Emit delivers ev to every SubscribeEvents channel. Subscribers are
+// copied under subsMu and then released, so a blocked Emit never holds
+// the lock CurrentSessionID and the other getters need. It waits for a
+// full subscriber buffer, but gives up on a subscriber whose context
+// ends.
+func (f *Fake) Emit(ev any) {
+	f.subsMu.Lock()
+	subs := make([]*subscriber, 0, len(f.subs))
+	for s := range f.subs {
+		subs = append(subs, s)
+	}
+	f.subsMu.Unlock()
+	for _, s := range subs {
+		s.mu.Lock()
+		if !s.closed {
+			select {
+			case s.ch <- ev:
+			case <-s.done:
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+// SetCurrent changes the session the fake terminal is viewing.
+func (f *Fake) SetCurrent(id string) {
+	f.mu.Lock()
+	f.current = id
+	f.mu.Unlock()
+}
+
+// SetCurrentSession is how both the terminal and the gateway report the
+// session they are viewing. The fake has one shared view, like the real
+// in-process workspace.
+func (f *Fake) SetCurrentSession(_ context.Context, sessionID string) error {
+	f.SetCurrent(sessionID)
+	return nil
+}
+
+// AddMessage stores a message so ListMessages returns it.
+func (f *Fake) AddMessage(m message.Message) {
+	f.mu.Lock()
+	f.messages[m.SessionID] = append(f.messages[m.SessionID], m)
+	f.mu.Unlock()
+}
+
+// SubscribeEvents registers a subscriber before it returns, so no event
+// emitted after registration can be lost. The channel closes when ctx is
+// done.
+func (f *Fake) SubscribeEvents(ctx context.Context) <-chan any {
+	s := &subscriber{ch: make(chan any, 1024), done: ctx.Done()}
+	f.subsMu.Lock()
+	f.subs[s] = struct{}{}
+	f.subsMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		f.subsMu.Lock()
+		delete(f.subs, s)
+		f.subsMu.Unlock()
+		s.mu.Lock()
+		s.closed = true
+		close(s.ch)
+		s.mu.Unlock()
+	}()
+	return s.ch
+}
+
+func (f *Fake) CurrentSessionID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.current
+}
+
+func (f *Fake) WorkingDir() string { return f.WorkDir }
+
+func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
+
+func (f *Fake) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
+
+func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
+
+func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }
+
+func (f *Fake) PermissionMode() permission.PermissionMode {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mode
+}
+
+func (f *Fake) PermissionSetMode(m permission.PermissionMode) {
+	f.mu.Lock()
+	f.mode = m
+	f.mu.Unlock()
+	f.record("PermissionSetMode")
+}
+
+func (f *Fake) GetSession(_ context.Context, id string) (session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.sessions[id]
+	if !ok {
+		return session.Session{}, ErrSessionNotFound
+	}
+	return s, nil
+}
+
+func (f *Fake) ListSessions(context.Context) ([]session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]session.Session, 0, len(f.sessions))
+	for _, s := range f.sessions {
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (f *Fake) CreateSession(_ context.Context, title string) (session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := "s" + string(rune('1'+len(f.sessions)))
+	s := session.Session{ID: id, Title: title}
+	f.sessions[id] = s
+	return s, nil
+}
+
+func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]message.Message(nil), f.messages[id]...), nil
+}
+
+func (f *Fake) AgentRun(ctx context.Context, sessionID, prompt string, att ...message.Attachment) error {
+	f.record("AgentRun:" + sessionID + ":" + prompt)
+	if f.OnRun != nil {
+		return f.OnRun(ctx, sessionID, prompt, att)
+	}
+	return nil
+}
+
+func (f *Fake) AgentCancel(sessionID string) {
+	f.record("AgentCancel:" + sessionID)
+}
+
+func (f *Fake) AgentIsSessionBusy(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.busy[id]
+}
+
+func (f *Fake) AgentQueuedPromptsList(id string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.queued[id]...)
+}
+
+func (f *Fake) AgentClearQueue(id string) {
+	f.mu.Lock()
+	delete(f.queued, id)
+	f.mu.Unlock()
+	f.record("AgentClearQueue:" + id)
+}
+
+// resolvePermission publishes the outcome the UI would publish and hands
+// it to a running scripted agent. It reports whether the fake answered.
+func (f *Fake) resolvePermission(p permission.PermissionRequest, granted bool) bool {
+	if !f.Resolve {
+		return false
+	}
+	n := permission.PermissionNotification{SessionID: p.SessionID, ToolCallID: p.ToolCallID, Granted: granted, Denied: !granted}
+	f.Emit(pubsub.Event[permission.PermissionNotification]{Type: pubsub.UpdatedEvent, Payload: n})
+	select {
+	case f.decisions <- n:
+	default:
+	}
+	return true
+}
+
+func (f *Fake) PermissionGrant(p permission.PermissionRequest) bool {
+	f.record("PermissionGrant:" + p.ID)
+	return f.resolvePermission(p, true)
+}
+
+func (f *Fake) PermissionGrantPersistent(p permission.PermissionRequest) bool {
+	f.record("PermissionGrantPersistent:" + p.ID)
+	return f.resolvePermission(p, true)
+}
+
+func (f *Fake) PermissionDeny(p permission.PermissionRequest) bool {
+	f.record("PermissionDeny:" + p.ID)
+	return f.resolvePermission(p, false)
+}
+
+func (f *Fake) QuestionAnswer(a []question.Answer) bool {
+	f.mu.Lock()
+	f.Answers = append(f.Answers, a)
+	f.mu.Unlock()
+	f.record("QuestionAnswer")
+	if !f.Resolve {
+		return false
+	}
+	select {
+	case f.answers <- a:
+	default:
+	}
+	return true
+}
+
+func (f *Fake) QuestionCancel() bool {
+	f.record("QuestionCancel")
+	return f.Resolve
+}
+
+// nextID returns a deterministic, per-fake unique ID. The scripted agent
+// uses it so fixture and smoke-test output stays stable.
+func (f *Fake) nextID(prefix string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	return prefix + "-" + strconv.Itoa(f.seq)
+}
+
+// CallLog returns a copy of the recorded calls.
+func (f *Fake) CallLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Calls...)
+}

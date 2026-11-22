@@ -348,6 +348,12 @@ func (app *App) ReportCurrentSession(sessionID string) {
 	app.herdrClient.SetSessionID(sessionID)
 }
 
+// CurrentSessionID returns the session last reported by the TUI.
+func (app *App) CurrentSessionID() string {
+	id, _ := app.currentSessionID.Load().(string)
+	return id
+}
+
 // SetRunWorktree records the Git worktree the command's --worktree flag
 // created, so `crush run --json` can report where the run happened.
 func (app *App) SetRunWorktree(path string) {

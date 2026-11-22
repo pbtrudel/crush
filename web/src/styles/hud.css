@@ -1,0 +1,82 @@
+/* The HUD instruments: the context gauge, rolling numerals with sparklines,
+   the activity chart and the server hexes. Hud.tsx publishes the strip
+   height as --hud-h, which shell.css uses to place the toasts. */
+.hud__id { display: grid; gap: 2px; min-inline-size: 0; }
+.hud__meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4);
+  margin: 2px 0 0; font: 500 var(--step--1)/1.2 var(--font-hud);
+  color: var(--text-muted);
+}
+.hud__model { display: inline-flex; align-items: center; gap: 6px; }
+.hud__provider { fill: var(--violet); flex: none; }
+.hud__branch { color: var(--teal); padding-inline-start: var(--space-4); border-inline-start: 1px solid var(--edge); }
+.hud__metric { display: grid; gap: var(--space-1); justify-items: start; }
+.hud__chart { display: grid; gap: var(--space-1); justify-items: start; }
+.hud__servers { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* A divider separates the LSP group from the MCP one, so an empty "none"
+   never reads as part of the next label. */
+.hud__servers .hexes + .hud-label { padding-inline-start: 8px; border-inline-start: 1px solid var(--edge); }
+
+.gauge { display: inline-grid; place-items: center; inline-size: 56px; block-size: 56px; }
+.gauge svg { display: block; }
+.gauge__track { fill: none; stroke: var(--edge); stroke-width: 4; }
+.gauge__value {
+  fill: none; stroke: var(--cyan); stroke-width: 4; stroke-linecap: round;
+  transform: rotate(-90deg); transform-box: fill-box; transform-origin: center;
+}
+.gauge__text { fill: var(--cyan); font: 600 var(--step--1) var(--font-hud); font-variant-numeric: tabular-nums; }
+.gauge[data-level='warn'] .gauge__value { stroke: var(--amber); }
+.gauge[data-level='warn'] .gauge__text { fill: var(--amber); }
+.gauge[data-level='critical'] .gauge__value { stroke: var(--magenta); }
+.gauge[data-level='critical'] .gauge__text { fill: var(--magenta); }
+/* base.css stops animations for reduced and off motion, so the pulse only
+   plays when the display setting is Full. */
+.gauge[data-level='critical'] { animation: gauge-pulse 1.4s ease-in-out infinite; }
+@keyframes gauge-pulse { 50% { opacity: 0.55; } }
+
+.numeral {
+  display: inline-flex; align-items: baseline;
+  font: 600 var(--step-1)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums; text-shadow: var(--glow-text);
+  color: var(--cyan);
+}
+.numeral__row { display: inline-flex; }
+.numeral__char { white-space: pre; }
+.roll { display: inline-block; block-size: 1em; overflow: hidden; }
+.roll__strip { display: flex; flex-direction: column; transition: transform 400ms var(--ease-out); }
+.roll__strip > span { block-size: 1em; line-height: 1; }
+.roll[data-d='0'] .roll__strip { transform: translateY(-0%); }
+.roll[data-d='1'] .roll__strip { transform: translateY(-10%); }
+.roll[data-d='2'] .roll__strip { transform: translateY(-20%); }
+.roll[data-d='3'] .roll__strip { transform: translateY(-30%); }
+.roll[data-d='4'] .roll__strip { transform: translateY(-40%); }
+.roll[data-d='5'] .roll__strip { transform: translateY(-50%); }
+.roll[data-d='6'] .roll__strip { transform: translateY(-60%); }
+.roll[data-d='7'] .roll__strip { transform: translateY(-70%); }
+.roll[data-d='8'] .roll__strip { transform: translateY(-80%); }
+.roll[data-d='9'] .roll__strip { transform: translateY(-90%); }
+
+.spark { display: inline-flex; }
+.spark svg { display: block; }
+.spark polyline { fill: none; stroke: var(--cyan-dim); stroke-width: 1.5; stroke-linejoin: round; }
+
+.chart { display: block; }
+.chart__base { stroke: var(--edge); stroke-width: 1; }
+.bar--read { fill: var(--cyan); }
+.bar--write { fill: var(--teal); }
+.bar--run { fill: var(--amber); }
+.bar--network { fill: var(--violet); }
+
+.hexes { display: inline-flex; align-items: center; gap: var(--space-1); }
+.hexes__none { color: var(--text-muted); opacity: 0.6; font: 500 var(--step--1)/1 var(--font-hud); }
+.hex { display: block; }
+.hex polygon { fill: var(--cyan); }
+.hex[data-tone='dim'] polygon { fill: var(--text-muted); opacity: 0.4; }
+.hex[data-tone='error'] polygon { fill: var(--magenta); }
+.hex__bang { fill: var(--void-deep); font: 700 10px var(--font-hud); }
+
+/* Below 1024px the strips go, with the chart caption; the numbers and the
+   gauge stay. */
+@media (max-width: 1023px) {
+  .spark, .chart, .hud__chart .hud-label { display: none; }
+}

@@ -1,0 +1,88 @@
+/* Cinematic mode. The flight itself writes transforms and opacity through
+   the CSSOM (CSP forbids style attributes); everything here only places the
+   elements it transforms. */
+
+/* Outside cinematic mode the wrappers must not change the grid or the order
+   the log is read in. */
+.cine-view,
+.cine-camera { display: contents; }
+
+/* The fixed view is the renderer's stage: the view offset transform lands on
+   it, so its origin sits at the top-left corner as three's own view element
+   has it. The camera element carries the perspective in its own transform,
+   so the origin stays at its center. */
+.holodeck[data-cinematic='true'] .cine-view {
+  display: block;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: 0 0;
+  z-index: 10;
+  /* Hidden until the first projected frame, so the log never shows at the
+     corner before the flight places it. */
+  opacity: 0;
+}
+.holodeck[data-cinematic='true'] .cine-camera {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  transform-style: preserve-3d;
+}
+
+/* The log is the object element: centered on the anchor by its own
+   transform, so it sits at the top left of the camera element. */
+.holodeck[data-cinematic='true'] .panel--log {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 34rem;
+  block-size: 70vh;
+  margin: 0;
+  transform: none;
+  transform-origin: 50% 50%;
+  pointer-events: auto;
+}
+
+/* Drags anywhere over the scene reach the canvas and orbit the camera. The
+   grid would otherwise swallow them; the agent list keeps its own pointer
+   events so it stays clickable. */
+.holodeck[data-cinematic='true'] .holodeck__grid { pointer-events: none; }
+.holodeck[data-cinematic='true'] .scene-layer__canvas { pointer-events: auto; }
+
+/* Only the way out and the link survive; the flex row replaces the seven
+   instrument columns the hidden children no longer fill. The identity block
+   is not dropped: Hud moves it to .visually-hidden so the page keeps its
+   level-one heading for assistive technology and axe. */
+.holodeck[data-cinematic='true'] .hud { display: flex; justify-content: flex-end; }
+.holodeck[data-cinematic='true'] .gauge,
+.holodeck[data-cinematic='true'] .hud__metric,
+.holodeck[data-cinematic='true'] .hud__chart,
+.holodeck[data-cinematic='true'] .hud__servers,
+.holodeck[data-cinematic='true'] .hud__select,
+.holodeck[data-cinematic='true'] .hud__controls > .hud-label,
+.holodeck[data-cinematic='true'] .hud__mode,
+.holodeck[data-cinematic='true'] .motion-menu { display: none; }
+
+/* The deck becomes a slim bar: one line of input and no help text. */
+.holodeck[data-cinematic='true'] .deck--slim { padding-block: var(--space-1); gap: 4px; }
+.holodeck[data-cinematic='true'] .deck--slim .deck__help { display: none; }
+.holodeck[data-cinematic='true'] .deck--slim .deck__row { align-items: center; }
+.holodeck[data-cinematic='true'] .deck--slim textarea {
+  min-block-size: 0;
+  block-size: 2.25rem;
+  max-block-size: 2.25rem;
+  padding-block: 4px;
+  resize: none;
+}
+
+/* The button reads as held while the mode is on. */
+.hud__cinematic[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
+
+/* Dialogs and toasts stay flat and in front of the projected log. */
+.holodeck[data-cinematic='true'] .interrupt-layer { z-index: 60; }
+
+@media (min-width: 1024px) {
+  /* The log left the grid, so the stage keeps the column it had. */
+  .holodeck[data-cinematic='true'] .stage { grid-column: 2; }
+}

@@ -344,6 +344,10 @@ type UI struct {
 	focus uiFocusState
 	state uiState
 	mode  uiInputMode
+	// webModeSeq orders the mode reports the gateway receives. It only
+	// changes on the update goroutine; commands may still run out of
+	// order.
+	webModeSeq uint64
 
 	// Frame memoization (see framecache.go). scrollOnlyUpdate is set by
 	// handlers that change nothing but the chat scroll position; frameDirty
@@ -1207,6 +1211,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.dialog.OpenDialog(dialog.NewSideAnswer(m.com, msg.question, msg.answer))
+	case WebStartedMsg:
+		cmds = append(cmds, m.webStarted(msg))
+	case WebSessionCreatedMsg:
+		cmds = append(cmds, m.selectSession(msg.ID)...)
+	case WebInputModeMsg:
+		cmds = append(cmds, m.webInputMode(msg))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -1223,10 +1233,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discord.ModeChangedMsg:
 		// Remote control already switched the agent; mirror the local mode
 		// so the badge and editor prompt track it.
+		changed := (m.mode == uiInputModePlan) != msg.Plan
 		if msg.Plan {
 			m.mode = uiInputModePlan
 		} else {
 			m.mode = uiInputModeCode
+		}
+		if changed {
+			if cmd := m.reportWebInputMode(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		m.setEditorPrompt(m.permModeCached())
 		m.invalidateBusyCaches()
@@ -2080,7 +2096,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, util.ReportInfo("Transparent background "+status))
 	case util.ClearStatusMsg:
-		m.status.ClearInfoMsg(msg.Seq)
+		cmds = append(cmds, m.status.ClearInfoMsg(msg.Seq))
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -2748,7 +2764,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
+		cmds = append(cmds, m.selectSession(msg.Session.ID)...)
 	case dialog.ActionSelectAgent:
 		// Remember the search and the selection, so Esc can put the list
 		// back the way the user left it.
@@ -2807,6 +2823,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		if cmd := m.newSession(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionOpenWeb:
+		cmds = append(cmds, m.openWeb())
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSummarize:
 		if m.isAgentBusy() {
@@ -5867,6 +5886,7 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 	if msg.err != nil {
 		return []tea.Cmd{util.ReportError(msg.err)}
 	}
+	changed := m.mode != msg.mode
 	m.mode = msg.mode
 	m.setEditorPrompt(m.permModeCached())
 	if m.rc != nil {
@@ -5875,6 +5895,11 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 		m.rc.SetMode(msg.mode == uiInputModePlan)
 	}
 	var cmds []tea.Cmd
+	if changed {
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 	}
@@ -6392,6 +6417,8 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 	switch {
 	case value == "/reload":
 		return m.reloadConfig(false), true
+	case value == "/web":
+		return m.openWeb(), true
 	case value == "/goal" || strings.HasPrefix(value, "/goal "):
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
@@ -7328,6 +7355,151 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 	return nil
 }
 
+// WebStartedMsg announces that the web gateway is up. The update loop
+// copies the link and opens the browser off the render path, so a slow
+// opener cannot freeze the TUI or hide the link.
+type WebStartedMsg struct {
+	URL string
+}
+
+// WebSessionCreatedMsg announces that the browser started a session. The
+// update loop opens it so the terminal and the tab show the same
+// conversation.
+type WebSessionCreatedMsg struct {
+	ID string
+}
+
+// WebInputModeMsg asks the terminal to switch input mode on behalf of the
+// browser. The terminal still owns the busy check and the agent switch.
+type WebInputModeMsg struct {
+	Plan bool
+}
+
+// webInputModeBusy is the refusal the browser shows when the terminal
+// cannot switch modes yet.
+const webInputModeBusy = "Can't switch while Crush is busy"
+
+// webInputMode routes a browser switch through the regular agent switch.
+// Asking for the mode already active is a no-op; a busy or switching agent
+// gets the same warning as Shift+Tab and a notice in the browser.
+func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
+	target := uiInputModeCode
+	if msg.Plan {
+		target = uiInputModePlan
+	}
+	if target == m.mode {
+		return nil
+	}
+	if m.isAgentBusy() || m.modeSwitching {
+		return tea.Batch(
+			util.ReportWarn("Agent is busy, please wait before switching input mode..."),
+			m.reportWebInputModeRefused(webInputModeBusy),
+		)
+	}
+	return m.setInputMode(target)
+}
+
+// webStatusTTL keeps the web link on screen long enough to read and copy,
+// including when a startup notice would otherwise replace it.
+const webStatusTTL = 30 * time.Second
+
+// webStarted shows the launch link at once, then copies it and opens a
+// browser tab in the background. The notice comes first so a slow clipboard
+// or opener cannot hide the link; the copy and the opener then run
+// concurrently so the clipboard cannot delay the browser. The link is never
+// lost: the copy failure and the opener failure both carry it.
+func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
+	if msg.URL == "" {
+		return nil
+	}
+	notice := util.ReportInfoWithTTL("Opening browser: "+msg.URL, webStatusTTL)
+	cmds := []tea.Cmd{
+		copyWebLinkToClipboard(
+			msg.URL,
+			"Opening browser. Web link copied: "+msg.URL,
+			"Failed to copy the web link to the clipboard. Open "+msg.URL,
+			webStatusTTL,
+		),
+	}
+	if m.com != nil && m.com.Web != nil {
+		web := m.com.Web
+		// --web starts the gateway before the program exists, so report
+		// the terminal's mode once the update loop sees the link. The
+		// command runs off the update loop like the other reports.
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, func() tea.Msg {
+			if err := web.OpenBrowser(); err != nil {
+				return util.InfoMsg{
+					Type: util.InfoTypeWarn,
+					Msg:  "Web mode is running. Open " + msg.URL,
+					TTL:  webStatusTTL,
+				}
+			}
+			return nil
+		})
+	}
+	return tea.Sequence(notice, tea.Batch(cmds...))
+}
+
+// openWeb starts web mode if needed and hands the launch link to the
+// update loop, which copies it and opens the browser without blocking.
+func (m *UI) openWeb() tea.Cmd {
+	if m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		// Seed a gateway that starts later with the mode already on
+		// screen, so its first snapshot is correct.
+		web.SetInputMode(plan, seq)
+		u, err := web.Start(context.Background())
+		if err != nil {
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		}
+		return WebStartedMsg{URL: u}
+	}
+}
+
+// nextWebModeSeq returns the sequence for the next mode report. Commands run
+// in their own goroutines, so the sequence, not their arrival order, decides
+// which report is newest.
+func (m *UI) nextWebModeSeq() uint64 {
+	m.webModeSeq++
+	return m.webModeSeq
+}
+
+// reportWebInputMode tells the gateway the settled input mode. It runs off
+// the update loop like the other gateway reports.
+func (m *UI) reportWebInputMode() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		web.SetInputMode(plan, seq)
+		return nil
+	}
+}
+
+// reportWebInputModeRefused tells the browser why the terminal kept its
+// mode. It runs off the update loop and reuses the error toast.
+func (m *UI) reportWebInputModeRefused(reason string) tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		web.ReportInputModeRefused(reason)
+		return nil
+	}
+}
+
 // newSession clears the current session state and prepares for a new session.
 // The actual session creation happens when the user sends their first message.
 // Returns a command to reload prompt history.
@@ -7739,6 +7911,10 @@ func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 }
 
 var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
+
+// copyWebLinkToClipboard writes the web launch link to the clipboard.
+// Tests replace it so they never touch the real clipboard.
+var copyWebLinkToClipboard = common.CopyToClipboardWithFailureTTL
 
 func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
 	if chat == nil {

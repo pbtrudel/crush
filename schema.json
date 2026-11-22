@@ -615,6 +615,11 @@
           "description": "Disable automatic conversation summarization",
           "default": false
         },
+        "web": {
+          "type": "boolean",
+          "description": "Open a browser tab that mirrors the session (web mode)",
+          "default": false
+        },
         "auto_compact_threshold": {
           "type": "number",
           "description": "Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.",

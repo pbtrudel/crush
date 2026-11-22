@@ -627,6 +627,26 @@ func (w *AppWorkspace) Subscribe(program *tea.Program) {
 	w.app.Subscribe(program)
 }
 
+func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
+	in := w.app.Events(ctx)
+	out := make(chan any, 256)
+	go func() {
+		defer close(out)
+		for ev := range in {
+			select {
+			case out <- ev.Payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+func (w *AppWorkspace) CurrentSessionID() string {
+	return w.app.CurrentSessionID()
+}
+
 func (w *AppWorkspace) Shutdown() {
 	w.app.Shutdown()
 }
