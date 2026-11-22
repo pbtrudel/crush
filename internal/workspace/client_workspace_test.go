@@ -13,7 +13,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/commands"
@@ -1311,4 +1313,70 @@ func TestClientWorkspaceLSPDiagnosticsByFile(t *testing.T) {
 	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
 
 	require.Equal(t, map[string]lsp.DiagnosticCounts{"/repo/a.go": {Error: 1}}, ws.LSPDiagnosticsByFile(t.Context()))
+}
+
+func TestClientWorkspaceTeamActions(t *testing.T) {
+	t.Parallel()
+	type call struct{ path, body string }
+	calls := make(chan call, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		calls <- call{r.URL.Path, string(data)}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	require.NoError(t, ws.TeamSendMessage(t.Context(), "s1", "alice", "rebase first"))
+	got := <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/message", got.path)
+	require.JSONEq(t, `{"session_id":"s1","text":"rebase first"}`, got.body)
+
+	require.NoError(t, ws.TeamInterrupt(t.Context(), "s1", "alice"))
+	got = <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/interrupt", got.path)
+	require.JSONEq(t, `{"session_id":"s1"}`, got.body)
+}
+
+// TestClientWorkspaceTeamErrorsKeepIdentity pins ruling I1: a team
+// failure keeps its identity across client/server mode, so the gateway
+// can branch on the disabled sentinel and the original Team code.
+func TestClientWorkspaceTeamErrorsKeepIdentity(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			w.WriteHeader(http.StatusConflict)
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{
+				Message: "agent teams are not enabled",
+				Code:    proto.TeamCodeDisabled,
+			}))
+		case strings.HasSuffix(r.URL.Path, "/interrupt"):
+			w.WriteHeader(http.StatusBadRequest)
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{
+				Message: `Team member "alice" not found`,
+				Code:    agentteam.CodeMemberNotFound,
+			}))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	err = ws.TeamSendMessage(t.Context(), "s1", "alice", "hi")
+	require.ErrorIs(t, err, agent.ErrAgentTeamsDisabled)
+
+	err = ws.TeamInterrupt(t.Context(), "s1", "alice")
+	require.Equal(t, agentteam.CodeMemberNotFound, agentteam.ErrorCode(err))
+	require.EqualError(t, err, `Team member "alice" not found`)
 }

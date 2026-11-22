@@ -37,6 +37,10 @@ const (
 	defaultLockTimeout = 5 * time.Second
 )
 
+// LeadName is the roster name of the Team Lead. Frontends that steer a
+// team on the user's behalf act as the Lead.
+const LeadName = leadName
+
 // Policy is the shared coordination guidance every Team member receives. It
 // mirrors the experimental DSH Agent Teams policy.
 const Policy = `## Agent Teams

@@ -11,8 +11,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/client"
@@ -620,6 +622,35 @@ func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]l
 		addDiagnostics(out, diags)
 	}
 	return out
+}
+
+// -- Team --
+
+func (w *ClientWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
+	return mapTeamError(w.client.TeamSendMessage(ctx, w.workspaceID(), sessionID, member, text))
+}
+
+func (w *ClientWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
+	return mapTeamError(w.client.TeamInterrupt(ctx, w.workspaceID(), sessionID, member))
+}
+
+// mapTeamError restores the error identity the server attached to a Team
+// action failure. Errors without a wire code pass through unchanged.
+func mapTeamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *client.TeamError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	if apiErr.Code == proto.TeamCodeDisabled {
+		if apiErr.Message == "" {
+			return agent.ErrAgentTeamsDisabled
+		}
+		return fmt.Errorf("%w: %s", agent.ErrAgentTeamsDisabled, apiErr.Message)
+	}
+	return &agentteam.Error{Code: apiErr.Code, Message: apiErr.Message}
 }
 
 // -- Config (read-only) --

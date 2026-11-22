@@ -53,6 +53,7 @@ type Fake struct {
 	busy        map[string]bool
 	history     map[string][]history.File
 	diagnostics map[string]lsp.DiagnosticCounts
+	teamErr     error
 	seq         int
 
 	// decisions and answers carry resolutions to a running scripted
@@ -205,6 +206,27 @@ func (f *Fake) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return maps.Clone(f.diagnostics)
+}
+
+// SetTeamErr sets the error both team calls return.
+func (f *Fake) SetTeamErr(err error) {
+	f.mu.Lock()
+	f.teamErr = err
+	f.mu.Unlock()
+}
+
+func (f *Fake) TeamSendMessage(_ context.Context, sessionID, member, text string) error {
+	f.record("TeamSendMessage:" + sessionID + ":" + member + ":" + text)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teamErr
+}
+
+func (f *Fake) TeamInterrupt(_ context.Context, sessionID, member string) error {
+	f.record("TeamInterrupt:" + sessionID + ":" + member)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teamErr
 }
 
 func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }

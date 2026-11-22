@@ -422,6 +422,24 @@ func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.Diag
 	return out
 }
 
+// -- Team --
+
+func (w *AppWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
+	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
+	if !ok {
+		return agent.ErrAgentTeamsDisabled
+	}
+	return tc.TeamSendMessage(ctx, sessionID, member, text)
+}
+
+func (w *AppWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
+	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
+	if !ok {
+		return agent.ErrAgentTeamsDisabled
+	}
+	return tc.TeamInterrupt(ctx, sessionID, member)
+}
+
 // -- Config (read-only) --
 
 func (w *AppWorkspace) Config() *config.Config {

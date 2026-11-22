@@ -500,6 +500,26 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceAgentSessionAsk),
 
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/message").
+			Summary("Message a teammate").
+			Description("Sends a message to a teammate as the Lead of the session's Agent Team.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamMessageRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberMessage),
+
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/interrupt").
+			Summary("Interrupt a teammate").
+			Description("Stops a teammate's current turn.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamInterruptRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberInterrupt),
+
 		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/shell").
 			Summary("Run shell command").
 			Description("Runs a shell command in the workspace on behalf of the session.").

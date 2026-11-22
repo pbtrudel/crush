@@ -1,10 +1,15 @@
 package client
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
+
+	"github.com/charmbracelet/crush/internal/proto"
 )
 
 // Typed outcomes callers need to distinguish from ordinary transport
@@ -61,4 +66,36 @@ func checkStatus(rsp *http.Response, ok ...int) error {
 		return fmt.Errorf("%w: %w", ErrServerShuttingDown, err)
 	}
 	return err
+}
+
+// TeamError is a team action failure as the server sent it: the HTTP
+// status plus the machine code and message from the error body. Callers
+// that need the original error type match it with errors.As.
+type TeamError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *TeamError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("status code %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("status code %d", e.StatusCode)
+}
+
+// checkTeamError returns a TeamError when rsp's error body carries a
+// machine code. Otherwise it restores the body and falls back to the
+// shared status mapping.
+func checkTeamError(rsp *http.Response) error {
+	data, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		return checkStatus(rsp)
+	}
+	var e proto.Error
+	if json.Unmarshal(data, &e) == nil && e.Code != "" {
+		return &TeamError{StatusCode: rsp.StatusCode, Code: e.Code, Message: e.Message}
+	}
+	rsp.Body = io.NopCloser(bytes.NewReader(data))
+	return checkStatus(rsp)
 }

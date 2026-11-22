@@ -1071,6 +1071,35 @@ func (c *Client) CancelAgentSession(ctx context.Context, id string, sessionID st
 	return nil
 }
 
+// TeamSendMessage sends a message to a teammate as the Lead of sessionID's
+// team.
+func (c *Client) TeamSendMessage(ctx context.Context, id, sessionID, member, text string) error {
+	body := jsonBody(proto.TeamMessageRequest{SessionID: sessionID, Text: text})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/team/members/%s/message", id, url.PathEscape(member)), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to message teammate: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to message teammate: %w", checkTeamError(rsp))
+	}
+	return nil
+}
+
+// TeamInterrupt stops a teammate's current turn.
+func (c *Client) TeamInterrupt(ctx context.Context, id, sessionID, member string) error {
+	body := jsonBody(proto.TeamInterruptRequest{SessionID: sessionID})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/team/members/%s/interrupt", id, url.PathEscape(member)), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to interrupt teammate: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to interrupt teammate: %w", checkTeamError(rsp))
+	}
+	return nil
+}
+
 // GetAgentSessionQueuedPromptsList retrieves the list of queued prompt
 // strings for a session.
 func (c *Client) GetAgentSessionQueuedPromptsList(ctx context.Context, id string, sessionID string) ([]string, error) {

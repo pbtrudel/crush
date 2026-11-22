@@ -247,6 +247,15 @@ type Workspace interface {
 	// holds, summed per file and keyed by absolute path.
 	LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts
 
+	// Team
+	//
+	// TeamSendMessage sends text to member of sessionID's Agent Team as its
+	// Lead, starting the member when it is inactive. TeamInterrupt stops the
+	// member's current turn. Both fail with agent.ErrAgentTeamsDisabled when
+	// Agent Teams is off.
+	TeamSendMessage(ctx context.Context, sessionID, member, text string) error
+	TeamInterrupt(ctx context.Context, sessionID, member string) error
+
 	// Config (read-only data)
 	Config() *config.Config
 	WorkingDir() string
