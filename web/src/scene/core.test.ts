@@ -100,4 +100,19 @@ describe('createCore', () => {
     expect(spun('reduced')).toBeCloseTo(full * 0.25);
     expect(spun('off')).toBe(0);
   });
+
+  it('settles a full motion colour change in bounded time', () => {
+    const colors = readColors();
+    const c = createCore(colors);
+    c.setMode('attention');
+    let animating = true;
+    let steps = 0;
+    for (; steps < 600 && animating; steps++) {
+      animating = c.update(0.016, steps * 0.016, 'full');
+    }
+    expect(steps).toBeLessThan(600);
+    expect(animating).toBe(false);
+    const heart = c.group.getObjectByName('heart') as THREE.Mesh;
+    expect((heart.material as THREE.MeshBasicMaterial).color.equals(colors.magenta)).toBe(true);
+  });
 });

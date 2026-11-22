@@ -23,12 +23,28 @@ export function coreLook(mode: CoreMode): CoreLook {
   return LOOKS[mode];
 }
 
+// A lerp stalls a few ulp short of the target, so without a tolerance it
+// would never report settled; snap once the remaining gap stops showing.
+const SETTLE_EPSILON = 0.001;
+
+function settled(current: THREE.Color, target: THREE.Color): boolean {
+  return (
+    Math.abs(target.r - current.r) < SETTLE_EPSILON &&
+    Math.abs(target.g - current.g) < SETTLE_EPSILON &&
+    Math.abs(target.b - current.b) < SETTLE_EPSILON
+  );
+}
+
 // stepColor moves a colour toward the attention target. Full motion blends
 // over several frames, but reduced and off render one frame per update, so
 // they snap: the user who asked for less motion still sees the cue at once.
 export function stepColor(current: THREE.Color, target: THREE.Color, motion: Motion): void {
-  if (motion === 'full') current.lerp(target, 0.2);
-  else current.copy(target);
+  if (motion !== 'full') {
+    current.copy(target);
+    return;
+  }
+  current.lerp(target, 0.2);
+  if (settled(current, target)) current.copy(target);
 }
 
 export interface Core {
