@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -47,6 +49,20 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	api.HandleFunc("GET /api/complete/files", g.handleCompleteFiles)
 }
 
+// writeInternal answers a failed workspace call without its error text,
+// which can carry file paths, SQL or provider details, and logs it instead.
+func writeInternal(w http.ResponseWriter, code string, err error) {
+	slog.Warn("Web API call failed", "code", code, "error", err)
+	writeError(w, http.StatusInternalServerError, code, "the workspace could not complete the request")
+}
+
+// isNotFound reports a lookup of something the workspace does not have. The
+// in-process workspace answers sql.ErrNoRows; the server-backed one, which
+// the gateway talks to in client/server mode, answers client.ErrNotFound.
+func isNotFound(err error) bool {
+	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, client.ErrNotFound)
+}
+
 // decodeJSON reads a bounded JSON body into v. An empty body is accepted
 // and leaves v untouched.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -68,7 +84,7 @@ func (g *Gateway) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	list, err := g.ws.ListSessions(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list_sessions", err.Error())
+		writeInternal(w, "list_sessions", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, entities(list))
@@ -88,7 +104,7 @@ func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s, err := g.ws.CreateSession(r.Context(), title)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create_session", err.Error())
+		writeInternal(w, "create_session", err)
 		return
 	}
 	// Report the session before answering or notifying the terminal, so a
@@ -123,9 +139,18 @@ func (g *Gateway) handleInputMode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
-	msgs, err := g.ws.ListMessages(r.Context(), r.PathValue("sid"))
+	sid := r.PathValue("sid")
+	if _, err := g.ws.GetSession(r.Context(), sid); err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
+			return
+		}
+		writeInternal(w, "get_session", err)
+		return
+	}
+	msgs, err := g.ws.ListMessages(r.Context(), sid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list_messages", err.Error())
+		writeInternal(w, "list_messages", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, entities(msgs))
@@ -150,13 +175,13 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	for _, fh := range r.MultipartForm.File["attachments"] {
 		f, err := fh.Open()
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_attachment", err.Error())
+			writeError(w, http.StatusBadRequest, "bad_attachment", "an attachment could not be read")
 			return
 		}
 		data, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_attachment", err.Error())
+			writeError(w, http.StatusBadRequest, "bad_attachment", "an attachment could not be read")
 			return
 		}
 		atts = append(atts, message.Attachment{
@@ -289,7 +314,7 @@ func (g *Gateway) handleCompleteFiles(w http.ResponseWriter, r *http.Request) {
 	root := g.ws.WorkingDir()
 	files, truncated, err := fsext.GlobGitignoreAwareCtx(r.Context(), pattern, root, maxCompletions)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "complete_files", err.Error())
+		writeInternal(w, "complete_files", err)
 		return
 	}
 	out := make([]string, 0, len(files))

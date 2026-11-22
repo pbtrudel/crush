@@ -1,9 +1,13 @@
 package webtest
 
 import (
+	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,4 +29,28 @@ func TestFakeEmptyCollectionsEncodeAsEmptyJSON(t *testing.T) {
 	encoded, err = json.Marshal(diags)
 	require.NoError(t, err)
 	require.Equal(t, "{}", string(encoded))
+}
+
+// TestEmitRacesCancel runs Emit while subscribers are cancelled; -race
+// catches a send on a channel the cleanup closes.
+func TestEmitRacesCancel(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	var wg sync.WaitGroup
+	for range 50 {
+		ctx, cancel := context.WithCancel(t.Context())
+		ch := f.SubscribeEvents(ctx)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range ch {
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			f.Emit(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent})
+			cancel()
+		}()
+	}
+	wg.Wait()
 }

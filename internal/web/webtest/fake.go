@@ -5,7 +5,8 @@ package webtest
 import (
 	"cmp"
 	"context"
-	"errors"
+	"database/sql"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -22,8 +23,9 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
-// ErrSessionNotFound is returned by GetSession for unknown IDs.
-var ErrSessionNotFound = errors.New("session not found")
+// ErrSessionNotFound is returned by GetSession for unknown IDs. It wraps
+// sql.ErrNoRows, which is what the real session service returns.
+var ErrSessionNotFound = fmt.Errorf("session not found: %w", sql.ErrNoRows)
 
 // subscriber is one SubscribeEvents channel. mu serialises Emit's send
 // against the cleanup close so an event can never race with close(ch).

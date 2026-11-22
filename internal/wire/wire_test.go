@@ -399,3 +399,8 @@ func TestConfigStaleMsgToProto_RoundTrip(t *testing.T) {
 	require.Equal(t, src.Changed, decoded.Payload.Changed)
 	require.Equal(t, src.Missing, decoded.Payload.Missing)
 }
+
+func TestWrapReturnsNilForUnrecognized(t *testing.T) {
+	t.Parallel()
+	require.Nil(t, Wrap(struct{ Unknown int }{}))
+}

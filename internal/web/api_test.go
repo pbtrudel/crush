@@ -3,10 +3,15 @@ package web
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,20 +19,29 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/stretchr/testify/require"
 )
 
-func doJSON(t *testing.T, c *http.Client, method, url, body string) (*http.Response, []byte) {
+// doJSON sends a JSON request. The target is named target, not url, so the
+// Origin header can be built from the net/url package.
+func doJSON(t *testing.T, c *http.Client, method, target, body string) (*http.Response, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), method, url, bytes.NewBufferString(body))
+	req, err := http.NewRequestWithContext(t.Context(), method, target, bytes.NewBufferString(body))
 	require.NoError(t, err)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Browsers send Origin on every state-changing request, and the
+	// gateway requires it.
+	if method != http.MethodGet && method != http.MethodHead {
+		req.Header.Set("Origin", (&url.URL{Scheme: req.URL.Scheme, Host: req.URL.Host}).String())
 	}
 	rsp := doReq(t, c, req)
 	data, err := io.ReadAll(rsp.Body)
@@ -61,6 +75,7 @@ func TestPromptMultipartRunsAgentDetached(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Origin", g.URL())
 	rsp := doReq(t, authedClient(t, g), req)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
@@ -111,6 +126,7 @@ func TestPromptSniffsAttachmentTypes(t *testing.T) {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Origin", g.URL())
 		rsp := doReq(t, authedClient(t, g), req)
 		rsp.Body.Close()
 		require.Equal(t, http.StatusAccepted, rsp.StatusCode)
@@ -135,6 +151,7 @@ func TestPromptEmptyRejected(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Origin", g.URL())
 	rsp := doReq(t, authedClient(t, g), req)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
@@ -539,4 +556,71 @@ func TestCreateSessionRejectsUnauthenticatedAndForeignOrigin(t *testing.T) {
 	rsp = doReq(t, authedClient(t, g), req)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+}
+
+func TestInternalErrorsDoNotLeakDetails(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writeInternal(rec, "list_sessions", errors.New("open /home/user/.crush/crush.db: disk I/O error"))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.NotContains(t, rec.Body.String(), "/home/user")
+	require.JSONEq(t, `{"error":"the workspace could not complete the request","code":"list_sessions"}`, rec.Body.String())
+}
+
+// TestIsNotFoundMatchesBothWorkspaceKinds covers the two shapes a missing
+// session arrives in: sql.ErrNoRows from the in-process workspace and
+// client.ErrNotFound from the server-backed one.
+func TestIsNotFoundMatchesBothWorkspaceKinds(t *testing.T) {
+	t.Parallel()
+	require.True(t, isNotFound(sql.ErrNoRows))
+	require.True(t, isNotFound(fmt.Errorf("get session s1: %w", sql.ErrNoRows)))
+	require.True(t, isNotFound(client.ErrNotFound))
+	require.True(t, isNotFound(fmt.Errorf("status code 404: %w", client.ErrNotFound)))
+	require.False(t, isNotFound(errors.New("open crush.db: disk I/O error")))
+	require.False(t, isNotFound(nil))
+}
+
+// clientNotFoundWorkspace reports a miss the way ClientWorkspace does in
+// client/server mode, where the server's 404 arrives as a wrapped
+// client.ErrNotFound rather than sql.ErrNoRows.
+type clientNotFoundWorkspace struct{ *webtest.Fake }
+
+func (clientNotFoundWorkspace) GetSession(context.Context, string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("get session: %w", client.ErrNotFound)
+}
+
+func TestMessagesForUnknownSessionIs404(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/nope/messages", "")
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+}
+
+func TestMessagesOverClientWorkspaceNotFoundIs404(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: clientNotFoundWorkspace{webtest.NewFake()}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/nope/messages", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+}
+
+func TestMalformedAndOversizedBodies(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := authedClient(t, g)
+	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/mode", `{"mode":`)
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	rsp, _ = doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/mode", `{"mode":"`+strings.Repeat("x", maxJSONBytes)+`"}`)
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+}
+
+func TestPromptMustBeMultipart(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", `{"prompt":"hi"}`)
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Contains(t, string(body), "bad_form")
+	require.Empty(t, fake.CallLog())
 }
