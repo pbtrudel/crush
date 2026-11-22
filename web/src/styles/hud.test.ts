@@ -34,6 +34,8 @@ describe('HUD server groups', () => {
     expect(hud).toMatch(
       /\.hud__servers \.hexes \+ \.hud-label \{[^}]*border-inline-start: 1px solid var\(--edge\)/,
     );
+    // The label text keeps a readable gap from the divider.
+    expect(hud).toMatch(/\.hud__servers \.hexes \+ \.hud-label \{[^}]*padding-inline-start: 8px/);
   });
 });
 

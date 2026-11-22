@@ -15,7 +15,7 @@
 .hud__servers { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 /* A divider separates the LSP group from the MCP one, so an empty "none"
    never reads as part of the next label. */
-.hud__servers .hexes + .hud-label { padding-inline-start: var(--space-1); border-inline-start: 1px solid var(--edge); }
+.hud__servers .hexes + .hud-label { padding-inline-start: 8px; border-inline-start: 1px solid var(--edge); }
 
 .gauge { display: inline-grid; place-items: center; inline-size: 56px; block-size: 56px; }
 .gauge svg { display: block; }
