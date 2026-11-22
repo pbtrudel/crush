@@ -1207,6 +1207,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.dialog.OpenDialog(dialog.NewSideAnswer(m.com, msg.question, msg.answer))
+	case WebStartedMsg:
+		cmds = append(cmds, m.webStarted(msg))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -7323,23 +7325,52 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 	return nil
 }
 
-// openWeb starts web mode if needed, opens a browser tab and reports the
-// link, which stays usable when no browser can be opened.
+// WebStartedMsg announces that the web gateway is up. The update loop
+// copies the link and opens the browser off the render path, so a slow
+// opener cannot freeze the TUI or hide the link.
+type WebStartedMsg struct {
+	URL string
+}
+
+// webStarted copies the launch link and opens a browser tab in the
+// background. The link is never lost: the copy failure and the opener
+// failure both carry it.
+func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
+	if msg.URL == "" {
+		return nil
+	}
+	cmds := []tea.Cmd{
+		copyWebLinkToClipboard(
+			msg.URL,
+			"Opening browser. Web link copied: "+msg.URL,
+			"Failed to copy the web link to the clipboard. Open "+msg.URL,
+		),
+	}
+	if m.com.Web != nil {
+		web := m.com.Web
+		cmds = append(cmds, func() tea.Msg {
+			if err := web.OpenBrowser(); err != nil {
+				return util.NewWarnMsg("Web mode is running. Open " + msg.URL)
+			}
+			return nil
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+// openWeb starts web mode if needed and hands the launch link to the
+// update loop, which copies it and opens the browser without blocking.
 func (m *UI) openWeb() tea.Cmd {
 	if m.com.Web == nil {
 		return util.ReportWarn("Web mode is not available here")
 	}
 	web := m.com.Web
 	return func() tea.Msg {
-		u, err := web.Open(context.Background())
-		switch {
-		case u == "":
+		u, err := web.Start(context.Background())
+		if err != nil {
 			return util.ReportError(fmt.Errorf("web mode: %w", err))()
-		case err != nil:
-			return util.ReportWarn("Web mode is running. Open " + u)()
-		default:
-			return util.ReportInfo("Web mode: " + u)()
 		}
+		return WebStartedMsg{URL: u}
 	}
 }
 
@@ -7754,6 +7785,10 @@ func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 }
 
 var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
+
+// copyWebLinkToClipboard writes the web launch link to the clipboard.
+// Tests replace it so they never touch the real clipboard.
+var copyWebLinkToClipboard = common.CopyToClipboardWithFailure
 
 func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
 	if chat == nil {

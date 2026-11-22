@@ -142,7 +142,7 @@ func TestReloadConfigCommandReloads(t *testing.T) {
 	require.Equal(t, 1, ws.reloads)
 }
 
-func TestEditorSlashWebOpensWebMode(t *testing.T) {
+func TestEditorSlashWebStartsWebMode(t *testing.T) {
 	t.Parallel()
 
 	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
@@ -152,7 +152,8 @@ func TestEditorSlashWebOpensWebMode(t *testing.T) {
 
 	submitEditor(t, m, "/web")
 
-	require.Equal(t, 1, web.opens)
+	require.Equal(t, 1, web.starts)
+	require.Zero(t, web.opens, "/web must not block on the browser opener")
 	require.Empty(t, ws.prompts, "/web must not be sent to the agent")
 }
 

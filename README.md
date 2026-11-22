@@ -727,8 +727,9 @@ does not get reaped before it can attach.
 `crush --web` starts the session with a browser tab that mirrors the
 terminal: same chat, same prompts, same permission requests, same files. The
 TUI keeps working next to it, and either side can drive the session. In a
-running session, `/web` opens another tab (or shows the URL when the browser
-cannot be opened). To turn it on by default, use `option web true` in your
+running session, `/web` copies the link and opens another tab in the
+background, and shows the link in a notification so a slow or missing browser
+never hides it. To turn it on by default, use `option web true` in your
 `crushrc`, or `"options": {"web": true}` in `crush.json`.
 
 Each Crush process serves its own tab on `127.0.0.1` at a random port, so two

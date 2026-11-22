@@ -41,7 +41,6 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/exitbanner"
 	ui "github.com/charmbracelet/crush/internal/ui/model"
-	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/crush/internal/web"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -180,15 +179,12 @@ crush --continue
 		)
 		model.SetProgram(program)
 		if webURL != "" {
-			// Open the browser only once the TUI is starting, so a slow or
-			// missing opener cannot delay startup. Send blocks until the
-			// program loop runs, so deliver the notice from the same
+			// Hand the link to the TUI once it is starting, so the UI
+			// copies it and opens the browser off the render path. Send
+			// blocks until the program loop runs, so deliver it from a
 			// goroutine.
 			go func() {
-				if err := webCtl.OpenBrowser(); err != nil {
-					slog.Info("Web mode could not open the browser", "error", err)
-					program.Send(util.NewWarnMsg("Web mode is running. Open " + webURL))
-				}
+				program.Send(ui.WebStartedMsg{URL: webURL})
 			}()
 		}
 		go ws.Subscribe(program)

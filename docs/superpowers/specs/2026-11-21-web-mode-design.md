@@ -97,10 +97,13 @@ The embed must live inside a Go package directory, so the build copies
 - Config option `options.web = true` (crushrc `option web true`, JSON
   `"options": {"web": true}`).
 - TUI command `/web` (also in the commands dialog): starts the gateway if not
-  running, otherwise re-opens the tab and shows the URL in a notification.
-- The browser is opened with `internal/browser.OpenURL`. On failure, the URL is
-  shown in a TUI notification and logged at info level (token included only in
-  the notification, never in logs).
+  running, then copies the launch link and opens the tab in the background.
+- As soon as the gateway is up, the launch link is copied to the clipboard and
+  shown in a TUI notification, and `internal/browser.OpenURL` runs off the
+  render path so a slow or missing opener cannot stall the TUI or hide the
+  link. On failure, the URL is shown in a TUI notification and logged at info
+  level (token included only in the notification, never in logs). A failed
+  copy also reports the URL.
 - TUI status bar shows a `web` indicator while the gateway runs.
 
 ### 2.3 Security
@@ -133,8 +136,10 @@ The embed must live inside a Go package directory, so the build copies
 Web mode assumes a single-user host. The token is visible in the browser
 opener's process arguments to other local users, and the cookie is sent to
 other `127.0.0.1` ports (the `Origin` and `Host` checks still protect
-state-changing calls). A strict `0600` redirect file and header-based auth are
-deferred to M4.
+state-changing calls). The launch link is also copied to the clipboard, so
+clipboard history tools (for example Windows clipboard history under WSL) may
+keep it until the session ends; the token dies with the gateway. A strict
+`0600` redirect file and header-based auth are deferred to M4.
 
 ### 2.4 Event stream
 
@@ -363,7 +368,7 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 | Socket dropped | HUD amber "Signal lost, reconnecting", exponential backoff to 10 s, resync via `since` or snapshot |
 | Crush exited | `gateway_closing` or repeated failure shows "Session ended", log stays readable, input disabled with reason |
 | Bad or missing token | 401 page: run `/web` in the terminal to get a fresh link |
-| Browser cannot open | URL shown in TUI notification |
+| Browser cannot open | Link already copied and shown; the failure warning carries the URL |
 | Permission or question answered elsewhere | Dialog closes, toast "Answered in terminal" |
 | API error | Inline error at the control that triggered it, with the server message and a retry where safe |
 | Oversized output or diff | Truncated with "show full"; diffs over 1 MB fall back to unified text |

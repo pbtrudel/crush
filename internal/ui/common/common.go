@@ -145,7 +145,10 @@ func IsAudioPath(path string) bool {
 // WebLauncher starts web mode and opens its browser tab. It is nil when
 // web mode is unavailable.
 type WebLauncher interface {
-	Open(ctx context.Context) (string, error)
+	// Start brings the gateway up if needed and returns the launch URL.
+	Start(ctx context.Context) (string, error)
+	// OpenBrowser opens a browser tab for the running gateway.
+	OpenBrowser() error
 	Running() bool
 }
 
@@ -277,6 +280,14 @@ func CopyToClipboard(text, successMessage string) tea.Cmd {
 	return CopyToClipboardWithCallback(text, successMessage, nil)
 }
 
+// CopyToClipboardWithFailure copies text like [CopyToClipboard], but reports
+// failureMessage when the native clipboard does not hold the text. Use it
+// when the copied text, such as a launch URL, must stay visible after a
+// failed copy.
+func CopyToClipboardWithFailure(text, successMessage, failureMessage string) tea.Cmd {
+	return copyToClipboard(text, successMessage, failureMessage, nil)
+}
+
 // CopyToClipboardWithCallback copies text to clipboard and executes a callback
 // before showing the success message.
 // This is useful when you need to perform additional actions like clearing UI state.
@@ -285,6 +296,12 @@ func CopyToClipboard(text, successMessage string) tea.Cmd {
 // have worked, so callers can safely use the callback to discard the copied
 // state (a selection, say) without losing it on a failed copy.
 func CopyToClipboardWithCallback(text, successMessage string, callback tea.Cmd) tea.Cmd {
+	return copyToClipboard(text, successMessage, "Failed to copy to clipboard", callback)
+}
+
+// copyToClipboard is the shared copy path. The failure message is a
+// parameter so callers whose text must survive a failed copy can include it.
+func copyToClipboard(text, successMessage, failureMessage string, callback tea.Cmd) tea.Cmd {
 	return func() tea.Msg {
 		// The native write goes first and is verified before OSC 52 goes out,
 		// because the terminal handles OSC 52 by writing the very same
@@ -298,7 +315,7 @@ func CopyToClipboardWithCallback(text, successMessage string, callback tea.Cmd) 
 		// does not hold the text is a real failure.
 		osc52 := tea.SetClipboard(text)
 		if errors.Is(err, clipboard.ErrWriteFailed) {
-			return tea.Sequence(osc52, util.ReportWarn("Failed to copy to clipboard"))()
+			return tea.Sequence(osc52, util.ReportWarn(failureMessage))()
 		}
 		return tea.Sequence(osc52, callback, util.ReportInfo(successMessage))()
 	}
