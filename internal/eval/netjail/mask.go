@@ -19,7 +19,9 @@ type Mask struct {
 // JailRunPath is where a jailed run shows its own run directory. /tmp is one
 // of DefaultMasks, so the mount point lives in the jail's private tmpfs, and
 // no path the child is given names the batch layout that advertises the
-// sibling runs of the same batch.
+// sibling runs of the same batch. /proc/self/mountinfo still names the host
+// directory the bind comes from, so a child that reads it learns the batch
+// and the run's own name, though no sibling.
 const JailRunPath = "/tmp/crush-run"
 
 // Bind is a host directory the jail shows at another path inside it.
