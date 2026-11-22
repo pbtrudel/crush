@@ -61,6 +61,26 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await expect(page.getByRole('list', { name: 'Agents' })).toContainText('Coder');
 });
 
+test('cinematic mode works with motion off', async ({ page, gateway }) => {
+  // The Display menu writes this key; seeding it is the same preference
+  // without a click through the menu.
+  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  await page.goto(gateway.launch);
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'off');
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  await page.keyboard.press('Alt+KeyC');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'true');
+  // Off motion jumps instead of flying, and the panel cross-fade still has
+  // to finish: a scene that only renders on the entry frame strands it part
+  // way through the fade.
+  await expect(page.locator('.cine-view')).toHaveCSS('opacity', '1');
+
+  await page.locator('.panel--log').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'false');
+});
+
 test('a tab without the token is not linked', async ({ browser, gateway }) => {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
