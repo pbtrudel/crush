@@ -1,4 +1,4 @@
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { agentsOf, statusLabel, type Agent } from '../../state/agents';
 import { needsAttention } from '../../state/reducer';
 import { actions, state } from '../../state/store';
@@ -19,6 +19,9 @@ export function AgentList() {
   // agent when others join or leave the roster.
   const [activeId, setActiveId] = useState<string | null>(null);
   const items = useRef(new Map<string, HTMLLIElement>());
+  // A node click or any other inspection moves the selection without the
+  // keyboard, so the tab stop follows it instead of the last arrow press.
+  useEffect(() => { setActiveId(null); }, [selected]);
   const found = agents.findIndex((a) => a.sessionId === (activeId ?? selected));
   const index = found < 0 ? 0 : found;
 
@@ -31,7 +34,15 @@ export function AgentList() {
     setActiveId(a.sessionId);
     void actions.inspect(a.sessionId || null);
   };
+  // The key event's own option wins over the roving index: a key pressed on
+  // an option selects that agent even when the tab stop sits elsewhere.
+  const optionAt = (target: EventTarget | null): Agent | undefined => {
+    const el = target instanceof Element ? target.closest('[role="option"]') : null;
+    return el ? agents.find((a) => items.current.get(a.sessionId) === el) : undefined;
+  };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Alt, Ctrl and Meta chords belong to the app shortcuts and the browser.
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     switch (e.key) {
       case 'ArrowDown':
       case 'ArrowRight':
@@ -54,7 +65,7 @@ export function AgentList() {
       case 'Enter':
       case ' ':
         e.preventDefault();
-        choose(agents[index]);
+        choose(optionAt(e.target) ?? agents[index]);
         break;
     }
   };

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { Stage } from './Stage';
+import { ConstellationSvg } from './ConstellationSvg';
 import { lowPower } from '../../state/motion';
 import { resetWebglProbe, sceneFailed, use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
@@ -79,6 +80,32 @@ describe('Stage', () => {
       render(null, root);
       lowPower.value = false;
       vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps the ring and every node inside the 2D viewBox', () => {
+    for (const count of [1, 2, 3, 5]) {
+      const root = document.createElement('div');
+      const agents = Array.from({ length: count }, (_, i) => ({
+        id: `a-${i}`, kind: 'teammate' as const, status: 'running' as const, name: `agent ${i}`,
+      }));
+      render(
+        <ConstellationSvg fill={0} busy={false} attention={false} agents={agents} selected={null} onSelect={() => {}} />,
+        root,
+      );
+      const svg = root.querySelector('svg')!;
+      const [, minY, , height] = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
+      const bottom = minY + height;
+      // The outer ring bottoms out at cy plus ry in the same units.
+      const ring = svg.querySelector('.cs-ring')!;
+      expect(Number(ring.getAttribute('cy')) + Number(ring.getAttribute('ry'))).toBeLessThanOrEqual(bottom);
+      for (const node of svg.querySelectorAll('[data-agent-node]')) {
+        const y = Number(/translate\(\s*\S+\s+(\S+)\s*\)/.exec(node.getAttribute('transform')!)![1]);
+        const hex = [...node.querySelector('.cs-node__hex')!.getAttribute('points')!.matchAll(/([-\d.]+),([-\d.]+)/g)]
+          .reduce((low, [, , py]) => Math.max(low, Math.abs(Number(py))), 0);
+        expect(y + hex).toBeLessThanOrEqual(bottom);
+      }
+      render(null, root);
     }
   });
 });

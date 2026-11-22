@@ -12,7 +12,7 @@ export function ConstellationSvg({ fill, busy, attention, agents, selected, onSe
   const r = 70;
   const c = 2 * Math.PI * r;
   return (
-    <svg class="constellation-svg" viewBox="-160 -120 320 220" data-busy={busy} data-attention={attention} aria-hidden="true">
+    <svg class="constellation-svg" viewBox="-160 -120 320 240" data-busy={busy} data-attention={attention} aria-hidden="true">
       <ellipse class="cs-ring" rx="150" ry="34" cy="70" />
       <ellipse class="cs-ring cs-ring--violet" rx="110" ry="25" cy="70" />
       <ellipse class="cs-ring" rx="70" ry="16" cy="70" />
