@@ -95,29 +95,43 @@ async function stop(proc: ChildProcess): Promise<void> {
   await waitForExit(proc, EXIT_TIMEOUT_MS);
 }
 
-export const test = base.extend<{}, { gateway: { launch: string; origin: string } }>({
-  gateway: [async ({}, use) => {
-    // `go run` does not forward SIGTERM to the program it starts, which
-    // would orphan webfake. Build once and run the binary directly.
-    const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
-    const bin = path.join(dir, 'webfake');
-    let proc: ChildProcess | undefined;
-    try {
-      execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, stdio: 'inherit' });
-      // stderr is piped rather than inherited: webfake repeats the token in
-      // its dev-server hint and test output must never carry it.
-      proc = spawn(bin, [], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
-      let stderrText = '';
-      proc.stderr!.on('data', (chunk: Buffer) => {
-        stderrText = (stderrText + chunk.toString()).slice(-4096);
-      });
-      const launch = await waitForLaunch(proc, () => stderrText);
-      await use({ launch, origin: launch.split('/#')[0] });
-    } finally {
-      if (proc) await stop(proc);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, { scope: 'worker', timeout: 180_000 }],
+export interface Gateway {
+  launch: string;
+  origin: string;
+}
+
+async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<void> {
+  // `go run` does not forward SIGTERM to the program it starts, which
+  // would orphan webfake. Build once and run the binary directly.
+  const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
+  const bin = path.join(dir, 'webfake');
+  let proc: ChildProcess | undefined;
+  try {
+    execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, stdio: 'inherit' });
+    // stderr is piped rather than inherited: webfake repeats the token in
+    // its dev-server hint and test output must never carry it.
+    proc = spawn(bin, [], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderrText = '';
+    proc.stderr!.on('data', (chunk: Buffer) => {
+      stderrText = (stderrText + chunk.toString()).slice(-4096);
+    });
+    const launch = await waitForLaunch(proc, () => stderrText);
+    await use({ launch, origin: launch.split('/#')[0] });
+  } finally {
+    if (proc) await stop(proc);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export const test = base.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({}, use) => launchGateway(use), { scope: 'worker', timeout: 180_000 }],
+});
+
+// Visual tests get their own webfake: the worker's shared session keeps every
+// message an earlier test sent, and the log and token counts in a screenshot
+// must not depend on which tests ran first.
+export const visualTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway(use),
 });
 
 export { expect } from '@playwright/test';
