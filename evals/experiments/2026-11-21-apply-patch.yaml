@@ -1,0 +1,45 @@
+date: 2026-11-21
+name: apply-patch
+variants:
+  - name: control
+    ref: 093cdf3dbe344b49bba7240c9bba8f472eb4d2bc
+    overlay:
+      apply_patch: false
+      disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch, spawn_teammate, send_message, list_agents, wait_agent, interrupt_agent, team_task_create, team_task_list, team_task_get, team_task_update]
+  - name: patch
+    ref: 093cdf3dbe344b49bba7240c9bba8f472eb4d2bc
+    overlay:
+      apply_patch: true
+      disabled_tools: [fetch, agentic_fetch, download, sourcegraph, web_search, web_fetch, spawn_teammate, send_message, list_agents, wait_agent, interrupt_agent, team_task_create, team_task_list, team_task_get, team_task_update]
+routes: [gpt-5.6-luna]
+repetitions: 3
+# Both variants run the same build, the branch's tip commit: only the overlay
+# differs, so the comparison isolates the tool. The option is gated on the
+# model id inside Crush (a "gpt-" prefix), so the control keeps edit and
+# multiedit and the variant is offered apply_patch instead. Pass rate is the
+# primary metric because the item's acceptance is that solving does not get
+# worse; the edit failure rate by kind comes from `crush stats report --json`
+# ("how edits fail") over each run's data directory, and steps per task is the
+# steps median compare prints.
+#
+# Model choice, from three smoke runs on pr-0010 with this commit. The
+# cheapest tier, gpt-5.4-nano, finished 23 steps without touching the graded
+# file and failed, so it cannot separate the arms; gpt-5.6-luna passed with
+# apply_patch on and is the next tier up, so the route is gpt-5.6-luna.
+#
+# Team tools are off in both arms. The smoke runs show these models treat
+# spawn_teammate, wait_agent and the team task board as work: one spent 46
+# tool calls and hit the task's step limit, which drowns the editing
+# comparison in orchestration noise. The list repeats the route's own
+# disabled_tools because an overlay replaces that value rather than merging
+# into it.
+#
+# The control smoke did call edit five times and still failed the task, so
+# edit use is not absent on this route and the arms can differ.
+primary_metric: pass_rate
+margin: 0.1
+# Planning stand-in: there is no gpt-5.6-luna baseline yet, so the standard
+# error comes from the deepseek-flash baseline of the same 24 tasks, as w12 and
+# w13 did for their own routes.
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453
