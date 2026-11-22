@@ -47,4 +47,65 @@ describe('Transcript', () => {
     await act(() => { render(<Transcript messages={sent} resetKey="s1" label="Log" />, root); });
     expect(log.scrollTop).toBe(3000);
   });
+
+  it('scrolls to the bottom when only the reset key changes', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => msg(`m${i}`, 'assistant', [{ type: 'text', data: { text: `line ${i}` } }], i));
+    await act(() => { render(<Transcript messages={many} resetKey="a" label="Log" />, root); });
+    const log = root.querySelector<HTMLElement>('[role="log"]')!;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 3000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 300 });
+    log.scrollTop = 0;
+    log.dispatchEvent(new Event('scroll'));
+    await act(() => { render(<Transcript messages={many} resetKey="b" label="Log" />, root); });
+    expect(log.scrollTop).toBe(3000);
+  });
+
+  it('stays unpinned when an assistant message arrives after the user scrolled up', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => msg(`m${i}`, 'assistant', [{ type: 'text', data: { text: `line ${i}` } }], i));
+    await act(() => { render(<Transcript messages={many} resetKey="s1" label="Log" />, root); });
+    const log = root.querySelector<HTMLElement>('[role="log"]')!;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 3000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 300 });
+    log.scrollTop = 0;
+    log.dispatchEvent(new Event('scroll'));
+    const grown = [...many, msg('a99', 'assistant', [{ type: 'text', data: { text: 'later' } }], 99)];
+    await act(() => { render(<Transcript messages={grown} resetKey="s1" label="Log" />, root); });
+    expect(log.scrollTop).toBe(0);
+  });
+
+  it('does not re-pin when an existing user message is re-rendered', async () => {
+    const many = Array.from({ length: 29 }, (_, i) => msg(`m${i}`, 'assistant', [{ type: 'text', data: { text: `line ${i}` } }], i));
+    const sent = [...many, msg('u1', 'user', [{ type: 'text', data: { text: 'next' } }], 99)];
+    await act(() => { render(<Transcript messages={sent} resetKey="s1" label="Log" />, root); });
+    const log = root.querySelector<HTMLElement>('[role="log"]')!;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 3000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 300 });
+    log.scrollTop = 0;
+    log.dispatchEvent(new Event('scroll'));
+    await act(() => { render(<Transcript messages={[...sent]} resetKey="s1" label="Log" />, root); });
+    expect(log.scrollTop).toBe(0);
+  });
+
+  it('keeps the view in place when earlier messages are revealed', async () => {
+    const many = Array.from({ length: 250 }, (_, i) => msg(`m${i}`, 'assistant', [{ type: 'text', data: { text: `line ${i}` } }], i));
+    await act(() => { render(<Transcript messages={many} resetKey="s1" label="Log" />, root); });
+    const log = root.querySelector<HTMLElement>('[role="log"]')!;
+    // scrollHeight follows the rendered message count, so jsdom reports the
+    // real before and after heights of the window growth.
+    Object.defineProperty(log, 'scrollHeight', {
+      configurable: true,
+      get: () => log.querySelectorAll('article.msg').length * 15,
+    });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 300 });
+    log.scrollTop = 1200;
+    log.dispatchEvent(new Event('scroll'));
+    const before = log.scrollHeight;
+    await act(() => {
+      root.querySelector<HTMLButtonElement>('.log__earlier')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(root.querySelectorAll('article.msg')).toHaveLength(250);
+    expect(log.scrollHeight).toBe(before + 50 * 15);
+    expect(log.scrollTop).toBe(1200 + 50 * 15);
+  });
 });
