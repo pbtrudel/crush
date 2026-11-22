@@ -98,43 +98,96 @@ func TestApplyCacheBreakpoints(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 
-	messages := []fantasy.Message{
-		fantasy.NewSystemMessage("system"),
-		fantasy.NewUserMessage("one"),
-		fantasy.NewUserMessage("two"),
-		fantasy.NewUserMessage("three"),
+	tests := []struct {
+		name       string
+		policy     cachePolicy
+		wantMarked []bool
+	}{
+		{
+			name:       "full layout marks the system prompt and the last two messages",
+			policy:     cachePolicyFull,
+			wantMarked: []bool{true, false, true, true},
+		},
+		{
+			name:       "gemini layout marks only the system prompt",
+			policy:     cachePolicyGemini,
+			wantMarked: []bool{true, false, false, false},
+		},
+		{
+			name:       "qwen layout marks the system prompt and the last message",
+			policy:     cachePolicyQwen,
+			wantMarked: []bool{true, false, false, true},
+		},
+		{
+			name:       "a provider that caches automatically gets no breakpoints",
+			policy:     cachePolicyNone,
+			wantMarked: []bool{false, false, false, false},
+		},
 	}
-	agent.applyCacheBreakpoints(messages)
 
-	require.NotEmpty(t, messages[0].ProviderOptions, "system message must carry a breakpoint")
-	require.Empty(t, messages[1].ProviderOptions, "interior messages must not carry breakpoints")
-	require.NotEmpty(t, messages[2].ProviderOptions, "second-to-last message must carry a breakpoint")
-	require.NotEmpty(t, messages[3].ProviderOptions, "last message must carry a breakpoint")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []fantasy.Message{
+				fantasy.NewSystemMessage("system"),
+				fantasy.NewUserMessage("one"),
+				fantasy.NewUserMessage("two"),
+				fantasy.NewUserMessage("three"),
+			}
+			agent.applyCacheBreakpoints(messages, tt.policy)
+
+			for i, want := range tt.wantMarked {
+				if want {
+					require.NotEmpty(t, messages[i].ProviderOptions, "message %d must carry a breakpoint", i)
+					continue
+				}
+				require.Empty(t, messages[i].ProviderOptions, "message %d must not carry a breakpoint", i)
+			}
+		})
+	}
 }
 
 func TestApplyCacheBreakpoints_SystemOnly(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 
-	messages := []fantasy.Message{fantasy.NewSystemMessage("system")}
-	agent.applyCacheBreakpoints(messages)
-	require.NotEmpty(t, messages[0].ProviderOptions)
+	marked := []fantasy.Message{fantasy.NewSystemMessage("system")}
+	agent.applyCacheBreakpoints(marked, cachePolicyFull)
+	require.NotEmpty(t, marked[0].ProviderOptions)
+
+	unmarked := []fantasy.Message{fantasy.NewSystemMessage("system")}
+	agent.applyCacheBreakpoints(unmarked, cachePolicyNone)
+	require.Empty(t, unmarked[0].ProviderOptions)
 }
 
 func TestApplyToolCacheBreakpoint(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 
-	stale := &recordingTool{name: "a", opts: fantasy.ProviderOptions{
-		anthropic.Name: &anthropic.ProviderCacheControlOptions{
-			CacheControl: anthropic.CacheControl{Type: "ephemeral"},
-		},
-	}}
-	last := &recordingTool{name: "b"}
-	agent.applyToolCacheBreakpoint([]fantasy.AgentTool{stale, last})
+	t.Run("the breakpoint moves to the last tool", func(t *testing.T) {
+		stale := &recordingTool{name: "a", opts: fantasy.ProviderOptions{
+			anthropic.Name: &anthropic.ProviderCacheControlOptions{
+				CacheControl: anthropic.CacheControl{Type: "ephemeral"},
+			},
+		}}
+		last := &recordingTool{name: "b"}
+		agent.applyToolCacheBreakpoint([]fantasy.AgentTool{stale, last}, cachePolicyFull)
 
-	require.Empty(t, stale.opts, "the breakpoint must move off the previous last tool")
-	require.NotEmpty(t, last.opts, "the last tool must carry the breakpoint")
+		require.Empty(t, stale.opts, "the breakpoint must move off the previous last tool")
+		require.NotEmpty(t, last.opts, "the last tool must carry the breakpoint")
+	})
+
+	t.Run("a policy without tool breakpoints leaves the definitions alone", func(t *testing.T) {
+		stale := &recordingTool{name: "a", opts: fantasy.ProviderOptions{
+			anthropic.Name: &anthropic.ProviderCacheControlOptions{
+				CacheControl: anthropic.CacheControl{Type: "ephemeral"},
+			},
+		}}
+		last := &recordingTool{name: "b"}
+		agent.applyToolCacheBreakpoint([]fantasy.AgentTool{stale, last}, cachePolicyGemini)
+
+		require.NotEmpty(t, stale.opts, "no breakpoint may be added or removed")
+		require.Empty(t, last.opts, "the last tool must not carry a breakpoint")
+	})
 }
 
 // TestToolsForStep_AppendsAdditionsAndIgnoresRemovals pins the mid-turn tool

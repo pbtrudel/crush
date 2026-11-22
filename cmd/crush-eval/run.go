@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	rep := flags.Int("rep", 1, "repetition")
 	maxSteps := flags.Int("max-steps", 0, "override the task's step limit")
 	timeout := flags.Duration("timeout", 0, "override the task's time limit")
+	overlay := flags.String("overlay", "", "config overlay as a JSON object, merged like a variant's overlay")
 	network := flags.String("network", netjail.DefaultMode(), "network mode of the run: jail or host")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -44,8 +46,17 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	// A single run takes the same overlay a variant does, so one arm of an
+	// experiment can be smoke-tested before a batch spends its repetitions.
+	var merge map[string]any
+	if *overlay != "" {
+		if err := json.Unmarshal([]byte(*overlay), &merge); err != nil {
+			fmt.Fprintf(stderr, "parse --overlay: %v\n", err)
+			return 2
+		}
+	}
 	if flags.NArg() != 1 || *routeName == "" {
-		fmt.Fprintln(stderr, "usage: crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--batch adhoc] [--rep 1] [--network jail|host]")
+		fmt.Fprintln(stderr, "usage: crush-eval run <task-id> --route <name> [--variant main] [--ref HEAD] [--batch adhoc] [--rep 1] [--overlay JSON] [--network jail|host]")
 		return 2
 	}
 	tk, err := findTask(flags.Arg(0))
@@ -101,6 +112,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		Footer:   string(footer),
 		MaxSteps: *maxSteps,
 		Timeout:  *timeout,
+		Overlay:  merge,
 		Network:  *network,
 	})
 	if err != nil {

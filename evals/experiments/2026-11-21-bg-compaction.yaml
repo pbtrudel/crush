@@ -1,0 +1,43 @@
+date: 2026-11-21
+name: bg-compaction
+variants:
+  - name: control
+    ref: 7fa78e632750c0f0c8b33f27b66af1ff5fc55405
+    overlay: {auto_compact_threshold: 0.2, compact_tail_tokens: 8000, compact_background_margin: 0}
+  - name: background
+    ref: 7fa78e632750c0f0c8b33f27b66af1ff5fc55405
+    overlay: {auto_compact_threshold: 0.2, compact_tail_tokens: 8000, compact_background_margin: 0.1}
+routes: [deepseek-flash-ctx]
+# One repetition, 48 runs: this batch guards cost and harm, it does not test
+# the saving, so it spends one repetition and the margin widens to 0.2.
+repetitions: 1
+# Both variants run the same build, the branch's tip commit: only the overlay
+# differs, so the comparison isolates the option. Pass rate is the primary
+# metric because a background summary that is stale or unused must not cost
+# solved tasks; wall time per task, steps and tokens are read from the same
+# batch (compare prints them per variant), and the compaction counts by
+# trigger come from `crush stats report --json` over each run's data
+# directory.
+#
+# What this batch can and cannot show, stated before the run. The suite gives
+# every run exactly one prompt, and the branch starts a background summary
+# only in the turn-end block where a blocking compaction would run, then
+# adopts it only at a later turn end that crosses the limit
+# (internal/agent/agent.go, adoptBackgroundCompaction). One prompt means no
+# later turn end, and the pending summary lives in the coordinator's memory,
+# so a second `crush run --continue` process cannot adopt it either. The arms
+# can therefore measure the option's cost and its risk to solved tasks, not
+# the saving it promises; that saving needs two turns in one process.
+#
+# Threshold deviation: no task crosses the default limit here. The
+# deepseek-flash route publishes no context window (0), and Crush disables
+# every compaction path when the window is 0, so its 14 run directories in
+# w21-edit-2 hold no summary. The deepseek-flash-ctx route declares 200k and
+# both arms compact at 0.2 * 200k = 40k with an 8k tail, so the runs that end
+# below the limit but inside the margin (0.1 * 200k = 20k, i.e. 20k to 40k)
+# are where the variant pays for a summary nobody adopts, and the runs above
+# 40k compact in both arms.
+primary_metric: pass_rate
+margin: 0.2
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.15736791443565348

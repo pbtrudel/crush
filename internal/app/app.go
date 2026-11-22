@@ -110,6 +110,10 @@ type App struct {
 	// currentSessionID is the session the user is working in, reported
 	// by the TUI and the non-interactive runner, for SessionEnd.
 	currentSessionID atomic.Value
+
+	// runWorktree is the Git worktree the command's --worktree flag
+	// created for this process, reported by `crush run --json`.
+	runWorktree string
 }
 
 // New initializes a new application instance. skillsMgr carries the
@@ -344,12 +348,19 @@ func (app *App) ReportCurrentSession(sessionID string) {
 	app.herdrClient.SetSessionID(sessionID)
 }
 
+// SetRunWorktree records the Git worktree the command's --worktree flag
+// created, so `crush run --json` can report where the run happened.
+func (app *App) SetRunWorktree(path string) {
+	app.runWorktree = path
+}
+
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout. With asJSON it prints one JSON object
 // that describes the run instead of its text, and returns an [ExitError]
 // when the run did not complete. Limits bound the steps and the time of the
-// session's tree.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast, asJSON bool, limits agent.RunLimits) error {
+// session's tree. An archived run hides the session it creates from the
+// session lists.
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel, reasoningEffort string, hideSpinner bool, continueSessionID string, useLast, asJSON bool, limits agent.RunLimits, archived bool) error {
 	slog.Info("Running in non-interactive mode")
 
 	// No dialog can answer an integrated pinentry prompt here, so GPG
@@ -460,6 +471,13 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		}
 	} else {
 		slog.Info("Created session for non-interactive run", "session_id", sess.ID)
+	}
+
+	if archived {
+		sess, err = app.archiveRunSession(ctx, sess)
+		if err != nil {
+			return fmt.Errorf("failed to archive the session: %w", err)
+		}
 	}
 
 	if reasoningEffort != "" && deferredEffort {

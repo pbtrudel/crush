@@ -1365,6 +1365,59 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	return nil
 }
 
+// noticeSender names the sender of a notice the runtime itself delivers, such
+// as a finished background job, rather than a Team member. It fails
+// ValidateMemberName, so no teammate can send mail under it.
+const noticeSender = "Crush"
+
+// NotifySession delivers a runtime notice to the teammate that owns
+// sessionID and reports whether a teammate owns it. A running teammate gets
+// it in its inbox; an inactive one is woken on its own run, and so on its own
+// model. The caller must not wake the session itself when this reports true:
+// the Lead's agent would run the teammate's session on the Lead's model.
+func (s *Service) NotifySession(ctx context.Context, sessionID, text string) (bool, error) {
+	if sessionID == "" || strings.TrimSpace(text) == "" {
+		return false, nil
+	}
+	var (
+		target  Member
+		found   bool
+		running bool
+	)
+	err := s.write(mustApply, func() (bool, error) {
+		for _, member := range s.state.Members {
+			if member.Role != RoleLead && member.SessionID == sessionID {
+				target, found = member, true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+		s.appendMessageLocked(noticeSender, target.Name, text)
+		s.notifyLocked()
+		running = s.statusLocked(target.Name) == StatusRunning
+		return true, nil
+	})
+	if err != nil || !found {
+		return found, err
+	}
+	if running {
+		return true, nil
+	}
+	pending := s.DrainInbox(target.Name, target.ParentID)
+	if len(pending) == 0 {
+		return true, nil
+	}
+	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+		s.mu.Lock()
+		s.notifyLocked()
+		s.mu.Unlock()
+		return true, err
+	}
+	return true, nil
+}
+
 // DrainInbox returns and marks delivered every pending message for name that
 // belongs to the caller's team.
 func (s *Service) DrainInbox(name, sessionID string) []Message {
@@ -1437,7 +1490,7 @@ func (s *Service) inboxPendingLocked(scope map[string]bool, message *Message, na
 		member, ok := s.memberLocked(message.From)
 		return ok && scope[member.ParentID]
 	}
-	return s.memberVisibleLocked(scope, message.From)
+	return message.From == noticeSender || s.memberVisibleLocked(scope, message.From)
 }
 
 // WaitForChange waits for the next roster, message, or task change.

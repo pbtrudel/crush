@@ -33,7 +33,16 @@ type Prompt struct {
 	workingDir string
 	canWrite   bool
 	toolNames  []string
+	variant    VariantFunc
 }
+
+// VariantFunc returns the template text to render instead of the base one
+// for a prompt profile, the model's provider and its model ID. ok false
+// means keep the base template.
+//
+// The profile decides the text, so a profile that is not implemented for a
+// prompt leaves it exactly as it was.
+type VariantFunc func(profile, provider, model string) (text string, ok bool)
 
 type PromptDat struct {
 	Provider            string
@@ -126,6 +135,15 @@ func WithWorkingDir(workingDir string) Option {
 	}
 }
 
+// WithVariant registers the template a prompt renders for a profile other
+// than the full one. Leaving it unset renders the base template for every
+// profile, which is what a prompt with a single template set wants.
+func WithVariant(fn VariantFunc) Option {
+	return func(p *Prompt) {
+		p.variant = fn
+	}
+}
+
 func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 	p := &Prompt{
 		name:     name,
@@ -139,7 +157,7 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 }
 
 func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore) (string, error) {
-	t, err := template.New(p.name).Parse(p.template)
+	t, err := template.New(p.name).Parse(p.templateText(store, provider, model))
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
@@ -153,6 +171,19 @@ func (p *Prompt) Build(ctx context.Context, provider, model string, store *confi
 	}
 
 	return sb.String(), nil
+}
+
+// templateText returns the template the configured prompt profile renders.
+// The base template is the full prompt, so it is what any profile without a
+// variant of its own gets.
+func (p *Prompt) templateText(store *config.ConfigStore, provider, model string) string {
+	if p.variant == nil {
+		return p.template
+	}
+	if text, ok := p.variant(store.Config().Options.GetPromptProfile(), provider, model); ok {
+		return text
+	}
+	return p.template
 }
 
 func processFile(filePath string) *ContextFile {

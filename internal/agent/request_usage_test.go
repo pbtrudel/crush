@@ -39,7 +39,7 @@ func TestRecordPromptFingerprintIgnoresCacheBreakpoints(t *testing.T) {
 	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
 
 	marked := textPrompt("a", "b", "c")
-	agent.applyCacheBreakpoints(marked)
+	agent.applyCacheBreakpoints(marked, cachePolicyFull)
 	require.NotEmpty(t, marked[len(marked)-1].ProviderOptions, "the first request must carry breakpoints")
 
 	previous, shared := agent.recordPromptFingerprint("session", marked)

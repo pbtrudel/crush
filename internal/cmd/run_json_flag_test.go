@@ -17,9 +17,9 @@ func TestRunRefusesJSONAgainstAServer(t *testing.T) {
 	require.Equal(t, "bool", flag.Value.Type())
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "1")
-	require.EqualError(t, refuseOnServer(true, agent.RunLimits{}), "the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
-	require.NoError(t, refuseOnServer(false, agent.RunLimits{}))
+	require.EqualError(t, refuseOnServer(true, agent.RunLimits{}, false), "the --json flag is not supported with CRUSH_CLIENT_SERVER=1; unset it to use the flag")
+	require.NoError(t, refuseOnServer(false, agent.RunLimits{}, false))
 
 	t.Setenv("CRUSH_CLIENT_SERVER", "0")
-	require.NoError(t, refuseOnServer(true, agent.RunLimits{}))
+	require.NoError(t, refuseOnServer(true, agent.RunLimits{}, false))
 }

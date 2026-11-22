@@ -549,3 +549,38 @@ func TestUsageRollupToleratesMissingParent(t *testing.T) {
 	require.Equal(t, int64(220), after.TotalContextTokens)
 	require.InDelta(t, 1.5, after.Cost, 1e-9)
 }
+
+// A scripted or CI run archives its session so the lists stay readable.
+// The session is still there, it is just left out of the list.
+func TestArchivedSessionLeavesTheList(t *testing.T) {
+	t.Parallel()
+
+	svc := newRollupService(t)
+	ctx := t.Context()
+
+	kept, err := svc.Create(ctx, "kept")
+	require.NoError(t, err)
+	scripted, err := svc.Create(ctx, "scripted")
+	require.NoError(t, err)
+	require.False(t, scripted.Archived)
+
+	archived, err := svc.SetArchived(ctx, scripted.ID, true)
+	require.NoError(t, err)
+	require.True(t, archived.Archived)
+
+	list, err := svc.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, kept.ID, list[0].ID)
+
+	fetched, err := svc.Get(ctx, scripted.ID)
+	require.NoError(t, err)
+	require.True(t, fetched.Archived, "the session is still readable by id")
+
+	restored, err := svc.SetArchived(ctx, scripted.ID, false)
+	require.NoError(t, err)
+	require.False(t, restored.Archived)
+	list, err = svc.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 2, "unarchiving puts the session back in the list")
+}

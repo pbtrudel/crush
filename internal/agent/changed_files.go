@@ -50,6 +50,10 @@ func stepChangedFiles(step fantasy.StepResult) []string {
 			}
 			continue
 		}
+		if call.ToolName == tools.ApplyPatchToolName {
+			files = append(files, tools.PatchFilePaths(toolStringInput(call.Input, "patch"))...)
+			continue
+		}
 		if !slices.Contains(changedFileTools, call.ToolName) {
 			continue
 		}

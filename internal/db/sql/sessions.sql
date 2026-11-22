@@ -37,7 +37,7 @@ LIMIT 1;
 -- name: ListSessions :many
 SELECT *
 FROM sessions
-WHERE parent_session_id is NULL
+WHERE parent_session_id is NULL AND archived = 0
 ORDER BY updated_at DESC;
 
 -- name: UpdateSession :one
@@ -59,6 +59,12 @@ RETURNING *;
 -- name: SetSessionChannel :one
 UPDATE sessions
 SET channel = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: SetSessionArchived :one
+UPDATE sessions
+SET archived = ?
 WHERE id = ?
 RETURNING *;
 

@@ -33,9 +33,11 @@ var toolSearchDescription string
 type LazyRegistry struct {
 	mu     sync.RWMutex
 	always map[string]struct{}
-	// deferred is every built-in tool that is not part of the core palette,
-	// keyed by name. MCP tools are never deferred: their schemas come and go
-	// with the server, and mcp_servers already owns activating them.
+	// deferred is every tool that is not part of the core palette, keyed by
+	// name, MCP-backed ones included: an MCP server's schemas cost the same
+	// tokens on every request as a built-in's. Filter keeps a tool only when
+	// the request's own palette carries it, so deferring an MCP tool hides
+	// nothing the session could not reveal anyway.
 	deferred map[string]fantasy.AgentTool
 	// revealed is per session, so one session unlocking a tool cannot grow
 	// another session's palette.
@@ -57,22 +59,20 @@ func NewLazyRegistry(always map[string]struct{}) *LazyRegistry {
 }
 
 // Register records the palette built for an agent: every tool that is not
-// core and not MCP-backed becomes deferred. Registration is cumulative across
-// builds because one coordinator shares the registry among its agents (the
-// lead, the plan agent, a task subagent rebuilt on every delegated turn): a
-// subagent's smaller palette must not make a tool the lead can reveal
-// unsearchable. Registering a name says the tool exists somewhere, not that
-// every agent can reveal it; Tool scopes a reveal to the palette of the agent
-// that owns it.
+// core becomes deferred, MCP-backed ones included. Registration is cumulative
+// across builds because one coordinator shares the registry among its agents
+// (the lead, the plan agent, a task subagent rebuilt on every delegated
+// turn): a subagent's smaller palette must not make a tool the lead can
+// reveal unsearchable. Registering a name says the tool exists somewhere, not
+// that every agent can reveal it; Tool scopes a reveal to the palette of the
+// agent that owns it, which is also what keeps a tool from one MCP channel
+// from being promised to a session that cannot carry it.
 func (r *LazyRegistry) Register(list []fantasy.AgentTool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, tool := range list {
 		name := tool.Info().Name
 		if _, core := r.always[name]; core {
-			continue
-		}
-		if _, isMCP := tool.(interface{ MCP() string }); isMCP {
 			continue
 		}
 		r.deferred[name] = tool
