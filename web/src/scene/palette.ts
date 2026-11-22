@@ -1,16 +1,21 @@
 import * as THREE from 'three';
 
+// A component that carries no value is serialized as "none", so it parses
+// as zero: an achromatic oklch() comes back as "oklch(0.3 0 none)".
+const component = (raw: string | undefined, scale = 1): number =>
+  !raw || raw === 'none' ? 0 : Number(raw) * scale;
+
 // parseOklch converts "oklch(L C H ...)" to a THREE.Color. THREE cannot parse
 // oklch() itself. A browser serializes a computed custom property with the
 // lightness as a percentage ("oklch(12% .05 275)"), so both forms must parse.
 // Returns null for any other syntax.
 export function parseOklch(raw: string): THREE.Color | null {
-  const m = /^oklch\(\s*([\d.]+)(%?)\s+([\d.]+)(%?)\s+(-?[\d.]+)/.exec(raw);
+  const m = /^oklch\(\s*([\d.]+|none)(%?)\s+([\d.]+|none)(%?)\s+(-?[\d.]+|none)/.exec(raw);
   if (!m) return null;
-  const L = m[2] === '%' ? Number(m[1]) / 100 : Number(m[1]);
+  const L = component(m[1], m[2] === '%' ? 0.01 : 1);
   // A percentage chroma is relative to 0.4, the CSS Color 4 reference range.
-  const C = m[4] === '%' ? (Number(m[3]) / 100) * 0.4 : Number(m[3]);
-  const h = (Number(m[5]) * Math.PI) / 180;
+  const C = component(m[3], m[4] === '%' ? 0.004 : 1);
+  const h = (component(m[5]) * Math.PI) / 180;
   const a = C * Math.cos(h);
   const b = C * Math.sin(h);
   const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;

@@ -39,6 +39,13 @@ describe('palette', () => {
     expect(parseOklch('oklch(12% 12.5% 275)')!.getHexString()).toBe(plain.getHexString());
   });
 
+  it('reads a component the browser serialized as none as zero', () => {
+    expect(parseOklch('oklch(0.82 0.14 none)')!.getHexString()).toBe(parseOklch('oklch(0.82 0.14 0)')!.getHexString());
+    expect(parseOklch('oklch(0.82 none 210)')!.getHexString()).toBe(parseOklch('oklch(0.82 0 210)')!.getHexString());
+    // No lightness at all is black, not a parse failure.
+    expect(parseOklch('oklch(none none none)')!.getHexString()).toBe('000000');
+  });
+
   it('falls back when the token is missing, as in jsdom', () => {
     expect(token('--missing', '#52d8ff').getHexString()).toBe('52d8ff');
   });
