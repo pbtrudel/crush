@@ -125,7 +125,7 @@ export async function boot() {
   const token = new URLSearchParams(location.hash.slice(1)).get('t');
   if (token) {
     await api.auth(token).catch(() => undefined);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', location.pathname + location.search);
   }
   connectStream({
     onFrames: handleFrames,

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
-import type { Frame, Message, PermissionRequest, QuestionRequest, Session, WireEvent } from '../api/types';
+import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent } from '../api/types';
 import { effectsLevel } from './effects';
 import { adoptSession, initialState } from './reducer';
-import { actions, dispatch, handleFrames, state } from './store';
+import { actions, boot, dispatch, handleFrames, state } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
+
+vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
 
 const fx = fixtures as unknown as Record<string, Frame>;
 
@@ -313,5 +315,26 @@ describe('M2 actions', () => {
     seed();
     vi.spyOn(api, 'teamInterrupt').mockRejectedValue(new ApiError(409, 'teams_disabled', 'Agent Teams is not enabled'));
     await expect(actions.interruptTeammate('alice')).resolves.toBe('Agent Teams is not enabled');
+  });
+});
+
+describe('stream and boot hardening', () => {
+  it('reloads a followed session as a baseline, not as new activity', async () => {
+    seed();
+    telemetry.value = emptyTelemetry();
+    vi.spyOn(api, 'snapshot').mockResolvedValue({
+      ...(fx.snapshot.payload as Snapshot), current_session_id: 's2',
+    });
+    handleFrames([{ seq: 20, type: 'session_follow', payload: { session_id: 's2' } }]);
+    await vi.waitFor(() => expect(state.value.messages.length).toBeGreaterThan(0));
+    expect(telemetry.value.tools).toEqual([]);
+  });
+
+  it('keeps the query string when it scrubs the token', async () => {
+    history.replaceState(null, '', '/?debug=1#t=abc');
+    vi.spyOn(api, 'auth').mockResolvedValue(undefined);
+    const replace = vi.spyOn(history, 'replaceState');
+    await boot();
+    expect(replace).toHaveBeenCalledWith(null, '', '/?debug=1');
   });
 });

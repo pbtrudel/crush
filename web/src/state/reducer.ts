@@ -241,8 +241,10 @@ export function reduce(s: State, f: Frame): State {
       return { ...next, inputMode: (f.payload as { mode: InputMode }).mode };
     case 'gateway_closing':
       return { ...next, conn: 'ended', busy: false };
-    case 'web_error':
-      return pushToast(next, 'error', (f.payload as { error: string }).error);
+    case 'web_error': {
+      const text = (f.payload as { error: string }).error;
+      return s.toasts.some((t) => t.tone === 'error' && t.text === text) ? next : pushToast(next, 'error', text);
+    }
     case 'message': {
       const m = ev.payload as Message;
       let base: State = next;

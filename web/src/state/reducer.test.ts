@@ -129,6 +129,12 @@ describe('reduce', () => {
     expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'agent busy' });
   });
 
+  it('does not repeat an error toast that is still shown', () => {
+    const f = { seq: 11, type: 'web_error', payload: { error: 'Prompt failed' } };
+    const s = reduce(reduce(live(), f), { ...f, seq: 12 });
+    expect(s.toasts.filter((t) => t.text === 'Prompt failed')).toHaveLength(1);
+  });
+
   it('input mode refusal toasts with the terminal reason', () => {
     const s = reduce(live(), {
       seq: 15, type: 'web_error', payload: { error: "Can't switch while Crush is busy" },

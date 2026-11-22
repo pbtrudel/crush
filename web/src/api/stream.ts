@@ -121,7 +121,14 @@ export function connectStream(h: StreamHandlers, env: StreamEnv = browserEnv()):
     sock.onmessage = (e) => {
       if (stopped) return;
       if (!gotFrame) { gotFrame = true; attempt = 0; }
-      const f = JSON.parse(e.data) as Frame;
+      let f: Frame;
+      try {
+        f = JSON.parse(e.data) as Frame;
+      } catch {
+        // A frame the page cannot read is dropped; the stream stays up and
+        // the next snapshot repairs whatever it carried.
+        return;
+      }
       if (f.type === 'gateway_closing') terminal = true;
       buffer.push(f);
       if (!scheduled) { scheduled = true; env.schedule(flush); }

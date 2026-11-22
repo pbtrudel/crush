@@ -71,6 +71,18 @@ describe('connectStream', () => {
     expect(conns.at(-1)).toBe('ended');
   });
 
+  it('skips a frame that is not JSON and keeps the connection', async () => {
+    const frames: number[] = [];
+    connectStream({ onFrames: (fs) => fs.forEach((f) => frames.push(f.seq)), onConn: () => {}, lastSeq: () => 0 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const sock = FakeSocket.last;
+    sock.onopen?.();
+    expect(() => sock.onmessage?.({ data: 'not json' })).not.toThrow();
+    sock.onmessage?.({ data: JSON.stringify({ seq: 2, type: 'web_error', payload: { error: 'x' } }) });
+    expect(frames).toEqual([2]);
+    expect(sock.closed).toBe(false);
+  });
+
   it('returns to live after a ring resume that sends no snapshot', async () => {
     const conns: string[] = [];
     connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 5 }, env());

@@ -28,6 +28,15 @@ describe('sceneSeed', () => {
     expect(sceneSeed()).toBe(99);
   });
 
+  it('ignores a blank stored seed', () => {
+    localStorage.setItem('crush-web-seed', '  ');
+    try {
+      expect(sceneSeed()).not.toBe(0);
+    } finally {
+      localStorage.removeItem('crush-web-seed');
+    }
+  });
+
   it('falls back to the clock when the stored value is not an integer', () => {
     vi.useFakeTimers();
     vi.setSystemTime(1234);
