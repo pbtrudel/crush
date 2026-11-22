@@ -4902,7 +4902,7 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 
 		if len(mediaFiles) > 0 {
 			convertedMessages = append(convertedMessages, fantasy.NewUserMessage(
-				"Here is the media content from the tool result:",
+				claudeagent.ToolMediaMessageText,
 				mediaFiles...,
 			))
 		}

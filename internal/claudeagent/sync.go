@@ -53,6 +53,14 @@ const (
 	DecisionChanged DecisionKind = "changed"
 )
 
+// ToolMediaMessageText is the first text of the user message the agent lowers
+// a tool result's media into. The lowering and the sync fingerprint have to
+// agree on it: a mismatch makes the media message a user group of its own,
+// which merges with the user message that follows it and rewrites the saved
+// history, so the session restarts and the whole conversation, old images
+// included, is sent again.
+const ToolMediaMessageText = "Here is the media content from the tool result:"
+
 // Decision tells the caller where the part Claude has not seen starts.
 type Decision struct {
 	Kind  DecisionKind
@@ -389,7 +397,7 @@ func syncIsToolMedia(message fantasy.Message) bool {
 		return false
 	}
 	first, ok := fantasy.AsMessagePart[fantasy.TextPart](message.Content[0])
-	if !ok || first.Text != "Attached media from tool result:" {
+	if !ok || first.Text != ToolMediaMessageText {
 		return false
 	}
 	for _, part := range message.Content[1:] {
