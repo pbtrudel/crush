@@ -40,7 +40,6 @@ export function App() {
       const action = cinematicKey({
         code: e.code,
         altKey: e.altKey,
-        key: e.key,
         inPrompt: focused instanceof HTMLElement && focused.id === 'deck-input',
         dialogOpen: needsAttention(state.value),
         active: cinematic.value,

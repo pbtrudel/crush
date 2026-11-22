@@ -28,7 +28,6 @@ export function setCinematic(on: boolean): void {
 export type KeyContext = {
   code: string;
   altKey: boolean;
-  key: string;
   inPrompt: boolean;
   dialogOpen: boolean;
   active: boolean;

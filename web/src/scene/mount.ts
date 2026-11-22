@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { FLIGHT_MS } from '../state/cinematic';
 import { effectsLevel, type EffectFlags, type EffectsLevel } from '../state/effects';
 import type { CoreMode } from '../state/levels';
 import type { Motion } from '../state/motion';
@@ -14,6 +15,7 @@ import { readColors } from './colors';
 import { watchContextLoss } from './contextLoss';
 import { createCore } from './core';
 import { FrameGuard } from './guard';
+import { sameSceneInput } from './input';
 import { clampStep, frameInterval } from './loop';
 import { motionScale } from './motionScale';
 import { sceneSeed } from './rng';
@@ -28,7 +30,14 @@ export interface SceneInput {
   focus: { x: number; y: number; width: number; height: number } | null;
 }
 
-export type CameraDriver = (camera: THREE.PerspectiveCamera, dt: number) => void;
+// A driver returns true while it is still flying or fading, so the mount
+// keeps rendering at the event rate in every motion level.
+export type CameraDriver = (camera: THREE.PerspectiveCamera, dt: number) => boolean;
+
+export interface CameraPoseOptions {
+  // Jump instead of easing: the cinematic panel cross-fade covers the cut.
+  snap?: boolean;
+}
 
 export interface SceneHandle {
   update(s: SceneInput): void;
@@ -37,7 +46,7 @@ export interface SceneHandle {
   camera: THREE.PerspectiveCamera;
   world: THREE.Scene;
   requestFrame(): void;
-  setCameraPose(p: { position: THREE.Vector3; target: THREE.Vector3 }): void;
+  setCameraPose(p: { position: THREE.Vector3; target: THREE.Vector3 }, o?: CameraPoseOptions): void;
   setCameraDriver(driver: CameraDriver | null): void;
   canvas: HTMLCanvasElement;
 }
@@ -60,18 +69,40 @@ const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.9 };
 // loss opens at the end state instead of flashing the grid dark again.
 let booted = false;
 
+// Test-only: re-arms the power-up so a test can watch it run or skip it.
+export function resetBootLatch(): void {
+  booted = false;
+}
+
 export function mountScene(
   canvas: HTMLCanvasElement,
   initial: SceneInput,
   hooks: { onStepDown(level: EffectsLevel): void; onFail(): void },
 ): SceneHandle {
-  const colors = readColors();
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
     alpha: false,
     powerPreference: 'high-performance',
   });
+  try {
+    return mountWith(renderer, canvas, initial, hooks);
+  } catch (error) {
+    // A mount that fails after the renderer exists must not strand a WebGL
+    // context: the scene layer retries and browsers cap live contexts.
+    renderer.dispose();
+    renderer.forceContextLoss();
+    throw error;
+  }
+}
+
+function mountWith(
+  renderer: THREE.WebGLRenderer,
+  canvas: HTMLCanvasElement,
+  initial: SceneInput,
+  hooks: { onStepDown(level: EffectsLevel): void; onFail(): void },
+): SceneHandle {
+  const colors = readColors();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
@@ -133,7 +164,14 @@ export function mountScene(
   const pointerTarget = { x: 0, y: 0 };
   const pointer = { x: 0, y: 0 };
   let appliedView: { x: number; y: number; width: number; height: number } | null = null;
+  // The focus offset belongs to the normal layout. Cinematic mode centers the
+  // scene, and blending the offset in and out keeps the projector from
+  // jumping sideways when the flight starts or ends.
+  let viewBlend = 1;
+  let viewTarget = 1;
+  let viewEasing = false;
   let poseEasing = false;
+  let driverBusy = false;
   let coreAnimating = false;
   let burstsAlive = false;
   let eventActive = false;
@@ -158,20 +196,35 @@ export function mountScene(
     const height = canvas.clientHeight;
     if (!width || !height) return;
     const offset = viewOffset({ width, height }, input.focus);
-    if (offset.x === 0 && offset.y === 0) {
+    const x = offset.x * viewBlend;
+    const y = offset.y * viewBlend;
+    if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) {
       if (appliedView) camera.clearViewOffset();
       appliedView = null;
       return;
     }
     const same =
       appliedView !== null &&
-      appliedView.x === offset.x &&
-      appliedView.y === offset.y &&
+      appliedView.x === x &&
+      appliedView.y === y &&
       appliedView.width === width &&
       appliedView.height === height;
     if (same) return;
-    camera.setViewOffset(width, height, offset.x, offset.y, width, height);
-    appliedView = { x: offset.x, y: offset.y, width, height };
+    camera.setViewOffset(width, height, x, y, width, height);
+    appliedView = { x, y, width, height };
+  };
+
+  // stepViewBlend walks the offset toward its target over the flight, the
+  // same span the camera takes to fly, and reports whether it is still
+  // moving so the frame loop keeps going.
+  const stepViewBlend = (dt: number): boolean => {
+    if (viewBlend === viewTarget) return false;
+    const step = dt / (FLIGHT_MS / 1000);
+    viewBlend =
+      viewTarget > viewBlend
+        ? Math.min(viewTarget, viewBlend + step)
+        : Math.max(viewTarget, viewBlend - step);
+    return viewBlend !== viewTarget;
   };
 
   const followCamera = (dt: number) => {
@@ -197,7 +250,14 @@ export function mountScene(
     const turn = parallax(pointer, input.motion);
     camera.rotation.y += turn.yaw;
     camera.rotation.x += turn.pitch;
-    applyViewOffset();
+  };
+
+  // A busy driver is the cinematic transition: it must render at the event
+  // rate in every motion level. An idle one leaves the scene ambience in
+  // charge, which is 30 fps in full and reduced and kick-only in off.
+  const renderInterval = (): number | null => {
+    if (driverBusy) return frameInterval({ hidden: document.hidden, motion: 'full', eventActive: true });
+    return frameInterval({ hidden: document.hidden, motion: input.motion, eventActive });
   };
 
   function frame(now: number) {
@@ -208,7 +268,7 @@ export function mountScene(
     if (document.hidden) return;
     const motion = input.motion;
     if (!forced) {
-      const interval = frameInterval({ hidden: false, motion, eventActive });
+      const interval = renderInterval();
       if (interval === null) return;
       // Ambient frames run at 30 fps, so skip a display frame that arrives
       // too soon after the last render.
@@ -223,7 +283,10 @@ export function mountScene(
     elapsed += dt;
 
     if (bootRunning()) {
-      bootMs = Math.min(BOOT_MS, bootMs + dt * 1000);
+      // While the session is still linking the clock waits at the ignition,
+      // so it must not overshoot it by the length of a frame.
+      const cap = input.booting ? BOOT_IGNITE_MS : BOOT_MS;
+      bootMs = Math.min(cap, bootMs + dt * 1000);
       bootDone = applyBoot(bootMs);
     }
 
@@ -232,8 +295,13 @@ export function mountScene(
     burstsAlive = bursts.update(dt);
     // The core runs first so the reflection copies this frame's pose.
     world.update(dt * motionScale(motion), elapsed);
-    if (driver) driver(camera, dt);
-    else followCamera(dt);
+    if (driver) driverBusy = driver(camera, dt);
+    else {
+      driverBusy = false;
+      followCamera(dt);
+    }
+    viewEasing = stepViewBlend(dt);
+    applyViewOffset();
     if (input.effects.bloom) composer.render();
     else renderer.render(scene, camera);
     const workMs = performance.now() - workStart;
@@ -249,9 +317,10 @@ export function mountScene(
       coreAnimating ||
       input.mode === 'working' ||
       poseEasing ||
-      driver !== null ||
+      driverBusy ||
+      viewEasing ||
       bootRunning();
-    if (frameInterval({ hidden: document.hidden, motion, eventActive }) !== null) schedule();
+    if (renderInterval() !== null) schedule();
   }
 
   const resize = () => {
@@ -280,6 +349,7 @@ export function mountScene(
   const stopWatching = watchContextLoss(canvas, hooks.onFail);
 
   const update = (next: SceneInput) => {
+    if (sameSceneInput(next, input)) return;
     // Bloom is only off when the level stepped down, so this edge is the
     // restore and the cooldown restarts from here.
     const restored = next.effects.bloom && !input.effects.bloom;
@@ -297,20 +367,34 @@ export function mountScene(
     kick();
   };
 
-  const setCameraPose = (p: { position: THREE.Vector3; target: THREE.Vector3 }) => {
+  const setCameraPose = (p: { position: THREE.Vector3; target: THREE.Vector3 }, options?: CameraPoseOptions) => {
     poseTarget.position.copy(p.position);
     poseTarget.target.copy(p.target);
-    poseEasing = true;
+    if (options?.snap) {
+      camera.position.copy(p.position);
+      lookTarget.copy(p.target);
+      poseEasing = false;
+    } else {
+      poseEasing = true;
+    }
     kick();
   };
 
   const setCameraDriver = (next: CameraDriver | null) => {
     driver = next;
-    // The driver owns the camera, including any offset it decides on.
+    driverBusy = false;
     if (next) {
-      camera.clearViewOffset();
-      appliedView = null;
+      // Cinematic mode centers the scene: ease the focus offset away over
+      // the flight so the projector does not jump sideways.
+      viewTarget = 0;
+    } else {
+      // The driver left the camera looking along its orbit heading. Seed the
+      // idle look target from that heading so the fly home does not snap.
+      const direction = camera.getWorldDirection(new THREE.Vector3());
+      lookTarget.copy(camera.position).add(direction.multiplyScalar(camera.position.distanceTo(HOME.target)));
+      viewTarget = 1;
     }
+    if (input.motion !== 'full') viewBlend = viewTarget;
     kick();
   };
 
@@ -330,6 +414,9 @@ export function mountScene(
     output.dispose();
     composer.dispose();
     renderer.dispose();
+    // Releasing the drawing buffer is what frees the context slot; without
+    // it a remount can exhaust the browser's context limit.
+    renderer.forceContextLoss();
   };
 
   resize();

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'preact/hooks';
+import { sameSceneInput } from '../../scene/input';
 import type { SceneHandle, SceneInput } from '../../scene/mount';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { effectFlags, effectsLevel, sceneFailed, use3D } from '../../state/effects';
@@ -40,6 +41,10 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
   // than the state captured when the mount effect ran.
   const latest = useRef(input);
   latest.current = input;
+  // Every state change re-renders this layer, and most of them leave the
+  // scene alone. Remember what the scene was last told so a re-render does
+  // not wake it.
+  const applied = useRef<SceneInput | null>(null);
 
   useEffect(() => {
     if (!enabled || !canvas.current) return;
@@ -54,6 +59,7 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
           },
         });
         scene.current = handle;
+        applied.current = latest.current;
         // Seed from the window so the 15 minutes it holds never replay as
         // a storm of rings.
         lastBurst.current = telemetry.peek().tools.at(-1)?.id;
@@ -70,7 +76,11 @@ export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
   }, [enabled]);
 
   useEffect(() => {
-    scene.current?.update(latest.current);
+    const handle = scene.current;
+    if (!handle) return;
+    if (applied.current && sameSceneInput(applied.current, latest.current)) return;
+    applied.current = latest.current;
+    handle.update(latest.current);
   }, [s, motion.value, effectsLevel.value, lowPower.value, stageRect.value]);
 
   // The flight lives in its own chunk, so only a visitor who enters

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { cinematicKey, type KeyContext } from './cinematic';
 
 const k = (over: Partial<KeyContext>): KeyContext => ({
-  code: 'KeyC', altKey: true, key: 'ç', inPrompt: false, dialogOpen: false, active: false, allowed: true, ...over,
+  code: 'KeyC', altKey: true, inPrompt: false, dialogOpen: false, active: false, allowed: true, ...over,
 });
 
 describe('cinematicKey', () => {
@@ -13,7 +13,7 @@ describe('cinematicKey', () => {
   });
 
   it('ignores C without Alt and other keys with Alt', () => {
-    expect(cinematicKey(k({ altKey: false, key: 'c' }))).toBeNull();
+    expect(cinematicKey(k({ altKey: false }))).toBeNull();
     expect(cinematicKey(k({ code: 'KeyV' }))).toBeNull();
   });
 
@@ -22,7 +22,7 @@ describe('cinematicKey', () => {
   });
 
   it('exits on Esc only outside the prompt and with no dialog open', () => {
-    const esc = { code: 'Escape', key: 'Escape', altKey: false, active: true };
+    const esc = { code: 'Escape', altKey: false, active: true };
     expect(cinematicKey(k(esc))).toBe('exit');
     expect(cinematicKey(k({ ...esc, inPrompt: true }))).toBeNull();
     expect(cinematicKey(k({ ...esc, dialogOpen: true }))).toBeNull();

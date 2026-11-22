@@ -84,6 +84,17 @@ export function startCinematic(scene: SceneHandle, els: CinematicEls, motion: Mo
   controls.minDistance = 6;
   controls.maxDistance = 18;
   controls.target.copy(jumped ? WIDE.target : from.target);
+  // Dragging or zooming changes the camera without a state change, so the
+  // scene needs a frame for each of them in every motion level.
+  controls.addEventListener('change', scene.requestFrame);
+
+  // The keyboard path covers cinematic mode: the canvas itself takes the
+  // focus ring, and OrbitControls turns shift plus arrows into orbit. The
+  // arrows in the prompt never reach the canvas.
+  controls.listenToKeyEvents(scene.canvas);
+  scene.canvas.tabIndex = 0;
+  scene.canvas.setAttribute('aria-label', '3D view, shift plus arrow keys orbit');
+  scene.canvas.removeAttribute('aria-hidden');
 
   const write = () => {
     const width = els.view.clientWidth || window.innerWidth;
@@ -97,25 +108,39 @@ export function startCinematic(scene: SceneHandle, els: CinematicEls, motion: Mo
     });
   };
 
-  const driver = (cam: THREE.PerspectiveCamera, dt: number) => {
+  const driver = (cam: THREE.PerspectiveCamera, dt: number): boolean => {
     if (flightMs < FLIGHT_MS) {
       flightMs = Math.min(FLIGHT_MS, flightMs + dt * 1000);
       const t = expoOut(flightMs / FLIGHT_MS);
       cam.position.lerpVectors(from.position, WIDE.position, t);
       controls.target.lerpVectors(from.target, WIDE.target, t);
+      // OrbitControls' first update would clamp the camera into the polar
+      // limits and pull the flight off its path, so the flight aims the
+      // camera itself and hands over once it lands.
+      cam.lookAt(controls.target);
+    } else {
+      controls.update();
     }
-    controls.update();
     fadeMs = Math.min(FADE_MS, fadeMs + dt * 1000);
     els.view.style.opacity = String(fadeMs / FADE_MS);
     write();
+    return flightMs < FLIGHT_MS || fadeMs < FADE_MS;
   };
 
   const stop = (): Promise<void> => {
+    controls.removeEventListener('change', scene.requestFrame);
     controls.dispose();
+    scene.canvas.removeAttribute('tabindex');
+    scene.canvas.removeAttribute('aria-label');
+    scene.canvas.setAttribute('aria-hidden', 'true');
     // The mount and the controls must never both own the camera: the driver
-    // goes first, then the mount eases the camera back.
+    // goes first, then the mount takes the camera back. Reduced and off
+    // motion snap home instead of flying.
     scene.setCameraDriver(null);
-    scene.setCameraPose({ position: HOME.position.clone(), target: HOME.target.clone() });
+    scene.setCameraPose(
+      { position: HOME.position.clone(), target: HOME.target.clone() },
+      { snap: motion !== 'full' },
+    );
     els.camera.style.transform = '';
     for (const panel of els.panels) panel.style.transform = '';
     els.view.style.opacity = '';

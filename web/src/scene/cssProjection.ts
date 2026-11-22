@@ -7,11 +7,11 @@ import type * as THREE from 'three';
 // DOM; this applies the same matrices to wrapper elements that stay where
 // Preact renders them.
 //
-// The renderer's `camera.view` branch is left out on purpose: the scene
-// mount clears the view offset while it runs a camera driver, so the
-// cinematic camera never has a view offset enabled. The camera matrices must
-// be up to date when these are called, as they are inside the renderer's
-// render().
+// The renderer's `camera.view` branch is left out on purpose: the offset
+// belongs to the normal layout, and the scene mount eases it to zero over
+// the cinematic flight, so the projected log is placed by the camera
+// matrices alone while the offset fades. The camera matrices must be up to
+// date when these are called, as they are inside the renderer's render().
 
 function epsilon(value: number): number {
   return Math.abs(value) < 1e-10 ? 0 : value;
