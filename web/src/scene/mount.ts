@@ -49,7 +49,10 @@ const POSE_EPSILON = 0.002;
 // The pointer turn follows the pointer at this rate rather than snapping.
 const POINTER_RATE = 6;
 
-const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.15 };
+// Bloom is tuned for a dark scene: a low threshold blooms the whole floor
+// and the sky along with the core, which washes the frame out. Only the
+// core and the ring edges are hot enough to pass this threshold.
+const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.9 };
 
 export function mountScene(
   canvas: HTMLCanvasElement,

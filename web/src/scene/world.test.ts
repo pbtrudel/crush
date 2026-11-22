@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { BEAM_COUNT, createWorld, PARTICLE_COUNT, REVEAL_FULL } from './world';
+import { BEAM_COUNT, createWorld, PARTICLE_COUNT, REVEAL_FULL, SKY_HEIGHT, skyMix } from './world';
 import { readColors } from './colors';
 
 describe('createWorld', () => {
@@ -72,5 +72,40 @@ describe('createWorld', () => {
     w.setReveal(REVEAL_FULL);
     w.update(0.016, 3);
     expect(opacity(copy)).toBeCloseTo(0.25);
+  });
+});
+
+describe('skyMix', () => {
+  it('keeps haze at and below the horizon and reaches void by SKY_HEIGHT', () => {
+    expect(skyMix(0)).toBe(0);
+    expect(skyMix(-12)).toBe(0);
+    expect(skyMix(SKY_HEIGHT / 2)).toBeCloseTo(0.5);
+    expect(skyMix(SKY_HEIGHT)).toBe(1);
+    expect(skyMix(60)).toBe(1);
+  });
+
+  it('is resolved by the backdrop: haze at the horizon, void at the zenith', () => {
+    const colors = readColors();
+    const w = createWorld(colors, 7);
+    const backdrop = w.group.getObjectByName('backdrop') as THREE.Mesh;
+    const position = backdrop.geometry.getAttribute('position');
+    const color = backdrop.geometry.getAttribute('color');
+    const ring = (y: number) => {
+      for (let i = 0; i < position.count; i++) {
+        if (Math.abs(position.getY(i) - y) < 1e-6) {
+          return new THREE.Color(color.getX(i), color.getY(i), color.getZ(i));
+        }
+      }
+      throw new Error(`the backdrop has no ring at y=${y}`);
+    };
+    expect(ring(0).getHex()).toBe(colors.haze.getHex());
+    expect(ring(60).getHex()).toBe(colors.void.getHex());
+
+    // The band the fade lives in needs rings of its own; one segment would
+    // interpolate straight past it and leave the sky a flat purple.
+    const ys = new Set<number>();
+    for (let i = 0; i < position.count; i++) ys.add(Math.round(position.getY(i) * 100) / 100);
+    const band = [...ys].filter((y) => y > 0 && y < SKY_HEIGHT);
+    expect(band.length).toBeGreaterThanOrEqual(2);
   });
 });

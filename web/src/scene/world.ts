@@ -34,15 +34,27 @@ interface ColoredMaterial extends THREE.Material {
 const PARTICLE_TOP = 6;
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
+// The sky reaches void this high on the backdrop sphere, and stays void
+// above it. The camera sees the sky from the horizon up to about 12 degrees
+// (15 units of the sphere), and the HUD hides most of that, so the open sky
+// above the panels is a narrow band. Reaching void at 8 units keeps that
+// band near the void token and leaves the haze as a glow along the horizon.
+export const SKY_HEIGHT = 8;
+
+// skyMix is the share of void in the sky at height y: none at and below the
+// horizon, all of it at SKY_HEIGHT and above. The backdrop sphere samples
+// this per vertex, so it needs enough rings to resolve the band.
+export const skyMix = (y: number): number => clamp01(y / SKY_HEIGHT);
+
 function createBackdrop(colors: SceneColors): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(60, 32, 16);
+  const geometry = new THREE.SphereGeometry(60, 32, 128);
   const position = geometry.getAttribute('position');
   const vertexColors = new Float32Array(position.count * 3);
   const tint = new THREE.Color();
   for (let i = 0; i < position.count; i++) {
-    // The zenith is void; the horizon and everything below it is haze, which
-    // is where the floor and the fog meet the sky.
-    tint.copy(colors.haze).lerp(colors.void, clamp01(position.getY(i) / 60));
+    // The sky fades to void; the horizon and everything below it is haze,
+    // which is where the floor and the fog meet the sky.
+    tint.copy(colors.haze).lerp(colors.void, skyMix(position.getY(i)));
     vertexColors[i * 3] = tint.r;
     vertexColors[i * 3 + 1] = tint.g;
     vertexColors[i * 3 + 2] = tint.b;
