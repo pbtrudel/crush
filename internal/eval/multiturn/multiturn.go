@@ -325,6 +325,22 @@ func RunOne(ctx context.Context, opts Options, tk *task.Task, arm Arm, rep int) 
 			turn.Reason = "completed"
 			turn.Steps, turn.Tools, turn.Tokens = sampled.steps, sampled.toolCalls, sampled.tokens
 			record(turn)
+			if i == 0 {
+				// The route names a model; only the store says which one
+				// answered. A run on another model measures something the
+				// batch is not about, so it stops at its first turn instead
+				// of spending five more.
+				provider, model, modelErr := serverModel(ctx, dataDir, sessionID)
+				if modelErr != nil {
+					run.Error = fmt.Sprintf("read the model that ran: %v", modelErr)
+					break
+				}
+				if provider != opts.Route.Provider || model != opts.Route.Model {
+					run.Error = fmt.Sprintf("ran %s/%s, the route asks for %s/%s",
+						provider, model, opts.Route.Provider, opts.Route.Model)
+					break
+				}
+			}
 		}
 		if err := server.close(); err != nil {
 			_ = err // The server is stopped either way; grading follows.

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/db"
@@ -68,6 +69,10 @@ type serverTransport struct {
 // startServer launches `crush server` in the run's checkout with the run's
 // own config and data directories, and waits for it to answer.
 func startServer(ctx context.Context, opts Options, src, dataDir, runDir string, env []string) (*serverTransport, error) {
+	env, err := pinDataDir(env, runDir)
+	if err != nil {
+		return nil, err
+	}
 	port, err := freePort()
 	if err != nil {
 		return nil, fmt.Errorf("pick a server port: %w", err)
@@ -473,6 +478,49 @@ func (s *serverTransport) do(req *http.Request, out any) error {
 		return fmt.Errorf("%s %s: decode response: %w", req.Method, req.URL.Path, err)
 	}
 	return nil
+}
+
+// pinDataDir points CRUSH_GLOBAL_DATA at a directory of the run's own.
+//
+// The data directory's crush.json is the last path in the config merge, so it
+// outranks the run's global config: a server, which has no -m flag to override
+// either, runs the model that file names. The eval home is shared, and its
+// file names whatever the last interactive session selected, so eight runs of
+// one batch silently ran a model the experiment never asked for. A run keeps
+// its own empty data directory instead: the route's credentials arrive in its
+// environment, and nothing outside the run can name a model.
+func pinDataDir(env []string, runDir string) ([]string, error) {
+	dir := filepath.Join(runDir, "data-global")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create the run's data directory: %w", err)
+	}
+	pinned := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CRUSH_GLOBAL_DATA=") {
+			continue
+		}
+		pinned = append(pinned, kv)
+	}
+	return append(pinned, "CRUSH_GLOBAL_DATA="+dir), nil
+}
+
+// serverModel is the provider and model of the session's first assistant row,
+// which is what the run actually used. The route names a model, but only the
+// store knows whether the server agreed: a run that answers on another model
+// measures nothing the batch is about.
+func serverModel(ctx context.Context, dataDir, sessionID string) (provider, model string, err error) {
+	conn, err := db.ConnectReadOnly(ctx, filepath.Join(dataDir, "crush.db"))
+	if err != nil {
+		return "", "", err
+	}
+	defer conn.Close() //nolint:errcheck // Read-only connection.
+	err = conn.QueryRowContext(ctx,
+		`select provider, model from messages where session_id = ? and role = 'assistant' order by rowid limit 1`,
+		sessionID).Scan(&provider, &model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("no assistant row to read a model from")
+	}
+	return provider, model, err
 }
 
 // writeServerModels puts the route's models into the run's global config.
