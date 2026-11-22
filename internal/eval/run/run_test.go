@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 var fakeVars = []string{
 	"FAKE_ARGV", "FAKE_PROMPT", "FAKE_ENV", "FAKE_OUTPUT", "FAKE_EXIT", "FAKE_SLEEP_MS",
 	"FAKE_WRITE", "FAKE_CONTENT", "FAKE_REMOVE", "FAKE_DB_SQL", "FAKE_DB_PART", "FAKE_PID",
-	"FAKE_CHILD_OUT",
+	"FAKE_CHILD_OUT", "FAKE_STAT_IN", "FAKE_STAT_OUT",
 }
 
 const (
@@ -529,6 +529,15 @@ func TestRunJailChildSeesANeutralRunPath(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), "env")
 	f.env["FAKE_ARGV"] = argvFile
 	f.env["FAKE_ENV"] = envFile
+	// The child checks what resolves inside the jail: the neutral path it
+	// works in, and the host path of its own run directory, which the
+	// batches mask hides.
+	statIn := filepath.Join(t.TempDir(), "stat-in")
+	statOut := filepath.Join(t.TempDir(), "stat-out")
+	own := filepath.Join(f.home.BatchDir("b1"), "runs", runDirName(f.options()))
+	write(t, statIn, netjail.JailRunPath+"\n"+own+"\n")
+	f.env["FAKE_STAT_IN"] = statIn
+	f.env["FAKE_STAT_OUT"] = statOut
 	opts := f.options()
 	opts.Network = netjail.ModeJail
 	// The jail allows one host, so a jailed route needs a base URL.
@@ -545,6 +554,11 @@ func TestRunJailChildSeesANeutralRunPath(t *testing.T) {
 	require.Contains(t, argv, filepath.Join(netjail.JailRunPath, "data"),
 		"the child keeps its data at the neutral path")
 	require.NotContains(t, argv, batch, "the child's arguments must not name the batch layout")
+
+	stat := read(t, statOut)
+	require.Contains(t, stat, "present "+netjail.JailRunPath)
+	require.Contains(t, stat, "missing "+own,
+		"the host path of the run's own directory must not resolve in the jail")
 
 	env := childEnv(t, envFile)
 	require.Equal(t, filepath.Join(netjail.JailRunPath, "home"), env["HOME"])

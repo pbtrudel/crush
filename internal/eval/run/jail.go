@@ -190,9 +190,10 @@ func unsafeParent(parent string, protect []string) bool {
 
 // jailMasks is what a jailed run hides: the jail's own masks, the host
 // checkout the tasks come from, the worktrees beside it and the eval home's
-// batches. The run's own directory stays visible and writable under the
-// batches mask, since the child writes its checkout, home, config and data
-// there.
+// batches. A run that binds its own directory at the neutral path hides the
+// whole batches tree, since the child is handed no path under it; a run
+// without a bind keeps its own directory visible, because that is where the
+// child writes.
 func jailMasks(paths Paths) []netjail.Mask {
 	masks := make([]netjail.Mask, 0, len(netjail.DefaultMasks)+3)
 	for _, path := range netjail.DefaultMasks {
@@ -205,7 +206,7 @@ func jailMasks(paths Paths) []netjail.Mask {
 	}
 	if paths.Batches != "" {
 		mask := netjail.Mask{Path: paths.Batches}
-		if paths.Own != "" {
+		if paths.Own != "" && paths.Jail == "" {
 			mask.Keep = []string{paths.Own}
 		}
 		masks = append(masks, mask)

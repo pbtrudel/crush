@@ -257,9 +257,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		}
 		paths.Jail = child.Run
 		masks = jailMasks(paths)
-		// The run directory is still kept under the batches mask, for a
-		// program that reaches it, and bound at the neutral path for the
-		// child, which is the only path it is given.
+		// The run directory stays writable on the host, where the runner
+		// reads it, and the jail shows it to the child at the neutral path,
+		// the only path the child is given.
 		jail.bind = netjail.Bind{Host: host.Run, Jail: child.Run, Dir: child.Src}
 	}
 	stdoutPath := filepath.Join(runDir, "stdout.json")
