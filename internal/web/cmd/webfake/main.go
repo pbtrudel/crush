@@ -26,9 +26,12 @@ func main() {
 	}
 	clock := time.Now()
 	if v := os.Getenv("WEBFAKE_CLOCK"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			clock = t
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_CLOCK:", err)
+			os.Exit(1)
 		}
+		clock = t
 	}
 	teamDir, err := os.MkdirTemp("", "webfake-team-")
 	if err != nil {

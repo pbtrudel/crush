@@ -125,34 +125,40 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 // delegate plays the subagent picking up work: a new edit call on sub-1
-// and version 3 of parser.go. The record is dated after every seeded
-// version so it is the latest position even when WEBFAKE_CLOCK runs ahead
-// of the wall clock.
+// and the next version of parser.go. The record is dated after every
+// seeded version so it is the latest position even when WEBFAKE_CLOCK runs
+// ahead of the wall clock.
 func (f *Fake) delegate() {
-	now := f.nextHistoryAt(f.parserPath())
+	version, now := f.nextHistory(f.parserPath())
 	call := message.ToolCall{ID: f.nextID("sub-tc"), Name: "edit", Input: `{"file_path":"internal/parser/parser.go"}`}
 	m := message.Message{ID: f.nextID("sub-a"), SessionID: "sub-1", Role: message.Assistant, CreatedAt: now, UpdatedAt: now, Parts: []message.ContentPart{
 		message.TextContent{Text: "Rewriting the tokenizer loop."}, call,
 	}}
 	f.AddMessage(m)
 	f.Emit(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: m})
-	h := history.File{ID: f.nextID("h"), SessionID: "sub-1", Path: f.parserPath(), Content: parserV2 + "\nfunc tokenize(string) []Token { return nil }\n", Version: 3, CreatedAt: now, UpdatedAt: now}
+	h := history.File{ID: f.nextID("h"), SessionID: "sub-1", Path: f.parserPath(), Content: parserV2 + "\nfunc tokenize(string) []Token { return nil }\n", Version: version, CreatedAt: now, UpdatedAt: now}
 	f.AddHistory(h)
 	f.Emit(pubsub.Event[history.File]{Type: pubsub.CreatedEvent, Payload: h})
 }
 
-// nextHistoryAt returns a creation time later than every stored version of
-// path.
-func (f *Fake) nextHistoryAt(path string) int64 {
-	now := time.Now().Unix()
+// nextHistory returns the version after the highest stored version of
+// path, and a creation time later than every stored version of it.
+func (f *Fake) nextHistory(path string) (version, at int64) {
+	at = time.Now().Unix()
 	sessions, _ := f.ListSessions(context.Background())
 	for _, s := range sessions {
 		files, _ := f.ListSessionHistory(context.Background(), s.ID)
 		for _, file := range files {
-			if file.Path == path && file.CreatedAt >= now {
-				now = file.CreatedAt + 1
+			if file.Path != path {
+				continue
+			}
+			if file.Version >= version {
+				version = file.Version + 1
+			}
+			if file.CreatedAt >= at {
+				at = file.CreatedAt + 1
 			}
 		}
 	}
-	return now
+	return version, at
 }
