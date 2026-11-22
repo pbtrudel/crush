@@ -174,7 +174,7 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
       aria-labelledby="q-title"
       tabIndex={-1}
     >
-      <form class="qform__body" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+      <form class="qform__body interrupt__scroll" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         <p id="q-title" class="hud-label">The agent is asking</p>
         {multi && (
           <div class="qform__tabs" role="tablist">

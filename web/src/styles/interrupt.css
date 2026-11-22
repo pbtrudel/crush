@@ -1,8 +1,14 @@
 .interrupt-layer:empty { display: none; }
 .interrupt-layer { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; background: oklch(0.09 0.04 275 / 0.55); backdrop-filter: blur(3px); }
-.interrupt {
-  inline-size: min(40rem, calc(100vw - 32px)); max-block-size: calc(100dvh - 64px); overflow-y: auto;
+/* The frame only draws the glass: the padding and the scrollbar live in the
+   inner layer, so the danger glow on the frame can paint outside it. */
+.interrupt { inline-size: min(40rem, calc(100vw - 32px)); overflow: visible; }
+/* 2px is the frame's border, so the frame stays within the viewport margin
+   the dialog had when it scrolled itself. */
+.interrupt__scroll {
   display: grid; gap: 12px; padding: var(--space-9);
+  max-block-size: calc(100dvh - 64px - 2px); overflow-y: auto;
+  border-radius: calc(var(--radius) - 1px);
 }
 /* The power-up still plays under the pulsing danger glow. */
 .interrupt[data-danger='high'] { animation: power-up 280ms var(--ease-out) both; }
@@ -20,7 +26,6 @@
 .interrupt__params { margin: 0; max-block-size: 30vh; overflow: auto; padding: 10px; background: var(--void-deep); border: 1px solid var(--edge); border-radius: var(--radius); font-size: var(--step--1); white-space: pre-wrap; }
 .interrupt__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .interrupt kbd { font: 600 0.75rem var(--font-code); padding: 1px 5px; border: 1px solid currentColor; border-radius: 3px; margin-inline-end: 6px; }
-.qform__body { display: contents; }
 .qform__field { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
 .qform__desc { color: var(--text-muted); margin: 0; }
 .qform__choices { display: grid; gap: 6px; }

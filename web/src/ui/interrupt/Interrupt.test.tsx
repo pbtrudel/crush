@@ -498,3 +498,35 @@ describe('Interrupt', () => {
     expect(document.activeElement).toBe(area());
   });
 });
+
+describe('Interrupt scroll region', () => {
+  it('keeps every permission child inside the inner scroll layer', async () => {
+    seed({ permissions: [permission()] });
+    await mount();
+    const d = dialog()!;
+    // The dialog frame only frames the glass; the inner layer scrolls, so the
+    // danger glow on the frame can paint outside it.
+    const scroll = d.querySelector(':scope > .interrupt__scroll');
+    expect(scroll).not.toBeNull();
+    expect(Array.from(d.children)).toEqual([scroll]);
+    expect(scroll!.querySelector('.interrupt__title')).not.toBeNull();
+    expect(scroll!.querySelector('.interrupt__params')).not.toBeNull();
+    expect(scroll!.querySelector('.interrupt__actions')).not.toBeNull();
+    // Keyboard focus still lands on the first control inside the layer.
+    expect(document.activeElement).toBe(allow());
+  });
+
+  it('keeps the whole question form inside the inner scroll layer', async () => {
+    seed({ question: freeText() });
+    await mount();
+    const d = dialog()!;
+    const scroll = d.querySelector(':scope > .interrupt__scroll');
+    expect(scroll).not.toBeNull();
+    expect(Array.from(d.children)).toEqual([scroll]);
+    // The form itself is the scroll layer, so its controls scroll with it.
+    expect(scroll!.tagName).toBe('FORM');
+    expect(scroll!.querySelector('.interrupt__actions')).not.toBeNull();
+    expect(scroll!.querySelector('textarea')).not.toBeNull();
+    expect(document.activeElement).toBe(area());
+  });
+});

@@ -110,19 +110,21 @@ export function PermissionDialog({ req, more, disabled = false }: { req: Permiss
       data-danger={req.danger ? 'high' : 'normal'}
       tabIndex={-1}
     >
-      <header>
-        <p class="hud-label">Permission required{more > 0 ? ` · ${more} more waiting` : ''}</p>
-        <h2 id="perm-title" class="interrupt__title">{req.tool_name}</h2>
-      </header>
-      <p id="perm-desc">{req.description || req.action}</p>
-      {req.danger && <p class="interrupt__danger">{req.danger}</p>}
-      {req.path && <p class="interrupt__path"><span class="hud-label">Path</span> <code>{req.path}</code></p>}
-      {params(req.params) && <pre class="interrupt__params">{params(req.params)}</pre>}
-      {error && <p class="interrupt__error" role="alert">{error}</p>}
-      <div class="interrupt__actions">
-        <button type="button" class="btn btn--primary" disabled={locked} aria-busy={sending} onClick={() => void decide('allow')}><kbd>A</kbd> Allow once</button>
-        <button type="button" class="btn" disabled={locked} aria-busy={sending} onClick={() => void decide('allow_session')}><kbd>S</kbd> Allow for session</button>
-        <button type="button" class="btn btn--danger" disabled={locked} aria-busy={sending} onClick={() => void decide('deny')}><kbd>D</kbd> Deny</button>
+      <div class="interrupt__scroll">
+        <header>
+          <p class="hud-label">Permission required{more > 0 ? ` · ${more} more waiting` : ''}</p>
+          <h2 id="perm-title" class="interrupt__title">{req.tool_name}</h2>
+        </header>
+        <p id="perm-desc">{req.description || req.action}</p>
+        {req.danger && <p class="interrupt__danger">{req.danger}</p>}
+        {req.path && <p class="interrupt__path"><span class="hud-label">Path</span> <code>{req.path}</code></p>}
+        {params(req.params) && <pre class="interrupt__params">{params(req.params)}</pre>}
+        {error && <p class="interrupt__error" role="alert">{error}</p>}
+        <div class="interrupt__actions">
+          <button type="button" class="btn btn--primary" disabled={locked} aria-busy={sending} onClick={() => void decide('allow')}><kbd>A</kbd> Allow once</button>
+          <button type="button" class="btn" disabled={locked} aria-busy={sending} onClick={() => void decide('allow_session')}><kbd>S</kbd> Allow for session</button>
+          <button type="button" class="btn btn--danger" disabled={locked} aria-busy={sending} onClick={() => void decide('deny')}><kbd>D</kbd> Deny</button>
+        </div>
       </div>
     </div>
   );
