@@ -16,8 +16,6 @@ export default defineConfig({
         viewport: { width: 1440, height: 860 },
       },
       expect: {
-        // The software renderer can take seconds to produce a stable frame.
-        timeout: 30_000,
         toHaveScreenshot: { maxDiffPixelRatio: 0.02, animations: 'disabled' },
       },
     },

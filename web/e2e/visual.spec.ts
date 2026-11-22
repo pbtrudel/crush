@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function settle(page: import('@playwright/test').Page) {
-  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
   // The lazy scene mounts after the link. Waking frames before it exists
   // would start the power-up at a different frame on each run.
   await page.waitForFunction(() => {
@@ -37,7 +37,7 @@ async function axe(page: import('@playwright/test').Page) {
 test('normal layout', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await settle(page);
-  await expect(page).toHaveScreenshot('normal.png');
+  await expect(page).toHaveScreenshot('normal.png', { timeout: 30_000 });
   await axe(page);
 });
 
@@ -50,7 +50,7 @@ test('cinematic mode', async ({ page, gateway }) => {
   await page.keyboard.press('Alt+KeyC');
   await (await flight).finished();
   await page.clock.runFor(1200);
-  await expect(page).toHaveScreenshot('cinematic.png');
+  await expect(page).toHaveScreenshot('cinematic.png', { timeout: 30_000 });
   await axe(page);
 });
 
@@ -65,17 +65,18 @@ test('permission request', async ({ page, gateway }) => {
   for (let i = 0; i < 120 && !(await dialog.isVisible()); i++) {
     await page.clock.runFor(16);
   }
-  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeVisible({ timeout: 30_000 });
   await page.clock.runFor(1000);
-  await expect(page).toHaveScreenshot('permission.png');
+  await expect(page).toHaveScreenshot('permission.png', { timeout: 30_000 });
   await axe(page);
   await page.keyboard.press('d');
+  await expect(dialog).toBeHidden();
 });
 
 test('reduced motion', async ({ page, gateway }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(gateway.launch);
   await settle(page);
-  await expect(page).toHaveScreenshot('reduced.png');
+  await expect(page).toHaveScreenshot('reduced.png', { timeout: 30_000 });
   await axe(page);
 });
