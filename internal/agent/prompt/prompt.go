@@ -33,7 +33,16 @@ type Prompt struct {
 	workingDir string
 	canWrite   bool
 	toolNames  []string
+	variant    VariantFunc
 }
+
+// VariantFunc returns the template text to render instead of the base one
+// for a prompt profile, the model's provider and its model ID. ok false
+// means keep the base template.
+//
+// The profile decides the text, so a profile that is not implemented for a
+// prompt leaves it exactly as it was.
+type VariantFunc func(profile, provider, model string) (text string, ok bool)
 
 type PromptDat struct {
 	Provider            string
@@ -126,6 +135,15 @@ func WithWorkingDir(workingDir string) Option {
 	}
 }
 
+// WithVariant registers the template a prompt renders for a profile other
+// than the full one. Leaving it unset renders the base template for every
+// profile, which is what a prompt with a single template set wants.
+func WithVariant(fn VariantFunc) Option {
+	return func(p *Prompt) {
+		p.variant = fn
+	}
+}
+
 func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 	p := &Prompt{
 		name:     name,
@@ -139,7 +157,7 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 }
 
 func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore) (string, error) {
-	t, err := template.New(p.name).Parse(p.template)
+	t, err := template.New(p.name).Parse(p.templateText(store, provider, model))
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
@@ -153,6 +171,19 @@ func (p *Prompt) Build(ctx context.Context, provider, model string, store *confi
 	}
 
 	return sb.String(), nil
+}
+
+// templateText returns the template the configured prompt profile renders.
+// The base template is the full prompt, so it is what any profile without a
+// variant of its own gets.
+func (p *Prompt) templateText(store *config.ConfigStore, provider, model string) string {
+	if p.variant == nil {
+		return p.template
+	}
+	if text, ok := p.variant(store.Config().Options.GetPromptProfile(), provider, model); ok {
+		return text
+	}
+	return p.template
 }
 
 func processFile(filePath string) *ContextFile {
@@ -171,10 +202,10 @@ func processFile(filePath string) *ContextFile {
 // the working directory, broadest first: a session started in a subdirectory
 // still reads the instructions kept at the repository root. An absolute path
 // names one file or directory and is read there only.
-func processContextPath(p string, store *config.ConfigStore) []ContextFile {
+func processContextPath(p, workingDir string) []ContextFile {
 	var contexts []ContextFile
 	seen := make(map[string]bool)
-	for _, dir := range contextSearchDirs(store.WorkingDir(), filepathext.SmartIsAbs(p)) {
+	for _, dir := range contextSearchDirs(workingDir, filepathext.SmartIsAbs(p)) {
 		for _, found := range processContextPathAt(filepathext.SmartJoin(dir, p)) {
 			// Two files whose names differ only in case are two files
 			// on a case-sensitive filesystem, so the key keeps the case.
@@ -276,7 +307,11 @@ func expandPath(path string, store *config.ConfigStore) string {
 // When maxBytes is positive, the chain is bounded: broader files are omitted
 // before the most specific file is truncated, so a large project chain
 // cannot evict the user's global instructions.
-func loadContextFiles(paths []string, store *config.ConfigStore, maxBytes int) ([]ContextFile, *ContextBudget) {
+//
+// Relative paths resolve against workingDir, the directory the prompt names,
+// so a prompt built for a directory other than the session's reads that
+// directory's instructions.
+func loadContextFiles(paths []string, workingDir string, store *config.ConfigStore, maxBytes int) ([]ContextFile, *ContextBudget) {
 	var files []ContextFile
 	seen := make(map[string]bool, len(paths))
 	for _, pth := range paths {
@@ -286,7 +321,7 @@ func loadContextFiles(paths []string, store *config.ConfigStore, maxBytes int) (
 			continue
 		}
 		seen[pathKey] = true
-		files = append(files, processContextPath(expanded, store)...)
+		files = append(files, processContextPath(expanded, workingDir)...)
 	}
 	return budgetContextFiles(files, maxBytes)
 }
@@ -443,8 +478,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
 	cfg := store.Config()
-	contextFiles, contextBudget := loadContextFiles(cfg.Options.ContextPaths, store, cfg.Options.GetContextMaxBytes())
-	globalContextFiles, globalContextBudget := loadContextFiles(cfg.Options.GlobalContextPaths, store, cfg.Options.GetContextMaxBytes())
+	contextFiles, contextBudget := loadContextFiles(cfg.Options.ContextPaths, workingDir, store, cfg.Options.GetContextMaxBytes())
+	globalContextFiles, globalContextBudget := loadContextFiles(cfg.Options.GlobalContextPaths, workingDir, store, cfg.Options.GetContextMaxBytes())
 
 	// Discover and load skills metadata.
 	var availSkillXML string

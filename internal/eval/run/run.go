@@ -77,6 +77,52 @@ type Options struct {
 	Preflight func() error
 }
 
+// runPaths are the directories of one run under its run directory on the
+// host.
+type runPaths struct {
+	// Run is the run directory itself.
+	Run string
+	// Src is the checkout the child works in.
+	Src string
+	// Home is the child's HOME.
+	Home string
+	// Config is CRUSH_GLOBAL_CONFIG.
+	Config string
+	// Data is the child's data directory.
+	Data string
+}
+
+// runPathsFor names the directories of a run under dir.
+func runPathsFor(dir string) runPaths {
+	return runPaths{
+		Run:    dir,
+		Src:    filepath.Join(dir, "src"),
+		Home:   filepath.Join(dir, "home"),
+		Config: filepath.Join(dir, "config", "crush"),
+		Data:   filepath.Join(dir, "data"),
+	}
+}
+
+// childPathsFor are the directories the child is given. A jailed child sees
+// its run directory at the jail's neutral path, under no name that leads to
+// the batch, so it has no reason to look at the runs beside it; a child on
+// the host is given the host paths unchanged.
+func childPathsFor(network string, host runPaths) runPaths {
+	if network == netjail.ModeJail {
+		return runPathsFor(netjail.JailRunPath)
+	}
+	return host
+}
+
+// jailRun is what a jailed child gets besides its masks: the proxy it reaches
+// the allowlisted host through, and the bind that shows its run directory at
+// the neutral path it is told about.
+type jailRun struct {
+	sock string
+	port int
+	bind netjail.Bind
+}
+
 // Run performs one run and appends its result line to the batch's
 // results.jsonl. It returns the line it appended.
 func Run(ctx context.Context, opts Options) (result.Result, error) {
@@ -150,7 +196,12 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 	line.ProjectConfig = blob
 
-	src := filepath.Join(runDir, "src")
+	// A child on the host works in the run directory; a jailed child is given
+	// the same directories under the jail's neutral path, so no path it reads
+	// advertises the batch layout and the sibling runs beside its own.
+	host := runPathsFor(runDir)
+	child := childPathsFor(line.Network, host)
+	src := host.Src
 	base, err := gitx.Output(ctx, src, "rev-parse", "HEAD")
 	if err != nil {
 		return line, err
@@ -158,17 +209,13 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	// The generated config belongs to this run alone: two runs of different
 	// variants start within milliseconds of each other, and a shared file
 	// would hand each child the other's provider and overlay.
-	dirs := route.Dirs{
-		Home:   filepath.Join(runDir, "home"),
-		Config: filepath.Join(runDir, "config", "crush"),
-	}
-	if err := os.MkdirAll(dirs.Home, 0o700); err != nil {
+	if err := os.MkdirAll(host.Home, 0o700); err != nil {
 		return line, fmt.Errorf("create the child's home: %w", err)
 	}
-	if err := os.Chmod(dirs.Home, 0o700); err != nil {
+	if err := os.Chmod(host.Home, 0o700); err != nil {
 		return line, fmt.Errorf("tighten the child's home: %w", err)
 	}
-	if err := route.WriteGlobalConfig(filepath.Join(dirs.Config, "crush.json"), opts.Route, opts.Overlay); err != nil {
+	if err := route.WriteGlobalConfig(filepath.Join(host.Config, "crush.json"), opts.Route, opts.Overlay); err != nil {
 		return line, err
 	}
 	if line.Network == netjail.ModeJail {
@@ -176,28 +223,27 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		if refresh == nil {
 			refresh = route.DefaultRefreshToken
 		}
-		if err := opts.Route.PrepareToken(ctx, opts.Home, filepath.Join(runDir, "data"), timeout, refresh); err != nil {
+		if err := opts.Route.PrepareToken(ctx, opts.Home, host.Data, timeout, refresh); err != nil {
 			return line, err
 		}
 	}
 	var proxy *netjail.Proxy
-	jailSock := ""
-	jailPort := 0
+	var jail jailRun
 	if line.Network == netjail.ModeJail {
 		var cleanup func()
-		proxy, jailPort, cleanup, err = startProxy(ctx, opts)
+		proxy, jail.port, cleanup, err = startProxy(ctx, opts)
 		if err != nil {
 			return line, err
 		}
-		jailSock = proxy.Path()
+		jail.sock = proxy.Path()
 		defer cleanup()
 		defer proxy.Close() //nolint:errcheck // The counts are read first.
 	}
-	env, err := opts.Route.ChildEnv(opts.Home, dirs, parentEnv(opts.ParentEnv))
+	env, err := opts.Route.ChildEnv(opts.Home, route.Dirs{Home: child.Home, Config: child.Config}, parentEnv(opts.ParentEnv))
 	if err != nil {
 		return line, err
 	}
-	env = append(env, networkEnv(line.Network, jailPort)...)
+	env = append(env, networkEnv(line.Network, jail.port)...)
 
 	// Only a jailed run hides paths, and only it needs git to say where the
 	// checkout is: a run on the host must not fail on a repository that has
@@ -209,13 +255,18 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		if err != nil {
 			return line, err
 		}
+		paths.Jail = child.Run
 		masks = jailMasks(paths)
+		// The run directory stays writable on the host, where the runner
+		// reads it, and the jail shows it to the child at the neutral path,
+		// the only path the child is given.
+		jail.bind = netjail.Bind{Host: host.Run, Jail: child.Run, Dir: child.Src}
 	}
 	stdoutPath := filepath.Join(runDir, "stdout.json")
 	exit, killed, err := execute(ctx, opts.BinPath, src,
-		commandArgs(opts, src, filepath.Join(runDir, "data"), maxSteps, timeout),
+		commandArgs(opts, child.Src, child.Data, maxSteps, timeout),
 		env, task.Prompt(opts.Task, opts.Footer), stdoutPath,
-		filepath.Join(runDir, "stderr.log"), timeout+grace, jailSock, jailPort,
+		filepath.Join(runDir, "stderr.log"), timeout+grace, jail,
 		masks)
 	if err != nil {
 		return line, err
@@ -243,6 +294,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		line.TurnEnds = out.Tree.TurnEnds
 		line.UndeliveredReports = out.Tree.UndeliveredReports
 		line.Gate = out.Gate
+		if out.Edits != nil {
+			line.Edits = *out.Edits
+		}
 		line.Estimated = out.Estimated
 		line.Cost = out.Cost
 		line.DurationMS = out.DurationMS
@@ -306,9 +360,11 @@ func commandArgs(opts Options, src, dataDir string, maxSteps int, timeout time.D
 
 // execute runs the binary in dir, the checkout it works on, with limit as
 // its deadline and kills its process group when the deadline passes. It
-// returns the process exit code and whether the watchdog fired. masks are
-// what the jail hides; a run on the host ignores them.
-func execute(ctx context.Context, bin, dir string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration, jailSock string, jailPort int, masks []netjail.Mask) (int, bool, error) {
+// returns the process exit code and whether the watchdog fired. jail.sock
+// names the jail's proxy when the run is jailed, and jail.bind is the neutral
+// path the child is given; a run on the host ignores both. masks are what the
+// jail hides.
+func execute(ctx context.Context, bin, dir string, args, env []string, prompt, stdoutPath, stderrPath string, limit time.Duration, jail jailRun, masks []netjail.Mask) (int, bool, error) {
 	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, false, fmt.Errorf("create stdout: %w", err)
@@ -321,9 +377,10 @@ func execute(ctx context.Context, bin, dir string, args, env []string, prompt, s
 	defer stderr.Close() //nolint:errcheck // Read-only log.
 
 	cmd := exec.CommandContext(ctx, bin, args...)
-	// The child starts in the checkout it works on, which is not one of
-	// the directories the jail hides: a working directory the masks cover
-	// fails a child that resolves it before it reads --cwd.
+	// The jail helper starts in the checkout on the host: a working directory
+	// the masks cover fails a helper that resolves it, and the masks are not
+	// in place yet. A jailed helper moves the child to the neutral path the
+	// bind gives it once the mount is there.
 	cmd.Dir = dir
 	// Holding a killed process's output pipe open must not keep Wait
 	// waiting after the group is gone.
@@ -333,8 +390,8 @@ func execute(ctx context.Context, bin, dir string, args, env []string, prompt, s
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	kill := processGroup(cmd)
-	if jailSock != "" {
-		if err := netjail.Wrap(cmd, jailSock, jailPort, masks...); err != nil {
+	if jail.sock != "" {
+		if err := netjail.WrapBound(cmd, jail.sock, jail.port, jail.bind, masks...); err != nil {
 			return 0, false, err
 		}
 	}
@@ -393,9 +450,11 @@ type runOutput struct {
 		Claims         int `json:"claims"`
 		UnbackedClaims int `json:"unbacked_claims"`
 	} `json:"gate"`
-	Estimated bool    `json:"estimated"`
-	Cost      float64 `json:"cost"`
-	Error     string  `json:"error"`
+	// Edits is set only for a run that called edit or multiedit.
+	Edits     *result.Edits `json:"edits,omitempty"`
+	Estimated bool          `json:"estimated"`
+	Cost      float64       `json:"cost"`
+	Error     string        `json:"error"`
 }
 
 // parseOutput reads the object and reports whether the file holds exactly

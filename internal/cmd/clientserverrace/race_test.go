@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +42,39 @@ const numClients = 8
 // subscribing to server events) and we'll cancel it. The race we care
 // about is observable strictly within ensureServer.
 const clientTimeout = 15 * time.Second
+
+// childEnvAllowlist names the only variables the spawned clients inherit.
+// Each client runs `crush run "hi"`, and with an empty config Crush
+// configures any provider whose API key it finds in the environment, so
+// passing the developer's environment through sent eight real prompts to
+// their provider on every run of this test.
+var childEnvAllowlist = []string{"PATH", "TMPDIR", "LANG", "LC_ALL", "TERM"}
+
+func childEnv(environ []string) []string {
+	var env []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(childEnvAllowlist, name) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+func writeStubProviderConfig(dir, baseURL string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	cfg := fmt.Sprintf(`{
+  "options": {"disable_default_providers": true, "disable_provider_auto_update": true},
+  "providers": {"stub": {"id": "stub", "name": "Stub", "type": "openai",
+    "base_url": %q, "api_key": "test-key",
+    "models": [{"id": "stub-model", "name": "Stub", "context_window": 8192, "default_max_tokens": 128}]}},
+  "models": {"main": {"provider": "stub", "model": "stub-model"},
+             "small": {"provider": "stub", "model": "stub-model"}}
+}`, baseURL)
+	return os.WriteFile(filepath.Join(dir, "crush.json"), []byte(cfg), 0o600)
+}
 
 func TestClientServerSpawnRace(t *testing.T) {
 	if testing.Short() {
@@ -82,8 +117,32 @@ func TestClientServerSpawnRace(t *testing.T) {
 		}
 	}
 
+	// The clients need a provider to stay alive: with none configured
+	// they exit at once, the server shuts itself down when the last
+	// workspace goes, and the health probe below can miss the whole
+	// window. A local provider that never answers holds every client in
+	// its run until clientTimeout, and sends nothing anywhere.
+	// The requests come from the spawned server process, which can
+	// outlive the clients, so cleanup releases them: Close would
+	// otherwise wait on them forever.
+	release := make(chan struct{})
+	stub := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		stub.CloseClientConnections()
+		stub.Close()
+	})
+	if err := writeStubProviderConfig(filepath.Join(configHome, "crush"), stub.URL+"/v1"); err != nil {
+		t.Fatalf("write stub provider config: %v", err)
+	}
+
 	env := append(
-		os.Environ(),
+		childEnv(os.Environ()),
 		"CRUSH_CLIENT_SERVER=1",
 		"XDG_CACHE_HOME="+cacheHome,
 		"XDG_DATA_HOME="+dataHome,

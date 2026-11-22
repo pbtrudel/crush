@@ -70,7 +70,13 @@ func (m *stubSummaryModel) StreamObject(context.Context, fantasy.ObjectCall) (fa
 // with a config store and auto-compaction disabled.
 func newCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *config.ConfigStore, disableAutoSummarize bool, tools ...fantasy.AgentTool) *sessionAgent {
 	gitCfg := catwalk.Model{ContextWindow: 200_000, DefaultMaxTokens: 32_000}
-	m := Model{Model: model, CatwalkCfg: gitCfg}
+	// These tests pin the Anthropic-style layout, so the model has to say
+	// it is served by the Anthropic provider.
+	m := Model{
+		Model:      model,
+		CatwalkCfg: gitCfg,
+		ModelCfg:   config.SelectedModel{Provider: anthropic.Name, Model: "claude-sonnet-4-5"},
+	}
 	return NewSessionAgent(SessionAgentOptions{
 		Models:               func() ModelSet { return ModelSet{Large: m, Small: m} },
 		SystemPrompt:         "SYSTEM PROMPT",
@@ -94,6 +100,7 @@ func newVisionCompactionAgent(env fakeEnv, model fantasy.LanguageModel, cfg *con
 			DefaultMaxTokens: 32_000,
 			Capabilities:     catwalk.Capabilities{Vision: true},
 		},
+		ModelCfg: config.SelectedModel{Provider: anthropic.Name, Model: "claude-sonnet-4-5"},
 	}
 	return NewSessionAgent(SessionAgentOptions{
 		Models:       func() ModelSet { return ModelSet{Large: large, Small: large} },

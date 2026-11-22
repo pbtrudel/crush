@@ -175,6 +175,12 @@ func (b *Backend) DeleteSession(ctx context.Context, workspaceID, sessionID stri
 		return err
 	}
 
+	// A summary being written ahead of the compaction limit has nothing
+	// left to compact into once the session is gone.
+	if c, ok := ws.AgentCoordinator.(interface{ CancelBackgroundCompaction(string) }); ok {
+		c.CancelBackgroundCompaction(sessionID)
+	}
+
 	return ws.Sessions.Delete(ctx, sessionID)
 }
 

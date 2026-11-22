@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/eval/batch"
 	"github.com/charmbracelet/crush/internal/eval/home"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	evalrun "github.com/charmbracelet/crush/internal/eval/run"
 	"github.com/charmbracelet/crush/internal/eval/task"
@@ -101,6 +102,13 @@ func rescanCmd(args []string, stdout, stderr io.Writer) int {
 		name := evalrun.DirName(line.Task, line.Variant, line.Route, line.Rep)
 		runDir := filepath.Join(batchDir, "runs", name)
 		paths.Own = runDir
+		// The scan cuts the path the child was given: a jailed child names
+		// the neutral path, and the host path of its own run is a marker
+		// again.
+		paths.Jail = ""
+		if line.Network == netjail.ModeJail {
+			paths.Jail = netjail.JailRunPath
+		}
 		db := filepath.Join(runDir, "data", "crush.db")
 		switch _, err := os.Stat(db); {
 		case err == nil:

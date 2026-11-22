@@ -89,6 +89,14 @@ type Aggregate struct {
 	// ran, sorted, so a batch report can list them.
 	UnbackedRuns []string
 
+	// EditAttempted, EditRefused and EditUnreadApplied sum the runs' edit
+	// and multiedit calls over the valid runs of the group, and
+	// EditRefusalRate is refused over attempted.
+	EditAttempted     int
+	EditRefused       int
+	EditUnreadApplied int
+	EditRefusalRate   float64
+
 	Steps      Distribution
 	ToolCalls  Distribution
 	DurationMS Distribution
@@ -179,6 +187,9 @@ func aggregate(variant, route, kind string, runs []result.Result) Aggregate {
 		agg.GateContinuations += r.Gate.Continuations
 		agg.GateClaims += r.Gate.Claims
 		agg.GateUnbacked += r.Gate.UnbackedClaims
+		agg.EditAttempted += r.Edits.Attempted
+		agg.EditRefused += r.Edits.Refused
+		agg.EditUnreadApplied += r.Edits.UnreadApplied
 		if r.Gate.UnbackedClaims > 0 {
 			agg.UnbackedRuns = append(agg.UnbackedRuns, runID(r))
 		}
@@ -199,6 +210,9 @@ func aggregate(variant, route, kind string, runs []result.Result) Aggregate {
 		agg.PassRate = float64(agg.Passes) / float64(agg.Valid)
 		agg.FalseCompletionRate = float64(agg.FalseCompletions) / float64(agg.Valid)
 		agg.StoppedShortRate = float64(agg.StoppedShort) / float64(agg.Valid)
+	}
+	if agg.EditAttempted > 0 {
+		agg.EditRefusalRate = float64(agg.EditRefused) / float64(agg.EditAttempted)
 	}
 	if agg.Completed > 0 {
 		agg.FalseCompletionRateCompleted = float64(agg.FalseCompletions) / float64(agg.Completed)

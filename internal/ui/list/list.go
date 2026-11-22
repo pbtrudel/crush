@@ -738,6 +738,22 @@ func (l *List) RemoveItem(idx int) {
 	l.totalHeightValid = false
 }
 
+// ReplaceItem swaps the item at the given index for another, keeping the
+// scroll offset and the selection where they are. It reports whether the
+// index was in range. The replaced item's cache entry is dropped; the new
+// item starts without one.
+func (l *List) ReplaceItem(idx int, item Item) bool {
+	if idx < 0 || idx >= len(l.items) {
+		return false
+	}
+	replaced := l.items[idx]
+	l.items[idx] = item
+	delete(l.cache, replaced)
+	delete(l.freezeSuppressed, replaced)
+	l.totalHeightValid = false
+	return true
+}
+
 // Focused returns whether the list is focused.
 func (l *List) Focused() bool {
 	return l.focused

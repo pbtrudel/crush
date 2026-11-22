@@ -27,9 +27,9 @@ type marker struct {
 	// prefix". A nil command makes the marker a substring.
 	command *regexp.Regexp
 	// own is a path that is cut out of the text before the marker is
-	// matched. The run's own directory sits under the eval home's batches,
-	// and the child names it all the time, so it is not contact with
-	// another batch.
+	// matched. The child names its own run directory all the time, so
+	// naming it is not contact with another batch; every other path under
+	// the batches is.
 	own string
 	// needs are the repositories the whole tool call must also name, any
 	// of them. A bare "gh pr create" is the recipe the checkout's own bash
@@ -71,13 +71,12 @@ func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 	for _, dir := range []string{paths.Suite, paths.Repo, paths.Checkout, paths.Worktrees} {
 		markers = appendPathMarker(markers, seen, dir, "")
 	}
-	// Only a run directory under the batches is cut out of the batch
-	// marker: anything else it names is contact with another batch.
-	own := absPath(paths.Own)
-	if own != "" && !strings.HasPrefix(own, absPath(paths.Batches)+string(filepath.Separator)) {
-		own = ""
-	}
-	markers = appendPathMarker(markers, seen, paths.Batches, own)
+	// Only the run's own directory is cut out of the batch marker: it names
+	// the neutral path a jailed run gives the child, or the child's own run
+	// directory in a run on the host. Any other path under the batches counts,
+	// the host path of the run's own directory included: once the child works
+	// at the neutral path, nothing it is handed names the batch.
+	markers = appendPathMarker(markers, seen, paths.Batches, childOwn(paths))
 	for i, m := range markers {
 		markers[i].text = strings.ToLower(m.text)
 		markers[i].own = strings.ToLower(m.own)
@@ -86,6 +85,16 @@ func contaminationMarkers(tk *task.Task, paths Paths) []marker {
 		}
 	}
 	return markers
+}
+
+// childOwn is the directory the child names as its own: the jail's neutral
+// path for a jailed run, the run's host directory otherwise. Empty when the
+// run has none to cut.
+func childOwn(paths Paths) string {
+	if paths.Jail != "" {
+		return absPath(paths.Jail)
+	}
+	return absPath(paths.Own)
 }
 
 // upstreamRepo is the upstream repository this fork tracks: a pull request

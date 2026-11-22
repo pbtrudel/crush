@@ -27,8 +27,9 @@ func fakeTool(name, description string) fantasy.AgentTool {
 	)
 }
 
-// fakeMCPTool is an MCP-backed tool: the registry must never defer those,
-// because MCP laziness belongs to the mcp_servers tool.
+// fakeMCPTool is an MCP-backed tool. It is deferred like any other non-core
+// tool: an MCP server's schemas cost the same tokens on every request as a
+// built-in's, so they are held back and revealed the same way.
 type fakeMCPTool struct {
 	fantasy.AgentTool
 	server string
@@ -71,15 +72,32 @@ func lazyFixture() (*LazyRegistry, []fantasy.AgentTool) {
 	return registry, full
 }
 
-func TestLazyRegistryFilterKeepsCoreAndMCPAndHoldsBackTheRest(t *testing.T) {
+func TestLazyRegistryFilterKeepsOnlyCoreAndHoldsBackTheRest(t *testing.T) {
 	t.Parallel()
 
 	registry, full := lazyFixture()
 
 	filtered := registry.Filter("session-1", full)
 
-	require.Equal(t, []string{ReadToolName, GrepToolName, "github_create_issue"}, toolNames(filtered),
-		"core palette members and MCP tools stay; deferred built-ins are held back")
+	require.Equal(t, []string{ReadToolName, GrepToolName}, toolNames(filtered),
+		"only the core palette stays in the request; deferred built-ins and MCP tools are held back")
+}
+
+func TestToolSearchRevealsAnMCPTool(t *testing.T) {
+	t.Parallel()
+
+	registry, full := lazyFixture()
+	search := searchTool(registry, full)
+
+	response, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"open an issue"}`})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Contains(t, response.Content, "github_create_issue",
+		"an MCP tool is searchable like any other deferred tool")
+
+	revealed := registry.Filter("session-1", full)
+	require.Equal(t, []string{ReadToolName, GrepToolName, "github_create_issue"}, toolNames(revealed),
+		"the revealed MCP tool joins the session's palette")
 }
 
 func TestLazyRegistryFilterWithoutCatalogChangesNothing(t *testing.T) {
@@ -117,7 +135,7 @@ func TestToolSearchRevealsToolForTheSessionOnly(t *testing.T) {
 		"a core palette tool is never deferred, so a search must not offer it")
 
 	revealed := registry.Filter("session-1", full)
-	require.Equal(t, []string{ReadToolName, GrepToolName, DiagnosticsToolName, "github_create_issue"},
+	require.Equal(t, []string{ReadToolName, GrepToolName, DiagnosticsToolName},
 		toolNames(revealed), "the revealed tool joins the session's palette")
 
 	// The revealed tool is the real one: it is callable, not a placeholder.
@@ -132,7 +150,7 @@ func TestToolSearchRevealsToolForTheSessionOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DiagnosticsToolName+" ran", ran.Content)
 
-	require.Equal(t, []string{ReadToolName, GrepToolName, "github_create_issue"},
+	require.Equal(t, []string{ReadToolName, GrepToolName},
 		toolNames(registry.Filter("session-2", full)),
 		"a reveal belongs to the session that asked for it")
 }
@@ -148,7 +166,7 @@ func TestToolSearchUnknownQueryRevealsNothing(t *testing.T) {
 	require.Contains(t, response.Content, DiagnosticsToolName,
 		"a miss still lists the deferred tool names so the model can retry")
 
-	require.Equal(t, []string{ReadToolName, GrepToolName, "github_create_issue"},
+	require.Equal(t, []string{ReadToolName, GrepToolName},
 		toolNames(registry.Filter("session-1", full)))
 }
 
@@ -204,7 +222,7 @@ func TestToolSearchRevealByNameIsStableOnRepeat(t *testing.T) {
 	second, err := search.Run(sessionCtx("session-1"), fantasy.ToolCall{Input: `{"query":"lsp_diagnostics"}`})
 	require.NoError(t, err)
 	require.Contains(t, second.Content, "already")
-	require.Equal(t, []string{ReadToolName, GrepToolName, DiagnosticsToolName, "github_create_issue"},
+	require.Equal(t, []string{ReadToolName, GrepToolName, DiagnosticsToolName},
 		toolNames(registry.Filter("session-1", full)),
 		"a repeated reveal must not duplicate the tool")
 }

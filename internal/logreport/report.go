@@ -238,12 +238,13 @@ func (p *pass) kindName(kind, build string) string {
 
 // Tool names the report reads: the names models call.
 const (
-	bashTool      = "bash"
-	editTool      = "edit"
-	multiEditTool = "multiedit"
-	writeTool     = "write"
-	viewTool      = "view"
-	readTool      = "read"
+	applyPatchTool = "apply_patch"
+	bashTool       = "bash"
+	editTool       = "edit"
+	multiEditTool  = "multiedit"
+	writeTool      = "write"
+	viewTool       = "view"
+	readTool       = "read"
 )
 
 func ratio(n, of int) float64 {

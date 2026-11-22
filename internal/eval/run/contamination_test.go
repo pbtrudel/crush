@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/task"
 	"github.com/stretchr/testify/require"
 )
@@ -303,6 +304,36 @@ func TestContaminatedCallsCutOnlyTheRunsOwnPath(t *testing.T) {
 		"cd /state/crush-eval/batches/b1/runs/pr-0010-r1",
 	} {
 		require.Zero(t, len(contaminatedCalls(call(t, input), markers)), input)
+	}
+}
+
+// A jailed child is handed the neutral path, so naming it is not contact with
+// another batch. The batches path of its own run is: nothing gives the child
+// that path any more, so a tool call that names it read the layout somewhere
+// it should not have.
+func TestContaminatedCallsCutTheNeutralRunPath(t *testing.T) {
+	t.Parallel()
+
+	paths := Paths{
+		Batches: "/state/crush-eval/batches",
+		Own:     "/state/crush-eval/batches/b1/runs/pr-0010-r1",
+		Jail:    netjail.JailRunPath,
+	}
+	markers := contaminationMarkers(&task.Task{}, paths)
+
+	for _, input := range []string{
+		"ls " + netjail.JailRunPath + "/src",
+		"cd " + netjail.JailRunPath + " && go test ./pkg",
+		`{"command":"cat ` + netjail.JailRunPath + `/data/crush.db"}`,
+	} {
+		require.Zero(t, len(contaminatedCalls(call(t, input), markers)), input)
+	}
+
+	for _, input := range []string{
+		"ls /state/crush-eval/batches/b1/runs/pr-0010-r1/src",
+		"ls /state/crush-eval/batches/b1/runs/pr-0010-r2/src",
+	} {
+		require.Equal(t, 1, len(contaminatedCalls(call(t, input), markers)), input)
 	}
 }
 

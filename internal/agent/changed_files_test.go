@@ -52,6 +52,9 @@ func TestStepChangedFiles(t *testing.T) {
 		{"multiedit", tools.MultiEditToolName, `{"file_path":"internal/b.go"}`, []string{"internal/b.go"}},
 		{"write", tools.WriteToolName, `{"file_path":"internal/c.go"}`, []string{"internal/c.go"}},
 		{"replace symbol", tools.ReplaceSymbolToolName, `{"file_path":"internal/d.go","symbol":"Old"}`, []string{"internal/d.go"}},
+		// A patch names its files in its sections, not in a file_path.
+		{"apply patch", tools.ApplyPatchToolName, `{"patch":"*** Begin Patch\n*** Update File: internal/e.go\n@@\n-a\n+b\n*** Delete File: internal/f.go\n*** End Patch"}`, []string{"internal/e.go", "internal/f.go"}},
+		{"apply patch with a move", tools.ApplyPatchToolName, `{"patch":"*** Begin Patch\n*** Update File: internal/g.go\n*** Move to: internal/h.go\n@@\n-a\n+b\n*** End Patch"}`, []string{"internal/g.go", "internal/h.go"}},
 		// A rename names no file: it records the symbol it moved.
 		{"rename", tools.RenameToolName, `{"symbol":"Old","new_name":"New"}`, []string{"(renamed Old)"}},
 		{"bash", tools.BashToolName, `{"command":"gofmt -w ."}`, nil},

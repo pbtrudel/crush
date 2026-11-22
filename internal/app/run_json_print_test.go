@@ -239,3 +239,58 @@ func TestRunJSONAfterASignal(t *testing.T) {
 	require.ErrorAs(t, err, &exitErr)
 	require.Equal(t, 3, exitErr.Code)
 }
+
+// The object says where a --worktree run landed, so a script can find the
+// checkout it asked for. A run in the repository's own checkout says
+// nothing.
+func TestRunJSONReportsTheWorktree(t *testing.T) {
+	t.Parallel()
+	app, sess := newRunLogApp(t)
+	app.SetRunWorktree("/repo/.repo-worktrees/fix-login")
+	start, err := app.startRun(t.Context(), sess)
+	require.NoError(t, err)
+	writeRows(t, app,
+		userRow(sess.ID, "Go.", false),
+		stepRow(sess.ID, "", 0, message.TurnEndCompleted, nil),
+	)
+	done := make(chan runResponse, 1)
+	done <- runResponse{}
+
+	var output bytes.Buffer
+	require.NoError(t, app.finishRunJSON(t.Context(), &output, sess.ID, start, done))
+	require.Equal(t, "/repo/.repo-worktrees/fix-login", decodeRun(t, &output).Worktree)
+
+	plain, plainSess := newRunLogApp(t)
+	start, err = plain.startRun(t.Context(), plainSess)
+	require.NoError(t, err)
+	writeRows(t, plain,
+		userRow(plainSess.ID, "Go.", false),
+		stepRow(plainSess.ID, "", 0, message.TurnEndCompleted, nil),
+	)
+	done = make(chan runResponse, 1)
+	done <- runResponse{}
+	output.Reset()
+	require.NoError(t, plain.finishRunJSON(t.Context(), &output, plainSess.ID, start, done))
+	require.Empty(t, decodeRun(t, &output).Worktree)
+	require.NotContains(t, output.String(), "worktree", "a run outside a worktree prints the object it printed before")
+}
+
+// A scripted run archives the session it created, so the pickers do not
+// fill up with CI runs. The rows are still there for whoever asks for them
+// by id.
+func TestScriptedRunArchivesItsSession(t *testing.T) {
+	t.Parallel()
+	app, sess := newRunLogApp(t)
+
+	archived, err := app.archiveRunSession(t.Context(), sess)
+	require.NoError(t, err)
+	require.True(t, archived.Archived)
+
+	list, err := app.Sessions.List(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, list)
+
+	fetched, err := app.Sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.True(t, fetched.Archived)
+}

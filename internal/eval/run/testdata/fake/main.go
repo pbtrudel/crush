@@ -6,7 +6,10 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +54,13 @@ func main() {
 	if schema := os.Getenv("FAKE_DB_SQL"); schema != "" {
 		createDatabase(dataDir, schema, os.Getenv("FAKE_DB_PART"))
 	}
+	if out := os.Getenv("FAKE_STAT_OUT"); out != "" {
+		// A run's child checks whether paths it should not see resolve at
+		// all: the list comes from a file, since passing one in the
+		// environment would hand the child a path the test asserts is
+		// absent.
+		writeStatReport(out, os.Getenv("FAKE_STAT_IN"))
+	}
 	if path := os.Getenv("FAKE_PID"); path != "" {
 		write(path, strconv.Itoa(os.Getpid()))
 	}
@@ -71,6 +81,27 @@ func main() {
 	os.Stdout.WriteString(os.Getenv("FAKE_OUTPUT"))
 	code, _ := strconv.Atoi(os.Getenv("FAKE_EXIT"))
 	os.Exit(code)
+}
+
+// writeStatReport writes one line per path of the list: present, missing, or
+// the error that is neither.
+func writeStatReport(out, in string) {
+	data, err := os.ReadFile(in)
+	if err != nil {
+		return
+	}
+	var report strings.Builder
+	for _, target := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		switch _, err := os.Stat(target); {
+		case err == nil:
+			fmt.Fprintf(&report, "present %s\n", target)
+		case errors.Is(err, fs.ErrNotExist):
+			fmt.Fprintf(&report, "missing %s\n", target)
+		default:
+			fmt.Fprintf(&report, "%v %s\n", err, target)
+		}
+	}
+	write(out, report.String())
 }
 
 // write writes content to path, ignoring failures: the test asserts the

@@ -64,6 +64,10 @@ func (m *mockSessionService) SetChannel(_ context.Context, sessionID, channel st
 	return session.Session{ID: sessionID, Channel: channel}, nil
 }
 
+func (m *mockSessionService) SetArchived(_ context.Context, sessionID string, archived bool) (session.Session, error) {
+	return session.Session{ID: sessionID, Archived: archived}, nil
+}
+
 func (m *mockSessionService) AddSessionUsage(context.Context, string, int64, int64, float64) error {
 	return nil
 }

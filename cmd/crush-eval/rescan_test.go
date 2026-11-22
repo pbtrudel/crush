@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/eval/gitx"
+	"github.com/charmbracelet/crush/internal/eval/netjail"
 	"github.com/charmbracelet/crush/internal/eval/result"
 	evalrun "github.com/charmbracelet/crush/internal/eval/run"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,55 @@ func TestRescanRewritesContamination(t *testing.T) {
 		"the rewrite keeps the results file mode")
 }
 
+// runDirOf is the run directory of one run of the test batch.
+func runDirOf(batchDir string, rep int) string {
+	return filepath.Dir(filepath.Dir(runDB(batchDir, rep)))
+}
+
+// TestRescanCutsThePathTheRunWasGiven checks the cut the scan makes: a jailed
+// child names the neutral path, so naming it is not contamination and naming
+// the host path of its own run is; a child on the host names its own host
+// directory, which stays cut.
+func TestRescanCutsThePathTheRunWasGiven(t *testing.T) {
+	// The checkout and the eval home are separate directories: a marker of
+	// the checkout would otherwise match every path of the batch.
+	repo := t.TempDir()
+	t.Chdir(repo)
+	_, err := gitx.Output(context.Background(), repo, "init", "-q")
+	require.NoError(t, err)
+	home := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	writeTestFile(t, filepath.Join("evals", "tasks", "pr-0001.yaml"),
+		"schema: 1\nid: pr-0001\nsource:\n  repo: pbtrudel/crush\n  pr: 1\n"+
+			"  merge: 334c5d791d23\n  base: 6dd947b1716d\n")
+
+	batchDir := writeBatch(t, home, "b1", []string{
+		`{"schema":1,"batch":"b1","task":"pr-0001","variant":"control@abc","route":"fake","rep":1,"network":"jail","exit":0,"pass":true}`,
+		`{"schema":1,"batch":"b1","task":"pr-0001","variant":"control@abc","route":"fake","rep":2,"network":"host","exit":0,"pass":true}`,
+	})
+	jailed := runDirOf(batchDir, 1)
+	writeSessionDB(t, runDB(batchDir, 1),
+		"ls "+filepath.Join(netjail.JailRunPath, "src"),
+		"ls "+filepath.Join(jailed, "src"),
+	)
+	writeSessionDB(t, runDB(batchDir, 2), "ls "+filepath.Join(runDirOf(batchDir, 2), "src"))
+
+	var stdout, stderr bytes.Buffer
+	code := rescanCmd([]string{"b1"}, &stdout, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+
+	lines, ignored, err := result.ReadFile(filepath.Join(batchDir, "results.jsonl"))
+	require.NoError(t, err)
+	require.Zero(t, ignored)
+	require.Len(t, lines, 2)
+	require.True(t, lines[0].Contaminated,
+		"the host path of the run's own directory counts for a jailed run")
+	require.Equal(t, 1, lines[0].ContaminatedMatches, "the neutral path does not count")
+	require.False(t, lines[1].Contaminated,
+		"a run on the host names its own directory all the time")
+	require.Zero(t, lines[1].ContaminatedMatches)
+}
+
 // runDB is the session database of one run of the test batch.
 func runDB(batchDir string, rep int) string {
 	name := evalrun.DirName("pr-0001", "control@abc", "fake", rep)
@@ -112,8 +162,8 @@ func runDB(batchDir string, rep int) string {
 }
 
 // writeSessionDB creates a run's session database with one assistant message
-// holding a single bash tool call with the given input.
-func writeSessionDB(t *testing.T, path, input string) {
+// holding a bash tool call per input.
+func writeSessionDB(t *testing.T, path string, inputs ...string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -122,10 +172,14 @@ func writeSessionDB(t *testing.T, path, input string) {
 	ctx := context.Background()
 	_, err = db.ExecContext(ctx, rescanSchema)
 	require.NoError(t, err)
-	parts, err := json.Marshal([]map[string]any{{
-		"type": "tool_call",
-		"data": map[string]any{"name": "bash", "input": input},
-	}})
+	calls := make([]map[string]any, 0, len(inputs))
+	for _, input := range inputs {
+		calls = append(calls, map[string]any{
+			"type": "tool_call",
+			"data": map[string]any{"name": "bash", "input": input},
+		})
+	}
+	parts, err := json.Marshal(calls)
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)`+

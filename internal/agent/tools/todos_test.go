@@ -56,6 +56,10 @@ func (m *mockSessionService) SetChannel(ctx context.Context, sessionID, channel 
 	return session.Session{}, nil
 }
 
+func (m *mockSessionService) SetArchived(ctx context.Context, sessionID string, archived bool) (session.Session, error) {
+	return session.Session{}, nil
+}
+
 func (m *mockSessionService) UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens int64, cost float64) error {
 	return nil
 }

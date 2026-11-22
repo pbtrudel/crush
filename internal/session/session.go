@@ -77,6 +77,7 @@ type Session struct {
 	Cost                 float64
 	Todos                []Todo
 	Channel              string
+	Archived             bool
 	CreatedAt            int64
 	UpdatedAt            int64
 }
@@ -91,6 +92,9 @@ type Service interface {
 	List(ctx context.Context) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
+	// SetArchived keeps a session out of the session lists without deleting
+	// it, which is how a scripted or CI run hides itself from the pickers.
+	SetArchived(ctx context.Context, sessionID string, archived bool) (Session, error)
 	// AddSessionUsage accumulates usage on a session and, when the session is a
 	// child, on its parent too: a parent's totals cover every agent below it.
 	AddSessionUsage(ctx context.Context, sessionID string, cacheReadTokens, contextTokens int64, cost float64) error
@@ -270,6 +274,24 @@ func (s *service) SetChannel(ctx context.Context, sessionID, channel string) (Se
 			String: channel,
 			Valid:  channel != "",
 		},
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	session := s.fromDBItem(dbSession)
+	s.applyEstimatedUsageState(&session)
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
+func (s *service) SetArchived(ctx context.Context, sessionID string, archived bool) (Session, error) {
+	flag := int64(0)
+	if archived {
+		flag = 1
+	}
+	dbSession, err := s.q.SetSessionArchived(ctx, db.SetSessionArchivedParams{
+		ID:       sessionID,
+		Archived: flag,
 	})
 	if err != nil {
 		return Session{}, err
@@ -466,6 +488,7 @@ func (s *service) fromDBItem(item db.Session) Session {
 		Cost:                 item.Cost,
 		Todos:                todos,
 		Channel:              item.Channel.String,
+		Archived:             item.Archived != 0,
 		CreatedAt:            item.CreatedAt,
 		UpdatedAt:            item.UpdatedAt,
 	}

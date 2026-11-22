@@ -52,6 +52,12 @@ type aggregateRow struct {
 	GateClaims        int      `json:"gate_claims"`
 	GateUnbacked      int      `json:"gate_unbacked_claims"`
 	UnbackedRuns      []string `json:"gate_unbacked_runs,omitempty"`
+	// EditAttempted, EditRefused and EditUnreadApplied sum the runs' edit
+	// and multiedit calls, and EditRefusalRate is refused over attempted.
+	EditAttempted     int     `json:"edit_attempted"`
+	EditRefused       int     `json:"edit_refused"`
+	EditRefusalRate   float64 `json:"edit_refusal_rate"`
+	EditUnreadApplied int     `json:"edit_unread_applied"`
 	// Cost is the total cost when every run priced itself.
 	Cost *float64 `json:"cost,omitempty"`
 }
@@ -293,6 +299,10 @@ func aggregateRows(runs []result.Result) []aggregateRow {
 			GateClaims:        agg.GateClaims,
 			GateUnbacked:      agg.GateUnbacked,
 			UnbackedRuns:      agg.UnbackedRuns,
+			EditAttempted:     agg.EditAttempted,
+			EditRefused:       agg.EditRefused,
+			EditRefusalRate:   agg.EditRefusalRate,
+			EditUnreadApplied: agg.EditUnreadApplied,
 		})
 	}
 	return rows
@@ -317,16 +327,17 @@ func printCompare(stdout io.Writer, report compareReport) {
 	}
 
 	figures := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(figures, "\nvariant\troute\tkind\tfalse/completed\tflagged\tcompleted\ttools\tduration_s\ttok_in\ttok_read\ttok_write\ttok_out\tcost")
+	fmt.Fprintln(figures, "\nvariant\troute\tkind\tfalse/completed\tflagged\tcompleted\ttools\tduration_s\ttok_in\ttok_read\ttok_write\ttok_out\tedits\tedit_refusals\tunread\tcost")
 	for _, row := range report.Aggregates {
 		cost := "n/a"
 		if row.Cost != nil {
 			cost = fmt.Sprintf("%.2f", *row.Cost)
 		}
-		fmt.Fprintf(figures, "%s\t%s\t%s\t%s\t%d\t%d\t%.0f\t%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%s\n",
+		fmt.Fprintf(figures, "%s\t%s\t%s\t%s\t%d\t%d\t%.0f\t%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%d\t%s\t%d\t%s\n",
 			row.Variant, row.Route, kindName(row.Kind), percent(row.FalseCompletionCompleted),
 			row.Flagged, row.Completed, row.ToolCalls, row.DurationMS/1000,
-			row.TokensInput, row.TokensRead, row.TokensWrite, row.TokensOutput, cost)
+			row.TokensInput, row.TokensRead, row.TokensWrite, row.TokensOutput,
+			row.EditAttempted, percent(row.EditRefusalRate), row.EditUnreadApplied, cost)
 	}
 	if err := figures.Flush(); err != nil {
 		return
