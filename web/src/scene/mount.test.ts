@@ -19,13 +19,17 @@ interface StubWorld extends StubPart {
   setReveal: Spy;
 }
 
+interface StubCore extends StubPart {
+  setBoot: Spy;
+}
+
 // The stubs record what the mount does to them. They are hoisted above the
 // module mocks below, which read and fill them.
 const renderers = vi.hoisted(() => [] as StubRenderer[]);
 const composers = vi.hoisted(() => [] as Array<{ disposed: number; renders: number }>);
 const parts = vi.hoisted(() => ({
   worlds: [] as StubWorld[],
-  cores: [] as StubPart[],
+  cores: [] as StubCore[],
   bursts: [] as StubPart[],
 }));
 const failing = vi.hoisted(() => ({ composer: false }));
@@ -441,5 +445,20 @@ describe('mountScene', () => {
     const secondWorld = parts.worlds.at(-1)!;
     expect(secondWorld.setReveal).toHaveBeenCalledTimes(1);
     expect(secondWorld.setReveal).toHaveBeenCalledWith(bootFrame(BOOT_MS, 'full').reveal);
+  });
+
+  it('holds the power-up at the ignition while the session is still linking', () => {
+    resetBootLatch();
+    start({ booting: true });
+    const core = parts.cores.at(-1)!;
+    // Two seconds of frames would take the clock past the whole power-up.
+    runFrames(120);
+    // Booting caps the clock at the ignition instead of overshooting it, so
+    // the core never lights before the session links.
+    expect(core.setBoot).toHaveBeenLastCalledWith({ rings: 3, ignite: 0 });
+
+    mounted.at(-1)!.update(input({ booting: false }));
+    runFrames(90);
+    expect(core.setBoot.mock.calls.at(-1)![0].ignite).toBe(1);
   });
 });
