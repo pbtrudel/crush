@@ -21,3 +21,19 @@ test('redacts a partial last line', () => {
   b.push('boom #t=HALF');
   expect(b.text()).toBe('boom #t=<redacted>');
 });
+
+test('drops an oversized line until its newline', () => {
+  const b = stderrBuffer(64);
+  b.push('x'.repeat(100) + ' #t=AB');
+  b.push('CDEF\nnext line\n');
+  expect(b.text()).not.toContain('AB');
+  expect(b.text()).not.toContain('CDEF');
+  expect(b.text()).toContain('next line');
+});
+
+test('resumes after a dropped line that ends in the same chunk as more lines', () => {
+  const b = stderrBuffer(64);
+  b.push('w'.repeat(100) + ' #t=');
+  b.push('ZZZtail\nkept line\n');
+  expect(b.text()).toBe('kept line');
+});
