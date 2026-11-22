@@ -90,6 +90,13 @@ func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create_session", err.Error())
 		return
 	}
+	// Report the session before answering or notifying the terminal, so a
+	// permission the first prompt raises is routed to this client. The
+	// terminal reports the same session again when it follows the callback,
+	// which is harmless. Presence is best-effort, like the TUI's reports.
+	if err := g.ws.SetCurrentSession(r.Context(), s.ID); err != nil {
+		slog.Debug("Failed to report the browser-created session", "session_id", s.ID, "error", err)
+	}
 	// The terminal opens the session so both clients show the same
 	// conversation. The callback is nil when no terminal is attached.
 	g.notifySessionCreated(s.ID)

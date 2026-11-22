@@ -230,6 +230,11 @@ current one. It creates the session through the workspace with the same
 open it; the tab follows the new current session through `session_follow`. An
 empty body uses that title.
 
+The terminal follows the most recently browser-created session even when it
+was showing another session. In the TUI status bar, config-stale and update
+notices wait behind a notice that is already visible instead of replacing it,
+and appear when that notice clears.
+
 Errors use `{"error": "...", "code": "..."}` with proper HTTP status codes.
 Any operation the TUI performs by reaching into internals instead of through
 `Workspace` gets a `Workspace` method first, so both clients share one path.

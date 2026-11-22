@@ -390,10 +390,13 @@ func TestRunCompleteClearsPending(t *testing.T) {
 func TestCreateSessionStartsOneSessionInTerminal(t *testing.T) {
 	t.Parallel()
 	fake := webtest.NewFake()
-	created := make(chan string, 1)
+	type createdSession struct{ id, current string }
+	created := make(chan createdSession, 1)
 	g, err := Start(t.Context(), Options{
-		Workspace:        fake,
-		OnSessionCreated: func(id string) { created <- id },
+		Workspace: fake,
+		OnSessionCreated: func(id string) {
+			created <- createdSession{id: id, current: fake.CurrentSessionID()}
+		},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
@@ -411,11 +414,13 @@ func TestCreateSessionStartsOneSessionInTerminal(t *testing.T) {
 	require.Equal(t, "New Session", sess.Title, "the title matches the TUI's first prompt")
 
 	select {
-	case id := <-created:
-		require.Equal(t, sess.ID, id, "the terminal opens the session the browser created")
+	case got := <-created:
+		require.Equal(t, sess.ID, got.id, "the terminal opens the session the browser created")
+		require.Equal(t, sess.ID, got.current, "the workspace reports the new session before the terminal is notified")
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnSessionCreated not called")
 	}
+	require.Equal(t, sess.ID, fake.CurrentSessionID())
 
 	sessions, err := fake.ListSessions(t.Context())
 	require.NoError(t, err)

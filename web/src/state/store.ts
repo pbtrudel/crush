@@ -5,7 +5,7 @@ import type {
   Frame, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
 } from '../api/types';
 import {
-  dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
+  adoptSession, dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
 } from './reducer';
 
 export const state = signal<State>(initialState());
@@ -107,7 +107,13 @@ export const actions = {
   async sendPrompt(prompt: string, files: File[]): Promise<string | null> {
     let sid = state.value.sessionId;
     try {
-      if (!sid) sid = (await api.createSession()).id;
+      if (!sid) {
+        sid = (await api.createSession()).id;
+        // Own the new session before sending: a failed prompt or a second
+        // submit must reuse it instead of starting another. A session_follow
+        // for the same id later is a no-op.
+        dispatch((s) => adoptSession(s, sid));
+      }
       await api.sendPrompt(sid, prompt, files);
       if (state.value.busy) await refreshQueue(sid);
       return null;

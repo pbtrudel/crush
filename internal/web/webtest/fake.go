@@ -121,6 +121,14 @@ func (f *Fake) SetCurrent(id string) {
 	f.mu.Unlock()
 }
 
+// SetCurrentSession is how both the terminal and the gateway report the
+// session they are viewing. The fake has one shared view, like the real
+// in-process workspace.
+func (f *Fake) SetCurrentSession(_ context.Context, sessionID string) error {
+	f.SetCurrent(sessionID)
+	return nil
+}
+
 // AddMessage stores a message so ListMessages returns it.
 func (f *Fake) AddMessage(m message.Message) {
 	f.mu.Lock()

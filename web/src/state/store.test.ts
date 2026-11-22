@@ -115,6 +115,24 @@ describe('actions.sendPrompt', () => {
 
     expect(send).not.toHaveBeenCalled();
   });
+
+  it('keeps the created session when the prompt fails, so a retry does not start another', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const send = vi.spyOn(api, 'sendPrompt')
+      .mockRejectedValueOnce(new ApiError(500, 'http_error', 'gateway on fire'))
+      .mockResolvedValueOnce({ accepted: true });
+
+    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+    expect(state.value.sessionId).toBe('s2');
+
+    await expect(actions.sendPrompt('first task', [])).resolves.toBeNull();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenNthCalledWith(1, 's2', 'first task', []);
+    expect(send).toHaveBeenNthCalledWith(2, 's2', 'first task', []);
+  });
 });
 
 describe('prompt queue', () => {
