@@ -58,8 +58,10 @@ func TestHostPaths(t *testing.T) {
 
 // TestJailMasks checks the mask list of a jailed run: the jail's socket
 // masks stay hidden, the host checkout and the worktrees beside it are
-// hidden, and the eval home's batches are hidden except the run's own
-// directory, which the child keeps writing.
+// hidden, and the eval home's batches are hidden. A run that binds its own
+// directory at the neutral path hides the whole batches tree, since the child
+// is handed no path under it; a run without a bind keeps its own directory
+// visible, because that is where the child writes.
 func TestJailMasks(t *testing.T) {
 	t.Parallel()
 
@@ -81,6 +83,18 @@ func TestJailMasks(t *testing.T) {
 	require.Contains(t, byPath, paths.Checkout)
 	require.Contains(t, byPath, paths.Worktrees)
 	require.Equal(t, []string{paths.Own}, byPath[paths.Batches].Keep)
+
+	// A jailed run gives the child the neutral path through a bind, so the
+	// batches mask has nothing to keep: the host path of the run's own
+	// directory must not resolve inside the jail either.
+	paths.Jail = netjail.JailRunPath
+	byPath = make(map[string]netjail.Mask)
+	for _, mask := range jailMasks(paths) {
+		byPath[mask.Path] = mask
+	}
+	require.Contains(t, byPath, paths.Batches)
+	require.Empty(t, byPath[paths.Batches].Keep,
+		"a bound run's own directory stays hidden with the rest of the batches")
 
 	// A path the runner could not derive is not a mask: masking an empty
 	// path would hide everything.
