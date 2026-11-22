@@ -29,6 +29,17 @@ vi.mock('../../scene/mount', () => ({
 const ev = (id: string, category: ToolEvent['category']): ToolEvent => ({ id, category, at: 1 });
 const original = HTMLCanvasElement.prototype.getContext;
 
+// Every root is unmounted inside act: a root left mounted past the test
+// queues preact's after-paint flush on a 35ms timeout that can fire after
+// jsdom has torn down, where cancelAnimationFrame no longer exists.
+const roots: HTMLElement[] = [];
+
+function newRoot(): HTMLElement {
+  const root = document.createElement('div');
+  roots.push(root);
+  return root;
+}
+
 beforeEach(() => {
   // A context object is enough for the probe; the loss extension is absent.
   HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof original;
@@ -43,7 +54,12 @@ beforeEach(() => {
   mount.update.mockClear();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const root of roots.splice(0)) {
+    await act(() => {
+      render(null, root);
+    });
+  }
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
   sceneFailed.value = false;
@@ -51,7 +67,7 @@ afterEach(() => {
 
 async function mountLayer() {
   const { SceneLayer } = await import('./SceneLayer');
-  const root = document.createElement('div');
+  const root = newRoot();
   await act(() => {
     render(<SceneLayer />, root);
   });
@@ -61,17 +77,18 @@ async function mountLayer() {
 
 describe('SceneLayer', () => {
   it('marks the scene failed when mount reports failure', async () => {
-    const root = await mountLayer();
+    await mountLayer();
     expect(sceneFailed.value).toBe(false);
-    mount.onFail!();
+    await act(() => {
+      mount.onFail!();
+    });
     expect(sceneFailed.value).toBe(true);
-    render(null, root);
   });
 
   it('marks the scene failed when mount throws, and hands the stage back', async () => {
     mount.throwOnMount = true;
     const { SceneLayer } = await import('./SceneLayer');
-    const root = document.createElement('div');
+    const root = newRoot();
     await act(() => {
       render(<SceneLayer />, root);
     });
@@ -82,11 +99,10 @@ describe('SceneLayer', () => {
     await act(() => {});
     expect(root.querySelector('canvas.scene-layer__canvas')).toBeNull();
     expect(use3D()).toBe(false);
-    render(null, root);
   });
 
   it('leaves the scene alone when a re-render carries the same input', async () => {
-    const root = await mountLayer();
+    await mountLayer();
     expect(mount.update).toHaveBeenCalledTimes(1);
 
     await act(() => {
@@ -98,12 +114,11 @@ describe('SceneLayer', () => {
       state.value = { ...state.value, busy: true };
     });
     expect(mount.update).toHaveBeenCalledTimes(2);
-    render(null, root);
   });
 
   it('does not burst for tool events that were already there when it mounted', async () => {
     telemetry.value = { ...emptyTelemetry(), tools: [ev('old1', 'read'), ev('old2', 'run')] };
-    const root = await mountLayer();
+    await mountLayer();
     expect(mount.burst).not.toHaveBeenCalled();
 
     await act(() => {
@@ -111,16 +126,14 @@ describe('SceneLayer', () => {
     });
     expect(mount.burst).toHaveBeenCalledTimes(1);
     expect(mount.burst).toHaveBeenCalledWith('write');
-    render(null, root);
   });
 
   it('bursts every event when older ones were pruned from the window', async () => {
     telemetry.value = { ...emptyTelemetry(), tools: [ev('old1', 'read')] };
-    const root = await mountLayer();
+    await mountLayer();
     await act(() => {
       telemetry.value = { ...telemetry.value, tools: [ev('new1', 'run'), ev('new2', 'network')] };
     });
     expect(mount.burst.mock.calls.map((c) => c[0])).toEqual(['run', 'network']);
-    render(null, root);
   });
 });

@@ -41,6 +41,25 @@ vi.mock('../../scene/mount', async () => {
 
 const original = HTMLCanvasElement.prototype.getContext;
 
+// Every root is unmounted inside act: a root left mounted past the test
+// queues preact's after-paint flush on a 35ms timeout that can fire after
+// jsdom has torn down, where cancelAnimationFrame no longer exists.
+const roots: HTMLElement[] = [];
+
+function newRoot(): HTMLElement {
+  const root = document.createElement('div');
+  roots.push(root);
+  return root;
+}
+
+async function unmount(root: HTMLElement) {
+  const i = roots.indexOf(root);
+  if (i >= 0) roots.splice(i, 1);
+  await act(() => {
+    render(null, root);
+  });
+}
+
 beforeEach(() => {
   // A context object is enough for the probe; the loss extension is absent.
   HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof original;
@@ -53,8 +72,13 @@ beforeEach(() => {
   mount.disposed = 0;
 });
 
-afterEach(() => {
+afterEach(async () => {
   gate.release();
+  for (const root of roots.splice(0)) {
+    await act(() => {
+      render(null, root);
+    });
+  }
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
   lowPower.value = false;
@@ -64,7 +88,7 @@ afterEach(() => {
 describe('SceneLayer unmounting while the scene chunk loads', () => {
   it('drops the stale mount when the layer remounts before the chunk settles', async () => {
     const { SceneLayer } = await import('./SceneLayer');
-    const root = document.createElement('div');
+    const root = newRoot();
     await act(() => {
       render(<SceneLayer />, root);
     });
@@ -86,9 +110,7 @@ describe('SceneLayer unmounting while the scene chunk loads', () => {
 
     // The stale mount is dropped; only the live layer mounts a scene.
     expect(mount.calls).toBe(1);
-    await act(() => {
-      render(null, root);
-    });
+    await unmount(root);
     expect(mount.disposed).toBe(1);
   });
 });
