@@ -21,6 +21,8 @@ const (
 	frameSnapshot  = "snapshot"
 	frameFollow    = "session_follow"
 	frameInputMode = "input_mode_changed"
+	frameTeamState = "team_state"
+	frameAgentRuns = "agent_runs"
 	frameClosing   = "gateway_closing"
 	frameError     = "web_error"
 )

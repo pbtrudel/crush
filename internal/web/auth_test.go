@@ -231,6 +231,9 @@ var protectedRoutes = []struct{ method, path string }{
 	{http.MethodGet, "/api/complete/files"},
 	{http.MethodGet, "/api/sessions/s1/files"},
 	{http.MethodGet, "/api/sessions/s1/files/diff?path=x"},
+	{http.MethodGet, "/api/sessions/s1"},
+	{http.MethodPost, "/api/team/members/alice/message"},
+	{http.MethodPost, "/api/team/members/alice/interrupt"},
 }
 
 func TestEveryRouteRequiresTheCookie(t *testing.T) {

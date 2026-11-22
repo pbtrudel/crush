@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
@@ -213,6 +214,10 @@ func (f *Fake) CurrentSessionID() string {
 }
 
 func (f *Fake) WorkingDir() string { return f.WorkDir }
+
+// Config returns nil: the fake has no data directory, so the gateway's team
+// watcher stays off unless a test sets Options.AgentTeamsDir.
+func (f *Fake) Config() *config.Config { return nil }
 
 func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 

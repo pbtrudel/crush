@@ -33,8 +33,14 @@ type Options struct {
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
+	// AgentTeamsDir holds team.json and agents.json. Empty derives it from
+	// the workspace config's data directory; with no config there is no
+	// team to watch.
+	AgentTeamsDir string
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
+	// teamPollInterval overrides teamPollInterval in tests.
+	teamPollInterval time.Duration
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -51,6 +57,10 @@ type Gateway struct {
 	hub        *hub
 	pending    *pending
 	idle       time.Duration
+	// team rereads the Agent Team files; teamDone closes when its
+	// watcher settles on shutdown.
+	team     *teamWatcher
+	teamDone chan struct{}
 	// fileStats memoizes the edited-file line counts every snapshot and
 	// file list asks for.
 	fileStats *fileStatCache
@@ -96,6 +106,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		hub:        newHub(),
 		pending:    newPending(),
 		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
+		team:       newTeamWatcher(teamDir(opts)),
+		teamDone:   make(chan struct{}),
 		fileStats:  newFileStatCache(),
 
 		onSessionCreated:     opts.OnSessionCreated,
@@ -106,6 +118,10 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		Handler:           g.guard(g.routes(assets)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Seed the team watcher without publishing, so the first snapshot
+	// already carries the roster and a fresh hub still starts at seq 0.
+	g.team.poll()
+	go g.watchTeam(cmp.Or(opts.teamPollInterval, teamPollInterval))
 	// Subscribe before Start returns so no event emitted right after it
 	// is lost. The session the terminal views is read here, not in the
 	// pump goroutine: a goroutine that starts late would adopt a session
@@ -227,6 +243,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
 	g.cancel()
+	<-g.teamDone
 	err := g.srv.Shutdown(ctx)
 	<-g.done
 	return err

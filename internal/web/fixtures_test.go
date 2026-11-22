@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/agentrun"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
@@ -39,8 +42,20 @@ func fixtureEvents() map[string]any {
 			ID: "t-1", SessionID: "s1", Role: message.Tool, CreatedAt: 103, UpdatedAt: 103,
 			Parts: []message.ContentPart{message.ToolResult{ToolCallID: "tc-1", Name: "view", Content: "package parser"}},
 		}},
+		"message_child": pubsub.Event[message.Message]{Type: pubsub.UpdatedEvent, Payload: message.Message{
+			ID: "sub-a-1", SessionID: "sub-1", Role: message.Assistant, CreatedAt: 105, UpdatedAt: 106,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: "Scanning the tokenizer."},
+				message.ToolCall{ID: "sub-tc-1", Name: "grep", Input: `{"pattern":"func Parse"}`},
+			},
+		}},
 		"session": pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: session.Session{
 			ID: "s1", Title: "Parser refactor", PromptTokens: 52000, CompletionTokens: 4100, Cost: 0.42,
+			Todos: []session.Todo{
+				{Content: "Map the parser", Status: session.TodoStatusCompleted, ActiveForm: "Mapping the parser"},
+				{Content: "Port the parser", Status: session.TodoStatusInProgress, ActiveForm: "Porting the parser"},
+				{Content: "Write parser tests", Status: session.TodoStatusPending, ActiveForm: "Writing parser tests"},
+			},
 		}},
 		"permission_request": pubsub.Event[permission.PermissionRequest]{Type: pubsub.CreatedEvent, Payload: permission.PermissionRequest{
 			ID: "p-1", SessionID: "s1", ToolCallID: "tc-2", ToolName: "bash", Description: "Run tests",
@@ -73,6 +88,45 @@ func fixtureEvents() map[string]any {
 	}
 }
 
+// fixtureTeam is the roster and task board the stage and the team tab show.
+func fixtureTeam() TeamState {
+	return TeamState{
+		TeamID: "team-1",
+		Members: []agentteam.Member{{
+			ID: "m-1", Name: "alice", Role: agentteam.RoleTeammate, SessionID: "team-m-1", ParentID: "s1",
+			Status: agentteam.StatusRunning, Model: "claude", ModelProvider: "anthropic",
+		}},
+		Tasks: []TeamTask{
+			{ID: "task-1", Revision: 2, Subject: "Port the parser", Status: agentteam.TaskInProgress, OwnerID: "m-1", OwnerName: "alice", BlockedBy: []string{}, SessionID: "s1"},
+			{ID: "task-2", Revision: 1, Subject: "Write parser tests", Status: agentteam.TaskPending, BlockedBy: []string{"task-1"}, SessionID: "s1"},
+		},
+	}
+}
+
+// fixtureRuns is the live agent registry: one subagent and one teammate.
+func fixtureRuns() []agentrun.Run {
+	started := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	return []agentrun.Run{
+		{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: started},
+		{ID: "team-m-1", Kind: agentrun.KindTeammate, Name: "alice", SessionID: "team-m-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: started},
+	}
+}
+
+// gatewayFixtureFrames builds the frames the gateway originates itself,
+// which never pass through encode.
+func gatewayFixtureFrames(t *testing.T) map[string]frame {
+	t.Helper()
+	mk := func(typ string, v any) frame {
+		raw, err := json.Marshal(v)
+		require.NoError(t, err)
+		return frame{Seq: 1, Type: typ, Payload: raw}
+	}
+	return map[string]frame{
+		"team_state": mk(frameTeamState, fixtureTeam()),
+		"agent_runs": mk(frameAgentRuns, fixtureRuns()),
+	}
+}
+
 // snapshotFrame builds the snapshot the gateway sends before any live frame.
 // A snapshot carries the hub head as its seq, which is 0 for a fresh hub.
 func snapshotFrame(t *testing.T) frame {
@@ -96,6 +150,8 @@ func snapshotFrame(t *testing.T) frame {
 		PermissionMode: "normal", InputMode: "code",
 		Model:  ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
 		Queued: []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
+		Team:      fixtureTeam(),
+		AgentRuns: fixtureRuns(),
 	})
 	require.NoError(t, err)
 	return frame{Seq: 0, Type: frameSnapshot, Payload: raw}
@@ -112,6 +168,9 @@ func TestWireFixtures(t *testing.T) {
 		out[name] = frame{Seq: 1, Type: typ, Payload: raw}
 	}
 	out["snapshot"] = snapshotFrame(t)
+	for name, f := range gatewayFixtureFrames(t) {
+		out[name] = f
+	}
 	got, err := json.MarshalIndent(out, "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')

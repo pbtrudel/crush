@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
@@ -51,6 +52,8 @@ type Snapshot struct {
 	Queued           []string              `json:"queued"`
 	LSP              map[string]ServerInfo `json:"lsp"`
 	MCP              map[string]ServerInfo `json:"mcp"`
+	Team             TeamState             `json:"team"`
+	AgentRuns        []agentrun.Run        `json:"agent_runs"`
 }
 
 func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot {
@@ -68,6 +71,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		InputMode:        g.InputMode(),
 		Model:            modelInfo(g),
 	}
+	s.Team, s.AgentRuns = g.team.current()
 	if branch, err := g.ws.GitBranch(ctx); err == nil {
 		s.Branch = branch
 	}

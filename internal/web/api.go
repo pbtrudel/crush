@@ -36,6 +36,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	api.HandleFunc("GET /api/snapshot", g.handleSnapshot)
 	api.HandleFunc("GET /api/sessions", g.handleListSessions)
 	api.HandleFunc("POST /api/sessions", g.handleCreateSession)
+	api.HandleFunc("GET /api/sessions/{sid}", g.handleGetSession)
 	api.HandleFunc("GET /api/sessions/{sid}/messages", g.handleMessages)
 	api.HandleFunc("GET /api/sessions/{sid}/files", g.handleFiles)
 	api.HandleFunc("GET /api/sessions/{sid}/files/diff", g.handleFileDiff)
@@ -49,6 +50,8 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	api.HandleFunc("POST /api/questions/answer", g.handleAnswer)
 	api.HandleFunc("POST /api/questions/cancel", g.handleQuestionCancel)
 	api.HandleFunc("GET /api/complete/files", g.handleCompleteFiles)
+	api.HandleFunc("POST /api/team/members/{member}/message", g.handleTeamMessage)
+	api.HandleFunc("POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
 }
 
 // writeInternal answers a failed workspace call without its error text,
