@@ -3,6 +3,7 @@ import { state, actions } from '../state/store';
 import { contextFill } from '../state/reducer';
 import type { PermissionMode } from '../api/types';
 import { telemetry } from '../state/telemetry';
+import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
 import { MotionMenu } from './MotionMenu';
 import { ActivityChart } from './hud/ActivityChart';
 import { ContextGauge } from './hud/ContextGauge';
@@ -20,6 +21,7 @@ export function Hud() {
   const fill = contextFill(s);
   const tokens = s.session ? s.session.prompt_tokens + s.session.completion_tokens : 0;
   const [now, setNow] = useState(() => Date.now());
+  const canFly = cinematicAllowed();
   const root = useRef<HTMLElement>(null);
   const link = s.conn === 'live' ? 'Linked' : s.conn === 'reconnecting' ? 'Reconnecting' : s.conn === 'ended' ? 'Ended' : 'Linking';
 
@@ -116,6 +118,15 @@ export function Hud() {
           >Code</button>
         </div>
         <MotionMenu />
+        {canFly && (
+          <button
+            type="button"
+            class="hud__mode-btn hud__cinematic"
+            aria-pressed={cinematic.value}
+            title="Cinematic mode (Alt+C)"
+            onClick={() => setCinematic(!cinematic.value)}
+          >Cinematic</button>
+        )}
         <span class="hud__link" data-conn={s.conn} role="status">
           <svg aria-hidden="true" viewBox="0 0 12 12" width="12" height="12"><polygon points="6,1 11,3.5 11,8.5 6,11 1,8.5 1,3.5" /></svg>
           {link}

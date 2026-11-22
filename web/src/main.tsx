@@ -12,6 +12,7 @@ import './styles/log.css';
 import './styles/deck.css';
 import './styles/interrupt.css';
 import './styles/panels.css';
+import './styles/cinematic.css';
 import { render } from 'preact';
 import { App } from './ui/App';
 import { boot } from './state/store';

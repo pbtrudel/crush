@@ -68,3 +68,21 @@ test('a tab without the token is not linked', async ({ browser, gateway }) => {
   await expect(page.getByRole('heading', { name: /not linked/ })).toBeVisible();
   await ctx.close();
 });
+
+test('Alt+C enters and Esc leaves cinematic mode', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  const prompt = page.getByLabel('Transmit to crush');
+  await prompt.focus();
+  await page.keyboard.press('Alt+KeyC');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'true');
+  await expect(prompt).toHaveValue('');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'true');
+  // Click something that stays visible in cinematic mode: the HUD title is
+  // hidden there, so use the log panel, which cinematic.css keeps (it holds
+  // no input, so focus leaves the prompt).
+  await page.locator('.panel--log').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'false');
+});

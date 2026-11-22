@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { actions, state } from '../../state/store';
 import { api } from '../../api/http';
+import { cinematic } from '../../state/cinematic';
 import { activeMention, applyMention } from './mention';
 
 // The gateway reads the whole prompt request through MaxBytesReader with a
@@ -125,7 +126,7 @@ export function CommandDeck() {
 
   return (
     <form
-      class="deck glass"
+      class={`deck glass${cinematic.value ? ' deck--slim' : ''}`}
       data-busy={s.busy}
       onSubmit={(e) => { e.preventDefault(); void submit(); }}
       onDragOver={(e) => e.preventDefault()}

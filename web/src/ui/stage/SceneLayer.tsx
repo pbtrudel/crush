@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'preact/hooks';
 import type { SceneHandle, SceneInput } from '../../scene/mount';
+import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { effectFlags, effectsLevel, sceneFailed, use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
 import { coreMode } from '../../state/levels';
@@ -8,7 +9,19 @@ import { contextFill } from '../../state/reducer';
 import { actions, state } from '../../state/store';
 import { telemetry } from '../../state/telemetry';
 
-export function SceneLayer() {
+interface ElementRef {
+  readonly current: HTMLElement | null;
+}
+
+// The log's wrappers live in the App, which also renders this layer, so the
+// cinematic flight receives them rather than looking them up by class.
+export interface SceneLayerProps {
+  view?: ElementRef;
+  camera?: ElementRef;
+  panels?: ElementRef[];
+}
+
+export function SceneLayer({ view, camera, panels }: SceneLayerProps = {}) {
   const s = state.value;
   const enabled = use3D();
   const tools = telemetry.value.tools;
@@ -59,6 +72,37 @@ export function SceneLayer() {
   useEffect(() => {
     scene.current?.update(latest.current);
   }, [s, motion.value, effectsLevel.value, lowPower.value, stageRect.value]);
+
+  // The flight lives in its own chunk, so only a visitor who enters
+  // cinematic mode downloads it.
+  useEffect(() => {
+    if (!cinematic.value) return;
+    const handle = scene.current;
+    const viewEl = view?.current;
+    const cameraEl = camera?.current;
+    const panelEls = (panels ?? []).map((p) => p.current).filter((el): el is HTMLElement => el !== null);
+    // Without a scene, its wrappers or the permission to fly there is
+    // nothing to start, so the mode fails closed instead of stranding the
+    // layout.
+    if (!cinematicAllowed() || !handle || !viewEl || !cameraEl || !panelEls.length) {
+      setCinematic(false);
+      return;
+    }
+    let cancelled = false;
+    let flight: { stop(): Promise<void> } | null = null;
+    void import('../../scene/cinematic')
+      .then(({ startCinematic }) => {
+        if (cancelled) return;
+        flight = startCinematic(handle, { view: viewEl, camera: cameraEl, panels: panelEls }, motion.value);
+      })
+      .catch(() => {
+        if (!cancelled) setCinematic(false);
+      });
+    return () => {
+      cancelled = true;
+      void flight?.stop();
+    };
+  }, [cinematic.value, enabled]);
 
   useEffect(() => {
     const handle = scene.current;

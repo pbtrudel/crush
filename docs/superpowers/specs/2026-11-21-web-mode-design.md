@@ -486,7 +486,9 @@ A watch mode for following agents work, not for long reading.
   is open (the dialog owns Esc).
 - **Transition:** the camera pulls back and up over about 900 ms (expo-out).
   At the same time the transmission log (and in M2 the agent inspector) moves
-  onto curved screens around the projector through three.js `CSS3DRenderer`.
+  onto angled screens around the projector, placed with `CSS3DRenderer`'s
+  projection math applied to wrapper elements in place (the renderer itself
+  would move the panels in the DOM).
   The panels stay real HTML: sharp, selectable, readable by screen readers.
   The renderer positions them through the CSSOM (`element.style.transform`),
   which the CSP allows; no `style` attributes are written into markup.
