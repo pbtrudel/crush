@@ -1,5 +1,7 @@
 .stage__inner { position: absolute; inset: 0; display: grid; }
-.constellation-svg { inline-size: 100%; block-size: 100%; display: block; }
+/* The svg fills the stage box rather than sizing itself from the viewBox
+   aspect ratio, so the default meet fit keeps the whole 2D scene inside. */
+.constellation-svg { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; display: block; }
 .constellation-svg { overflow: visible; }
 .cs-ring { fill: none; stroke: var(--cyan); stroke-opacity: 0.5; }
 .cs-ring--violet { stroke: var(--violet); }

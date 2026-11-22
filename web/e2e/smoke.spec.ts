@@ -1,4 +1,40 @@
 import { test, expect } from './fixture';
+import type { Page } from '@playwright/test';
+
+interface Box { x: number; y: number; w: number; h: number }
+
+const inside = (inner: Box, outer: Box, tolerance = 0.5) => (
+  inner.x >= outer.x - tolerance
+  && inner.y >= outer.y - tolerance
+  && inner.x + inner.w <= outer.x + outer.w + tolerance
+  && inner.y + inner.h <= outer.y + outer.h + tolerance
+);
+
+// The stage owns its box: the svg fills it, every 2D node sits inside it, and
+// the list stays clickable above the drawing.
+async function stageGeometry(page: Page) {
+  return page.evaluate(() => {
+    const rect = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    };
+    const stage = document.querySelector('.stage')!;
+    const list = document.querySelector('.agent-list')!;
+    const nodes = [...document.querySelectorAll('[data-agent-node]')].map((n) => {
+      const h = n.querySelector('.cs-node__hex')!.getBoundingClientRect();
+      const hit = document.elementFromPoint(h.x + h.width / 2, h.y + h.height / 2);
+      return { id: n.getAttribute('data-agent-node'), box: rect(n), hitInside: hit !== null && n.contains(hit) };
+    });
+    const option = list.querySelector('[role="option"]')!.getBoundingClientRect();
+    const overList = document.elementFromPoint(option.x + option.width / 2, option.y + option.height / 2);
+    return {
+      stage: rect(stage),
+      svg: rect(document.querySelector('svg.constellation-svg')!),
+      listTakesClicks: overList !== null && overList.closest('.agent-list') !== null,
+      nodes,
+    };
+  });
+}
 
 test('links, shows the session and streams a reply', async ({ page, gateway }) => {
   // A violation means the CSP blocks the app itself. Collect every report
@@ -59,6 +95,23 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await page.getByLabel('Low power (2D constellation)').check();
   await expect(page.locator('svg.constellation-svg')).toBeVisible();
   await expect(page.getByRole('listbox', { name: 'Agents' })).toContainText('Coder');
+  // The roster arrives in frames after boot, so wait for the first node.
+  await expect(page.locator('[data-agent-node]').first()).toBeVisible();
+  const wide = await stageGeometry(page);
+  expect(wide.nodes.length).toBeGreaterThan(0);
+  expect(inside(wide.svg, wide.stage), 'svg inside the stage').toBe(true);
+  for (const node of wide.nodes) {
+    expect(inside(node.box, wide.stage), `node ${node.id} inside the stage`).toBe(true);
+    expect(node.hitInside, `node ${node.id} takes the click at its center`).toBe(true);
+  }
+  expect(wide.listTakesClicks, 'the list takes clicks above the drawing').toBe(true);
+  // The narrow breakpoints keep the drawing inside the 220px row and the
+  // 96px strip.
+  for (const width of [900, 600]) {
+    await page.setViewportSize({ width, height: 860 });
+    const narrow = await stageGeometry(page);
+    expect(inside(narrow.svg, narrow.stage), `svg inside the stage at ${width}px`).toBe(true);
+  }
 });
 
 test('cinematic mode works with motion off', async ({ page, gateway }) => {
