@@ -6,6 +6,7 @@ import '@fontsource/jetbrains-mono/400.css';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/shell.css';
+import './styles/hud.css';
 import './styles/stage.css';
 import './styles/log.css';
 import './styles/deck.css';

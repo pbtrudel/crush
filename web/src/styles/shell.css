@@ -9,18 +9,17 @@
   gap: var(--space-4);
   padding-inline: max(var(--space-4), env(safe-area-inset-left));
 }
+/* Every instrument keeps its own column, so the strip stays on one row at
+   1440px; the identity block takes the slack. */
 .hud {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  grid-template-columns: minmax(9rem, 1fr) auto auto auto auto auto auto;
   align-items: center;
-  gap: var(--space-9);
+  gap: var(--space-4) calc(var(--space-4) * 1.5);
   padding: var(--space-4) calc(var(--space-4) * 1.5);
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
-.hud__readouts { display: flex; gap: calc(var(--space-4) * 1.5); margin: 0; flex-wrap: wrap; }
-.hud__readouts dd { margin: 4px 0 0; font: 500 var(--step-1)/1.1 var(--font-hud); font-variant-numeric: tabular-nums; color: var(--cyan); }
-.hud__readouts meter { inline-size: 72px; block-size: 6px; vertical-align: middle; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
 .hud__select {
   appearance: none; color: var(--text); background-color: var(--glass-solid);
@@ -87,8 +86,10 @@
 .boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }
 .boot__rings span:nth-child(3) { animation-delay: 0.53s; }
 @keyframes boot-ring { from { transform: scale(0.2); opacity: 1; } to { transform: scale(1); opacity: 0; } }
-/* Toasts sit top right, below the HUD strip. */
-.toasts { position: fixed; inset-block-start: 112px; inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
+/* Toasts sit top right, below the HUD strip. --hud-h is the height the HUD
+   publishes; the 80px fallback keeps the old 112px offset until it
+   reports. */
+.toasts { position: fixed; inset-block-start: calc(var(--hud-h, 80px) + var(--space-4) * 2); inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
 .toast {
   display: flex; gap: 10px; align-items: center; padding: 10px 12px; min-inline-size: 18rem; max-inline-size: 26rem;
   border-radius: var(--radius);
@@ -98,15 +99,21 @@
 .toast[data-tone='warn'] { --bracket: var(--amber); }
 .toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
 .unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
+@media (max-width: 1279px) {
+  /* The one-row grid needs about 1230px, so the instrument row wraps
+     before the side panels turn into tabs. */
+  .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); }
+  .hud__id { flex: 1 1 12rem; }
+  .hud__controls { flex: 1 1 100%; flex-wrap: wrap; }
+}
 @media (max-width: 1023px) {
-  .hud { grid-template-columns: 1fr; gap: var(--space-4); }
-  /* The stacked HUD is taller, so the toasts start below it. */
-  .toasts { inset-block-start: 216px; }
+  /* The wrapped HUD is taller, so until the HUD reports its height the
+     fallback keeps the old 216px offset. */
+  .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
   .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
   .panel--log { transform: none; order: 2; }
 }
 /* Below 768px everything stacks and the constellation collapses to a strip. */
 @media (max-width: 767px) {
   .holodeck__grid { grid-template-rows: 96px 1fr; }
-  .hud__readouts { display: none; }
 }
