@@ -46,9 +46,12 @@ export function effectFlags(level: EffectsLevel, lowPower: boolean): EffectFlags
   };
 }
 
+// Restore is the way back from a failed scene, so it also forgets the
+// cached probe: the next mount has to ask the browser for a context again.
 export function restoreEffects(): void {
   effectsLevel.value = 0;
   sceneFailed.value = false;
+  resetWebglProbe();
 }
 
 // Leaving low power must retry the scene its own toggle disposed. Watching

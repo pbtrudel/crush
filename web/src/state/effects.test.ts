@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { lowPower } from './motion';
-import { effectFlags, effectsLevel, restoreEffects, sceneFailed } from './effects';
+import {
+  effectFlags,
+  effectsLevel,
+  resetWebglProbe,
+  restoreEffects,
+  sceneFailed,
+  webglSupported,
+} from './effects';
 
 describe('sceneFailed', () => {
   it('resets when low power turns off, and only then', () => {
@@ -20,6 +27,20 @@ describe('sceneFailed', () => {
     restoreEffects();
     expect(effectsLevel.value).toBe(0);
     expect(sceneFailed.value).toBe(false);
+  });
+
+  it('retries the WebGL probe that a failed scene left cached', () => {
+    resetWebglProbe();
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext');
+    getContext.mockReturnValue(null);
+    expect(webglSupported()).toBe(false);
+    // The probe is cached, so a newly available context changes nothing.
+    getContext.mockReturnValue({ getExtension: () => null } as unknown as WebGL2RenderingContext);
+    expect(webglSupported()).toBe(false);
+    restoreEffects();
+    expect(webglSupported()).toBe(true);
+    getContext.mockRestore();
+    resetWebglProbe();
   });
 });
 

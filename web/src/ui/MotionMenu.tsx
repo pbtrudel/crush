@@ -1,3 +1,4 @@
+import { effectsLevel, restoreEffects, sceneFailed } from '../state/effects';
 import { lowPower, motion, setLowPower, setMotion, type Motion } from '../state/motion';
 
 export function MotionMenu() {
@@ -18,6 +19,11 @@ export function MotionMenu() {
         <input type="checkbox" checked={lowPower.value} onChange={(e) => setLowPower((e.currentTarget as HTMLInputElement).checked)} />
         Low power (2D constellation)
       </label>
+      {/* The step-down toast dismisses itself, so the menu is the lasting
+          way back from reduced effects and from a failed scene. */}
+      {(effectsLevel.value > 0 || sceneFailed.value) && (
+        <button type="button" class="btn btn--ghost" onClick={() => restoreEffects()}>Restore effects</button>
+      )}
       </div>
     </details>
   );
