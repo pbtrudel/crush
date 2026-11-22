@@ -79,11 +79,18 @@
 .banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
 .banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
 .banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
+/* The loading overlay is a hologram label over the live scene rather than a
+   cover, so the scene's own power-up shows through. `holo` supplies the
+   translucent veil and the corner brackets. */
 .boot {
   position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; gap: var(--space-9);
-  justify-items: center; background: var(--void); transition: opacity var(--dur-out) var(--ease-out), visibility 0s linear var(--dur-out);
+  justify-items: center; background: none; transition: opacity var(--dur-out) var(--ease-out), visibility 0s linear var(--dur-out);
 }
+/* `.holo` sets position: relative for its brackets and panels.css loads
+   last, so the fixed placement is restated with a two-class selector. */
+.boot.holo { position: fixed; }
 .boot[data-done='true'] { opacity: 0; visibility: hidden; }
+/* A 2D view has no scene to draw the boot, so it keeps the CSS rings. */
 .boot__rings { position: relative; inline-size: 160px; block-size: 160px; }
 .boot__rings span { position: absolute; inset: 0; border: 1px solid var(--cyan); border-radius: 50%; animation: boot-ring 1.6s var(--ease-out) infinite; }
 .boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }

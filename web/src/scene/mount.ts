@@ -7,6 +7,7 @@ import { effectsLevel, type EffectFlags, type EffectsLevel } from '../state/effe
 import type { CoreMode } from '../state/levels';
 import type { Motion } from '../state/motion';
 import type { ToolCategory } from '../state/toolCategory';
+import { BOOT_IGNITE_MS, BOOT_MS, bootFrame } from './boot';
 import { categoryColor, createBursts } from './bursts';
 import { HOME, parallax, viewOffset } from './camera';
 import { readColors } from './colors';
@@ -54,6 +55,11 @@ const POINTER_RATE = 6;
 // core and the ring edges are hot enough to pass this threshold.
 const BLOOM = { strength: 1.1, radius: 0.6, threshold: 0.9 };
 
+// The power-up is a page-load event, not a scene-instance one: a scene that
+// remounts after a step down, an effects restore or a recovered context
+// loss opens at the end state instead of flashing the grid dark again.
+let booted = false;
+
 export function mountScene(
   canvas: HTMLCanvasElement,
   initial: SceneInput,
@@ -99,6 +105,25 @@ export function mountScene(
   core.setMode(input.mode);
   core.setFill(input.fill);
   world.setEffects(input.effects);
+
+  const firstBoot = !booted;
+  booted = true;
+  let bootMs = firstBoot ? 0 : BOOT_MS;
+  let bootDone = false;
+
+  const applyBoot = (ms: number): boolean => {
+    const frame = bootFrame(ms, input.motion);
+    world.setReveal(frame.reveal);
+    core.setBoot({ rings: frame.rings, ignite: frame.ignite });
+    return frame.done;
+  };
+  bootDone = applyBoot(bootMs);
+
+  // The ignition is the boot's last phase. While the session is still
+  // linking the clock waits at its start, so the core lights up as the
+  // overlay goes instead of before it.
+  const bootHeld = () => input.booting && bootMs >= BOOT_IGNITE_MS;
+  const bootRunning = () => !bootDone && !bootHeld();
 
   // The guard starts where an earlier scene left the effects, so a remount
   // after a step down cannot re-enable beams.
@@ -197,6 +222,11 @@ export function mountScene(
     lastRender = now;
     elapsed += dt;
 
+    if (bootRunning()) {
+      bootMs = Math.min(BOOT_MS, bootMs + dt * 1000);
+      bootDone = applyBoot(bootMs);
+    }
+
     const workStart = performance.now();
     coreAnimating = core.update(dt, elapsed, motion);
     burstsAlive = bursts.update(dt);
@@ -220,7 +250,7 @@ export function mountScene(
       input.mode === 'working' ||
       poseEasing ||
       driver !== null ||
-      input.booting;
+      bootRunning();
     if (frameInterval({ hidden: document.hidden, motion, eventActive }) !== null) schedule();
   }
 
