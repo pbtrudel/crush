@@ -11,10 +11,26 @@ const SANITIZE = {
   FORBID_TAGS: ['style', 'form', 'input'],
 };
 
+// The page CSP allows img-src data: and blob: only.
+export const isLocalUrl = (u: string) => u.startsWith('data:') || u.startsWith('blob:');
+
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener noreferrer');
+  }
+  // A remote image would render as a broken box, so keep the reference as
+  // a link instead.
+  if (node.tagName === 'IMG') {
+    const src = node.getAttribute('src') ?? '';
+    if (src && !isLocalUrl(src)) {
+      const a = node.ownerDocument.createElement('a');
+      a.setAttribute('href', src);
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+      a.textContent = `Image: ${node.getAttribute('alt') || src}`;
+      node.replaceWith(a);
+    }
   }
 });
 

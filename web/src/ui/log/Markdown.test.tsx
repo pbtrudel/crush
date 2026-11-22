@@ -43,6 +43,13 @@ describe('Markdown', () => {
     const href = root.querySelector('a')?.getAttribute('href') ?? '';
     expect(href.toLowerCase()).not.toContain('javascript:');
   });
+  it('turns a remote image into a link', () => {
+    const root = renderText('![chart](https://example.com/c.png)');
+    expect(root.querySelector('img')).toBeNull();
+    const a = root.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('https://example.com/c.png');
+    expect(a.textContent).toBe('Image: chart');
+  });
   it('does not re-parse unchanged text on re-render', () => {
     const spy = vi.spyOn(DOMPurify, 'sanitize');
     const root = document.createElement('div');

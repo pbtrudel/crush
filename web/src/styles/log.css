@@ -29,6 +29,7 @@
 .msg__finish[data-reason='error'] { color: var(--magenta); }
 .msg__marker { text-align: center; color: var(--violet); }
 .msg__image { max-inline-size: 100%; border-radius: var(--radius); border: 1px solid var(--edge); }
+.msg a { color: var(--cyan); overflow-wrap: anywhere; }
 .msg__cursor { inline-size: 8px; block-size: 16px; background: var(--cyan); animation: blink 0.8s steps(2) infinite; }
 .shell code { color: var(--teal); }
 .report { border: 1px solid var(--violet-dim); border-radius: var(--radius); padding: 10px; }
