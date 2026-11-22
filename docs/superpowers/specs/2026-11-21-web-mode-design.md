@@ -16,7 +16,8 @@ each agent is doing, which files changed and how.
 - Web mode, when enabled, opens a browser with a UI for Crush.
 - Same functionality as the TUI, in a browser tab.
 - Futuristic, 3D, animations, holograms; theme matches
-  `assets/2026-11-21-web-mode-reference.jpg`.
+  `assets/2026-11-21-web-mode-reference.jpg` and, after the first build was
+  rejected, the neon holographic dashboard references in section 3.1.
 - See agents working; click an agent to see what it is doing.
 - A side section listing edited files and showing their contents as a git diff
   in an editor.
@@ -269,125 +270,337 @@ against the session's history set, never read from arbitrary disk locations.
 
 ## 3. Visual language
 
-Reference: `assets/2026-11-21-web-mode-reference.jpg`. A user faces a
-holographic projector; curved panels wrap around them; hexagonal node networks,
-glowing rings, cyan light with magenta and violet accents on a deep navy void.
-
 Concept name: **Holodeck**. Dominant work patterns: operate (prompt, approve,
 steer) and monitor (agents, files).
 
-### 3.1 Tokens
+### 3.1 Direction and references
+
+The first build used a muted navy theme with grey wireframes and flat boxes.
+The user rejected it. This section replaces it with a neon holographic look
+agreed in brainstorming on 2026-11-22.
+
+References: the "holographic dashboard" image set on stockcake.com
+(`https://stockcake.com/i/holografische-dashboard-oberfl%C3%A4che_4008192_1821188`
+and its related images), shared as screenshots. The traits to reproduce:
+
+- Saturated neon light (cyan, hot magenta, violet) with heavy glow and bloom.
+- Atmosphere: violet fog, drifting particles, light beams.
+- A glossy floor with a neon perspective grid running to the horizon.
+- A holographic projector: glowing ring pedestal, light cone, content
+  floating above it.
+- Angled glass screens with glowing two-tone edges, corner brackets and scan
+  lines.
+- Instrument-style data: radial gauges, bar charts, sparklines, big glowing
+  numerals.
+
+Not reproduced: city skylines and isometric circuit landscapes. They are
+decoration that competes with the agents for attention and costs GPU time.
+
+Decisions taken (user choices in brackets):
+
+| Topic | Decision |
+|---|---|
+| 3D depth | Readable 2D layout of glass panels over a full 3D world, plus a cinematic mode (C) |
+| Palette | Cyan-led; violet for fog and depth; magenta only for "needs you" (A) |
+| Scene | Grid floor, atmosphere, projector and core, agent nodes in orbit (1 to 4) |
+| Panels | Glass for what you read, hologram for what you glance at (C) |
+| Top bar | Instruments plus a live activity chart (B) |
+| Motion | Calm while idle, lively while working (A) |
+| Cinematic | Watch mode, toggled by a key and a button (A plus a shortcut) |
+| Technique | HTML panels over a three.js scene; CSS 3D renderer for cinematic mode |
+
+### 3.2 Tokens
 
 | Role | Value | Use |
 |---|---|---|
-| void | `oklch(0.14 0.04 265)` | background, with faint scan grid and depth fog |
-| surface | `oklch(0.19 0.05 260 / 0.72)` | glass panels, inner shadow + edge highlight |
-| holo cyan | `oklch(0.82 0.14 210)` | primary signal: active, focus, links |
-| magenta | `oklch(0.68 0.24 330)` | attention only: permission requests, errors, hot path |
-| violet | `oklch(0.60 0.20 290)` | secondary structure: subagents, reasoning |
-| teal | `oklch(0.78 0.13 175)` | success, additions |
-| amber | `oklch(0.80 0.15 75)` | warning, reconnecting |
-| text | `oklch(0.93 0.02 230)` / muted `oklch(0.70 0.04 240)` | body / secondary |
+| void | `oklch(0.12 0.05 275)` | page background, scene clear color |
+| haze | `oklch(0.30 0.16 300)` | horizon gradient and depth fog |
+| glass | `oklch(0.16 0.05 265 / 0.70)` | glass panel body, behind `backdrop-filter: blur(14px)` |
+| glass solid | `oklch(0.16 0.05 265 / 0.94)` | glass body where `backdrop-filter` is unsupported |
+| holo cyan | `oklch(0.86 0.17 205)` | primary signal: edges, grid, core, focus, links |
+| magenta | `oklch(0.70 0.29 340)` | attention only: permission requests, questions, errors, context near full |
+| violet | `oklch(0.62 0.25 295)` | depth and structure: fog, subagents, reasoning, network tools |
+| teal | `oklch(0.82 0.16 170)` | success, additions, write tools |
+| amber | `oklch(0.83 0.17 75)` | warnings, reconnecting, run tools |
+| text | `oklch(0.95 0.02 220)` / muted `oklch(0.74 0.05 240)` | body / secondary |
 
-Every state carried by color also carries an icon, label, or shape. Contrast:
-body text at least 4.5:1 on surface; HUD numerals at least 3:1.
+- Glow is a token too: `--glow-cyan` is a two-layer shadow (a tight 1 px
+  edge at full strength plus a soft 18 px halo at 35 % alpha). The same
+  exists for magenta and violet.
+- Values past the sRGB gamut are clipped by the browser; P3 displays show the
+  fuller saturation. Contrast is checked against the clipped sRGB value.
+- Every state carried by color also carries an icon, label, or shape.
 
-Type (self-hosted, bundled): Chakra Petch (HUD labels, numerals), IBM Plex Sans
-(prose), JetBrains Mono (code). Spacing on a 4 px base (4, 16, 36 rhythm).
-Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
+Type (self-hosted, bundled): Chakra Petch for labels and numerals, with a
+cyan text glow on numerals; IBM Plex Sans for prose; JetBrains Mono for code.
+Spacing on a 4 px base (4, 16, 36 rhythm). Focus ring: 2 px dashed holo cyan,
+2 px offset, on every interactive element.
 
-### 3.2 Layout
+### 3.3 Layout
 
 ```
-┌──────────────────────── HUD strip ─────────────────────────┐
-│ title · model · tokens/cost · branch · LSP/MCP hex · mode · link │
-├──────────────┬──────────────────────────────┬──────────────┤
-│ Transmission │      Agent Constellation      │ File         │
-│ log (curved, │   (Three.js, core on ring     │ hologram     │
-│ rotateY +)   │    projector, orbiting hexes) │ drawer       │
-│              │   todo orbit · context ring   │ (toggle)     │
-│              │   inspector (on node click)   │              │
-├──────────────┴──────────────────────────────┴──────────────┤
-│ Chronoline (tool-call ticks)                                │
-│ Command deck: prompt · attachments · queue chips · send/cancel │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────── HUD strip (hologram) ──────────────────────┐
+│ title · model · branch │ context gauge │ tokens · cost │ activity │
+│ LSP/MCP hex tiles │ permissions · Plan/Code · cinematic · display · link │
+├───────────────┬──────────────────────────────┬────────────────┤
+│ Transmission  │        3D scene (§3.4)        │ File drawer    │
+│ log (glass,   │  projector, core, agent nodes │ (glass, M2,    │
+│ curved)       │  inspector on node click (M2) │  slides in)    │
+├───────────────┴──────────────────────────────┴────────────────┤
+│ Command deck (glass, flat): prompt · attachments · send/cancel │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-- Side panels use CSS 3D perspective (`perspective-origin: 50% 0%`) with a
-  slight inward `rotateY`, reproducing the wraparound panels of the reference.
-- Below 1024 px the side panels become tabs; the constellation stays central.
-  Below 768 px everything stacks, constellation collapses to a compact strip.
+- The 3D scene fills the whole viewport behind every panel; the center column
+  is simply where no panel covers it.
+- The transmission log keeps its slight inward curve toward the projector
+  (CSS perspective with a small `rotateY`). The command deck stays flat.
+- Below 1024 px the side panels become tabs and the activity chart and
+  sparklines hide (numbers stay). Below 768 px everything stacks and the scene
+  shrinks to a strip behind the HUD.
 
-### 3.3 Components and display features
+### 3.4 The scene
 
-- **Agent Constellation**: main agent is a glowing core over a ring projector.
-  Subagents (violet) and teammates (cyan) are hexagonal nodes in orbit,
-  connected by light filaments. A filament pulses when messages flow; a tool
-  call fires a particle burst tinted by tool category (read, write, exec,
-  network, agent). Statuses: running (bright, slow spin), inactive (dim),
-  provisioning (assembling wireframe), failed (magenta flicker plus icon),
-  done (collapses into the core). A ring around the core shows context window
-  fill; a small cost and token readout sits under it.
-- **Inspector**: opens on node click or keyboard selection. Live transcript of
-  that agent's session, current tool with elapsed time, model and provider,
-  tokens and cost, assigned task, status, and actions (cancel, message for
-  teammates).
+Rendered by three.js behind all panels.
+
+**Camera.** Slightly above the floor, looking at the projector. In Full
+motion a small parallax follows the pointer (at most 2 degrees); the camera
+never drifts on its own.
+
+**Floor.** Dark plane with a cyan perspective grid whose lines fade into the
+haze at the horizon. The glossy look comes from a mirrored, dimmed copy of the
+emissive objects (core, rings, nodes) under the floor; there are no real
+reflections.
+
+**Atmosphere.**
+- Exponential fog in the haze color; the background shades from void at the
+  top to haze at the horizon.
+- About 1,500 dust particles drifting slowly, drawn as one `Points` batch.
+- Three or four soft light beams angled down from above, fading in and out
+  over 6 to 10 seconds.
+
+**Projector and core.**
+- A pedestal of three stacked cyan rings casting an upward cone of light.
+- The core floats in the cone: a faceted crystal with a glowing rim and a
+  bright inner heart. It replaces the grey wireframe sphere.
+- A ring around the core fills with the context window share.
+
+| Core state | Look |
+|---|---|
+| Idle | Slow breathing pulse (about 4 s period) |
+| Working | Brighter, spinning faster |
+| Needs you (permission or question pending) | Magenta, pulsing |
+| Error | Magenta flicker, plus an icon and text in the panels |
+
+**Agent nodes (M2, with the constellation).**
+- Hexagonal prisms on a tilted orbit around the core: cyan for teammates,
+  violet for subagents.
+- Each node is joined to the core by a light filament; a pulse runs along it
+  when messages flow.
+- A tool call fires a short particle burst from the core to the node that ran
+  it. In M1, with only the main agent, the burst is a ring expanding from the
+  core.
+- Burst color by tool category: read cyan, write teal, run amber, network
+  violet. Magenta stays reserved for "needs you".
+- Clicking a node opens its inspector. Node statuses: running (bright, slow
+  spin), inactive (dim), provisioning (assembling wireframe), failed (magenta
+  flicker plus icon), done (collapses into the core).
+
+**Glow.** An `UnrealBloomPass` (three.js `examples/jsm/postprocessing`) makes
+only emissive parts bleed light. Panels and text are HTML above the canvas and
+are never bloomed.
+
+**Fallbacks.**
+- Low power mode: no bloom, no beams, a quarter of the particles, no
+  cinematic mode.
+- No WebGL: the existing 2D view, with low power mode forced on.
+
+### 3.5 Panels
+
+**Glass** (read often): transmission log, command deck, file drawer, agent
+inspector, permission requests, questions.
+
+- Body in the glass token over a 14 px backdrop blur; the solid token where
+  blur is unsupported.
+- Two-tone glowing edge: cyan at the top left fading to violet at the bottom
+  right, with the cyan glow token outside.
+- Brighter cyan L-shaped corner brackets on all four corners.
+- A very faint scan-line texture in the panel background only, never over
+  text.
+- Code blocks sit in a darker inset well inside the glass.
+- Permission requests and questions use the same glass with magenta edges and
+  brackets. The scene dims behind them, and the edge pulse grows with the
+  danger level. Focus moves into them and the page behind is `inert`.
+
+**Hologram** (glanced at): the HUD strip, agent labels next to their nodes in
+the scene, and toasts.
+
+- No fill, or a whisper of void at 20 % alpha. Content is glowing cyan lines
+  and text inside thin bracket frames, with a faint scan-line texture.
+- Each element flickers once for about 120 ms when it appears; never
+  continuously.
+- Toasts appear top right, dismiss themselves after 6 s (errors stay until
+  dismissed), and are announced by a polite live region.
+
+**Controls.**
+- Primary (Transmit): solid glowing cyan.
+- Secondary: cyan outline, filling on hover.
+- The permission `<select>` is restyled to match (it shows the browser's
+  default white control today).
+- The HUD gains the cinematic mode button.
+
+### 3.6 Instruments (the HUD)
+
+| Instrument | Look | Behavior |
+|---|---|---|
+| Session title, model, branch | Hologram text; the model has a small provider glyph | Static |
+| Context | Radial gauge, about 56 px, percentage in the center | Cyan; amber from 75 %; magenta and pulsing from 90 % |
+| Tokens, cost | Big glowing numerals, each with a sparkline of the last 10 minutes | Numerals roll to new values instead of jumping |
+| Activity | One bar per minute for the last 15 minutes, stacked by tool category in the §3.4 colors | The current minute grows live; hover shows counts |
+| LSP, MCP | One small hex tile per server | Lit cyan when running, dim when stopped, magenta plus icon on errors or down; hover shows name and status |
+| Controls | Permissions, Plan/Code, cinematic (`Alt+C`), display settings, link status | As today, restyled |
+
+- Instruments are SVG built in Preact.
+- Sparklines and the activity chart are derived in the browser from stream
+  frames already sent (usage updates and tool calls). History starts when the
+  tab opens; a reconnect replays what the gateway ring still holds. No new
+  server API is needed.
+- Tool category is derived from the tool name with a fixed table in the
+  frontend (for example `view`, `grep`, `glob`, `ls` are read; `edit`,
+  `write`, `multiedit` are write; `bash` and job tools are run; `fetch`,
+  `download`, web search and MCP tools are network). Unknown tools count as
+  run.
+- Each instrument has a text label for screen readers, for example "Context
+  42 percent".
+
+### 3.7 Cinematic mode
+
+A watch mode for following agents work, not for long reading.
+
+- **Toggle:** `Alt+C` (`Option+C` on macOS) from anywhere, including while
+  typing in the prompt, matched on `event.code === "KeyC"` with `altKey` and
+  `preventDefault` so macOS does not insert a character. Also the HUD button,
+  whose tooltip shows the shortcut.
+- **Exit:** `Alt+C`, the button, or Esc. Esc exits only when focus is outside
+  the prompt (in the prompt it keeps cancelling a run) and no interrupt dialog
+  is open (the dialog owns Esc).
+- **Transition:** the camera pulls back and up over about 900 ms (expo-out).
+  At the same time the transmission log (and in M2 the agent inspector) moves
+  onto curved screens around the projector through three.js `CSS3DRenderer`.
+  The panels stay real HTML: sharp, selectable, readable by screen readers.
+  The renderer positions them through the CSSOM (`element.style.transform`),
+  which the CSP allows; no `style` attributes are written into markup.
+- **While in it:** drag to orbit (polar angle limited so the camera stays
+  above the floor), scroll to zoom within bounds. Clicking an agent node turns
+  its screen to face the camera.
+- **Prompt:** a slim prompt bar stays at the bottom. Permission requests and
+  questions still appear flat in front of everything, and focus jumps to
+  them.
+- **Reduced and Off motion:** a 150 ms cross-fade instead of the flight.
+- **Low power mode:** cinematic mode is unavailable and the button hidden.
+- DOM order never changes, so assistive technology reads cinematic mode the
+  same as the normal layout.
+
+### 3.8 Components and display features
+
+Unchanged in purpose; they take the glass or hologram treatment above.
+
+- **Inspector** (M2): opens on node click or keyboard selection. Live
+  transcript of that agent's session, current tool with elapsed time, model
+  and provider, tokens and cost, assigned task, status, and actions (cancel,
+  message for teammates).
 - **Transmission log**: markdown rendering, collapsible tool cards with input
   and output, streaming text, reasoning as a dimmed violet "thought layer"
   (collapsed by default, expandable), plan handoff cards, compaction markers,
   subagent report cards. Virtualized for long sessions.
-- **File hologram drawer**: tree of edited files with +/- bars and diagnostic
+- **File drawer** (M2): tree of edited files with +/- bars and diagnostic
   markers; selecting a file opens a CodeMirror 6 merge view (side-by-side or
-  unified, read-only, syntax highlighted), a version stepper, and links to the
-  tool calls that produced each version. CodeMirror is loaded lazily.
-- **Chronoline**: horizontal timeline of tool calls and edits; hover previews,
-  click scrolls the log and highlights the agent node.
-- **Interrupt hologram**: permission requests emerge from the core, pulse
-  magenta scaled to danger level, show tool, path, params, and description.
-  Keys: `A` allow, `S` allow for session, `D` deny. Focus moves into it;
-  background is `inert`.
-- **Question form**: tabbed holographic form supporting yes/no, single, multi,
+  unified, read-only, syntax highlighted), a version stepper, and links to
+  the tool calls that produced each version. CodeMirror is loaded lazily.
+- **Chronoline** (M2): horizontal timeline of tool calls and edits above the
+  command deck; hover previews, click scrolls the log and highlights the
+  agent node.
+- **Permission request**: magenta glass (§3.5), shows tool, path, params,
+  and description. Keys: `A` allow, `S` allow for session, `D` deny.
+- **Question form**: magenta glass, tabbed, supporting yes/no, single, multi,
   free text, and the confirmation step.
-- **Task board**: three lanes (pending, in progress, completed) for team
-  tasks; owner chips link to constellation nodes.
-- **Todo orbit**: session todos as a compact ring checklist beside the core.
-- **Command palette** (`Ctrl+K` / `Cmd+K`): commands, slash commands, MCP
+- **Task board** (M2): three lanes (pending, in progress, completed) for team
+  tasks; owner chips link to agent nodes.
+- **Todo orbit** (M2): session todos as a compact ring checklist beside the
+  core.
+- **Command palette** (M3, `Ctrl+K` / `Cmd+K`): commands, slash commands, MCP
   prompts, skills, sessions, models, toggles; argument form for commands that
   take arguments.
-- **Systems panel**: LSP and MCP servers as a hex status grid with
-  start/stop/refresh/auth actions and diagnostics counts.
-- **Boot sequence**: short power-up animation that doubles as the loading
-  state while the snapshot arrives.
-- **Toast holograms**: notifications and "answered in the other client"
-  messages.
+- **Systems panel** (M3): LSP and MCP servers as a hex status grid with
+  start/stop/refresh/auth actions and diagnostics counts. The HUD hex tiles
+  open it.
+- **Boot sequence**: the scene powers up (grid draws outward, rings stack,
+  core ignites) while the snapshot arrives; it doubles as the loading state.
+- **Toasts**: notifications, refusals ("Can't switch while Crush is busy")
+  and "answered in the other client" messages.
 
-### 3.4 Motion and performance
+### 3.9 Motion
 
-- Motion settings: Full, Reduced, Off. Default follows
-  `prefers-reduced-motion`. Only `transform`, `opacity`, `filter` animate.
-  Easing: expo-out for entrances; exits at about 70 % of entrance duration.
-- Low power mode swaps WebGL for a 2D SVG constellation; auto-enabled when
-  WebGL is unavailable.
-- The Three.js scene renders on demand (on change and during active
-  animation), targets 60 fps, and pauses when `document.hidden`.
+- Settings: Full, Reduced, Off. Default follows `prefers-reduced-motion`.
+- **Idle:** the core breathes, particles drift, the grid scrolls gently,
+  beams fade in and out. Nothing else moves.
+- **Working:** tool-call bursts, filament pulses, faster core spin, live
+  activity bar.
+- **Entrances:** panels and messages power up with a short glitch and
+  scan-line sweep under 300 ms (expo-out); exits at about 70 % of the entrance
+  duration. Hologram elements flicker once on appearance.
+- Only `transform`, `opacity` and `filter` animate in CSS.
+- Reduced: no parallax, no flicker or glitch, entrances become fades, scene
+  ambient motion at a quarter speed, bursts become a single brightness pulse.
+  Off: the scene renders static frames on state change only.
+
+### 3.10 Performance
+
+- The scene renders on demand: up to 60 fps while anything event-driven is
+  moving, 30 fps when only idle ambient motion remains, paused when
+  `document.hidden`.
+- Bloom renders at half resolution. Particles are one draw call. In-scene
+  agent labels re-render only when their content changes.
+- **Frame-time guard:** when the average frame time exceeds 25 ms over about
+  3 s, effects step down one level at a time: bloom off, then beams off, then
+  half the particles. A toast says "Reduced effects to keep things smooth"
+  with a button to restore them. The guard does not step down again for 10 s
+  after a change.
 - Streaming deltas are coalesced once per animation frame.
-- Initial load budget about 600 KB gzipped; Three.js and CodeMirror in
-  separate chunks.
+- Initial load budget about 600 KB gzipped. three.js (scene and
+  postprocessing), the cinematic mode code and CodeMirror are separate chunks
+  loaded in parallel so the text panels render first.
 
-### 3.5 Accessibility
+### 3.11 Accessibility
 
 - Every 3D element has a DOM equivalent: an agent list (roving tabindex) that
-  drives the same selection as the constellation, and a file list.
-- Native elements first; dialogs trap and restore focus; live regions announce
-  new permission requests, run completion, and errors.
-- Works at 200 % zoom; keyboard path covers every flow.
+  drives the same selection as the nodes, and a file list.
+- Text on glass at least 4.5:1, measured with the glass composited over the
+  brightest pixel the scene renders (the core at full bloom). HUD numerals at
+  least 3:1 against the haze.
+- Native elements first; dialogs trap and restore focus; live regions
+  announce new permission requests, run completion, errors and toasts.
+- Works at 200 % zoom; the keyboard path covers every flow, including
+  cinematic mode.
+
+### 3.12 Visual verification
+
+- Playwright screenshot tests against webfake with a fixed random seed and a
+  paused clock (`page.clock`), in headless Chromium with SwiftShader WebGL:
+  normal layout, cinematic mode, a permission request open, and Reduced
+  motion. Baselines are committed under `web/e2e/` and compared with a small
+  tolerance; they are regenerated deliberately with `--update-snapshots`.
+- An axe scan (`@axe-core/playwright`) on each of those screens, failing on
+  serious and critical violations.
+- During the build, the same screenshots are reviewed by eye against the
+  references after each visual task.
 
 ## 4. States and error handling
 
 | Situation | Behavior |
 |---|---|
 | Loading | Boot sequence until snapshot applied |
-| Empty session | Empty constellation core with deck hint: what to type and what will appear |
+| Empty session | Idle core on the projector, with a deck hint: what to type and what will appear |
 | No edited files | Drawer explains edits will appear here as agents write |
 | Socket dropped | HUD amber "Signal lost, reconnecting", exponential backoff to 10 s, resync via `since` or snapshot |
 | Crush exited | `gateway_closing` or repeated failure shows "Session ended", log stays readable, input disabled with reason |
@@ -396,7 +609,7 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 | Permission or question answered elsewhere | Dialog closes, toast "Answered in terminal" |
 | API error | Inline error at the control that triggered it, with the server message and a retry where safe |
 | Oversized output or diff | Truncated with "show full"; diffs over 1 MB fall back to unified text |
-| WebGL missing | Low power 2D constellation |
+| WebGL missing | Low power mode forced on, 2D view, no cinematic mode |
 
 ## 5. Parity map and milestones
 
@@ -405,9 +618,9 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 | Chat stream, markdown, tool cards, reasoning | Transmission log, thought layer | M1 |
 | Send, queue, cancel, attachments, file picker, `@` completion | Command deck | M1 |
 | Start a session from the landing screen (first prompt) | Command deck, `POST /sessions` | M1 |
-| Permission dialog, permission mode | Interrupt hologram, HUD toggle | M1 |
+| Permission dialog, permission mode | Magenta glass request, HUD selector | M1 |
 | Plan mode | HUD Plan/Code toggle, deck badge, `POST /input-mode` | M1 |
-| Question forms | Holographic form | M1 |
+| Question forms | Magenta glass form | M1 |
 | Subagents, teammates, agents dialog | Constellation, inspector, agent list | M2 |
 | Team tasks | Task board | M2 |
 | Todos | Todo orbit | M2 |
@@ -420,10 +633,15 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 | Plan handoff, notifications | Log cards, toasts | M3 |
 | API key, OAuth (Copilot, Hyper, OpenAI, Grok), AWS SSO | Auth dialogs reusing existing flows | M4 |
 | Pinentry, SSH askpass | Secure prompt dialog | M4 |
-| Theme, motion, low power, detach | Visual settings | M4 |
+| Theme, detach | Visual settings | M4 |
 
 Each milestone is independently shippable as its own PR series; M1 includes the
-gateway, auth, stream, build pipeline, and the visual shell.
+gateway, auth, stream, build pipeline, and the full visual language of
+section 3: scene (floor, atmosphere, projector, core, bloom), glass and
+hologram panels, HUD instruments, cinematic mode, motion settings (Full,
+Reduced, Off), low power mode, the frame-time guard, and the screenshot and
+axe checks. Agent nodes, filaments, the inspector and the file drawer arrive
+with their features in M2.
 
 Conflict rule: first answer wins for permissions and questions; the other
 client closes its dialog on the resolution event.
@@ -463,7 +681,9 @@ Frontend:
   race resolution, delta coalescing.
 - Playwright smoke against a gateway backed by a fake workspace: load, send a
   prompt, permission round-trip, open a diff, select an agent node via
-  keyboard and pointer, reduced motion and low power modes.
+  keyboard and pointer, reduced motion and low power modes, `Alt+C`
+  cinematic toggle.
+- Screenshot and axe checks as in section 3.12.
 
 Manual: two terminals with `--web` (one in-process, one
 `CRUSH_CLIENT_SERVER=1`), confirm two independent tabs and two-way sync with
