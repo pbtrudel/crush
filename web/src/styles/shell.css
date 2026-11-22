@@ -117,10 +117,11 @@
 }
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,
-     needs about 1280px of content, so the instruments wrap below it. */
-  .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); }
+     needs about 1280px of content, so the instruments wrap below it and
+     take back the wide gutter the tightened layout gave up. */
+  .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); padding: var(--space-4) calc(var(--space-4) * 1.5); }
   .hud__id { flex: 1 1 12rem; }
-  .hud__controls { flex: 1 1 100%; flex-wrap: wrap; }
+  .hud__controls { flex: 1 1 100%; flex-wrap: wrap; gap: var(--space-4); }
   /* The wrapped HUD is taller, so until the HUD reports its height the
      fallback keeps the old 216px offset. */
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }

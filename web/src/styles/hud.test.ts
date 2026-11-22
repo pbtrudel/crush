@@ -51,6 +51,10 @@ describe('HUD instrument row', () => {
     expect(rule(tight, '.hud')).toContain('gap: var(--space-1) 10px');
     expect(rule(tight, '.hud')).toContain('padding: var(--space-4) 12px');
     expect(rule(tight, '.hud__controls')).toContain('gap: var(--space-1)');
+
+    // The wrapped layout keeps the wide gutter it had before the tightening.
+    expect(rule(wrapped, '.hud')).toContain('padding: var(--space-4) calc(var(--space-4) * 1.5)');
+    expect(rule(wrapped, '.hud__controls')).toContain('gap: var(--space-4)');
   });
 
   it('keeps the taller toast fallback with the wrapped HUD', () => {
