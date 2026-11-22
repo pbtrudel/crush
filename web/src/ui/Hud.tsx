@@ -56,7 +56,7 @@ export function Hud() {
 
   return (
     <header class="hud holo scanlines flicker-once" ref={root}>
-      <div class="hud__id">
+      <div class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}>
         <span class="hud-label">{s.project || 'crush'}</span>
         <h1 class="hud__title">{s.session?.title || 'New session'}</h1>
         <p class="hud__meta">

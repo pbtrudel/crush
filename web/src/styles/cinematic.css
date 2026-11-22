@@ -49,9 +49,10 @@
 .holodeck[data-cinematic='true'] .scene-layer__canvas { pointer-events: auto; }
 
 /* Only the way out and the link survive; the flex row replaces the seven
-   instrument columns the hidden children no longer fill. */
+   instrument columns the hidden children no longer fill. The identity block
+   is not dropped: Hud moves it to .visually-hidden so the page keeps its
+   level-one heading for assistive technology and axe. */
 .holodeck[data-cinematic='true'] .hud { display: flex; justify-content: flex-end; }
-.holodeck[data-cinematic='true'] .hud__id,
 .holodeck[data-cinematic='true'] .gauge,
 .holodeck[data-cinematic='true'] .hud__metric,
 .holodeck[data-cinematic='true'] .hud__chart,

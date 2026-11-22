@@ -6,6 +6,11 @@ import { lowPower } from './motion';
 // normal layout.
 export const cinematic = signal(false);
 
+// The flight and the panel cross-fade, in milliseconds. They live with the
+// mode's state so eager code can read them without the lazy scene chunk.
+export const FLIGHT_MS = 900;
+export const FADE_MS = 150;
+
 // The one place the rule for entering cinematic mode is written. The App
 // reads it for the key, the HUD for its button and the scene layer for the
 // flight; none of them repeats the expression.

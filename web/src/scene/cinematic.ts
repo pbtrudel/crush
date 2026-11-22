@@ -1,17 +1,16 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { FADE_MS, FLIGHT_MS } from '../state/cinematic';
 import type { Motion } from '../state/motion';
 import { HOME, WIDE } from './camera';
 import { cameraCSS, objectCSS } from './cssProjection';
 import { expoOut } from './ease';
 import type { SceneHandle } from './mount';
 
-export const FLIGHT_MS = 900;
-export const FADE_MS = 150;
-
 // The log hangs to the left of the projector, turned toward the wide orbit,
-// with one CSS pixel standing for 0.004 world units.
-const LOG_ANCHOR = { x: -3.2, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.004 };
+// with one CSS pixel standing for 0.008 world units: at the wide camera the
+// panel lands at about 0.87x of its CSS size, so body text stays legible.
+const LOG_ANCHOR = { x: -3.2, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.008 };
 
 // The mount snaps its own pose easing inside this distance, so the fly-back
 // is over by then.
