@@ -106,6 +106,7 @@ func (app *App) printRunJSON(ctx context.Context, output io.Writer, sessionID st
 	}
 	result.DurationMs = time.Since(start.at).Milliseconds()
 	result.Tree.UndeliveredReports = response.tree.Team.UnreadByLead
+	result.Worktree = app.runWorktree
 	// The session's cost already includes what its child sessions cost.
 	if sess, err := app.Sessions.Get(ctx, sessionID); err != nil {
 		slog.Warn("Failed to read the session's cost", "error", err)

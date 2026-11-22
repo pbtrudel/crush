@@ -50,6 +50,8 @@ type MultiEditResponseMetadata struct {
 	NewContent   string       `json:"new_content,omitempty"`
 	EditsApplied int          `json:"edits_applied"`
 	EditsFailed  []FailedEdit `json:"edits_failed,omitempty"`
+	// UnreadEdit marks a batch applied to a file the read guard refused.
+	UnreadEdit bool `json:"unread_edit,omitempty"`
 }
 
 const MultiEditToolName = "multiedit"
@@ -63,6 +65,7 @@ func NewMultiEditTool(
 	files history.Service,
 	filetracker filetracker.Service,
 	workingDir string,
+	editWithoutRead bool,
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		MultiEditToolName,
@@ -86,7 +89,14 @@ func NewMultiEditTool(
 			var response fantasy.ToolResponse
 			var err error
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{
+				ctx:         ctx,
+				permissions: permissions,
+				files:       files,
+				filetracker: filetracker,
+				workingDir:  workingDir,
+				withoutRead: editWithoutRead,
+			}
 			// Handle file creation case (first edit has empty old_string)
 			if len(params.Edits) > 0 && params.Edits[0].OldString == "" {
 				response, err = processMultiEditWithCreation(editCtx, params, call)
@@ -145,6 +155,28 @@ func applyEditsToContent(currentContent string, edits []MultiEditOperation, star
 		currentContent = newContent
 	}
 	return currentContent, failedEdits, whitespaceCorrected
+}
+
+// failedEditsText renders the edits of a batch that could not be applied, so
+// the model reads which one failed and why. A failure that carries a hint
+// keeps it on lines indented under its bullet.
+func failedEditsText(failed []FailedEdit) string {
+	if len(failed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Failed edits:")
+	for _, edit := range failed {
+		lines := strings.Split(edit.Error, "\n")
+		fmt.Fprintf(&b, "\n- edit %d: %s", edit.Index, lines[0])
+		for _, line := range lines[1:] {
+			b.WriteString("\n")
+			if line != "" {
+				b.WriteString("  " + line)
+			}
+		}
+	}
+	return b.String()
 }
 
 func processMultiEditWithCreation(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -230,6 +262,9 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		message = fmt.Sprintf("File created with %d edits: %s", len(params.Edits), params.FilePath)
 	}
 	message = withWhitespaceNote(message, whitespaceCorrected)
+	if text := failedEditsText(failedEdits); text != "" {
+		message += "\n\n" + text
+	}
 
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(message),
@@ -245,22 +280,43 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 }
 
 func processMultiEditExistingFile(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
+	file, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	if resp.Content != "" || resp.IsError {
 		return resp, nil
 	}
+	sessionID, oldContent, isCrlf := file.sessionID, file.content, file.isCrlf
 
 	currentContent, failedEdits, whitespaceCorrected := applyEditsToContent(oldContent, params.Edits, 0)
+
+	// A batch applies to a file the guard refuses only when every edit is
+	// an exact, single match as the content evolves there. One edit that
+	// fails, needs the whitespace fallback or asks for replace_all refuses
+	// the whole call, with the guard's own refusal.
+	var degraded, refused bool
+	if file.guard.refused() {
+		replaceAll := false
+		for _, op := range params.Edits {
+			replaceAll = replaceAll || op.ReplaceAll
+		}
+		degraded, refused = edit.mayEditUnread(file.guard, replaceAll, whitespaceCorrected || len(failedEdits) > 0)
+		if refused {
+			return refusedBatch(file.guard, failedEdits), nil
+		}
+	}
 
 	// Check if content actually changed
 	if oldContent == currentContent {
 		// If we have failed edits, report them
 		if len(failedEdits) > 0 {
+			message := fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))
+			if text := failedEditsText(failedEdits); text != "" {
+				message += "\n\n" + text
+			}
 			resp := fantasy.WithResponseMetadata(
-				fantasy.NewTextErrorResponse(fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))),
+				fantasy.NewTextErrorResponse(message),
 				MultiEditResponseMetadata{
 					EditsApplied: 0,
 					EditsFailed:  failedEdits,
@@ -319,7 +375,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		writeContent, _ = fsext.ToWindowsLineEndings(writeContent)
 	}
 
-	if err := commitFileChange(edit, sessionID, params.FilePath, oldContent, writeContent); err != nil {
+	if err := commitFileChange(edit, sessionID, params.FilePath, oldContent, writeContent, !degraded); err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to write file: %s", err)), nil
 	}
 
@@ -330,6 +386,12 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		message = fmt.Sprintf("Applied %d edits to file: %s", len(params.Edits), params.FilePath)
 	}
 	message = withWhitespaceNote(message, whitespaceCorrected)
+	if degraded {
+		message += "\n" + unreadEditNote
+	}
+	if text := failedEditsText(failedEdits); text != "" {
+		message += "\n\n" + text
+	}
 
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(message),
@@ -340,8 +402,26 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 			Removals:     removals,
 			EditsApplied: editsApplied,
 			EditsFailed:  failedEdits,
+			UnreadEdit:   degraded,
 		},
 	), nil
+}
+
+// refusedBatch is the refusal of a batch the read guard keeps: the guard's
+// sentence, and the edits of the batch that failed, so the model learns
+// which one did not match. When a match failure is why the batch was
+// refused, the refusal takes that failure's kind.
+func refusedBatch(guard readGuard, failed []FailedEdit) fantasy.ToolResponse {
+	resp := guard.refusal(true)
+	if text := failedEditsText(failed); text != "" {
+		resp.Content += "\n\n" + text
+	}
+	for _, edit := range failed {
+		if edit.Kind == ErrorKindTextNotFound || edit.Kind == ErrorKindMultipleMatches {
+			return withErrorKind(resp, edit.Kind)
+		}
+	}
+	return resp
 }
 
 // applyEditToContent applies a single edit, reporting whether it only matched

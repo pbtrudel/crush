@@ -45,11 +45,13 @@ Agent Teams is available in this session. Use it by default: the Lead coordinate
 
 Work solo only for a single trivial action (one command, one file read, a direct factual answer) or when the user explicitly asks you to. Everything else goes to the Team: create shared tasks, spawn at least one teammate, and delegate. Requests with two or more steps, multiple files, investigation, or tests must use the Team. Reuse existing teammates before spawning new ones. When in doubt, delegate.
 
+One teammate per concrete, self-contained brief, never a wave. Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small. Cap a fan-out at what the task actually needs.
+
 The Team Lead and all teammates share the same working directory and filesystem. Edits are immediately visible to every member. Split write work into disjoint scopes, record expected write scopes on shared tasks, and use task dependencies when work must be ordered. Write-scope overlap is advisory, not a lock.
 
 The Lead owns the task worktree. Create it with the worktree tool before delegating, include its absolute path in every task description, and have every teammate work inside that path. Remove it only after the branch is pushed and merged.
 
-Prefer read/edit/write for file changes. If a file operation returns FS_STALE_VERSION, read the current file, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.
+Prefer read/edit/write for file changes. If an edit or write is refused because the file changed since you read it, read the current file, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.
 
 Keep the shared task board current at every step, because the user watches it. Create a task for each unit of work before delegating it, claim it with the current revision, and complete it the moment the work is verified. Edit tasks whose scope changed, and delete tasks that are superseded, abandoned, or no longer relevant. Once a completed task's result has been reported, delete it too, so the board holds only live work. Never report work as done while its task is still pending or in progress.
 
@@ -1363,6 +1365,59 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	return nil
 }
 
+// noticeSender names the sender of a notice the runtime itself delivers, such
+// as a finished background job, rather than a Team member. It fails
+// ValidateMemberName, so no teammate can send mail under it.
+const noticeSender = "Crush"
+
+// NotifySession delivers a runtime notice to the teammate that owns
+// sessionID and reports whether a teammate owns it. A running teammate gets
+// it in its inbox; an inactive one is woken on its own run, and so on its own
+// model. The caller must not wake the session itself when this reports true:
+// the Lead's agent would run the teammate's session on the Lead's model.
+func (s *Service) NotifySession(ctx context.Context, sessionID, text string) (bool, error) {
+	if sessionID == "" || strings.TrimSpace(text) == "" {
+		return false, nil
+	}
+	var (
+		target  Member
+		found   bool
+		running bool
+	)
+	err := s.write(mustApply, func() (bool, error) {
+		for _, member := range s.state.Members {
+			if member.Role != RoleLead && member.SessionID == sessionID {
+				target, found = member, true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+		s.appendMessageLocked(noticeSender, target.Name, text)
+		s.notifyLocked()
+		running = s.statusLocked(target.Name) == StatusRunning
+		return true, nil
+	})
+	if err != nil || !found {
+		return found, err
+	}
+	if running {
+		return true, nil
+	}
+	pending := s.DrainInbox(target.Name, target.ParentID)
+	if len(pending) == 0 {
+		return true, nil
+	}
+	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+		s.mu.Lock()
+		s.notifyLocked()
+		s.mu.Unlock()
+		return true, err
+	}
+	return true, nil
+}
+
 // DrainInbox returns and marks delivered every pending message for name that
 // belongs to the caller's team.
 func (s *Service) DrainInbox(name, sessionID string) []Message {
@@ -1435,7 +1490,7 @@ func (s *Service) inboxPendingLocked(scope map[string]bool, message *Message, na
 		member, ok := s.memberLocked(message.From)
 		return ok && scope[member.ParentID]
 	}
-	return s.memberVisibleLocked(scope, message.From)
+	return message.From == noticeSender || s.memberVisibleLocked(scope, message.From)
 }
 
 // WaitForChange waits for the next roster, message, or task change.

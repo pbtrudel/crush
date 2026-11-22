@@ -113,6 +113,16 @@ func (r *Runner) Run(ctx context.Context, ev Event) AggregateResult {
 	return agg
 }
 
+// Configured reports whether any hook is configured for the event. The
+// turn-end gate uses it to avoid reading the working tree when nothing will
+// read the result.
+func (r *Runner) Configured(event string) bool {
+	if r == nil {
+		return false
+	}
+	return len(r.source()[event]) > 0
+}
+
 // matchingHooks returns the hooks configured for the event, deduplicated
 // by command, keeping only those whose matcher accepts the tool name. A
 // matcher on an event without a tool name is ignored.
@@ -240,7 +250,7 @@ func (r *Runner) runOne(parentCtx context.Context, hook HookConfig, envVars []st
 	switch exitCode {
 	case 2:
 		if reason == "" {
-			reason = "blocked by hook"
+			reason = legacyDenyReason
 		}
 		return HookResult{Decision: DecisionDeny, Reason: reason}
 	case HaltExitCode:

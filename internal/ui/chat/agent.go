@@ -257,6 +257,7 @@ func (a *AgentToolMessageItem) DispatchStatus() (DispatchStatus, bool) {
 		Started:  a.dispatchStarted,
 		Finished: a.dispatchReportedAt,
 	}
+	status.Model, status.ModelProvider = splitRunModel(dispatchResultRunModel(a.result))
 	return status, true
 }
 
@@ -266,6 +267,10 @@ type DispatchStatus struct {
 	Running  bool
 	Started  time.Time
 	Finished time.Time // When its report landed; zero while running.
+	// Model is the model the subagent runs on, and ModelProvider the
+	// provider serving it. Both are empty until the dispatch records them.
+	Model         string
+	ModelProvider string
 }
 
 // AgentToolRenderContext renders agent tool messages.
@@ -587,9 +592,31 @@ func backgroundedName(opts *ToolRenderOpts) string {
 
 // dispatchRunModel reads the model a dispatch recorded once its subagent started.
 func dispatchRunModel(opts *ToolRenderOpts) string {
+	if !opts.HasResult() {
+		return ""
+	}
+	return dispatchResultRunModel(opts.Result)
+}
+
+// dispatchResultRunModel reads the run model out of a dispatch result's
+// metadata.
+func dispatchResultRunModel(result *message.ToolResult) string {
+	if result == nil || result.Metadata == "" {
+		return ""
+	}
 	var meta agent.AgentDispatchResponseMetadata
-	if opts.HasResult() {
-		_ = json.Unmarshal([]byte(opts.Result.Metadata), &meta)
+	if json.Unmarshal([]byte(result.Metadata), &meta) != nil {
+		return ""
 	}
 	return meta.RunModel
+}
+
+// splitRunModel splits the provider/model pair a dispatch records for
+// display. A value without a slash is all model, with no provider.
+func splitRunModel(runModel string) (model, provider string) {
+	provider, model, ok := strings.Cut(runModel, "/")
+	if !ok {
+		return runModel, ""
+	}
+	return model, provider
 }

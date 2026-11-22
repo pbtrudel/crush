@@ -1,0 +1,54 @@
+schema: 1
+id: pr-0044
+source:
+  repo: pbtrudel/crush
+  pr: 44
+  merge: f6d2ba9308ab9838fa1492d9158f7531ab661a64
+  base: 9fa5f7cb84318f02e115dd92f5a2ab49f00cdd0c
+kind: interface
+why: |
+  Three shell-command restrictions got in the way in practice:
+
+  - Completed background shells stayed tracked for eight hours so their output remained readable, and counted toward the hard 50-job cap the entire time. Sessions therefore hit `maximum number of background jobs (50) reached` even when nothing was running.
+  - YOLO mode skips permission prompts, but the shell still rejected `sudo` as a banned command, so the mode could not run administrative commands.
+  - Every package install, including `go install`, was blocked, so the agent could not install the tooling it needed.
+prompt: |
+  Three shell-command restrictions got in the way in practice:
+
+  - Completed background shells stayed tracked for eight hours so their output remained readable, and counted toward the hard 50-job cap the entire time. Sessions therefore hit `maximum number of background jobs (50) reached` even when nothing was running.
+  - YOLO mode skips permission prompts, but the shell still rejected `sudo` as a banned command, so the mode could not run administrative commands.
+  - Every package install, including `go install`, was blocked, so the agent could not install the tooling it needed.
+interface: |
+  Interface: `internal/agent/tools` declares `func blockFuncs(yolo bool) []shell.BlockFunc`.
+  Starting a job reaps the completed jobs when the cap is already reached: a completed job
+  still counts toward the cap and stays listed until a start reclaims it.
+  Every package-install command leaves the block list, among them `apk add`, `apt install`,
+  `apt-get install`, `dnf install`, `pacman -S`, `pkg install`, `yum install`, `zypper install`,
+  `brew install`, `cargo install`, `gem install`, `go install`, `npm install --global`,
+  `npm install -g`, `pip install --user`, `pip3 install --user`, `pnpm add --global`,
+  `pnpm add -g` and `yarn global add`, while `go test -exec` stays blocked.
+  `sudo` is blocked unless permission requests are skipped, and `su`, `doas` and the
+  system-modification commands stay blocked in YOLO mode too.
+grade:
+  packages: [./internal/agent/tools, ./internal/shell]
+  tests: [TestBackgroundShellManager_StartReapsCompletedJobsAtLimit, TestBashTool_SudoNotBlockedInYoloMode, TestBlockFuncs_PackageInstallsAllowed, TestBlockFuncs_SudoAllowedOnlyInYoloMode]
+  exclude: []
+  hidden:
+    - {path: internal/agent/tools/bash_test.go, blob: e4e7fb6227d8c466eb7afbf8f0fdf05cdb496da4}
+    - {path: internal/shell/background_test.go, blob: e7a19c1754c983316d9e07b329d1ea0422fb0bdd}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 78
+  timeout: 22m
+risks:
+  - three problems in one prompt (the cap, sudo in YOLO mode, package installs); the design table lists two
+  - 'hidden choice: the cap is reclaimed in Start, the exact package-install commands that leave the block list, and that go test -exec stays blocked'
+  - the touched tests are 4, not the 5 of the design table
+  - "correlated: pr-0044, pr-0051, pr-0076"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 8, packages: 10}

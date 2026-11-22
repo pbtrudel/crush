@@ -37,6 +37,10 @@ type Payload struct {
 	Source               string          `json:"source,omitempty"`
 	Reason               string          `json:"reason,omitempty"`
 	Trigger              string          `json:"trigger,omitempty"`
+	StopHookActive       *bool           `json:"stop_hook_active,omitempty"`
+	TurnEnd              string          `json:"turn_end,omitempty"`
+	ChangedFiles         []string        `json:"changed_files,omitempty"`
+	ContinuationsLeft    *int            `json:"continuations_left,omitempty"`
 }
 
 // BuildPayload constructs the JSON stdin payload for an event.
@@ -53,6 +57,10 @@ func BuildPayload(ev Event, cwd string) []byte {
 		Source:               ev.Source,
 		Reason:               ev.Reason,
 		Trigger:              ev.Trigger,
+		StopHookActive:       ev.StopHookActive,
+		TurnEnd:              ev.TurnEnd,
+		ChangedFiles:         ev.ChangedFiles,
+		ContinuationsLeft:    ev.ContinuationsLeft,
 	}
 	if ev.Tool != nil {
 		p.ToolName = ev.Tool.Name

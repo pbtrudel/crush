@@ -1,0 +1,20 @@
+date: 2026-11-20
+name: w32-completion-check
+variants:
+  - name: control
+    ref: dbed3bf5
+  - name: check
+    ref: dbed3bf5
+    overlay: {turn_end_completion_check: true}
+routes: [deepseek-flash]
+repetitions: 3
+# False completions are the primary metric because the check exists to stop
+# a turn that reports work it never verified; pass rate is the guard, and
+# crush-eval compare --metric pass_rate reports it from the same batch.
+primary_metric: false_completions
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453
+# Both variants run the same build, the change's last code commit. The
+# overlay reaches the child through its generated config, not the
+# environment, so only the overlay differs between them.

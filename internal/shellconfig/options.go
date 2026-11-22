@@ -36,8 +36,11 @@ import (
 //	option max-background-jobs 200
 //	option pinentry-integrated false
 //	option pinentry-cache-timeout 300
+//	option responses-reasoning-replay false
 //
 // Boolean shortcuts: for boolean fields, omitting the value sets it to true.
+// Options that are on by default (progress, auto-lsp, pinentry-integrated,
+// responses-reasoning-replay) are turned off by passing false.
 func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	b := configBuilderFromCtx(ctx)
 	if b == nil {
@@ -218,7 +221,11 @@ var optionSpecs = map[string]optionSpec{
 	"agent-teams":                  {jsonKey: "agent_teams", kind: optBool},
 	"repeat-tool-reminders":        {jsonKey: "repeat_tool_reminders", kind: optBool},
 	"repetition-detection":         {jsonKey: "repetition_detection", kind: optBool},
+	"lazy-tools":                   {jsonKey: "lazy_tools", kind: optBool},
+	"apply-patch":                  {jsonKey: "apply_patch", kind: optBool},
 	"history-slim-reasoning":       {jsonKey: "history_slim_reasoning", kind: optBool},
+	"responses-reasoning-replay":   {jsonKey: "responses_reasoning_replay", kind: optBool},
+	"edit-without-read":            {jsonKey: "edit_without_read", kind: optBool},
 
 	// Boolean fields exposed positively but stored as their negation.
 	"metrics":              {jsonKey: "disable_metrics", kind: optBool, inverted: true},
@@ -230,6 +237,7 @@ var optionSpecs = map[string]optionSpec{
 	"notifications":  {jsonKey: "notifications", kind: optString},
 	"data-directory": {jsonKey: "data_directory", kind: optString},
 	"initialize-as":  {jsonKey: "initialize_as", kind: optString},
+	"prompt-profile": {jsonKey: "prompt_profile", kind: optString},
 
 	// Integer fields.
 	"request-timeout":        {jsonKey: "request_timeout", kind: optInt},
@@ -240,6 +248,7 @@ var optionSpecs = map[string]optionSpec{
 	"auto-compact-threshold":    {jsonKey: "auto_compact_threshold", kind: optFloat},
 	"auto-compact-max-tokens":   {jsonKey: "auto_compact_max_tokens", kind: optInt},
 	"compact-tail-tokens":       {jsonKey: "compact_tail_tokens", kind: optInt},
+	"compact-background-margin": {jsonKey: "compact_background_margin", kind: optFloat},
 	"history-slim-idle-minutes": {jsonKey: "history_slim_idle_minutes", kind: optInt},
 	"compaction-prune-chars":    {jsonKey: "compaction_prune_chars", kind: optInt},
 	"context-max-bytes":         {jsonKey: "context_max_bytes", kind: optInt},
@@ -258,7 +267,7 @@ var optionSpecs = map[string]optionSpec{
 // that live under options.tui rather than as top-level options.
 func optionUI(options map[string]any, args []string, stderr io.Writer) error {
 	if len(args) != 4 {
-		return usage(stderr, "usage: option ui <compact|diff|transparent|mouse|scrollbar|completions-max-depth|completions-max-items|exit-banner> <value>")
+		return usage(stderr, "usage: option ui <compact|diff|transparent|mouse|scrollbar|verbosity|completions-max-depth|completions-max-items|exit-banner> <value>")
 	}
 
 	key := args[2]
@@ -291,6 +300,11 @@ func optionUI(options map[string]any, args []string, stderr io.Writer) error {
 			return usage(stderr, fmt.Sprintf("option ui exit-banner expects default, compact, or none, got %q", value))
 		}
 		ui["exit_banner"] = value
+	case "verbosity":
+		if value != "low" && value != "high" {
+			return usage(stderr, fmt.Sprintf("option ui verbosity expects low or high, got %q", value))
+		}
+		ui["verbosity"] = value
 	case "completions-max-depth", "completions-max-items":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 0 {

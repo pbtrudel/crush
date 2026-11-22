@@ -57,8 +57,9 @@ type ContentPart interface {
 type ReasoningContent struct {
 	Thinking         string                             `json:"thinking"`
 	Signature        string                             `json:"signature"`
-	ThoughtSignature string                             `json:"thought_signature"` // Used for google
-	ToolID           string                             `json:"tool_id"`           // Used for openrouter google models
+	RedactedData     string                             `json:"redacted_data,omitempty"` // Used for anthropic redacted thinking
+	ThoughtSignature string                             `json:"thought_signature"`       // Used for google
+	ToolID           string                             `json:"tool_id"`                 // Used for openrouter google models
 	ResponsesData    *openai.ResponsesReasoningMetadata `json:"responses_data"`
 	StartedAt        int64                              `json:"started_at,omitempty"`
 	FinishedAt       int64                              `json:"finished_at,omitempty"`
@@ -72,7 +73,7 @@ func (tc ReasoningContent) String() string {
 // provider. Providers may return signed reasoning with no visible text,
 // and dropping it changes the prefix their signatures are bound to.
 func (tc ReasoningContent) HasReplayData() bool {
-	return tc.Thinking != "" || tc.Signature != "" || tc.ThoughtSignature != "" || tc.ResponsesData != nil
+	return tc.Thinking != "" || tc.Signature != "" || tc.RedactedData != "" || tc.ThoughtSignature != "" || tc.ResponsesData != nil
 }
 func (ReasoningContent) isPart() {}
 
@@ -263,9 +264,15 @@ type CompactionStats struct {
 	SavedTokens   int64 `json:"saved_tokens"`
 	KeptMessages  int   `json:"kept_messages"`
 	// Trigger names what started the compaction: threshold, ceiling,
-	// guard, overflow, model_switch, fusion_preflight, fusion_route or
-	// manual. Empty on compactions recorded before triggers were.
+	// guard, overflow, model_switch, fusion_preflight, fusion_route,
+	// manual or background, or background_unused for a summary written
+	// ahead of the limit that was never adopted. Empty on compactions
+	// recorded before triggers were.
 	Trigger string `json:"trigger,omitempty"`
+	// ReloadSkills names the skills the state message created after this
+	// compaction listed, so the next compaction can list them again even
+	// though their instructions are no longer in the messages it reads.
+	ReloadSkills []string `json:"reload_skills,omitempty"`
 }
 
 func (CompactionStats) isPart() {}
@@ -568,87 +575,70 @@ func (m *Message) TruncateReasoning(keepRunes int) {
 	}
 }
 
-func (m *Message) AppendReasoningContent(delta string) {
-	found := false
+// updateReasoning applies fn to the first reasoning part in place and
+// reports whether the message holds one. Each helper changes only its own
+// field: rebuilding the part from a subset of the fields drops the data
+// another provider stored, and the replayed history then lacks signatures
+// the provider needs.
+func (m *Message) updateReasoning(fn func(*ReasoningContent)) bool {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking + delta,
-				Signature:  c.Signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
-			found = true
+			fn(&c)
+			m.Parts[i] = c
+			return true
 		}
 	}
-	if !found {
-		m.Parts = append(m.Parts, ReasoningContent{
-			Thinking:  delta,
-			StartedAt: time.Now().Unix(),
-		})
+	return false
+}
+
+func (m *Message) AppendReasoningContent(delta string) {
+	if m.updateReasoning(func(c *ReasoningContent) { c.Thinking += delta }) {
+		return
 	}
+	m.Parts = append(m.Parts, ReasoningContent{
+		Thinking:  delta,
+		StartedAt: time.Now().Unix(),
+	})
 }
 
 func (m *Message) AppendThoughtSignature(signature string, toolCallID string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:         c.Thinking,
-				ThoughtSignature: c.ThoughtSignature + signature,
-				ToolID:           toolCallID,
-				Signature:        c.Signature,
-				StartedAt:        c.StartedAt,
-				FinishedAt:       c.FinishedAt,
-			}
-			return
-		}
+	updated := m.updateReasoning(func(c *ReasoningContent) {
+		c.ThoughtSignature += signature
+		c.ToolID = toolCallID
+	})
+	if updated {
+		return
 	}
 	m.Parts = append(m.Parts, ReasoningContent{ThoughtSignature: signature})
 }
 
 func (m *Message) AppendReasoningSignature(signature string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking,
-				Signature:  c.Signature + signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
-			return
-		}
+	if m.updateReasoning(func(c *ReasoningContent) { c.Signature += signature }) {
+		return
 	}
 	m.Parts = append(m.Parts, ReasoningContent{Signature: signature})
 }
 
 func (m *Message) SetReasoningResponsesData(data *openai.ResponsesReasoningMetadata) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:      c.Thinking,
-				ResponsesData: data,
-				StartedAt:     c.StartedAt,
-				FinishedAt:    c.FinishedAt,
-			}
-			return
-		}
+	m.updateReasoning(func(c *ReasoningContent) { c.ResponsesData = data })
+}
+
+// SetReasoningRedactedData stores Anthropic's redacted thinking block. An
+// empty value is not stored: the end of a later reasoning block reports no
+// redacted data, and it must not wipe the block an earlier one carried.
+func (m *Message) SetReasoningRedactedData(data string) {
+	if data == "" {
+		return
 	}
+	m.updateReasoning(func(c *ReasoningContent) { c.RedactedData = data })
 }
 
 func (m *Message) FinishThinking() {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			if c.FinishedAt == 0 {
-				m.Parts[i] = ReasoningContent{
-					Thinking:   c.Thinking,
-					Signature:  c.Signature,
-					StartedAt:  c.StartedAt,
-					FinishedAt: time.Now().Unix(),
-				}
-			}
-			return
+	m.updateReasoning(func(c *ReasoningContent) {
+		if c.FinishedAt == 0 {
+			c.FinishedAt = time.Now().Unix()
 		}
-	}
+	})
 }
 
 func (m *Message) ThinkingDuration() time.Duration {
@@ -939,9 +929,10 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 		reasoning := m.ReasoningContent()
 		if reasoning.HasReplayData() {
 			reasoningPart := fantasy.ReasoningPart{Text: reasoning.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
-			if reasoning.Signature != "" {
+			if reasoning.Signature != "" || reasoning.RedactedData != "" {
 				reasoningPart.ProviderOptions[anthropic.Name] = &anthropic.ReasoningOptionMetadata{
-					Signature: reasoning.Signature,
+					Signature:    reasoning.Signature,
+					RedactedData: reasoning.RedactedData,
 				}
 			}
 			if reasoning.ResponsesData != nil {

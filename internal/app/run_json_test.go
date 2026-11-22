@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -95,6 +96,59 @@ func TestSummarizeRunFollowsAContinuation(t *testing.T) {
 	require.False(t, result.Estimated)
 }
 
+// The turn-end gate's row reopens the prompt's run, so the continuation's
+// ending decides the reason and the exit code.
+func TestSummarizeRunFollowsAGateContinuation(t *testing.T) {
+	t.Parallel()
+
+	rows := func(continuation message.TurnEnd) []message.Message {
+		return []message.Message{
+			userRow("root", "Fix it.", false),
+			stepRow("root", "Done.", 0, message.TurnEndCompleted, nil),
+			userRow("root", "<turn_end_gate>\nCrush checked your turn.", true),
+			stepRow("root", "Partial.", 0, continuation, nil),
+		}
+	}
+
+	result := summarizeRun("root", rows(message.TurnEndMaxTokens))
+	require.Equal(t, message.TurnEndMaxTokens, result.Reason)
+	require.Equal(t, "Partial.", result.Text)
+	require.Equal(t, 2, runExitCode(result.Reason), "a continuation that stopped short exits 2, not 0")
+
+	// A continuation that hit the step limit ends the command the same way.
+	result = summarizeRun("root", rows(message.TurnEndStepLimit))
+	require.Equal(t, message.TurnEndStepLimit, result.Reason)
+	require.Equal(t, 2, runExitCode(result.Reason))
+}
+
+// A run the gate never continued prints the object it printed before the
+// gate existed: no gate key, and the same keys as then.
+func TestRunResultOmitsTheGateWhenUnused(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix it.", false),
+		stepRow("root", "Done.", 0, message.TurnEndCompleted, nil),
+	}
+
+	result := summarizeRun("root", rows)
+	require.Nil(t, result.Gate)
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"gate"`)
+	var object map[string]any
+	require.NoError(t, json.Unmarshal(data, &object))
+	fields := make([]string, 0, len(object))
+	for field := range object {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	require.Equal(t, []string{
+		"build", "cost", "duration_ms", "estimated", "model", "provider", "reason",
+		"schema", "session", "session_id", "text", "tree",
+	}, fields)
+}
+
 // A subagent report folded back into the session opens no run, so the
 // prompt's run still decides the reason; a hidden background notice opens
 // none either.
@@ -141,6 +195,7 @@ func TestRunResultJSON(t *testing.T) {
 			Sessions: 1, runCounts: runCounts{Steps: 1, Tokens: runTokens{Input: 5}},
 			TurnEnds: map[message.TurnEnd]int{message.TurnEndCompleted: 1}, UndeliveredReports: 2,
 		},
+		Gate: &runGate{Continuations: 1, Claims: 2, UnbackedClaims: 1},
 		Cost: 0.5,
 	}
 
@@ -152,6 +207,7 @@ func TestRunResultJSON(t *testing.T) {
 		"session": {"steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0}},
 		"tree": {"sessions": 1, "steps": 1, "tool_calls": 0, "tokens": {"input": 5, "cache_read": 0, "cache_write": 0, "output": 0},
 			"turn_ends": {"completed": 1}, "undelivered_reports": 2},
+		"gate": {"continuations": 1, "claims": 2, "unbacked_claims": 1},
 		"estimated": false, "cost": 0.5
 	}`, string(data))
 }
@@ -211,4 +267,115 @@ func TestSummarizeRunReportsALimitInTheTree(t *testing.T) {
 		stepRow("team-2", "", 1, message.TurnEndTimeLimit, nil),
 	)
 	require.Equal(t, message.TurnEndTimeLimit, summarizeRun("root", rows).Reason, "the deadline is read first")
+}
+
+// editStep is an assistant row that called one tool and nothing else.
+func editStep(sessionID, id, name string) message.Message {
+	return message.Message{SessionID: sessionID, Role: message.Assistant, Parts: []message.ContentPart{
+		message.ToolCall{ID: id, Name: name, Input: `{"file_path":"a.go"}`, Finished: true},
+		message.Finish{Reason: message.FinishReasonEndTurn, TurnEnd: message.TurnEndCompleted},
+	}}
+}
+
+// editAnswer is the tool row that answered one call.
+func editAnswer(sessionID, id, name string, isError bool, metadata string) message.Message {
+	return message.Message{SessionID: sessionID, Role: message.Tool, Parts: []message.ContentPart{
+		message.ToolResult{ToolCallID: id, Name: name, IsError: isError, Metadata: metadata},
+	}}
+}
+
+// The edits object counts the run's edit and multiedit calls: how many were
+// attempted, how many were refused and by which kind, and how many applied
+// to a file not read first. Calls outside the run, and the write tool, are
+// not edits.
+func TestSummarizeRunCountsEdits(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Fix it.", false),
+		editStep("root", "e1", "edit"),
+		editAnswer("root", "e1", "edit", true, `{"error_kind":"not_read"}`),
+		editStep("root", "e2", "multiedit"),
+		editAnswer("root", "e2", "multiedit", true, `{"error_kind":"multiple_matches"}`),
+		editStep("root", "e3", "edit"),
+		editAnswer("root", "e3", "edit", false, `{"unread_edit":true}`),
+		editStep("root", "w1", "write"),
+		editAnswer("root", "w1", "write", true, `{"error_kind":"not_read"}`),
+		// A result whose call the command did not write is not counted.
+		editAnswer("root", "e9", "edit", true, `{"error_kind":"not_read"}`),
+		editStep("team-1", "e4", "edit"),
+		editAnswer("team-1", "e4", "edit", true, `{"error_kind":"text_not_found"}`),
+		editStep("root", "e5", "edit"),
+		editAnswer("root", "e5", "edit", true, ""),
+	}
+
+	result := summarizeRun("root", rows)
+
+	require.NotNil(t, result.Edits)
+	require.Equal(t, 5, result.Edits.Attempted)
+	require.Equal(t, 3, result.Edits.Refused, "only the guard and match kinds are refusals")
+	require.Equal(t, 1, result.Edits.NotRead)
+	require.Equal(t, 1, result.Edits.MultipleMatches)
+	require.Equal(t, 1, result.Edits.NoMatch)
+	require.Equal(t, 1, result.Edits.Errors, "a failure without a kind is not a refusal")
+	require.Equal(t, 1, result.Edits.UnreadApplied)
+}
+
+// A failed edit is a refusal only for the guard and match kinds. Any other
+// failed edit, with or without a kind, is an error and stays out of Refused.
+func TestEditCountsRefusalsAndErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		metadata     string
+		wantRefused  int
+		wantErrors   int
+		wantNotRead  int
+		wantNoMatch  int
+		wantMultiple int
+	}{
+		{name: "not read", metadata: `{"error_kind":"not_read"}`, wantRefused: 1, wantNotRead: 1},
+		{name: "changed since read", metadata: `{"error_kind":"changed_since_read"}`, wantRefused: 1},
+		{name: "no match", metadata: `{"error_kind":"text_not_found"}`, wantRefused: 1, wantNoMatch: 1},
+		{name: "several matches", metadata: `{"error_kind":"multiple_matches"}`, wantRefused: 1, wantMultiple: 1},
+		{name: "a kind outside the refusals", metadata: `{"error_kind":"permission_denied"}`, wantErrors: 1},
+		{name: "no kind at all", metadata: "", wantErrors: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rows := []message.Message{
+				userRow("root", "Fix it.", false),
+				editStep("root", "e1", "edit"),
+				editAnswer("root", "e1", "edit", true, tt.metadata),
+			}
+
+			edits := editCounts(rows)
+			require.NotNil(t, edits)
+			require.Equal(t, 1, edits.Attempted)
+			require.Equal(t, tt.wantRefused, edits.Refused)
+			require.Equal(t, tt.wantErrors, edits.Errors)
+			require.Equal(t, tt.wantNotRead, edits.NotRead)
+			require.Equal(t, tt.wantNoMatch, edits.NoMatch)
+			require.Equal(t, tt.wantMultiple, edits.MultipleMatches)
+		})
+	}
+}
+
+// A run that made no edit call prints no edits object, so the output is the
+// object it printed before the metric existed.
+func TestSummarizeRunOmitsTheEditsObjectWithoutCalls(t *testing.T) {
+	t.Parallel()
+	rows := []message.Message{
+		userRow("root", "Run the tests.", false),
+		stepRow("root", "Done.", 1, message.TurnEndCompleted, nil),
+	}
+
+	result := summarizeRun("root", rows)
+	require.Nil(t, result.Edits)
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"edits"`)
 }

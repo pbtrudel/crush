@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -24,8 +25,12 @@ type AgentDescriptor struct {
 	Name            string
 	Kind            agentrun.Kind
 	Status          agentrun.Status
-	StartedAt       time.Time
-	FinishedAt      time.Time
+	// Model is the model the agent runs on, and ModelProvider the provider
+	// serving it. Both are empty when the model is not known.
+	Model         string
+	ModelProvider string
+	StartedAt     time.Time
+	FinishedAt    time.Time
 }
 
 // Agents is an agent selector dialog.
@@ -87,11 +92,58 @@ func agentItems(t *styles.Styles, agents []AgentDescriptor) []list.FilterableIte
 	for _, agent := range agents {
 		action := ActionSelectAgent{Agent: agent}
 		item := NewCommandItem(t, agent.SessionID, agent.Name, string(agent.Status), action).
-			WithDescription(string(agent.Kind)).
+			WithDescription(agentRowDescription(agent)).
 			WithAliases(string(agent.Kind), string(agent.Status))
 		items = append(items, item)
 	}
 	return items
+}
+
+// agentRowDescription labels an agent's row with its kind and the model it
+// runs on, leaving the model out when it is unknown.
+func agentRowDescription(agent AgentDescriptor) string {
+	if agent.Model == "" {
+		return string(agent.Kind)
+	}
+	parts := []string{string(agent.Kind), agent.Model}
+	if agent.ModelProvider != "" {
+		parts = append(parts, agent.ModelProvider)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// Filter returns the search text the list is filtered by.
+func (a *Agents) Filter() string {
+	return a.input.Value()
+}
+
+// SelectedSessionID returns the session of the selected row, or the empty
+// string when nothing is selected.
+func (a *Agents) SelectedSessionID() string {
+	item, ok := a.list.SelectedItem().(*CommandItem)
+	if !ok || item == nil {
+		return ""
+	}
+	return item.ID()
+}
+
+// Restore puts back a saved search and selection, for a list rebuilt after a
+// viewer closes. A session the filter no longer lists leaves the first row
+// selected.
+func (a *Agents) Restore(filter, sessionID string) {
+	if filter != "" {
+		a.input.SetValue(filter)
+		a.list.SetFilter(filter)
+	}
+	a.list.ScrollToTop()
+	a.list.SetSelected(0)
+	for idx, item := range a.list.FilteredItems() {
+		if selected, ok := item.(*CommandItem); ok && selected.ID() == sessionID {
+			a.list.SetSelected(idx)
+			a.list.ScrollToSelected()
+			return
+		}
+	}
 }
 
 // ID implements Dialog.

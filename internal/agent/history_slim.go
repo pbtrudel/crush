@@ -17,8 +17,9 @@ const staleReadStub = "[Earlier contents of %s omitted: the file was changed lat
 
 var (
 	fileReadTools = []string{tools.ViewToolName, tools.ReadToolName}
-	// fileEditTools change the file named by their file_path input.
-	fileEditTools = []string{tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName, tools.ReplaceSymbolToolName}
+	// fileEditTools change the file named by their file_path input; a
+	// patch names its files in the patch itself.
+	fileEditTools = []string{tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName, tools.ReplaceSymbolToolName, tools.ApplyPatchToolName}
 )
 
 // slimColdHistory lightens, in the in-memory copy a request is built from,
@@ -98,6 +99,7 @@ func stubStaleReads(msgs []message.Message) {
 			var input struct {
 				FilePath  string   `json:"file_path"`
 				FilePaths []string `json:"file_paths"`
+				Patch     string   `json:"patch"`
 			}
 			if err := json.Unmarshal([]byte(tc.Input), &input); err != nil {
 				continue
@@ -105,6 +107,9 @@ func stubStaleReads(msgs []message.Message) {
 			paths := input.FilePaths
 			if len(paths) == 0 && input.FilePath != "" {
 				paths = []string{input.FilePath}
+			}
+			if len(paths) == 0 && input.Patch != "" {
+				paths = tools.PatchFilePaths(input.Patch)
 			}
 			cleaned := make([]string, 0, len(paths))
 			for _, path := range paths {

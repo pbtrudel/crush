@@ -187,6 +187,9 @@ type (
 	// configReloadedMsg is sent when a config reload attempt completes.
 	configReloadedMsg struct {
 		err error
+		// retryWhenIdle asks for the reload to run again once the agent
+		// stops working, instead of reporting the busy refusal.
+		retryWhenIdle bool
 	}
 	// sideAnswerMsg carries the answer to a side question.
 	sideAnswerMsg struct {
@@ -255,6 +258,13 @@ type (
 	// gitBranchPollMsg is sent by the git branch poll timer.
 	gitBranchPollMsg struct{}
 )
+
+// agentsListState is what an agent viewer has to put back on the Agents list
+// when it closes.
+type agentsListState struct {
+	filter    string
+	sessionID string
+}
 
 // UI represents the main user interface model.
 type UI struct {
@@ -443,6 +453,10 @@ type UI struct {
 	// accept an earlier viewer's asynchronous load result.
 	agentViewer           *agentViewer
 	agentViewerGeneration uint64
+	// agentsReturn is what the Agents list the viewer was opened from has to
+	// come back with. The list itself is rebuilt when the viewer closes, so
+	// statuses and models are fresh.
+	agentsReturn *agentsListState
 
 	// onboarding state
 	onboarding struct {
@@ -555,6 +569,12 @@ type UI struct {
 	// in-flight fetch captures it at dispatch and its result is discarded
 	// if the generation has moved on (see workspace_cache.go).
 	promptQueueGen uint64
+	// pendingConfigReload records a config reload that was refused because
+	// the agent was busy. It runs on the next idle probe, when the
+	// coordinator can swap tools and prompts again, and stays set until a
+	// reload lands.
+	pendingConfigReload bool
+
 	// agentBusyCache / permModeCache memoize the workspace busy and
 	// permission-mode probes (synchronous HTTP round-trips in client/server
 	// mode). Reads never probe; refreshes happen off-thread (see
@@ -2067,6 +2087,28 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case dialog.ActionMCPAuthStarted:
 		cmds = append(cmds, m.authenticateMCP(msg.Ctx, msg.Name))
+	case configReloadedMsg:
+		// A reload asked to wait for an idle agent is retried on the next
+		// idle edge; the coordinator cannot swap tools and prompts under a
+		// running turn.
+		switch {
+		case msg.err == nil:
+			m.pendingConfigReload = false
+			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
+		case msg.retryWhenIdle && errors.Is(msg.err, app.ErrConfigReloadBusy):
+			// The retry stays armed until a reload lands, and a cache that
+			// already reads idle gets probed, since no busy-to-idle edge
+			// would ever run it.
+			m.pendingConfigReload = true
+			cmds = append(cmds, util.ReportInfo("Agent Teams will apply when the current turn ends"))
+			if !m.isAgentBusy() {
+				cmds = append(cmds, m.dispatchBusyRefresh())
+			}
+		default:
+			cmds = append(cmds, util.ReportError(msg.err))
+		}
+		// crushrc may have changed skill paths and custom commands.
+		cmds = append(cmds, m.loadCustomCommands())
 	case dialog.ActionMCPAuthComplete, dialog.ActionMCPAuthErrored:
 		// The OAuth flow finished server-side: refresh the memoized states
 		// so the sidebar reflects the outcome even when the state_changed
@@ -2698,6 +2740,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
 	case dialog.ActionSelectAgent:
+		// Remember the search and the selection, so Esc can put the list
+		// back the way the user left it.
+		if agents, ok := m.dialog.Dialog(dialog.AgentsID).(*dialog.Agents); ok {
+			m.agentsReturn = &agentsListState{
+				filter:    agents.Filter(),
+				sessionID: agents.SelectedSessionID(),
+			}
+		}
 		m.dialog.CloseDialog(dialog.AgentsID)
 		cmds = append(cmds, m.openAgentViewer(msg.Agent))
 
@@ -2860,15 +2910,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		})
 	case dialog.ActionReloadConfig:
 		m.dialog.CloseDialog(dialog.CommandsID)
-		cmds = append(cmds, m.reloadConfig())
-	case configReloadedMsg:
-		if msg.err != nil {
-			cmds = append(cmds, util.ReportError(msg.err))
-		} else {
-			cmds = append(cmds, util.ReportInfo("Configuration reloaded"))
-		}
-		// crushrc may have changed skill paths and custom commands.
-		cmds = append(cmds, m.loadCustomCommands())
+		cmds = append(cmds, m.reloadConfig(false))
 	case skillsReloadedMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
@@ -3776,7 +3818,12 @@ func (m *UI) openAuthenticationDialogWithMethod(provider catwalk.Provider, model
 func (m *UI) handleAgentViewerKeyPress(msg tea.KeyPressMsg) tea.Cmd {
 	viewerChat := m.agentViewer.chat
 	if key.Matches(msg, m.keyMap.Chat.Cancel) {
-		return m.closeAgentViewer()
+		saved := m.agentsReturn
+		cmd := m.closeAgentViewer()
+		if saved != nil && m.agentsListed() {
+			m.reopenAgentsList(saved)
+		}
+		return cmd
 	}
 
 	var cmds []tea.Cmd
@@ -6334,7 +6381,7 @@ func (m *UI) followRemoteClear(msg discord.SessionClearedMsg) []tea.Cmd {
 func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 	switch {
 	case value == "/reload":
-		return m.reloadConfig(), true
+		return m.reloadConfig(false), true
 	case value == "/goal" || strings.HasPrefix(value, "/goal "):
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
@@ -6349,25 +6396,45 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 
 // reloadConfig re-reads the config files and applies them to the running
 // agents. The command palette and the /reload slash command share it.
-func (m *UI) reloadConfig() tea.Cmd {
+// retryWhenIdle keeps a reload the busy agent refused pending until it idles.
+func (m *UI) reloadConfig(retryWhenIdle bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
-		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx), retryWhenIdle: retryWhenIdle}
 	}
 }
 
 // setAgentTeams persists the Agent Teams toggle and applies it in place. The
-// coordinator creates or tears down the Team service during the reload.
+// coordinator creates or tears down the Team service during the reload. A
+// workspace config that sets the option outranks the global file, so the
+// toggle is written there too. The workspace file's contents decide that, not
+// the merged config: a busy agent refuses the reload, which would leave the
+// merged value stale. The reload is refused as busy rather than failed, and
+// runs again once the agent is idle.
 func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, "options.agent_teams", enabled); err != nil {
-			return util.ReportError(err)()
+		scopes := []config.Scope{config.ScopeGlobal}
+		if m.workspaceSetsAgentTeams() {
+			scopes = append(scopes, config.ScopeWorkspace)
 		}
-		ctx, cancel := common.WorkspaceOpContext()
-		defer cancel()
-		return configReloadedMsg{err: m.com.Workspace.ReloadConfig(ctx)}
+		for _, scope := range scopes {
+			if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
+				return configReloadedMsg{err: err}
+			}
+		}
+		return m.reloadConfig(true)()
 	}
+}
+
+// workspaceSetsAgentTeams reports whether the workspace config file sets the
+// Agent Teams option, which is what makes a global write lose to it.
+func (m *UI) workspaceSetsAgentTeams() bool {
+	cfg := m.com.Config()
+	if cfg == nil || cfg.Options == nil {
+		return false
+	}
+	return config.WorkspaceConfigSets(cfg.Options.DataDirectory, "options.agent_teams")
 }
 
 // sendMessage sends a message with the given content and attachments.
@@ -6850,6 +6917,22 @@ func (m *UI) openAgentsDialog() tea.Cmd {
 	return nil
 }
 
+// agentsListed reports whether agents can exist in this session at all. With
+// Agent Teams off there is no list to go back to.
+func (m *UI) agentsListed() bool {
+	cfg := m.com.Config()
+	return cfg == nil || cfg.Options.GetAgentTeams()
+}
+
+// reopenAgentsList rebuilds the Agents list from the current descriptors, so
+// a status or model that changed while the viewer was open is shown, with the
+// search and selection the viewer was opened with.
+func (m *UI) reopenAgentsList(saved *agentsListState) {
+	agents := dialog.NewAgents(m.com, m.agentDescriptors())
+	agents.Restore(saved.filter, saved.sessionID)
+	m.dialog.OpenDialog(agents)
+}
+
 // openAgentViewer opens an independent transcript without changing the main
 // session or consuming the agent's run lifecycle.
 func (m *UI) openAgentViewer(descriptor dialog.AgentDescriptor) tea.Cmd {
@@ -6874,6 +6957,7 @@ func (m *UI) closeAgentViewer() tea.Cmd {
 		return nil
 	}
 	m.agentViewer.Close()
+	m.agentsReturn = nil
 	m.agentViewer = nil
 	m.updateLayoutAndSize()
 	m.invalidateFrames()

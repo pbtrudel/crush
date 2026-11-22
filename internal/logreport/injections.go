@@ -11,6 +11,9 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 )
 
+// gateInjectionTag opens the hidden row the turn-end gate writes.
+const gateInjectionTag = "turn_end_gate"
+
 // injectionTags are the tags the harness opens its hidden user rows with.
 // The report owns the list: a test in each package that writes one of
 // them asserts, through InjectionTag, that its text carries the tag. No
@@ -20,7 +23,9 @@ var injectionTags = []string{
 	"system_reminder",
 	"background_job_notice",
 	"env_snapshot",
+	"compaction_state",
 	"background_subagent_notice",
+	gateInjectionTag,
 }
 
 // subagentReportKind is the kind of a user row that carries a subagent

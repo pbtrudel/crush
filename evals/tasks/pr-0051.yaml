@@ -1,0 +1,42 @@
+schema: 1
+id: pr-0051
+source:
+  repo: pbtrudel/crush
+  pr: 51
+  merge: 8e91d2b88f26a2481161a6631bffbf397fa786cf
+  base: 9530816eb132dfb67aa980e9e55791fec5a4795b
+kind: interface
+why: >
+  Completed background shells are reaped when the 50-job cap is hit. A `job_kill` call that
+  arrives after completion then failed with `background shell not found`, which surfaced as a
+  red error in the transcript even though there was nothing left to stop.
+prompt: >
+  Completed background shells are reaped when the 50-job cap is hit. A `job_kill` call that
+  arrives after completion then failed with `background shell not found`, which surfaced as a
+  red error in the transcript even though there was nothing left to stop.
+interface: >
+  Interface: `internal/shell` declares the package-level variable
+  `var ErrBackgroundShellNotFound = errors.New("background shell not found")`, which callers
+  test for with `errors.Is`. A kill of a shell that is already gone returns a response that
+  says the shell is not running. `BackgroundShellManager.Kill` (and `Remove`) of an unknown id
+  returns an error that wraps it.
+grade:
+  packages: [./internal/agent/tools, ./internal/shell]
+  tests: [TestJobKillUnknownShellIsNoop, TestBackgroundShellManager_KillNonExistent]
+  exclude: []
+  hidden:
+    - {path: internal/agent/tools/job_test.go, blob: 5914c4403084f6c73ae8d929ddda8acf4e6575bb}
+    - {path: internal/shell/background_test.go, blob: d4ec82e3b706702101de727a3dfee8cc47e9a348}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 40
+  timeout: 10m
+risks:
+  - "correlated: pr-0044, pr-0051, pr-0076"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 5, packages: 9}

@@ -554,6 +554,16 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			if len(config.Models) > 0 {
 				models := []catwalk.Model{}
 				seen := make(map[string]bool)
+				// A listed model replaces its catalog entry, but the
+				// catalog's endpoint type is not something a user would
+				// restate. Without it a Responses model falls back to the
+				// provider's chat-completions type and leaves that API.
+				catalogTypes := make(map[string]catwalk.Type, len(p.Models))
+				for _, model := range p.Models {
+					if model.Type != "" {
+						catalogTypes[model.ID] = model.Type
+					}
+				}
 
 				for _, model := range config.Models {
 					if seen[model.ID] {
@@ -562,6 +572,9 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 					seen[model.ID] = true
 					if model.Name == "" {
 						model.Name = model.ID
+					}
+					if model.Type == "" {
+						model.Type = catalogTypes[model.ID]
 					}
 					models = append(models, model)
 				}
@@ -1548,20 +1561,27 @@ func computeWorktreeRoot(dir string) string {
 	return abs
 }
 
-// projectBoundary returns the directory at which an upward configuration
-// search rooted at dir should stop. It is the git working tree root when
-// one can be detected, otherwise dir itself. Returning dir as a
-// fallback keeps Crush from silently adopting state files placed above
-// the current project.
-func projectBoundary(dir string) string {
+// ProjectRoot returns the repository root for dir and whether dir is inside
+// a working tree. Outside one the root is dir itself, which is the boundary
+// config loading already uses: returning dir keeps Crush from reading, or
+// silently adopting, files placed above the current project.
+func ProjectRoot(dir string) (root string, inRepo bool) {
 	if root := worktreeRoot(dir); root != "" {
-		return root
+		return root, true
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return dir
+		return dir, false
 	}
-	return abs
+	return abs, false
+}
+
+// projectBoundary returns the directory at which an upward configuration
+// search rooted at dir should stop. It is the git working tree root when
+// one can be detected, otherwise dir itself.
+func projectBoundary(dir string) string {
+	boundary, _ := ProjectRoot(dir)
+	return boundary
 }
 
 // GlobalSkillsDirs returns the default directories for Agent Skills.

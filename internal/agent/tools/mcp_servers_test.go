@@ -35,3 +35,19 @@ func TestListInactiveMCPServers(t *testing.T) {
 	require.Contains(t, out, "lazy-one")
 	require.NotContains(t, out, "off", "disabled servers are not activatable")
 }
+
+// TestActivationReplyMentionsToolSearchWhenLazy covers the one way activation
+// can mislead a lazy session: the reply lists the server's tools, but their
+// schemas are deferred, so a model that tries to call one straight away gets
+// "tool not found". The reply has to say so.
+func TestActivationReplyMentionsToolSearchWhenLazy(t *testing.T) {
+	reply := "MCP server \"github\" is connected. Tools available from your next step:\n- create_issue: open an issue"
+
+	require.Equal(t, reply, withLazyActivationHint(reply, false),
+		"a full-palette reply is untouched")
+
+	lazyReply := withLazyActivationHint(reply, true)
+	require.Contains(t, lazyReply, reply, "the activation reply itself is kept")
+	require.Contains(t, lazyReply, ToolSearchToolName,
+		"a lazy session must be told the schemas are not in its palette yet")
+}

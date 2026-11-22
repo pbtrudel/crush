@@ -49,11 +49,26 @@ func TestSessionEnvSnapshotDeterministic(t *testing.T) {
 		"same clock and repo state must render identical bytes")
 }
 
-// A .git directory that is not a real repository satisfies isGitRepo but
-// makes every git command fail. The snapshot must degrade instead of
-// failing the turn: the branch line is omitted and the status section is
+// A session started in a subdirectory of a repository must still get the
+// git status. The repository root decides, not the working directory.
+func TestSessionEnvSnapshotSubdirectory(t *testing.T) {
+	t.Parallel()
+
+	root := newRepo(t, "feature/thing")
+	pkg := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+
+	got := SessionEnvSnapshot(context.Background(), pkg, fixedSnapshotTime())
+	require.Contains(t, got, "Current branch: feature/thing")
+	require.Contains(t, got, "Status: clean\n")
+}
+
+// A .git directory that is not a real repository satisfies the repository
+// check but makes every git command fail. The snapshot must degrade instead
+// of failing the turn: the branch line is omitted and the status section is
 // best-effort (the status command pipes through head, so a failing git is
-// not reported as an error).
+// not reported as an error). The git block is still rendered: a broken .git
+// does not turn the directory into a non-repository.
 func TestSessionEnvSnapshotBrokenGit(t *testing.T) {
 	t.Parallel()
 
@@ -62,5 +77,7 @@ func TestSessionEnvSnapshotBrokenGit(t *testing.T) {
 
 	got := SessionEnvSnapshot(context.Background(), dir, fixedSnapshotTime())
 	require.Contains(t, got, "Today's date: 1/1/2025")
+	require.Contains(t, got, "Git status (snapshot at conversation start",
+		"a .git entry still marks the directory as a repository")
 	require.NotContains(t, got, "Current branch")
 }

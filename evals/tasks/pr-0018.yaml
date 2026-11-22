@@ -1,0 +1,36 @@
+schema: 1
+id: pr-0018
+source:
+  repo: pbtrudel/crush
+  pr: 18
+  merge: 51fe11f9214795820bb63ca494ce1e847e30edfd
+  base: 5ff2a4bd0a62c39eafeb5a7cea33319cdc862248
+kind: interface
+why: |
+  The bash tool skips the permission prompt for commands it classifies as read-only, but that classification missed file redirection: `ls > ~/.bashrc` or `cat notes >> ~/.ssh/authorized_keys` executed without approval, so a prompt-injected model could overwrite arbitrary files. Several allowlisted entries were also not read-only: `env`/`printenv` dump credentials to the model, `kill`/`killall` are destructive, and `timeout`/`nohup`/`nice`/`time` execute arbitrary child commands that bypass the prefix check entirely. Review additionally found that `git diff --output=<file>` truncates a file with no shell metacharacter at all.
+prompt: |
+  The bash tool skips the permission prompt for commands it classifies as read-only, but that classification missed file redirection: `ls > ~/.bashrc` or `cat notes >> ~/.ssh/authorized_keys` executed without approval, so a prompt-injected model could overwrite arbitrary files. Several allowlisted entries were also not read-only: `env`/`printenv` dump credentials to the model, `kill`/`killall` are destructive, and `timeout`/`nohup`/`nice`/`time` execute arbitrary child commands that bypass the prefix check entirely. Review additionally found that `git diff --output=<file>` truncates a file with no shell metacharacter at all.
+interface: |
+  Interface: `internal/agent/tools` gains `func isSafeReadOnlyCommand(cmd string) bool`, which reports whether a command may run without a permission prompt. Besides the commands the problem names, `set`, `unset` and the `git branch`, `git tag` and `git remote` subcommands leave the allow list, as do the git flags `--output`, `--ext-diff` and `-O`/`--open-files-in-pager`; a command prefix still only matches at a word boundary, so `lsof` is not `ls`. Input redirection `<`, a background `&`, the redirects `&>` and `>&`, and a newline count as command chaining.
+grade:
+  packages: [./internal/agent/tools]
+  tests: [TestBashTool_UnsafeReadOnlyLookalikesRequirePermission, TestContainsCommandChaining, TestIsSafeReadOnlyCommand]
+  exclude: []
+  hidden:
+    - {path: internal/agent/tools/bash_test.go, blob: ff572f7f1e9bdcb3bf170da6353d3830e064853a}
+    - {path: internal/agent/tools/safe_test.go, blob: 5dfc3735177b678eb068d447f270b27d0a086217}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 48
+  timeout: 10m
+risks:
+  - "hidden choice: set, unset and the git branch, tag and remote subcommands leave the allow list, and the git flags --output, --ext-diff and -O are rejected."
+  - "hidden choice: input redirection, a background ampersand, the &> and >& redirects and a newline count as command chaining."
+  - "the design table lists two TestBashTool_* tests; the diff touches only TestBashTool_UnsafeReadOnlyLookalikesRequirePermission, so that is the one graded."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 7, packages: 10}

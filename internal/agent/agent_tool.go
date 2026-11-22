@@ -38,12 +38,16 @@ const (
 )
 
 // writeAgentConfig derives the read-write variant of the task agent: the same
-// agent, given the coder's tools and MCP servers. Subagents never get the
-// delegation tools; effectiveToolNames strips them.
+// agent, given the coder's tools and MCP servers. The copied list drops the
+// tools a subagent never gets, so the write variant keeps the edit tools and
+// the Team tools stay out of it.
 func writeAgentConfig(cfg *config.Config) config.Agent {
 	task := cfg.Agents[config.AgentTask]
 	if coder, ok := cfg.Agents[config.AgentCoder]; ok {
-		task.AllowedTools = slices.Clone(coder.AllowedTools)
+		excluded := config.SubAgentExcludedTools()
+		task.AllowedTools = slices.DeleteFunc(slices.Clone(coder.AllowedTools), func(name string) bool {
+			return slices.Contains(excluded, name)
+		})
 		task.AllowedMCP = coder.AllowedMCP
 	}
 	return task
@@ -151,6 +155,9 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 		AgentToolName,
 		description,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if refusal, off := c.refuseAgentsOff(); off {
+				return refusal, nil
+			}
 			// A teammate keeps this tool so its palette matches the Lead's,
 			// but nested delegation is not supported: the Team domain has
 			// one level, and a teammate's sub-agent would run outside the

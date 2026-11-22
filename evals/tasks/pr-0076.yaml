@@ -1,0 +1,55 @@
+schema: 1
+id: pr-0076
+source:
+  repo: pbtrudel/crush
+  pr: 76
+  merge: ecdbc382e1114e4042b7adf884ae2c8e99086d36
+  base: 0d4af8b4fed48337f22a98f7935150ff5372d548
+kind: interface
+why: |
+  Users see `background shell not found: <id>` repeatedly. Two code paths promise the model a job ID and then delete it:
+
+  - Every **foreground** bash command published a background-completion notice ("Background job X finished… use job_output with shell_id=X") and was immediately removed from the job map, so that instruction was always a dead end.
+  - A `run_in_background` command that finished inside the 1s fast-failure probe was removed the same way, even though its notice had already gone out.
+
+  Because job IDs also restart at 1 in each process, stale IDs from a resumed session hit the same error, and it surfaced as a failed tool call with a `×` in the UI.
+prompt: |
+  Users see `background shell not found: <id>` repeatedly. Two code paths promise the model a job ID and then delete it:
+
+  - Every **foreground** bash command published a background-completion notice ("Background job X finished… use job_output with shell_id=X") and was immediately removed from the job map, so that instruction was always a dead end.
+  - A `run_in_background` command that finished inside the 1s fast-failure probe was removed the same way, even though its notice had already gone out.
+
+  Because job IDs also restart at 1 in each process, stale IDs from a resumed session hit the same error, and it surfaced as a failed tool call with a `×` in the UI.
+interface: |
+  Interface: `internal/shell` declares `func (bs *BackgroundShell) SetSessionID(sessionID string)`
+  on `*BackgroundShell`, which attaches the owning session to a job that outlived its
+  foreground window.
+  The bash tool's response metadata carries the job id in a `ShellID` field.
+  `job_output` answers an id the manager no longer tracks with a non-error text that contains
+  the words `no longer tracked` and says its output is gone.
+  A job with no owning session publishes no completion notice, and a job whose session is
+  attached before it finishes publishes one for that session.
+grade:
+  packages: [./internal/agent/tools, ./internal/shell]
+  tests: [TestBackgroundJobSessionAttachedLateStillNotifies, TestBashTool_BackgroundJobFastCompletionStaysReadable, TestForegroundJobPublishesNoNotice, TestJobOutputUnknownShellIsNotAnError]
+  exclude: []
+  hidden:
+    - {path: internal/agent/tools/bash_test.go, blob: 377b19abea8a5dc7a6550b77074be816bd3fc308}
+    - {path: internal/agent/tools/job_test.go, blob: 13f841a355924083dfe467477a81af06e8e20b09}
+    - {path: internal/shell/background_notice_test.go, blob: ebf5c7e50dc600ff8904b4457a4da2f75e4d3781}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 40
+  timeout: 10m
+risks:
+  - 'hidden choice: the ShellID field of the bash response metadata, the text that answers an unknown job id, and the no-session rule for notices'
+  - the touched tests are 4 and the design table names 6; the grade also runs the rest of both packages
+  - TestForegroundJobPublishesNoNotice waits a fixed 200 ms, so it is timing bound on a loaded machine
+  - "correlated: pr-0044, pr-0051, pr-0076"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 9, packages: 11}

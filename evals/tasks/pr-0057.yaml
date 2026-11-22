@@ -1,0 +1,40 @@
+schema: 1
+id: pr-0057
+source:
+  repo: pbtrudel/crush
+  pr: 57
+  merge: 0dda785edc97b6de1abaf629f64060058eb069e7
+  base: b434bbceb9d684a7ffa3ac9e9930beb0978bcd07
+kind: interface
+why: |
+  The sidebar's TPS_AVG mixed throughput from every model used in a session. After switching models, the average kept reflecting the previous model's speed, so it did not describe the model actually in use.
+prompt: |
+  The sidebar's TPS_AVG mixed throughput from every model used in a session. After switching models, the average kept reflecting the previous model's speed, so it did not describe the model actually in use.
+interface: |
+  Interface: `internal/ui/model` declares `func (m *UI) resetTPS()`.
+  A reset clears the live rate with its message id, start time, byte count and token count,
+  and clears both the session's output and duration totals.
+  The session average is seeded only from the steps whose provider and model match the last
+  finished, non-summary assistant message, so steps from an earlier model and summary steps
+  are left out.
+grade:
+  packages: [./internal/ui/model]
+  tests: [TestResetSessionTPSFiltersByActiveModel, TestResetTPSClearsLiveAndSession]
+  exclude: []
+  hidden:
+    - {path: internal/ui/model/tps_test.go, blob: e655ff9edb78eebab407f5d8929dc373d240f80f}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 64
+  timeout: 10m
+risks:
+  - 'hidden choice: which fields a reset clears, and that the seeded average keeps only the active model''s steps'
+  - the touched tests are 2, not the 3 TestReset*TPS* tests of the design table
+  - grades a large UI package whose tests build the whole model; ./internal/ui/model is graded by several tasks (rule 9 handled suite-wide)
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 23, packages: 7}

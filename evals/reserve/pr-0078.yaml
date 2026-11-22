@@ -1,0 +1,54 @@
+schema: 1
+id: pr-0078
+source:
+  repo: pbtrudel/crush
+  pr: 78
+  merge: a4157de3817a1bed4744a0061f9e4ff1c1f89948
+  base: cd19b4c3b53ceb7a24bf4a2d7c05aff07ad3a913
+kind: interface
+why: |
+  Crush was billing a provider for two models the account never selected: 179 requests to `glm-5.3` and 164 to `glm-5.3-flash`. Those two are the provider's declared default large and small models, and Crush had three ways to adopt them without being asked:
+
+  1. An unconfigured small slot resolved to the provider's declared default small model.
+  2. A configured model missing from the catalog was replaced by that default, and the replacement was written back to the config file. One transient catalog miss therefore changed the user's choice permanently, which is why pinning a model elsewhere did not stop the usage.
+  3. Title generation ran on those models invisibly. It calls the provider directly, so neither the logs nor the session database recorded which model it used, and its 40-token output cap made any reasoning model end on the token limit, retry with the large model, and bill both on every title.
+prompt: |
+  Crush was billing a provider for two models the account never selected: 179 requests to `glm-5.3` and 164 to `glm-5.3-flash`. Those two are the provider's declared default large and small models, and Crush had three ways to adopt them without being asked:
+
+  1. An unconfigured small slot resolved to the provider's declared default small model.
+  2. A configured model missing from the catalog was replaced by that default, and the replacement was written back to the config file. One transient catalog miss therefore changed the user's choice permanently, which is why pinning a model elsewhere did not stop the usage.
+  3. Title generation ran on those models invisibly. It calls the provider directly, so neither the logs nor the session database recorded which model it used, and its 40-token output cap made any reasoning model end on the token limit, retry with the large model, and bill both on every title.
+interface: |
+  Interface: `internal/agent` declares the constants `plainTitleTokens` and
+  `reasoningTitleTokens` of type `int64`, the type `titleAttempt` with the fields
+  `name string` and `model Model`, and `func titleTokenBudget(m Model) int64` and
+  `func titleAttempts(small, large Model) []titleAttempt`.
+  A plain model's title budget is `plainTitleTokens`, a reasoning model's is
+  `reasoningTitleTokens` unless its declared default max tokens are larger, and a large model
+  identical to the small one is not tried a second time; the attempts are named `small` and
+  `large` in that order.
+  The small slot follows the selected large model, a selection the catalog does not list is
+  kept instead of being replaced or written back, and no model is substituted for it.
+grade:
+  packages: [./internal/agent, ./internal/config]
+  tests: [TestConfig_configureSelectedModels, TestConfig_defaultModelSelection, TestTitleAttempts, TestTitleTokenBudget]
+  exclude: []
+  hidden:
+    - {path: internal/agent/title_budget_test.go, blob: c176a6ac3a0830d094033a579d9b3893137c7163}
+    - {path: internal/config/load_test.go, blob: 8df2f60ad2b41c2129d6e535ad61a587d76555e1}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'reserve: rule 9 (internal/agent)'
+  - 'hidden choice: the attempt names `small` and `large`, the fields of `titleAttempt`, that a larger declared budget is kept for a reasoning model, and the kept-selection rule'
+  - four introduced names, the maximum an interface task may state (design rule 4)
+  - 'wide: the config half of the change touches the model resolution path and its existing tests'
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 10, packages: 7}

@@ -279,11 +279,11 @@ func seedTailStaleRead(t *testing.T, env fakeEnv, conn *sql.DB) session.Session 
 	return sess
 }
 
-// TestSummarizeStubsWithoutAPromptInTheLog covers the compaction that runs
-// before the next prompt is stored, which is what preflight does: the only
-// idle gap is the one the coming prompt would close, so a compaction that
-// measured itself against nothing would send the stale read while the turn
-// that follows sends the note. Both requests must agree.
+// TestSummarizeStubsWithoutAPromptInTheLog covers the preflight compaction
+// that runs before the next prompt is stored: the only idle gap is the one
+// the coming prompt would close, so a compaction that measured itself against
+// nothing would send the stale read while the turn that follows sends the
+// note. Both requests must agree.
 func TestSummarizeStubsWithoutAPromptInTheLog(t *testing.T) {
 	env, conn := coldHistoryEnv(t)
 	sess := seedTailStaleRead(t, env, conn)
@@ -291,7 +291,12 @@ func TestSummarizeStubsWithoutAPromptInTheLog(t *testing.T) {
 	model := &compactionTalkingModel{}
 	agent := newWindowAgent(env, model, 200_000)
 
-	require.NoError(t, agent.Summarize(t.Context(), sess.ID, nil, nil))
+	_, err := agent.summarize(t.Context(), compactionRequest{
+		sessionID:  sess.ID,
+		largeModel: agent.largeModel.Get(),
+		trigger:    compactionTriggerFusionPreflight,
+	})
+	require.NoError(t, err)
 	require.Len(t, model.prompts, 1)
 
 	compaction := promptWithResults(model.prompts[0])
@@ -300,13 +305,33 @@ func TestSummarizeStubsWithoutAPromptInTheLog(t *testing.T) {
 	require.NotContains(t, compaction, movedReadContent, "the stale contents must not be sent")
 
 	// The turn that follows rebuilds from the summary and the retained tail.
-	_, err := agent.Run(t.Context(), SessionAgentCall{Prompt: "finish it", SessionID: sess.ID, MaxOutputTokens: 1000})
+	_, err = agent.Run(t.Context(), SessionAgentCall{Prompt: "finish it", SessionID: sess.ID, MaxOutputTokens: 1000})
 	require.NoError(t, err)
 	require.Len(t, model.prompts, 2)
 
 	next := promptWithResults(model.prompts[1])
 	require.Contains(t, next, stubText("/w/a.go"), "the next turn must send the note too")
 	require.NotContains(t, next, movedReadContent, "the stale contents must not come back")
+}
+
+// TestSummarizeManualKeepsAStaleHistory covers a /compact typed long after
+// the session went quiet. No live request follows it, so there is no idle gap
+// to rewrite history for, and the last turn's request is still what the
+// provider holds: stubbing the whole conversation here would send bytes the
+// session never sent.
+func TestSummarizeManualKeepsAStaleHistory(t *testing.T) {
+	env, conn := coldHistoryEnv(t)
+	sess, _ := seedColdHistory(t, env, conn)
+
+	stub := &stubSummaryModel{summaryText: "# Conversation Summary\n\nAll good."}
+	agent := newCompactionAgent(env, stub, nil, false)
+
+	require.NoError(t, agent.Summarize(t.Context(), sess.ID, nil, nil))
+	require.Len(t, stub.calls, 1)
+
+	sent := promptWithResults(stub.calls[0].Prompt)
+	require.Contains(t, sent, movedReadContent, "the compaction must send the read the live turn sent")
+	require.NotContains(t, sent, stubText("/w/a.go"))
 }
 
 // TestCompactionRecordsPrefixAttribution covers the usage record a compaction

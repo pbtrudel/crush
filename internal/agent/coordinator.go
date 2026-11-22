@@ -169,6 +169,12 @@ type coordinator struct {
 	mainAgentName string
 	agents        map[string]SessionAgent
 	hookRunner    *hooks.Runner
+	// promptInputsMu guards promptInputs, which a run refreshes when its
+	// own agent's models are rebuilt.
+	promptInputsMu sync.Mutex
+	// promptInputs records what each lead agent's prompt was rendered from,
+	// so a reload only re-renders a prompt whose inputs changed.
+	promptInputs map[string]promptInput
 
 	// models is shared by every agent; rebuildMu serializes rebuilds of it.
 	models    csync.Value[coordinatorModels]
@@ -247,6 +253,13 @@ type coordinator struct {
 	// limits are the limits callers set on session trees, shared by every
 	// agent this coordinator builds.
 	limits runLimits
+
+	// lazyMu guards lazyTools, the shared registry behind options.lazy_tools.
+	// It is created on first use and kept for the coordinator's life, so the
+	// tool rebuild a config reload triggers does not re-defer a tool a
+	// session already revealed.
+	lazyMu    sync.Mutex
+	lazyTools *tools.LazyRegistry
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -294,6 +307,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		notify:          opts.Notify,
 		runComplete:     opts.RunComplete,
 		agents:          make(map[string]SessionAgent),
+		promptInputs:    make(map[string]promptInput),
 		skillsMgr:       opts.Skills,
 		allSkills:       allSkills,
 		activeSkills:    activeSkills,
@@ -324,17 +338,11 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errCoderAgentNotConfigured
 	}
 
-	// The prompt has to know the palette the coder is really given: it is what
-	// decides whether the Agent Teams policy applies, and tools can be cut
-	// with disabled_tools. effectiveToolNames is the same list buildTools
-	// filters the palette by, so the prompt and the tool block agree.
-	coderPrompt, err := coderPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
-	)
+	coderPrompt, _, err := c.agentPrompt(config.AgentCoder, agentCfg)
 	if err != nil {
 		return nil, err
 	}
+	c.promptInputs[config.AgentCoder] = c.promptInputFor(agentCfg)
 
 	agent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
 	if err != nil {
@@ -347,13 +355,11 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, errPlanAgentNotConfigured
 	}
 
-	planSystemPrompt, err := planPrompt(
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(planCfg, roleLead)),
-	)
+	planSystemPrompt, _, err := c.agentPrompt(config.AgentPlan, planCfg)
 	if err != nil {
 		return nil, err
 	}
+	c.promptInputs[config.AgentPlan] = c.promptInputFor(planCfg)
 
 	planAgent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
 	if err != nil {
@@ -661,6 +667,19 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	// main agent against a session it did not build.
 	if c.sessions.IsAgentToolSession(sessionID) {
 		return
+	}
+	// A teammate session is not the main agent's either. Waking it here
+	// ran the teammate's session on the Lead's model, alongside its own
+	// run when it was busy, so the Team delivers the notice to the
+	// teammate's own run instead.
+	if c.team != nil {
+		owned, err := c.team.NotifySession(ctx, sessionID, notice)
+		if err != nil {
+			slog.Warn("Failed to wake teammate for background completion", "session_id", sessionID, "error", err)
+		}
+		if owned {
+			return
+		}
 	}
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		return
@@ -1044,6 +1063,29 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 			}
 		}
 
+		userExtraBody, _ := mergedOptions["extra_body"].(map[string]any)
+
+		// Ask the vendor to keep the reasoning of earlier turns when the
+		// request asks for reasoning.
+		if vendorReasoningProvider(providerCfg.ID) &&
+			requestReasons(extraBody, userExtraBody, mergedOptions["reasoning_effort"]) {
+			addVendorReasoningFlag(extraBody, model.CatwalkCfg.ID)
+		}
+
+		// The user's configured extra_body wins over Crush's own fields. A
+		// thinking object is merged one level deep, so the user's keys win
+		// and the other keys stay.
+		for key, value := range userExtraBody {
+			if key == "thinking" {
+				if userThinking, ok := value.(map[string]any); ok {
+					if thinking, ok := extraBody[key].(map[string]any); ok {
+						maps.Copy(thinking, userThinking)
+						continue
+					}
+				}
+			}
+			extraBody[key] = value
+		}
 		mergedOptions["extra_body"] = extraBody
 
 		parsed, err := openaicompat.ParseOptions(mergedOptions)
@@ -1144,6 +1186,47 @@ const (
 // isSubAgent reports whether the role bills as agent-initiated.
 func (r agentRole) isSubAgent() bool { return r != roleLead }
 
+// promptInput is everything the base system prompt of a lead agent is
+// rendered from, apart from the config and the environment it reads itself.
+// A reload re-renders only when this changes, so an unrelated edit cannot
+// rewrite the cached prompt prefix.
+type promptInput struct {
+	agentTeams bool
+	toolNames  string
+	profile    string
+}
+
+// promptInputFor reports the inputs the prompt of a lead agent renders from.
+func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
+	return promptInput{
+		agentTeams: !c.agentsOff(),
+		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
+		profile:    c.cfg.Config().Options.GetPromptProfile(),
+	}
+}
+
+// agentPrompt builds a lead agent's base system prompt from the current
+// config. ok is false for an agent whose prompt this coordinator does not
+// own. The prompt has to know the palette the agent is really given: it is
+// what decides whether the Agent Teams policy applies, and tools can be cut
+// with disabled_tools. effectiveToolNames is the same list buildTools filters
+// the palette by, so the prompt and the tool block agree.
+func (c *coordinator) agentPrompt(name string, agentCfg config.Agent) (_ *prompt.Prompt, ok bool, _ error) {
+	opts := []prompt.Option{
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
+	}
+	switch name {
+	case config.AgentCoder:
+		p, err := coderPrompt(opts...)
+		return p, true, err
+	case config.AgentPlan:
+		p, err := planPrompt(opts...)
+		return p, true, err
+	}
+	return nil, false, nil
+}
+
 // agentSystemPrompt is where buildAgent takes the base system prompt from.
 // Template is rendered against the current environment; Prebuilt is used
 // verbatim, which is how a teammate extends the Lead's already-built prompt
@@ -1187,9 +1270,11 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		SystemPromptSuffix:   system.Suffix,
 		IsSubAgent:           role.isSubAgent(),
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
+		NonInteractive:       !c.interactive,
 		IsYolo:               c.permissions.PermissionMode().SkipsPrompts(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,
+		History:              c.history,
 		Cfg:                  c.cfg,
 		Tools:                nil,
 		Notify:               c.notify,
@@ -1197,6 +1282,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		Hooks:                c.hookRunner,
 		titles:               &c.titles,
 		limits:               &c.limits,
+		LazyTools:            c.lazyRegistryIfEnabled,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -1245,19 +1331,28 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 // headless run exits before one could arrive, so delegation blocks there and
 // detaches here. Subagents get neither, since they can neither fan out nor
 // ask questions. A teammate keeps the Lead's palette for prompt-cache
-// parity and refuses at run time instead.
+// parity and refuses at run time instead. With Agent Teams off no delegation
+// tool is attached in either mode, since there is no agent left to delegate
+// to; agentic_fetch stays, as it runs its helper inside its own call.
 func (c *coordinator) effectiveToolNames(agentCfg config.Agent, role agentRole) []string {
+	agentsOff := c.agentsOff()
 	return slices.DeleteFunc(slices.Clone(agentCfg.AllowedTools), func(name string) bool {
 		switch name {
 		case tools.QuestionToolName:
 			return role == roleSubAgent || !c.interactive
 		case AgentToolName:
-			return role.isSubAgent() || c.interactive
+			return agentsOff || role.isSubAgent() || c.interactive
 		case AgentDispatchToolName, AgentSendToolName, AgentStatusToolName, AgentStopToolName:
-			return role == roleSubAgent || !c.interactive
+			return agentsOff || role == roleSubAgent || !c.interactive
 		}
 		return false
 	})
+}
+
+// agentsOff reports whether Agent Teams is turned off in the current config.
+// A coordinator without a config keeps the surface it was built for.
+func (c *coordinator) agentsOff() bool {
+	return c.cfg != nil && !c.cfg.Config().Options.GetAgentTeams()
 }
 
 // buildTools builds an agent's tools. parentModel reports the model the
@@ -1324,8 +1419,8 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewJobOutputTool(c.cfg.Config().Options.DataDirectory),
 		tools.NewJobKillTool(),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), nil),
-		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewMultiEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
+		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), c.cfg.Config().Options.GetEditWithoutRead()),
+		tools.NewMultiEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), c.cfg.Config().Options.GetEditWithoutRead()),
 		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), nil),
 		tools.NewGlobTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.Glob),
 		tools.NewGrepTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.Grep),
@@ -1337,6 +1432,18 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewWorktreeTool(c.cfg.WorkingDir()),
 	)
+
+	// A GPT model gets apply_patch instead of edit and multiedit: it was
+	// trained on the *** Begin Patch format, and exact-string matching is
+	// where its edits most often fail. The option is off by default and
+	// changes nothing for any other model family.
+	if c.applyPatchFor(agent) {
+		allTools = slices.DeleteFunc(allTools, func(tool fantasy.AgentTool) bool {
+			name := tool.Info().Name
+			return name == tools.EditToolName || name == tools.MultiEditToolName
+		})
+		allTools = append(allTools, tools.NewApplyPatchTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()))
+	}
 
 	// Interactive-only, and never given to subagents; effectiveToolNames
 	// is what decides both.
@@ -1401,6 +1508,15 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 			}
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
+	}
+	// Lazy tool mode sends a small core palette and holds the rest of these
+	// schemas back until the model reveals them. The registry learns the full
+	// palette here, which is what tool_search hands back, and the reveal tool
+	// itself joins the list; registration is skipped entirely when the option
+	// is off, so nothing about the palette changes.
+	if registry := c.lazyRegistryIfEnabled(); registry != nil {
+		registry.Register(filteredTools)
+		filteredTools = append(filteredTools, registry.Tool(lazyPaletteNames(filteredTools)))
 	}
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
@@ -1477,12 +1593,13 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 	}
 
 	model := Model{
-		Model:        languageModel,
-		CatwalkCfg:   *catwalkModel,
-		ModelCfg:     modelCfg,
-		FlatRate:     providerCfg.FlatRate,
-		OAuth:        providerCfg.OAuthToken != nil,
-		ProviderName: providerCfg.Name,
+		Model:           languageModel,
+		CatwalkCfg:      *catwalkModel,
+		ModelCfg:        modelCfg,
+		FlatRate:        providerCfg.FlatRate,
+		OAuth:           providerCfg.OAuthToken != nil,
+		ProviderName:    providerCfg.Name,
+		ServingProvider: servingProvider(providerCfg, *catwalkModel),
 	}
 	// A Fusion entry stands for a router, not a concrete model: every path
 	// that uses it has to resolve a real model first. The session agent
@@ -1562,20 +1679,23 @@ func (c *coordinator) hyperAPIKey() string {
 // provider) because the value depends on the caller, while the rest of the
 // provider options come from static config.
 //
-// The two providers documented here want different scopes, and the reason is
-// what each one caches. OpenAI matches a prefix across conversations, so the
-// hint is derived from the workspace: every session, sub-agent, and
-// compaction run in this workspace shares the same tool and system-prompt
-// prefixes and routes to one cache shard. Mistral matches per conversation
-// and asks for a conversation or session ID; a single workspace key was in
-// practice shared by the Lead and every concurrent sub-agent and teammate,
-// and far more requests missed than with one key per session. The session
-// hash used here is the same value sent as the x-session-affinity header, so
-// routing and caching agree.
+// OpenAI wants a different scope from everything else, and the reason is what
+// it caches. It matches a prefix across conversations, so the hint is derived
+// from the workspace: every session, sub-agent, and compaction run in this
+// workspace shares the same tool and system-prompt prefixes and routes to one
+// cache shard.
 //
-// Only providers with documented support get the hint here. For other
-// OpenAI-compatible providers (Hyper, Command Code, custom endpoints) a static
-// key can be set through the provider's extra_body config instead.
+// Every other OpenAI-compatible endpoint matches per conversation, so it gets
+// the session hash as a top-level prompt_cache_key request field through
+// extra_body. A single workspace key was in practice shared by the Lead and
+// every concurrent sub-agent and teammate, and far more requests missed than
+// with one key per session. The session hash used here is the same value sent
+// as the x-session-affinity header, so routing and caching agree; an unknown
+// session falls back to the workspace key.
+//
+// A key the user set in the provider's extra_body always wins, since a wrong
+// key only misroutes a cache and never changes the completion. An endpoint
+// that rejects the field gets one retry without it rather than a failed turn.
 func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, providerCfg config.ProviderConfig, sessionID string) fantasy.ProviderOptions {
 	workingDir := c.cfg.WorkingDir()
 	if workingDir == "" {
@@ -1594,8 +1714,7 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		)
 	}
 
-	switch {
-	case providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI):
+	if providerCfg.Type == openai.Name && providerCfg.ID == string(catwalk.InferenceProviderOpenAI) {
 		// The Responses API and Chat Completions carry the key on different
 		// option structs; mutating the existing entry keeps whatever else
 		// getProviderOptions put there (reasoning summary, include, ...).
@@ -1607,21 +1726,38 @@ func (c *coordinator) withPromptCacheKey(options fantasy.ProviderOptions, provid
 		default:
 			options[openai.Name] = &openai.ProviderOptions{PromptCacheKey: &key}
 		}
-	case isMistralBaseURL(baseURL):
-		opts, _ := options[openaicompat.Name].(*openaicompat.ProviderOptions)
-		if opts == nil {
-			opts = &openaicompat.ProviderOptions{}
-		}
-		if opts.ExtraBody == nil {
-			opts.ExtraBody = map[string]any{}
-		}
-		cacheKey := key
-		if sessionID != "" {
-			cacheKey = session.HashID(sessionID)
-		}
-		opts.ExtraBody["prompt_cache_key"] = cacheKey
-		options[openaicompat.Name] = opts
+		return options
 	}
+
+	// Providers served by their own SDK (Anthropic, Google, OpenRouter,
+	// Azure) have no openai-compat options, and a field they never read is
+	// not worth adding. Mistral is matched by host because its type and ID
+	// vary between configs.
+	opts, ok := options[openaicompat.Name].(*openaicompat.ProviderOptions)
+	if !ok && !isMistralBaseURL(baseURL) {
+		return options
+	}
+	// The provider's own extra_body is applied to the request body after
+	// these options, so a key configured there wins and nothing is added
+	// here.
+	if _, exists := providerCfg.ExtraBody["prompt_cache_key"]; exists {
+		return options
+	}
+	if opts == nil {
+		opts = &openaicompat.ProviderOptions{}
+	}
+	if opts.ExtraBody == nil {
+		opts.ExtraBody = map[string]any{}
+	}
+	if _, exists := opts.ExtraBody["prompt_cache_key"]; exists {
+		return options
+	}
+	cacheKey := key
+	if sessionID != "" {
+		cacheKey = session.HashID(sessionID)
+	}
+	opts.ExtraBody["prompt_cache_key"] = cacheKey
+	options[openaicompat.Name] = opts
 	return options
 }
 
@@ -1707,8 +1843,14 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 		// ChatGPT OAuth: requests go through the Codex backend, which
 		// expects account headers and rejects some request fields, so
 		// they pass through the Codex transport.
-		opts = append(opts, openai.WithHTTPClient(openaiOAuthClient(httpClient, token)))
-	} else if httpClient = captureClient(httpClient); httpClient != nil {
+		httpClient = openaiOAuthClient(httpClient, token)
+	} else {
+		httpClient = captureClient(httpClient)
+	}
+	// The replay transport sits above the recorder, so a capture shows the
+	// body the backend receives after the reasoning items were replayed.
+	httpClient = c.withResponsesReasoningReplay(httpClient)
+	if httpClient != nil {
 		opts = append(opts, openai.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -1825,8 +1967,20 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		if httpClient != nil && httpClient.Transport != nil {
 			baseTransport = httpClient.Transport
 		}
-		opts = append(opts, openaicompat.WithHTTPClient(mistralVibeClient(baseTransport)))
-	} else if httpClient = captureClient(httpClient); httpClient != nil {
+		httpClient = mistralVibeClient(baseTransport)
+	} else {
+		// The recorder goes on first so the retry transport sits above it
+		// and a capture shows the body the endpoint receives.
+		httpClient = captureClient(httpClient)
+		// The prompt cache key these requests carry is optional: an endpoint
+		// that does not know the field drops it after one retry instead of
+		// failing the turn. Mistral keeps its own transport and behaviour.
+		httpClient = withPromptCacheKeyRetry(httpClient)
+	}
+	if wireType == catwalk.TypeResponses {
+		httpClient = c.withResponsesReasoningReplay(httpClient)
+	}
+	if httpClient != nil {
 		opts = append(opts, openaicompat.WithHTTPClient(httpClient))
 	}
 
@@ -1859,7 +2013,9 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 	if c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()
 	}
-	if httpClient = captureClient(httpClient); httpClient != nil {
+	httpClient = captureClient(httpClient)
+	httpClient = c.withResponsesReasoningReplay(httpClient)
+	if httpClient != nil {
 		opts = append(opts, azure.WithHTTPClient(httpClient))
 	}
 	if options == nil {
@@ -2098,6 +2254,13 @@ func (c *coordinator) Cancel(sessionID string) {
 	c.currentAgent().Cancel(sessionID)
 }
 
+// CancelBackgroundCompaction stops the summary a session wrote ahead of the
+// auto-compaction limit, and leaves its runs alone. It is called when the
+// session goes away, since the summary has nothing left to compact into.
+func (c *coordinator) CancelBackgroundCompaction(sessionID string) {
+	c.currentAgent().CancelBackgroundCompaction(sessionID)
+}
+
 // CancelAll stops everything, detached subagents included. It is the
 // shutdown path, so the subagents are stopped without reporting: nobody is
 // left to read a report, and the next run on each parent session reports
@@ -2180,6 +2343,35 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 		return err
 	}
 	agent.SetTools(tools)
+
+	// The prompt is rendered from the tool palette and the Agent Teams
+	// setting, so a reload that changes either has to re-render it. Every
+	// other edit leaves the prompt, and its cached prefix, alone.
+	input := c.promptInputFor(agentCfg)
+	c.promptInputsMu.Lock()
+	rendered, renderedBefore := c.promptInputs[name]
+	c.promptInputsMu.Unlock()
+	if renderedBefore && rendered == input {
+		return nil
+	}
+	template, ok, err := c.agentPrompt(name, agentCfg)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	systemPrompt, err := template.Build(ctx, models.Large.Model.Provider(), models.Large.Model.Model(), c.cfg)
+	if err != nil {
+		return err
+	}
+	agent.SetSystemPrompt(systemPrompt)
+	c.promptInputsMu.Lock()
+	if c.promptInputs == nil {
+		c.promptInputs = make(map[string]promptInput)
+	}
+	c.promptInputs[name] = input
+	c.promptInputsMu.Unlock()
 	return nil
 }
 

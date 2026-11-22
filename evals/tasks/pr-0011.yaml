@@ -1,0 +1,35 @@
+schema: 1
+id: pr-0011
+source:
+  repo: pbtrudel/crush
+  pr: 11
+  merge: a36bb808686890b994be55793263e854ec932039
+  base: 334c5d791d23786c87c71c175128225e528beaef
+kind: interface
+why: |
+  The `/rc` command (Discord remote control, added in #9) never appears in the `/` command palette on a fresh launch. The palette entry is gated on an active session, but Crush creates the session lazily on the first prompt, so before you send any message the command is invisible and cannot be discovered or run.
+prompt: |
+  The `/rc` command (Discord remote control, added in #9) never appears in the `/` command palette on a fresh launch. The palette entry is gated on an active session, but Crush creates the session lazily on the first prompt, so before you send any message the command is invisible and cannot be discovered or run.
+interface: |
+  Interface: `internal/ui/model` gains `func (m *UI) toggleRemoteControl() []tea.Cmd`, where `tea` is the existing import alias for `charm.land/bubbletea/v2`. The palette entry keeps its id `remote_control` and is listed by the dialog's default commands whether or not a session exists. With no active session the method creates exactly one session through the workspace and returns the commands that load it and start the bridge. `m.session` already holds the created session when the method returns.
+grade:
+  packages: [./internal/ui/dialog, ./internal/ui/model]
+  tests: [TestRemoteControlCommandVisibleWithoutSession, TestRemoteControlCreatesSessionWhenNoneActive]
+  exclude: []
+  hidden:
+    - {path: internal/ui/dialog/remote_control_test.go, blob: fa687afdc02ce0334895b3432e5e9277d0b8e5ad}
+    - {path: internal/ui/model/remote_control_test.go, blob: 3643a4aa6bddf9960be862cd147f5770f1541b60}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 40
+  timeout: 10m
+risks:
+  - "hidden choice: the palette entry keeps its id `remote_control`, and with no session it creates exactly one session and returns the commands that start the bridge."
+  - "correlated: pr-0011, pr-0065, pr-0094"
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 22, packages: 8}

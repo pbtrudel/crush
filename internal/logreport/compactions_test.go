@@ -50,3 +50,29 @@ func TestCompactionsByTrigger(t *testing.T) {
 		Failed: 2,
 	}, log.report(Options{}).Compactions)
 }
+
+func TestCompactionsCountUnusedBackgroundSummaries(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	log.session("s1", "title")
+	compacted := func(trigger string, before int64) {
+		log.summary("s1", message.TextContent{Text: "summary"},
+			message.Finish{Reason: message.FinishReasonEndTurn},
+			message.CompactionStats{TokensBefore: before, Trigger: trigger})
+	}
+	compacted("background", 90_000)
+	// A summary written ahead of the limit and never adopted compacted
+	// nothing, so it is counted apart from the compactions.
+	compacted("background_unused", 85_000)
+	compacted("background_unused", 88_000)
+
+	require.Equal(t, Compactions{
+		Count:              1,
+		MedianTokensBefore: 90_000,
+		ByTrigger: []Compaction{
+			{Trigger: "background", Count: 1, MedianTokensBefore: 90_000},
+		},
+		UnusedBackground: 2,
+	}, log.report(Options{}).Compactions)
+}

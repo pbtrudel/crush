@@ -1,0 +1,43 @@
+schema: 1
+id: pr-0050
+source:
+  repo: pbtrudel/crush
+  pr: 50
+  merge: 9530816eb132dfb67aa980e9e55791fec5a4795b
+  base: 667e22c8f0a322e509cfd8247a5f65f4c96b54fa
+kind: interface
+why: |
+  PR #49 added a streaming repetition guard and sidebar TPS stats, but testing the merged code found two gaps: a degenerate response that inserts a space between repeated characters (for example a CJK character repeated every 57 characters) was not stopped, and reasoning output was never inspected. The TPS stat also disappeared when idle, and the long `LIVE_TPS` / `TOTAL_AVG_FOR_SESSION` labels were hard to scan.
+prompt: |
+  PR #49 added a streaming repetition guard and sidebar TPS stats, but testing the merged code found two gaps: a degenerate response that inserts a space between repeated characters (for example a CJK character repeated every 57 characters) was not stopped, and reasoning output was never inspected. The TPS stat also disappeared when idle, and the long `LIVE_TPS` / `TOTAL_AVG_FOR_SESSION` labels were hard to scan.
+interface: |
+  Interface: `internal/message` declares the method `func (m *Message) TruncateReasoning(keepRunes int)`
+  on `*Message`, which keeps the first `keepRunes` runes of the message's reasoning parts and
+  leaves its other parts untouched.
+grade:
+  packages: [./internal/agent, ./internal/config, ./internal/message, ./internal/ui/common, ./internal/ui/model]
+  tests: [TestBeginLiveTPSKeepsPreviousRate, TestModelInfoAlwaysRendersTPSStat, TestModelInfoRendersTPSStat, TestOptionsHarnessBudgets, TestOptionsHarnessTogglesFromJSON, TestRepetitionDetector, TestStartBackgroundSubAgentReturnsImmediately, TestSubagentOutputTool, TestTruncateReasoning, TestUpdateLiveTPS]
+  exclude: []
+  hidden:
+    - {path: internal/agent/repetition_test.go, blob: 0d86787f382771bab5d401d5af904687baf18d3c}
+    - {path: internal/agent/subagent_tool_test.go, blob: 4c344646634d6948535015f14f431d5355149ee1}
+    - {path: internal/config/options_harness_test.go, blob: 8814ef2d00bebbe4eb4ee5ef819d069fd05d41b6}
+    - {path: internal/message/content_test.go, blob: bbe688b2843b87fa99c3f074f599d0726ae8d0c5}
+    - {path: internal/ui/common/elements_test.go, blob: df7c1682b21f7ac4e71e57ec511b8fa95d4bb9a6}
+    - {path: internal/ui/model/tps_test.go, blob: d86492ae2a34fc49ecdbf262471619cabfd1e5a3}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 120
+  timeout: 25m
+risks:
+  - 'reserve: too wide (5 packages), and rule 9 (internal/agent)'
+  - 'too wide: 10 tests across 5 packages and at least four problems in one prompt (the repetition guard, reasoning truncation, the TPS labels, subagent_output coverage and the harness options)'
+  - 'hidden choice: the rendered `TPS:` and `TPS_AVG` labels, the kept length of a truncated reasoning, and the harness option names'
+  - the touched tests are 10, not the 11 of the design table
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 16, packages: 7}

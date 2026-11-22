@@ -1,0 +1,5 @@
+  ▸ × Ran 7 tools (3 edits, 2 reads, 2 bash), 1 failed
+
+  × Bash go build ./...
+  
+   ERROR  exit status 1

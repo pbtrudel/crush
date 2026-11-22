@@ -84,11 +84,12 @@ crush run --json --max-steps 40 --timeout 20m "Fix the failing test"
 			sessionID, _       = cmd.Flags().GetString("session")
 			useLast, _         = cmd.Flags().GetBool("continue")
 			jsonOutput, _      = cmd.Flags().GetBool("json")
+			archived, _        = cmd.Flags().GetBool("archived")
 			maxSteps, _        = cmd.Flags().GetInt("max-steps")
 			timeout, _         = cmd.Flags().GetDuration("timeout")
 		)
 		limits := agent.RunLimits{MaxSteps: maxSteps, Timeout: timeout}
-		if err := refuseOnServer(jsonOutput, limits); err != nil {
+		if err := refuseOnServer(jsonOutput, limits, archived); err != nil {
 			return err
 		}
 		if err := checkRunLimits(limits); err != nil {
@@ -183,7 +184,7 @@ crush run --json --max-steps 40 --timeout 20m "Fix the failing test"
 			sessionID = sess.ID
 		}
 
-		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast, jsonOutput, limits)
+		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, reasoningEffort, quiet || verbose, sessionID, useLast, jsonOutput, limits, archived)
 	},
 }
 
@@ -196,14 +197,17 @@ func init() {
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.Flags().Bool("json", false, "Print one JSON object describing the run instead of its text, and exit 0 when it completed, 2 when the model stopped short, 3 when the run should be repeated")
+	runCmd.Flags().Bool("archived", false, "Create the session archived so it stays out of the session lists, which keeps scripted and CI runs from burying the sessions a person works in")
 	runCmd.Flags().Int("max-steps", 0, "Stop the session and every session it starts once they took this many steps in all; zero means no limit")
 	runCmd.Flags().Duration("timeout", 0, "Cancel the session and every session it starts this long after the prompt is sent, for example 20m; zero means no limit")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
+	runCmd.MarkFlagsMutuallyExclusive("archived", "session")
+	runCmd.MarkFlagsMutuallyExclusive("archived", "continue")
 }
 
 // refuseOnServer refuses the flags that only the in-process command
 // implements, before anything is read or started.
-func refuseOnServer(jsonOutput bool, limits agent.RunLimits) error {
+func refuseOnServer(jsonOutput bool, limits agent.RunLimits, archived bool) error {
 	if !useClientServer() {
 		return nil
 	}
@@ -212,6 +216,7 @@ func refuseOnServer(jsonOutput bool, limits agent.RunLimits) error {
 		set  bool
 	}{
 		{name: "--json", set: jsonOutput},
+		{name: "--archived", set: archived},
 		{name: "--max-steps", set: limits.MaxSteps != 0},
 		{name: "--timeout", set: limits.Timeout != 0},
 	} {

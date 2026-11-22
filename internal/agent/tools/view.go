@@ -92,6 +92,9 @@ const (
 type contentTooLargeError struct {
 	Size int
 	Max  int
+	// Lines is how many lines fitted before the size limit was hit, so the
+	// message can name a limit that would work.
+	Lines int
 }
 
 func (e contentTooLargeError) Error() string {
@@ -333,8 +336,8 @@ func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, c
 	if err != nil {
 		var tooLarge contentTooLargeError
 		if errors.As(err, &tooLarge) {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("Content section is too large (%d bytes). Maximum size is %d bytes",
-				tooLarge.Size, tooLarge.Max)), nil
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("Content section is too large (%d bytes). Maximum size is %d bytes. The first %d lines fit; read again with a limit of at most %d, or start at a later offset.",
+				tooLarge.Size, tooLarge.Max, tooLarge.Lines, tooLarge.Lines)), nil
 		}
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to read file: %s", err)), nil
 	}
@@ -590,7 +593,7 @@ func readTextFile(filePath string, offset, limit, maxContentSize int) (string, b
 			projectedSize++
 		}
 		if maxContentSize > 0 && projectedSize > maxContentSize {
-			return "", false, contentTooLargeError{Size: projectedSize, Max: maxContentSize}
+			return "", false, contentTooLargeError{Size: projectedSize, Max: maxContentSize, Lines: len(lines)}
 		}
 		contentSize = projectedSize
 		lines = append(lines, lineText)

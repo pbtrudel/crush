@@ -45,6 +45,8 @@ import (
 	"github.com/charmbracelet/crush/internal/claudeagent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/gitutil"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -72,6 +74,11 @@ const (
 	// budget. The recent working set — file reads, command outputs, and
 	// edits — is worth far more to the model than more summary prose.
 	defaultCompactTailTokens = config.DefaultCompactTailTokens
+
+	// defaultCompactBackgroundMargin is how far below the auto-compaction
+	// limit a finished turn starts the summary when the user has not
+	// configured a margin. Zero keeps compaction blocking.
+	defaultCompactBackgroundMargin = config.DefaultCompactBackgroundMargin
 
 	// defaultCompactionMaxOutputTokens bounds the summary a compaction
 	// request may generate. Reasoning models spend part of this budget on
@@ -215,6 +222,27 @@ type SessionAgentCall struct {
 	// context-overflow recovery, so a second overflow fails normally
 	// instead of looping between summarize and retry.
 	overflowRetried bool
+	// gateContinuations counts the turn-end continuations this prompt
+	// already used. It is carried on the call, so a compaction
+	// continuation, which copies the call, keeps the count.
+	gateContinuations int
+	// gateContinued marks a call the turn-end gate started, so its run
+	// does not fire TurnStart again.
+	gateContinued bool
+	// gateBaseline is the working tree at the prompt's start, so the gate
+	// can see a change no tool call made. Nil when nothing reads it, or
+	// when it could not be taken.
+	gateBaseline *gitutil.WorktreeState
+	// gateBaselineErr records that the baseline could not be taken, so the
+	// prompt falls back to tool-call detection and does not retry.
+	gateBaselineErr bool
+	// gateRoot is the repository root resolved with the baseline, so the
+	// tool paths and git's paths compare as one. Empty outside a
+	// repository.
+	gateRoot string
+	// gateChangedFiles are the files this prompt's tools changed, from
+	// every run of it.
+	gateChangedFiles []string
 }
 
 // filterToolsForChannel scopes the tool list for a turn. A channel-originated
@@ -264,6 +292,9 @@ type SessionAgent interface {
 	SetAdoptedToolOrder(sessionID string, names []string)
 	Cancel(sessionID string)
 	CancelAll()
+	// CancelBackgroundCompaction stops the summary written ahead of the
+	// auto-compaction limit without touching the session's runs.
+	CancelBackgroundCompaction(sessionID string)
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
 	// ListSettledMessages reads a session's transcript, first settling any
@@ -296,6 +327,10 @@ type Model struct {
 	OAuth bool
 	// ProviderName is the provider's display name, such as "GitHub Copilot".
 	ProviderName string
+	// ServingProvider is the provider the request travels through (see
+	// servingProvider), such as "anthropic" for a Claude model behind a
+	// gateway. It decides the prompt-cache breakpoint layout.
+	ServingProvider string
 }
 
 // activeCancel wraps a context.CancelFunc with a unique pointer identity.
@@ -332,6 +367,10 @@ type sessionAgent struct {
 	isSubAgent bool
 	sessions   session.Service
 	messages   message.Service
+	// history lists the files a session changed, which the state block
+	// repeats after a compaction. Nil in most tests and in agents built
+	// without a history service; the block then leaves the list out.
+	history history.Service
 	// cfg backs channel reply routing (config lookup + MCP tool
 	// invocation). Nil in tests and subagents that never see channel
 	// turns; sendChannelReply treats nil as "routing disabled".
@@ -341,13 +380,28 @@ type sessionAgent struct {
 	// means mcp.RunTool.
 	replyToolRun         func(ctx context.Context, cfg *config.ConfigStore, name, tool, input string) (mcp.ToolResult, error)
 	disableAutoSummarize bool
-	isYolo               bool
+	// nonInteractive marks an agent that answers one prompt and exits
+	// (`crush run`), which never starts a background compaction: the
+	// process would exit before the summary is used.
+	nonInteractive bool
+	isYolo         bool
 	// permissions answers whether the user is being asked about tool
 	// calls at all. Nil in tests and anywhere that never needs to know.
 	permissions permission.Service
 	notify      pubsub.Publisher[notify.Notification]
 	runComplete pubsub.Publisher[notify.RunComplete]
 	hooks       *hooks.Runner
+	// gateChecks are extra built-in checks a test registers ahead of the
+	// completion check; production leaves the list nil. It is a test seam,
+	// like snapshotState.
+	gateChecks []gateCheck
+	// snapshotState reads the working tree for the gate. It is a field so
+	// a test can count the calls; nil means gitutil.Snapshot.
+	snapshotState func(ctx context.Context, dir string) (gitutil.WorktreeState, error)
+	// beforeHandoff, when set, runs once between the gate's decision and
+	// the hand-off. It is a test seam for the window in between, where a
+	// prompt or a cancel can arrive.
+	beforeHandoff func()
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -383,10 +437,23 @@ type sessionAgent struct {
 	// back to their sorted positions, which would rewrite the block and
 	// re-read the conversation from the first adopted tool.
 	adoptedTools *csync.Map[string, []string]
+	// stepTools records, per session, the tool list the last step actually
+	// sent. The tools block is serialized ahead of the messages, so a
+	// compaction re-sends that exact list instead of rebuilding it from a
+	// registry a server may have changed since (see toolsForStep).
+	stepTools *csync.Map[string, []fantasy.AgentTool]
+	// bgCompactions records, per session, the summary being written ahead of
+	// the auto-compaction limit, or the one already written and waiting for
+	// the limit. See startBackgroundCompaction.
+	bgCompactions *csync.Map[string, *backgroundCompaction]
 	// titles tracks in-flight title generation so CancelAll can drain it.
 	titles *titleTracker
 	// limits are the limits callers set on session trees. Nil holds none.
 	limits *runLimits
+	// lazyTools resolves the registry behind options.lazy_tools, the one the
+	// coordinator's tool_search tool reveals through. Nil sends the full
+	// palette.
+	lazyTools func() *tools.LazyRegistry
 
 	// dispatchMu holds a per-session mutex that serializes the
 	// accepted -> (cancel-on-entry | queued | active) transition in
@@ -444,6 +511,7 @@ type SessionAgentOptions struct {
 	SystemPromptSuffix   string
 	IsSubAgent           bool
 	DisableAutoSummarize bool
+	NonInteractive       bool
 	Sessions             session.Service
 	Messages             message.Service
 	Permissions          permission.Service
@@ -451,6 +519,9 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// History is optional: it supplies the changed-file list the
+	// post-compaction state block repeats. Nil leaves the list out.
+	History history.Service
 	// Now is the clock used for per-session data (the environment
 	// snapshot). Tests pin it so recorded requests stay reproducible;
 	// production leaves it nil for time.Now.
@@ -465,6 +536,10 @@ type SessionAgentOptions struct {
 	// limits is shared by a coordinator's agents, so every run in a session
 	// tree draws on the limits set on it.
 	limits *runLimits
+	// LazyTools resolves the registry behind options.lazy_tools. It is nil
+	// when no coordinator owns the agent (tests, the agentic-fetch subagent),
+	// and returning nil means the full palette is sent.
+	LazyTools func() *tools.LazyRegistry
 }
 
 func NewSessionAgent(
@@ -483,8 +558,10 @@ func NewSessionAgent(
 		isSubAgent:             opts.IsSubAgent,
 		sessions:               opts.Sessions,
 		messages:               opts.Messages,
+		history:                opts.History,
 		cfg:                    opts.Cfg,
 		disableAutoSummarize:   opts.DisableAutoSummarize,
+		nonInteractive:         opts.NonInteractive,
 		isYolo:                 opts.IsYolo,
 		permissions:            opts.Permissions,
 		tools:                  csync.NewSliceFrom(opts.Tools),
@@ -499,8 +576,11 @@ func NewSessionAgent(
 		promptHashes:           csync.NewMap[string, []string](),
 		toolsHashes:            csync.NewMap[string, []string](),
 		adoptedTools:           csync.NewMap[string, []string](),
+		stepTools:              csync.NewMap[string, []fantasy.AgentTool](),
+		bgCompactions:          csync.NewMap[string, *backgroundCompaction](),
 		titles:                 cmp.Or(opts.titles, new(titleTracker)),
 		limits:                 opts.limits,
+		lazyTools:              opts.LazyTools,
 		dispatchMu:             csync.NewMap[string, *sync.Mutex](),
 		acceptedRuns:           csync.NewMap[string, int](),
 		cancelMark:             csync.NewMap[string, uint64](),
@@ -856,6 +936,7 @@ const sideQuestionRetrySuffix = "\n\nAnswer from the conversation above only. Do
 // history without persisting anything or exposing tools to the model.
 func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 	largeModel := a.largeModel.Get()
+	policy := cachePolicyForModel(largeModel)
 	promptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
@@ -905,7 +986,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 				}
 				a.normalizePromptMessages(prepared.Messages)
 				prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
-				a.applyCacheBreakpoints(prepared.Messages)
+				a.applyCacheBreakpoints(prepared.Messages, policy)
 				if promptPrefix != "" {
 					prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 				}
@@ -1204,6 +1285,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	// Copy mutable fields under lock to avoid races with SetTools.
 	promptPrefix := a.systemPromptPrefix.Get()
+	policy := cachePolicyForModel(largeModel)
 
 	// Resolve the tool list and the MCP instruction block once per turn and
 	// reuse them for every step (see the PrepareStep closure below).
@@ -1214,11 +1296,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// server cannot drop them from the palette either. Tools the session
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
+	agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
 
-	a.applyToolCacheBreakpoint(agentTools)
+	a.applyToolCacheBreakpoint(agentTools, policy)
 
 	// Copilot Fusion resolves its plan per turn, so the phase runner is built
 	// here where the turn's prompt and the read-only review tools are known.
@@ -1305,7 +1388,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if !compacted && preflightCompact {
-		if err := a.summarize(genCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, compactionTriggerFusionPreflight, false, false); err != nil {
+		if _, err := a.summarize(genCtx, compactionRequest{
+			sessionID:     call.SessionID,
+			largeModel:    largeModel,
+			opts:          call.ProviderOptions,
+			onAuthRefresh: call.OnAuthRefresh,
+			trigger:       compactionTriggerFusionPreflight,
+			active:        true,
+		}); err != nil {
 			return nil, persistPromptOnError(err)
 		}
 		compacted = true
@@ -1370,9 +1460,35 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
 	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
+	// The gate compares the working tree at the prompt's start with the
+	// tree at its end, so a change made by a shell command or by a
+	// teammate in the same tree counts too. A compaction continuation and
+	// a gate continuation both copy the call, so this is taken once per
+	// prompt.
+	// Only a Lead turn can continue, so only a Lead turn pays for the
+	// baseline.
+	if call.gateBaseline == nil && !call.gateBaselineErr && a.gateNeedsChangedFiles() &&
+		!call.NonInteractive && !call.Ephemeral && !a.isSubAgent {
+		state, snapErr := a.snapshotWorktree(genCtx, a.gateWorkingDir())
+		if snapErr != nil {
+			call.gateBaselineErr = true
+			slog.Debug("Turn-end gate: no working-tree baseline; only tool calls are compared",
+				"session_id", call.SessionID, "error", snapErr)
+		} else {
+			call.gateBaseline = &state
+			// Resolved once, here, so the tool paths can be expressed
+			// against the root the porcelain paths use.
+			call.gateRoot, _ = gitutil.RepoRoot(genCtx, a.gateWorkingDir())
+		}
+	}
+
 	startTime := time.Now()
 	a.eventPromptSent(call.SessionID)
-	a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
+	// A continuation is the same prompt, as Claude Code's Stop
+	// continuation is: it does not submit a new prompt.
+	if !call.gateContinued {
+		a.fireTurnHook(genCtx, call, hooks.Event{Name: hooks.EventTurnStart})
+	}
 
 	var stepMessages []fantasy.Message
 	// What the request being sent carried, and how much of it the session
@@ -1450,9 +1566,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// move the tools block and its cache breakpoint.
 			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools)
 			if adopted {
-				a.applyToolCacheBreakpoint(stepTools)
+				a.applyToolCacheBreakpoint(stepTools, policy)
 			}
 			prepared.Tools = stepTools
+			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
 			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
 
 			// Drain queued follow-up prompts for this step. Calls covered
@@ -1506,7 +1623,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
 			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 
-			a.applyCacheBreakpoints(prepared.Messages)
+			a.applyCacheBreakpoints(prepared.Messages, policy)
 
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
@@ -1577,6 +1694,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if anthropicData, ok := reasoning.ProviderMetadata[anthropic.Name]; ok {
 				if reasoning, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok {
 					currentAssistant.AppendReasoningSignature(reasoning.Signature)
+					currentAssistant.SetReasoningRedactedData(reasoning.RedactedData)
 				}
 			}
 			if googleData, ok := reasoning.ProviderMetadata[google.Name]; ok {
@@ -1738,6 +1856,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			currentSession = updatedSession
 
 			stepResults = append(stepResults, stepResult)
+			// Free to collect, and it catches an edit the working tree
+			// cannot tell apart from one made before the prompt.
+			call.gateChangedFiles = append(call.gateChangedFiles, stepChangedFiles(stepResult)...)
 			if a.repeatToolRemindersEnabled() {
 				signature := getToolInteractionSignature(stepResult.Content)
 				if signature != lastRepeatSignature {
@@ -2003,6 +2124,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			slog.Warn("Failed to record how the turn ended", "session_id", call.SessionID, "error", updateErr)
 		}
 	}
+	// The turn-end gate decides whether the prompt gets one more run
+	// before the turn ends. It runs with the run context, so a cancel
+	// interrupts a slow check, and before the reply, so a continued turn
+	// is answered once.
+	var gateNext *SessionAgentCall
+	gateRan := false
+	if !overflowRecovery && !shouldSummarize && currentAssistant != nil &&
+		!call.NonInteractive && !call.Ephemeral {
+		gateRan = true
+		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID))
+	}
 	// Compact when the mid-turn overflow guard tripped, when a provider
 	// context overflow is being recovered, or when the finished turn left
 	// the session at or above the configured threshold. The guard and
@@ -2010,8 +2142,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// rejected mid-work and has to resume, while the threshold path
 	// compacted a turn that already completed, and re-running the prompt
 	// would repeat finished work.
+	//
+	// A turn the gate continues is not compacted here: the continuation is
+	// about to work on the same question, and a summary would hand the
+	// model a summary in place of the work it is asked to check. Its own
+	// ending runs the threshold check.
 	continued := false
-	if shouldSummarize || a.shouldAutoCompact(largeModel, currentSession) {
+	autoCompacting := a.shouldAutoCompact(largeModel, currentSession)
+	if gateNext == nil && !shouldSummarize && !autoCompacting {
+		// The turn stopped short of the limit but inside the margin the
+		// user configured, so the summary is written now, while the next
+		// prompt runs, instead of making it wait at the limit.
+		a.startBackgroundCompaction(genCtx, call, largeModel, currentSession)
+	}
+	if gateNext == nil && (shouldSummarize || autoCompacting) {
 		a.activeRequests.Del(call.SessionID)
 		summarizeCtx := genCtx
 		if overflowRecovery {
@@ -2023,9 +2167,22 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			summarizeCtx, cancelSummarize = context.WithTimeout(context.WithoutCancel(ctx), overflowRecoveryTimeout)
 			defer cancelSummarize()
 		}
-		threshold, _ := a.compactionConfig()
-		trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
-		summarizeErr := a.summarize(summarizeCtx, call.SessionID, largeModel, call.ProviderOptions, call.OnAuthRefresh, true, trigger, false, shouldSummarize)
+		var summarizeErr error
+		if shouldSummarize || !a.adoptBackgroundCompaction(summarizeCtx, call.SessionID) {
+			// The limit needs space now: any summary written ahead of it
+			// is superseded by the blocking compaction.
+			a.cancelBackgroundCompaction(call.SessionID)
+			threshold, _ := a.compactionConfig()
+			trigger := turnCompactionTrigger(overflowRecovery, shouldSummarize, effectiveContextWindow(largeModel), threshold, a.autoCompactMaxTokens())
+			_, summarizeErr = a.summarize(summarizeCtx, compactionRequest{
+				sessionID:     call.SessionID,
+				largeModel:    largeModel,
+				opts:          call.ProviderOptions,
+				onAuthRefresh: call.OnAuthRefresh,
+				trigger:       trigger,
+				active:        true,
+			})
+		}
 		// Recorded before the returns below, which a failed compaction
 		// takes, and before a blocked one is cleared.
 		turnEnd = turnEndAfterCompaction(turnEnd, summarizeErr, call.limits.deadlinePassed())
@@ -2091,53 +2248,40 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	} else {
 		recordTurnEnd()
 	}
-	finished := currentAssistant != nil && !continued
+	finished := currentAssistant != nil && !continued && gateNext == nil
 
-	// A turn that ends with the list still behind the work is reported to
-	// the user by Crush, not by the model. By the time execution reaches
-	// here the model has ignored repeated reminders about the same item, so
-	// a further reminder would not help; the note keeps the user from
-	// discovering the stale list only when they open it.
-	if finished && !a.isSubAgent && todoStaleItem != "" {
-		// A compaction can outlast cleanupCtx, so the note gets its own
-		// short deadline, detached from the run like the other final
-		// writes.
-		noteCtx, cancelNote := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancelNote()
-		if latest, getErr := a.sessions.Get(noteCtx, call.SessionID); getErr != nil {
-			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
-		} else if staleTodoAtTurnEnd(todoStaleItem, todoReminderUnanswered, latest.Todos) {
-			currentAssistant.AppendContent(staleTodoNote(todoStaleItem, todoReminderUnanswered+1))
-			if updateErr := a.messages.Update(noteCtx, *currentAssistant); updateErr != nil {
-				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
-			}
-		}
+	// What the turn still owes the user. A continued turn owes it from its
+	// continuation, and a continuation the hand-off drops owes it then.
+	finish := gateFinish{
+		assistant:   currentAssistant,
+		summarized:  shouldSummarize,
+		overflow:    overflowRecovery,
+		finished:    finished,
+		turnEndHook: finished && !gateRan,
+		cancel:      cancel,
+		staleItem:   todoStaleItem,
+		staleN:      todoReminderUnanswered,
+		completed:   completedToolCalls.Copy(),
+		title:       currentSession.Title,
 	}
-
-	// Route the finished turn's response back to the channel it came
-	if currentAssistant != nil && (!shouldSummarize || (!overflowRecovery && len(currentAssistant.ToolCalls()) == 0)) {
-		a.sendChannelReply(ctx, call, channelReplyText(currentAssistant), completedToolCalls.Copy())
+	if gateNext == nil {
+		a.finishWithoutGate(ctx, call, finish)
 	}
-
-	// Release active request before publishing the notification.
-	// TUI handlers poll IsSessionBusy() and only re-evaluate when a
-	// tea.Msg arrives, so the cleanup must precede the notify or
-	// subscribers see stale busy state at the moment of receipt.
-	a.activeRequests.Del(call.SessionID)
-	cancel()
-
-	if finished {
-		a.fireTurnHook(ctx, call, turnEndEvent(nil, currentAssistant))
+	// A continuation the hand-off drops leaves a turn that ended here
+	// after all, so it owes the stale note and the notification, and it
+	// runs the threshold compaction the gate put off.
+	dropContinuation := func() {
+		finish.finished = true
+		finish.released = true
+		a.compactDroppedGate(ctx, call, largeModel, currentSession)
+		a.finishWithoutGate(ctx, call, finish)
 	}
-
-	// Send notification that agent has finished its turn (skip for
-	// nested/non-interactive sessions).
-	if !call.NonInteractive && a.notify != nil {
-		a.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-			SessionID:    call.SessionID,
-			SessionTitle: currentSession.Title,
-			Type:         notify.TypeAgentFinished,
-		})
+	// A continued turn keeps the session registered until the hand-off
+	// reads the queue, so a prompt typed in between is queued rather than
+	// started, and drops the continuation. The seam lets a test stand in
+	// that window.
+	if gateNext != nil && a.beforeHandoff != nil {
+		a.beforeHandoff()
 	}
 
 	// Hand off to the next queued prompt (if any) under dispatchMu so
@@ -2186,7 +2330,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		a.settleDroppedCalls(queuedMessages)
 		queuedMessages = nil
 	}
-	if len(queuedMessages) == 0 {
+	// The gate's continuation is dropped by a cancel, a limit or a prompt
+	// the user typed while the checks ran. Its prompt then ends as it
+	// stands, and the user's prompt runs next. The cancel reaches the run
+	// through its context: genCtx is cancelled here for the last time, so
+	// anything set before now is a cancel the gate must respect.
+	gateDropped := false
+	if gateNext != nil {
+		mark, marked := a.cancelMark.Get(call.SessionID)
+		if (marked && mark > 0) || call.limits.reached() || genCtx.Err() != nil || hasUserPrompt(queuedMessages) {
+			gateNext, gateDropped = nil, true
+		}
+	}
+	if gateNext != nil || gateDropped {
+		// Give up the session here, under the lock a new prompt must take
+		// to start: anything typed before now was queued, and the
+		// decision above saw it.
+		a.activeRequests.Del(call.SessionID)
+		cancel()
+	}
+	if gateNext == nil && len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
 		// run remains in flight that it might still cover; otherwise a
 		// sibling prompt (sequence at or below the mark) waiting to
@@ -2201,9 +2364,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			a.cancelMark.Del(call.SessionID)
 		}
 		mu.Unlock()
+		if gateDropped {
+			dropContinuation()
+		}
 		return result, err
 	}
-	// There are queued messages, restart the loop. Suppress the outer
+	// There is work to run next, so restart the loop. Suppress the outer
 	// defer's emit: it would otherwise observe the recursive Run's retErr
 	// (named-return clobbering through the return below) against this
 	// turn's MessageID/Text and publish a mixed, racing event.
@@ -2213,11 +2379,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// that is finished and handing off to a *different* queued prompt must
 	// publish its own RunComplete here — leaving it to the recursive turn
 	// (which carries a different RunID) would hang a caller waiting on
-	// this turn's RunID. The exception is the summarize-continuation path,
-	// which re-queues this same call (same RunID) to resume after a
-	// summary; in that case the eventual terminal turn for this RunID
+	// this turn's RunID. The exceptions are the summarize-continuation
+	// path, which re-queues this same call (same RunID) to resume after a
+	// summary, and the gate's continuation, which carries this call's
+	// RunID; in both cases the eventual terminal turn for this RunID
 	// publishes, so publishing now would double-emit.
 	outerOwesRunComplete := call.RunID != ""
+	if gateNext != nil {
+		outerOwesRunComplete = false
+	}
 	if outerOwesRunComplete {
 		for _, q := range queuedMessages {
 			if q.RunID == call.RunID {
@@ -2226,8 +2396,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 		}
 	}
-	firstQueuedMessage := queuedMessages[0]
-	a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	var firstQueuedMessage SessionAgentCall
+	if gateNext != nil {
+		// Queued reports and wake-ups stay behind the continuation and
+		// are folded into its first step.
+		firstQueuedMessage = *gateNext
+	} else {
+		firstQueuedMessage = queuedMessages[0]
+		a.messageQueue.Set(call.SessionID, queuedMessages[1:])
+	}
 	// Reserve a fresh accept for the dequeued prompt before dropping the
 	// lock so acceptedRuns > 0 across the handoff into the recursive
 	// Run. This closes the window between this dequeue and the recursive
@@ -2236,6 +2413,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the recursive Run's accepted path observes as cancel-on-entry.
 	firstQueuedMessage.Accepted = a.BeginAccepted(call.SessionID)
 	mu.Unlock()
+	if gateDropped {
+		dropContinuation()
+	}
 	if outerOwesRunComplete {
 		complete := notify.RunComplete{SessionID: call.SessionID, RunID: call.RunID}
 		if currentAssistant != nil {
@@ -2253,38 +2433,91 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 // Summarize compacts the session on the user's request. It returns
 // ErrCompactionBlocked when a PreCompact hook blocks it.
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, a.largeModel.Get(), opts, onAuthRefresh, false, compactionTriggerManual, false, false)
+	// The user asked for a compaction now: a summary written ahead of the
+	// limit is superseded by this one.
+	a.cancelBackgroundCompaction(sessionID)
+	_, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    a.largeModel.Get(),
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerManual,
+	})
+	return err
 }
 
-// summarize runs one compaction request. active reports that the caller
-// already owns the session's active-run registration (the model-switch path
-// runs inside Run), so this call must not replace or clear it. atLimit
-// reports that the window, not the threshold, forced this compaction, which
-// is the only case that has to rewrite history the provider already cached.
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeModel Model, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, active bool, trigger compactionTrigger, pinned, atLimit bool) error {
+// compactionRequest is one compaction run: what to summarize, what started
+// it, and how its result reaches the session.
+type compactionRequest struct {
+	sessionID     string
+	largeModel    Model
+	opts          fantasy.ProviderOptions
+	onAuthRefresh func(context.Context, *fantasy.ProviderError) error
+	trigger       compactionTrigger
+	// active reports that the caller already owns the session's active-run
+	// registration (the model-switch path runs inside Run), so this call
+	// must not replace or clear it.
+	active bool
+	pinned bool
+	// snapshot, when non-nil, is the history to summarize instead of the
+	// stored one. A background summary passes the history as it stood at
+	// the turn that crossed the pre-threshold.
+	snapshot []message.Message
+	// deferred writes the summary without adopting it: the session keeps
+	// its context, its step fingerprints, and its queue until the caller
+	// splices the result in. A deferred run happens beside a live turn, so
+	// it must leave every piece of live state alone.
+	deferred bool
+}
+
+// summarize runs one compaction request and returns what it wrote. The
+// outcome is nil unless the request is deferred, because a compaction that
+// adopts its own summary needs nothing back.
+func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*compactionOutcome, error) {
+	sessionID, largeModel, opts, onAuthRefresh := req.sessionID, req.largeModel, req.opts, req.onAuthRefresh
+	trigger, active, pinned := req.trigger, req.active, req.pinned
 	if !active && a.IsSessionBusy(sessionID) {
-		return ErrSessionBusy
+		return nil, ErrSessionBusy
 	}
 	systemPromptPrefix := a.systemPromptPrefix.Get()
+	policy := cachePolicyForModel(largeModel)
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
-	msgs, err := a.getSessionMessages(ctx, currentSession)
-	if err != nil {
-		return err
+	// The previous summary's stats carry the skills its state block listed;
+	// this compaction must list again whatever nothing has read since.
+	previousSummaryID := currentSession.SummaryMessageID
+	msgs := req.snapshot
+	// The message a deferred summary ends on, which is what the splice
+	// checks against the history before adopting it.
+	snapshotEnd := ""
+	if len(msgs) > 0 {
+		snapshotEnd = msgs[len(msgs)-1].ID
+	}
+	if msgs == nil {
+		msgs, err = a.getSessionMessages(ctx, currentSession)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(msgs) == 0 {
 		// Nothing to summarize.
-		return nil
+		return nil, nil
 	}
 	// The compaction request must send the bytes the turn sent, or it
-	// misses the cache it exists to preserve.
-	// Slim with "now" as the trailing message's time, not zero: a preflight
-	// compaction runs before the prompt that triggered it is stored, and the
-	// request that follows measures the same trailing idle gap.
-	a.slimHistory(largeModel, msgs, a.now().Unix())
+	// misses the cache it exists to preserve. Slim from the trailing
+	// message's own time, the way the turn that filled the cache measured
+	// its idle gap from the prompt it had just stored: measuring from "now"
+	// would stub the whole history of a session that has simply been quiet
+	// for longer than the idle window. A preflight compaction still measures
+	// from "now", because its gap is the one the coming prompt will close.
+	anchor := a.now().Unix()
+	if !trigger.measuresFromNow() && len(msgs) > 0 && msgs[len(msgs)-1].CreatedAt > 0 {
+		anchor = msgs[len(msgs)-1].CreatedAt
+	}
+	a.slimHistory(largeModel, msgs, anchor)
 	tokensBefore := currentSession.PromptTokens + currentSession.CompletionTokens
 
 	// The compaction request re-enters through the same system prompt,
@@ -2294,8 +2527,26 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// the prompt from a different system prompt or tool list — as this
 	// path once did — discards the cache for the entire context.
 	systemPrompt := a.systemPromptForSession(sessionID)
-	compactionTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
-	compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	// The tools block is serialized ahead of the messages, so rebuilding it
+	// here from a registry that changed since the turn's last step would
+	// rewrite the cached prefix for the whole conversation. Re-send the list
+	// that step sent. Only a compaction with no live step behind it, such as
+	// a manual /compact in a fresh process, has to build one.
+	compactionTools, ok := a.stepTools.Get(sessionID)
+	if ok {
+		// The list may name a tool the registry has dropped since. That is
+		// intended: the guard refuses to run any tool, and re-sending the
+		// list the step sent is what keeps the prefix cacheable.
+		compactionTools = slices.Clone(compactionTools)
+	} else {
+		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
+		// Lazy mode filters here too: a compaction that has to rebuild the
+		// tools block must send the list the next step would send, or this
+		// one request carries every deferred schema and rewrites the cached
+		// prefix for nothing.
+		compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
+		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
+	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
 	// keeps any text a tool did produce within the same budget the session
 	// log uses. Composing them means neither layer can be lost by editing
@@ -2307,7 +2558,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			bound: a.truncateToolOutput,
 		}
 	}
-	a.applyToolCacheBreakpoint(compactionTools)
+	a.applyToolCacheBreakpoint(compactionTools, policy)
 
 	// Everything before the cut is summarized; the matching suffix is
 	// kept verbatim so recent reads, command outputs, and edits survive
@@ -2327,16 +2578,29 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		tailTokens += messageTokens(msg)
 	}
 
+	// The state block repeats what the summary can only describe. Build it
+	// from the messages as they stand before the cut, before pruning
+	// rewrites their contents and before the request runs.
+	carriedSkills := a.compactionStateCarriedSkills(ctx, previousSummaryID)
+	stateText, listedSkills := a.compactionStateText(
+		ctx, sessionID, currentSession.Todos,
+		compactionStateSkills(msgs, cutIndex, carriedSkills),
+	)
+
 	// Pruning rewrites tool results the provider has already cached, so the
 	// compaction request stops matching the conversation from the first
 	// pruned result on and is billed in full, and the summarizer sees less.
 	// Keep the history byte-identical unless the request cannot fit
-	// otherwise. A compaction forced by the window always prunes: the
-	// session's token count predates the tool results that filled it.
-	// Decide from the larger of the reported context and an estimate of what
-	// this request will actually carry. The reported count is exact for the
-	// request it came from but predates anything stored afterwards, such as a
-	// large tool result, and preflight compaction decided to run from the
+	// otherwise, whatever trigger asked for it: the mid-turn guard fires
+	// while the request still fits, and rewriting there would throw away a
+	// warm cache for nothing. An overflow recovery is the exception, because
+	// the provider has already rejected that request as too large: the size
+	// below is a heuristic built from the last request's count and an
+	// estimate, and neither can be trusted against a rejection. Decide from
+	// the larger of the reported context and an estimate of what this
+	// request will actually carry. The reported count is exact for the
+	// request it came from but predates anything stored afterwards, such as
+	// a large tool result, and preflight compaction decided to run from the
 	// assembled prompt, not from that count. Zero reported usage still means
 	// the size is unknown, and an unknown size never fits.
 	contextTokens := tokensBefore
@@ -2345,7 +2609,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			contextTokens = estimate
 		}
 	}
-	if atLimit || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
+	if trigger == compactionTriggerOverflow || !compactionFits(effectiveContextWindow(largeModel), contextTokens, compactionMaxOutputTokens(largeModel)) {
 		if pruned, saved := pruneToolResultsForCompaction(msgs[:cutIndex], a.compactionPruneChars()); pruned > 0 {
 			slog.Debug(
 				"Pruned tool results before compaction",
@@ -2357,7 +2621,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	}
 
 	if pre := a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPreCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()}); pre.Blocked() {
-		return fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
+		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
 	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
@@ -2380,7 +2644,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		var err error
 		summaryModel, err = fusion.stepModel(ctx, fusion.plan.Steps[0])
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	agent := fantasy.NewAgent(
@@ -2398,7 +2662,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		IsSummaryMessage: true,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var (
@@ -2428,19 +2692,29 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 			}
 			a.normalizePromptMessages(prepared.Messages)
 			prepared.Tools = compactionTools
+			// Every live step rewrites empty tool media and applies the
+			// request image budget before sending. Skipping either here
+			// would change the bytes at the first rewritten part and
+			// re-read the conversation behind it.
+			prepared.Messages = dropEmptyToolMedia(prepared.Messages)
 			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 			// The last-message marker lands on the message that closed
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
-			a.applyCacheBreakpoints(prepared.Messages)
+			a.applyCacheBreakpoints(prepared.Messages, policy)
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
 			// The compaction prompt is what the provider cached last, so the
 			// next turn's shared-prefix count has to be measured against it,
-			// not against the turn that came before the compaction.
-			previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
-			toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			// not against the turn that came before the compaction. A
+			// deferred run happens beside a live turn and must leave the
+			// fingerprints that turn is measured against alone.
+			if !req.deferred {
+				previousMessages, sharedMessages = a.recordPromptFingerprint(sessionID, prepared.Messages)
+				toolsChanged = a.recordToolsFingerprint(sessionID, prepared.Tools)
+			}
 			promptMessages = len(prepared.Messages)
 			return callContext, prepared, nil
 		},
@@ -2468,16 +2742,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		if isCancelErr {
 			// User cancelled summarize we need to remove the summary message.
 			deleteErr := a.messages.Delete(ctx, summaryMessage.ID)
-			return deleteErr
+			return nil, deleteErr
 		}
 		// Mark the summary message as finished with an error so the UI
 		// stops spinning.
 		summaryMessage.AddFinish(message.FinishReasonError, "Summarization Error", err.Error())
 		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(ctx, summaryMessage); updateErr != nil {
-			return updateErr
+			return nil, updateErr
 		}
-		return err
+		return nil, err
 	}
 
 	if strings.TrimSpace(summaryMessage.Content().Text) == "" {
@@ -2488,9 +2762,9 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		summaryMessage.AddFinish(message.FinishReasonError, "Compaction Error", emptyErr.Error())
 		summaryMessage.SetBuild(version.BuildStamp())
 		if updateErr := a.messages.Update(genCtx, summaryMessage); updateErr != nil {
-			return updateErr
+			return nil, updateErr
 		}
-		return emptyErr
+		return nil, emptyErr
 	}
 
 	// The measured outcome rides on the summary message itself so it
@@ -2508,6 +2782,7 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 		SavedTokens:   savedTokens,
 		KeptMessages:  keptMessages,
 		Trigger:       string(trigger),
+		ReloadSkills:  listedSkills,
 	})
 
 	for _, step := range resp.Steps {
@@ -2557,7 +2832,31 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	})
 	err = a.messages.Update(genCtx, summaryMessage)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	// A deferred run leaves the session alone: the caller adopts the
+	// summary when the limit is reached, and a summary that is never
+	// adopted must not have reset the context of a live session. Its cost
+	// is still recorded, with an incrementing write that cannot lose a
+	// concurrent step or rollup, so the tokens it spent stay visible.
+	if req.deferred {
+		step := a.stepUsageFor(largeModel, currentSession, resp.TotalUsage, overrideCost, false)
+		if usageErr := a.sessions.AddSessionUsage(genCtx, sessionID, step.CacheReadTokens, step.ContextTokens, step.Cost); usageErr != nil {
+			slog.Warn("Failed to record the background compaction usage", "session_id", sessionID, "error", usageErr)
+		}
+		return &compactionOutcome{
+			summaryID:     summaryMessage.ID,
+			cutID:         cutID,
+			snapshotEnd:   snapshotEnd,
+			stateText:     stateText,
+			summaryTokens: summaryTokens,
+			tokensBefore:  tokensBefore,
+			tailTokens:    tailTokens,
+			savedTokens:   savedTokens,
+			keptMessages:  keptMessages,
+			estimated:     usageIsZero(resp.TotalUsage),
+		}, nil
 	}
 
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, overrideCost, false)
@@ -2569,7 +2868,16 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	currentSession.EstimatedUsage = usageIsZero(resp.TotalUsage)
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	// The state block lands after the summary and the preserved tail, which
+	// is where it is also true: it describes the session at compaction time.
+	if stateText != "" {
+		if _, err := a.createCompactionStateMessage(genCtx, sessionID, stateText); err != nil {
+			// The compaction itself succeeded, so a missing block costs
+			// the next turn its reminders and nothing more.
+			slog.Warn("Failed to store the compaction state message", "session_id", sessionID, "error", err)
+		}
 	}
 	a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPostCompact, SessionID: sessionID, Trigger: trigger.hookTrigger()})
 
@@ -2591,12 +2899,12 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, largeMod
 	// Process any messages that were queued while summarizing.
 	queuedMessages, ok := a.messageQueue.Get(sessionID)
 	if !ok || len(queuedMessages) == 0 {
-		return nil
+		return nil, nil
 	}
 	firstQueuedMessage := queuedMessages[0]
 	a.messageQueue.Set(sessionID, queuedMessages[1:])
 	_, qErr := a.Run(ctx, firstQueuedMessage)
-	return qErr
+	return nil, qErr
 }
 
 // compactionConfig returns the auto-compaction threshold (as a fraction of
@@ -2663,7 +2971,15 @@ func (a *sessionAgent) maybeCompactForFusionRoute(
 	if !ok || previous.model.Model == nil || previous.budget <= nextBudget {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previous.model, opts, onAuthRefresh, true, compactionTriggerFusionRoute, true, false); err != nil {
+	if _, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    previous.model,
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerFusionRoute,
+		active:        true,
+		pinned:        true,
+	}); err != nil {
 		return false, fmt.Errorf("compact before switching to a smaller routed model: %w", err)
 	}
 	return true, nil
@@ -2710,6 +3026,11 @@ func (a *sessionAgent) slimHistory(model Model, msgs []message.Message, next int
 	idle, dropReasoning := a.historySlimConfig()
 	if idle <= 0 || (model.Model != nil && model.Model.Provider() == claudeagent.Name) {
 		return
+	}
+	// Kimi, MiMo and DeepSeek require the reasoning content they produced
+	// back in the history, so slimming must not drop it.
+	if vendorReasoningNeedsHistory(model.CatwalkCfg.ID) {
+		dropReasoning = false
 	}
 	if cut := slimColdHistory(msgs, next, idle, dropReasoning); cut > 0 {
 		slog.Debug("Slimmed history before the last idle gap", "messages", cut)
@@ -2786,7 +3107,14 @@ func (a *sessionAgent) maybeCompactForModelSwitch(
 	if !needsModelSwitchCompaction(previousLarge, current, tokens, threshold) {
 		return false, nil
 	}
-	if err := a.summarize(ctx, sessionID, previousLarge, opts, onAuthRefresh, true, compactionTriggerModelSwitch, false, false); err != nil {
+	if _, err := a.summarize(ctx, compactionRequest{
+		sessionID:     sessionID,
+		largeModel:    previousLarge,
+		opts:          opts,
+		onAuthRefresh: onAuthRefresh,
+		trigger:       compactionTriggerModelSwitch,
+		active:        true,
+	}); err != nil {
 		a.largeModel.Set(previousLarge)
 		a.smallModel.Set(previousSmall)
 		return false, fmt.Errorf("compact before switching to a smaller model: %w", err)
@@ -3154,9 +3482,10 @@ func (a *sessionAgent) recordToolsFingerprint(sessionID string, tools []fantasy.
 // applyToolCacheBreakpoint puts the cache breakpoint on the last tool
 // definition and clears it from every other tool in the list, so the tool
 // block caches independently of the conversation while the request stays
-// within the provider's breakpoint limit.
-func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
-	if len(tools) == 0 {
+// within the provider's breakpoint limit. A policy without tool breakpoints
+// leaves the definitions alone; no other caller ever sets one.
+func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool, policy cachePolicy) {
+	if len(tools) == 0 || !policy.Tools {
 		return
 	}
 	cacheOptions := a.getCacheControlOptions()
@@ -3184,6 +3513,10 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool) {
 // cache breakpoint has to move.
 func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
+	// A tool this session revealed with tool_search during the last step
+	// passes the lazy filter now, so the adoption below is what adds it to
+	// the palette; a still-unrevealed one stays out of the request.
+	current = a.lazyToolsForSession(sessionID, current)
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
 		known[tool.Info().Name] = struct{}{}
@@ -3266,19 +3599,20 @@ func stableToolOrder(toolList []fantasy.AgentTool, adopted []string) []fantasy.A
 	return ordered
 }
 
-// applyCacheBreakpoints marks the prompt-cache boundaries for providers with
-// explicit caching (Anthropic, Bedrock, and Claude models served through
-// Vercel). The layout matches what Anthropic's own clients use: one breakpoint
-// on the last system message (covering the system prompt and, in providers
-// that serialize them ahead of it, the tool definitions) and one on each of
-// the final two messages. The tail breakpoints are what let a turn extend the
-// cached prefix instead of rewriting it, so they must land on messages that
-// the next turn replays unchanged.
+// applyCacheBreakpoints marks the prompt-cache boundaries the policy asks
+// for. The full layout matches what Anthropic's own clients use: one
+// breakpoint on the last system message (covering the system prompt and, in
+// providers that serialize them ahead of it, the tool definitions) and one
+// on each of the final two messages. The tail breakpoints are what let a
+// turn extend the cached prefix instead of rewriting it, so they must land
+// on messages that the next turn replays unchanged.
 //
-// Providers that cache automatically (OpenAI, DeepSeek, Gemini) ignore these
-// markers entirely; for them only prefix stability matters.
-func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message) {
-	if len(messages) == 0 {
+// Providers that cache automatically (OpenAI, DeepSeek) ignore these markers
+// entirely and get none; Gemini and Qwen get the smaller layouts their
+// upstreams actually honour, because a tail marker they do not understand
+// writes a fresh cache on every step.
+func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message, policy cachePolicy) {
+	if len(messages) == 0 || (!policy.System && policy.Tail == 0) {
 		return
 	}
 	lastSystemRoleInx := -1
@@ -3288,16 +3622,16 @@ func (a *sessionAgent) applyCacheBreakpoints(messages []fantasy.Message) {
 			lastSystemRoleInx = i
 			continue
 		}
-		if !systemMarked && lastSystemRoleInx >= 0 {
+		if policy.System && !systemMarked && lastSystemRoleInx >= 0 {
 			messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
 			systemMarked = true
 		}
-		if i >= len(messages)-2 {
+		if i >= len(messages)-policy.Tail {
 			messages[i].ProviderOptions = a.getCacheControlOptions()
 		}
 	}
 	// A prompt made up only of system messages still gets its breakpoint.
-	if !systemMarked && lastSystemRoleInx >= 0 {
+	if policy.System && !systemMarked && lastSystemRoleInx >= 0 {
 		messages[lastSystemRoleInx].ProviderOptions = a.getCacheControlOptions()
 	}
 }
@@ -3606,10 +3940,11 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			out := make([]message.Message, 0, len(cutMsgs))
 			summary := cutMsgs[i]
 			summary.Role = message.User
+			summary = labelCompactedSummary(summary)
 			out = append(out, summary)
 			out = append(out, cutMsgs[:i]...)
 			out = append(out, cutMsgs[i+1:]...)
-			return out, nil
+			return dropDetachedSummaries(out, session.SummaryMessageID), nil
 		}
 		// The summary or the cut message no longer exists: fall back to
 		// the summary-only view rather than re-sending the full
@@ -3634,9 +3969,43 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 		if summaryMsgIndex != -1 {
 			msgs = msgs[summaryMsgIndex:]
 			msgs[0].Role = message.User
+			msgs[0] = labelCompactedSummary(msgs[0])
 		}
 	}
-	return msgs, nil
+	return dropDetachedSummaries(msgs, session.SummaryMessageID), nil
+}
+
+// dropDetachedSummaries removes the summaries the session has not adopted:
+// one written ahead of the compaction limit, while it is pending or after it
+// went unused, sits in the history it summarizes and must not be read as
+// part of it.
+func dropDetachedSummaries(msgs []message.Message, summaryID string) []message.Message {
+	return slices.DeleteFunc(msgs, func(msg message.Message) bool {
+		return msg.IsSummaryMessage && msg.ID != summaryID
+	})
+}
+
+// labelCompactedSummary wraps the summary in the label that tells the
+// working model what it is reading: a compacted session replays it as an
+// ordinary user message, and nothing else says so. Only the replayed copy is
+// labelled, so the transcript and the stats report still read the summary as
+// written. The text is fixed, which keeps the replayed bytes stable.
+func labelCompactedSummary(msg message.Message) message.Message {
+	msg.Parts = slices.Clone(msg.Parts)
+	for i, part := range msg.Parts {
+		text, ok := part.(message.TextContent)
+		if !ok {
+			continue
+		}
+		text.Text = "<compacted_history>\n" +
+			"The earlier part of this conversation was compacted. This is its summary. " +
+			"The messages after it are kept verbatim.\n\n" +
+			text.Text +
+			"\n</compacted_history>"
+		msg.Parts[i] = text
+		break
+	}
+	return msg
 }
 
 // hasUserTextMessage reports whether any user message in msgs contains
@@ -3711,6 +4080,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	if userPrompt == "" {
 		return
 	}
+	// A subagent run is never shown as a session of its own, so a title
+	// for it would be a billed model request nobody reads.
+	if a.isSubAgent {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, titleTimeout)
 	defer cancel()
 
@@ -3719,6 +4093,11 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	// while generation runs is not clobbered.
 	var initialTitle string
 	if sess, err := a.sessions.Get(ctx, sessionID); err == nil {
+		// Child sessions (teammates, agent tool runs) sit behind their
+		// parent and keep the title they were created with.
+		if sess.ParentSessionID != "" {
+			return
+		}
 		initialTitle = sess.Title
 	} else {
 		slog.Warn("Failed to read session for title generation", "session_id", sessionID, "error", err)
@@ -4112,6 +4491,11 @@ func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message
 }
 
 func (a *sessionAgent) Cancel(sessionID string) {
+	// A summary written ahead of the limit has nothing left to compact into
+	// once the turn it followed is cancelled. It is stopped before the
+	// dispatch lock, because discarding a finished one writes.
+	a.cancelBackgroundCompaction(sessionID)
+
 	// Serialize against the dispatch handoff in Run so the accepted ->
 	// (cancel-on-entry | queued | active) transition is atomic against
 	// this cancel. Every cancel observes at least one of: an active
@@ -4220,6 +4604,11 @@ func (a *sessionAgent) CancelAll() {
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
+	}
+	// Background summaries belong to no active run, so the loop above does
+	// not reach them and they have to be stopped on their own.
+	for sessionID := range a.bgCompactions.Seq2() {
+		a.cancelBackgroundCompaction(sessionID)
 	}
 	if !a.titles.wait(time.Until(deadline)) {
 		slog.Warn("Gave up waiting for session title generation to finish")

@@ -83,6 +83,9 @@ type AggregateResult struct {
 	Context       string     // Concatenated context from all hooks.
 	UpdatedInput  string     // Merged tool_input JSON (empty if no patches).
 	UpdatedOutput string     // Replacement tool output; the last hook to set it wins.
+	// contexts holds each hook's context in config order, aligned with
+	// Hooks, so a TurnEnd verdict can name the hook that said it.
+	contexts []string
 }
 
 // Blocked reports whether any hook denied the action or halted the turn.
@@ -154,6 +157,10 @@ func aggregate(results []HookResult, origToolInput string) AggregateResult {
 		Halt:          halt,
 		HookCount:     len(results),
 		UpdatedOutput: output,
+		contexts:      make([]string, len(results)),
+	}
+	for i, r := range results {
+		agg.contexts[i] = r.Context
 	}
 	if anyPatch {
 		agg.UpdatedInput = merged

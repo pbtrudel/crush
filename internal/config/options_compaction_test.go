@@ -196,3 +196,51 @@ func TestOptionsCompactionFromJSON(t *testing.T) {
 	require.Equal(t, 30*time.Minute, cfg.Options.GetHistorySlimIdle())
 	require.True(t, cfg.Options.HistorySlimReasoning)
 }
+
+func TestOptionsGetCompactBackgroundMargin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		options  *Options
+		expected float64
+	}{
+		{
+			name:     "nil options",
+			options:  nil,
+			expected: DefaultCompactBackgroundMargin,
+		},
+		{
+			name:     "unset field keeps compaction blocking",
+			options:  &Options{},
+			expected: DefaultCompactBackgroundMargin,
+		},
+		{
+			name:     "configured margin",
+			options:  &Options{CompactBackgroundMargin: ptr(0.1)},
+			expected: 0.1,
+		},
+		{
+			name:     "zero disables the background summary",
+			options:  &Options{CompactBackgroundMargin: ptr(0.0)},
+			expected: 0,
+		},
+		{
+			name:     "negative is treated as zero",
+			options:  &Options{CompactBackgroundMargin: ptr(-0.2)},
+			expected: 0,
+		},
+		{
+			name:     "values above one are capped",
+			options:  &Options{CompactBackgroundMargin: ptr(2.0)},
+			expected: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.expected, tt.options.GetCompactBackgroundMargin())
+		})
+	}
+}

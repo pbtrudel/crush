@@ -486,6 +486,10 @@ Boolean Keys:
                                  Crush dialog instead of an external
                                  pinentry program; never modifies GPG or
                                  git configuration (default true)
+  responses-reasoning-replay     send the encrypted reasoning items an
+                                 OpenAI Responses endpoint returned earlier
+                                 in the turn back with the next request; on
+                                 by default, pass false to turn it off
   metrics                        send anonymous usage metrics
   auto-summarize                 automatically compact long conversations
   provider-auto-update           update the provider catalog automatically
@@ -497,6 +501,9 @@ String Keys:
   initialize-as string             context filename created by crush init
   notifications string             notification style: auto, native, osc, bell,
                                    or disabled
+  prompt-profile string            coder system prompt: full (default) or
+                                   lean, a short base plus a model-family
+                                   add-on
   attribution-trailer-style string attribution trailer: none, co-authored-by,
                                    or assisted-by
 

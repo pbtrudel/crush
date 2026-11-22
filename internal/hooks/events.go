@@ -107,6 +107,17 @@ type Event struct {
 	Reason string
 	// Trigger is why compaction ran (PreCompact, PostCompact).
 	Trigger string
+	// StopHookActive tells a TurnEnd hook that this run continues a turn
+	// the gate already checked (TurnEnd). It is Claude Code's name for it.
+	StopHookActive *bool
+	// TurnEnd is the stamp of the ending turn (TurnEnd). A continuation is
+	// honoured only for a completed turn.
+	TurnEnd string
+	// ChangedFiles are the files the turn changed (TurnEnd).
+	ChangedFiles []string
+	// ContinuationsLeft is how many continuations this prompt has left
+	// (TurnEnd).
+	ContinuationsLeft *int
 }
 
 // ToolCall identifies the tool call a tool event is about. Input is raw

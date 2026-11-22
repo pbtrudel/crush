@@ -1,0 +1,76 @@
+schema: 1
+id: pr-0080
+source:
+  repo: pbtrudel/crush
+  pr: 80
+  merge: 8325082029d81f59796cac04103c73bf0e746d49
+  base: 592fe726464a05d96ece9d16105ad93acd52aa16
+kind: plain
+why: |
+  `/btw` fails on long agentic sessions with "the model returned no answer
+  (finish_reason=stop)". The project log records the reason, but not the cause:
+
+  ```
+  WARN "Side question returned no text" finish_reason=stop provider=mistral model=deepseek-v4-1-flash-1017
+  ```
+
+  Replaying a real failing session (727 messages, ~148k tokens) against the same
+  provider shows what happens. The side question replays the whole transcript,
+  which is made of tool turns, so the model answers by calling a tool. The
+  ephemeral agent deliberately declares no tools, so the provider drops the call
+  and returns an empty message with a normal stop reason. Short sessions answer
+  fine, which is why this only bites after a long working session.
+
+  | request | result |
+  | --- | --- |
+  | full history, no tools (what `/btw` sends) | `finish=stop`, empty content |
+  | same history, tools declared | model returns a tool call |
+  | last 10 messages only | answers normally |
+  | full history + "Do not call any tools" | answers correctly |
+prompt: |
+  `/btw` fails on long agentic sessions with "the model returned no answer
+  (finish_reason=stop)". The project log records the reason, but not the cause:
+
+  ```
+  WARN "Side question returned no text" finish_reason=stop provider=mistral model=deepseek-v4-1-flash-1017
+  ```
+
+  Replaying a real failing session (727 messages, ~148k tokens) against the same
+  provider shows what happens. The side question replays the whole transcript,
+  which is made of tool turns, so the model answers by calling a tool. The
+  ephemeral agent deliberately declares no tools, so the provider drops the call
+  and returns an empty message with a normal stop reason. Short sessions answer
+  fine, which is why this only bites after a long working session.
+
+  | request | result |
+  | --- | --- |
+  | full history, no tools (what `/btw` sends) | `finish=stop`, empty content |
+  | same history, tools declared | model returns a tool call |
+  | last 10 messages only | answers normally |
+  | full history + "Do not call any tools" | answers correctly |
+
+  An empty answer is retried exactly once, with the same question plus
+  `Do not call any tools.` in the request; an answer still empty after the
+  retry is an error whose text contains `finish_reason=<reason>` and the words
+  `no answer`.
+grade:
+  packages: [./internal/agent]
+  tests: [TestEphemeralRetriesWhenTheProviderAnswersWithNothing, TestEphemeralReportsWhyAnAnswerIsEmpty, TestEphemeralKeepsConversationHistory]
+  exclude: []
+  hidden:
+    - {path: internal/agent/ephemeral_test.go, blob: 1390bac0ebef534a0a52dd4c6bcaab1b66935ab6}
+  deleted: []
+  timeout: 10m
+limits:
+  max_steps: 40
+  timeout: 10m
+risks:
+  - "hidden choice: one retry only, with `Do not call any tools.` and the question in the retried request, and afterwards an error whose text contains `finish_reason=<reason>` and the words `no answer`."
+  - "correlated: pr-0061, pr-0075, pr-0080 (the same function changed at three points in time; the three tasks are not independent)."
+  - "the grade runs the rest of `./internal/agent`, the slowest package of the suite."
+vetted:
+  date: "2026-11-19"
+  go: go1.27.2
+  base_fails: 5/5
+  merge_passes: 5/5
+  grade_seconds: {touched: 19, packages: 12}

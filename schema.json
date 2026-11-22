@@ -644,12 +644,25 @@
           "description": "When slimming older history, also drop plain reasoning text from earlier turns. Signed or encrypted reasoning is always kept. Off by default because providers differ on whether earlier reasoning helps.",
           "default": false
         },
+        "responses_reasoning_replay": {
+          "type": "boolean",
+          "description": "Replay the encrypted reasoning items an OpenAI Responses endpoint returned earlier in the turn with the next request. On by default; set it to false to turn it off.",
+          "default": true
+        },
         "compact_tail_tokens": {
           "type": "integer",
           "description": "Tokens of recent conversation kept verbatim after a compaction. 0 disables the verbatim tail and keeps only the summary.",
           "default": 24576,
           "examples": [
             16384
+          ]
+        },
+        "compact_background_margin": {
+          "type": "number",
+          "description": "Fraction of the context window below the auto-compaction limit at which the summary is written in the background, so the next prompt does not wait for it. A summary the session never uses still costs tokens. Ignored by crush run, which exits before the summary is used. 0 (the default) keeps compaction blocking.",
+          "default": 0,
+          "examples": [
+            0.1
           ]
         },
         "compaction_prune_chars": {
@@ -800,6 +813,43 @@
           "type": "boolean",
           "description": "Stop a stream that degenerates into a long run of the same character or a short repeated pattern.",
           "default": true
+        },
+        "lazy_tools": {
+          "type": "boolean",
+          "description": "Send only a small core tool palette (read/view, edit, bash, grep, glob, ls, todos and the delegation tools) plus tool_search, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request, at the price of one extra tool call per deferred tool. Off by default.",
+          "default": false
+        },
+        "prompt_profile": {
+          "type": "string",
+          "enum": [
+            "full",
+            "lean"
+          ],
+          "description": "System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family, and leaves tool guidance to the tool descriptions. Both keep the rules, environment, context files and skills.",
+          "default": "full"
+        },
+        "apply_patch": {
+          "type": "boolean",
+          "description": "Offer GPT and other OpenAI-family models the apply_patch tool (the *** Begin Patch format) instead of edit and multiedit. Off by default, and it changes nothing for models from other families.",
+          "default": false
+        },
+        "turn_end_max_continuations": {
+          "type": "integer",
+          "description": "How many times the turn-end gate may continue one prompt before the turn ends. A continuation is one more model run with a harness message from Crush. 0 turns continuations off and still runs the checks.",
+          "default": 1,
+          "examples": [
+            0
+          ]
+        },
+        "turn_end_completion_check": {
+          "type": "boolean",
+          "description": "Experimental: ask the model to verify its work, with the commands it ran, before ending a turn that changed files. Off by default until the task suite measures whether it prevents false completions.",
+          "default": false
+        },
+        "edit_without_read": {
+          "type": "boolean",
+          "description": "Experimental: let edit and multiedit apply an edit to a file that was not read first or changed since it was read, when old_string matches the file exactly once. The file is then not marked as read. Off by default until the task suite measures how many edits it stops refusing.",
+          "default": false
         },
         "pinentry_integrated": {
           "type": "boolean",
@@ -964,7 +1014,7 @@
         },
         "extra_body": {
           "type": "object",
-          "description": "Additional fields to include in request bodies, only works with openai-compatible providers"
+          "description": "Additional fields to include in request bodies, only works with openai-compatible providers; keys override the fields Crush sets for the request"
         },
         "provider_options": {
           "type": "object",
@@ -1152,6 +1202,15 @@
           ],
           "description": "Exit banner style after quitting Crush",
           "default": "default"
+        },
+        "verbosity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "high"
+          ],
+          "description": "Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place",
+          "default": "high"
         }
       },
       "additionalProperties": false,

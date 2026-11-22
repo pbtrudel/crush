@@ -72,6 +72,30 @@ func TestTurnsPromptsHiddenTurnsAndContinuations(t *testing.T) {
 	}, turns.RunEnds)
 }
 
+// The turn-end gate's row continues the prompt's runs, so a row after a
+// completed run counts as a continuation, not as a hidden turn.
+func TestTurnsCountAGateContinuation(t *testing.T) {
+	t.Parallel()
+
+	log := newTestLog(t)
+	log.session("lead", "title")
+	log.add("lead", message.User, message.TextContent{Text: "one"})
+	log.lastStep("lead", newBuild, message.TurnEndCompleted)
+	log.add("lead", message.User, message.TextContent{Text: "<turn_end_gate>\nCrush checked your turn.", Hidden: true})
+	log.lastStep("lead", newBuild, message.TurnEndCompleted)
+	log.add("lead", message.User, message.TextContent{Text: "two"})
+	log.lastStep("lead", newBuild, message.TurnEndCompleted)
+
+	turns := log.report(Options{}).Turns
+	require.Equal(t, 2, turns.Prompts)
+	require.Equal(t, 1, turns.Continuations)
+	require.Zero(t, turns.HiddenTurns)
+	injections := log.report(Options{}).Injections.ByKind
+	require.Len(t, injections, 1)
+	require.Equal(t, "turn_end_gate", injections[0].Kind, "the gate row is still an injection")
+	require.Equal(t, 1, injections[0].Rows)
+}
+
 // TestTurnsContinuationFollowsTheCompaction pins when a guard or overflow
 // stamp continues the prompt: only a compaction that ran leaves a summary
 // row before the requeued row.
