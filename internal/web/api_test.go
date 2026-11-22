@@ -384,3 +384,59 @@ func TestRunCompleteClearsPending(t *testing.T) {
 	_, ok := g.pending.permission("p2")
 	require.True(t, ok, "another session's pending request must survive")
 }
+
+// TestCreateSessionStartsOneSessionInTerminal checks that the browser can
+// start a session and that the gateway tells the terminal to open it.
+func TestCreateSessionStartsOneSessionInTerminal(t *testing.T) {
+	t.Parallel()
+	fake := webtest.NewFake()
+	created := make(chan string, 1)
+	g, err := Start(t.Context(), Options{
+		Workspace:        fake,
+		OnSessionCreated: func(id string) { created <- id },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	rsp, data := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/sessions", "{}")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusCreated, rsp.StatusCode)
+
+	var sess struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	require.NoError(t, json.Unmarshal(data, &sess))
+	require.NotEmpty(t, sess.ID)
+	require.Equal(t, "New Session", sess.Title, "the title matches the TUI's first prompt")
+
+	select {
+	case id := <-created:
+		require.Equal(t, sess.ID, id, "the terminal opens the session the browser created")
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnSessionCreated not called")
+	}
+
+	sessions, err := fake.ListSessions(t.Context())
+	require.NoError(t, err)
+	require.Len(t, sessions, 2, "exactly one session was created")
+}
+
+// TestCreateSessionRejectsUnauthenticatedAndForeignOrigin checks that the
+// route sits behind the same guards as every other state-changing route.
+func TestCreateSessionRejectsUnauthenticatedAndForeignOrigin(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+
+	rsp := do(t, nil, http.MethodPost, g.URL()+"/api/sessions", strings.NewReader("{}"))
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions", strings.NewReader("{}"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	rsp = doReq(t, authedClient(t, g), req)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+}

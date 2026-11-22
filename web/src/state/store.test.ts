@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
-import type { Frame, PermissionRequest, QuestionRequest } from '../api/types';
+import type { Frame, PermissionRequest, QuestionRequest, Session } from '../api/types';
 import { initialState } from './reducer';
 import { actions, handleFrames, state } from './store';
 
@@ -90,6 +90,30 @@ describe('actions.answer', () => {
     await expect(actions.answer('b1', [])).resolves.toBeNull();
     expect(state.value.question).toBeNull();
     expect(state.value.toasts.map((t) => t.text)).toContain('Already answered in the terminal');
+  });
+});
+
+describe('actions.sendPrompt', () => {
+  it('starts a session when the terminal has none', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+
+    await expect(actions.sendPrompt('first task', [])).resolves.toBeNull();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('s2', 'first task', []);
+  });
+
+  it('sends nothing and reports the failure when the session cannot start', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    vi.spyOn(api, 'createSession').mockRejectedValue(new ApiError(500, 'create_session', 'gateway on fire'));
+    const send = vi.spyOn(api, 'sendPrompt');
+
+    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+
+    expect(send).not.toHaveBeenCalled();
   });
 });
 

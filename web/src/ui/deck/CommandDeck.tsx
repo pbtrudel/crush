@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { actions, NO_SESSION_HINT, state } from '../../state/store';
+import { actions, state } from '../../state/store';
 import { api } from '../../api/http';
 import { activeMention, applyMention } from './mention';
 
@@ -33,9 +33,6 @@ export function CommandDeck() {
   // first request is in flight.
   const inFlight = useRef(false);
   const ended = s.conn === 'ended';
-  // M1 never starts a session from the browser: sending waits for the
-  // terminal to have one (starting a session here lands with M3).
-  const noSession = s.sessionId === '';
 
   useEffect(() => {
     const el = area.current;
@@ -86,7 +83,6 @@ export function CommandDeck() {
     inFlight.current = true;
     try {
       if (!text.trim()) { setError('Type a task before transmitting.'); return; }
-      if (!s.sessionId) { setError(NO_SESSION_HINT); return; }
       const attachmentBytes = files.reduce((n, f) => n + f.size, 0);
       const promptBytes = new TextEncoder().encode(text).length;
       if (attachmentBytes + promptBytes + MULTIPART_OVERHEAD >= MAX_ATTACHMENT_BYTES) {
@@ -176,7 +172,7 @@ export function CommandDeck() {
           <input ref={picker} type="file" multiple hidden onChange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)} />
           <button type="button" class="btn btn--ghost" disabled={ended} onClick={() => picker.current?.click()}>Attach</button>
           {s.busy && <button type="button" class="btn btn--danger" onClick={() => void actions.cancel()}>Cancel run</button>}
-          <button type="submit" class="btn btn--primary" disabled={ended || noSession || sending} aria-busy={sending}>
+          <button type="submit" class="btn btn--primary" disabled={ended || sending} aria-busy={sending}>
             {sending ? 'Transmitting' : s.busy ? 'Queue task' : 'Transmit'}
           </button>
         </div>
@@ -197,9 +193,7 @@ export function CommandDeck() {
       <p id="deck-help" class="deck__help">
         {ended
           ? 'This crush process has exited. Start crush with --web to link a new tab.'
-          : noSession
-            ? `${NO_SESSION_HINT}.`
-            : 'Enter to send, Shift+Enter for a new line, Esc to cancel a run. Drop or paste files to attach.'}
+          : 'Enter to send, Shift+Enter for a new line, Esc to cancel a run. Drop or paste files to attach.'}
       </p>
       <p id="deck-error" class="deck__error" role="alert">{error}</p>
     </form>

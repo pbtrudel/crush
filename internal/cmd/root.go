@@ -178,6 +178,11 @@ crush --continue
 			tea.WithFilter(inputFilter.Filter),
 		)
 		model.SetProgram(program)
+		webCtl.SetOnSessionCreated(func(id string) {
+			// Send blocks until the program loop runs, so deliver from a
+			// goroutine and keep the HTTP response prompt.
+			go func() { program.Send(ui.WebSessionCreatedMsg{ID: id}) }()
+		})
 		if webURL != "" {
 			// Hand the link to the TUI once it is starting, so the UI
 			// copies it and opens the browser off the render path. Send

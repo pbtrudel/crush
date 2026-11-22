@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -21,6 +22,9 @@ type Options struct {
 	Workspace workspace.Workspace
 	// Assets overrides the embedded frontend; nil uses the embedded dist.
 	Assets fs.FS
+	// OnSessionCreated is called with the id of a session the browser
+	// started, so the terminal can open it. It may be nil.
+	OnSessionCreated func(id string)
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -36,6 +40,11 @@ type Gateway struct {
 	done       chan struct{}
 	hub        *hub
 	pending    *pending
+
+	// onMu guards onSessionCreated, which the controller may replace while
+	// the gateway is running.
+	onMu             sync.RWMutex
+	onSessionCreated func(string)
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -68,6 +77,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		done:       make(chan struct{}),
 		hub:        newHub(),
 		pending:    newPending(),
+
+		onSessionCreated: opts.OnSessionCreated,
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
@@ -107,6 +118,25 @@ func (g *Gateway) URL() string { return fmt.Sprintf("http://127.0.0.1:%d", g.por
 func (g *Gateway) LaunchURL() string { return g.URL() + "/#t=" + g.secret }
 
 func (g *Gateway) token() string { return g.secret }
+
+// setOnSessionCreated replaces the callback for sessions the browser
+// starts. It is safe to call while a handler is notifying.
+func (g *Gateway) setOnSessionCreated(fn func(string)) {
+	g.onMu.Lock()
+	g.onSessionCreated = fn
+	g.onMu.Unlock()
+}
+
+// notifySessionCreated reports a browser-started session to the terminal.
+// No callback means no terminal is attached, which is fine.
+func (g *Gateway) notifySessionCreated(id string) {
+	g.onMu.RLock()
+	fn := g.onSessionCreated
+	g.onMu.RUnlock()
+	if fn != nil {
+		fn(id)
+	}
+}
 
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.

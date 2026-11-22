@@ -2,9 +2,12 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/stretchr/testify/require"
@@ -73,4 +76,33 @@ func TestControllerOpenBrowserRequiresGateway(t *testing.T) {
 
 	require.Error(t, c.OpenBrowser())
 	require.False(t, called)
+}
+
+// TestControllerForwardsSessionsCreatedInBrowser checks that the callback
+// set after Start reaches the running gateway, where the root command sets
+// it once the program exists.
+func TestControllerForwardsSessionsCreatedInBrowser(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	created := make(chan string, 1)
+	c.SetOnSessionCreated(func(id string) { created <- id })
+
+	rsp, data := doJSON(t, authedClient(t, c.gw), http.MethodPost, c.gw.URL()+"/api/sessions", "{}")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusCreated, rsp.StatusCode)
+
+	var sess struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(data, &sess))
+	select {
+	case id := <-created:
+		require.Equal(t, sess.ID, id)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the controller did not forward the created session")
+	}
 }

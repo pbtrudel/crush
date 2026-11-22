@@ -80,11 +80,19 @@ func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	s, err := g.ws.CreateSession(r.Context(), body.Title)
+	title := strings.TrimSpace(body.Title)
+	if title == "" {
+		// Match the TUI, which creates "New Session" on the first prompt.
+		title = "New Session"
+	}
+	s, err := g.ws.CreateSession(r.Context(), title)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_session", err.Error())
 		return
 	}
+	// The terminal opens the session so both clients show the same
+	// conversation. The callback is nil when no terminal is attached.
+	g.notifySessionCreated(s.ID)
 	writeJSON(w, http.StatusCreated, innerPayload(pubsub.Event[session.Session]{Type: pubsub.CreatedEvent, Payload: s}))
 }
 

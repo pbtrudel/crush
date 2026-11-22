@@ -1209,6 +1209,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dialog.OpenDialog(dialog.NewSideAnswer(m.com, msg.question, msg.answer))
 	case WebStartedMsg:
 		cmds = append(cmds, m.webStarted(msg))
+	case WebSessionCreatedMsg:
+		cmds = append(cmds, m.selectSession(msg.ID)...)
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -2740,7 +2742,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
+		cmds = append(cmds, m.selectSession(msg.Session.ID)...)
 	case dialog.ActionSelectAgent:
 		// Remember the search and the selection, so Esc can put the list
 		// back the way the user left it.
@@ -7330,6 +7332,13 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 // opener cannot freeze the TUI or hide the link.
 type WebStartedMsg struct {
 	URL string
+}
+
+// WebSessionCreatedMsg announces that the browser started a session. The
+// update loop opens it so the terminal and the tab show the same
+// conversation.
+type WebSessionCreatedMsg struct {
+	ID string
 }
 
 // webStatusTTL keeps the web link on screen long enough to read and copy,

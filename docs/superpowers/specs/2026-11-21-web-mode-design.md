@@ -224,6 +224,12 @@ implementation plan.
 | provider auth | `POST /auth/provider/key`, `POST /auth/provider/oauth/start`, `GET /auth/provider/oauth/status` |
 | system | `GET /health`, `GET /git/branch`, `POST /detach` |
 
+`POST /sessions` starts a session from the browser when the terminal has no
+current one. It creates the session through the workspace with the same
+`New Session` title the TUI uses for a first prompt, then asks the terminal to
+open it; the tab follows the new current session through `session_follow`. An
+empty body uses that title.
+
 Errors use `{"error": "...", "code": "..."}` with proper HTTP status codes.
 Any operation the TUI performs by reaching into internals instead of through
 `Workspace` gets a `Workspace` method first, so both clients share one path.
@@ -381,6 +387,7 @@ Focus ring: 2 px dashed holo cyan, 2 px offset, on every interactive element.
 |---|---|---|
 | Chat stream, markdown, tool cards, reasoning | Transmission log, thought layer | M1 |
 | Send, queue, cancel, attachments, file picker, `@` completion | Command deck | M1 |
+| Start a session from the landing screen (first prompt) | Command deck, `POST /sessions` | M1 |
 | Permission dialog, permission mode | Interrupt hologram, HUD toggle | M1 |
 | Question forms | Holographic form | M1 |
 | Subagents, teammates, agents dialog | Constellation, inspector, agent list | M2 |

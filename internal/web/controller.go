@@ -19,6 +19,8 @@ type Controller struct {
 
 	mu sync.Mutex
 	gw *Gateway
+
+	onSessionCreated func(string)
 }
 
 // NewController returns a controller for ws that opens tabs with the
@@ -32,7 +34,10 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.gw == nil {
-		gw, err := Start(ctx, Options{Workspace: c.ws})
+		gw, err := Start(ctx, Options{
+			Workspace:        c.ws,
+			OnSessionCreated: c.onSessionCreated,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -40,6 +45,18 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 		slog.Info("Web mode started", "url", gw.URL())
 	}
 	return c.gw.LaunchURL(), nil
+}
+
+// SetOnSessionCreated sets the callback for sessions the browser starts.
+// It may be called after Start; the running gateway is updated too.
+func (c *Controller) SetOnSessionCreated(fn func(string)) {
+	c.mu.Lock()
+	c.onSessionCreated = fn
+	gw := c.gw
+	c.mu.Unlock()
+	if gw != nil {
+		gw.setOnSessionCreated(fn)
+	}
 }
 
 // Open starts the gateway if needed and opens a browser tab. When the

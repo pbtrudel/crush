@@ -32,7 +32,7 @@ export const api = {
     }
   },
   snapshot: (sid?: string) => call<Snapshot>('GET', `/api/snapshot${sid ? `?session=${encodeURIComponent(sid)}` : ''}`),
-  createSession: (title: string) => call<Session>('POST', '/api/sessions', { title }),
+  createSession: (title?: string) => call<Session>('POST', '/api/sessions', title ? { title } : {}),
   messages: (sid: string) => call<Message[]>('GET', `/api/sessions/${encodeURIComponent(sid)}/messages`),
   sendPrompt(sid: string, prompt: string, files: File[]) {
     const form = new FormData();

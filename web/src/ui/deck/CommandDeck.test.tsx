@@ -107,12 +107,22 @@ afterEach(async () => {
 });
 
 describe('CommandDeck', () => {
-  it('disables transmit and explains the missing session', async () => {
+  it('starts a session from the landing screen', async () => {
     seed({ sessionId: '' });
+    const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue(null);
     await mount();
-    expect(transmit().disabled).toBe(true);
-    expect(root.querySelector('label[for="deck-input"]')).not.toBeNull();
-    expect(root.querySelector('#deck-help')!.textContent).toBe('Start or open a session in the terminal.');
+    expect(transmit().disabled).toBe(false);
+    expect(root.querySelector('#deck-help')!.textContent).toContain('Enter to send');
+    await type('first task');
+
+    await act(() => {
+      key('Enter');
+    });
+    await flush();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0]).toBe('first task');
+    expect(textarea().value).toBe('');
   });
 
   it('keeps the newer completion when a stale response arrives late', async () => {

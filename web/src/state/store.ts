@@ -18,8 +18,6 @@ function errorText(err: unknown): string {
   return err instanceof ApiError ? err.message : 'The request did not reach crush';
 }
 
-export const NO_SESSION_HINT = 'Start or open a session in the terminal';
-
 // report toasts an error for actions with no control to show it on.
 const report = (err: unknown) => dispatch((s) => pushToast(s, 'error', errorText(err)));
 const answeredElsewhere = () => dispatch((s) => pushToast(s, 'info', 'Already answered in the terminal'));
@@ -104,13 +102,12 @@ export function handleFrames(frames: Frame[]) {
 
 export const actions = {
   // sendPrompt returns the error text for the deck to show inline, or null.
-  // The browser never creates a session in M1: the terminal owns the current
-  // session, and prompts for a session the terminal is not viewing would
-  // never reach a client the server delivers prompts to.
+  // With no current session the browser starts one the way the terminal
+  // does on a first prompt; the gateway then asks the terminal to open it.
   async sendPrompt(prompt: string, files: File[]): Promise<string | null> {
-    const sid = state.value.sessionId;
-    if (!sid) return NO_SESSION_HINT;
+    let sid = state.value.sessionId;
     try {
+      if (!sid) sid = (await api.createSession()).id;
       await api.sendPrompt(sid, prompt, files);
       if (state.value.busy) await refreshQueue(sid);
       return null;

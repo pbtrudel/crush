@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/stretchr/testify/require"
@@ -245,4 +246,27 @@ func TestOpenWebReportsUnavailable(t *testing.T) {
 
 	require.Equal(t, util.InfoTypeWarn, msg.Type)
 	require.Equal(t, "Web mode is not available here", msg.Msg)
+}
+
+// TestWebSessionCreatedLoadsSession checks that a session the browser starts
+// opens in the terminal the same way picking it in the sessions dialog does.
+func TestWebSessionCreatedLoadsSession(t *testing.T) {
+	t.Parallel()
+
+	u, ws := newAgentViewerUITest(t)
+	u.session = &session.Session{ID: "terminal-session"}
+	calls := ws.setCurrentSessionCalls
+
+	_, cmd := u.Update(WebSessionCreatedMsg{ID: "browser-session"})
+	require.NotNil(t, cmd)
+
+	var load loadSessionMsg
+	for _, msg := range runCmdCollect(cmd) {
+		if l, ok := msg.(loadSessionMsg); ok {
+			load = l
+		}
+	}
+	require.Equal(t, "browser-session", load.session.ID)
+	require.Equal(t, calls+1, ws.setCurrentSessionCalls,
+		"the workspace must report the new current session so the tab follows")
 }
