@@ -24,7 +24,9 @@ func seedTree(fake *webtest.Fake) {
 	fake.AddSession(session.Session{ID: "s9", Title: "Other"})
 	for _, f := range []history.File{
 		{ID: "f0", SessionID: "s1", Path: "/repo/a.go", Content: "a\n", Version: 0, CreatedAt: 10, UpdatedAt: 10},
-		{ID: "f1", SessionID: "sub-1", Path: "/repo/a.go", Content: "a\nb\n", Version: 1, CreatedAt: 11, UpdatedAt: 11},
+		// A subagent's first edit to a path starts a version 0 of its own:
+		// versions are unique per (path, session), not per path.
+		{ID: "f1", SessionID: "sub-1", Path: "/repo/a.go", Content: "a\nb\n", Version: 0, CreatedAt: 11, UpdatedAt: 11},
 		{ID: "f2", SessionID: "s1", Path: "/repo/a.go", Content: "a\nb\nc\n", Version: 2, CreatedAt: 12, UpdatedAt: 12},
 		{ID: "f3", SessionID: "sub-2", Path: "/repo/b.go", Content: "", Version: 0, CreatedAt: 13, UpdatedAt: 13},
 		{ID: "f4", SessionID: "sub-2", Path: "/repo/b.go", Content: "x\n", Version: 1, CreatedAt: 14, UpdatedAt: 14},
@@ -58,25 +60,36 @@ func TestFileSummariesAggregateChildSessions(t *testing.T) {
 
 // TestFileSummariesSkipOversizedDiff pins ruling I3: a version above the
 // diff cap is never diffed, and its counts are reported as unknown so the
-// drawer does not show a misleading zero.
+// drawer does not show a misleading zero. Either end of the pair counts.
 func TestFileSummariesSkipOversizedDiff(t *testing.T) {
 	t.Parallel()
-	g, fake := startTest(t)
-	fake.AddHistory(history.File{
-		ID: "big-0", SessionID: "s1", Path: "/repo/big.txt", Version: 0, CreatedAt: 1, UpdatedAt: 1,
-		Content: strings.Repeat("o", maxDiffBytes+1),
-	})
-	fake.AddHistory(history.File{
-		ID: "big-1", SessionID: "s1", Path: "/repo/big.txt", Version: 1, CreatedAt: 2, UpdatedAt: 2,
-		Content: "small\n",
-	})
-	got, err := g.fileSummaries(t.Context(), "s1")
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.True(t, got[0].StatsUnknown)
-	require.Zero(t, got[0].Additions)
-	require.Zero(t, got[0].Removals)
-	require.Zero(t, g.fileStats.diffCount(), "the oversized version must not be diffed")
+	huge := strings.Repeat("o", maxDiffBytes+1)
+	for _, tc := range []struct {
+		name        string
+		first, last string
+	}{
+		{"oversized first version", huge, "small\n"},
+		{"oversized last version", "small\n", huge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, fake := startTest(t)
+			fake.AddHistory(history.File{
+				ID: "big-0", SessionID: "s1", Path: "/repo/big.txt", Version: 0, CreatedAt: 1, UpdatedAt: 1,
+				Content: tc.first,
+			})
+			fake.AddHistory(history.File{
+				ID: "big-1", SessionID: "s1", Path: "/repo/big.txt", Version: 1, CreatedAt: 2, UpdatedAt: 2,
+				Content: tc.last,
+			})
+			got, err := g.fileSummaries(t.Context(), "s1")
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			require.True(t, got[0].StatsUnknown)
+			require.Zero(t, got[0].Additions)
+			require.Zero(t, got[0].Removals)
+			require.Zero(t, g.fileStats.diffCount(), "the oversized version must not be diffed")
+		})
+	}
 }
 
 // TestFileSummariesMemoizeStats pins ruling I3: an unchanged file is not
@@ -101,6 +114,91 @@ func TestFileSummariesMemoizeStats(t *testing.T) {
 	require.Len(t, got, 2)
 	require.Equal(t, "/repo/a.go", got[0].Path)
 	require.Equal(t, 3, got[0].Additions)
+}
+
+// TestFileSummariesMergeCollidingVersions pins the cross-session version
+// collision: a subagent's first edit to a path is its own version 0, so
+// versions must be addressed by position in the chronologically merged
+// list, and the stats diff the first against the latest in time.
+func TestFileSummariesMergeCollidingVersions(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "child", ParentSessionID: "s1", CreatedAt: 2})
+	for _, f := range []history.File{
+		{ID: "p0", SessionID: "s1", Path: "/repo/x.go", Content: "one\n", Version: 0, CreatedAt: 10, UpdatedAt: 10},
+		{ID: "p1", SessionID: "s1", Path: "/repo/x.go", Content: "one\ntwo\n", Version: 1, CreatedAt: 11, UpdatedAt: 11},
+		{ID: "c0", SessionID: "child", Path: "/repo/x.go", Content: "one\ntwo\nthree\n", Version: 0, CreatedAt: 12, UpdatedAt: 12},
+		{ID: "c1", SessionID: "child", Path: "/repo/x.go", Content: "one\ntwo\nthree\nfour\n", Version: 1, CreatedAt: 13, UpdatedAt: 13},
+	} {
+		fake.AddHistory(f)
+	}
+	got, err := g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, []int64{0, 1, 2, 3}, got[0].VersionIDs, "versions are positions, not history.Version")
+	require.Equal(t, 3, got[0].Additions, "first against the latest in time")
+	require.Zero(t, got[0].Removals)
+	require.Equal(t, int64(13), got[0].UpdatedAt)
+	require.Equal(t, []string{"s1", "child"}, got[0].SessionIDs)
+
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", ""), "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	var d FileDiff
+	require.NoError(t, json.Unmarshal(body, &d))
+	require.Equal(t, int64(0), d.From)
+	require.Equal(t, int64(3), d.To)
+	require.Equal(t, "one\n", d.Old)
+	require.Equal(t, "one\ntwo\nthree\nfour\n", d.New)
+
+	rsp, body = doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", "&from=1&to=2"), "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.NoError(t, json.Unmarshal(body, &d))
+	require.Equal(t, "one\ntwo\n", d.Old, "position 1 is the parent's version 1 at t=11")
+	require.Equal(t, "one\ntwo\nthree\n", d.New, "position 2 is the child's version 0 at t=12")
+
+	rsp, body = doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", "&from=4"), "")
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "bad_version")
+}
+
+// TestTreeHistoryOrdersTies pins the sort keys: creation time first, then
+// version, then record id, so a colliding version still has one order.
+func TestTreeHistoryOrdersTies(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	for _, f := range []history.File{
+		{ID: "b", SessionID: "s1", Path: "/repo/t.go", Version: 2, CreatedAt: 10},
+		{ID: "a", SessionID: "s1", Path: "/repo/t.go", Version: 2, CreatedAt: 10},
+		{ID: "c", SessionID: "s1", Path: "/repo/t.go", Version: 1, CreatedAt: 10},
+		{ID: "d", SessionID: "s1", Path: "/repo/t.go", Version: 3, CreatedAt: 5},
+	} {
+		fake.AddHistory(f)
+	}
+	byPath, err := g.treeHistory(t.Context(), "s1")
+	require.NoError(t, err)
+	var ids []string
+	for _, f := range byPath["/repo/t.go"] {
+		ids = append(ids, f.ID)
+	}
+	require.Equal(t, []string{"d", "c", "a", "b"}, ids)
+}
+
+// TestFileRoutesRejectUnknownSession pins that both routes answer the same
+// 404 as the messages route for a session the workspace does not have.
+func TestFileRoutesRejectUnknownSession(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	seedTree(fake)
+	c := authedClient(t, g)
+	for _, target := range []string{
+		g.URL() + "/api/sessions/nope/files",
+		diffURL(g, "nope", "/repo/a.go", ""),
+	} {
+		rsp, body := doJSON(t, c, http.MethodGet, target, "")
+		require.Equal(t, http.StatusNotFound, rsp.StatusCode, target)
+		require.Contains(t, string(body), "unknown_session", target)
+	}
 }
 
 func TestFileDiffAcrossChildSessions(t *testing.T) {
@@ -154,11 +252,58 @@ func TestFileDiffRejectsPathOutsideTree(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 }
 
-func TestBuildDiffTruncatesLargePayload(t *testing.T) {
+func lines(c string, n int) string { return strings.Repeat(strings.Repeat(c, 1023)+"\n", n) }
+
+// TestFileDiffTruncatesOversizedPair pins that the route never diffs two
+// texts whose sum is over the cap: the answer is the truncated fallback
+// with no content at all.
+func TestFileDiffTruncatesOversizedPair(t *testing.T) {
 	t.Parallel()
-	line := func(c string) string { return strings.Repeat(c, 1023) + "\n" }
-	old := strings.Repeat(line("o"), 600)
-	next := strings.Repeat(line("n"), 600)
+	g, fake := startTest(t)
+	fake.AddHistory(history.File{
+		ID: "big-0", SessionID: "s1", Path: "/repo/big.txt", Version: 0, CreatedAt: 1, UpdatedAt: 1,
+		Content: lines("o", 600),
+	})
+	fake.AddHistory(history.File{
+		ID: "big-1", SessionID: "s1", Path: "/repo/big.txt", Version: 1, CreatedAt: 2, UpdatedAt: 2,
+		Content: lines("n", 600),
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/big.txt", ""), "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.NotContains(t, string(body), "oooo", "no old content in the payload")
+	require.NotContains(t, string(body), "nnnn", "no new content in the payload")
+	var d FileDiff
+	require.NoError(t, json.Unmarshal(body, &d))
+	require.True(t, d.Truncated)
+	require.Empty(t, d.Old)
+	require.Empty(t, d.New)
+	require.Empty(t, d.Unified)
+	require.Equal(t, "text", d.Language)
+}
+
+func TestBuildDiffSkipsOversizedPair(t *testing.T) {
+	t.Parallel()
+	d, err := buildDiff("/repo/big.txt", []history.File{
+		{Version: 0, Content: lines("o", 600)},
+		{Version: 1, Content: lines("n", 600)},
+	}, nil, nil)
+	require.NoError(t, err)
+	require.True(t, d.Truncated)
+	require.Empty(t, d.Old)
+	require.Empty(t, d.New)
+	require.Empty(t, d.Unified)
+	require.Equal(t, "text", d.Language)
+}
+
+// TestBuildDiffCutsUnifiedAtLineBoundary keeps the cut path honest: a pair
+// that fits the cap can still produce a unified diff over it, and the cut
+// then lands on a line and a rune boundary.
+func TestBuildDiffCutsUnifiedAtLineBoundary(t *testing.T) {
+	t.Parallel()
+	// 512 lines of 1024 bytes each keep the two texts at exactly the cap,
+	// while the unified diff carries more than a byte of prefix per line.
+	old, next := lines("o", 512), lines("n", 512)
+	require.LessOrEqual(t, len(old)+len(next), maxDiffBytes)
 	d, err := buildDiff("/repo/big.txt", []history.File{{Version: 0, Content: old}, {Version: 1, Content: next}}, nil, nil)
 	require.NoError(t, err)
 	require.True(t, d.Truncated)
@@ -166,6 +311,7 @@ func TestBuildDiffTruncatesLargePayload(t *testing.T) {
 	require.Empty(t, d.New)
 	require.LessOrEqual(t, len(d.Unified), maxDiffBytes)
 	require.True(t, strings.HasSuffix(d.Unified, "\n"), "the cut lands on a line boundary")
+	require.True(t, utf8.ValidString(d.Unified))
 	require.Equal(t, "text", d.Language)
 }
 

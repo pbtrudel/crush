@@ -33,7 +33,9 @@ type FileDiagnostics struct {
 }
 
 // FileSummary is one edited path across a session and every session below
-// it.
+// it. VersionIDs are positions in that tree's history, in creation order,
+// not history.Version: a subagent's first edit of a path starts a version
+// 0 of its own, so versions collide across sessions.
 type FileSummary struct {
 	Path        string          `json:"path"`
 	Versions    int             `json:"versions"`
@@ -48,8 +50,9 @@ type FileSummary struct {
 	StatsUnknown bool `json:"stats_unknown,omitempty"`
 }
 
-// FileDiff is the diff between two versions of one edited path. Truncated
-// answers carry only the unified text.
+// FileDiff is the diff between two versions of one edited path. From and
+// To are positions in the tree's history, the same numbering as
+// FileSummary.VersionIDs. Truncated answers carry only the unified text.
 type FileDiff struct {
 	Path      string `json:"path"`
 	From      int64  `json:"from"`
@@ -84,7 +87,9 @@ func (g *Gateway) sessionTree(ctx context.Context, root string) ([]string, error
 }
 
 // treeHistory groups the file history of root's tree by path, each path's
-// versions in version order.
+// versions in creation order. Version numbers are per path and session,
+// so two sessions can both hold a version 0 of one path: creation time
+// decides the order, then the version, then the record id.
 func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]history.File, error) {
 	ids, err := g.sessionTree(ctx, root)
 	if err != nil {
@@ -102,7 +107,11 @@ func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]hi
 	}
 	for _, versions := range byPath {
 		slices.SortFunc(versions, func(a, b history.File) int {
-			return cmp.Or(cmp.Compare(a.Version, b.Version), cmp.Compare(a.CreatedAt, b.CreatedAt))
+			return cmp.Or(
+				cmp.Compare(a.CreatedAt, b.CreatedAt),
+				cmp.Compare(a.Version, b.Version),
+				cmp.Compare(a.ID, b.ID),
+			)
 		})
 	}
 	return byPath, nil
@@ -123,7 +132,7 @@ func (g *Gateway) fileSummaries(ctx context.Context, root string) ([]FileSummary
 		ids := make([]int64, len(versions))
 		var sessions []string
 		for i, v := range versions {
-			ids[i] = v.Version
+			ids[i] = int64(i)
 			if !slices.Contains(sessions, v.SessionID) {
 				sessions = append(sessions, v.SessionID)
 			}
@@ -215,33 +224,36 @@ func versionIdentity(v history.File) string {
 	return v.SessionID + ":" + strconv.FormatInt(v.Version, 10)
 }
 
-// buildDiff diffs two versions of one path. A nil bound picks the first or
-// the latest version.
+// buildDiff diffs two versions of one path, addressed by their position in
+// versions. A nil bound picks the first or the latest version.
 func buildDiff(path string, versions []history.File, from, to *int64) (FileDiff, error) {
-	pick := func(want *int64, fallback history.File) (history.File, error) {
-		if want == nil {
-			return fallback, nil
+	pick := func(want *int64, fallback int64) (history.File, int64, error) {
+		i := fallback
+		if want != nil {
+			i = *want
 		}
-		for _, v := range versions {
-			if v.Version == *want {
-				return v, nil
-			}
+		if i < 0 || i >= int64(len(versions)) {
+			return history.File{}, 0, errUnknownVersion
 		}
-		return history.File{}, errUnknownVersion
+		return versions[i], i, nil
 	}
-	a, err := pick(from, versions[0])
+	a, fromIdx, err := pick(from, 0)
 	if err != nil {
 		return FileDiff{}, err
 	}
-	b, err := pick(to, versions[len(versions)-1])
+	b, toIdx, err := pick(to, int64(len(versions)-1))
 	if err != nil {
 		return FileDiff{}, err
+	}
+	d := FileDiff{Path: path, From: fromIdx, To: toIdx, Language: languageFor(path)}
+	// Two texts over the cap are not diffed at all: the diff itself is the
+	// expensive part, and the drawer shows the same too-large fallback.
+	if len(a.Content)+len(b.Content) > maxDiffBytes {
+		d.Truncated = true
+		return d, nil
 	}
 	unified, _, _ := diff.GenerateDiff(a.Content, b.Content, path)
-	d := FileDiff{
-		Path: path, From: a.Version, To: b.Version,
-		Old: a.Content, New: b.Content, Unified: unified, Language: languageFor(path),
-	}
+	d.Old, d.New, d.Unified = a.Content, b.Content, unified
 	if len(d.Old)+len(d.New)+len(d.Unified) > maxDiffBytes {
 		d.Old, d.New, d.Truncated = "", "", true
 		d.Unified = truncateLines(d.Unified, maxDiffBytes)
@@ -282,7 +294,11 @@ func languageFor(path string) string {
 }
 
 func (g *Gateway) handleFiles(w http.ResponseWriter, r *http.Request) {
-	files, err := g.fileSummaries(r.Context(), r.PathValue("sid"))
+	sid := r.PathValue("sid")
+	if !g.sessionExists(w, r, sid) {
+		return
+	}
+	files, err := g.fileSummaries(r.Context(), sid)
 	if err != nil {
 		writeInternal(w, "list_files", err)
 		return
@@ -294,6 +310,10 @@ func (g *Gateway) handleFiles(w http.ResponseWriter, r *http.Request) {
 // reads nothing but that history: a path is a lookup key, never a file to
 // open.
 func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
+	sid := r.PathValue("sid")
+	if !g.sessionExists(w, r, sid) {
+		return
+	}
 	q := r.URL.Query()
 	path := q.Get("path")
 	if path == "" {
@@ -306,7 +326,7 @@ func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_version", "from and to must be version numbers")
 		return
 	}
-	byPath, err := g.treeHistory(r.Context(), r.PathValue("sid"))
+	byPath, err := g.treeHistory(r.Context(), sid)
 	if err != nil {
 		writeInternal(w, "file_history", err)
 		return
@@ -326,6 +346,21 @@ func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// sessionExists answers 404 unknown_session for a session the workspace
+// does not have, the same answer the messages route gives, and reports
+// whether the handler may continue.
+func (g *Gateway) sessionExists(w http.ResponseWriter, r *http.Request, sid string) bool {
+	if _, err := g.ws.GetSession(r.Context(), sid); err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
+			return false
+		}
+		writeInternal(w, "get_session", err)
+		return false
+	}
+	return true
 }
 
 func versionParam(s string) (*int64, bool) {
