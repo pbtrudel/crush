@@ -41,6 +41,7 @@ type Snapshot struct {
 	CurrentSessionID string                `json:"current_session_id"`
 	Session          json.RawMessage       `json:"session,omitempty"`
 	Messages         []json.RawMessage     `json:"messages"`
+	Files            []FileSummary         `json:"files"`
 	Permissions      []json.RawMessage     `json:"permissions"`
 	Question         json.RawMessage       `json:"question,omitempty"`
 	PermissionMode   string                `json:"permission_mode"`
@@ -58,6 +59,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		WorkingDir:       g.ws.WorkingDir(),
 		CurrentSessionID: sessionID,
 		Messages:         []json.RawMessage{},
+		Files:            []FileSummary{},
 		Permissions:      []json.RawMessage{},
 		Queued:           []string{},
 		LSP:              map[string]ServerInfo{},
@@ -97,6 +99,11 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 	}
 	if msgs, err := g.ws.ListMessages(ctx, sessionID); err == nil {
 		s.Messages = entities(msgs)
+	}
+	if files, err := g.fileSummaries(ctx, sessionID); err == nil {
+		s.Files = files
+	} else {
+		slog.Debug("Web snapshot could not list edited files", "session_id", sessionID, "error", err)
 	}
 	s.Busy = g.ws.AgentIsSessionBusy(sessionID)
 	if q := g.ws.AgentQueuedPromptsList(sessionID); q != nil {

@@ -39,6 +39,9 @@ func encode(ev any) (string, json.RawMessage, bool) {
 	if p.Type == pubsub.PayloadTypeMessage {
 		return p.Type, withoutAttachmentData(p.Payload), true
 	}
+	if p.Type == pubsub.PayloadTypeFile {
+		return p.Type, withoutFileContent(p.Payload), true
+	}
 	return p.Type, p.Payload, true
 }
 
@@ -95,6 +98,34 @@ func withoutAttachmentData(payload json.RawMessage) json.RawMessage {
 	}
 	env["payload"] = out
 	out, err = json.Marshal(env)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// withoutFileContent drops the file text from a history event. The tab
+// only needs to know that a path changed, and whole files in the replay
+// ring would cost memory for every reconnecting tab.
+func withoutFileContent(payload json.RawMessage) json.RawMessage {
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return payload
+	}
+	var file map[string]json.RawMessage
+	if err := json.Unmarshal(env["payload"], &file); err != nil {
+		return payload
+	}
+	if _, ok := file["content"]; !ok {
+		return payload
+	}
+	delete(file, "content")
+	inner, err := json.Marshal(file)
+	if err != nil {
+		return payload
+	}
+	env["payload"] = inner
+	out, err := json.Marshal(env)
 	if err != nil {
 		return payload
 	}

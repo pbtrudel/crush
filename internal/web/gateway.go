@@ -51,6 +51,9 @@ type Gateway struct {
 	hub        *hub
 	pending    *pending
 	idle       time.Duration
+	// fileStats memoizes the edited-file line counts every snapshot and
+	// file list asks for.
+	fileStats *fileStatCache
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -93,6 +96,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		hub:        newHub(),
 		pending:    newPending(),
 		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
+		fileStats:  newFileStatCache(),
 
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,

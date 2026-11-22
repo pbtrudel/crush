@@ -1,4 +1,19 @@
 {
+  "file": {
+    "seq": 1,
+    "type": "file",
+    "payload": {
+      "payload": {
+        "created_at": 104,
+        "id": "f-1",
+        "path": "/repo/parser.go",
+        "session_id": "sub-1",
+        "updated_at": 104,
+        "version": 1
+      },
+      "type": "created"
+    }
+  },
   "lsp_event": {
     "seq": 1,
     "type": "lsp_event",
@@ -259,6 +274,27 @@
           "provider": "anthropic",
           "created_at": 1,
           "updated_at": 2
+        }
+      ],
+      "files": [
+        {
+          "path": "/repo/parser.go",
+          "versions": 2,
+          "version_ids": [
+            0,
+            1
+          ],
+          "additions": 3,
+          "removals": 1,
+          "diagnostics": {
+            "error": 1,
+            "warning": 0
+          },
+          "updated_at": 104,
+          "session_ids": [
+            "s1",
+            "sub-1"
+          ]
         }
       ],
       "permissions": [],

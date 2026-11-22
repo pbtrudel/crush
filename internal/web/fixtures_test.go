@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -66,6 +67,9 @@ func fixtureEvents() map[string]any {
 		"lsp_event": pubsub.Event[app.LSPEvent]{Type: pubsub.UpdatedEvent, Payload: app.LSPEvent{
 			Type: app.LSPEventStateChanged, Name: "gopls", DiagnosticCount: 2,
 		}},
+		"file": pubsub.Event[history.File]{Type: pubsub.CreatedEvent, Payload: history.File{
+			ID: "f-1", SessionID: "sub-1", Path: "/repo/parser.go", Content: "package parser", Version: 1, CreatedAt: 104, UpdatedAt: 104,
+		}},
 	}
 }
 
@@ -85,6 +89,10 @@ func snapshotFrame(t *testing.T) frame {
 	raw, err := json.Marshal(Snapshot{
 		Version: "test", WorkingDir: "/repo", CurrentSessionID: "s1",
 		Messages: []json.RawMessage{msg}, Permissions: []json.RawMessage{},
+		Files: []FileSummary{{
+			Path: "/repo/parser.go", Versions: 2, VersionIDs: []int64{0, 1}, Additions: 3, Removals: 1,
+			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
+		}},
 		PermissionMode: "normal", InputMode: "code",
 		Model:  ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
 		Queued: []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},

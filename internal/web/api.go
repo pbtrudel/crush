@@ -37,6 +37,8 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	api.HandleFunc("GET /api/sessions", g.handleListSessions)
 	api.HandleFunc("POST /api/sessions", g.handleCreateSession)
 	api.HandleFunc("GET /api/sessions/{sid}/messages", g.handleMessages)
+	api.HandleFunc("GET /api/sessions/{sid}/files", g.handleFiles)
+	api.HandleFunc("GET /api/sessions/{sid}/files/diff", g.handleFileDiff)
 	api.HandleFunc("POST /api/sessions/{sid}/prompt", g.handlePrompt)
 	api.HandleFunc("POST /api/sessions/{sid}/cancel", g.handleCancel)
 	api.HandleFunc("GET /api/sessions/{sid}/queue", g.handleQueue)
