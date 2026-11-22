@@ -118,10 +118,6 @@ func (g *Gateway) handleInputMode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_mode", "mode must be plan or code")
 		return
 	}
-	if body.Mode == g.InputMode() {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
 	g.notifyInputModeRequested(body.Mode == inputModePlan)
 	w.WriteHeader(http.StatusAccepted)
 }

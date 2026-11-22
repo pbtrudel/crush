@@ -30,12 +30,18 @@ func webWarn(text string) util.InfoMsg {
 }
 
 // stubWeb is a configurable web launcher for the web mode message tests.
+type webModeReport struct {
+	plan bool
+	seq  uint64
+}
+
 type stubWeb struct {
 	url      string
 	startErr error
 	openErr  error
 	opens    int
-	modes    []bool
+	reports  []webModeReport
+	refusals []string
 }
 
 func (s *stubWeb) Start(context.Context) (string, error) { return s.url, s.startErr }
@@ -47,7 +53,11 @@ func (s *stubWeb) OpenBrowser() error {
 
 func (s *stubWeb) Running() bool { return true }
 
-func (s *stubWeb) SetInputMode(plan bool) { s.modes = append(s.modes, plan) }
+func (s *stubWeb) SetInputMode(plan bool, seq uint64) {
+	s.reports = append(s.reports, webModeReport{plan: plan, seq: seq})
+}
+
+func (s *stubWeb) ReportInputModeRefused(reason string) { s.refusals = append(s.refusals, reason) }
 
 func newWebUI(web common.WebLauncher) *UI {
 	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
@@ -132,7 +142,27 @@ func TestOpenWebReturnsStartedMessage(t *testing.T) {
 	require.True(t, ok, "openWeb must hand the link to the update loop")
 	require.Equal(t, "http://127.0.0.1:1/#t=x", msg.URL)
 	require.Zero(t, web.opens, "openWeb must not open the browser itself")
-	require.Equal(t, []bool{false}, web.modes, "the gateway starts with the terminal's code mode")
+	require.Equal(t, []webModeReport{{plan: false, seq: 1}}, web.reports,
+		"the gateway starts with the terminal's code mode")
+}
+
+// TestWebStartedReportsInputMode checks that --web, which starts the gateway
+// before the program exists, reports the mode once webStarted runs.
+func TestWebStartedReportsInputMode(t *testing.T) {
+	original := copyWebLinkToClipboard
+	t.Cleanup(func() { copyWebLinkToClipboard = original })
+	copyWebLinkToClipboard = func(_, successMessage, _ string, ttl time.Duration) tea.Cmd {
+		return util.ReportInfoWithTTL(successMessage, ttl)
+	}
+
+	web := &stubWeb{url: webTestURL}
+	m := newWebUI(web)
+	m.mode = uiInputModePlan
+
+	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
+	runWebCmds(cmd)
+
+	require.Equal(t, []webModeReport{{plan: true, seq: 1}}, web.reports)
 }
 
 func TestWebStartedShowsNoticeBeforeOpening(t *testing.T) {
@@ -304,7 +334,7 @@ func TestWebInputModeMsgSwitchesPlan(t *testing.T) {
 	runCmdCollect(cmd)
 	require.Equal(t, uiInputModePlan, u.mode)
 	require.Equal(t, config.AgentPlan, ws.setMainCalledWith)
-	require.Equal(t, []bool{true}, web.modes)
+	require.Equal(t, []webModeReport{{plan: true, seq: 1}}, web.reports)
 }
 
 // TestWebInputModeMsgRefusedWhileBusy checks that a browser request cannot
@@ -333,7 +363,9 @@ func TestWebInputModeMsgRefusedWhileBusy(t *testing.T) {
 	require.Equal(t, "Agent is busy, please wait before switching input mode...", warning.Msg)
 	require.Equal(t, uiInputModeCode, u.mode)
 	require.Empty(t, ws.setMainCalledWith)
-	require.Empty(t, web.modes)
+	require.Empty(t, web.reports)
+	require.Equal(t, []string{webInputModeBusy}, web.refusals,
+		"the browser must learn why the switch did not happen")
 
 	u.mode = uiInputModePlan
 	_, cmd = u.Update(WebInputModeMsg{Plan: true})
@@ -356,5 +388,5 @@ func TestDiscordModeChangedReportsToWeb(t *testing.T) {
 	_, cmd := u.Update(discord.ModeChangedMsg{Plan: true})
 	require.Equal(t, uiInputModePlan, u.mode)
 	runCmdCollect(cmd)
-	require.Equal(t, []bool{true}, web.modes)
+	require.Equal(t, []webModeReport{{plan: true, seq: 1}}, web.reports)
 }

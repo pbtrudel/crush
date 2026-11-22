@@ -128,6 +128,13 @@ describe('reduce', () => {
     expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'agent busy' });
   });
 
+  it('input mode refusal toasts with the terminal reason', () => {
+    const s = reduce(live(), {
+      seq: 15, type: 'web_error', payload: { error: "Can't switch while Crush is busy" },
+    });
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: "Can't switch while Crush is busy" });
+  });
+
   it('permission mode, session and lsp updates', () => {
     let s = reduce(live(), fx.permission_mode_changed);
     expect(s.permissionMode).toBe('yolo');

@@ -151,8 +151,12 @@ type WebLauncher interface {
 	// OpenBrowser opens a browser tab for the running gateway.
 	OpenBrowser() error
 	// SetInputMode reports the terminal's plan or code mode to the
-	// gateway. It is a pure in-memory call.
-	SetInputMode(plan bool)
+	// gateway. seq orders reports: the gateway ignores an older one that
+	// a concurrent command delivers late.
+	SetInputMode(plan bool, seq uint64)
+	// ReportInputModeRefused tells the browser why a switch did not
+	// happen. It is a pure in-memory call.
+	ReportInputModeRefused(reason string)
 	Running() bool
 }
 

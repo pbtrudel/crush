@@ -428,12 +428,12 @@ func TestCreateSessionStartsOneSessionInTerminal(t *testing.T) {
 }
 
 // TestInputModeEndpointForwardsValidModes checks that a browser toggle
-// reaches the terminal callback and that a mode the gateway already runs
-// does not notify it again.
+// always reaches the terminal callback; the terminal decides whether the
+// request is a no-op.
 func TestInputModeEndpointForwardsValidModes(t *testing.T) {
 	t.Parallel()
 	fake := webtest.NewFake()
-	modes := make(chan bool, 2)
+	modes := make(chan bool, 3)
 	g, err := Start(t.Context(), Options{
 		Workspace:            fake,
 		OnInputModeRequested: func(plan bool) { modes <- plan },
@@ -455,15 +455,17 @@ func TestInputModeEndpointForwardsValidModes(t *testing.T) {
 		t.Fatal("OnInputModeRequested not called")
 	}
 
-	// The terminal reports the switch, then a repeated request is a no-op.
+	// The terminal already switched, but the gateway still forwards the
+	// request: a same-mode request is the terminal's no-op to make.
 	g.SetInputMode(true)
 	rsp, _ = doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"plan"}`)
 	rsp.Body.Close()
 	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
 	select {
 	case plan := <-modes:
-		t.Fatalf("repeated plan mode notified the terminal: %v", plan)
-	default:
+		require.True(t, plan)
+	case <-time.After(2 * time.Second):
+		t.Fatal("same-mode request was not forwarded")
 	}
 
 	rsp, _ = doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", `{"mode":"code"}`)
@@ -475,6 +477,30 @@ func TestInputModeEndpointForwardsValidModes(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnInputModeRequested not called for code mode")
 	}
+}
+
+// TestInputModeEndpointRejectsWrongMethod checks the route only accepts the
+// method the browser uses.
+func TestInputModeEndpointRejectsWrongMethod(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+
+	rsp := do(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/input-mode", nil)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, rsp.StatusCode)
+	require.Equal(t, http.MethodPost, rsp.Header.Get("Allow"))
+}
+
+// TestInputModeEndpointRejectsOversizeBody checks the endpoint honors the
+// gateway's JSON body limit.
+func TestInputModeEndpointRejectsOversizeBody(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+
+	body := `{"mode":"` + strings.Repeat("x", maxJSONBytes) + `"}`
+	rsp, _ := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/input-mode", body)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 }
 
 // TestInputModeRejectsUnauthenticatedAndForeignOrigin checks the route sits

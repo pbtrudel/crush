@@ -136,7 +136,7 @@ func TestControllerReportsInputModeBeforeStart(t *testing.T) {
 	t.Parallel()
 	c := NewController(webtest.NewFake())
 	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
-	c.SetInputMode(true)
+	c.SetInputMode(true, 1)
 	_, err := c.Start(t.Context())
 	require.NoError(t, err)
 
@@ -148,4 +148,36 @@ func TestControllerReportsInputModeBeforeStart(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &snap))
 	require.Equal(t, "plan", snap.InputMode)
+}
+
+// TestControllerIgnoresStaleInputModeReports checks that reports racing in
+// separate commands cannot leave the gateway on the older mode.
+func TestControllerIgnoresStaleInputModeReports(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	c.SetInputMode(true, 2)
+	c.SetInputMode(false, 1)
+
+	require.Equal(t, inputModePlan, c.gw.InputMode())
+}
+
+// TestControllerReportsInputModeRefusal checks that the terminal's busy
+// refusal reaches the browser through the stream.
+func TestControllerReportsInputModeRefusal(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	conn := dialStream(t, c.gw, "")
+	readFrame(t, conn)
+	c.ReportInputModeRefused("Can't switch while Crush is busy")
+	f := readFrame(t, conn)
+	require.Equal(t, frameError, f.Type)
+	require.JSONEq(t, `{"error":"Can't switch while Crush is busy"}`, string(f.Payload))
 }

@@ -110,7 +110,9 @@ describe('CommandDeck', () => {
   it('badges the deck while plan mode is on', async () => {
     seed({ inputMode: 'plan' });
     await mount();
-    expect(root.querySelector('.deck__plan-badge')!.textContent).toContain('Plan mode');
+    const badge = root.querySelector('.deck__plan-badge')!;
+    expect(badge.textContent).toContain('Plan mode');
+    expect(badge.getAttribute('role')).toBeNull();
   });
 
   it('hides the plan badge in code mode', async () => {

@@ -23,6 +23,7 @@ type Controller struct {
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
 	inputMode            bool
+	inputModeSeq         uint64
 }
 
 // NewController returns a controller for ws that opens tabs with the
@@ -80,14 +81,30 @@ func (c *Controller) SetOnInputModeRequested(fn func(bool)) {
 }
 
 // SetInputMode records the terminal's input mode for the snapshot and
-// updates a running gateway. It is pure in-memory state.
-func (c *Controller) SetInputMode(plan bool) {
+// updates a running gateway. Reports run in separate commands, so seq makes
+// the newest report win even when an older one arrives late. The controller
+// lock covers the gateway publish too, so two reports cannot interleave.
+func (c *Controller) SetInputMode(plan bool, seq uint64) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if seq < c.inputModeSeq {
+		return
+	}
 	c.inputMode = plan
+	c.inputModeSeq = seq
+	if c.gw != nil {
+		c.gw.SetInputMode(plan)
+	}
+}
+
+// ReportInputModeRefused tells the browser why the terminal kept its mode.
+// The gateway publishes it through the existing error frame and toast.
+func (c *Controller) ReportInputModeRefused(reason string) {
+	c.mu.Lock()
 	gw := c.gw
 	c.mu.Unlock()
 	if gw != nil {
-		gw.SetInputMode(plan)
+		gw.reportInputModeRefused(reason)
 	}
 }
 

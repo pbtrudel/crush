@@ -227,6 +227,33 @@ func TestInputModePublished(t *testing.T) {
 	require.JSONEq(t, `{"mode":"code"}`, string(f.Payload))
 }
 
+// TestInputModeReplaysAfterReconnect checks that a tab reconnecting from
+// before the switch learns the mode from the replay ring.
+func TestInputModeReplaysAfterReconnect(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	snap := readFrame(t, c)
+	g.SetInputMode(true)
+	mode := readFrame(t, c)
+	c.Close(websocket.StatusNormalClosure, "")
+
+	c2 := dialStream(t, g, "?since="+itoa(snap.Seq))
+	replay := readFrame(t, c2)
+	require.Equal(t, "input_mode_changed", replay.Type)
+	require.Equal(t, mode.Seq, replay.Seq)
+	require.JSONEq(t, `{"mode":"plan"}`, string(replay.Payload))
+}
+
+// TestSnapshotShowsReportedInputMode checks a fresh snapshot after a mode
+// switch, including the one the first tab receives.
+func TestSnapshotShowsReportedInputMode(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	g.SetInputMode(true)
+	require.Equal(t, "plan", g.buildSnapshot(t.Context(), "s1").InputMode)
+}
+
 func TestShutdownSendsClosing(t *testing.T) {
 	t.Parallel()
 	fake := webtestFake()

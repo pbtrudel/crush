@@ -178,19 +178,26 @@ func (g *Gateway) InputMode() string {
 }
 
 // SetInputMode records the terminal's mode and tells every tab. It is a
-// pure in-memory call: the hub only queues the frame.
+// pure in-memory call: the hub only queues the frame. The publish happens
+// under the same lock as the update so concurrent reports cannot publish an
+// older mode after a newer one.
 func (g *Gateway) SetInputMode(plan bool) {
 	mode := inputModeCode
 	if plan {
 		mode = inputModePlan
 	}
 	g.modeMu.Lock()
+	defer g.modeMu.Unlock()
 	changed := g.inputMode != mode
 	g.inputMode = mode
-	g.modeMu.Unlock()
 	if changed {
 		g.hub.publishJSON(frameInputMode, map[string]string{"mode": mode})
 	}
+}
+
+// reportInputModeRefused tells every tab why the terminal kept its mode.
+func (g *Gateway) reportInputModeRefused(reason string) {
+	g.hub.publishJSON(frameError, map[string]string{"error": reason})
 }
 
 const (

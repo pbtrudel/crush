@@ -344,6 +344,10 @@ type UI struct {
 	focus uiFocusState
 	state uiState
 	mode  uiInputMode
+	// webModeSeq orders the mode reports the gateway receives. It only
+	// changes on the update goroutine; commands may still run out of
+	// order.
+	webModeSeq uint64
 
 	// Frame memoization (see framecache.go). scrollOnlyUpdate is set by
 	// handlers that change nothing but the chat scroll position; frameDirty
@@ -7361,9 +7365,13 @@ type WebInputModeMsg struct {
 	Plan bool
 }
 
+// webInputModeBusy is the refusal the browser shows when the terminal
+// cannot switch modes yet.
+const webInputModeBusy = "Can't switch while Crush is busy"
+
 // webInputMode routes a browser switch through the regular agent switch.
 // Asking for the mode already active is a no-op; a busy or switching agent
-// gets the same warning as Shift+Tab.
+// gets the same warning as Shift+Tab and a notice in the browser.
 func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
 	target := uiInputModeCode
 	if msg.Plan {
@@ -7373,7 +7381,10 @@ func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
 		return nil
 	}
 	if m.isAgentBusy() || m.modeSwitching {
-		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
+		return tea.Batch(
+			util.ReportWarn("Agent is busy, please wait before switching input mode..."),
+			m.reportWebInputModeRefused(webInputModeBusy),
+		)
 	}
 	return m.setInputMode(target)
 }
@@ -7402,6 +7413,12 @@ func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
 	}
 	if m.com != nil && m.com.Web != nil {
 		web := m.com.Web
+		// --web starts the gateway before the program exists, so report
+		// the terminal's mode once the update loop sees the link. The
+		// command runs off the update loop like the other reports.
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		cmds = append(cmds, func() tea.Msg {
 			if err := web.OpenBrowser(); err != nil {
 				return util.InfoMsg{
@@ -7424,16 +7441,25 @@ func (m *UI) openWeb() tea.Cmd {
 	}
 	web := m.com.Web
 	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
 	return func() tea.Msg {
 		// Seed a gateway that starts later with the mode already on
 		// screen, so its first snapshot is correct.
-		web.SetInputMode(plan)
+		web.SetInputMode(plan, seq)
 		u, err := web.Start(context.Background())
 		if err != nil {
 			return util.ReportError(fmt.Errorf("web mode: %w", err))()
 		}
 		return WebStartedMsg{URL: u}
 	}
+}
+
+// nextWebModeSeq returns the sequence for the next mode report. Commands run
+// in their own goroutines, so the sequence, not their arrival order, decides
+// which report is newest.
+func (m *UI) nextWebModeSeq() uint64 {
+	m.webModeSeq++
+	return m.webModeSeq
 }
 
 // reportWebInputMode tells the gateway the settled input mode. It runs off
@@ -7444,8 +7470,22 @@ func (m *UI) reportWebInputMode() tea.Cmd {
 	}
 	web := m.com.Web
 	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
 	return func() tea.Msg {
-		web.SetInputMode(plan)
+		web.SetInputMode(plan, seq)
+		return nil
+	}
+}
+
+// reportWebInputModeRefused tells the browser why the terminal kept its
+// mode. It runs off the update loop and reuses the error toast.
+func (m *UI) reportWebInputModeRefused(reason string) tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		web.ReportInputModeRefused(reason)
 		return nil
 	}
 }

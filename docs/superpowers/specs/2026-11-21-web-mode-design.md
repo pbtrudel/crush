@@ -240,10 +240,12 @@ and appear when that notice clears.
 
 `POST /input-mode` takes `{"mode":"plan"|"code"}` and returns 202. The gateway
 validates the mode, keeps no agent state, and asks the terminal to switch
-through a callback. The terminal applies its usual busy and mode-switching
-checks; a request for the mode already active is a no-op. When the mode
-settles, the terminal reports it back to the gateway, which includes it in the
-snapshot and publishes `input_mode_changed`.
+through a callback. Every valid request is forwarded, even for the mode that
+is already active: the terminal applies its usual busy and mode-switching
+checks, where a same-mode request is a no-op. When the mode settles, the
+terminal reports it back to the gateway, which includes it in the snapshot and
+publishes `input_mode_changed`. A refused switch publishes `web_error`, which
+the browser shows as a toast.
 
 Errors use `{"error": "...", "code": "..."}` with proper HTTP status codes.
 Any operation the TUI performs by reaching into internals instead of through
