@@ -584,3 +584,29 @@ func TestArchivedSessionLeavesTheList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 2, "unarchiving puts the session back in the list")
 }
+
+func TestListChildrenReturnsDirectChildrenOnly(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	sessions := NewService(db.New(conn), conn)
+
+	root, err := sessions.Create(t.Context(), "root")
+	require.NoError(t, err)
+	child, err := sessions.CreateTaskSession(t.Context(), "child-1", root.ID, "Subagent")
+	require.NoError(t, err)
+	_, err = sessions.CreateTaskSession(t.Context(), "grandchild-1", child.ID, "Nested")
+	require.NoError(t, err)
+
+	got, err := sessions.ListChildren(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "child-1", got[0].ID)
+	require.Equal(t, root.ID, got[0].ParentSessionID)
+
+	none, err := sessions.ListChildren(t.Context(), "missing")
+	require.NoError(t, err)
+	require.Empty(t, none)
+}

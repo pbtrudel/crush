@@ -90,6 +90,10 @@ type Service interface {
 	Get(ctx context.Context, id string) (Session, error)
 	GetLast(ctx context.Context) (Session, error)
 	List(ctx context.Context) ([]Session, error)
+	// ListChildren returns the sessions parentID spawned (subagent,
+	// teammate and helper sessions), oldest first. Archived children are
+	// included: archiving hides a session from pickers, not its edits.
+	ListChildren(ctx context.Context, parentID string) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
 	// SetArchived keeps a session out of the session lists without deleting
@@ -427,6 +431,19 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 		s.applyEstimatedUsageState(&sessions[i])
 	}
 	return sessions, nil
+}
+
+func (s *service) ListChildren(ctx context.Context, parentID string) ([]Session, error) {
+	rows, err := s.q.ListChildSessions(ctx, sql.NullString{String: parentID, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Session, len(rows))
+	for i, row := range rows {
+		out[i] = s.fromDBItem(row)
+		s.applyEstimatedUsageState(&out[i])
+	}
+	return out, nil
 }
 
 // publishSessionUpdate re-fetches a session and publishes an UpdatedEvent so

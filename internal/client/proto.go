@@ -715,6 +715,23 @@ func (c *Client) ListSessionHistoryFiles(ctx context.Context, id string, session
 	return files, nil
 }
 
+// ListChildSessions returns the sessions a session spawned.
+func (c *Client) ListChildSessions(ctx context.Context, id string, sessionID string) ([]proto.Session, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/children", id, sessionID), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get child sessions: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get child sessions: status code %d", rsp.StatusCode)
+	}
+	var sessions []proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&sessions); err != nil {
+		return nil, fmt.Errorf("failed to decode child sessions: %w", err)
+	}
+	return sessions, nil
+}
+
 // CreateSession creates a new session in a workspace as a proto type.
 func (c *Client) CreateSession(ctx context.Context, id string, title string) (*proto.Session, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions", id), nil, jsonBody(proto.Session{Title: title}), http.Header{"Content-Type": []string{"application/json"}})

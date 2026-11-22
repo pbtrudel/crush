@@ -219,6 +219,16 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSessionHistory),
 
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/children").
+			Summary("List child sessions").
+			Description("Lists the subagent, teammate and helper sessions a session spawned, oldest first.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.Session{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionChildren),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/messages").
 			Summary("Get session messages").
 			Tags("sessions").

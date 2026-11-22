@@ -410,6 +410,22 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	jsonEncode(w, history)
 }
 
+// handleGetWorkspaceSessionChildren returns the sessions a session spawned.
+func (c *controllerV1) handleGetWorkspaceSessionChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	children, err := c.backend.ListChildSessions(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result := make([]proto.Session, len(children))
+	for i, s := range children {
+		result[i] = wire.SessionToProto(s)
+	}
+	jsonEncode(w, result)
+}
+
 // handleGetWorkspaceSessionMessages returns all messages for a session.
 func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

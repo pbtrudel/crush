@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
@@ -45,6 +46,7 @@ type Querier interface {
 	// message too, but the user never typed it, so it has no place in the
 	// prompt history.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	ListChildSessions(ctx context.Context, parentSessionID sql.NullString) ([]Session, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)

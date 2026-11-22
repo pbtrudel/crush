@@ -3,12 +3,17 @@
 package webtest
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strconv"
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -39,14 +44,16 @@ type Fake struct {
 	subsMu sync.Mutex
 	subs   map[*subscriber]struct{}
 
-	mu       sync.Mutex
-	current  string
-	sessions map[string]session.Session
-	messages map[string][]message.Message
-	mode     permission.PermissionMode
-	queued   map[string][]string
-	busy     map[string]bool
-	seq      int
+	mu          sync.Mutex
+	current     string
+	sessions    map[string]session.Session
+	messages    map[string][]message.Message
+	mode        permission.PermissionMode
+	queued      map[string][]string
+	busy        map[string]bool
+	history     map[string][]history.File
+	diagnostics map[string]lsp.DiagnosticCounts
+	seq         int
 
 	// decisions and answers carry resolutions to a running scripted
 	// agent, so a test or webfake can play the user's part.
@@ -75,6 +82,7 @@ func NewFake() *Fake {
 		messages:  make(map[string][]message.Message),
 		queued:    make(map[string][]string),
 		busy:      make(map[string]bool),
+		history:   make(map[string][]history.File),
 		current:   "s1",
 		decisions: make(chan permission.PermissionNotification, 16),
 		answers:   make(chan []question.Answer, 16),
@@ -136,6 +144,20 @@ func (f *Fake) AddMessage(m message.Message) {
 	f.mu.Unlock()
 }
 
+// AddSession stores a session, such as a child session with a parent.
+func (f *Fake) AddSession(s session.Session) {
+	f.mu.Lock()
+	f.sessions[s.ID] = s
+	f.mu.Unlock()
+}
+
+// AddHistory stores one file version for ListSessionHistory.
+func (f *Fake) AddHistory(file history.File) {
+	f.mu.Lock()
+	f.history[file.SessionID] = append(f.history[file.SessionID], file)
+	f.mu.Unlock()
+}
+
 // SubscribeEvents registers a subscriber before it returns, so no event
 // emitted after registration can be lost. The channel closes when ctx is
 // done.
@@ -170,6 +192,19 @@ func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 func (f *Fake) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
 
 func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
+
+// SetDiagnostics sets what LSPDiagnosticsByFile returns.
+func (f *Fake) SetDiagnostics(m map[string]lsp.DiagnosticCounts) {
+	f.mu.Lock()
+	f.diagnostics = maps.Clone(m)
+	f.mu.Unlock()
+}
+
+func (f *Fake) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCounts {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.diagnostics)
+}
 
 func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }
 
@@ -219,6 +254,27 @@ func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]message.Message(nil), f.messages[id]...), nil
+}
+
+func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []session.Session
+	for _, s := range f.sessions {
+		if s.ParentSessionID == parentID {
+			out = append(out, s)
+		}
+	}
+	slices.SortFunc(out, func(a, b session.Session) int {
+		return cmp.Or(cmp.Compare(a.CreatedAt, b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return out, nil
+}
+
+func (f *Fake) ListSessionHistory(_ context.Context, sessionID string) ([]history.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]history.File(nil), f.history[sessionID]...), nil
 }
 
 func (f *Fake) AgentRun(ctx context.Context, sessionID, prompt string, att ...message.Attachment) error {

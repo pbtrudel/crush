@@ -17,11 +17,13 @@ import (
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1263,4 +1265,50 @@ func TestTranslateEvent_ConfigStale(t *testing.T) {
 	require.True(t, ok, "expected app.ConfigStaleMsg, got %T", out)
 	require.Equal(t, ev.Payload.Changed, got.Changed)
 	require.Equal(t, ev.Payload.Missing, got.Missing)
+}
+
+func TestClientWorkspaceListChildSessions(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/workspaces/ws-1/sessions/s1/children", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode([]proto.Session{
+			{ID: "sub-1", ParentSessionID: "s1", Title: "Subagent"},
+		}))
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	got, err := ws.ListChildSessions(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "sub-1", got[0].ID)
+	require.Equal(t, "s1", got[0].ParentSessionID)
+}
+
+func TestClientWorkspaceLSPDiagnosticsByFile(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/lsps":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{"gopls": {Name: "gopls"}}))
+		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
+			require.NoError(t, json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
+			}))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	require.Equal(t, map[string]lsp.DiagnosticCounts{"/repo/a.go": {Error: 1}}, ws.LSPDiagnosticsByFile(t.Context()))
 }

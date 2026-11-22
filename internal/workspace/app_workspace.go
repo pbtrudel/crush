@@ -75,6 +75,10 @@ func (w *AppWorkspace) ParseAgentToolSessionID(sessionID string) (string, string
 	return w.app.Sessions.ParseAgentToolSessionID(sessionID)
 }
 
+func (w *AppWorkspace) ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error) {
+	return w.app.Sessions.ListChildren(ctx, parentID)
+}
+
 // SetCurrentSession reports the active session to herdr so the pane
 // can persist a resumable reference. Multi-client presence tracking
 // is irrelevant in single-client local mode, but herdr still needs
@@ -406,6 +410,16 @@ func (w *AppWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts 
 		return lsp.DiagnosticCounts{}
 	}
 	return state.Client.GetDiagnosticCounts()
+}
+
+func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCounts {
+	out := map[string]lsp.DiagnosticCounts{}
+	for _, state := range app.GetLSPStates() {
+		if state.Client != nil {
+			addDiagnostics(out, state.Client.GetDiagnostics())
+		}
+	}
+	return out
 }
 
 // -- Config (read-only) --

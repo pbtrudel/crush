@@ -229,6 +229,53 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 	return i, err
 }
 
+const listChildSessions = `-- name: ListChildSessions :many
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, channel, total_cache_read_tokens, total_context_tokens, summary_cut_message_id, archived
+FROM sessions
+WHERE parent_session_id = ?
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListChildSessions(ctx context.Context, parentSessionID sql.NullString) ([]Session, error) {
+	rows, err := q.query(ctx, q.listChildSessionsStmt, listChildSessions, parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.ParentSessionID,
+			&i.Title,
+			&i.MessageCount,
+			&i.PromptTokens,
+			&i.CompletionTokens,
+			&i.Cost,
+			&i.UpdatedAt,
+			&i.CreatedAt,
+			&i.SummaryMessageID,
+			&i.Todos,
+			&i.Channel,
+			&i.TotalCacheReadTokens,
+			&i.TotalContextTokens,
+			&i.SummaryCutMessageID,
+			&i.Archived,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessions = `-- name: ListSessions :many
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, channel, total_cache_read_tokens, total_context_tokens, summary_cut_message_id, archived
 FROM sessions
@@ -447,11 +494,7 @@ type UpdateSessionTitleIfCurrentParams struct {
 }
 
 func (q *Queries) UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error {
-	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent,
-		arg.Title,
-		arg.ID,
-		arg.Title_2,
-	)
+	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent, arg.Title, arg.ID, arg.Title_2)
 	return err
 }
 
@@ -469,9 +512,6 @@ type UpdateSessionTodosParams struct {
 }
 
 func (q *Queries) UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error {
-	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos,
-		arg.Todos,
-		arg.ID,
-	)
+	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos, arg.Todos, arg.ID)
 	return err
 }

@@ -96,6 +96,15 @@ func (b *Backend) ListSessionHistory(ctx context.Context, workspaceID, sessionID
 	return ws.History.ListBySession(ctx, sessionID)
 }
 
+// ListChildSessions returns the sessions a session spawned.
+func (b *Backend) ListChildSessions(ctx context.Context, workspaceID, sessionID string) ([]session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return ws.Sessions.ListChildren(ctx, sessionID)
+}
+
 // SaveSession updates a session in the given workspace.
 func (b *Backend) SaveSession(ctx context.Context, workspaceID string, sess session.Session) (session.Session, error) {
 	ws, err := b.GetWorkspace(workspaceID)

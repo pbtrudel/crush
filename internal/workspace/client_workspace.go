@@ -33,7 +33,6 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/version"
-	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 )
 
 // ClientWorkspace implements the Workspace interface by delegating all
@@ -190,6 +189,18 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func (w *ClientWorkspace) ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error) {
+	list, err := w.client.ListChildSessions(ctx, w.workspaceID(), parentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, len(list))
+	for i, s := range list {
+		out[i] = protoToSession(s)
+	}
+	return out, nil
 }
 
 // SetCurrentSession reports the session this client is currently
@@ -587,19 +598,28 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 	var counts lsp.DiagnosticCounts
 	for _, fileDiags := range diags {
 		for _, d := range fileDiags {
-			switch d.Severity {
-			case protocol.SeverityError:
-				counts.Error++
-			case protocol.SeverityWarning:
-				counts.Warning++
-			case protocol.SeverityInformation:
-				counts.Information++
-			case protocol.SeverityHint:
-				counts.Hint++
-			}
+			countSeverity(&counts, d.Severity)
 		}
 	}
 	return counts
+}
+
+// LSPDiagnosticsByFile asks every server for its diagnostics. A server
+// that fails to answer is left out rather than failing the whole list.
+func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts {
+	out := map[string]lsp.DiagnosticCounts{}
+	states, err := w.client.GetLSPs(ctx, w.workspaceID())
+	if err != nil {
+		return out
+	}
+	for name := range states {
+		diags, err := w.client.GetLSPDiagnostics(ctx, w.workspaceID(), name)
+		if err != nil {
+			continue
+		}
+		addDiagnostics(out, diags)
+	}
+	return out
 }
 
 // -- Config (read-only) --
