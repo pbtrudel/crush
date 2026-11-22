@@ -28,6 +28,10 @@ type Status struct {
 	help     help.Model
 	helpKm   help.KeyMap
 	msg      util.InfoMsg
+	// pending holds an update that arrived while a message the user has
+	// not read yet was on screen. Showing it now would wipe that message,
+	// so it waits until the current one clears.
+	pending util.InfoMsg
 	// msgSeq identifies the message on screen; expiry timers carry it.
 	msgSeq uint64
 
@@ -48,8 +52,21 @@ func NewStatus(com *common.Common, km help.KeyMap) *Status {
 }
 
 // Show puts msg on screen and returns the command that retires it once its
-// TTL, or [DefaultStatusTTL] if unset, has passed.
+// TTL, or [DefaultStatusTTL] if unset, has passed. An update waits behind a
+// message that is still on screen and is shown when that message clears;
+// every other message replaces the one on screen.
 func (s *Status) Show(msg util.InfoMsg) tea.Cmd {
+	if msg.Type == util.InfoTypeUpdate && !s.msg.IsEmpty() && s.msg.Type != util.InfoTypeUpdate {
+		// Only the latest pending update matters; the next one makes
+		// this one stale.
+		s.pending = msg
+		return nil
+	}
+	return s.show(msg)
+}
+
+// show replaces the message on screen and starts its expiry timer.
+func (s *Status) show(msg util.InfoMsg) tea.Cmd {
 	ttl := msg.TTL
 	if ttl <= 0 {
 		ttl = DefaultStatusTTL
@@ -62,11 +79,19 @@ func (s *Status) Show(msg util.InfoMsg) tea.Cmd {
 	})
 }
 
-// ClearInfoMsg clears the message on screen if seq still identifies it.
-func (s *Status) ClearInfoMsg(seq uint64) {
-	if seq == s.msgSeq {
-		s.msg = util.InfoMsg{}
+// ClearInfoMsg clears the message on screen if seq still identifies it and
+// returns the timer for the pending update, if one is waiting.
+func (s *Status) ClearInfoMsg(seq uint64) tea.Cmd {
+	if seq != s.msgSeq {
+		return nil
 	}
+	s.msg = util.InfoMsg{}
+	if s.pending.IsEmpty() {
+		return nil
+	}
+	msg := s.pending
+	s.pending = util.InfoMsg{}
+	return s.show(msg)
 }
 
 // SetMode sets the input mode and permission mode used for the mode badge.

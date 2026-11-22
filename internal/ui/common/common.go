@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/clipboard"
@@ -285,7 +286,13 @@ func CopyToClipboard(text, successMessage string) tea.Cmd {
 // when the copied text, such as a launch URL, must stay visible after a
 // failed copy.
 func CopyToClipboardWithFailure(text, successMessage, failureMessage string) tea.Cmd {
-	return copyToClipboard(text, successMessage, failureMessage, nil)
+	return copyToClipboard(text, successMessage, failureMessage, nil, 0)
+}
+
+// CopyToClipboardWithFailureTTL is [CopyToClipboardWithFailure] with a
+// status message TTL, for callers whose text must stay readable longer.
+func CopyToClipboardWithFailureTTL(text, successMessage, failureMessage string, ttl time.Duration) tea.Cmd {
+	return copyToClipboard(text, successMessage, failureMessage, nil, ttl)
 }
 
 // CopyToClipboardWithCallback copies text to clipboard and executes a callback
@@ -296,12 +303,12 @@ func CopyToClipboardWithFailure(text, successMessage, failureMessage string) tea
 // have worked, so callers can safely use the callback to discard the copied
 // state (a selection, say) without losing it on a failed copy.
 func CopyToClipboardWithCallback(text, successMessage string, callback tea.Cmd) tea.Cmd {
-	return copyToClipboard(text, successMessage, "Failed to copy to clipboard", callback)
+	return copyToClipboard(text, successMessage, "Failed to copy to clipboard", callback, 0)
 }
 
 // copyToClipboard is the shared copy path. The failure message is a
 // parameter so callers whose text must survive a failed copy can include it.
-func copyToClipboard(text, successMessage, failureMessage string, callback tea.Cmd) tea.Cmd {
+func copyToClipboard(text, successMessage, failureMessage string, callback tea.Cmd, ttl time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		// The native write goes first and is verified before OSC 52 goes out,
 		// because the terminal handles OSC 52 by writing the very same
@@ -315,8 +322,8 @@ func copyToClipboard(text, successMessage, failureMessage string, callback tea.C
 		// does not hold the text is a real failure.
 		osc52 := tea.SetClipboard(text)
 		if errors.Is(err, clipboard.ErrWriteFailed) {
-			return tea.Sequence(osc52, util.ReportWarn(failureMessage))()
+			return tea.Sequence(osc52, util.ReportWarnWithTTL(failureMessage, ttl))()
 		}
-		return tea.Sequence(osc52, callback, util.ReportInfo(successMessage))()
+		return tea.Sequence(osc52, callback, util.ReportInfoWithTTL(successMessage, ttl))()
 	}
 }

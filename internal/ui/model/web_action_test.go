@@ -17,6 +17,16 @@ import (
 
 const webTestURL = "http://127.0.0.1:1/#t=x"
 
+// webInfo and webWarn build the status messages webStarted reports. The
+// link stays on screen long enough to read and copy.
+func webInfo(text string) util.InfoMsg {
+	return util.InfoMsg{Type: util.InfoTypeInfo, Msg: text, TTL: 30 * time.Second}
+}
+
+func webWarn(text string) util.InfoMsg {
+	return util.InfoMsg{Type: util.InfoTypeWarn, Msg: text, TTL: 30 * time.Second}
+}
+
 // stubWeb is a configurable web launcher for the web mode message tests.
 type stubWeb struct {
 	url      string
@@ -124,8 +134,8 @@ func TestWebStartedShowsNoticeBeforeOpening(t *testing.T) {
 	// run in parallel with the other tests in this package.
 	original := copyWebLinkToClipboard
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
-	copyWebLinkToClipboard = func(_, successMessage, _ string) tea.Cmd {
-		return util.ReportInfo(successMessage)
+	copyWebLinkToClipboard = func(_, successMessage, _ string, ttl time.Duration) tea.Cmd {
+		return util.ReportInfoWithTTL(successMessage, ttl)
 	}
 
 	web := &stubWeb{url: webTestURL}
@@ -136,12 +146,12 @@ func TestWebStartedShowsNoticeBeforeOpening(t *testing.T) {
 	require.Len(t, cmds, 2)
 	require.Zero(t, web.opens, "the opener must not run before the notice")
 
-	require.Equal(t, util.NewInfoMsg("Opening browser: "+webTestURL), cmds[0]())
+	require.Equal(t, webInfo("Opening browser: "+webTestURL), cmds[0]())
 	require.Zero(t, web.opens, "the opener must run only after the notice")
 
 	msgs := runWebCmds(cmds[1])
 	require.Equal(t, 1, web.opens)
-	require.Contains(t, msgs, util.NewInfoMsg("Opening browser. Web link copied: "+webTestURL))
+	require.Contains(t, msgs, webInfo("Opening browser. Web link copied: "+webTestURL))
 }
 
 func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
@@ -149,9 +159,9 @@ func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
 
 	var copied []string
-	copyWebLinkToClipboard = func(text, successMessage, _ string) tea.Cmd {
+	copyWebLinkToClipboard = func(text, successMessage, _ string, ttl time.Duration) tea.Cmd {
 		copied = append(copied, text)
-		return util.ReportInfo(successMessage)
+		return util.ReportInfoWithTTL(successMessage, ttl)
 	}
 
 	web := &stubWeb{url: webTestURL}
@@ -163,15 +173,15 @@ func TestWebStartedCopiesLinkAndOpensBrowser(t *testing.T) {
 	msgs := runWebCmds(cmd)
 	require.Equal(t, []string{webTestURL}, copied)
 	require.Equal(t, 1, web.opens, "the browser must be opened in the background")
-	require.Contains(t, msgs, util.NewInfoMsg("Opening browser: "+webTestURL))
-	require.Contains(t, msgs, util.NewInfoMsg("Opening browser. Web link copied: "+webTestURL))
+	require.Contains(t, msgs, webInfo("Opening browser: "+webTestURL))
+	require.Contains(t, msgs, webInfo("Opening browser. Web link copied: "+webTestURL))
 }
 
 func TestWebStartedWarnsWhenBrowserFails(t *testing.T) {
 	original := copyWebLinkToClipboard
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
-	copyWebLinkToClipboard = func(_, successMessage, _ string) tea.Cmd {
-		return util.ReportInfo(successMessage)
+	copyWebLinkToClipboard = func(_, successMessage, _ string, ttl time.Duration) tea.Cmd {
+		return util.ReportInfoWithTTL(successMessage, ttl)
 	}
 
 	web := &stubWeb{url: webTestURL, openErr: errors.New("no browser")}
@@ -181,14 +191,14 @@ func TestWebStartedWarnsWhenBrowserFails(t *testing.T) {
 	msgs := runWebCmds(cmd)
 
 	require.Equal(t, 1, web.opens)
-	require.Contains(t, msgs, util.NewWarnMsg("Web mode is running. Open "+webTestURL))
+	require.Contains(t, msgs, webWarn("Web mode is running. Open "+webTestURL))
 }
 
 func TestWebStartedCopyFailureKeepsLink(t *testing.T) {
 	original := copyWebLinkToClipboard
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
-	copyWebLinkToClipboard = func(_, _, failureMessage string) tea.Cmd {
-		return util.ReportWarn(failureMessage)
+	copyWebLinkToClipboard = func(_, _, failureMessage string, ttl time.Duration) tea.Cmd {
+		return util.ReportWarnWithTTL(failureMessage, ttl)
 	}
 
 	web := &stubWeb{url: webTestURL}
@@ -197,14 +207,14 @@ func TestWebStartedCopyFailureKeepsLink(t *testing.T) {
 	_, cmd := m.Update(WebStartedMsg{URL: webTestURL})
 	msgs := runWebCmds(cmd)
 
-	require.Contains(t, msgs, util.NewWarnMsg("Failed to copy the web link to the clipboard. Open "+webTestURL))
+	require.Contains(t, msgs, webWarn("Failed to copy the web link to the clipboard. Open "+webTestURL))
 }
 
 func TestWebStartedWithoutWebLauncher(t *testing.T) {
 	original := copyWebLinkToClipboard
 	t.Cleanup(func() { copyWebLinkToClipboard = original })
-	copyWebLinkToClipboard = func(_, successMessage, _ string) tea.Cmd {
-		return util.ReportInfo(successMessage)
+	copyWebLinkToClipboard = func(_, successMessage, _ string, ttl time.Duration) tea.Cmd {
+		return util.ReportInfoWithTTL(successMessage, ttl)
 	}
 
 	m := newWebUI(nil)
@@ -213,8 +223,8 @@ func TestWebStartedWithoutWebLauncher(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msgs := runWebCmds(cmd)
-	require.Contains(t, msgs, util.NewInfoMsg("Opening browser: "+webTestURL))
-	require.NotContains(t, msgs, util.NewWarnMsg("Web mode is running. Open "+webTestURL))
+	require.Contains(t, msgs, webInfo("Opening browser: "+webTestURL))
+	require.NotContains(t, msgs, webWarn("Web mode is running. Open "+webTestURL))
 }
 
 func TestOpenWebReportsStartFailure(t *testing.T) {

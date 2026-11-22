@@ -2076,7 +2076,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, util.ReportInfo("Transparent background "+status))
 	case util.ClearStatusMsg:
-		m.status.ClearInfoMsg(msg.Seq)
+		cmds = append(cmds, m.status.ClearInfoMsg(msg.Seq))
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -7332,6 +7332,10 @@ type WebStartedMsg struct {
 	URL string
 }
 
+// webStatusTTL keeps the web link on screen long enough to read and copy,
+// including when a startup notice would otherwise replace it.
+const webStatusTTL = 30 * time.Second
+
 // webStarted shows the launch link at once, then copies it and opens a
 // browser tab in the background. The notice comes first so a slow clipboard
 // or opener cannot hide the link; the copy and the opener then run
@@ -7341,19 +7345,24 @@ func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
 	if msg.URL == "" {
 		return nil
 	}
-	notice := util.ReportInfo("Opening browser: " + msg.URL)
+	notice := util.ReportInfoWithTTL("Opening browser: "+msg.URL, webStatusTTL)
 	cmds := []tea.Cmd{
 		copyWebLinkToClipboard(
 			msg.URL,
 			"Opening browser. Web link copied: "+msg.URL,
 			"Failed to copy the web link to the clipboard. Open "+msg.URL,
+			webStatusTTL,
 		),
 	}
 	if m.com != nil && m.com.Web != nil {
 		web := m.com.Web
 		cmds = append(cmds, func() tea.Msg {
 			if err := web.OpenBrowser(); err != nil {
-				return util.NewWarnMsg("Web mode is running. Open " + msg.URL)
+				return util.InfoMsg{
+					Type: util.InfoTypeWarn,
+					Msg:  "Web mode is running. Open " + msg.URL,
+					TTL:  webStatusTTL,
+				}
 			}
 			return nil
 		})
@@ -7791,7 +7800,7 @@ var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
 
 // copyWebLinkToClipboard writes the web launch link to the clipboard.
 // Tests replace it so they never touch the real clipboard.
-var copyWebLinkToClipboard = common.CopyToClipboardWithFailure
+var copyWebLinkToClipboard = common.CopyToClipboardWithFailureTTL
 
 func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
 	if chat == nil {
