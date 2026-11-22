@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -60,6 +61,23 @@ func TestRegistryMergesAcrossInstances(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	t.Parallel()
 	require.Empty(t, Load(filepath.Join(t.TempDir(), "missing.json")))
+}
+
+// TestLoadErrReportsUnreadableFiles separates a missing registry, which is an
+// empty list, from one that cannot be read, so a frontend can keep the runs it
+// already shows instead of blanking them.
+func TestLoadErrReportsUnreadableFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	runs, err := LoadErr(filepath.Join(dir, "missing.json"))
+	require.NoError(t, err)
+	require.Empty(t, runs)
+
+	broken := filepath.Join(dir, "agents.json")
+	require.NoError(t, os.WriteFile(broken, []byte(`{"version":1,"runs":`), 0o644))
+	_, err = LoadErr(broken)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "decode agent runs")
 }
 
 func TestRegistryCreatesMissingDirectory(t *testing.T) {

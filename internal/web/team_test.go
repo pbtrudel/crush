@@ -103,6 +103,48 @@ func TestTeamWatcherKeepsLastGoodState(t *testing.T) {
 	require.Len(t, cur.Members, 1)
 }
 
+func TestTeamFramesKeepLastGoodRuns(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTeam(t, dir, agentteam.State{TeamID: "team-1"})
+	writeRuns(t, dir, []agentrun.Run{{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: time.Now()}})
+	g, _ := startWith(t, Options{AgentTeamsDir: dir, teamPollInterval: 20 * time.Millisecond})
+	c := dialStream(t, g, "")
+	var snap Snapshot
+	require.NoError(t, json.Unmarshal(readFrame(t, c).Payload, &snap))
+	require.Len(t, snap.AgentRuns, 1)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents.json"), []byte(`{"version":1,"runs":`), 0o644))
+	// A roster change proves the watcher polled the broken registry too.
+	writeTeam(t, dir, agentteam.State{TeamID: "team-1", Members: []agentteam.Member{alice()}})
+	for {
+		f := readFrame(t, c)
+		if f.Type == frameAgentRuns {
+			require.NotEqual(t, "[]", string(f.Payload), "a broken registry must not blank the runs")
+			continue
+		}
+		if f.Type == frameTeamState {
+			break
+		}
+	}
+	// The snapshot keeps the last good runs as well.
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	var later Snapshot
+	require.NoError(t, json.Unmarshal(body, &later))
+	require.Len(t, later.AgentRuns, 1)
+	require.Equal(t, "sub-1", later.AgentRuns[0].ID)
+
+	writeRuns(t, dir, []agentrun.Run{{ID: "sub-2", Kind: agentrun.KindSubagent, Name: "Second pass", SessionID: "sub-2", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: time.Now()}})
+	for {
+		f := readFrame(t, c)
+		if f.Type == frameAgentRuns {
+			require.Contains(t, string(f.Payload), `"sub-2"`, "a readable registry publishes again")
+			break
+		}
+	}
+}
+
 func TestTeamStateDropsDeletedTasksAndInbox(t *testing.T) {
 	t.Parallel()
 	gone := alice()

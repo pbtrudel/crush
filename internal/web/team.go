@@ -77,12 +77,13 @@ func teamStateFrom(s agentteam.State) TeamState {
 type teamWatcher struct {
 	statePath, runsPath string
 
-	mu      sync.Mutex
-	team    TeamState
-	runs    []agentrun.Run
-	teamRaw []byte
-	runsRaw []byte
-	warned  bool
+	mu         sync.Mutex
+	team       TeamState
+	runs       []agentrun.Run
+	teamRaw    []byte
+	runsRaw    []byte
+	warned     bool
+	runsWarned bool
 }
 
 func newTeamWatcher(dir string) *teamWatcher {
@@ -95,9 +96,9 @@ func newTeamWatcher(dir string) *teamWatcher {
 }
 
 // poll returns the payloads that changed since the last poll, nil for an
-// unchanged one. A team file that fails to load keeps the last good roster:
-// the writer replaces it atomically, so a failure is a real problem, and
-// blanking the board would only make it flicker.
+// unchanged one. A file that fails to load keeps the last good state: the
+// writer replaces it atomically, so a failure is a real problem, and blanking
+// the board would only make it flicker.
 func (w *teamWatcher) poll() (team, runs json.RawMessage) {
 	if w.statePath == "" {
 		return nil, nil
@@ -116,7 +117,15 @@ func (w *teamWatcher) poll() (team, runs json.RawMessage) {
 			w.team, w.teamRaw, team = next, raw, raw
 		}
 	}
-	list := agentrun.Load(w.runsPath)
+	list, err := agentrun.LoadErr(w.runsPath)
+	if err != nil {
+		if !w.runsWarned {
+			slog.Warn("Web mode could not read the agent runs", "error", err)
+			w.runsWarned = true
+		}
+		return team, nil
+	}
+	w.runsWarned = false
 	if list == nil {
 		list = []agentrun.Run{}
 	}
