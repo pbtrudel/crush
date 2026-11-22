@@ -28,10 +28,15 @@ type Paths struct {
 	Worktrees string
 	// Batches is the eval home's batches directory.
 	Batches string
-	// Own is the run's own directory under Batches. The child writes its
-	// checkout, home, config and data there, so naming it is not contact
-	// with another batch.
+	// Own is the run's own directory under Batches. The jail keeps it
+	// visible there, and the child writes its checkout, home, config and
+	// data there through the bind a jailed run gives it.
 	Own string
+	// Jail is the path a jailed child is given for its own run directory,
+	// empty for a run on the host. The child names it constantly, so the
+	// scan cuts it; it does not cut the batches path, which the child has no
+	// reason to name once it works at the neutral path.
+	Jail string
 	// Remotes are the owner/repo names of the checkout's origin and
 	// upstream remotes, when they exist.
 	Remotes []string

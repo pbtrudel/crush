@@ -27,6 +27,12 @@ import (
 var fakeBin string
 
 func TestMain(m *testing.M) {
+	// A jail re-execs the running binary as its helper, so a test that
+	// starts a jailed run has to dispatch the helper's command line the way
+	// the eval binary's main does.
+	if len(os.Args) > 1 && os.Args[1] == "__jail" {
+		os.Exit(netjail.Main(os.Args[2:]))
+	}
 	dir, err := os.MkdirTemp("", "crush-eval-run-")
 	if err != nil {
 		panic(err)
@@ -502,6 +508,56 @@ func TestRunGivesTheChildItsOwnHome(t *testing.T) {
 	require.Empty(t, entries, "the child's home starts empty")
 }
 
+// A jailed run hands its child the neutral run path everywhere a path is
+// passed, so nothing the model can see advertises the batch layout, and what
+// the child writes still lands in its host run directory.
+func TestRunJailChildSeesANeutralRunPath(t *testing.T) {
+	t.Parallel()
+
+	if err := netjail.Preflight(); err != nil {
+		t.Skipf("the jail is unavailable: %v", err)
+	}
+
+	f := newFixture(t)
+	// The run stops before grading: a grade of a checkout under /tmp runs in
+	// the jail with /tmp masked, which is not what this test is about.
+	f.env["FAKE_OUTPUT"] = outputLine("completed", "")
+	f.env["FAKE_EXIT"] = "1"
+	f.env["FAKE_WRITE"] = "pkg/pkg.go"
+	f.env["FAKE_CONTENT"] = fixedSource
+	argvFile := filepath.Join(t.TempDir(), "argv")
+	envFile := filepath.Join(t.TempDir(), "env")
+	f.env["FAKE_ARGV"] = argvFile
+	f.env["FAKE_ENV"] = envFile
+	opts := f.options()
+	opts.Network = netjail.ModeJail
+	// The jail allows one host, so a jailed route needs a base URL.
+	opts.Route.ProviderConfig = map[string]any{"base_url": "https://api.example.test"}
+
+	line, err := Run(context.Background(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, line.Exit)
+
+	batch := f.home.BatchDir("b1")
+	argv := read(t, argvFile)
+	require.Contains(t, argv, filepath.Join(netjail.JailRunPath, "src"),
+		"the child checks out at the neutral path")
+	require.Contains(t, argv, filepath.Join(netjail.JailRunPath, "data"),
+		"the child keeps its data at the neutral path")
+	require.NotContains(t, argv, batch, "the child's arguments must not name the batch layout")
+
+	env := childEnv(t, envFile)
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "home"), env["HOME"])
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "config", "crush"), env["CRUSH_GLOBAL_CONFIG"])
+	for key, value := range env {
+		require.NotContains(t, value, batch, "the child's %s must not name the batch layout", key)
+	}
+
+	// The neutral path is the host run directory shown under another name, so
+	// the work the child did is in the checkout the grade read.
+	require.Equal(t, fixedSource, read(t, filepath.Join(f.dir(t), "src", "pkg", "pkg.go")))
+}
+
 // childEnv reads the environment a run's child saw from the file the fake
 // binary dumped it into.
 func childEnv(t *testing.T, path string) map[string]string {
@@ -596,6 +652,28 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// A jailed child is handed its run directory at the jail's neutral path, so
+// no argument or variable it reads names the batch layout and its sibling
+// runs; a child on the host keeps the host paths.
+func TestChildPathsForJail(t *testing.T) {
+	t.Parallel()
+
+	host := runPathsFor(filepath.Join("/eval", "batches", "b1", "runs", "pr-0010-r1"))
+	child := childPathsFor(netjail.ModeJail, host)
+
+	for _, path := range []string{child.Run, child.Src, child.Home, child.Config, child.Data} {
+		require.NotContains(t, path, "batches", "a jailed child is not told where the batch lives")
+	}
+	require.Equal(t, netjail.JailRunPath, child.Run)
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "src"), child.Src)
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "home"), child.Home)
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "config", "crush"), child.Config)
+	require.Equal(t, filepath.Join(netjail.JailRunPath, "data"), child.Data)
+
+	require.Equal(t, host, childPathsFor(netjail.ModeHost, host),
+		"a run on the host is given the host paths")
 }
 
 func read(t *testing.T, path string) string {
