@@ -5,7 +5,14 @@
   display: grid; gap: 12px; padding: var(--space-9);
 }
 /* The power-up still plays under the pulsing danger glow. */
-.interrupt[data-danger='high'] { animation: power-up 280ms var(--ease-out) both, danger 1.4s ease-in-out 280ms infinite; }
+.interrupt[data-danger='high'] { animation: power-up 280ms var(--ease-out) both; }
+/* The glow pulses on a layer of its own: a box-shadow keyframe on the
+   blurred glass would repaint that backdrop every frame (spec 3.9). */
+.interrupt[data-danger='high']::before {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 1px var(--magenta), 0 0 64px oklch(0.68 0.24 330 / 0.7);
+  opacity: 0; animation: danger-pulse 1.4s ease-in-out 280ms infinite;
+}
 .interrupt__title { margin: 0; font: 600 var(--step-2)/1.2 var(--font-hud); }
 .interrupt__danger { margin: 0; color: var(--magenta); font: 500 var(--step--1) var(--font-code); overflow-wrap: anywhere; }
 .interrupt__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
@@ -25,4 +32,4 @@
 .qform__tabs button { padding: 6px 12px; border: 1px solid var(--edge); border-radius: 999px; background: transparent; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px; }
 .qform__tabs button[aria-selected='true'] { border-color: var(--cyan); color: var(--cyan); }
 .qform__tabs button[data-done='true']::after { content: ' ✓'; color: var(--teal); }
-@keyframes danger { 50% { box-shadow: 0 0 0 1px var(--magenta), 0 0 64px oklch(0.68 0.24 330 / 0.7); } }
+@keyframes danger-pulse { 50% { opacity: 1; } }
