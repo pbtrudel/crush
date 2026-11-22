@@ -69,11 +69,13 @@ describe('Hud instruments', () => {
     await mount();
 
     expect(root.querySelector('[role="meter"]')!.getAttribute('aria-label')).toBe('Context');
+    expect(Array.from(root.querySelectorAll('.hud-label[aria-hidden="true"]')).map((n) => n.textContent))
+      .toEqual(['Tokens', 'Cost', 'Tools 15m']);
     expect(Array.from(root.querySelectorAll('.numeral .visually-hidden')).map((n) => n.textContent))
       .toEqual(['Tokens 0', 'Cost $0.00']);
     expect(root.querySelector('[role="img"][aria-label="Tool calls in the last 15 minutes: 0"]')).not.toBeNull();
     expect(Array.from(root.querySelectorAll('.hex title')).map((t) => t.textContent))
-      .toEqual(['gopls: lit', 'tsserver: error', 'fs: lit', 'gh: error']);
+      .toEqual(['gopls: ready', 'tsserver: error, 4 diag', 'fs: ready, 3 tools', 'gh: error']);
   });
 
   it('publishes its height for the toast offset', async () => {

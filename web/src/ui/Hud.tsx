@@ -67,14 +67,19 @@ export function Hud() {
       </div>
       <ContextGauge fill={fill} />
       <div class="hud__metric">
+        <span class="hud-label" aria-hidden="true">Tokens</span>
         <Numeral label="Tokens" text={fmtTokens(tokens)} />
         <Sparkline values={usage.map((u) => u.tokens)} label="Token trend" />
       </div>
       <div class="hud__metric">
+        <span class="hud-label" aria-hidden="true">Cost</span>
         <Numeral label="Cost" text={`$${(s.session?.cost ?? 0).toFixed(2)}`} />
         <Sparkline values={usage.map((u) => u.cost)} label="Cost trend" />
       </div>
-      <ActivityChart events={tools} now={now} />
+      <div class="hud__chart">
+        <span class="hud-label" aria-hidden="true">Tools 15m</span>
+        <ActivityChart events={tools} now={now} />
+      </div>
       <div class="hud__servers">
         <span class="hud-label">LSP</span>
         <ServerHexes kind="lsp" servers={s.lsp} />

@@ -10,9 +10,12 @@
   padding-inline: max(var(--space-4), env(safe-area-inset-left));
 }
 /* Every instrument keeps its own column, so the strip stays on one row at
-   1440px; the identity block takes the slack. */
+   1440px; the identity block takes the slack. The z-index lifts the HUD's
+   Display menu over the panels below, which the scan-line isolation would
+   otherwise paint on top; toasts and the interrupt layer stay above it. */
 .hud {
   position: relative;
+  z-index: 20;
   display: grid;
   grid-template-columns: minmax(9rem, 1fr) auto auto auto auto auto auto;
   align-items: center;
@@ -99,9 +102,9 @@
 .toast[data-tone='warn'] { --bracket: var(--amber); }
 .toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
 .unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
-@media (max-width: 1279px) {
-  /* The one-row grid needs about 1230px, so the instrument row wraps
-     before the side panels turn into tabs. */
+@media (max-width: 1439px) {
+  /* The one-row grid, captions and empty-server placeholders included,
+     needs about 1320px of content, so the instruments wrap below 1440px. */
   .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); }
   .hud__id { flex: 1 1 12rem; }
   .hud__controls { flex: 1 1 100%; flex-wrap: wrap; }
