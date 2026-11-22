@@ -7,11 +7,21 @@ import type {
 import {
   adoptSession, dismissToast, initialState, markAnswered, pushToast, reduce, setConn, type State,
 } from './reducer';
+import { observe, telemetry } from './telemetry';
 
 export const state = signal<State>(initialState());
 
+// apply is the only path that moves the state forward, so every change
+// feeds the HUD telemetry alongside it.
+function apply(fn: (s: State) => State, baseline: boolean) {
+  const prev = state.value;
+  const next = fn(prev);
+  state.value = next;
+  telemetry.value = observe(telemetry.value, prev, next, baseline, Date.now());
+}
+
 export function dispatch(fn: (s: State) => State) {
-  state.value = fn(state.value);
+  apply(fn, false);
 }
 
 function errorText(err: unknown): string {
@@ -65,7 +75,7 @@ async function refreshQueue(sid: string) {
 async function reloadSession(id: string) {
   try {
     const snap: Snapshot = await api.snapshot(id);
-    dispatch((s) => (s.sessionId === id ? reduce(s, { seq: s.lastSeq, type: 'snapshot', payload: snap }) : s));
+    apply((s) => (s.sessionId === id ? reduce(s, { seq: s.lastSeq, type: 'snapshot', payload: snap }) : s), true);
   } catch (err) {
     dispatch((s) => pushToast(s, 'error', `Could not load the session: ${errorText(err)}`));
   }
@@ -89,8 +99,10 @@ export async function boot() {
 
 // handleFrames applies a batch of stream frames and starts the follow-up
 // work the stream cannot express, such as reloading a session or the queue.
+// A batch that holds a snapshot is baseline: the history it carries is not
+// new activity.
 export function handleFrames(frames: Frame[]) {
-  dispatch((s) => frames.reduce(reduce, s));
+  apply((s) => frames.reduce(reduce, s), frames.some((f) => f.type === 'snapshot'));
   const id = state.value.needsReload;
   if (id) {
     dispatch((s) => ({ ...s, needsReload: null }));

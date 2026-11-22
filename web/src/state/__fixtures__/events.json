@@ -224,5 +224,54 @@
         "attached_clients": 0
       }
     }
+  },
+  "snapshot": {
+    "seq": 0,
+    "type": "snapshot",
+    "payload": {
+      "version": "test",
+      "working_dir": "/repo",
+      "current_session_id": "s1",
+      "messages": [
+        {
+          "id": "a-0",
+          "role": "assistant",
+          "session_id": "s1",
+          "model": "claude",
+          "provider": "anthropic",
+          "created_at": 1,
+          "updated_at": 2,
+          "parts": [
+            {
+              "type": "tool_call",
+              "data": {
+                "id": "tc-0",
+                "name": "bash",
+                "input": "{}",
+                "finished": true
+              }
+            },
+            {
+              "type": "finish",
+              "data": {
+                "reason": "end_turn",
+                "time": 2
+              }
+            }
+          ]
+        }
+      ],
+      "permissions": [],
+      "permission_mode": "normal",
+      "input_mode": "code",
+      "model": {
+        "id": "claude",
+        "name": "Claude",
+        "provider": "anthropic",
+        "context_window": 200000
+      },
+      "busy": false,
+      "queued": []
+    }
   }
 }

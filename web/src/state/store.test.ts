@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
 import type { Frame, PermissionRequest, QuestionRequest, Session } from '../api/types';
-import { initialState } from './reducer';
-import { actions, handleFrames, state } from './store';
+import { adoptSession, initialState } from './reducer';
+import { actions, dispatch, handleFrames, state } from './store';
+import { emptyTelemetry, telemetry } from './telemetry';
 
 const fx = fixtures as unknown as Record<string, Frame>;
 
@@ -212,5 +213,40 @@ describe('actions.setInputMode', () => {
     await actions.setInputMode('plan');
 
     expect(state.value.toasts.map((t) => t.text)).toContain('unknown mode');
+  });
+});
+
+describe('telemetry from the stream', () => {
+  beforeEach(() => {
+    state.value = initialState();
+    telemetry.value = emptyTelemetry();
+  });
+
+  it('treats a snapshot batch as baseline and records only later calls', () => {
+    handleFrames([fx.snapshot]);
+    expect(state.value.sessionId).toBe('s1');
+    expect(telemetry.value.tools).toEqual([]);
+    expect(telemetry.value.seen.has('tc-0')).toBe(true);
+    // A reconnect replays the same snapshot: still no activity.
+    handleFrames([fx.snapshot]);
+    expect(telemetry.value.tools).toEqual([]);
+    handleFrames([fx.message_assistant]);
+    expect(telemetry.value.tools.map((e) => e.id)).toEqual(['tc-1']);
+    expect(telemetry.value.tools[0].category).toBe('read');
+  });
+
+  it('records a live call that arrives in its own batch', () => {
+    handleFrames([fx.snapshot]);
+    handleFrames([fx.message_assistant]);
+    handleFrames([fx.message_assistant]);
+    expect(telemetry.value.tools).toHaveLength(1);
+  });
+
+  it('resets telemetry when a session is adopted through dispatch', () => {
+    handleFrames([fx.snapshot]);
+    handleFrames([fx.message_assistant]);
+    expect(telemetry.value.tools).toHaveLength(1);
+    dispatch((s) => adoptSession(s, 's2'));
+    expect(telemetry.value).toEqual(emptyTelemetry());
   });
 });
