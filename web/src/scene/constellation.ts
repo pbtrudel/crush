@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { stepColor } from './core';
 import { token } from './palette';
 
 export interface SceneState {
@@ -21,14 +22,6 @@ function contextArc(fill: number, p: Palette): THREE.Mesh {
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.y = 0.01;
   return mesh;
-}
-
-// stepColor moves a colour toward the attention target. Full motion blends
-// over several frames, but reduced and off render a single frame per update,
-// so they snap: the user who asked for less motion still sees the cue at once.
-export function stepColor(current: THREE.Color, target: THREE.Color, motion: SceneState['motion']): void {
-  if (motion === 'full') current.lerp(target, 0.2);
-  else current.copy(target);
 }
 
 // mountConstellation draws the holographic projector: a wireframe core

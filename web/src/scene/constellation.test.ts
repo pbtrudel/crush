@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { stepColor } from './constellation';
+import { stepColor } from './core';
 
 const cyan = new THREE.Color('#52d8ff');
 const magenta = new THREE.Color('#ff4fd8');
