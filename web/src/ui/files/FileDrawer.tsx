@@ -1,6 +1,7 @@
 import { closeDrawer, drawerOpen, selectedFile } from '../../state/drawer';
 import { state } from '../../state/store';
-import { changeBlocks, fileGroups, relativePath } from './fileGroups';
+import { changeBlocks, fileGroups } from './fileGroups';
+import { DiffPanel } from './DiffPanel';
 
 export function FileDrawer() {
   const s = state.value;
@@ -51,9 +52,7 @@ export function FileDrawer() {
           ))}
         </nav>
       )}
-      <div class="drawer__diff">
-        {selected && <p class="hud-label">{relativePath(selected, s.workingDir)}</p>}
-      </div>
+      <div class="drawer__diff">{selected && <DiffPanel key={selected} path={selected} />}</div>
     </aside>
   );
 }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
@@ -6,6 +6,15 @@ import type { Frame } from '../../api/types';
 import { drawerOpen, panelTab, selectedFile } from '../../state/drawer';
 import { initialState, reduce } from '../../state/reducer';
 import { state } from '../../state/store';
+
+// The drawer's own job is the wiring; DiffPanel has its own tests.
+const shown = vi.hoisted(() => ({ paths: [] as string[] }));
+vi.mock('./DiffPanel', () => ({
+  DiffPanel: ({ path }: { path: string }) => {
+    shown.paths.push(path);
+    return <p class="hud-label">{path}</p>;
+  },
+}));
 import { FileDrawer } from './FileDrawer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -13,6 +22,7 @@ const root = document.createElement('div');
 beforeEach(() => {
   drawerOpen.value = true;
   selectedFile.value = null;
+  shown.paths = [];
 });
 afterEach(async () => {
   await act(() => { render(null, root); });
@@ -58,6 +68,16 @@ describe('FileDrawer', () => {
     await act(() => { root.querySelector<HTMLButtonElement>('button.file-row')!.click(); });
     expect(selectedFile.value).toBe('/repo/parser.go');
     expect(root.querySelector('button.file-row')!.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  // The diff panel replaces the path label under the list.
+  it('renders the selected file\'s diff in the diff slot', async () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    await act(() => { render(<FileDrawer />, root); });
+    expect(shown.paths).toEqual([]);
+    await act(() => { root.querySelector<HTMLButtonElement>('button.file-row')!.click(); });
+    expect(shown.paths).toEqual(['/repo/parser.go']);
+    expect(root.querySelector('.drawer__diff')!.textContent).toBe('/repo/parser.go');
   });
 
   it('is inert while closed', async () => {

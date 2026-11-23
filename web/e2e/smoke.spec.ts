@@ -289,6 +289,69 @@ test('3D tags stay inside the stage and never take the agent list clicks', async
   }
 });
 
+// The diff editor is CodeMirror, which style-mod would style with an inline
+// <style> element in a document root and the CSP blocks. It therefore mounts
+// in a shadow root and adopts its sheets there. Opening parser.go must reach
+// that merge view, and no violation may fire on the way.
+test('the diff editor mounts in a shadow root without a CSP violation', async ({ page, gateway }) => {
+  await page.addInitScript(() => {
+    const violations: string[] = [];
+    Object.assign(window, { __cspViolations: violations });
+    window.addEventListener('securitypolicyviolation', (e) => {
+      violations.push(`${e.violatedDirective} ${e.blockedURI}`);
+    });
+  });
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await page.evaluate(() => document.querySelector<HTMLElement>('.drawer-handle')?.click());
+  const drawer = page.locator('#file-drawer');
+  await expect(drawer).toBeVisible();
+  await drawer.locator('.file-row', { hasText: 'parser.go' }).click();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const host = document.querySelector('.diffpanel__view');
+    const root = host?.shadowRoot;
+    if (!root) return 'no shadow root';
+    if (root.querySelector('.cm-mergeView') === null) return 'no merge view';
+    const editors = root.querySelectorAll('.cm-editor');
+    if (editors.length !== 2) return `${editors.length} editors`;
+    return 'mounted';
+  }), { message: 'the merge view mounts inside the shadow root' }).toBe('mounted');
+
+  // version_ids are history positions, not history versions: the seeded
+  // parser.go was first edited in two sessions, both numbering from 0.
+  const versions = await page.evaluate(() => {
+    const from = document.querySelector<HTMLSelectElement>('.diffpanel select[name="from"]')!;
+    const to = document.querySelector<HTMLSelectElement>('.diffpanel select[name="to"]')!;
+    return {
+      from: [...from.options].map((o) => o.value),
+      to: [...to.options].map((o) => o.value),
+      picked: [from.value, to.value],
+    };
+  });
+  expect(versions.from).toEqual(['0', '1', '2']);
+  expect(versions.to).toEqual(['0', '1', '2']);
+  expect(versions.picked).toEqual(['0', '2']);
+
+  const report = await page.evaluate(() => {
+    const root = document.querySelector('.diffpanel__view')!.shadowRoot!;
+    return {
+      violations: (window as unknown as { __cspViolations: string[] }).__cspViolations,
+      inlineStyles: document.querySelectorAll('style').length,
+      shadowStyles: root.querySelectorAll('style').length,
+      adopted: root.adoptedStyleSheets.length,
+      // The Go grammar is its own lazy chunk; keywords prove it loaded.
+      keywords: root.querySelectorAll('.cm-content .tok-keyword').length,
+    };
+  });
+  expect(report.violations).toEqual([]);
+  expect(report.inlineStyles).toBe(0);
+  expect(report.shadowStyles).toBe(0);
+  // Our diff sheet and CodeMirror's share the root, both constructed.
+  expect(report.adopted).toBeGreaterThanOrEqual(2);
+  expect(report.keywords).toBeGreaterThan(0);
+});
+
 // The drawer handle must stay the topmost thing at its own centre without
 // stealing the inspector's close button or the first agent option, and the
 // closed drawer must not add a sideways scroll. The layout changes with the
@@ -402,7 +465,7 @@ test('the files tab gives the diff room at 900x800', async ({ page, gateway }) =
       const diff = document.querySelector('.drawer__diff');
       return {
         height: diff?.getBoundingClientRect().height ?? 0,
-        path: diff?.querySelector('.hud-label')?.textContent ?? '',
+        path: diff?.querySelector('.diffpanel__title')?.textContent ?? '',
       };
     });
     if (d.path === '') return 'the selected file is not shown in the diff';

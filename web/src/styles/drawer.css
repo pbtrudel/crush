@@ -43,3 +43,16 @@
 .panel-tabs .hud__mode-btn[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
 .panel-tabs .hud__mode-btn:disabled { opacity: 0.5; cursor: default; }
 [data-motion='off'] .panel--drawer, [data-motion='reduced'] .panel--drawer { transition-duration: 1ms; }
+/* The diff view (spec 3.8). The CodeMirror instance lives in a shadow root
+   inside `.diffpanel__view` and fills it; see diff.css, which is adopted
+   there and not loaded by main.tsx. */
+.diffpanel { display: flex; flex-direction: column; gap: var(--space-1); min-block-size: 0; flex: 1; }
+.diffpanel__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-4); }
+.diffpanel__title { margin: 0; font: 500 var(--step-0) var(--font-code); overflow-wrap: anywhere; flex: 1 1 100%; }
+.diffpanel__view { flex: 1; min-block-size: 0; }
+.diffpanel__editors { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: 0; }
+.diffpanel__error { color: var(--magenta); }
+.diff-unified { overflow: auto; margin: 0; padding: var(--space-1); background: var(--void-deep); border: 1px solid var(--edge); border-radius: var(--radius); font: 400 var(--step--1)/1.5 var(--font-code); flex: 1; min-block-size: 0; }
+.diff-unified [data-kind='add'] { color: var(--teal); }
+.diff-unified [data-kind='rem'] { color: var(--amber); }
+.diff-unified [data-kind='hunk'] { color: var(--violet); }

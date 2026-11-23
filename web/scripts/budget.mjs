@@ -34,3 +34,18 @@ if (total > LIMIT) {
   console.error(`Eager bundle is ${total - LIMIT} bytes over the ${LIMIT} byte budget`);
   process.exitCode = 1;
 }
+
+// Heavy libraries must stay in lazy chunks. These strings survive
+// minification and appear only in their code, so finding one in an eager
+// file means a static import slipped in somewhere.
+const LAZY_MARKERS = [['three.js', 'isWebGLRenderer'], ['CodeMirror', 'cm-editor']];
+for (const ref of refs) {
+  if (!ref.endsWith('.js')) continue;
+  const text = readFileSync(path.join(dist, ref.replace(/^\//, '')), 'utf8');
+  for (const [lib, marker] of LAZY_MARKERS) {
+    if (text.includes(marker)) {
+      console.error(`${ref} pulls ${lib} into the eager bundle (found ${marker})`);
+      process.exitCode = 1;
+    }
+  }
+}

@@ -1,0 +1,39 @@
+/* Adopted inside the diff view's shadow root, next to CodeMirror's own
+   constructed sheets, so the CSP never sees an inline style element. The
+   custom properties inherit through the shadow boundary. Additions take the
+   add colour and removals the amber one; magenta stays for needs-you states
+   and failures. */
+:host { display: block; block-size: 100%; }
+.diff {
+  box-sizing: border-box; block-size: 100%;
+  color: var(--text); background: var(--void-deep);
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 400 var(--step--1)/1.5 var(--font-code);
+}
+/* One scroll area inside the editor: a unified view scrolls its scroller,
+   a merge view scrolls as a whole, and the drawer never sees a third. */
+.diff > .cm-editor { block-size: 100%; background: transparent; color: var(--text); }
+.diff > .cm-editor .cm-scroller { overflow: auto; }
+.diff .cm-mergeView { block-size: 100%; }
+.diff .cm-editor { background: transparent; color: var(--text); }
+.diff .cm-editor.cm-focused { outline: 2px dashed var(--cyan); outline-offset: 2px; }
+.diff .cm-gutters { background: transparent; color: var(--text-muted); border-inline-end: 1px solid var(--edge); }
+.diff .cm-merge-a .cm-changedLine, .diff .cm-deletedChunk, .diff .cm-deletedLine {
+  background: color-mix(in oklch, var(--amber) 14%, transparent);
+}
+.diff .cm-merge-b .cm-changedLine, .diff .cm-insertedLine {
+  background: color-mix(in oklch, var(--teal) 14%, transparent);
+}
+.diff .cm-merge-a .cm-changedText, .diff .cm-deletedText {
+  background: color-mix(in oklch, var(--amber) 32%, transparent);
+}
+.diff .cm-merge-b .cm-changedText {
+  background: color-mix(in oklch, var(--teal) 32%, transparent);
+}
+.diff .cm-collapsedLines { color: var(--text-muted); background: var(--surface); }
+.diff .tok-keyword { color: var(--violet); }
+.diff .tok-string { color: var(--teal); }
+.diff .tok-comment { color: var(--text-muted); font-style: italic; }
+.diff .tok-number, .diff .tok-bool { color: var(--amber); }
+.diff .tok-typeName, .diff .tok-className, .diff .tok-definition { color: var(--cyan); }
+.diff .tok-operator, .diff .tok-punctuation { color: var(--text-muted); }
