@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -121,7 +122,7 @@ func TestAskAnswers(t *testing.T) {
 	c := authedClient(t, g)
 	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/sessions/s1/ask",
 		`{"question":"how does it look up names?"}`)
-	defer rsp.Body.Close()
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	require.JSONEq(t, `{"answer":"It uses a trie"}`, string(body))
 	require.Contains(t, fake.CallLog(), "AgentAsk:s1:how does it look up names?")
@@ -129,9 +130,23 @@ func TestAskAnswers(t *testing.T) {
 	tooLarge := strings.Repeat("x", 16<<10+1)
 	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/sessions/s1/ask",
 		`{"question":"`+tooLarge+`"}`)
-	defer rsp.Body.Close()
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
 	require.Contains(t, string(body), "question_too_large")
+}
+
+// TestShellRejectsOversizedCommand pins the shell body cap, like the side
+// question's: an oversized command never reaches the workspace.
+func TestShellRejectsOversizedCommand(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost,
+		g.URL()+"/api/sessions/s1/shell",
+		`{"command":"`+strings.Repeat("x", 16<<10+1)+`"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "command_too_large")
+	require.Empty(t, fake.CallLog())
 }
 
 func TestAgentStartingOnAgentRoutes(t *testing.T) {
@@ -285,6 +300,69 @@ func TestShellCancel(t *testing.T) {
 	require.Empty(t, done.Error)
 }
 
+// TestShellCancelAfterContextDone mirrors the real workspace, whose
+// streaming path turns a cancelled run into a nil error and a non-zero
+// exit code: the done frame still reads as the SIGINT convention.
+func TestShellCancelAfterContextDone(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.OnShell = func(ctx context.Context, _, _ string, _ func(string), _ bool) (proto.ShellCommandResponse, error) {
+		<-ctx.Done()
+		return proto.ShellCommandResponse{ExitCode: 1}, nil
+	}
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+	client := authedClient(t, g)
+	runID := startShell(t, client, g, "sleep 10")
+	rsp, body := doJSON(t, client, http.MethodDelete, g.URL()+"/api/shell/"+runID, "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+
+	_, done := readShellOutput(t, c, runID)
+	require.Equal(t, 130, done.ExitCode)
+	require.Empty(t, done.Error)
+}
+
+// TestShellCoalescesProgress holds the command open so several progress
+// writes land inside one flush interval; they must arrive as one frame,
+// not one frame per write.
+func TestShellCoalescesProgress(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fake.OnShell = func(_ context.Context, _, _ string, onProgress func(string), _ bool) (proto.ShellCommandResponse, error) {
+		onProgress("one\n")
+		onProgress("two\n")
+		onProgress("three\n")
+		<-release
+		return proto.ShellCommandResponse{Output: "one\ntwo\nthree\n"}, nil
+	}
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+	startShell(t, authedClient(t, g), g, "printf three")
+	f := readFrame(t, c)
+	require.Equal(t, frameShellOutput, f.Type)
+	var chunk shellFrame
+	require.NoError(t, json.Unmarshal(f.Payload, &chunk))
+	require.False(t, chunk.Done)
+	require.Equal(t, "one\ntwo\nthree\n", chunk.Chunk)
+
+	unblock()
+	for {
+		f = readFrame(t, c)
+		if f.Type == frameShellOutput {
+			break
+		}
+	}
+	var final shellFrame
+	require.NoError(t, json.Unmarshal(f.Payload, &final))
+	require.True(t, final.Done)
+	require.Empty(t, final.Chunk)
+}
+
 // TestShellFailureReportsFixedError covers a command that fails for a
 // reason other than cancellation: the tab shows the fixed message and the
 // log keeps the detail, as the TUI does.
@@ -305,26 +383,94 @@ func TestShellFailureReportsFixedError(t *testing.T) {
 }
 
 func TestShellCancelledOnShutdown(t *testing.T) {
+	t.Parallel()
 	g, fake := startTest(t)
 	returned := make(chan error, 1)
 	fake.OnShell = func(ctx context.Context, _, _ string, _ func(string), _ bool) (proto.ShellCommandResponse, error) {
 		<-ctx.Done()
 		err := ctx.Err()
 		returned <- err
-		return proto.ShellCommandResponse{}, err
+		// The real streaming path reports a nil error and a non-zero
+		// exit code for a cancelled run.
+		return proto.ShellCommandResponse{ExitCode: 1}, nil
 	}
-	client := authedClient(t, g)
-	startShell(t, client, g, "sleep 10")
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+	runID := startShell(t, authedClient(t, g), g, "sleep 10")
 	require.Eventually(t, func() bool {
 		return slices.Contains(fake.CallLog(), "AgentRunShellCommand:s1:sleep 10:true")
 	}, time.Second, 10*time.Millisecond)
 
-	require.NoError(t, g.Shutdown(context.Background()))
+	done := make(chan error, 1)
+	go func() { done <- g.Shutdown(context.Background()) }()
+	var final shellFrame
+	for {
+		f := readFrame(t, c)
+		require.NotEqual(t, frameClosing, f.Type, "the cancelled run settles before the gateway closes")
+		if f.Type != frameShellOutput {
+			continue
+		}
+		require.NoError(t, json.Unmarshal(f.Payload, &final))
+		require.Equal(t, runID, final.RunID)
+		if final.Done {
+			break
+		}
+	}
+	require.Equal(t, 130, final.ExitCode)
+	require.Empty(t, final.Error)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return")
+	}
 	select {
 	case err := <-returned:
 		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown did not cancel the shell command")
+	}
+}
+
+// TestShutdownBoundsTheShellWait covers a command that ignores its
+// context: Shutdown must give up after the caller's deadline instead of
+// hanging on it.
+func TestShutdownBoundsTheShellWait(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	fake.OnShell = func(context.Context, string, string, func(string), bool) (proto.ShellCommandResponse, error) {
+		<-release
+		close(returned)
+		return proto.ShellCommandResponse{ExitCode: 1}, nil
+	}
+	t.Cleanup(func() {
+		unblock()
+		select {
+		case <-returned:
+		case <-time.After(2 * time.Second):
+			t.Error("the fake shell did not return after release")
+		}
+	})
+	startShell(t, authedClient(t, g), g, "stuck")
+	require.Eventually(t, func() bool {
+		return slices.Contains(fake.CallLog(), "AgentRunShellCommand:s1:stuck:true")
+	}, time.Second, 10*time.Millisecond)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- g.Shutdown(shutdownCtx) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+		require.Less(t, time.Since(start), time.Second, "Shutdown waited on a command that ignores cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown waited on a command that ignores cancellation")
 	}
 }
 

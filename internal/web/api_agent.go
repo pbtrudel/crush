@@ -280,11 +280,13 @@ func (g *Gateway) runShell(ctx context.Context, id, sessionID, command string, i
 	done := shellDonePayload{
 		RunID: id, SessionID: sessionID, Done: true, ExitCode: resp.ExitCode,
 	}
+	// The real streaming path reports a cancelled run as a nil error and
+	// a non-zero exit code, so a finished context decides before the
+	// error does: that run reads as the TUI's SIGINT convention.
 	switch {
-	case err == nil:
-	case errors.Is(err, context.Canceled):
+	case ctx.Err() != nil, errors.Is(err, context.Canceled):
 		done.ExitCode = shellCancelledExitCode
-	default:
+	case err != nil:
 		slog.Warn("Web shell command failed", "session_id", sessionID, "error", err)
 		done.Error = shellFailedText
 	}

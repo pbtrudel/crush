@@ -272,15 +272,25 @@ func normalizeInputMode(mode string) string {
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.
 func (g *Gateway) Shutdown(ctx context.Context) error {
-	// Cancel and settle every running shell before the hub closes, so no
-	// final frame is published into a closed hub.
+	// Cancel every running shell, then wait for them before the hub
+	// closes, so no final frame is published into a closed hub. The wait
+	// honours the caller's deadline: a command that ignores cancellation
+	// must not hold shutdown open.
 	g.shellMu.Lock()
 	g.shellsClosed = true
 	for _, cancel := range g.shells {
 		cancel()
 	}
 	g.shellMu.Unlock()
-	g.shellWG.Wait()
+	shellsDone := make(chan struct{})
+	go func() {
+		g.shellWG.Wait()
+		close(shellsDone)
+	}()
+	select {
+	case <-shellsDone:
+	case <-ctx.Done():
+	}
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
 	g.cancel()
