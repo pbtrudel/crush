@@ -1,7 +1,7 @@
 import { Component } from 'preact';
 import type { Message, Part, ToolResultData } from '../../api/types';
 import { Clipped } from './Clipped';
-import { isLocalUrl, Markdown } from './Markdown';
+import { isHttpUrl, isLocalUrl, Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 
 type FinishPart = Extract<Part, { type: 'finish' }>;
@@ -39,9 +39,12 @@ function MessageViewBody({ m, results }: Props) {
               />
             );
           case 'image_url':
-            return isLocalUrl(p.data.url)
-              ? <img key={i} class="msg__image" src={p.data.url} alt="Attached image" />
-              : <a key={i} href={p.data.url} target="_blank" rel="noopener noreferrer">Image: {p.data.url}</a>;
+            if (isLocalUrl(p.data.url)) return <img key={i} class="msg__image" src={p.data.url} alt="Attached image" />;
+            // Only an http(s) source becomes a link: any other scheme would
+            // reach the href unfiltered.
+            return isHttpUrl(p.data.url)
+              ? <a key={i} href={p.data.url} target="_blank" rel="noopener noreferrer">Image: {p.data.url}</a>
+              : <span key={i}>Image: {p.data.url}</span>;
           case 'binary':
             return <p key={i} class="msg__attachment">Attachment: {p.data.path ?? p.data.mime_type ?? 'file'}</p>;
           case 'shell_command':

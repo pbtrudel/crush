@@ -38,6 +38,14 @@ describe('MessageView', () => {
     expect(root.querySelector('a')?.getAttribute('href')).toBe('https://example.com/a.png');
   });
 
+  it('never links an image from a non-http scheme', async () => {
+    await act(() => {
+      render(<MessageView m={{ ...base, parts: [{ type: 'image_url', data: { url: 'javascript:alert(1)' } }] }} results={new Map()} />, root);
+    });
+    expect(root.querySelector('a')).toBeNull();
+    expect(root.textContent).toContain('Image: javascript:alert(1)');
+  });
+
   it('clips a long tool input', async () => {
     const long = { ...call, data: { ...call.data, input: JSON.stringify({ command: 'x'.repeat(9000) }) } };
     await act(() => { render(<MessageView m={{ ...base, parts: [long] }} results={new Map()} />, root); });

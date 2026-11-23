@@ -14,7 +14,7 @@ const SANITIZE = {
 
 // The page CSP allows img-src data: and blob: only.
 export const isLocalUrl = (u: string) => u.startsWith('data:') || u.startsWith('blob:');
-const isHttpUrl = (u: string) => /^https?:\/\//i.test(u);
+export const isHttpUrl = (u: string) => /^https?:\/\//i.test(u);
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
