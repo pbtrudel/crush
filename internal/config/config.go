@@ -1423,7 +1423,9 @@ func (c *Config) IsModelAvailable(provider, model string) bool {
 }
 
 // UsableModels returns the models the current credential can serve: a
-// ChatGPT or Grok login only reaches its subscription's models.
+// ChatGPT or Grok login only reaches its subscription's models. Unlike
+// SubscriptionCatalog it does not fall back to the API catalog while the
+// subscription list is still nil.
 func (p ProviderConfig) UsableModels() []catwalk.Model {
 	if models, ok := p.SubscriptionModels(); ok {
 		return models
@@ -1444,6 +1446,18 @@ func (p ProviderConfig) SubscriptionModels() ([]catwalk.Model, bool) {
 		return p.GrokModels, true
 	}
 	return nil, false
+}
+
+// SubscriptionCatalog returns the models a ChatGPT or Grok login grants,
+// and whether the provider is signed in with a subscription whose list has
+// been fetched. A signed-in provider whose list is still nil reports false,
+// so callers keep showing the API catalog until the fetch lands.
+func (p ProviderConfig) SubscriptionCatalog() ([]catwalk.Model, bool) {
+	models, ok := p.SubscriptionModels()
+	if !ok || models == nil {
+		return nil, false
+	}
+	return models, true
 }
 
 func (c *Config) GetProviderForModel(modelType SelectedModelType) *ProviderConfig {

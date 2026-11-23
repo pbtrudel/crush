@@ -41,10 +41,10 @@ type ModelChoice struct {
 
 // ModelChoices lists the models the configured, enabled providers can
 // serve right now, grouped by provider id and in config order within each
-// provider. A ChatGPT or Grok login lists only its subscription's models,
-// since the API catalog would 404. Providers the model dialog hides
-// (unconfigured or disabled) are left out, so a choice always skips the
-// sign-in flow.
+// provider. A ChatGPT or Grok login lists its subscription's models once
+// fetched and the API catalog until then, matching the model dialog.
+// Providers the dialog hides (unconfigured or disabled) are left out, so a
+// choice always skips the sign-in flow.
 func ModelChoices(cfg *config.Config) []ModelChoice {
 	if cfg == nil || cfg.Providers == nil {
 		return nil
@@ -65,7 +65,11 @@ func ModelChoices(cfg *config.Config) []ModelChoice {
 		if !ok {
 			continue
 		}
-		for _, model := range providerConfig.UsableModels() {
+		models := providerConfig.Models
+		if subscriptionModels, ok := providerConfig.SubscriptionCatalog(); ok {
+			models = subscriptionModels
+		}
+		for _, model := range models {
 			if !cfg.IsModelAvailable(id, model.ID) {
 				continue
 			}

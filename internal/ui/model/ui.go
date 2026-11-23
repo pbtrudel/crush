@@ -3351,7 +3351,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			ctx, cancel := common.WorkspaceOpContext()
 			defer cancel()
 			if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
-				return util.ReportError(err)
+				return util.ReportError(err)()
 			}
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))

@@ -169,6 +169,25 @@ func TestModelChoicesSortsProviders(t *testing.T) {
 	require.Equal(t, "zulu", got[1].Provider)
 }
 
+// TestModelChoicesFallsBackToCatalogBeforeSubscriptionFetch mirrors the
+// dialog: a signed-in provider with no subscription list yet (the fetch
+// after sign-in has not landed) keeps its API catalog.
+func TestModelChoicesFallsBackToCatalogBeforeSubscriptionFetch(t *testing.T) {
+	t.Parallel()
+
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	providers.Set("openai", config.ProviderConfig{
+		ID:         "openai",
+		Name:       "OpenAI",
+		OAuthToken: &oauth.Token{AccessToken: "t"},
+		Models:     []catwalk.Model{{ID: "gpt-api"}},
+	})
+
+	got := ModelChoices(&config.Config{Providers: providers})
+	require.Len(t, got, 1)
+	require.Equal(t, "gpt-api", got[0].ID)
+}
+
 func TestSelectModelRefusesWhileBusy(t *testing.T) {
 	t.Parallel()
 

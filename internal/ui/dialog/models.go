@@ -516,7 +516,7 @@ func (m *Models) setProviderItems() error {
 
 		// A ChatGPT or Grok login lists only its subscription's models; the
 		// API catalog would 404. Until that list is fetched, show the catalog.
-		if subscriptionModels, _ := providerConfig.SubscriptionModels(); subscriptionModels != nil {
+		if subscriptionModels, ok := providerConfig.SubscriptionCatalog(); ok {
 			group := NewModelGroup(t, name, true)
 			for _, model := range subscriptionModels {
 				item := NewModelItem(t, provider, m.withConfiguredReasoning(providerID, model), m.modelType, false)

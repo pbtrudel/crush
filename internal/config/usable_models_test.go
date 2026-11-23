@@ -43,3 +43,20 @@ func TestProviderConfigSubscriptionModels(t *testing.T) {
 	_, ok = ProviderConfig{ID: "copilot", OAuthToken: token}.SubscriptionModels()
 	require.False(t, ok)
 }
+
+func TestProviderConfigSubscriptionCatalog(t *testing.T) {
+	t.Parallel()
+	token := &oauth.Token{AccessToken: "t"}
+	api := []catwalk.Model{{ID: "api-model"}}
+	sub := []catwalk.Model{{ID: "sub-model"}}
+
+	models, ok := ProviderConfig{ID: "openai", Models: api, ChatGPTModels: sub, OAuthToken: token}.SubscriptionCatalog()
+	require.True(t, ok)
+	require.Equal(t, sub, models)
+
+	_, ok = ProviderConfig{ID: "openai", Models: api, OAuthToken: token}.SubscriptionCatalog()
+	require.False(t, ok, "signed in but the list is not fetched yet")
+
+	_, ok = ProviderConfig{ID: "openai", Models: api, ChatGPTModels: sub}.SubscriptionCatalog()
+	require.False(t, ok, "an API key is not a subscription")
+}
