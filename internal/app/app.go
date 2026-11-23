@@ -114,6 +114,14 @@ type App struct {
 	// runWorktree is the Git worktree the command's --worktree flag
 	// created for this process, reported by `crush run --json`.
 	runWorktree string
+
+	// agentInitMu guards AgentCoordinator creation so concurrent
+	// initializers (a client attaching while the server-side channel
+	// injection initializes a headless workspace) cannot build two
+	// coordinators for one workspace. agentInteractive records which
+	// variant the current coordinator was built with.
+	agentInitMu      sync.Mutex
+	agentInteractive bool
 }
 
 // New initializes a new application instance. skillsMgr carries the
@@ -147,7 +155,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Permissions: permSvc,
 		conn:        conn,
 		Questions:   question.NewService(),
-		FileTracker: filetracker.NewService(q),
+		FileTracker: filetracker.NewService(q, store.WorkingDir()),
 		Pinentry:    pinentry.DefaultService(),
 		LSPManager:  lsp.NewManager(store),
 		Skills:      skillsMgr,
@@ -240,6 +248,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if err != nil {
 		slog.Warn("Failed to list disabled MCP overrides; starting them anyway", "error", err)
 	}
+	// MCP clients are process-global and a server hosts one app per
+	// workspace, so hold a reference that keeps another app's shutdown from
+	// closing them. The mcp.Close cleanup below releases it.
+	mcp.Acquire()
 	go mcp.Initialize(ctx, app.Permissions, store, forceStart, localDisabled)
 
 	// Start herdr integration when running inside a herdr pane.
@@ -266,6 +278,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
+		// A failed app is never shut down, so release its MCP reference.
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = mcp.Close(closeCtx)
+		cancel()
 		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
 	}
 	go app.refreshDiscoveredModels(ctx, app.AgentCoordinator)
@@ -318,6 +334,13 @@ func (app *App) Store() *config.ConfigStore {
 // Each caller receives its own channel; all callers receive every event.
 func (app *App) Events(ctx context.Context) <-chan pubsub.Event[tea.Msg] {
 	return app.events.Subscribe(ctx)
+}
+
+// EventsWithOverflow is like [App.Events], but also returns a channel that
+// is closed the first time an event is dropped for this caller because it
+// fell behind. See [pubsub.Broker.SubscribeWithOverflow].
+func (app *App) EventsWithOverflow(ctx context.Context) (<-chan pubsub.Event[tea.Msg], <-chan struct{}) {
+	return app.events.SubscribeWithOverflow(ctx)
 }
 
 // SendEvent publishes a message to all event subscribers.
@@ -456,7 +479,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 
 	// force update of agent models before running so mcp tools are loaded
-	app.AgentCoordinator.UpdateModels(ctx)
+	app.Agent().UpdateModels(ctx)
 
 	defer stopSpinner()
 
@@ -512,8 +535,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	// teammate the turn started may still be working. The loop below keeps
 	// printing the session's output meanwhile.
 	done := make(chan runResponse, 1)
+	coord := app.Agent()
 	go func() {
-		done <- runAndWait(ctx, app.AgentCoordinator, sess.ID, prompt, limits)
+		done <- runAndWait(ctx, coord, sess.ID, prompt, limits)
 	}()
 	if asJSON {
 		// Nothing is streamed: the object is all that goes to output.
@@ -594,10 +618,11 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 }
 
 func (app *App) UpdateAgentModel(ctx context.Context) error {
-	if app.AgentCoordinator == nil {
+	coord := app.Agent()
+	if coord == nil {
 		return fmt.Errorf("agent configuration is missing")
 	}
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return coord.UpdateModels(ctx)
 }
 
 // ReloadSkills re-discovers the workspace's skills from the current
@@ -609,10 +634,11 @@ func (app *App) ReloadSkills(ctx context.Context) error {
 		return nil
 	}
 	skills.Reload(app.Skills, config.SkillsDiscoveryConfig(app.config))
-	if app.AgentCoordinator == nil {
+	coord := app.Agent()
+	if coord == nil {
 		return nil
 	}
-	return app.AgentCoordinator.RefreshSkills(ctx)
+	return coord.RefreshSkills(ctx)
 }
 
 // ErrConfigReloadBusy is returned when a reload is requested while an agent
@@ -636,7 +662,7 @@ func (app *App) ReloadConfig(ctx context.Context) error {
 	if app.config == nil {
 		return errors.New("configuration is not loaded")
 	}
-	if app.AgentCoordinator != nil && app.AgentCoordinator.IsBusy() {
+	if coord := app.Agent(); coord != nil && coord.IsBusy() {
 		return ErrConfigReloadBusy
 	}
 	if err := app.config.ReloadFromDisk(ctx); err != nil {
@@ -647,8 +673,8 @@ func (app *App) ReloadConfig(ctx context.Context) error {
 	if err := app.ReloadSkills(ctx); err != nil {
 		return err
 	}
-	if app.AgentCoordinator != nil {
-		if err := app.AgentCoordinator.RefreshModels(ctx); err != nil {
+	if coord := app.Agent(); coord != nil {
+		if err := coord.RefreshModels(ctx); err != nil {
 			return err
 		}
 	}
@@ -768,7 +794,7 @@ func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) e
 		smallModel := app.GetDefaultSmallModel(lastMsg.Provider)
 		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallModel)
 	}
-	if err := app.AgentCoordinator.UpdateModels(ctx); err != nil {
+	if err := app.Agent().UpdateModels(ctx); err != nil {
 		return fmt.Errorf("failed to update agent models: %w", err)
 	}
 	slog.Info("Restored model from session",
@@ -826,7 +852,7 @@ func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel,
 		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallCfg)
 	}
 
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return app.Agent().UpdateModels(ctx)
 }
 
 // overrideReasoningEffort validates the requested reasoning effort against
@@ -848,7 +874,7 @@ func (app *App) overrideReasoningEffort(ctx context.Context, reasoningEffort str
 		"model", selected.Model,
 		"reasoning_effort", reasoningEffort)
 	app.config.OverridePreferredModel(config.SelectedModelTypeMain, selected)
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return app.Agent().UpdateModels(ctx)
 }
 
 // GetDefaultSmallModel returns the default small model for the given
@@ -1024,26 +1050,54 @@ func (app *App) InitCoderAgentNonInteractive(ctx context.Context) error {
 	return app.initCoderAgent(ctx, false)
 }
 
-// coordinatorContext returns the context for a new coordinator and ends
-// the one the previous coordinator was built with. It derives from the
-// app's context, not the caller's: a server request or a UI operation that
-// initializes the agent ends long before the coordinator should.
-func (app *App) coordinatorContext() context.Context {
+// newCoordinatorContext returns the context for a coordinator that is not
+// built yet, leaving the current coordinator's context running. It derives
+// from the app's context, not the caller's: a server request or a UI
+// operation that initializes the agent ends long before the coordinator
+// should.
+func (app *App) newCoordinatorContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(app.globalCtx)
+}
+
+// adoptCoordinatorContext ends the current coordinator's context and makes
+// stop the one that ends the next. Callers hold agentInitMu.
+func (app *App) adoptCoordinatorContext(stop context.CancelFunc) {
 	if app.stopCoordinator != nil {
 		app.stopCoordinator()
 	}
-	coordinatorCtx, cancel := context.WithCancel(app.globalCtx)
-	app.stopCoordinator = cancel
-	return coordinatorCtx
+	app.stopCoordinator = stop
 }
 
+// initCoderAgent builds the workspace's coder coordinator. It is
+// create-only: once a coordinator exists the call is a no-op, so a
+// channel push initializing the agent headlessly cannot race a client
+// attach into building a second coordinator. The one refinement is an
+// upgrade: an interactive initializer replaces a coordinator that was
+// built headlessly, so an attached client regains the interactive-only
+// tools (notably question). A downgrade or a re-init while a run is in
+// flight keeps the existing coordinator, because swapping it then
+// would strand the run.
 func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
+	app.agentInitMu.Lock()
+	defer app.agentInitMu.Unlock()
+	if app.AgentCoordinator != nil {
+		if !interactive || app.agentInteractive {
+			return nil
+		}
+		if app.AgentCoordinator.IsBusy() {
+			slog.Warn("Keeping headless coder agent: interactive init raced a running turn")
+			return nil
+		}
+	}
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
-	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(app.coordinatorContext(), agent.CoordinatorOptions{
+	// The replacement is built on a context of its own, and the current
+	// coordinator keeps running until it exists: if building fails, the
+	// app must not be left pointing at a coordinator that was shut down.
+	coordinatorCtx, stopNew := app.newCoordinatorContext()
+	coord, err := agent.NewCoordinator(coordinatorCtx, agent.CoordinatorOptions{
 		Config:      app.config,
 		Sessions:    app.Sessions,
 		Messages:    app.Messages,
@@ -1057,14 +1111,26 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		Skills:      app.Skills,
 		HookRunner:  app.hookRunner,
 		Interactive: interactive,
+		ShellOwner:  app,
 	})
 	if err != nil {
+		stopNew()
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	if old := app.AgentCoordinator; old != nil {
+		// Interactive upgrade: cancel anything the headless coordinator
+		// still has in flight. The IsBusy check above covers the common
+		// case, but a channel push can start a run between the check and
+		// the swap, and nothing reaches the old coordinator afterwards.
+		old.CancelAll()
+	}
+	app.adoptCoordinatorContext(stopNew)
+	app.AgentCoordinator = coord
+	app.agentInteractive = interactive
 	if app.config.Config().Permissions.GetAutoReview() {
 		if setter, ok := app.Permissions.(permission.ReviewerSetter); ok {
-			if reviewer, ok := app.AgentCoordinator.(interface {
+			if reviewer, ok := coord.(interface {
 				ReviewToolCall(context.Context, permission.PermissionRequest) (permission.ReviewDecision, error)
 			}); ok {
 				setter.SetReviewer(reviewer.ReviewToolCall)
@@ -1072,6 +1138,19 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		}
 	}
 	return nil
+}
+
+// Agent returns the current coder coordinator under the init lock. Every
+// reader of the AgentCoordinator field goes through here, so an
+// interactive upgrade replacing a headless coordinator cannot race a
+// dispatch into calling methods on a half-replaced value. The returned
+// coordinator may be swapped for a newer one right after the call; a
+// superseded coordinator has been cancelled and is safe to finish calls
+// on.
+func (app *App) Agent() agent.Coordinator {
+	app.agentInitMu.Lock()
+	defer app.agentInitMu.Unlock()
+	return app.AgentCoordinator
 }
 
 // Subscribe sends events to the TUI as tea.Msgs.
@@ -1116,11 +1195,14 @@ func (app *App) Shutdown() {
 	// collected the active ones, then cancel all agents and wait for them to
 	// finish. This must complete before closing the DB so agents can finish
 	// writing their state.
-	if app.stopCoordinator != nil {
-		app.stopCoordinator()
+	app.agentInitMu.Lock()
+	stopCoordinator := app.stopCoordinator
+	app.agentInitMu.Unlock()
+	if stopCoordinator != nil {
+		stopCoordinator()
 	}
-	if app.AgentCoordinator != nil {
-		app.AgentCoordinator.CancelAll()
+	if coord := app.Agent(); coord != nil {
+		coord.CancelAll()
 	}
 	app.fireSessionEnd()
 
@@ -1146,9 +1228,11 @@ func (app *App) Shutdown() {
 		event.AppExited()
 	})
 
-	// Kill all background shells.
+	// Kill the background shells this app started. The shell manager is
+	// shared by the whole process, and the server hosts one app per
+	// workspace, so other workspaces' shells must keep running.
 	wg.Go(func() {
-		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
+		shell.GetBackgroundShellManager().KillOwned(shutdownCtx, app)
 	})
 
 	// Close herdr client to stop its background writer.

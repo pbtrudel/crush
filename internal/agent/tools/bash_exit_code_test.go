@@ -59,7 +59,7 @@ func TestBashTool_ExitCodeInMetadata(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := runBashTool(t, tool, ctx, tt.params)
 			if shellID := gjson.Get(resp.Metadata, "shell_id").String(); shellID != "" {
-				defer shell.GetBackgroundShellManager().Kill(shellID)
+				defer shell.GetBackgroundShellManager().Kill(context.Background(), shellID)
 			}
 
 			code := gjson.Get(resp.Metadata, "exit_code")
@@ -87,7 +87,7 @@ func TestBashTool_MovedToBackgroundHasNoExitCode(t *testing.T) {
 	require.Contains(t, resp.Content, "moved to background")
 	require.False(t, gjson.Get(resp.Metadata, "exit_code").Exists(), "a background job reports through its notice")
 	require.False(t, gjson.Get(resp.Metadata, "interrupted").Exists())
-	require.NoError(t, shell.GetBackgroundShellManager().Kill(gjson.Get(resp.Metadata, "shell_id").String()))
+	require.NoError(t, shell.GetBackgroundShellManager().Kill(t.Context(), gjson.Get(resp.Metadata, "shell_id").String()))
 }
 
 func TestBashTool_CancelledCommandIsInterrupted(t *testing.T) {

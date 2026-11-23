@@ -247,7 +247,7 @@ func TestBuildCompactionPrompt(t *testing.T) {
 
 	t.Run("first compaction", func(t *testing.T) {
 		t.Parallel()
-		prompt := buildCompactionPrompt(session.Session{}, 12, 40)
+		prompt := buildCompactionPrompt(string(summaryPromptTmpl), session.Session{}, 12, 40)
 		require.Contains(t, prompt, "Compact the conversation above")
 		require.Contains(t, prompt, "Preserved Tail")
 		require.Contains(t, prompt, "The most recent 12 of the conversation's 40 messages")
@@ -257,14 +257,14 @@ func TestBuildCompactionPrompt(t *testing.T) {
 
 	t.Run("incremental compaction carries the previous summary note", func(t *testing.T) {
 		t.Parallel()
-		prompt := buildCompactionPrompt(session.Session{SummaryMessageID: "s1"}, 4, 10)
+		prompt := buildCompactionPrompt(string(summaryPromptTmpl), session.Session{SummaryMessageID: "s1"}, 4, 10)
 		require.Contains(t, prompt, "Previous Summary")
 		require.Contains(t, prompt, "preserve everything in it")
 	})
 
 	t.Run("todos are carried over", func(t *testing.T) {
 		t.Parallel()
-		prompt := buildCompactionPrompt(session.Session{Todos: []session.Todo{{Content: "fix the bug", Status: session.TodoStatusInProgress}}}, 0, 5)
+		prompt := buildCompactionPrompt(string(summaryPromptTmpl), session.Session{Todos: []session.Todo{{Content: "fix the bug", Status: session.TodoStatusInProgress}}}, 0, 5)
 		require.Contains(t, prompt, "Current Todo List")
 		require.Contains(t, prompt, "fix the bug")
 	})

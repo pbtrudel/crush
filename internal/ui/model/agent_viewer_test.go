@@ -43,6 +43,11 @@ func (w *agentViewerWorkspace) Config() *config.Config {
 
 func (w *agentViewerWorkspace) WorkingDir() string { return "/tmp/crush-agent-viewer-test" }
 
+// A session load fetches the repository-scoped skill toggles; no
+// overrides is the empty state.
+func (w *agentViewerWorkspace) SkillsDisabled(context.Context) ([]string, error) { return nil, nil }
+func (w *agentViewerWorkspace) SkillsEnabled(context.Context) ([]string, error)  { return nil, nil }
+
 func (w *agentViewerWorkspace) GetSession(_ context.Context, sessionID string) (session.Session, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -102,11 +102,11 @@ func (f *fakeQuestionService) Ask(context.Context, question.Request) ([]question
 	return f.answers, nil
 }
 
-func (f *fakeQuestionService) Answer([]question.Answer) bool { return false }
+func (f *fakeQuestionService) Answer(string, []question.Answer) bool { return false }
 
-func (f *fakeQuestionService) Cancel() bool { return false }
+func (f *fakeQuestionService) Cancel(string) bool { return false }
 
-func (f *fakeQuestionService) Pending() (question.Request, bool) { return question.Request{}, false }
+func (f *fakeQuestionService) Pending() []question.Request { return nil }
 
 func runQuestionTool(t *testing.T, tool fantasy.AgentTool, ctx context.Context) fantasy.ToolResponse {
 	t.Helper()
@@ -142,4 +142,19 @@ func TestQuestionToolRefusesInsideTeammate(t *testing.T) {
 	require.False(t, response.IsError, response.Content)
 	require.True(t, svc.asked)
 	require.Contains(t, response.Content, "User answered: yes")
+}
+
+func TestFormatAnswers_AttachesMetadata(t *testing.T) {
+	t.Parallel()
+	questions := []question.Question{{Text: "Pick", Type: question.TypeFreeText}}
+	answers := []question.Answer{{FillInText: "line one\nline two"}}
+
+	resp, err := formatAnswers(answers, questions)
+	require.NoError(t, err)
+	require.Equal(t, "Q1: Pick\nUser provided: line one\nline two", resp.Content)
+
+	var meta QuestionResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, questions, meta.Questions)
+	require.Equal(t, answers, meta.Answers)
 }

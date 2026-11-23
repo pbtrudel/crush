@@ -439,8 +439,13 @@ func TestSlimHistory_DeepSeekDefaultUnchanged(t *testing.T) {
 	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
 	agent.cfg = config.NewTestStore(&config.Config{Options: &config.Options{}})
 
+	// One build cloned, not two builds: tool calls are stamped with the
+	// time they were added, so two builds can differ by a millisecond.
 	deepseek := coldHistory()
-	other := coldHistory()
+	other := make([]message.Message, len(deepseek))
+	for i := range deepseek {
+		other[i] = deepseek[i].Clone()
+	}
 	agent.slimHistory(Model{
 		Model:      &stubProviderModel{provider: "other"},
 		CatwalkCfg: catwalk.Model{ID: "deepseek-v4.1-flash"},

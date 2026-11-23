@@ -156,7 +156,7 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 		return t.base.RoundTrip(req)
 	}
 
-	original, err := readResponsesBody(req)
+	original, encoding, err := readResponsesBody(req)
 	if err != nil {
 		return nil, err
 	}
@@ -165,18 +165,18 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 	// A request past the bound is passed through untouched rather than
 	// hashed, so the prefix tables stay a bounded allocation.
 	if !ok || len(input) > maxResponsesReplayInputItems {
-		return t.base.RoundTrip(requestWithBody(req, original))
+		return t.base.RoundTrip(requestWithBody(req, original, encoding))
 	}
 	scope := replayScope{endpoint: responsesEndpoint(req), model: responsesModel(original)}
 	if t.pausedFor(scope) {
-		return t.base.RoundTrip(requestWithBody(req, original))
+		return t.base.RoundTrip(requestWithBody(req, original, encoding))
 	}
 	prefix := conversationPrefix{hash: prefixHashes(canonicalItems(input))[len(input)], count: len(input)}
 
 	body, inserted := t.withRecordedItems(original, input, scope)
 	// The original body was consumed to inspect it; every request is
 	// rebuilt from the bytes we hold.
-	sent := requestWithBody(req, body)
+	sent := requestWithBody(req, body, encoding)
 
 	resp, err := t.base.RoundTrip(sent)
 	if err != nil {
@@ -191,7 +191,7 @@ func (t *responsesReasoningReplayTransport) RoundTrip(req *http.Request) (*http.
 				"url", req.URL.Redacted(), "status", resp.StatusCode, "body", logBody(rejectedBody))
 			// The retry is not wrapped: the scope is paused, so nothing
 			// from it would be inserted again.
-			return t.base.RoundTrip(requestWithBody(req, original))
+			return t.base.RoundTrip(requestWithBody(req, original, encoding))
 		}
 	}
 
@@ -724,24 +724,12 @@ func logBody(body []byte) string {
 	return strings.TrimSpace(string(body))
 }
 
-func readResponsesBody(req *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
+func readResponsesBody(req *http.Request) ([]byte, string, error) {
+	body, encoding, err := readRequestBody(req)
 	if err != nil {
-		return nil, fmt.Errorf("reading responses request body: %w", err)
+		return nil, "", fmt.Errorf("reading responses request body: %w", err)
 	}
-	return body, nil
-}
-
-func requestWithBody(req *http.Request, body []byte) *http.Request {
-	clone := req.Clone(req.Context())
-	clone.Body = io.NopCloser(bytes.NewReader(body))
-	clone.ContentLength = int64(len(body))
-	clone.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	clone.TransferEncoding = nil
-	return clone
+	return body, encoding, nil
 }
 
 // withResponsesReasoningReplay installs the replay transport on a provider

@@ -154,3 +154,20 @@ func TestEventSink_DrainDoesNotConsumeSignal(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("m2")}, frameDatas(frames))
 	require.Empty(t, sub.drain())
 }
+
+func TestEventSink_AttachAfterOverflowIsSignalled(t *testing.T) {
+	t.Parallel()
+
+	// The pump overflows the sink without holding the registry lock, so a
+	// connection can attach to a sink that already gave up on its stream.
+	// It must end at once rather than wait on a sink that never publishes.
+	sink := newEventSink()
+	sink.overflowAll()
+	sub := sink.attach(8)
+
+	select {
+	case <-sub.overflowed():
+	default:
+		t.Fatal("a connection attached after the sink overflowed was never told")
+	}
+}

@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/discover"
-	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,7 +32,7 @@ type mockSessionAgent struct {
 	systemPrompt string
 	// notices records EnqueueNotice calls.
 	notices []string
-	// busy controls IsSessionBusy.
+	// busy controls HasActiveTurn and HasPendingWork.
 	busy bool
 	// summarizeOpts records the provider options of the most recent
 	// Summarize call.
@@ -67,7 +66,8 @@ func (m *mockSessionAgent) Cancel(sessionID string) {
 }
 func (m *mockSessionAgent) CancelAll()                                  {}
 func (m *mockSessionAgent) CancelBackgroundCompaction(string)           {}
-func (m *mockSessionAgent) IsSessionBusy(sessionID string) bool         { return m.busy }
+func (m *mockSessionAgent) HasActiveTurn(sessionID string) bool         { return m.busy }
+func (m *mockSessionAgent) HasPendingWork(sessionID string) bool        { return m.busy }
 func (m *mockSessionAgent) IsBusy() bool                                { return false }
 func (m *mockSessionAgent) QueuedPrompts(sessionID string) int          { return 0 }
 func (m *mockSessionAgent) QueuedPromptsList(sessionID string) []string { return nil }
@@ -79,9 +79,6 @@ func (m *mockSessionAgent) Summarize(_ context.Context, _ string, opts fantasy.P
 	return nil
 }
 func (m *mockSessionAgent) GenerateTitle(context.Context, string, string) {}
-func (m *mockSessionAgent) ListSettledMessages(context.Context, string, func(string) bool) ([]message.Message, error) {
-	return nil, nil
-}
 
 // newTestCoordinator creates a minimal coordinator for unit testing runSubAgent.
 func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCfg config.ProviderConfig) *coordinator {
@@ -89,9 +86,10 @@ func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCf
 	require.NoError(t, err)
 	cfg.Config().Providers.Set(providerID, providerCfg)
 	return &coordinator{
-		cfg:      cfg,
-		sessions: env.sessions,
-		messages: env.messages,
+		cfg:         cfg,
+		sessions:    env.sessions,
+		messages:    env.messages,
+		permissions: env.permissions,
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/charmbracelet/crush/internal/backend"
@@ -19,8 +20,14 @@ type controllerV1 struct {
 	server  *Server
 }
 
-// handleGetHealth checks server health.
+// handleGetHealth checks server health. A server that has committed to
+// shutting down answers 503: it takes no new workspaces, so a readiness
+// probe must not mistake it for a live server.
 func (c *controllerV1) handleGetHealth(w http.ResponseWriter, _ *http.Request) {
+	if c.backend.Closing() {
+		jsonError(w, http.StatusServiceUnavailable, backend.ErrServerShuttingDown.Error())
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -253,18 +260,44 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 		case <-r.Context().Done():
 			c.server.logDebug(r, "Stopping event stream")
 			return
+		case <-sub.overflowed():
+			// The client stopped keeping up (a suspended or wedged
+			// terminal) and events were dropped for it, possibly a
+			// permission request or a run's completion. End the stream
+			// rather than leave a silent gap. A client with a reconnect
+			// loop (the TUI) re-reports its session, which re-delivers
+			// pending permission and question prompts, and reloads what
+			// it shows. Nothing re-delivers a dropped RunComplete:
+			// `crush run` has no reconnect loop and treats the closed
+			// stream as a failed run.
+			slog.Warn("Closing event stream of a client that fell behind",
+				"workspace", id, "client_id", clientID)
+			return
+		case <-sub.closed:
+			c.server.logDebug(r, "Stopping event stream; workspace events ended")
+			return
 		case <-sub.wait():
 			// Drain until empty, flushing once per batch: a client that
 			// falls behind sends fewer, larger frames instead of one
 			// syscall per event, and a frame that lands mid-drain is
 			// caught by the next pass instead of riding a consumed
-			// signal into the backlog.
+			// signal into the backlog. A batch stops at one backlog's
+			// worth of frames, with the signal re-armed for the rest:
+			// against a steady producer, draining until empty would grow
+			// buf without bound and never reach the write that tells a
+			// stalled client apart from a fast one.
 			var buf []byte
+			drained := 0
 			for {
+				if drained >= sinkBacklog {
+					sub.rearm()
+					break
+				}
 				frames := sub.drain()
 				if len(frames) == 0 {
 					break
 				}
+				drained += len(frames)
 				for _, f := range frames {
 					if !c.deliverToClient(r.Context(), id, clientID, f.payload) {
 						continue
@@ -793,6 +826,18 @@ func (c *controllerV1) handlePostWorkspacePermissionsGrant(w http.ResponseWriter
 	jsonEncode(w, proto.PermissionGrantResponse{Resolved: resolved})
 }
 
+// handlePostWorkspaceSessionAutoApprove auto-approves every permission
+// request a session raises.
+func (c *controllerV1) handlePostWorkspaceSessionAutoApprove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	if err := c.backend.AutoApproveSession(id, sid); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceQuestionsAnswer submits answers for a batch question.
 func (c *controllerV1) handlePostWorkspaceQuestionsAnswer(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -812,12 +857,20 @@ func (c *controllerV1) handlePostWorkspaceQuestionsAnswer(w http.ResponseWriter,
 	jsonEncode(w, proto.QuestionAnswerResponse{Resolved: resolved})
 }
 
-// handlePostWorkspaceQuestionsCancel cancels the pending question
-// batch for a workspace.
+// handlePostWorkspaceQuestionsCancel cancels a pending question batch
+// for a workspace.
 func (c *controllerV1) handlePostWorkspaceQuestionsCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	cancelled, err := c.backend.CancelQuestion(id)
+	// Clients that predate batch IDs send no body.
+	var req proto.QuestionCancel
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	cancelled, err := c.backend.CancelQuestion(id, req.BatchRequestID)
 	if err != nil {
 		c.handleError(w, r, err)
 		return
@@ -888,7 +941,8 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusConflict
 	case errors.Is(err, backend.ErrWorkspaceClosing),
 		errors.Is(err, backend.ErrServerNotIdle),
-		errors.Is(err, backend.ErrClientRetired):
+		errors.Is(err, backend.ErrClientRetired),
+		errors.Is(err, backend.ErrPromptOverrideMismatch):
 		status = http.StatusConflict
 	case errors.Is(err, backend.ErrServerShuttingDown):
 		// 503, not 409: the request is not wrong, this process is just

@@ -56,6 +56,7 @@ type BackgroundShell struct {
 	Description string
 	Shell       *Shell
 	WorkingDir  string
+	owner       any // Who started the shell, for KillOwned
 	ctx         context.Context
 	cancel      context.CancelFunc
 	sessionMu   sync.RWMutex
@@ -117,18 +118,21 @@ func GetBackgroundShellManager() *BackgroundShellManager {
 }
 
 // Start creates and starts a new background shell with the given command,
-// unless maxJobs jobs are already running.
-func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command, description string, maxJobs int) (*BackgroundShell, error) {
-	return m.start(ctx, workingDir, blockFuncs, command, description, "", maxJobs)
+// unless maxJobs jobs are already running. The shell is tagged with owner, a
+// comparable value identifying who started it, so that
+// [BackgroundShellManager.KillOwned] can stop it with that owner's other
+// shells.
+func (m *BackgroundShellManager) Start(ctx context.Context, owner any, workingDir string, blockFuncs []BlockFunc, command, description string, maxJobs int) (*BackgroundShell, error) {
+	return m.start(ctx, owner, workingDir, blockFuncs, command, description, "", maxJobs)
 }
 
 // StartWithSession is Start with the owning session recorded, so the agent
 // that started the job can receive an in-session completion notice.
-func (m *BackgroundShellManager) StartWithSession(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command, description, sessionID string, maxJobs int) (*BackgroundShell, error) {
-	return m.start(ctx, workingDir, blockFuncs, command, description, sessionID, maxJobs)
+func (m *BackgroundShellManager) StartWithSession(ctx context.Context, owner any, workingDir string, blockFuncs []BlockFunc, command, description, sessionID string, maxJobs int) (*BackgroundShell, error) {
+	return m.start(ctx, owner, workingDir, blockFuncs, command, description, sessionID, maxJobs)
 }
 
-func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command, description, sessionID string, maxJobs int) (*BackgroundShell, error) {
+func (m *BackgroundShellManager) start(ctx context.Context, owner any, workingDir string, blockFuncs []BlockFunc, command, description, sessionID string, maxJobs int) (*BackgroundShell, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -152,6 +156,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, workingDir string, b
 		Description: description,
 		WorkingDir:  workingDir,
 		Shell:       shell,
+		owner:       owner,
 		ctx:         shellCtx,
 		cancel:      cancel,
 		stdout:      newCappedBuffer(maxKeptOutput),
@@ -288,15 +293,30 @@ func (m *BackgroundShellManager) Remove(id string) error {
 	return err
 }
 
-// Kill terminates a background shell by ID.
-func (m *BackgroundShellManager) Kill(id string) error {
+// killWaitTimeout bounds how long Kill waits for a cancelled shell to
+// report done before giving up and returning.
+const killWaitTimeout = 5 * time.Second
+
+// Kill terminates a background shell by ID. It never blocks indefinitely:
+// a stubborn descendant can keep the shell's pipes open past cancellation,
+// so it stops waiting once ctx is done or killWaitTimeout elapses. In that
+// case the kill signal has been sent but the process may still be exiting.
+func (m *BackgroundShellManager) Kill(ctx context.Context, id string) error {
 	shell, err := m.take(id)
 	if err != nil {
 		return err
 	}
 	shell.cancel()
-	<-shell.done
-	return nil
+	timer := time.NewTimer(killWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-shell.done:
+		return nil
+	case <-ctx.Done():
+		return errors.New("kill signal sent, process may still be exiting")
+	case <-timer.C:
+		return errors.New("kill signal sent, process may still be exiting")
+	}
 }
 
 // BackgroundShellInfo contains information about a background shell.
@@ -321,6 +341,29 @@ func (m *BackgroundShellManager) KillAll(ctx context.Context) {
 	m.shells = map[string]*BackgroundShell{}
 	m.mu.Unlock()
 
+	killShells(ctx, shells)
+}
+
+// KillOwned terminates the background shells started on behalf of owner,
+// leaving every other owner's shells running. The provided context bounds
+// how long the function waits for each shell to exit.
+func (m *BackgroundShellManager) KillOwned(ctx context.Context, owner any) {
+	m.mu.Lock()
+	shells := map[string]*BackgroundShell{}
+	for id, shell := range m.shells {
+		if shell.owner == owner {
+			shells[id] = shell
+			delete(m.shells, id)
+		}
+	}
+	m.mu.Unlock()
+
+	killShells(ctx, shells)
+}
+
+// killShells cancels the given shells and waits for each to exit, or for
+// ctx to be done.
+func killShells(ctx context.Context, shells map[string]*BackgroundShell) {
 	var wg sync.WaitGroup
 	for _, shell := range shells {
 		wg.Go(func() {

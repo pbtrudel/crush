@@ -173,3 +173,71 @@ func TestSessionAverageUsesDecodeTime(t *testing.T) {
 	_, average := m.tpsStats()
 	require.InDelta(t, 50.0, average, 0.001, "decode time, not wall clock, is the denominator")
 }
+
+// routedStep builds a finished assistant step that Hyper/Prism routed to
+// the model named by prismID. The router itself is the provider/model.
+func routedStep(createdAt int64, prismID string, outputBytes, decodeMs int) message.Message {
+	return message.Message{
+		Role:           message.Assistant,
+		Provider:       "hyper",
+		Model:          "prism",
+		PrismModelID:   prismID,
+		PrismModelName: prismID + "-name",
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt + int64(decodeMs/1000),
+		Parts: []message.ContentPart{
+			message.TextContent{Text: string(make([]byte, outputBytes))},
+			message.Finish{Reason: message.FinishReasonEndTurn, DecodeMs: int64(decodeMs)},
+		},
+	}
+}
+
+func TestResetSessionTPSDoesNotMixRoutedModels(t *testing.T) {
+	t.Parallel()
+	m := &UI{}
+	// The router is the same provider and model for both steps; only the
+	// routed model differs, so the average must follow the last routed one.
+	msgs := []message.Message{
+		routedStep(100, "claude-opus", 400, 4000),
+		routedStep(200, "gpt-codex", 800, 2000),
+	}
+	m.resetSessionTPS(msgs)
+	_, average := m.tpsStats()
+	require.InDelta(t, 100.0, average, 0.001, "only the last routed model's steps count")
+}
+
+func TestLiveTPSRestartsAverageWhenRoutedModelChanges(t *testing.T) {
+	t.Parallel()
+	m := &UI{}
+	step := func(id, prismID string, outputBytes, decodeMs int) {
+		msg := routedStep(0, prismID, 0, 0)
+		msg.ID = id
+		msg.Parts = nil
+		m.beginLiveTPS(msg)
+		msg.Parts = []message.ContentPart{message.TextContent{Text: string(make([]byte, outputBytes))}}
+		m.updateLiveTPS(msg)
+		msg.Parts = append(msg.Parts, message.Finish{Reason: message.FinishReasonEndTurn, DecodeMs: int64(decodeMs)})
+		m.updateLiveTPS(msg)
+	}
+	step("a1", "claude-opus", 400, 1000)
+	step("a2", "gpt-codex", 800, 4000)
+	_, average := m.tpsStats()
+	require.InDelta(t, 50.0, average, 0.001, "a new routed model restarts the average from its own step")
+}
+
+func TestLiveTPSAccumulatesStepsFromOneModel(t *testing.T) {
+	t.Parallel()
+	m := &UI{}
+	step := func(id string, outputBytes, decodeMs int) {
+		msg := message.Message{ID: id, Role: message.Assistant, Provider: "anthropic", Model: "claude"}
+		m.beginLiveTPS(msg)
+		msg.Parts = []message.ContentPart{message.TextContent{Text: string(make([]byte, outputBytes))}}
+		m.updateLiveTPS(msg)
+		msg.Parts = append(msg.Parts, message.Finish{Reason: message.FinishReasonEndTurn, DecodeMs: int64(decodeMs)})
+		m.updateLiveTPS(msg)
+	}
+	step("a1", 400, 1000)
+	step("a2", 800, 4000)
+	_, average := m.tpsStats()
+	require.InDelta(t, 60.0, average, 0.001, "steps from the same model still pool")
+}

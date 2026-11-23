@@ -576,3 +576,30 @@ func TestLoadShellConfig_RespectsContextCancellation(t *testing.T) {
 		t.Fatal("LoadShellConfig did not return after context cancellation")
 	}
 }
+
+// TestLoadShellConfig_ProviderRequestCompression verifies that
+// --request-compression takes a comma-separated list, in order.
+func TestLoadShellConfig_ProviderRequestCompression(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `provider add local --base-url http://localhost:8080/v1 --request-compression "br, gzip"`
+	jsonBytes, err := LoadShellConfig(t.Context(), filepath.Join(dir, "crushrc"), []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+	local := result["providers"].(map[string]any)["local"].(map[string]any)
+	require.Equal(t, []any{"br", "gzip"}, local["request_compression"])
+}
+
+// TestLoadShellConfig_ProviderRequestCompressionEmptyEntry verifies that
+// an empty list entry is an error rather than a silent no-op.
+func TestLoadShellConfig_ProviderRequestCompressionEmptyEntry(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `provider add local --request-compression "br,,gzip"`
+	_, err := LoadShellConfig(t.Context(), filepath.Join(dir, "crushrc"), []byte(script))
+	require.ErrorContains(t, err, "--request-compression")
+}

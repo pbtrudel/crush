@@ -23,8 +23,8 @@ type busySessionAgent struct {
 	queued atomic.Int64
 }
 
-func (a *busySessionAgent) IsSessionBusy(string) bool { return a.busy.Load() }
-func (a *busySessionAgent) QueuedPrompts(string) int  { return int(a.queued.Load()) }
+func (a *busySessionAgent) HasPendingWork(string) bool { return a.busy.Load() }
+func (a *busySessionAgent) QueuedPrompts(string) int   { return int(a.queued.Load()) }
 
 type treeWait struct {
 	tree SessionTree
@@ -67,7 +67,7 @@ func TestWaitForSessionTreeFollowsTheSessionsRuns(t *testing.T) {
 	t.Parallel()
 	agent := &busySessionAgent{}
 	agent.busy.Store(true)
-	c := &coordinator{mainAgent: agent}
+	c := &coordinator{mainAgent: agent, agents: map[string]SessionAgent{config.AgentCoder: agent}}
 
 	waited := waitForTree(t, c, "session-root")
 	requireStillWaiting(t, waited)
@@ -84,7 +84,7 @@ func TestWaitForSessionTreeFollowsTheSessionsRuns(t *testing.T) {
 func TestWaitForSessionTreeCountsARunInFlight(t *testing.T) {
 	t.Parallel()
 	agent := &busySessionAgent{}
-	c := &coordinator{mainAgent: agent}
+	c := &coordinator{mainAgent: agent, agents: map[string]SessionAgent{config.AgentCoder: agent}}
 
 	c.runStarted("session-root")
 	waited := waitForTree(t, c, "session-root")
@@ -101,7 +101,7 @@ func TestWaitForSessionTreeCountsAQueuedPrompt(t *testing.T) {
 	t.Parallel()
 	agent := &busySessionAgent{}
 	agent.queued.Store(1)
-	c := &coordinator{mainAgent: agent}
+	c := &coordinator{mainAgent: agent, agents: map[string]SessionAgent{config.AgentCoder: agent}}
 
 	waited := waitForTree(t, c, "session-root")
 	requireStillWaiting(t, waited)
@@ -118,7 +118,7 @@ func TestWaitForSessionTreeStopsWithItsContext(t *testing.T) {
 	t.Parallel()
 	agent := &busySessionAgent{}
 	agent.busy.Store(true)
-	c := &coordinator{mainAgent: agent}
+	c := &coordinator{mainAgent: agent, agents: map[string]SessionAgent{config.AgentCoder: agent}}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 

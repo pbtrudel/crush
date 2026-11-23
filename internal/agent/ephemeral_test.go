@@ -74,9 +74,9 @@ func (m *recordingLanguageModel) callCount() int {
 	return len(m.calls)
 }
 
-// promptText joins the text parts of a call's prompt so a test can assert on
+// callPromptText joins the text parts of a call's prompt so a test can assert on
 // what the model was asked.
-func promptText(t *testing.T, call fantasy.Call) string {
+func callPromptText(t *testing.T, call fantasy.Call) string {
 	t.Helper()
 	var joined strings.Builder
 	for _, msg := range call.Prompt {
@@ -148,7 +148,7 @@ func TestEphemeralKeepsConversationHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	call := model.lastCall(t)
-	joined := promptText(t, call)
+	joined := callPromptText(t, call)
 	require.Contains(t, joined, "we picked the pooled connection")
 	require.Contains(t, joined, "what was the pooling option?")
 }
@@ -177,7 +177,7 @@ func TestEphemeralRetriesWhenTheProviderAnswersWithNothing(t *testing.T) {
 	require.Equal(t, "the answer", subAgentOutput(res))
 	require.Equal(t, 2, model.callCount(), "an empty answer must be retried once")
 
-	retry := promptText(t, model.lastCall(t))
+	retry := callPromptText(t, model.lastCall(t))
 	require.Contains(t, retry, "what is the state of the bump?")
 	require.Contains(t, retry, "Do not call any tools.")
 }
