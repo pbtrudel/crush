@@ -42,3 +42,39 @@ export function escapePalette(): boolean {
   closePalette();
   return true;
 }
+
+// sessionsOpen holds the HUD's session switcher. Its inline rename and delete
+// confirm live here too, so the App's Escape handler can cancel those before
+// it closes the dialog, as the palette's argument form does.
+export const sessionsOpen = signal(false);
+export const sessionRenameId = signal<string | null>(null);
+export const sessionDeleteId = signal<string | null>(null);
+
+export function openSessions(): void {
+  sessionRenameId.value = null;
+  sessionDeleteId.value = null;
+  sessionsOpen.value = true;
+}
+
+export function closeSessions(): void {
+  sessionsOpen.value = false;
+  sessionRenameId.value = null;
+  sessionDeleteId.value = null;
+}
+
+// escapeSessions closes the innermost switcher layer: an open rename or
+// delete confirm is cancelled first, otherwise the dialog closes and its
+// focus trap restores the opener. It reports whether it consumed the press.
+export function escapeSessions(): boolean {
+  if (!sessionsOpen.value) return false;
+  if (sessionRenameId.value !== null) {
+    sessionRenameId.value = null;
+    return true;
+  }
+  if (sessionDeleteId.value !== null) {
+    sessionDeleteId.value = null;
+    return true;
+  }
+  closeSessions();
+  return true;
+}

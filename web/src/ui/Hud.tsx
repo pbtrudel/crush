@@ -4,6 +4,7 @@ import { contextFill } from '../state/reducer';
 import type { PermissionMode } from '../api/types';
 import { telemetry } from '../state/telemetry';
 import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
+import { openSessions } from '../state/palette';
 import { MotionMenu } from './MotionMenu';
 import { ActivityChart } from './hud/ActivityChart';
 import { ContextGauge } from './hud/ContextGauge';
@@ -65,7 +66,17 @@ export function Hud() {
     <header class="hud holo scanlines flicker-once" ref={root}>
       <div class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}>
         <span class="hud-label">{s.project || 'crush'}</span>
-        <h1 class="hud__title">{s.session?.title || 'New session'}</h1>
+        <h1 class="hud__title">
+          {/* The identity block is off screen in cinematic mode, so an
+              invisible control must not take a tab stop. */}
+          <button
+            type="button"
+            class="hud__title-btn"
+            tabIndex={cinematic.value ? -1 : 0}
+            aria-label={`Session: ${s.session?.title || 'New session'}. Switch session`}
+            onClick={() => openSessions()}
+          >{s.session?.title || 'New session'}</button>
+        </h1>
         <p class="hud__meta">
           <span class="hud__model">
             <svg class="hud__provider" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><polygon points="6,1 11,6 6,11 1,6" /></svg>

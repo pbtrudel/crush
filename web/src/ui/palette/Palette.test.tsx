@@ -8,7 +8,9 @@ import type {
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { state } from '../../state/store';
-import { argumentItem, closePalette, openPalette, paletteOpen, paletteQuery } from '../../state/palette';
+import {
+  argumentItem, closePalette, closeSessions, openPalette, paletteOpen, paletteQuery, sessionsOpen,
+} from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { setMotion } from '../../state/motion';
 import { App } from '../App';
@@ -112,6 +114,7 @@ afterEach(async () => {
   await act(() => { render(null, root); });
   root.remove();
   closePalette();
+  closeSessions();
   argumentItem.value = null;
   setCinematic(false);
   setMotion('full');
@@ -296,6 +299,20 @@ describe('the command palette', () => {
 
     expect(follow).toHaveBeenCalledWith('s-2');
     expect(paletteOpen.value).toBeNull();
+  });
+
+  it('opens the session switcher from the Sessions action', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    await type('sessions');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(sessionsOpen.value).toBe(true);
+    expect(root.querySelector('[role="dialog"][aria-label="Sessions"]')).not.toBeNull();
   });
 
   it('keeps the remaining groups when one source fails, with a Retry', async () => {

@@ -23,6 +23,7 @@ const EXPECTED_SHEETS = [
   'log.css',
   'palette.css',
   'panels.css',
+  'sessions.css',
   'shell.css',
   'stage.css',
   'team.css',

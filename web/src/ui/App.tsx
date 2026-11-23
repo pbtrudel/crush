@@ -21,8 +21,11 @@ import { Inspector } from './inspector/Inspector';
 import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
-import { escapePalette, paletteOpen, togglePalette } from '../state/palette';
+import {
+  closeSessions, escapePalette, escapeSessions, paletteOpen, sessionsOpen, togglePalette,
+} from '../state/palette';
 import { Palette } from './palette/Palette';
+import { SessionSwitcher } from './sessions/SessionSwitcher';
 
 export function App() {
   const s = state.value;
@@ -63,19 +66,28 @@ export function App() {
       const focused = document.activeElement;
       const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
-      // closed while a dialog owns the page.
+      // closed while a dialog owns the page. The sessions switcher makes way
+      // for it, so two dialogs never stack.
       if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
         if (needsAttention(state.value)) return;
         e.preventDefault();
+        if (sessionsOpen.value) closeSessions();
         togglePalette();
         return;
       }
       // The palette is the innermost layer: it takes Escape before the
-      // Display menu, the inspector and the cinematic view. Its argument form
-      // hands the list back on the first press.
+      // sessions switcher, the Display menu, the inspector and the cinematic
+      // view. Its argument form hands the list back on the first press.
       if (e.key === 'Escape' && paletteOpen.value !== null) {
         e.preventDefault();
         escapePalette();
+        return;
+      }
+      // The switcher is next: its open rename or delete confirm is cancelled
+      // before the dialog closes.
+      if (e.key === 'Escape' && sessionsOpen.value) {
+        e.preventDefault();
+        escapeSessions();
         return;
       }
       // An open Display menu owns Escape: it closes itself, so the inspector
@@ -140,6 +152,7 @@ export function App() {
       </div>
       <Interrupt />
       <Palette inert={modal} />
+      <SessionSwitcher inert={modal} />
       <Toasts />
       <CineHint />
     </div>

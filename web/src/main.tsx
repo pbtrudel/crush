@@ -17,6 +17,7 @@ import './styles/deck.css';
 import './styles/interrupt.css';
 import './styles/panels.css';
 import './styles/palette.css';
+import './styles/sessions.css';
 import './styles/cinematic.css';
 import { render } from 'preact';
 import { App } from './ui/App';
