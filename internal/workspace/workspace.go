@@ -182,6 +182,9 @@ type Workspace interface {
 	// AgentAsk answers a side question about the session without
 	// persisting the exchange or touching the workspace.
 	AgentAsk(ctx context.Context, sessionID, question string) (string, error)
+	// AgentAddNote keeps text for the session's next prompt. It starts
+	// no run and is not shown in the chat.
+	AgentAddNote(ctx context.Context, sessionID, text string) error
 	UpdateAgentModel(ctx context.Context) error
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error

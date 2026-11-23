@@ -76,3 +76,12 @@ func TestFakeHistoryMeta(t *testing.T) {
 	require.ErrorIs(t, err, sql.ErrNoRows)
 	require.Contains(t, f.CallLog(), "GetHistoryVersion:h1")
 }
+
+// TestFakeAgentAddNoteRecords pins the call log entry gateway tests
+// assert on: the note text reaches the fake's log unchanged.
+func TestFakeAgentAddNoteRecords(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	require.NoError(t, f.AgentAddNote(t.Context(), "s1", "prefer the small model"))
+	require.Equal(t, []string{"AgentAddNote:s1:prefer the small model"}, f.CallLog())
+}

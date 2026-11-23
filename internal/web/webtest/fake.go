@@ -404,6 +404,11 @@ func (f *Fake) AgentClearQueue(id string) {
 	f.record("AgentClearQueue:" + id)
 }
 
+func (f *Fake) AgentAddNote(_ context.Context, sessionID, text string) error {
+	f.record("AgentAddNote:" + sessionID + ":" + text)
+	return nil
+}
+
 // resolvePermission publishes the outcome the UI would publish and hands
 // it to a running scripted agent. It reports whether the fake answered.
 func (f *Fake) resolvePermission(p permission.PermissionRequest, granted bool) bool {

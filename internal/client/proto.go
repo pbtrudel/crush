@@ -655,6 +655,21 @@ func (c *Client) AgentAskSession(ctx context.Context, id string, sessionID strin
 	return resp.Answer, nil
 }
 
+// AgentAddNote keeps text for the session's next prompt. It starts no
+// run and is not shown in the chat.
+func (c *Client) AgentAddNote(ctx context.Context, id string, sessionID string, text string) error {
+	body := jsonBody(proto.SessionNote{Text: text})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/sessions/%s/notes", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to add note: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to add note: %w", err)
+	}
+	return nil
+}
+
 // InitiateAgentProcessing triggers agent initialization on the server.
 func (c *Client) InitiateAgentProcessing(ctx context.Context, id string, interactive bool) error {
 	body := jsonBody(proto.AgentInitRequest{Interactive: interactive})

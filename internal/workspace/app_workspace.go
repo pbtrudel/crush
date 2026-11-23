@@ -144,6 +144,17 @@ func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string)
 	return asker.Ask(ctx, sessionID, question)
 }
 
+// AgentAddNote keeps text for the session's next prompt. It starts no
+// run and is not shown in the chat.
+func (w *AppWorkspace) AgentAddNote(_ context.Context, sessionID, text string) error {
+	coord := w.app.Agent()
+	if coord == nil {
+		return ErrAgentNotInitialized
+	}
+	coord.AddNote(sessionID, text)
+	return nil
+}
+
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
 	var persist shell.PersistFunc
 	if sessionID != "" {

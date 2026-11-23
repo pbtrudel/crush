@@ -407,6 +407,10 @@ func (w *ClientWorkspace) AgentAsk(ctx context.Context, sessionID, question stri
 	return answer, agentErr(err)
 }
 
+func (w *ClientWorkspace) AgentAddNote(ctx context.Context, sessionID, text string) error {
+	return agentErr(w.client.AgentAddNote(ctx, w.workspaceID(), sessionID, text))
+}
+
 func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context) error {
 	return agentErr(w.client.UpdateAgent(ctx, w.workspaceID()))
 }

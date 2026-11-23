@@ -1727,6 +1727,15 @@ func TestAppWorkspaceTeamWithoutCoordinator(t *testing.T) {
 	require.ErrorIs(t, w.TeamInterrupt(t.Context(), "s1", "alice"), ErrAgentNotInitialized)
 }
 
+// TestAppWorkspaceAddNoteWithoutCoordinator keeps local and client/server
+// mode reporting the same error for the same state: a note needs an agent
+// to keep it.
+func TestAppWorkspaceAddNoteWithoutCoordinator(t *testing.T) {
+	t.Parallel()
+	w := NewAppWorkspace(&app.App{}, nil)
+	require.ErrorIs(t, w.AgentAddNote(t.Context(), "s1", "prefer the small model"), ErrAgentNotInitialized)
+}
+
 // TestClientWorkspaceSaveSessionSendsTodos pins the wire converter the
 // SDK uses to save a session: the todos must reach the server.
 func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
@@ -1821,4 +1830,42 @@ func TestClientWorkspaceMapsAgentNotInitialized(t *testing.T) {
 	_, err := ws.AgentAsk(t.Context(), "s1", "why?")
 	require.ErrorIs(t, err, ErrAgentNotInitialized)
 	require.ErrorIs(t, ws.UpdateAgentModel(t.Context()), ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.AgentAddNote(t.Context(), "s1", "prefer the small model"), ErrAgentNotInitialized)
+}
+
+// TestClientWorkspaceAddNotePostsTheNote pins the notes call: the SDK
+// posts the note text to the session's notes route.
+func TestClientWorkspaceAddNotePostsTheNote(t *testing.T) {
+	t.Parallel()
+	var (
+		mu     sync.Mutex
+		path   string
+		method string
+		note   proto.SessionNote
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspaces/ws-1/agent/sessions/s1/notes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body proto.SessionNote
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "failed to decode note", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		path, method, note = r.URL.Path, r.Method, body
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	require.NoError(t, ws.AgentAddNote(t.Context(), "s1", "prefer the small model"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "/v1/workspaces/ws-1/agent/sessions/s1/notes", path)
+	require.Equal(t, http.MethodPost, method)
+	require.Equal(t, "prefer the small model", note.Text)
 }
