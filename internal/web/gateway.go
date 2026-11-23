@@ -48,6 +48,9 @@ type Options struct {
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
 	teamPollInterval time.Duration
+	// mcpAuthPoll overrides how long an MCP auth request waits for the
+	// OAuth URL in tests.
+	mcpAuthPoll time.Duration
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -89,6 +92,15 @@ type Gateway struct {
 	shells       map[string]context.CancelFunc
 	shellWG      sync.WaitGroup
 	shellsClosed bool
+	// auths holds the cancel func of every running MCP OAuth flow, keyed
+	// by server name. authWG lets Shutdown wait for them before the hub
+	// closes, and authsClosed refuses a flow started during shutdown.
+	authMu      sync.Mutex
+	auths       map[string]context.CancelFunc
+	authWG      sync.WaitGroup
+	authsClosed bool
+	// authPoll overrides how long an auth request waits for the URL.
+	authPoll time.Duration
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -143,6 +155,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		fileStats:  newFileStatCache(slots),
 		diffs:      slots,
 		shells:     make(map[string]context.CancelFunc),
+		auths:      make(map[string]context.CancelFunc),
+		authPoll:   opts.mcpAuthPoll,
 
 		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
@@ -281,23 +295,30 @@ func normalizeInputMode(mode string) string {
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.
 func (g *Gateway) Shutdown(ctx context.Context) error {
-	// Cancel every running shell, then wait for them before the hub
-	// closes, so no final frame is published into a closed hub. The wait
-	// honours the caller's deadline: a command that ignores cancellation
-	// must not hold shutdown open.
+	// Cancel every running shell and MCP OAuth flow, then wait for them
+	// before the hub closes, so no final frame is published into a closed
+	// hub. The wait honours the caller's deadline: work that ignores
+	// cancellation must not hold shutdown open.
 	g.shellMu.Lock()
 	g.shellsClosed = true
 	for _, cancel := range g.shells {
 		cancel()
 	}
 	g.shellMu.Unlock()
-	shellsDone := make(chan struct{})
+	g.authMu.Lock()
+	g.authsClosed = true
+	for _, cancel := range g.auths {
+		cancel()
+	}
+	g.authMu.Unlock()
+	workDone := make(chan struct{})
 	go func() {
 		g.shellWG.Wait()
-		close(shellsDone)
+		g.authWG.Wait()
+		close(workDone)
 	}()
 	select {
-	case <-shellsDone:
+	case <-workDone:
 	case <-ctx.Done():
 	}
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})

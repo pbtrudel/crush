@@ -58,6 +58,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.registerCommandRoutes(api)
 	g.registerAgentRoutes(api)
 	g.registerModelRoutes(api)
+	g.registerSystemRoutes(api)
 }
 
 // route registers an API handler and records its pattern for the auth

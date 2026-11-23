@@ -86,9 +86,28 @@ type Fake struct {
 	// so @ completion has real files.
 	WorkDir string
 	// LSP and MCP are what LSPGetStates and MCPGetStates return. Set them
-	// before the gateway starts.
-	LSP map[string]workspace.LSPClientInfo
-	MCP map[string]mcp.ClientInfo
+	// before the gateway starts, and LSPDiagnostics likewise: it is what
+	// LSPGetDiagnosticCounts answers.
+	LSP            map[string]workspace.LSPClientInfo
+	MCP            map[string]mcp.ClientInfo
+	LSPDiagnostics map[string]lsp.DiagnosticCounts
+	// MCPDisabled and MCPEnabled are the repository-scoped overrides, and
+	// MCPPending the servers awaiting OAuth. Set them before the gateway
+	// starts.
+	MCPDisabled []string
+	MCPEnabled  []string
+	MCPPending  []mcp.PendingAuthServer
+	// AuthURL is what MCPAuthURL answers while a flow runs.
+	AuthURL string
+	// mcpOverridesErr makes both override reads fail; reloadErr makes
+	// ReloadConfig fail; authErr is what MCPAuthenticate returns once
+	// released. The auth flow blocks on authRelease, or on ctx unless
+	// authIgnoreCtx. Set them with the setters.
+	mcpOverridesErr error
+	reloadErr       error
+	authErr         error
+	authRelease     chan struct{}
+	authIgnoreCtx   bool
 	// Calls is guarded by mu; read it through CallLog.
 	Calls   []string
 	Granted []string
@@ -103,6 +122,9 @@ type Fake struct {
 	OnSummarize func(ctx context.Context, sessionID string) error
 	OnAsk       func(ctx context.Context, sessionID, question string) (string, error)
 	OnShell     func(ctx context.Context, sessionID, command string, onProgress func(string), isFirst bool) (proto.ShellCommandResponse, error)
+	// OnLSPStart, when set, runs after LSPStart records its call, so a test
+	// can observe the context a detached start was given.
+	OnLSPStart func(ctx context.Context, path string)
 	// AskAnswer is what AgentAsk returns when OnAsk is nil.
 	AskAnswer string
 	// NoteErr, when set, makes AgentAddNote fail.
@@ -371,6 +393,41 @@ func (f *Fake) SetReadyErr(err error) {
 
 func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
 
+func (f *Fake) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.LSPDiagnostics[name]
+}
+
+func (f *Fake) LSPStart(ctx context.Context, path string) {
+	f.record("LSPStart:" + path)
+	f.mu.Lock()
+	onStart := f.OnLSPStart
+	f.mu.Unlock()
+	if onStart != nil {
+		onStart(ctx, path)
+	}
+}
+
+func (f *Fake) LSPStopAll(context.Context) {
+	f.record("LSPStopAll")
+}
+
+func (f *Fake) ReloadConfig(context.Context) error {
+	f.record("ReloadConfig")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloadErr
+}
+
+// SetReloadErr makes ReloadConfig fail, the way a busy agent or a config
+// that does not parse does.
+func (f *Fake) SetReloadErr(err error) {
+	f.mu.Lock()
+	f.reloadErr = err
+	f.mu.Unlock()
+}
+
 // SetDiagnostics sets what LSPDiagnosticsByFile returns.
 func (f *Fake) SetDiagnostics(m map[string]lsp.DiagnosticCounts) {
 	f.mu.Lock()
@@ -406,6 +463,124 @@ func (f *Fake) TeamInterrupt(_ context.Context, sessionID, member string) error 
 }
 
 func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }
+
+func (f *Fake) MCPStartServer(_ context.Context, name string) error {
+	f.record("MCPStartServer:" + name)
+	return nil
+}
+
+func (f *Fake) RefreshMCPTools(_ context.Context, name string) {
+	f.record("RefreshMCPTools:" + name)
+}
+
+func (f *Fake) MCPRefreshPrompts(_ context.Context, name string) {
+	f.record("MCPRefreshPrompts:" + name)
+}
+
+func (f *Fake) MCPRefreshResources(_ context.Context, name string) {
+	f.record("MCPRefreshResources:" + name)
+}
+
+func (f *Fake) MCPSetServerDisabled(_ context.Context, name string, disabled bool) error {
+	f.record("MCPSetServerDisabled:" + name + ":" + strconv.FormatBool(disabled))
+	return nil
+}
+
+func (f *Fake) MCPServersDisabled(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpOverridesErr != nil {
+		return nil, f.mcpOverridesErr
+	}
+	return append([]string(nil), f.MCPDisabled...), nil
+}
+
+func (f *Fake) MCPServersEnabled(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpOverridesErr != nil {
+		return nil, f.mcpOverridesErr
+	}
+	return append([]string(nil), f.MCPEnabled...), nil
+}
+
+// SetMCPOverridesErr makes both repository override reads fail, as a
+// session store that cannot answer would.
+func (f *Fake) SetMCPOverridesErr(err error) {
+	f.mu.Lock()
+	f.mcpOverridesErr = err
+	f.mu.Unlock()
+}
+
+func (f *Fake) MCPPendingAuth() []mcp.PendingAuthServer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]mcp.PendingAuthServer(nil), f.MCPPending...)
+}
+
+// SetMCPPending replaces the servers awaiting OAuth, the way the real flow
+// moves a server out of the pending state as soon as it starts.
+func (f *Fake) SetMCPPending(pending []mcp.PendingAuthServer) {
+	f.mu.Lock()
+	f.MCPPending = append([]mcp.PendingAuthServer(nil), pending...)
+	f.mu.Unlock()
+}
+
+func (f *Fake) MCPAuthURL(string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.AuthURL
+}
+
+// MCPAuthenticate plays the blocking OAuth flow: it ends when its context
+// does or when the release channel closes, and then returns the configured
+// error. A nil release channel returns at once.
+func (f *Fake) MCPAuthenticate(ctx context.Context, name string) error {
+	f.record("MCPAuthenticate:" + name)
+	f.mu.Lock()
+	release, ignoreCtx, authErr := f.authRelease, f.authIgnoreCtx, f.authErr
+	f.mu.Unlock()
+	if release == nil {
+		return authErr
+	}
+	if ignoreCtx {
+		<-release
+	} else {
+		select {
+		case <-ctx.Done():
+			f.record("MCPAuthenticateCanceled:" + name)
+			return ctx.Err()
+		case <-release:
+		}
+	}
+	// Released while the context was still live: the flow outlived its
+	// request, which is what a detached caller needs.
+	f.record("MCPAuthenticateReleased:" + name + ":" + strconv.FormatBool(ctx.Err() == nil))
+	return authErr
+}
+
+// SetMCPAuthRelease makes MCPAuthenticate block until ch closes.
+func (f *Fake) SetMCPAuthRelease(ch chan struct{}) {
+	f.mu.Lock()
+	f.authRelease = ch
+	f.mu.Unlock()
+}
+
+// SetMCPAuthIgnoreCtx makes the blocked flow wait for the release channel
+// even after its context ends, the way a command that ignores cancellation
+// does.
+func (f *Fake) SetMCPAuthIgnoreCtx(ignore bool) {
+	f.mu.Lock()
+	f.authIgnoreCtx = ignore
+	f.mu.Unlock()
+}
+
+// SetMCPAuthErr makes a released flow fail.
+func (f *Fake) SetMCPAuthErr(err error) {
+	f.mu.Lock()
+	f.authErr = err
+	f.mu.Unlock()
+}
 
 // AddSkill adds a visible skill and the content ReadSkill returns for it.
 func (f *Fake) AddSkill(entry skills.CatalogEntry, content string) {

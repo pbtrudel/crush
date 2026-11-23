@@ -51,3 +51,11 @@ func summarizeFailure(sessionID string, err error) map[string]string {
 	}
 	return webErrorPayload(sessionID, "summarize_failed", "The session could not be compacted.")
 }
+
+// mcpAuthFailure is the web_error payload for an MCP OAuth flow that
+// failed for a reason other than cancellation. The message is fixed, never
+// the workspace error; the log keeps the detail. No session is named
+// because the flow belongs to no session.
+func mcpAuthFailure() map[string]string {
+	return webErrorPayload("", "mcp_auth_failed", "The MCP server could not be authorised. The terminal log has the details.")
+}

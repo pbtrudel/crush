@@ -255,6 +255,13 @@ func TestEveryRouteRequiresTheCookie(t *testing.T) {
 		"GET /api/providers",
 		"POST /api/models/select",
 		"POST /api/models/reasoning",
+		"GET /api/mcp",
+		"POST /api/mcp/{name}/{action}",
+		"GET /api/lsp",
+		"GET /api/lsp/{name}/diagnostics",
+		"POST /api/lsp/start",
+		"POST /api/lsp/stop",
+		"POST /api/config/reload",
 	} {
 		require.Contains(t, g.apiRoutes, want)
 	}
