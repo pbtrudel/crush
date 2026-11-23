@@ -738,12 +738,23 @@ func TestAgentStartingAnswers503(t *testing.T) {
 func TestPromptFailurePublishesSafeError(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		err  error
-		code string
+		name    string
+		err     error
+		code    string
+		message string
 	}{
-		{"prompt failure", fmt.Errorf("open /home/u/.secret: %w", os.ErrPermission), "prompt_failed"},
-		{"starting agent", fmt.Errorf("run: %w", workspace.ErrAgentNotInitialized), "agent_starting"},
+		{
+			"prompt failure",
+			fmt.Errorf("open /home/u/.secret: %w", os.ErrPermission),
+			"prompt_failed",
+			"The prompt could not run. The terminal log has the details.",
+		},
+		{
+			"starting agent",
+			fmt.Errorf("run: %w", workspace.ErrAgentNotInitialized),
+			"agent_starting",
+			"Crush is starting the agent; send the prompt again in a moment",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -776,7 +787,7 @@ func TestPromptFailurePublishesSafeError(t *testing.T) {
 			require.NoError(t, json.Unmarshal(f.Payload, &payload))
 			require.Equal(t, "s1", payload.SessionID)
 			require.Equal(t, tc.code, payload.Code)
-			require.NotEmpty(t, payload.Error)
+			require.Equal(t, tc.message, payload.Error)
 			require.NotContains(t, payload.Error, "/home/u")
 			require.NotContains(t, payload.Error, "agent coordinator")
 		})

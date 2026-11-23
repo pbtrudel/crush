@@ -80,7 +80,7 @@ type Fake struct {
 	Resolve       bool
 	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
 	// ReadyErr is what AgentReadyErr returns. nil means the agent is
-	// ready. Set it before the gateway starts.
+	// ready. Set it before the first request.
 	ReadyErr error
 }
 

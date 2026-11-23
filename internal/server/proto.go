@@ -1052,11 +1052,6 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 // its machine code so a client can restore the original error identity;
 // everything else falls back to the generic mapper.
 func (c *controllerV1) writeTeamError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, backend.ErrAgentNotInitialized) {
-		c.server.logError(r, err.Error())
-		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.TeamCodeAgentNotInitialized)
-		return
-	}
 	if errors.Is(err, agent.ErrAgentTeamsDisabled) {
 		c.server.logError(r, err.Error())
 		jsonErrorCode(w, http.StatusConflict, err.Error(), proto.TeamCodeDisabled)

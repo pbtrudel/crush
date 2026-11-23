@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/server"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
@@ -235,6 +237,25 @@ func TestTeamRoutesValidate(t *testing.T) {
 	require.Empty(t, fake.CallLog())
 }
 
+// TestTeamRoutesRejectUnknownSession pins that both team actions answer 404
+// unknown_session for a session the workspace does not have, before any team
+// call, the same answer the messages route gives.
+func TestTeamRoutesRejectUnknownSession(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := authedClient(t, g)
+	for _, target := range []string{
+		g.URL() + "/api/team/members/alice/message",
+		g.URL() + "/api/team/members/alice/interrupt",
+	} {
+		rsp, data := doJSON(t, c, http.MethodPost, target, `{"session_id":"nope","text":"hi"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusNotFound, rsp.StatusCode, target)
+		require.Contains(t, string(data), "unknown_session", target)
+	}
+	require.Empty(t, fake.CallLog())
+}
+
 func TestTeamRoutesMapErrors(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
@@ -277,6 +298,24 @@ func (c *teamStubCoordinator) TeamInterrupt(context.Context, string, string) err
 	return c.err
 }
 
+// IsSessionBusy answers the question the server's session route asks every
+// coordinator; without it the nil embed panics and the route answers 500.
+func (c *teamStubCoordinator) IsSessionBusy(string) bool { return false }
+
+// sessionStubService implements only Get; the embedded nil Service panics
+// on anything else, which flags an unexpected call. It stands in for the
+// session store app.NewForTest leaves nil.
+type sessionStubService struct {
+	session.Service
+}
+
+func (sessionStubService) Get(_ context.Context, id string) (session.Session, error) {
+	if id == "s1" {
+		return session.Session{ID: "s1", Title: "Holodeck test"}, nil
+	}
+	return session.Session{}, sql.ErrNoRows
+}
+
 // startClientGateway runs the gateway on a real ClientWorkspace over a real
 // server, so the wire round trip a client/server workspace makes is part of
 // the test.
@@ -285,6 +324,7 @@ func startClientGateway(t *testing.T, coordinator agent.Coordinator) *Gateway {
 	a := app.NewForTest(t.Context())
 	t.Cleanup(a.ShutdownForTest)
 	a.AgentCoordinator = coordinator
+	a.Sessions = sessionStubService{}
 
 	srv := server.NewServer(nil, "tcp", "127.0.0.1:0")
 	ws := &backend.Workspace{ID: "ws-1", Path: t.TempDir(), App: a}
@@ -316,6 +356,7 @@ func TestTeamRoutesMapErrorsOverClientWorkspace(t *testing.T) {
 	cases := []struct {
 		name        string
 		coordinator agent.Coordinator
+		sessionID   string
 		status      int
 		code        string
 		message     string
@@ -355,13 +396,30 @@ func TestTeamRoutesMapErrorsOverClientWorkspace(t *testing.T) {
 			code:        "agent_starting",
 			message:     "Crush is starting the agent",
 		},
+		{
+			// The server has no 404 for a missing session: it keeps 404
+			// meaning "the server lost this workspace", so the lookup
+			// fails with the generic 500 and the gateway answers its
+			// generic get_session failure. In-process mode answers 404
+			// unknown_session for the same state.
+			name:        "unknown session",
+			coordinator: &teamStubCoordinator{},
+			sessionID:   "nope",
+			status:      http.StatusInternalServerError,
+			code:        "get_session",
+			message:     generic,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			g := startClientGateway(t, tc.coordinator)
 			c := authedClient(t, g)
-			rsp, data := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/bob/interrupt", `{"session_id":"s1"}`)
+			sid := tc.sessionID
+			if sid == "" {
+				sid = "s1"
+			}
+			rsp, data := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/bob/interrupt", `{"session_id":"`+sid+`"}`)
 			rsp.Body.Close()
 			require.Equal(t, tc.status, rsp.StatusCode, string(data))
 			var answer struct {

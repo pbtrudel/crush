@@ -214,6 +214,9 @@ func (g *Gateway) handleTeamMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "message_too_large", "message is over 64 KiB")
 		return
 	}
+	if !g.sessionExists(w, r, body.SessionID) {
+		return
+	}
 	if err := g.ws.TeamSendMessage(r.Context(), body.SessionID, r.PathValue("member"), body.Text); err != nil {
 		writeTeamError(w, err)
 		return
@@ -230,6 +233,9 @@ func (g *Gateway) handleTeamInterrupt(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SessionID == "" {
 		writeError(w, http.StatusBadRequest, "missing_session", "session_id is required")
+		return
+	}
+	if !g.sessionExists(w, r, body.SessionID) {
 		return
 	}
 	if err := g.ws.TeamInterrupt(r.Context(), body.SessionID, r.PathValue("member")); err != nil {
