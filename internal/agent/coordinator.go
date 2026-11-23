@@ -1235,21 +1235,33 @@ type promptInput struct {
 	agentTeams bool
 	toolNames  string
 	profile    string
+	// family is the add-on family the lean profile renders from. It is
+	// empty under the full profile, which renders no add-on, so a model
+	// switch alone does not re-render there.
+	family string
 }
 
 // promptInputFor reports the inputs the prompt of a lead agent renders from.
-// The profile is the effective one, and it depends on the model, so a setting
-// change that moves the effective profile re-renders the prompt while one
-// that leaves it alone keeps the cached prefix.
+// The profile is the effective one, and both it and the lean add-on's family
+// depend on the model, so a switch that moves either re-renders the prompt
+// while one that leaves both alone keeps the cached prefix.
 func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
 	provider, model := "", ""
 	if large := c.mainModels().Large; large.Model != nil {
 		provider, model = large.Model.Provider(), large.Model.Model()
 	}
+	profile := effectivePromptProfile(c.cfg.Config().Options.GetPromptProfile(), provider, model)
+	// The family decides the lean add-on, so a switch into another family
+	// has to re-render. The full profile renders no add-on and ignores it.
+	family := ""
+	if profile == config.PromptProfileLean {
+		family = promptFamily(provider, model)
+	}
 	return promptInput{
 		agentTeams: !c.agentsOff(),
 		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
-		profile:    effectivePromptProfile(c.cfg.Config().Options.GetPromptProfile(), provider, model),
+		profile:    profile,
+		family:     family,
 	}
 }
 

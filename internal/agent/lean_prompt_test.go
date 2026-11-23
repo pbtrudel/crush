@@ -308,6 +308,43 @@ func TestPromptInputFollowsTheEffectiveProfile(t *testing.T) {
 		"an unset profile on a model that was not measured stays full")
 }
 
+// A model switch that lands in another prompt family re-renders the lean
+// prompt: the family picks the add-on, so keeping the old one would give a
+// Claude model the DeepSeek guidance.
+func TestPromptInputFollowsThePromptFamily(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive: true,
+		mainModel:   policyTestDeepSeek,
+	})
+	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
+	coord.cfg.Config().Options.PromptProfile = config.PromptProfileLean
+
+	before := coord.promptInputFor(agentCfg)
+	require.Equal(t, familyDefault, before.family)
+
+	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
+
+	after := coord.promptInputFor(agentCfg)
+	require.Equal(t, familyAnthropic, after.family)
+	require.NotEqual(t, before, after,
+		"a family change must re-render the lean prompt")
+}
+
+// The full profile renders no add-on, so a model switch within it leaves the
+// prompt input alone.
+func TestPromptInputIgnoresTheFamilyUnderTheFullProfile(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive: true,
+		mainModel:   policyTestDeepSeek,
+	})
+	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
+	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
+
+	before := coord.promptInputFor(agentCfg)
+	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
+	require.Equal(t, before, coord.promptInputFor(agentCfg))
+}
+
 // profileModel is a language model whose provider and model ID a test names.
 type profileModel struct {
 	fakeLanguageModel
