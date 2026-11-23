@@ -115,6 +115,26 @@ describe('Stage', () => {
     }
   });
 
+  it('puts the todo orbit and the team board after the agent list', async () => {
+    resetWebglProbe();
+    lowPower.value = true;
+    state.value = reduce(reduce(initialState(), fx.snapshot), fx.session);
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<Stage />, root); });
+      const kids = [...root.querySelector<HTMLElement>('.stage__inner')!.children];
+      const list = root.querySelector('.agent-list')!;
+      const orbit = root.querySelector('.todo-orbit')!;
+      const board = root.querySelector('.taskboard')!;
+      expect(kids.indexOf(orbit)).toBe(kids.indexOf(list) + 1);
+      expect(kids.indexOf(board)).toBe(kids.indexOf(list) + 2);
+    } finally {
+      render(null, root);
+      state.value = initialState();
+      lowPower.value = false;
+    }
+  });
+
   it('keeps the ring and every node inside the 2D viewBox', () => {
     for (const count of [1, 2, 3, 5]) {
       const root = document.createElement('div');

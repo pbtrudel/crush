@@ -4,6 +4,8 @@ import { actions, state } from '../../state/store';
 import { contextFill, needsAttention } from '../../state/reducer';
 import { use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
+import { TaskBoard } from '../team/TaskBoard';
+import { TodoOrbit } from '../team/TodoOrbit';
 import { AgentList } from './AgentList';
 import { AgentTags } from './AgentTags';
 import { ConstellationSvg } from './ConstellationSvg';
@@ -47,6 +49,8 @@ export function Stage() {
       )}
       {threeD && <AgentTags agents={agents} selected={s.inspected?.sessionId ?? null} />}
       <AgentList />
+      <TodoOrbit />
+      <TaskBoard />
     </div>
   );
 }
