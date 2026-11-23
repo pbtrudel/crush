@@ -373,7 +373,7 @@ func (d *dispatchedAgent) awaitDeliverable(ctx context.Context) bool {
 		if !d.running() || d.stopping() {
 			return false
 		}
-		if d.runner().IsSessionBusy(d.SessionID) {
+		if d.runner().HasActiveTurn(d.SessionID) {
 			return true
 		}
 		select {
@@ -591,7 +591,7 @@ func (c *coordinator) reopen(entry *dispatchedAgent, prompt string, agent Sessio
 	c.runDispatched(runCtx, entry, gen, func(ctx context.Context) (fantasy.ToolResponse, error) {
 		result, err := agent.Run(ctx, agentCall)
 		if err != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("Subagent failed: %s", err)), nil
+			return subAgentRunError("Subagent failed", err), nil
 		}
 		return subAgentResponse(result), nil
 	})

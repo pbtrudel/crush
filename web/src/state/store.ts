@@ -5,8 +5,8 @@ import type {
   Frame, InputMode, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
 } from '../api/types';
 import {
-  adoptSession, dismissToast, initialState, inspect, markAnswered, mergeInspected, pushToast, reduce,
-  setConn, type State,
+  adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
+  mergeInspected, pushToast, reduce, setConn, type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
 import { observe, telemetry } from './telemetry';
@@ -42,10 +42,11 @@ function dropPermission(id: string) {
   dispatch((s) => ({ ...s, permissions: s.permissions.filter((p) => p.id !== id) }));
 }
 
-// dropQuestion removes a batch the service no longer holds.
+// dropQuestion removes a batch the service no longer holds and shows the
+// next one waiting, if any.
 function dropQuestion(batchId: string) {
   answeredElsewhere();
-  dispatch((s) => (s.question && s.question.id === batchId ? { ...s, question: null } : s));
+  dispatch((s) => dropQuestionFrom(s, batchId));
 }
 
 // isNotPending reports the gateway error for a request the workspace has
@@ -217,7 +218,7 @@ export const actions = {
   async answer(batchId: string, answers: QuestionAnswer[]): Promise<string | null> {
     dispatch((s) => markAnswered(s, batchId));
     try {
-      const { resolved } = await api.answer(answers);
+      const { resolved } = await api.answer(batchId, answers);
       if (!resolved) dropQuestion(batchId);
       return null;
     } catch (err) {
@@ -234,7 +235,7 @@ export const actions = {
   async cancelQuestion(batchId: string): Promise<string | null> {
     dispatch((s) => markAnswered(s, batchId));
     try {
-      const { resolved } = await api.cancelQuestion();
+      const { resolved } = await api.cancelQuestion(batchId);
       if (!resolved) dropQuestion(batchId);
       return null;
     } catch (err) {

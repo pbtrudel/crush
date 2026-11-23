@@ -80,6 +80,20 @@ describe('actions.grant', () => {
 });
 
 describe('actions.answer', () => {
+  it('names the batch it answers', async () => {
+    seed();
+    const answer = vi.spyOn(api, 'answer').mockResolvedValue({ resolved: true });
+    await expect(actions.answer('b1', [])).resolves.toBeNull();
+    expect(answer).toHaveBeenCalledWith('b1', []);
+  });
+
+  it('names the batch it cancels', async () => {
+    seed();
+    const cancel = vi.spyOn(api, 'cancelQuestion').mockResolvedValue({ resolved: true });
+    await expect(actions.cancelQuestion('b1')).resolves.toBeNull();
+    expect(cancel).toHaveBeenCalledWith('b1');
+  });
+
   it('drops a batch the service no longer holds', async () => {
     seed();
     vi.spyOn(api, 'answer').mockResolvedValue({ resolved: false });

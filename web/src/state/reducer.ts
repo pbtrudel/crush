@@ -26,6 +26,7 @@ export interface State {
   messages: Message[];
   permissions: PermissionRequest[];
   question: QuestionRequest | null;
+  questionQueue: QuestionRequest[];
   busy: boolean;
   queued: string[];
   toasts: Toast[];
@@ -47,7 +48,7 @@ export function initialState(): State {
     conn: 'booting', lastSeq: 0, version: '', workingDir: '', project: '', branch: '',
     model: { id: '', name: '', provider: '', context_window: 0 },
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
-    permissions: [], question: null, busy: false, queued: [], toasts: [],
+    permissions: [], question: null, questionQueue: [], busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
     files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null,
   };
@@ -70,6 +71,34 @@ export function setConn(s: State, conn: Conn): State {
 
 export function markAnswered(s: State, id: string): State {
   return { ...s, answered: [...s.answered, id] };
+}
+
+// enqueueQuestion shows a batch unless one is already on screen, in which
+// case it waits: several sessions can each hold a batch at once and the
+// form shows one at a time.
+export function enqueueQuestion(s: State, q: QuestionRequest): State {
+  if (!s.question) return { ...s, question: q };
+  if (s.question.id === q.id) return { ...s, question: q };
+  const i = s.questionQueue.findIndex((x) => x.id === q.id);
+  if (i < 0) return { ...s, questionQueue: [...s.questionQueue, q] };
+  const questionQueue = s.questionQueue.slice();
+  questionQueue[i] = q;
+  return { ...s, questionQueue };
+}
+
+// dropQuestion removes a batch the terminal resolved and promotes the next
+// waiting one, so a second batch does not stay hidden behind the first.
+export function dropQuestion(s: State, id: string): State {
+  if (s.question?.id === id) {
+    const [next, ...rest] = s.questionQueue;
+    return { ...s, question: next ?? null, questionQueue: rest };
+  }
+  if (!s.questionQueue.some((q) => q.id === id)) return s;
+  return { ...s, questionQueue: s.questionQueue.filter((q) => q.id !== id) };
+}
+
+function knowsQuestion(s: State, id: string): boolean {
+  return s.question?.id === id || s.questionQueue.some((q) => q.id === id);
 }
 
 export function adoptSession(s: State, id: string): State {
@@ -214,7 +243,8 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     session: snap.session ?? null,
     messages,
     permissions: snap.permissions ?? [],
-    question: snap.question ?? null,
+    question: (snap.questions ?? [])[0] ?? null,
+    questionQueue: (snap.questions ?? []).slice(1),
     busy: snap.busy || (last ? isOpenAssistant(last) : false),
     queued: snap.queued ?? [],
     lsp: serverMap(snap.lsp),
@@ -291,11 +321,11 @@ export function reduce(s: State, f: Frame): State {
       return local || n.cancelled ? out : pushToast(out, 'info', 'Permission answered in the terminal');
     }
     case 'question_batch_request':
-      return { ...next, question: ev.payload as QuestionRequest };
+      return enqueueQuestion(next, ev.payload as QuestionRequest);
     case 'question_batch_notification': {
       const n = ev.payload as { batch_id: string };
-      if (!s.question || s.question.id !== n.batch_id) return next;
-      const out = { ...next, question: null };
+      if (!knowsQuestion(s, n.batch_id)) return next;
+      const out = dropQuestion(next, n.batch_id);
       return s.answered.includes(n.batch_id) ? out : pushToast(out, 'info', 'Question answered in the terminal');
     }
     case 'permission_mode_changed':

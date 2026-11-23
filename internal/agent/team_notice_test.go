@@ -80,7 +80,7 @@ func TestBackgroundNoticeWakesTeammateOnItsOwnRun(t *testing.T) {
 	prompts := runner.snapshot()
 	require.Len(t, prompts, 2, "the teammate must be woken on its own run")
 	require.Contains(t, prompts[1], "job 1 finished")
-	require.False(t, coord.currentAgent().IsSessionBusy(sess.ID), "the Lead's agent must not run a teammate session")
+	require.False(t, coord.currentAgent().HasActiveTurn(sess.ID), "the Lead's agent must not run a teammate session")
 	require.Never(t, func() bool {
 		msgs, err := coord.messages.List(context.Background(), sess.ID)
 		return err == nil && len(msgs) > 0

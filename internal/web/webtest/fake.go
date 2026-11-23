@@ -75,8 +75,10 @@ type Fake struct {
 	Calls   []string
 	Granted []string
 	Answers [][]question.Answer
-	Resolve bool
-	OnRun   func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+	// AnswerBatches records the batch each answer named.
+	AnswerBatches []string
+	Resolve       bool
+	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
 }
 
 // NewFake returns a fake with one current session "s1".
@@ -394,9 +396,10 @@ func (f *Fake) PermissionDeny(p permission.PermissionRequest) bool {
 	return f.resolvePermission(p, false)
 }
 
-func (f *Fake) QuestionAnswer(a []question.Answer) bool {
+func (f *Fake) QuestionAnswer(batchID string, a []question.Answer) bool {
 	f.mu.Lock()
 	f.Answers = append(f.Answers, a)
+	f.AnswerBatches = append(f.AnswerBatches, batchID)
 	f.mu.Unlock()
 	f.record("QuestionAnswer")
 	if !f.Resolve {
@@ -409,8 +412,8 @@ func (f *Fake) QuestionAnswer(a []question.Answer) bool {
 	return true
 }
 
-func (f *Fake) QuestionCancel() bool {
-	f.record("QuestionCancel")
+func (f *Fake) QuestionCancel(batchID string) bool {
+	f.record("QuestionCancel:" + batchID)
 	return f.Resolve
 }
 

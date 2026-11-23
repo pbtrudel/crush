@@ -267,7 +267,10 @@ func blockFuncs(blocked []string) []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions) fantasy.AgentTool {
+// NewBashTool returns the bash tool. Every shell it starts is tagged with
+// shellOwner, so the owner can stop them with
+// [shell.BackgroundShellManager.KillOwned].
+func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions, shellOwner any) fantasy.AgentTool {
 	blocked := resolveBlockedCommands(perms)
 	userSafe := userSafeCommands(perms)
 	return fantasy.NewAgentTool(
@@ -296,8 +299,21 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 			// Check whether the command is dangerous so we can surface a
 			// warning in the permission dialog.
 			var check shell.CommandCheck
+			var adminBlocks []shell.BlockFunc
+			mode := permissions.PermissionMode()
 			if !safeReadOnly {
 				check = shell.CheckCommand(params.Command, blockFuncs(blocked))
+
+				if check.Matched && mode.RefusesDangerous() {
+					adminBlocks = adminBlockFuncs(blocked)
+					if inner := shell.CheckCommand(params.Command, adminBlocks); inner.Matched {
+						name := inner.Reason
+						if slices.Contains(adminCommands, name) {
+							name = "the command " + name + " runs"
+						}
+						return fantasy.NewTextErrorResponse(yoloBlockedMessage(name)), nil
+					}
+				}
 
 				p, err := permissions.Request(
 					ctx,
@@ -326,39 +342,132 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 				}
 			}
 
-			// Re-blocking a command that was already approved would override
-			// the answer that was given, whether the user gave it at a prompt
-			// or yolo mode gave it on their behalf. That only applies when the
-			// check actually recognised a command by name, though: a warning
-			// that merely says "this could not be analysed" names nothing the
-			// user could have judged, so approving it is not approval of
-			// anything in particular and the block list stays on. Otherwise a
-			// stray $(date) anywhere on the line would waive the run-time
-			// checks for every command beside it.
-			//
-			// What the block list can see is narrow: commands this interpreter
-			// dispatches itself, including names that only resolve after a
-			// glob or variable expands. A command that runs inside a child
-			// process is invisible to it.
-			//
-			// Sysadmin mode is the deliberate exception: it asks for nothing
-			// and blocks nothing.
+			// A named match reaching here was approved at a prompt; keep the block list for everything else.
 			var blocksToUse []shell.BlockFunc
-			if !check.Matched && permissions.PermissionMode() != permission.PermissionModeSysadmin {
+			switch {
+			case adminBlocks != nil:
+				blocksToUse = adminBlocks
+			case !check.Matched && mode != permission.PermissionModeSysadmin:
 				blocksToUse = blockFuncs(blocked)
 			}
-			return executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs)
+			return executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs, shellOwner)
 		},
 	)
 }
 
-func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, spillDir string, blockFuncsToUse []shell.BlockFunc, sessionID string, maxBackgroundJobs int) (fantasy.ToolResponse, error) {
+// adminCommands still run in yolo mode. They ask for the user's own
+// credentials (a password, Touch ID) when they run, so yolo answering the
+// permission prompt does not let them act unseen. What they run is still
+// checked against the block list.
+var adminCommands = []string{"doas", "sudo"}
+
+// adminValueFlags are the flags of each admin command that take a separate
+// value, so the value is not mistaken for the command being run.
+var adminValueFlags = map[string][]string{
+	"doas": {"-a", "-C", "-u"},
+	"sudo": {
+		"-C", "--close-from", "-D", "--chdir", "-g", "--group", "-h", "--host",
+		"-p", "--prompt", "-R", "--chroot", "-r", "--role", "-T", "--command-timeout",
+		"-t", "--type", "-U", "--other-user", "-u", "--user",
+	},
+}
+
+// adminInner returns the command an admin command runs, and false when args
+// is not an admin command. An admin command with nothing after its flags
+// (sudo -v) runs nothing, so it resolves to an empty command.
+func adminInner(args []string) ([]string, bool) {
+	args = shell.ResolveArgv(args)
+	if len(args) == 0 {
+		return nil, false
+	}
+	name := shell.NormalizeCommandName(args[0])
+	if !slices.Contains(adminCommands, name) {
+		return nil, false
+	}
+	valueFlags := adminValueFlags[name]
+	rest := args[1:]
+options:
+	for len(rest) > 0 {
+		tok := rest[0]
+		switch {
+		case tok == "--":
+			rest = rest[1:]
+			break options
+		case !strings.HasPrefix(tok, "-") || tok == "-":
+			break options
+		case strings.HasPrefix(tok, "--"):
+			// --user=root is one word; --user root is two.
+			words := 1
+			if slices.Contains(valueFlags, tok) {
+				words = 2
+			}
+			rest = rest[min(words, len(rest)):]
+		default:
+			rest = rest[min(shortFlagWords(tok, valueFlags), len(rest)):]
+		}
+	}
+	// sudo sets leading NAME=VALUE words in the command's environment, so
+	// the command is the first word after them.
+	if name == "sudo" {
+		for len(rest) > 0 && strings.Index(rest[0], "=") > 0 {
+			rest = rest[1:]
+		}
+	}
+	if len(rest) == 0 {
+		return nil, true
+	}
+	return rest, true
+}
+
+// shortFlagWords is how many words a cluster of short flags such as -Eu
+// takes. The first letter that takes a value ends the cluster: the rest of
+// the word is its value (-uroot), or the next word is when nothing is left
+// (-Eu root).
+func shortFlagWords(cluster string, valueFlags []string) int {
+	for i := 1; i < len(cluster); i++ {
+		if slices.Contains(valueFlags, "-"+cluster[i:i+1]) {
+			if i == len(cluster)-1 {
+				return 2
+			}
+			return 1
+		}
+	}
+	return 1
+}
+
+// adminBlockFuncs is the block list with the admin commands taken off it,
+// plus a rule that applies the list to whatever an admin command runs, so
+// `sudo true` runs in yolo mode while `sudo curl` stays blocked.
+func adminBlockFuncs(blocked []string) []shell.BlockFunc {
+	inner := blockFuncs(slices.DeleteFunc(slices.Clone(blocked), func(cmd string) bool {
+		return slices.Contains(adminCommands, shell.NormalizeCommandName(cmd))
+	}))
+	var wrapped shell.BlockFunc
+	wrapped = func(args []string) bool {
+		cmd, ok := adminInner(args)
+		if !ok || len(cmd) == 0 {
+			return false
+		}
+		if wrapped(cmd) {
+			return true
+		}
+		return slices.ContainsFunc(inner, func(block shell.BlockFunc) bool { return block(cmd) })
+	}
+	return append(inner, wrapped)
+}
+
+// yoloBlockedMessage names the way out so the model doesn't retry variations.
+func yoloBlockedMessage(command string) string {
+	return fmt.Sprintf("blocked: %s is a dangerous command, and yolo mode blocks dangerous commands without asking. Tell the user: they can switch to normal mode to be asked about it, use sysadmin mode to allow it, or mark it safe with `permissions safe`.", command)
+}
+
+func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, spillDir string, blockFuncsToUse []shell.BlockFunc, sessionID string, maxBackgroundJobs int, shellOwner any) (fantasy.ToolResponse, error) {
 	// If explicitly requested as background, start immediately with detached context
 	if params.RunInBackground {
 		startTime := time.Now()
 		bgManager := shell.GetBackgroundShellManager()
 		// Use background context so it continues after tool returns
-		bgShell, err := bgManager.StartWithSession(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, sessionID, maxBackgroundJobs)
+		bgShell, err := bgManager.StartWithSession(context.Background(), shellOwner, execWorkingDir, blockFuncsToUse, params.Command, params.Description, sessionID, maxBackgroundJobs)
 		if err != nil {
 			return fantasy.NewTextErrorResponse("Failed to start background shell: " + err.Error()), nil
 		}
@@ -419,7 +528,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	// answered inline, so announcing it as a background completion would
 	// send the model after output it already has.
 	bgManager := shell.GetBackgroundShellManager()
-	bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, maxBackgroundJobs)
+	bgShell, err := bgManager.Start(context.Background(), shellOwner, execWorkingDir, blockFuncsToUse, params.Command, params.Description, maxBackgroundJobs)
 	if err != nil {
 		return fantasy.NewTextErrorResponse("Failed to start shell: " + err.Error()), nil
 	}
@@ -436,10 +545,9 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-ctx.Done():
 		// Incoming context was cancelled before we moved to background
 		// Kill the shell and return error
-		if err := bgManager.Kill(bgShell.ID); err != nil {
-			slog.Warn("Failed to kill interrupted shell",
-				"shell_id", bgShell.ID, "error", err)
-		}
+		// Kill returns at once with ctx already done, so its "may still be
+		// exiting" error is expected here and not worth reporting.
+		_ = bgManager.Kill(ctx, bgShell.ID)
 		// The result is still stored, from this metadata and the error,
 		// so the stamp says the command was aborted.
 		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{

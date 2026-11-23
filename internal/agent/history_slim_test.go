@@ -31,7 +31,9 @@ func assistantAt(seconds int64, text string) message.Message {
 // callAt builds an assistant message carrying one tool call.
 func callAt(seconds int64, id, name, input string) message.Message {
 	msg := message.Message{Role: message.Assistant, CreatedAt: seconds}
-	msg.AddToolCall(message.ToolCall{ID: id, Name: name, Input: input, Finished: true})
+	// A fixed start makes two builds of the same history byte-identical;
+	// AddToolCall would otherwise stamp the wall clock at each build.
+	msg.AddToolCall(message.ToolCall{ID: id, Name: name, Input: input, Finished: true, StartedAtMs: seconds * 1_000})
 	return msg
 }
 
@@ -439,8 +441,13 @@ func TestSlimHistory_DeepSeekDefaultUnchanged(t *testing.T) {
 	agent := testSessionAgent(env, nil, nil, "system").(*sessionAgent)
 	agent.cfg = config.NewTestStore(&config.Config{Options: &config.Options{}})
 
+	// One build cloned, not two builds: tool calls are stamped with the
+	// time they were added, so two builds can differ by a millisecond.
 	deepseek := coldHistory()
-	other := coldHistory()
+	other := make([]message.Message, len(deepseek))
+	for i := range deepseek {
+		other[i] = deepseek[i].Clone()
+	}
 	agent.slimHistory(Model{
 		Model:      &stubProviderModel{provider: "other"},
 		CatwalkCfg: catwalk.Model{ID: "deepseek-v4.1-flash"},

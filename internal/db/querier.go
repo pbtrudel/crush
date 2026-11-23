@@ -22,6 +22,8 @@ type Querier interface {
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
+	DeleteSkillsDisabled(ctx context.Context, name string) error
+	DeleteSkillsEnabled(ctx context.Context, name string) error
 	GetAverageResponseTime(ctx context.Context) (int64, error)
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
@@ -40,6 +42,8 @@ type Querier interface {
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
 	InsertMCPDisabledServer(ctx context.Context, name string) error
 	InsertMCPEnabledServer(ctx context.Context, name string) error
+	InsertSkillsDisabled(ctx context.Context, name string) error
+	InsertSkillsEnabled(ctx context.Context, name string) error
 	// Backs prompt history when no session is open. Needs
 	// idx_messages_role_created_at to seek rather than scan the table.
 	// Child sessions are excluded: a subagent's task prompt is a user
@@ -65,6 +69,8 @@ type Querier interface {
 	ListNewFiles(ctx context.Context) ([]File, error)
 	ListSessionReadFiles(ctx context.Context, sessionID string) ([]ReadFile, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	ListSkillsDisabled(ctx context.Context) ([]string, error)
+	ListSkillsEnabled(ctx context.Context) ([]string, error)
 	// Backs prompt history, which steps back one entry at a time.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error
@@ -72,6 +78,9 @@ type Querier interface {
 	SetSessionArchived(ctx context.Context, arg SetSessionArchivedParams) (Session, error)
 	SetSessionChannel(ctx context.Context, arg SetSessionChannelParams) (Session, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
+	// channel is deliberately not written here: SetSessionChannel owns the
+	// binding, so a load-modify-Save cycle with a stale session cannot
+	// clobber the channel the coordinator just set.
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
 	UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error
 	UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error

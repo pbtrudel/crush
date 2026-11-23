@@ -286,25 +286,40 @@ func (g *Gateway) handleMode(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		BatchID string            `json:"batch_id"`
 		Answers []question.Answer `json:"answers"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if g.ws.QuestionAnswer(body.Answers) {
+	if body.BatchID == "" {
+		writeError(w, http.StatusBadRequest, "bad_batch_id", "batch_id is required")
+		return
+	}
+	if _, ok := g.pending.question(body.BatchID); ok && g.ws.QuestionAnswer(body.BatchID, body.Answers) {
 		writeJSON(w, http.StatusOK, map[string]bool{"resolved": true})
 		return
 	}
-	g.pending.forgetQuestion()
+	g.pending.forgetQuestion(body.BatchID)
 	writeError(w, http.StatusNotFound, "not_pending", "question batch is no longer pending")
 }
 
-func (g *Gateway) handleQuestionCancel(w http.ResponseWriter, _ *http.Request) {
-	if g.ws.QuestionCancel() {
+func (g *Gateway) handleQuestionCancel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BatchID string `json:"batch_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.BatchID == "" {
+		writeError(w, http.StatusBadRequest, "bad_batch_id", "batch_id is required")
+		return
+	}
+	if _, ok := g.pending.question(body.BatchID); ok && g.ws.QuestionCancel(body.BatchID) {
 		writeJSON(w, http.StatusOK, map[string]bool{"resolved": true})
 		return
 	}
-	g.pending.forgetQuestion()
+	g.pending.forgetQuestion(body.BatchID)
 	writeError(w, http.StatusNotFound, "not_pending", "question batch is no longer pending")
 }
 

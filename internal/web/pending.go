@@ -12,14 +12,18 @@ import (
 // pending remembers unresolved prompts so the browser can answer by ID
 // and so snapshots can restore open dialogs.
 type pending struct {
-	mu    sync.Mutex
-	perms map[string]permission.PermissionRequest
-	order []string
-	q     *question.Request
+	mu     sync.Mutex
+	perms  map[string]permission.PermissionRequest
+	order  []string
+	qs     map[string]question.Request
+	qorder []string
 }
 
 func newPending() *pending {
-	return &pending{perms: make(map[string]permission.PermissionRequest)}
+	return &pending{
+		perms: make(map[string]permission.PermissionRequest),
+		qs:    make(map[string]question.Request),
+	}
 }
 
 func (p *pending) observe(ev any) {
@@ -43,12 +47,13 @@ func (p *pending) observe(ev any) {
 		}
 		p.compact()
 	case pubsub.Event[question.Request]:
-		q := e.Payload
-		p.q = &q
-	case pubsub.Event[question.Notification]:
-		if p.q != nil && p.q.ID == e.Payload.BatchID {
-			p.q = nil
+		if _, ok := p.qs[e.Payload.ID]; !ok {
+			p.qorder = append(p.qorder, e.Payload.ID)
 		}
+		p.qs[e.Payload.ID] = e.Payload
+	case pubsub.Event[question.Notification]:
+		delete(p.qs, e.Payload.BatchID)
+		p.compactQuestions()
 	case pubsub.Event[notify.RunComplete]:
 		// The run that asked is over, so nothing it asked can be answered
 		// any more. Leaving these entries behind would keep dialogs open
@@ -66,9 +71,12 @@ func (p *pending) forgetSessionLocked(sessionID string) {
 		}
 	}
 	p.compact()
-	if p.q != nil && p.q.SessionID == sessionID {
-		p.q = nil
+	for id, q := range p.qs {
+		if q.SessionID == sessionID {
+			delete(p.qs, id)
+		}
 	}
+	p.compactQuestions()
 }
 
 func (p *pending) compact() {
@@ -79,6 +87,16 @@ func (p *pending) compact() {
 		}
 	}
 	p.order = kept
+}
+
+func (p *pending) compactQuestions() {
+	kept := p.qorder[:0]
+	for _, id := range p.qorder {
+		if _, ok := p.qs[id]; ok {
+			kept = append(kept, id)
+		}
+	}
+	p.qorder = kept
 }
 
 func (p *pending) permission(id string) (permission.PermissionRequest, bool) {
@@ -98,14 +116,23 @@ func (p *pending) permissions() []permission.PermissionRequest {
 	return out
 }
 
-func (p *pending) question() *question.Request {
+// question returns the batch with the given ID, if it is still pending.
+func (p *pending) question(id string) (question.Request, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.q == nil {
-		return nil
+	q, ok := p.qs[id]
+	return q, ok
+}
+
+// questions returns every pending batch in arrival order.
+func (p *pending) questions() []question.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]question.Request, 0, len(p.qorder))
+	for _, id := range p.qorder {
+		out = append(out, p.qs[id])
 	}
-	q := *p.q
-	return &q
+	return out
 }
 
 func (p *pending) forget(id string) {
@@ -115,9 +142,10 @@ func (p *pending) forget(id string) {
 	p.mu.Unlock()
 }
 
-// forgetQuestion drops the pending question, if any.
-func (p *pending) forgetQuestion() {
+// forgetQuestion drops one pending batch. Other batches stay answerable.
+func (p *pending) forgetQuestion(id string) {
 	p.mu.Lock()
-	p.q = nil
+	delete(p.qs, id)
+	p.compactQuestions()
 	p.mu.Unlock()
 }

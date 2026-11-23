@@ -112,7 +112,7 @@ func testEnvAt(t *testing.T, workingDir string) fakeEnv {
 	// on a permission prompt.
 	permissions.SetPermissionMode(permission.PermissionModeSysadmin)
 	history := history.NewService(q, conn)
-	filetrackerService := filetracker.NewService(q)
+	filetrackerService := filetracker.NewService(q, workingDir)
 	lspClients := csync.NewMap[string, *lsp.Client]()
 	titles := new(titleTracker)
 
@@ -133,6 +133,12 @@ func testEnvAt(t *testing.T, workingDir string) fakeEnv {
 		lspClients,
 		titles,
 	}
+}
+
+// testConfigStore is the minimal store a sessionAgent needs; production always
+// gets a real one.
+func testConfigStore() *config.ConfigStore {
+	return config.NewTestStore(&config.Config{Options: &config.Options{}, Providers: csync.NewMap[string, config.ProviderConfig]()})
 }
 
 func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPrompt string, tools ...fantasy.AgentTool) SessionAgent {
@@ -166,14 +172,14 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 		t, _ := time.Parse("1/2/2006", "1/1/2025")
 		return t
 	}
-	prompt, err := coderPrompt(
-		prompt.WithPlatform("linux"),
-		prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
-	)
+	cfg, err := config.Init(context.Background(), env.workingDir, "", false)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Init(context.Background(), env.workingDir, "", false)
+	prompt, err := loadPrompt(cfg, "coder",
+		prompt.WithPlatform("linux"),
+		prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +197,9 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 	cfg.Config().Options.ContextPaths = nil
 	cfg.Config().Options.GlobalContextPaths = nil
 	cfg.Config().LSP = nil
+	// The working directory is not a git repository, so Load caps the ls
+	// walk. The cassettes were recorded without that cap.
+	cfg.Config().Tools.Ls = config.ToolLs{}
 
 	systemPrompt, err := prompt.Build(context.TODO(), large.Provider(), large.Model(), cfg)
 	if err != nil {
@@ -204,7 +213,7 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 	}
 
 	allTools := []fantasy.AgentTool{
-		tools.NewBashTool(env.permissions, env.workingDir, cfg.Config().Options.DataDirectory, cfg.Config().Options.Attribution, modelName, cfg.Config().Options.GetMaxBackgroundJobs(), cfg.Config().Permissions),
+		tools.NewBashTool(env.permissions, env.workingDir, cfg.Config().Options.DataDirectory, cfg.Config().Options.Attribution, modelName, cfg.Config().Options.GetMaxBackgroundJobs(), cfg.Config().Permissions, nil),
 		tools.NewDownloadTool(env.permissions, env.workingDir, r.GetDefaultClient()),
 		tools.NewEditTool(nil, env.permissions, env.history, *env.filetracker, env.workingDir, cfg.Config().Options.GetEditWithoutRead()),
 		tools.NewMultiEditTool(nil, env.permissions, env.history, *env.filetracker, env.workingDir, cfg.Config().Options.GetEditWithoutRead()),

@@ -112,6 +112,39 @@ describe('reduce', () => {
     expect(s.toasts.at(-1)?.text).toBe('Question answered in the terminal');
   });
 
+  it('a second question batch waits instead of replacing the first', () => {
+    const second = structuredClone(fx.question_batch_request) as any;
+    second.payload.payload.id = 'q-2';
+    second.payload.payload.session_id = 's2';
+    let s = reduce(live(), fx.question_batch_request);
+    s = reduce(s, second);
+    expect(s.question?.id).toBe('q-1');
+    expect(s.questionQueue.map((q) => q.id)).toEqual(['q-2']);
+
+    s = reduce(s, fx.question_batch_notification);
+    expect(s.question?.id).toBe('q-2');
+    expect(s.questionQueue).toHaveLength(0);
+  });
+
+  it('a notification for a queued batch keeps the one on screen', () => {
+    const second = structuredClone(fx.question_batch_request) as any;
+    second.payload.payload.id = 'q-2';
+    let s = reduce(live(), fx.question_batch_request);
+    s = reduce(s, second);
+    s = reduce(s, {
+      seq: 14, type: 'question_batch_notification', payload: { type: 'updated', payload: { batch_id: 'q-2' } },
+    } as Frame);
+    expect(s.question?.id).toBe('q-1');
+    expect(s.questionQueue).toHaveLength(0);
+  });
+
+  it('a snapshot restores every open batch', () => {
+    const req = (fx.question_batch_request.payload as any).payload;
+    const s = reduce(initialState(), snapshot({ questions: [req, { ...req, id: 'q-2' }] } as Partial<Snapshot>));
+    expect(s.question?.id).toBe('q-1');
+    expect(s.questionQueue.map((q) => q.id)).toEqual(['q-2']);
+  });
+
   it('session_follow resets messages and requests a reload', () => {
     let s = reduce(live(), fx.message_user);
     s = reduce(s, { seq: 13, type: 'session_follow', payload: { session_id: 's2' } });
