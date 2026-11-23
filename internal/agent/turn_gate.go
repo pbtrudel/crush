@@ -303,7 +303,9 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 	todoAsked := false
 	todoItem := ""
 	checks := slices.Clone(a.gateChecks)
-	checks = append(checks, todoGateCheck{})
+	if !a.isSubAgent {
+		checks = append(checks, todoGateCheck{})
+	}
 	if a.completionCheckOn() {
 		checks = append(checks, completionGateCheck{})
 	}
@@ -313,7 +315,7 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		if verdict.Reason == "" {
 			continue
 		}
-		if check.Name() == todoGateCheckName {
+		if _, isTodo := check.(todoGateCheck); isTodo {
 			todoAsked = true
 			todoItem = in.StaleTodo
 		}

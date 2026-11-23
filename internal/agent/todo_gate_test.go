@@ -245,6 +245,22 @@ func TestTodoGateReadsTheListOnlyWhereItCanAsk(t *testing.T) {
 	}
 }
 
+// A subagent turn renders its own prompt and owes the user nothing, so the
+// todo gate must not spend a continuation on it.
+func TestTodoGateSkipsSubagentTurns(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	script := append(stalePromptScript(), answer("still working", fantasy.FinishReasonStop, 1_000))
+	sa := newCompactionAgent(env, &scriptedModel{script: script}, nil, false, &recordingTool{name: tools.BashToolName})
+	sa.isSubAgent = true
+	sess := staleTodoSession(t, env, "subagent todo gate")
+
+	_, err := sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Empty(t, gateRows(t, env, sess.ID))
+}
+
 // A prompt that cannot continue never reaches the gate, so the note is still
 // written: the user learns the list stayed behind.
 func TestTurnGate_TodoNoteFallsBackWithoutContinuations(t *testing.T) {
