@@ -54,6 +54,13 @@ function stubSessions(list: Session[] = LIST) {
   return vi.spyOn(api, 'sessions').mockResolvedValue(list);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -450,5 +457,441 @@ describe('session switcher', () => {
     setCinematic(false);
     await act(() => { state.value = { ...state.value }; });
     expect(hudButton().tabIndex).toBe(0);
+  });
+
+  it('keeps focus on the row after a rename is cancelled', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+    expect(document.activeElement).toBe(rowButton('Fix the lexer', 'Rename'));
+  });
+
+  it('keeps focus on the row after a rename succeeds', async () => {
+    seed();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser'), session('s-2', 'New name'), session('s-3', 'Port the parser')]);
+    const rename = vi.spyOn(api, 'renameSession').mockResolvedValue(session('s-2', 'New name'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Rename Fix the lexer"]')!;
+    await act(() => {
+      input.value = 'New name';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await flush();
+    await pressKey(input, { key: 'Enter', code: 'Enter' });
+
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+    expect(document.activeElement).toBe(rowButton('New name', 'Rename'));
+  });
+
+  it('keeps focus on the row after the confirm is cancelled', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Cancel').click(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    expect(document.activeElement).toBe(rowButton('Fix the lexer', 'Delete'));
+  });
+
+  it('keeps focus on the row after Escape cancels the confirm', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    expect(document.activeElement).toBe(rowButton('Fix the lexer', 'Delete'));
+  });
+
+  it('keeps focus on the row when the delete is refused as busy', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'deleteSession').mockRejectedValue(new ApiError(409, 'session_busy', 'Crush is working in this session'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toContain('Crush is working in this session');
+    expect(document.activeElement).toBe(rowButton('Fix the lexer', 'Delete'));
+  });
+
+  it('focuses the retry when the reload after a delete fails', async () => {
+    seed();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    expect(retry).not.toBeNull();
+    expect(document.activeElement).toBe(retry);
+  });
+
+  it('moves focus to the row that takes the deleted one\u2019s place', async () => {
+    seed();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(titleButton('Port the parser')).not.toBeNull();
+    expect(document.activeElement).toBe(titleButton('Port the parser'));
+    expect(titleButton('Port the parser').tabIndex).toBe(0);
+  });
+
+  it('clamps the neighbour after the last row and falls back to the filter', async () => {
+    seed();
+    state.value = {
+      ...state.value,
+      sessionId: 's-0',
+      session: session('s-0', 'Elsewhere'),
+    };
+    const sessions = vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser'), session('s-2', 'Fix the lexer')])
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser')])
+      .mockResolvedValueOnce([]);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Port the parser', 'Delete').click(); });
+    await flush();
+    expect(document.activeElement).toBe(titleButton('Fix the lexer'));
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    expect(document.activeElement).toBe(titleButton('Fix the parser'));
+
+    await act(() => { rowButton('Fix the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the parser', 'Delete').click(); });
+    await flush();
+    expect(sessions).toHaveBeenCalledTimes(4);
+    expect(dialog()!.textContent).toContain('No sessions match');
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('moves from the filter into the list and roves the tab stop', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+    const proto = Element.prototype as unknown as { scrollIntoView?: (arg?: unknown) => void };
+    const before = proto.scrollIntoView;
+    const scroll = vi.fn();
+    proto.scrollIntoView = scroll;
+    try {
+      filter().focus();
+      await pressKey(filter(), { key: 'ArrowDown', code: 'ArrowDown' });
+      expect(document.activeElement).toBe(titleButton('Fix the parser'));
+      expect(titleButton('Fix the parser').tabIndex).toBe(0);
+      expect(titleButton('Fix the lexer').tabIndex).toBe(-1);
+
+      await pressKey(titleButton('Fix the parser'), { key: 'ArrowDown', code: 'ArrowDown' });
+      expect(document.activeElement).toBe(titleButton('Fix the lexer'));
+      expect(titleButton('Fix the lexer').tabIndex).toBe(0);
+      expect(titleButton('Fix the parser').tabIndex).toBe(-1);
+
+      await pressKey(titleButton('Fix the lexer'), { key: 'ArrowUp', code: 'ArrowUp' });
+      expect(document.activeElement).toBe(titleButton('Fix the parser'));
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      proto.scrollIntoView = before;
+    }
+  });
+
+  it('marks the current session for assistive tech', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    expect(titleButton('Fix the parser').getAttribute('aria-current')).toBe('true');
+    expect(titleButton('Fix the lexer').hasAttribute('aria-current')).toBe(false);
+    expect(row('Fix the parser').textContent).toContain('current');
+    expect(row('Fix the lexer').textContent).not.toContain('current');
+  });
+
+  it('renders a title with markup as text', async () => {
+    seed();
+    const evil = '<img src=x onerror=alert(1)>';
+    stubSessions([session('s-1', 'Fix the parser'), session('s-9', evil)]);
+    await mount();
+    await openFromHud();
+
+    expect(titleButton(evil)).not.toBeNull();
+    expect(titleButton(evil).textContent).toBe(evil);
+    expect(dialog()!.querySelector('.sessions__list img')).toBeNull();
+    expect(dialog()!.querySelector('.sessions__list')!.textContent).toContain(evil);
+  });
+
+  it('drops an answer that arrives after the dialog closed', async () => {
+    seed();
+    const answer = deferred<Session[]>();
+    const sessions = vi.spyOn(api, 'sessions')
+      .mockReturnValueOnce(answer.promise)
+      .mockResolvedValueOnce([session('s-1', 'Fresh session')]);
+    await mount();
+    await act(() => { hudButton().click(); });
+    await flush();
+    expect(dialog()).not.toBeNull();
+
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+    expect(dialog()).toBeNull();
+    await act(async () => { answer.resolve(LIST); await Promise.resolve(); });
+    await flush();
+    expect(dialog()).toBeNull();
+    expect(root.querySelector('.sessions__list')).toBeNull();
+
+    // A reopened switcher starts from its own fetch, never the late answer.
+    await openFromHud();
+    expect(Array.from(dialog()!.querySelectorAll('.sessions__title')).map((b) => b.textContent))
+      .toEqual(['Fresh session']);
+    expect(sessions).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops an older answer that resolves after a newer load', async () => {
+    seed();
+    const older = deferred<Session[]>();
+    const newer = deferred<Session[]>();
+    const sessions = vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const remove = vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    expect(remove).toHaveBeenCalledWith('s-2');
+
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Port the parser', 'Delete').click(); });
+    await flush();
+    expect(remove).toHaveBeenCalledWith('s-3');
+    expect(sessions).toHaveBeenCalledTimes(3);
+
+    // The newer load answers first and the older one lands after it. The
+    // older list still holds both deleted sessions, so it must be dropped.
+    await act(async () => {
+      newer.resolve([session('s-1', 'Fix the parser')]);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(Array.from(dialog()!.querySelectorAll('.sessions__title')).map((b) => b.textContent))
+      .toEqual(['Fix the parser']);
+
+    await act(async () => {
+      older.resolve([session('s-1', 'Fix the parser'), session('s-2', 'Fix the lexer'), session('s-3', 'Port the parser')]);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(Array.from(dialog()!.querySelectorAll('.sessions__title')).map((b) => b.textContent))
+      .toEqual(['Fix the parser']);
+  });
+
+  it('renames once on a double Enter', async () => {
+    seed();
+    stubSessions();
+    const rename = vi.spyOn(api, 'renameSession').mockResolvedValue(session('s-2', 'New name'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Rename Fix the lexer"]')!;
+    await act(() => {
+      input.value = 'New name';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await flush();
+    await act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(rename).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes once on a double click of the confirm', async () => {
+    seed();
+    stubSessions();
+    const remove = vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => {
+      const confirm = confirmButton('Fix the lexer', 'Delete');
+      confirm.click();
+      confirm.click();
+    });
+    await flush();
+
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('follows once on a double click of a title button', async () => {
+    seed();
+    stubSessions();
+    const follow = vi.spyOn(api, 'follow').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => {
+      const button = titleButton('Fix the lexer');
+      button.click();
+      button.click();
+    });
+    await flush();
+
+    expect(follow).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves focus to the editor a new action opens', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { rowButton('Port the parser', 'Rename').click(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Rename Port the parser"]')!;
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+    expect(confirmDialog('Fix the lexer')).not.toBeNull();
+    expect(document.activeElement).toBe(confirmButton('Fix the lexer', 'Delete'));
+  });
+
+  it('clears the failure line when the rename is cancelled', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'renameSession').mockRejectedValue(new ApiError(400, 'bad_title', 'title must be 1 to 200 characters'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    await pressKey(root.querySelector('.sessions__rename')!, { key: 'Enter', code: 'Enter' });
+    expect(dialog()!.querySelector('[role="alert"]')).not.toBeNull();
+
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('clears the failure line when a new action starts', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'deleteSession').mockRejectedValue(new ApiError(409, 'session_busy', 'Crush is working in this session'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    expect(dialog()!.querySelector('[role="alert"]')).not.toBeNull();
+
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+
+    expect(confirmDialog('Port the parser')).not.toBeNull();
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('clears the failure line after a successful load', async () => {
+    seed();
+    const sessions = vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockResolvedValueOnce(LIST);
+    vi.spyOn(api, 'renameSession').mockResolvedValue(session('s-2', 'Fix the lexer'));
+    vi.spyOn(api, 'deleteSession').mockRejectedValue(new ApiError(409, 'session_busy', 'Crush is working in this session'));
+    await mount();
+    await openFromHud();
+
+    // A successful rename reloads, and that load fails.
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    await pressKey(root.querySelector('.sessions__rename')!, { key: 'Enter', code: 'Enter' });
+    expect(dialog()!.querySelector('[role="status"]')).not.toBeNull();
+
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Port the parser', 'Delete').click(); });
+    await flush();
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toContain('Crush is working in this session');
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(sessions).toHaveBeenCalledTimes(3);
+    expect(dialog()!.querySelector('[role="status"]')).toBeNull();
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
   });
 });
