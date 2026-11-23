@@ -87,6 +87,30 @@ func testConfigWithoutProviders() *config.Config {
 	}
 }
 
+// TestReasoningControls pins the shared pair the dialog's choices and the
+// web model info read: a nil model cannot reason, a reasoning model reports
+// its effort levels, and a plain model reports neither.
+func TestReasoningControls(t *testing.T) {
+	t.Parallel()
+
+	canReason, levels := ReasoningControls(nil)
+	require.False(t, canReason, "a config without providers has no model to reason with")
+	require.Nil(t, levels)
+
+	reasoning := catwalk.Model{ID: "m1", Reasoning: catwalk.Reasoning{
+		Thinking:     catwalk.ThinkingToggleable,
+		EffortLevels: catwalk.NewEffortLevels("low", "high"),
+	}}
+	canReason, levels = ReasoningControls(&reasoning)
+	require.True(t, canReason)
+	require.Equal(t, []string{"low", "high"}, levels)
+
+	plain := catwalk.Model{ID: "m2"}
+	canReason, levels = ReasoningControls(&plain)
+	require.False(t, canReason)
+	require.Empty(t, levels)
+}
+
 func TestModelChoicesListsEnabledConfiguredModels(t *testing.T) {
 	t.Parallel()
 

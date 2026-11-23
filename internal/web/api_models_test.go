@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -33,10 +34,30 @@ func startModelConfig(t *testing.T, cfg *config.Config) (*Gateway, *webtest.Fake
 	model := cfg.GetModel(main.Provider, main.Model)
 	require.NotNil(t, model)
 	fake.SetAgentModel(workspace.AgentModel{ModelCfg: main, CatwalkCfg: *model})
+	return startFake(t, fake), fake
+}
+
+// startModelAgent starts a gateway over a fake with cfg (which may be nil
+// or have no providers) and an agent model set by hand, the states a reload
+// in flight leaves behind.
+func startModelAgent(t *testing.T, cfg *config.Config) (*Gateway, *webtest.Fake) {
+	t.Helper()
+	fake := webtest.NewFake()
+	fake.Cfg = cfg
+	fake.SetAgentModel(workspace.AgentModel{
+		ModelCfg:   config.SelectedModel{Provider: "p1", Model: "m1"},
+		CatwalkCfg: catwalk.Model{ID: "m1", Name: "Model One", ContextWindow: 200_000},
+	})
+	return startFake(t, fake), fake
+}
+
+// startFake starts a gateway over fake and shuts it down when the test ends.
+func startFake(t *testing.T, fake *webtest.Fake) *Gateway {
+	t.Helper()
 	g, err := Start(t.Context(), Options{Workspace: fake})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
-	return g, fake
+	return g
 }
 
 // decodeModelInfo reads a ModelInfo answer body.
@@ -114,6 +135,33 @@ func TestSelectModelSwitchesAndPublishes(t *testing.T) {
 	require.Error(t, err, "a switch is announced once, not again by the watch")
 }
 
+// TestSelectSmallModelSwitches pins that the small model is a model type of
+// its own: the main model stays, and the new small model reaches every tab.
+func TestSelectSmallModelSwitches(t *testing.T) {
+	t.Parallel()
+	g, fake := startModels(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
+		`{"type":"small","provider":"p1","model":"m1"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	info := decodeModelInfo(t, body)
+	require.Equal(t, "m1", info.ID, "the main model is untouched")
+	require.NotNil(t, info.Small)
+	require.Equal(t, "m1", info.Small.ID)
+	require.Contains(t, fake.CallLog(), "UpdatePreferredModel:global:small:p1/m1")
+
+	f := readFrame(t, c)
+	require.Equal(t, "model_changed", f.Type)
+	var changed ModelInfo
+	require.NoError(t, json.Unmarshal(f.Payload, &changed))
+	require.Equal(t, "m1", changed.ID)
+	require.NotNil(t, changed.Small)
+	require.Equal(t, "m1", changed.Small.ID)
+}
+
 // TestSnapshotModelInfo pins the model fields a tab loads with and the one
 // readiness call both snapshot fields share.
 func TestSnapshotModelInfo(t *testing.T) {
@@ -176,6 +224,18 @@ func TestSelectModelErrors(t *testing.T) {
 		{
 			name:   "unknown type",
 			body:   `{"type":"tiny","provider":"p1","model":"m2"}`,
+			status: http.StatusBadRequest,
+			code:   "bad_type",
+		},
+		{
+			name:   "empty type",
+			body:   `{"type":"","provider":"p1","model":"m2"}`,
+			status: http.StatusBadRequest,
+			code:   "bad_type",
+		},
+		{
+			name:   "large type",
+			body:   `{"type":"large","provider":"p1","model":"m2"}`,
 			status: http.StatusBadRequest,
 			code:   "bad_type",
 		},
@@ -251,6 +311,60 @@ func TestReasoningRequiresOneField(t *testing.T) {
 	})
 }
 
+// TestReasoningErrors pins the states the reasoning route refuses before it
+// touches the model: an agent that is starting, a busy one, and a config
+// reload in flight.
+func TestReasoningErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("starting agent", func(t *testing.T) {
+		t.Parallel()
+		g, fake := startModels(t)
+		fake.SetReadyErr(workspace.ErrAgentNotInitialized)
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/reasoning", `{"effort":"high"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+		require.Contains(t, string(body), `"code":"agent_starting"`)
+		require.Empty(t, fake.CallLog())
+	})
+
+	t.Run("busy agent", func(t *testing.T) {
+		t.Parallel()
+		g, fake := startModels(t)
+		fake.SetAgentBusy(true)
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/reasoning", `{"effort":"high"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusConflict, rsp.StatusCode, string(body))
+		require.Contains(t, string(body), `"code":"agent_busy"`)
+		require.Equal(t, []string{"AgentIsBusy"}, fake.CallLog())
+	})
+
+	t.Run("no config", func(t *testing.T) {
+		t.Parallel()
+		g, _ := startModelAgent(t, nil)
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/reasoning", `{"effort":"high"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+		require.Contains(t, string(body), `"code":"agent_starting"`)
+	})
+
+	t.Run("config without providers", func(t *testing.T) {
+		t.Parallel()
+		g, _ := startModelAgent(t, &config.Config{
+			Models: map[config.SelectedModelType]config.SelectedModel{
+				config.SelectedModelTypeMain: {Provider: "p1", Model: "m1"},
+			},
+			Agents: map[string]config.Agent{
+				config.AgentCoder: {Model: config.SelectedModelTypeMain},
+			},
+		})
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/reasoning", `{"effort":"high"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+		require.Contains(t, string(body), `"code":"agent_starting"`)
+	})
+}
+
 // TestReasoningValidatesTheCurrentModel pins the checks the helper would
 // otherwise answer with a 500: an effort the model does not offer and
 // thinking on a model that cannot reason.
@@ -294,7 +408,7 @@ func TestModelWatchPublishesTerminalChanges(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	f := nextFrameOfType(t, c, ctx, "model_changed")
+	f := nextFrameOfType(ctx, t, c, "model_changed")
 	var changed ModelInfo
 	require.NoError(t, json.Unmarshal(f.Payload, &changed))
 	require.Equal(t, "m2", changed.ID)
@@ -319,9 +433,7 @@ func TestModelWatchReportsReadiness(t *testing.T) {
 	require.NotNil(t, model)
 	fake.SetAgentModel(workspace.AgentModel{ModelCfg: main, CatwalkCfg: *model})
 	fake.SetReadyErr(workspace.ErrAgentNotInitialized)
-	g, err := Start(t.Context(), Options{Workspace: fake})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	g := startFake(t, fake)
 
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c) // Snapshot, taken while the agent starts.
@@ -333,15 +445,34 @@ func TestModelWatchReportsReadiness(t *testing.T) {
 	fake.SetReadyErr(nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	f := nextFrameOfType(t, c, ctx, "model_changed")
+	f := nextFrameOfType(ctx, t, c, "model_changed")
 	var changed ModelInfo
 	require.NoError(t, json.Unmarshal(f.Payload, &changed))
 	require.True(t, changed.AgentReady)
 }
 
+// TestModelWatchSkipsUnreachableWorkspace pins that a client workspace the
+// gateway cannot reach is not reported as a model switch: AgentModel
+// answers an empty model while the server is away, and publishing it would
+// replace every tab's model with nothing.
+func TestModelWatchSkipsUnreachableWorkspace(t *testing.T) {
+	t.Parallel()
+	g, fake := startModels(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+
+	fake.SetReadyErr(fmt.Errorf("get agent info: %w", workspace.ErrServerUnreachable))
+	fake.SetAgentModel(workspace.AgentModel{})
+
+	quiet, stop := context.WithTimeout(t.Context(), 2500*time.Millisecond)
+	defer stop()
+	_, _, err := c.Read(quiet)
+	require.Error(t, err, "an unreachable workspace must not publish an empty model")
+}
+
 // nextFrameOfType reads frames until one of the wanted type arrives. It
 // runs on the test goroutine, so failures stop the test directly.
-func nextFrameOfType(t *testing.T, c *websocket.Conn, ctx context.Context, want string) testFrame {
+func nextFrameOfType(ctx context.Context, t *testing.T, c *websocket.Conn, want string) testFrame {
 	t.Helper()
 	for {
 		_, data, err := c.Read(ctx)

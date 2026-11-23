@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"reflect"
 	"strconv"
@@ -91,7 +92,8 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 	}
 	// One readiness call feeds both fields, so the snapshot cannot say the
 	// agent is ready while its model says otherwise.
-	s.Model = modelInfo(g)
+	readyErr := g.ws.AgentReadyErr()
+	s.Model = modelInfo(g, readyErr == nil)
 	s.AgentReady = s.Model.AgentReady
 	s.Team, s.AgentRuns = g.team.current()
 	if branch, err := g.ws.GitBranch(ctx); err == nil {
@@ -146,18 +148,19 @@ func errText(err error) string {
 }
 
 // modelInfo describes the model the agent runs now, how it reasons and
-// whether the agent is ready. The reasoning controls come from the selected
-// main model in the config rather than from the model choices, so a
-// provider the selector filters out keeps them; the switch helpers validate
-// against the same model.
-func modelInfo(g *Gateway) ModelInfo {
+// whether the agent is ready. agentReady is the caller's readiness read, so
+// a snapshot asks the workspace once. The reasoning controls come from the
+// selected main model in the config rather than from the model choices, so
+// a provider the selector filters out keeps them; the switch helpers
+// validate against the same model.
+func modelInfo(g *Gateway, agentReady bool) ModelInfo {
 	m := g.ws.AgentModel()
 	info := ModelInfo{
 		ID:            m.ModelCfg.Model,
 		Name:          m.CatwalkCfg.Name,
 		Provider:      m.ModelCfg.Provider,
 		ContextWindow: m.CatwalkCfg.ContextWindow,
-		AgentReady:    g.ws.AgentReadyErr() == nil,
+		AgentReady:    agentReady,
 	}
 	cfg := g.ws.Config()
 	if cfg == nil {
@@ -168,6 +171,11 @@ func modelInfo(g *Gateway) ModelInfo {
 		info.Think = main.Think
 	}
 	info.CanReason, info.EffortLevels = workspace.ReasoningControls(mainCatalogModel(cfg))
+	if len(info.EffortLevels) == 0 {
+		// A model without levels always reports nil, so an empty slice is
+		// never mistaken for a change by the watch.
+		info.EffortLevels = nil
+	}
 	if small, ok := cfg.Models[config.SelectedModelTypeSmall]; ok {
 		info.Small = &ModelRef{ID: small.Model, Provider: small.Provider}
 	}
@@ -183,19 +191,58 @@ func mainCatalogModel(cfg *config.Config) *catwalk.Model {
 	return cfg.GetModelByType(config.SelectedModelTypeMain)
 }
 
-// announceModel publishes the current model info when it differs from the
-// one the hub last announced, and returns it. Handlers announce after a
-// successful switch, so the watch does not repeat the frame; the pump
-// announces every eighth follow tick to follow changes made in the
-// terminal.
+// modelWatchReady reports whether a model watch tick may read the model. A
+// starting agent is a normal state a tab follows; a workspace the gateway
+// cannot reach (server unreachable, workspace gone) is not, because
+// AgentModel answers an empty model then and publishing it would replace
+// every tab's model with nothing.
+func modelWatchReady(err error) bool {
+	return err == nil || errors.Is(err, workspace.ErrAgentNotInitialized)
+}
+
+// seedModel records the model the hub starts from, so an unchanged model
+// never publishes a frame.
+func (g *Gateway) seedModel() {
+	readyErr := g.ws.AgentReadyErr()
+	if !modelWatchReady(readyErr) {
+		return
+	}
+	info := modelInfo(g, readyErr == nil)
+	g.modelMu.Lock()
+	g.lastModel = info
+	g.modelMu.Unlock()
+}
+
+// watchModel is one model watch tick: it reads readiness before the model,
+// publishes when the info changed, and keeps the last model otherwise.
+func (g *Gateway) watchModel() {
+	readyErr := g.ws.AgentReadyErr()
+	if !modelWatchReady(readyErr) {
+		return
+	}
+	g.publishModel(modelInfo(g, readyErr == nil))
+}
+
+// announceModel publishes the current model and returns it. Handlers call it
+// after a successful switch, which needs a ready and reachable agent; the
+// watch uses watchModel instead, so an unreachable workspace does not look
+// like an empty model.
 func (g *Gateway) announceModel() ModelInfo {
+	info := modelInfo(g, g.ws.AgentReadyErr() == nil)
+	g.publishModel(info)
+	return info
+}
+
+// publishModel records info as the announced model and publishes
+// model_changed when it differs from what the hub announced last. The
+// workspace reads happen before the lock, so a slow workspace does not hold
+// it.
+func (g *Gateway) publishModel(info ModelInfo) {
 	g.modelMu.Lock()
 	defer g.modelMu.Unlock()
-	info := modelInfo(g)
 	if reflect.DeepEqual(info, g.lastModel) {
-		return info
+		return
 	}
 	g.lastModel = info
 	g.hub.publishJSON(frameModelChanged, info)
-	return info
 }

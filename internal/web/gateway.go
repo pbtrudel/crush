@@ -157,6 +157,9 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	// already carries the roster and a fresh hub still starts at seq 0.
 	g.team.poll()
 	go g.watchTeam(cmp.Or(opts.teamPollInterval, teamPollInterval))
+	// The model the hub starts from is the one at load, seeded before the
+	// pump starts so an unchanged model never publishes a frame.
+	g.seedModel()
 	// Subscribe before Start returns so no event emitted right after it
 	// is lost. The session the terminal views is read here, not in the
 	// pump goroutine: a goroutine that starts late would adopt a session
@@ -324,11 +327,6 @@ const modelWatchTicks = 8
 // changes the terminal makes. last is the session the terminal was viewing
 // when the gateway started.
 func (g *Gateway) pump(events <-chan any, last string) {
-	// The model the hub starts from is the one at load, so an unchanged
-	// model never publishes a frame.
-	g.modelMu.Lock()
-	g.lastModel = modelInfo(g)
-	g.modelMu.Unlock()
 	ticker := time.NewTicker(followInterval)
 	defer ticker.Stop()
 	ticks := 0
@@ -355,7 +353,7 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			}
 			ticks++
 			if ticks%modelWatchTicks == 0 {
-				g.announceModel()
+				g.watchModel()
 			}
 		}
 	}

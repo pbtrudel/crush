@@ -75,6 +75,14 @@ func (g *Gateway) handleReasoning(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceError(w, "set_reasoning", err)
 		return
 	}
+	// A config with no providers is a reload in flight, not a bad request:
+	// the pre-checks have no model to read, so answer a state the browser
+	// can retry instead of a 400 the user cannot fix.
+	cfg := g.ws.Config()
+	if cfg == nil || cfg.Providers == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent_starting", agentStartingText)
+		return
+	}
 	if (body.Effort == nil) == (body.Think == nil) {
 		writeError(w, http.StatusBadRequest, "bad_reasoning", "send exactly one of effort or think")
 		return
@@ -84,7 +92,7 @@ func (g *Gateway) handleReasoning(w http.ResponseWriter, r *http.Request) {
 		// workspace.SetReasoningEffort refuses an unknown level with a plain
 		// error, which would answer 500; refuse it here, as the terminal
 		// does, before the helper runs.
-		if _, levels := workspace.ReasoningControls(mainCatalogModel(g.ws.Config())); !slices.Contains(levels, *body.Effort) {
+		if _, levels := workspace.ReasoningControls(mainCatalogModel(cfg)); !slices.Contains(levels, *body.Effort) {
 			writeError(w, http.StatusBadRequest, "bad_reasoning", "the model does not offer that reasoning effort")
 			return
 		}
@@ -92,7 +100,7 @@ func (g *Gateway) handleReasoning(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Thinking is a mode a model either has or does not; the helper
 		// would store it on a model that never reads it.
-		if canReason, _ := workspace.ReasoningControls(mainCatalogModel(g.ws.Config())); !canReason {
+		if canReason, _ := workspace.ReasoningControls(mainCatalogModel(cfg)); !canReason {
 			writeError(w, http.StatusBadRequest, "bad_reasoning", "the model cannot reason")
 			return
 		}
