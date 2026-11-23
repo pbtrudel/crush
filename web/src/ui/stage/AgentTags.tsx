@@ -24,6 +24,12 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
     // degenerate rect, which reads as an overlap, so it counts as absent.
     const docked = document.querySelector('.taskboard')?.getBoundingClientRect() ?? null;
     const board = docked !== null && docked.width > 0 && docked.height > 0 ? docked : null;
+    // The inspector is docked in the same stacking context and takes clicks,
+    // so a node whose point projects onto it would put its tag over the
+    // panel's controls. A closed panel is excluded by the selector; a
+    // zero-size rect means it has no box yet and counts as absent.
+    const inspectorBox = document.querySelector('.panel--inspector:not([hidden])')?.getBoundingClientRect() ?? null;
+    const inspector = inspectorBox !== null && inspectorBox.width > 0 && inspectorBox.height > 0 ? inspectorBox : null;
     const shown = new Set<string>();
     for (const s of screens) {
       const tag = el.querySelector<HTMLElement>(`[data-agent-node="${CSS.escape(s.id)}"]`);
@@ -50,7 +56,11 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
         box.width <= 0 ||
         box.height <= 0 ||
         (s.x >= box.left && s.x <= box.right && s.y >= box.top && s.y <= box.bottom);
-      tag.dataset.visible = String(s.visible && inside);
+      const overInspector =
+        inspector !== null &&
+        s.x >= inspector.left && s.x <= inspector.right &&
+        s.y >= inspector.top && s.y <= inspector.bottom;
+      tag.dataset.visible = String(s.visible && inside && !overInspector);
       shown.add(s.id);
     }
     // A node stops projecting while it collapses into the core, and nothing

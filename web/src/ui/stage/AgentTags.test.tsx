@@ -129,6 +129,42 @@ describe('AgentTags', () => {
     board.remove();
   });
 
+  // The inspector is a docked panel in the same stacking context as the
+  // tags, and it takes clicks. A tag over it would both paint on its
+  // controls and steal the press from them.
+  function dockInspector(rect: DOMRectReadOnly, hidden = false) {
+    const panel = document.createElement('section');
+    panel.className = 'panel panel--inspector';
+    if (hidden) panel.setAttribute('hidden', '');
+    document.body.append(panel);
+    vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect);
+    return panel;
+  }
+
+  it('hides a tag whose point lies in the open inspector', async () => {
+    const inspector = dockInspector(box(600, 100, 300, 400));
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    publishAgentScreens([{ id: 'sub-1', x: 700, y: 200, visible: true }]);
+    expect(tag.dataset.visible).toBe('false');
+    // A point beside the panel is still on the stage, so it stays visible.
+    publishAgentScreens([{ id: 'sub-1', x: 300, y: 200, visible: true }]);
+    expect(tag.dataset.visible).toBe('true');
+    inspector.remove();
+  });
+
+  it('keeps a tag visible when the inspector is hidden', async () => {
+    // A closed panel reports a box too, and the selector must ignore it.
+    const inspector = dockInspector(box(600, 100, 300, 400), true);
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    publishAgentScreens([{ id: 'sub-1', x: 700, y: 200, visible: true }]);
+    expect(tag.dataset.visible).toBe('true');
+    inspector.remove();
+  });
+
   it('selects the agent on click', async () => {
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
