@@ -295,16 +295,19 @@ func TestPromptInputFollowsTheEffectiveProfile(t *testing.T) {
 		mainModel:   policyTestDeepSeek,
 	})
 	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
+	coderInput := func() promptInput {
+		return coord.promptInputFor(config.AgentCoder, agentCfg, coord.mainModels())
+	}
 
-	require.Equal(t, config.PromptProfileLean, coord.promptInputFor(agentCfg).profile,
+	require.Equal(t, config.PromptProfileLean, coderInput().profile,
 		"an unset profile on DeepSeek is the lean prompt")
 
 	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
-	require.Equal(t, config.PromptProfileFull, coord.promptInputFor(agentCfg).profile)
+	require.Equal(t, config.PromptProfileFull, coderInput().profile)
 
 	coord.cfg.Config().Options.PromptProfile = ""
 	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
-	require.Equal(t, config.PromptProfileFull, coord.promptInputFor(agentCfg).profile,
+	require.Equal(t, config.PromptProfileFull, coderInput().profile,
 		"an unset profile on a model that was not measured stays full")
 }
 
@@ -319,12 +322,12 @@ func TestPromptInputFollowsThePromptFamily(t *testing.T) {
 	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
 	coord.cfg.Config().Options.PromptProfile = config.PromptProfileLean
 
-	before := coord.promptInputFor(agentCfg)
+	before := coord.promptInputFor(config.AgentCoder, agentCfg, coord.mainModels())
 	require.Equal(t, familyDefault, before.family)
 
 	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
 
-	after := coord.promptInputFor(agentCfg)
+	after := coord.promptInputFor(config.AgentCoder, agentCfg, coord.mainModels())
 	require.Equal(t, familyAnthropic, after.family)
 	require.NotEqual(t, before, after,
 		"a family change must re-render the lean prompt")
@@ -340,9 +343,32 @@ func TestPromptInputIgnoresTheFamilyUnderTheFullProfile(t *testing.T) {
 	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
 	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
 
-	before := coord.promptInputFor(agentCfg)
+	before := coord.promptInputFor(config.AgentCoder, agentCfg, coord.mainModels())
 	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
-	require.Equal(t, before, coord.promptInputFor(agentCfg))
+	require.Equal(t, before, coord.promptInputFor(config.AgentCoder, agentCfg, coord.mainModels()))
+}
+
+// Only the built-in coder prompt picks a family add-on, so a replaced coder
+// prompt and the plan agent keep their input across a model switch.
+func TestPromptInputFamilyStaysWithTheBuiltInCoderPrompt(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive: true,
+		mainModel:   policyTestDeepSeek,
+	})
+	cfg := coord.cfg.Config()
+	cfg.Options.PromptProfile = config.PromptProfileLean
+	cfg.Options.Prompts = config.PromptPaths{config.AgentCoder: "custom-coder.md"}
+	coderCfg := cfg.Agents[config.AgentCoder]
+	planCfg := cfg.Agents[config.AgentPlan]
+
+	coderBefore := coord.promptInputFor(config.AgentCoder, coderCfg, coord.mainModels())
+	planBefore := coord.promptInputFor(config.AgentPlan, planCfg, coord.mainModels())
+	require.Empty(t, coderBefore.family, "a replaced coder prompt renders no add-on")
+	require.Empty(t, planBefore.family, "the plan prompt renders no add-on")
+
+	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
+	require.Equal(t, coderBefore, coord.promptInputFor(config.AgentCoder, coderCfg, coord.mainModels()))
+	require.Equal(t, planBefore, coord.promptInputFor(config.AgentPlan, planCfg, coord.mainModels()))
 }
 
 // profileModel is a language model whose provider and model ID a test names.
