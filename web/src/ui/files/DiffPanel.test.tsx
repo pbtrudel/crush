@@ -164,6 +164,56 @@ describe('DiffPanel', () => {
     expect(root.querySelector('select[name="to"]')).not.toBeNull();
   });
 
+  // The stepper can start a second request while the first is in flight.
+  // The first answer is stale and must not overwrite the newer one.
+  function deferredDiff() {
+    const pending: Array<{ resolve: (d: FileDiff) => void; reject: (e: unknown) => void }> = [];
+    vi.spyOn(api, 'diff').mockImplementation(() => new Promise((resolve, reject) => {
+      pending.push({ resolve, reject });
+    }));
+    return pending;
+  }
+
+  async function widenRange() {
+    const from = root.querySelector<HTMLSelectElement>('select[name="from"]')!;
+    await act(() => {
+      from.value = '1';
+      from.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    return from;
+  }
+
+  it('ignores a superseded answer', async () => {
+    const pending = deferredDiff();
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    expect(pending).toHaveLength(1);
+    const from = await widenRange();
+    expect(pending).toHaveLength(2);
+
+    // The newer request answers first...
+    await act(async () => { pending[1].resolve(diff({ from: 1, to: 1 })); await new Promise((r) => setTimeout(r, 0)); });
+    await flush();
+    expect(from.value).toBe('1');
+    // ...and the superseded answer lands after it.
+    await act(async () => { pending[0].resolve(diff({ from: 0, to: 1 })); await new Promise((r) => setTimeout(r, 0)); });
+    await flush();
+    expect(from.value).toBe('1');
+  });
+
+  it('ignores a superseded failure', async () => {
+    const pending = deferredDiff();
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    await widenRange();
+    expect(pending).toHaveLength(2);
+
+    await act(async () => { pending[1].resolve(diff({ from: 1, to: 1 })); await new Promise((r) => setTimeout(r, 0)); });
+    await act(async () => { pending[0].reject(new ApiError(404, 'unknown_path', 'the session has no history for this path')); await new Promise((r) => setTimeout(r, 0)); });
+    await flush();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('links the agents that edited the file', async () => {
     vi.spyOn(api, 'diff').mockResolvedValue(diff());
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);

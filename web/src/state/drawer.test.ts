@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readStored } from './storage';
-import { closeDrawer, diffMode, drawerOpen, openFile, panelTab, selectedFile, setDiffMode, toggleDrawer } from './drawer';
+import { diffMode, drawerOpen, panelTab, selectedFile, setDiffMode, toggleDrawer } from './drawer';
 
 describe('the drawer state', () => {
   beforeEach(() => {
@@ -39,16 +39,6 @@ describe('the drawer state', () => {
     expect(drawerOpen.value).toBe(true);
     expect(panelTab.value).toBe('files');
     toggleDrawer();
-    expect(drawerOpen.value).toBe(false);
-    expect(panelTab.value).toBe('log');
-  });
-
-  it('opens a file in the drawer and closes back to the log', () => {
-    openFile('/repo/a.go');
-    expect(drawerOpen.value).toBe(true);
-    expect(panelTab.value).toBe('files');
-    expect(selectedFile.value).toBe('/repo/a.go');
-    closeDrawer();
     expect(drawerOpen.value).toBe(false);
     expect(panelTab.value).toBe('log');
   });

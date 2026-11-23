@@ -39,9 +39,3 @@ export function closeDrawer(): void {
   drawerOpen.value = false;
   if (panelTab.value === 'files') panelTab.value = 'log';
 }
-
-export function openFile(path: string): void {
-  drawerOpen.value = true;
-  selectedFile.value = path;
-  panelTab.value = 'files';
-}
