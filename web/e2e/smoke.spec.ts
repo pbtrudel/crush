@@ -481,18 +481,29 @@ async function reachability(page: Page) {
         && Math.min(x.bottom, y.bottom) > Math.max(x.top, y.top);
     };
     const handle = document.querySelector('.drawer-handle');
+    const list = document.querySelector('.agent-list');
     const option = document.querySelector('.agent-list [role="option"]');
     const inspector = document.querySelector('.panel--inspector');
     const openInspector = inspector !== null && !inspector.hasAttribute('hidden');
     const close = openInspector ? inspector.querySelector('.inspector__close') : null;
     const title = openInspector ? inspector.querySelector('#inspector-title') : null;
+    const head = openInspector ? inspector.querySelector('.inspector__head') : null;
+    // An inert drawer is the closed one: it waits off the page edge.
+    const drawer = document.querySelector('#file-drawer');
+    const openDrawer = drawer !== null && !drawer.hasAttribute('inert');
+    const drawerClose = openDrawer ? drawer.querySelector('.drawer__head button') : null;
+    const firstFile = openDrawer ? drawer.querySelector('.file-row') : null;
     return {
       handle: handle !== null && hitSelf(handle),
       option: option !== null && hitSelf(option),
       close: close === null ? null : hitSelf(close),
+      title: title === null ? null : hitSelf(title),
+      drawerClose: drawerClose === null ? null : hitSelf(drawerClose),
+      firstFile: firstFile === null ? null : hitSelf(firstFile),
       overlapsOption: handle !== null && option !== null && overlaps(handle, option),
       overlapsClose: handle !== null && close !== null && overlaps(handle, close),
       overlapsTitle: handle !== null && title !== null && overlaps(handle, title),
+      listOverlapsHead: list !== null && head !== null && overlaps(list, head),
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     };
   });
@@ -542,9 +553,14 @@ test('the drawer handle and inspector stay reachable at 1440 and 1100', async ({
           if (!g.option) problems.push('the first agent option does not take its centre');
           if (g.overlapsOption) problems.push('the handle overlaps the first agent option');
           if (inspector && g.close !== true) problems.push('the close button does not take its centre');
+          if (inspector && g.title !== true) problems.push('the inspector title does not take its centre');
+          if (inspector && g.listOverlapsHead) problems.push('the agent list overlaps the inspector head');
           if (g.overlapsClose) problems.push('the handle overlaps the close button');
           if (g.overlapsTitle) problems.push('the handle overlaps the inspector title');
           if (!inspector && g.close !== null) problems.push('the inspector is not the hidden one');
+          if (drawer && g.drawerClose !== true) problems.push('the drawer close button does not take its centre');
+          if (drawer && g.firstFile !== true) problems.push('the first file row does not take its centre');
+          if (!drawer && g.firstFile !== null) problems.push('the closed drawer still answers');
           if (g.overflow > 0) problems.push(`the page scrolls sideways by ${g.overflow}px`);
           return problems.length === 0 ? 'ok' : problems.join('; ');
         }, {
@@ -582,4 +598,235 @@ test('the files tab gives the diff room at 900x800', async ({ page, gateway }) =
     if (d.path === '') return 'the selected file is not shown in the diff';
     return d.height >= 240 ? 'ok' : `${Math.round(d.height)}px tall`;
   }, { message: 'the selected diff is at least 240px tall at 900x800' }).toBe('ok');
+});
+
+// The inspector's head is the top of the panel, so a long agent name wraps
+// it. The handle keeps the stage corner and the head leaves that corner
+// empty, whatever the name.
+test('a long inspector title stays clear of the drawer handle', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  // The fake's subagent carries the long name.
+  await page.evaluate(() => {
+    const option = [...document.querySelectorAll<HTMLElement>('.agent-list [role="option"]')]
+      .find((o) => (o.textContent ?? '').includes('Map the parser entry points'));
+    option?.click();
+  });
+  await expect(page.locator('.panel--inspector')).toBeVisible();
+  await expect(page.locator('#inspector-title')).toContainText('Map the parser entry points');
+
+  for (const viewport of [{ width: 1440, height: 860 }, { width: 1100, height: 800 }, { width: 1024, height: 768 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(async () => {
+      const g = await page.evaluate(() => {
+        const box = (sel: string) => {
+          const el = document.querySelector(sel);
+          if (el === null) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom };
+        };
+        const overlaps = (a: { x: number; y: number; right: number; bottom: number }, b: typeof a) => (
+          Math.min(a.right, b.right) > Math.max(a.x, b.x) && Math.min(a.bottom, b.bottom) > Math.max(a.y, b.y)
+        );
+        const handle = box('.drawer-handle');
+        const title = box('#inspector-title');
+        return {
+          handle,
+          title,
+          overlap: handle !== null && title !== null && overlaps(handle, title),
+          centre: (() => {
+            const el = document.querySelector('#inspector-title');
+            if (el === null) return 'missing';
+            const r = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return hit !== null && el.contains(hit) ? 'title' : 'other';
+          })(),
+        };
+      });
+      if (g.title === null || g.title.h < 40) return `the title is ${g.title?.h ?? 0}px tall, not a wrapped one`;
+      if (g.overlap) return `the handle covers the title at ${Math.round(g.title.y)}-${Math.round(g.title.bottom)}`;
+      if (g.centre !== 'title') return 'the title centre is covered';
+      return 'ok';
+    }, { message: `${viewport.width}x${viewport.height}: the handle leaves the title alone` }).toBe('ok');
+  }
+});
+
+// Between 1024px and 1279px the open drawer sits over the log column, so the
+// log it covers leaves the tab order. The states either side of the band keep
+// it reachable.
+test('the covered log leaves the tab order over the overlay drawer', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  const log = page.locator('.panel--log');
+  // The transcript arrives in frames after boot; the summaries are its tab
+  // stops and have to exist before the walk below means anything.
+  await expect(page.locator('.panel--log summary, .panel--log button').first()).toBeVisible();
+  const focusLogControl = () => page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('.panel--log summary, .panel--log button');
+    if (el === null) return 'no control';
+    el.focus();
+    return document.activeElement === el ? 'focused' : 'blocked';
+  });
+
+  // A drawer with its own column never makes the log inert.
+  await page.setViewportSize({ width: 1440, height: 860 });
+  await setDrawer(page, true);
+  await expect(log).not.toHaveAttribute('inert', '');
+  expect(await focusLogControl(), 'the log control takes focus in its own layout').toBe('focused');
+
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await expect(log).toHaveAttribute('inert', '');
+  expect(await focusLogControl(), 'the covered log is out of reach').toBe('blocked');
+  // From inside the drawer, twenty four tabs must never stop in the log.
+  await page.evaluate(() => document.querySelector<HTMLElement>('#file-drawer .file-row')?.focus());
+  const stops: string[] = [];
+  for (let i = 0; i < 24; i++) {
+    await page.keyboard.press('Tab');
+    stops.push(await page.evaluate(() => {
+      const el = document.activeElement;
+      if (el === null || el === document.body) return 'body';
+      return el.closest('.panel--log') !== null ? 'log' : el.tagName.toLowerCase();
+    }));
+  }
+  expect(stops, 'no tab stop lands in the covered log').not.toContain('log');
+  expect(stops.some((s) => s !== 'body'), 'the tabs still move through the page').toBe(true);
+
+  // Closing the drawer, or a layout with its own column, gives the tab stops
+  // back.
+  await setDrawer(page, false);
+  await expect(log).not.toHaveAttribute('inert', '');
+  expect(await focusLogControl(), 'the log control takes focus again').toBe('focused');
+  await setDrawer(page, true);
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(log).not.toHaveAttribute('inert', '');
+});
+
+// The closed drawer waits off the page edge. In the overlay layout it must
+// share its open anchor, or opening it teleports the panel across the grid
+// before the transform starts.
+test('the overlay drawer opens from one anchor', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  const anchor = () => page.evaluate(() => {
+    const el = document.querySelector('#file-drawer');
+    if (el === null) return null;
+    const style = getComputedStyle(el);
+    return { start: style.insetInlineStart, end: style.insetInlineEnd, opacity: style.opacity };
+  });
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await setDrawer(page, false);
+  // Opacity is the transitioned property: wait for it to land on both ends.
+  await expect.poll(async () => (await anchor())?.opacity).toBe('0');
+  const closed = await anchor();
+  await setDrawer(page, true);
+  await expect.poll(async () => (await anchor())?.opacity).toBe('1');
+  const open = await anchor();
+  expect(closed!.start, 'the closed drawer keeps the open anchor').toBe(open!.start);
+  expect(closed!.end, 'the closed drawer keeps the open anchor').toBe(open!.end);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+});
+
+// Cinematic mode gives the scene its drags back. The task board and the todo
+// orbit stay on screen for information, but only their own controls take a
+// pointer.
+test('cinematic mode passes orbit drags through the stage panels', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  await expect(page.locator('.boot')).toBeHidden();
+  const panels = () => page.evaluate(() => {
+    const read = (sel: string) => {
+      const el = document.querySelector(sel);
+      if (el === null) return null;
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return {
+        pointer: getComputedStyle(el).pointerEvents,
+        hit: hit === null ? 'null' : (hit === el || el.contains(hit) ? 'self' : hit.tagName.toLowerCase()),
+      };
+    };
+    return { taskboard: read('.taskboard'), orbit: read('.todo-orbit'), owner: read('.taskcard__owner') };
+  });
+  const stage = await panels();
+  expect(stage.taskboard?.pointer, 'the task board takes pointers on the stage').toBe('auto');
+  expect(stage.orbit?.pointer, 'the todo orbit takes pointers on the stage').toBe('auto');
+
+  await page.keyboard.press('Alt+KeyC');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'true');
+  await expect.poll(async () => {
+    const p = await panels();
+    const problems: string[] = [];
+    if (p.taskboard?.pointer !== 'none') problems.push(`the task board still takes pointers (${p.taskboard?.pointer})`);
+    if (p.orbit?.pointer !== 'none') problems.push(`the todo orbit still takes pointers (${p.orbit?.pointer})`);
+    if (p.taskboard?.hit === 'self') problems.push('the task board takes the drag');
+    if (p.orbit?.hit === 'self') problems.push('the todo orbit takes the drag');
+    if (p.owner?.pointer !== 'auto') problems.push('the owner chip lost its pointer');
+    if (p.owner?.hit !== 'self') problems.push('the owner chip does not take its centre');
+    return problems.length === 0 ? 'ok' : problems.join('; ');
+  }, { message: 'the scene keeps the drags in cinematic mode' }).toBe('ok');
+});
+
+// Log text under a 0.70 glass reads through the panel, so the overlay state
+// takes the solid surface. Wider layouts keep the lighter glass: nothing
+// sits under them.
+test('the overlay drawer is opaque enough to read over the log', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  const glass = () => page.evaluate(() => {
+    const el = document.querySelector('#file-drawer');
+    return el === null ? '' : getComputedStyle(el).backgroundImage;
+  });
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await setDrawer(page, true);
+  await expect.poll(async () => (await glass()).includes('0.16 0.05 265 / 0.94') ? 'solid' : (await glass()).slice(0, 90))
+    .toBe('solid');
+  await page.setViewportSize({ width: 1440, height: 860 });
+  await expect.poll(async () => (await glass()).includes('0.16 0.05 265 / 0.7)') ? 'glass' : (await glass()).slice(0, 90))
+    .toBe('glass');
+});
+
+// The overlay drawer is only 392px tall at 1100x800, and the diff below the
+// file list has to keep a usable editor. The list gives up its height there.
+test('the overlay drawer gives the diff room at 1100x800', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await setDrawer(page, true);
+  await page.evaluate(() => document.querySelector<HTMLElement>('#file-drawer .file-row')?.click());
+  await expect(page.locator('.diffpanel__title')).toBeVisible();
+
+  await expect.poll(async () => {
+    const m = await page.evaluate(() => {
+      const view = document.querySelector('.diffpanel__view');
+      const diff = document.querySelector('.drawer__diff');
+      const drawer = document.querySelector('#file-drawer');
+      const surface = document.querySelector('.diffpanel__view')?.shadowRoot?.querySelector('.cm-mergeView') ?? null;
+      const visible = (el: Element | null) => {
+        if (el === null || drawer === null) return 0;
+        const r = el.getBoundingClientRect();
+        const d = drawer.getBoundingClientRect();
+        return Math.round(Math.min(r.bottom, d.bottom) - Math.max(r.top, d.top));
+      };
+      return {
+        view: visible(view),
+        editor: visible(surface),
+        scroll: diff === null ? [0, 0] : [diff.clientHeight, diff.scrollHeight],
+      };
+    });
+    if (m.view < 200) return `the diff view is ${m.view}px tall`;
+    if (m.editor < 190) return `the editor is ${m.editor}px tall`;
+    if (m.scroll[1] > m.scroll[0] + 2) return 'the diff slot scrolls on its own';
+    return 'ok';
+  }, { message: 'the diff view keeps 200px at 1100x800' }).toBe('ok');
+
+  // A selected diff does not move the drawer's own controls out of reach.
+  for (const inspector of [false, true]) {
+    await setInspector(page, inspector);
+    const g = await reachability(page);
+    expect(g.handle, 'the handle takes its centre').toBe(true);
+    expect(g.drawerClose, 'the drawer close button takes its centre').toBe(true);
+    expect(g.firstFile, 'the first file row takes its centre').toBe(true);
+    if (inspector) expect(g.title, 'the inspector title takes its centre').toBe(true);
+    expect(g.overflow, 'no sideways scroll').toBe(0);
+  }
 });

@@ -31,13 +31,19 @@
    two-class selector. */
 .drawer-handle { position: absolute; inset-block-start: var(--space-4); inset-inline-end: var(--space-4); z-index: 7; pointer-events: auto; padding: 6px 12px; font: 500 var(--step--1) var(--font-hud); cursor: pointer; }
 .drawer-handle.glass { position: absolute; }
-/* The inspector's close button sits in the same corner; while it is open
-   the handle moves below the inspector header, where both stay reachable.
-   At 1024px the stage is only 432px wide and the inspector fills it, so
-   there is no free strip beside the panel to move into. */
-@media (min-width: 1024px) {
-  .holodeck__grid:has(.panel--inspector:not([hidden])) .drawer-handle {
-    inset-block-start: calc(var(--space-4) + 5rem);
+/* From 1280px the inspector's right edge is the stage's right edge, so the
+   handle sits over the head's corner. The head keeps that corner empty
+   (below) instead of moving the handle by a guess at the head's height: a
+   title that wraps to three lines would run under the old offset. */
+@media (min-width: 1280px) {
+  .panel--inspector .inspector__head { padding-inline-end: calc(var(--space-4) + 7rem); }
+}
+/* Between 1024px and 1279px the drawer slides over the log column
+   (shell.css), so both states keep that anchor and opening the drawer only
+   changes transform and opacity instead of jumping across the grid first. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .holodeck__grid[data-drawer='closed'] .panel--drawer {
+    inset-inline-start: 0; inset-inline-end: auto; inline-size: min(34rem, 100%);
   }
 }
 .panel-tabs .hud__mode-btn[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
@@ -50,6 +56,11 @@
   .panel--drawer:has(.diffpanel) .drawer__head { padding-block: var(--space-1); }
   .panel--drawer:has(.diffpanel) .drawer__list { max-block-size: min(40%, 7rem); }
   .panel--drawer:has(.diffpanel) .drawer__diff { padding-block-end: var(--space-2); }
+}
+/* The overlay drawer is only as tall as the stage, so the file list gives up
+   half its strip there and the diff view keeps 200px. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .panel--drawer:has(.diffpanel) .drawer__list { max-block-size: min(40%, 4rem); }
 }
 /* The diff view (spec 3.8). The CodeMirror instance lives in a shadow root
    inside `.diffpanel__view` and fills it; see diff.css, which is adopted

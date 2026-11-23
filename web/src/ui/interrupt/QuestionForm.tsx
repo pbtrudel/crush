@@ -6,7 +6,12 @@ import { useDialogFocus } from './focus';
 
 const UNREACHABLE = 'The request did not reach crush';
 
-function Field({ q, d, onChange }: { q: Question; d: Draft; onChange: (d: Draft) => void }) {
+// Field hands each change to the form as a recipe rather than a finished
+// draft: two answers that land before the next render both apply to the
+// draft they saw, so neither one drops the other.
+type DraftChange = (prev: Draft) => Draft;
+
+function Field({ q, d, onChange }: { q: Question; d: Draft; onChange: (change: DraftChange) => void }) {
   const name = `q-${q.id}`;
   return (
     <fieldset class="qform__field">
@@ -16,7 +21,7 @@ function Field({ q, d, onChange }: { q: Question; d: Draft; onChange: (d: Draft)
         <div class="qform__choices">
           {[true, false].map((v) => (
             <label key={String(v)} class="qform__choice">
-              <input type="radio" name={name} checked={d.yes === v} onChange={() => onChange({ ...d, yes: v })} />
+              <input type="radio" name={name} checked={d.yes === v} onChange={() => onChange((prev) => ({ ...prev, yes: v }))} />
               {v ? 'Yes' : 'No'}
             </label>
           ))}
@@ -25,17 +30,19 @@ function Field({ q, d, onChange }: { q: Question; d: Draft; onChange: (d: Draft)
       {(q.type === 'single_choice' || q.type === 'multi_choice') && (
         <div class="qform__choices">
           {q.choices?.map((c) => {
-            const checked = d.selected?.includes(c.id) ?? false;
             const multi = q.type === 'multi_choice';
             return (
               <label key={c.id} class="qform__choice">
                 <input
                   type={multi ? 'checkbox' : 'radio'}
                   name={name}
-                  checked={checked}
-                  onChange={() => onChange({
-                    ...d,
-                    selected: multi ? (checked ? d.selected!.filter((x) => x !== c.id) : [...(d.selected ?? []), c.id]) : [c.id],
+                  checked={d.selected?.includes(c.id) ?? false}
+                  onChange={() => onChange((prev) => {
+                    const on = prev.selected?.includes(c.id) ?? false;
+                    const selected = multi
+                      ? (on ? (prev.selected ?? []).filter((x) => x !== c.id) : [...(prev.selected ?? []), c.id])
+                      : [c.id];
+                    return { ...prev, selected };
                   })}
                 />
                 <span><strong>{c.label}</strong>{c.description && <span class="qform__desc"> {c.description}</span>}</span>
@@ -46,7 +53,10 @@ function Field({ q, d, onChange }: { q: Question; d: Draft; onChange: (d: Draft)
       )}
       <label class="qform__text">
         <span class="hud-label">{q.type === 'free_text' ? 'Answer' : 'Or write your own'}</span>
-        <textarea rows={2} value={d.text ?? ''} onInput={(e) => onChange({ ...d, text: (e.currentTarget as HTMLTextAreaElement).value })} />
+        <textarea rows={2} value={d.text ?? ''} onInput={(e) => {
+          const value = (e.currentTarget as HTMLTextAreaElement).value;
+          onChange((prev) => ({ ...prev, text: value }));
+        }} />
       </label>
     </fieldset>
   );
@@ -210,7 +220,10 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
             {req.confirm_description && <p>{req.confirm_description}</p>}
           </section>
         ) : current ? (
-          <Field q={current} d={draft[current.id] ?? {}} onChange={(d) => setDraft({ ...draft, [current.id]: d })} />
+          <Field q={current} d={draft[current.id] ?? {}} onChange={(change) => setDraft((prev) => ({
+            ...prev,
+            [current.id]: change(prev[current.id] ?? {}),
+          }))} />
         ) : null}
         {error && <p class="interrupt__error" role="alert">{error}</p>}
         <div class="interrupt__actions">

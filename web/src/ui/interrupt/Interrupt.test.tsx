@@ -242,9 +242,14 @@ describe('Interrupt', () => {
     await mount();
     await act(() => { root.querySelectorAll<HTMLInputElement>('input[type="radio"]')[0].click(); });
     await act(() => { root.querySelector<HTMLButtonElement>('.interrupt__actions .btn--primary')!.click(); });
+    // Both boxes are checked inside one act: a second answer that lands
+    // before the re-render still has to keep the first one.
     const boxes = root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    await act(() => { boxes[0].click(); });
-    await act(() => { boxes[2].click(); });
+    await act(() => {
+      boxes[0].click();
+      boxes[2].click();
+    });
+    expect([boxes[0].checked, boxes[2].checked]).toEqual([true, true]);
     await act(() => { root.querySelector<HTMLButtonElement>('.interrupt__actions .btn--primary')!.click(); });
     await act(async () => { root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
     expect(answer).toHaveBeenCalledWith('b2', [

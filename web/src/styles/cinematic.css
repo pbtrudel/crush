@@ -65,6 +65,11 @@
    events so it stays clickable. */
 .holodeck[data-cinematic='true'] .holodeck__grid { pointer-events: none; }
 .holodeck[data-cinematic='true'] .scene-layer__canvas { pointer-events: auto; }
+/* The task board and the todo orbit stay for information, but the scene owns
+   the drags in cinematic mode: only their own controls take a pointer. */
+.holodeck[data-cinematic='true'] .taskboard,
+.holodeck[data-cinematic='true'] .todo-orbit { pointer-events: none; }
+.holodeck[data-cinematic='true'] .taskboard .taskcard__owner { pointer-events: auto; }
 
 /* Only the way out and the link survive; the flex row replaces the seven
    instrument columns the hidden children no longer fill. The identity block

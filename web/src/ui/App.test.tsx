@@ -4,6 +4,7 @@ import { act } from 'preact/test-utils';
 import fixtures from '../state/__fixtures__/events.json';
 import type { Frame } from '../api/types';
 import { drawerOpen, panelTab } from '../state/drawer';
+import { overlayWidth } from '../state/overlay';
 import { initialState, reduce } from '../state/reducer';
 import { state } from '../state/store';
 import { App } from './App';
@@ -77,6 +78,68 @@ describe('App layout', () => {
       expect(tabs.hasAttribute('inert')).toBe(false);
     } finally {
       await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
+});
+
+// One live region per state: two polite regions saying the same thing make
+// a screen reader repeat every connection change.
+describe('connection status', () => {
+  const regions = (root: Element) => [...root.querySelectorAll('[role="status"]')]
+    .filter((el) => /Linked|Reconnecting|Signal lost|Session ended/.test(el.textContent ?? ''));
+
+  it('announces a lost or ended link from the HUD only', async () => {
+    state.value = { ...initialState(), conn: 'reconnecting' };
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<App />, root); });
+      const live = regions(root);
+      expect(live).toHaveLength(1);
+      expect(live[0].classList.contains('hud__link')).toBe(true);
+      expect(live[0].textContent).toContain('Signal lost. Reconnecting to crush.');
+
+      // The banner still shows the instruction; it just has nothing to say.
+      const banner = root.querySelector('.banner')!;
+      expect(banner.getAttribute('aria-hidden')).toBe('true');
+      expect(banner.hasAttribute('role')).toBe(false);
+      expect(banner.textContent).toContain('Signal lost');
+
+      await act(() => { state.value = { ...state.value, conn: 'ended' }; });
+      expect(regions(root)).toHaveLength(1);
+      expect(regions(root)[0].textContent).toContain('Start crush with --web');
+      expect(root.querySelector('.banner')!.getAttribute('aria-hidden')).toBe('true');
+    } finally {
+      await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
+});
+
+// Between 1024px and 1279px the open drawer covers the log, so the log it
+// covers leaves the tab order. Every other layout keeps it reachable.
+describe('the covered log', () => {
+  it('is inert only over the overlay drawer', async () => {
+    drawerOpen.value = false;
+    overlayWidth.value = false;
+    state.value = { ...initialState(), conn: 'live' };
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<App />, root); });
+      const log = root.querySelector('.panel--log')!;
+      expect(log.hasAttribute('inert')).toBe(false);
+      await act(() => { drawerOpen.value = true; });
+      expect(log.hasAttribute('inert')).toBe(false);
+      await act(() => { overlayWidth.value = true; });
+      expect(log.hasAttribute('inert')).toBe(true);
+      await act(() => { overlayWidth.value = false; });
+      expect(log.hasAttribute('inert')).toBe(false);
+      await act(() => { drawerOpen.value = false; });
+      expect(log.hasAttribute('inert')).toBe(false);
+    } finally {
+      await act(() => { render(null, root); });
+      drawerOpen.value = false;
+      overlayWidth.value = false;
       state.value = initialState();
     }
   });

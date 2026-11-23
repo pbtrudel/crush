@@ -1,7 +1,11 @@
 .agent-list {
   position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
-  margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
+  margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
   pointer-events: auto;
+  /* A long agent name would widen its option and reach the inspector's half
+     of the stage, so the list keeps a fixed column and truncates the name
+     instead. The full text stays in the DOM for assistive technology. */
+  max-inline-size: 14rem;
   /* A tag may project over the list; the list is the accessible path, so it
      wins the click there. Both stay under the HUD at 20. */
   z-index: 6;
@@ -12,6 +16,7 @@
   font: 500 var(--step--1) var(--font-hud);
   cursor: pointer;
 }
+.agent-list__name { flex: 1 1 auto; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-list li[data-status='running'] .agent-list__glyph { color: var(--cyan); }
 .agent-list li[data-status='attention'] { border-color: var(--magenta); }
 .agent-list li[data-status='attention'] .agent-list__glyph { color: var(--magenta); }
@@ -20,7 +25,33 @@
 .agent-list li[data-kind='teammate'] .agent-list__glyph { color: var(--cyan); }
 .agent-list li[data-status='inactive'], .agent-list li[data-status='done'] { opacity: 0.7; }
 .agent-list li[data-status='failed'] { border-color: var(--magenta); }
-.agent-list__status { margin-inline-start: auto; }
+.agent-list__status { margin-inline-start: auto; flex: 0 0 auto; }
+/* The stage holds the list beside the inspector from 1312px up, or from
+   1632px up once the drawer's third column takes its share. Narrower than
+   that, the list becomes one row at the stage's top, leaves the handle its
+   corner, and the panel starts under it. The row is one option tall, so the
+   panel's offset is the stage's own inset twice plus 2.25rem. A row that
+   outgrows the stage scrolls without a bar, which keeps that height fixed. */
+@media (min-width: 1024px) and (max-width: 1311px) {
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list {
+    display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; }
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector {
+    margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+  }
+}
+@media (min-width: 1312px) and (max-width: 1631px) {
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list {
+    display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector {
+    margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+  }
+}
 .cs-node { cursor: pointer; pointer-events: auto; }
 .cs-node__hex { fill: var(--void-deep); stroke: var(--cyan); stroke-width: 1.5; }
 .cs-node[data-kind='subagent'] .cs-node__hex { stroke: var(--violet); }

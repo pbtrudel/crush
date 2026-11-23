@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
 import { needsAttention } from '../state/reducer';
 import { drawerOpen, panelTab } from '../state/drawer';
+import { logInert, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
 import { BootSequence } from './BootSequence';
@@ -28,6 +29,10 @@ export function App() {
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
   const inspector = useRef<HTMLElement>(null);
+
+  // The log goes inert while the overlay drawer covers it: that is a width
+  // plus drawer state, not something a stylesheet can express.
+  useEffect(() => watchOverlayWidth(), []);
 
   useEffect(() => {
     document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);
@@ -88,7 +93,7 @@ export function App() {
       <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={panelTab.value}>
         <div class="cine-view" ref={view}>
           <div class="cine-camera" ref={camera}>
-            <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log}>
+            <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log} inert={modal || logInert.value}>
               <TransmissionLog />
             </section>
             <Inspector panelRef={inspector} />

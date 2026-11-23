@@ -84,7 +84,7 @@ func SeedHolodeck(f *Fake, teamDir string, clock time.Time) error {
 	}
 	now := time.Now()
 	runs := map[string]any{"version": 1, "runs": []agentrun.Run{
-		{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: now},
+		{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser entry points, then rewrite the tokenizer pipeline", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: now},
 		{ID: "team-m-1", Kind: agentrun.KindTeammate, Name: "alice", SessionID: "team-m-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: now},
 	}}
 	if err := os.MkdirAll(teamDir, 0o755); err != nil {

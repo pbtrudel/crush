@@ -94,6 +94,16 @@
   .holodeck__grid[data-drawer='open'] .panel--drawer {
     position: absolute; inset-block: 0; inset-inline-start: 0; z-index: 3;
     inline-size: min(34rem, 100%);
+    /* Over the log, the 0.70 glass lets the text underneath read through,
+       so the overlay takes the solid token and keeps the two-tone edge. */
+    background-image: linear-gradient(var(--surface-solid), var(--surface-solid)),
+      linear-gradient(135deg, var(--cyan), var(--violet));
+  }
+  /* The closed drawer keeps the open one's anchor: opening then only changes
+     transform and opacity, instead of jumping across the grid first. While
+     it waits off the edge it is transparent, inert and click-through. */
+  .holodeck__grid[data-drawer='closed'] .panel--drawer {
+    inset-inline-start: 0; inset-inline-end: auto; inline-size: min(34rem, 100%);
   }
 }
 /* The tabs only exist in the narrow single-slot layout. */
