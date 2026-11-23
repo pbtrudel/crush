@@ -88,25 +88,26 @@ test that failed first:
   asserted the old behaviour was replaced by one that asserts the new one.
 - **Fusion steps** now get the refusal retry as well as the request guard.
 
-## Follow-ups worth doing
+## Follow-ups (implemented with this sync)
 
-1. **Reviewer before session grants.** `permission.Request` runs the fork's
-   auto-reviewer before the "allow for session" and inherited auto-approval
-   checks, so a review can deny what the user already allowed and costs a
-   model call each time. This predates the merge; moving those checks ahead
-   of the reviewer is a separate change.
-2. **Skills in the prompt.** Upstream's skill toggles rebuild the system
-   prompt, but the fork's `coordinator.RefreshSkills` (behind
-   `ReloadSkills`) rebuilds only tools, so a reload leaves the prompt's
-   skill list stale until the next session.
-3. **Compression elsewhere.** Request compression could be offered as an
-   opt-in for other OpenAI-compatible providers now that the fork's
-   transports understand compressed bodies. Mistral is excluded until
-   tested with its Vibe signing.
-4. **Model-segmented TPS.** Messages now persist the model display name,
-   which the TPS average can use to stop mixing models.
-5. **`CRUSH_DATA_DIR` with worktrees.** Pointing it at one directory keeps a
-   single session database across `crush --worktree` sessions.
+Each landed as its own commit on the sync branch.
+
+1. **Session approvals before the reviewer.** "Allow for session" grants
+   and session-wide auto-approval are checked before the fork's automatic
+   reviewer, so a review cannot deny what the user already allowed and
+   costs no model call when an approval covers the request.
+2. **Skills in the prompt.** A skills reload now rebuilds each agent's
+   system prompt once, on its next turn, so the listed skills match the
+   reload. Turns without a reload keep the cached prompt.
+3. **Opt-in request compression.** Any OpenAI-compatible provider can set
+   `request_compression` (`br`, `gzip`, in order of preference). Hyper keeps
+   both by default; Mistral is excluded until tested with its Vibe signing.
+4. **TPS by routed model.** The session average already followed the active
+   provider and model. With Hyper routing it now follows the model that
+   actually answered, and restarts when the router switches models.
+5. **Shared sessions for `crush --worktree`.** Such runs use the original
+   checkout's data directory, so their sessions stay with the project's.
+   `--data-dir`, `CRUSH_DATA_DIR` and `data_directory` still take precedence.
 
 ## Verification
 
