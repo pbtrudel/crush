@@ -300,6 +300,17 @@ type LoadOption func(*loadOptions)
 
 type loadOptions struct {
 	skipProviderUpdate bool
+	dataDirFrom        string
+}
+
+// WithDefaultDataDirFrom resolves the default data directory from dir
+// instead of the working directory. It applies only when no data directory
+// is set by the dataDir argument, CRUSH_DATA_DIR or the data_directory
+// option. A run in a new Git worktree passes the checkout it was started
+// from, so it shares that checkout's sessions instead of starting an empty
+// database in the worktree.
+func WithDefaultDataDirFrom(dir string) LoadOption {
+	return func(o *loadOptions) { o.dataDirFrom = dir }
 }
 
 // WithoutProviderUpdate keeps the provider catalog refresh off. The load
@@ -334,6 +345,9 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
 
+	if dataDir == "" && o.dataDirFrom != "" && (cfg.Options == nil || cfg.Options.DataDirectory == "") {
+		dataDir = defaultDataDirFor(o.dataDirFrom)
+	}
 	cfg.setDefaults(workingDir, dataDir)
 
 	store := &ConfigStore{
@@ -856,6 +870,16 @@ func (c *Config) NormalizeOptions() {
 	}
 }
 
+// defaultDataDirFor returns the data directory a project at workingDir
+// uses when none is configured: the closest existing one within the
+// project, or a new one in workingDir.
+func defaultDataDirFor(workingDir string) string {
+	if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
+		return path
+	}
+	return filepath.Join(workingDir, defaultDataDirectory)
+}
+
 func (c *Config) setDefaults(workingDir, dataDir string) {
 	c.NormalizeOptions()
 	if len(c.Options.GlobalContextPaths) == 0 {
@@ -871,11 +895,7 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	if dataDir != "" {
 		c.Options.DataDirectory = dataDir
 	} else if c.Options.DataDirectory == "" {
-		if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
-			c.Options.DataDirectory = path
-		} else {
-			c.Options.DataDirectory = filepath.Join(workingDir, defaultDataDirectory)
-		}
+		c.Options.DataDirectory = defaultDataDirFor(workingDir)
 	}
 	c.Options.DataDirectory = filepath.Clean(filepathext.SmartJoin(workingDir, c.Options.DataDirectory))
 	if c.Providers == nil {

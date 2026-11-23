@@ -377,21 +377,38 @@ func setupWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
 // rather than being spelled out twice.
 const sysadminModeWarning = "Warning: sysadmin mode is active. Every command is auto-approved, and the block list that catches dangerous commands at run time is switched off."
 
+// initLocalConfig applies --worktree to cwd and loads the config for the
+// resulting directory. It returns the store, the directory Crush runs in,
+// and the worktree it created, if any.
+func initLocalConfig(cmd *cobra.Command, cwd string, opts ...config.LoadOption) (*config.ConfigStore, string, string, error) {
+	debug, _ := cmd.Flags().GetBool("debug")
+	dataDir, _ := cmd.Flags().GetString("data-dir")
+
+	dir, worktree, err := applyWorktreeFlag(cmd, cwd)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if worktree != "" {
+		// Sessions stay in the checkout's database, so the worktree run
+		// is listed and resumable with the rest of the project's.
+		opts = append(opts, config.WithDefaultDataDirFrom(cwd))
+	}
+	store, err := config.Init(cmd.Context(), dir, dataDir, debug, opts...)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return store, dir, worktree, nil
+}
+
 // setupLocalWorkspace creates an in-process app.App and wraps it in an
 // AppWorkspace.
 func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
 	debug, _ := cmd.Flags().GetBool("debug")
 	yoloCount, _ := cmd.Flags().GetCount("yolo")
 	channels, _ := cmd.Flags().GetStringSlice("channels")
-	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
 
 	cwd, err := ResolveCwd(cmd)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	cwd, worktree, err := applyWorktreeFlag(cmd, cwd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -401,7 +418,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		return nil, nil, err
 	}
 
-	store, err := config.Init(ctx, cwd, dataDir, debug)
+	store, cwd, worktree, err := initLocalConfig(cmd, cwd)
 	if err != nil {
 		return nil, nil, err
 	}
