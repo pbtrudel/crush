@@ -160,6 +160,7 @@ type coordinator struct {
 	notify      pubsub.Publisher[notify.Notification]
 	runComplete pubsub.Publisher[notify.RunComplete]
 	interactive bool
+	shellOwner  any
 
 	// agentMu guards mainAgent and mainAgentName: SetMainAgent runs on
 	// HTTP handler goroutines while runs, cancels, and probes read the
@@ -205,6 +206,9 @@ type coordinator struct {
 	// the busy check sees subagents the main agent is not running itself.
 	subSessionsMu sync.Mutex
 	subSessions   map[string]int
+	// settleMu serializes transcript repairs so two readers cannot both
+	// settle one orphaned call.
+	settleMu sync.Mutex
 
 	// Skills discovery results. The manager is the live source of
 	// truth; the slices below are its last-read snapshot. skillsMu guards
@@ -232,6 +236,16 @@ type coordinator struct {
 	// todo with a settled team task, so concurrent completions cannot
 	// clobber each other.
 	todoMu sync.Mutex
+
+	// prompts holds each main agent's prompt template, and skillKeys the
+	// skill toggle state its system prompt was last built with, so a
+	// toggle rebuilds the prompt on the next turn. Guarded by skillKeysMu.
+	prompts     map[string]*prompt.Prompt
+	skillKeys   map[string]string
+	skillKeysMu sync.Mutex
+
+	// promptTexts is every prompt's text, read once at startup.
+	promptTexts map[string]string
 
 	readyWg errgroup.Group
 
@@ -279,6 +293,9 @@ type CoordinatorOptions struct {
 	Skills      *skills.Manager
 	HookRunner  *hooks.Runner
 	Interactive bool
+	// ShellOwner tags the background shells the bash tool starts, so the
+	// owner can stop its own shells without touching anyone else's.
+	ShellOwner any
 }
 
 func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, error) {
@@ -315,6 +332,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		interactive:     opts.Interactive,
 		wakeCounts:      make(map[string]int),
 		hookRunner:      opts.HookRunner,
+		shellOwner:      opts.ShellOwner,
 		dispatched:      csync.NewMap[string, *dispatchedAgent](),
 		backgroundAfter: subAgentBackgroundAfter,
 	}
@@ -337,6 +355,12 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	if !ok {
 		return nil, errCoderAgentNotConfigured
 	}
+
+	promptTexts, err := loadPromptTexts(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	c.promptTexts = promptTexts
 
 	coderPrompt, _, err := c.agentPrompt(config.AgentCoder, agentCfg)
 	if err != nil {
@@ -366,6 +390,16 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 	c.agents[config.AgentPlan] = planAgent
+
+	c.prompts = map[string]*prompt.Prompt{
+		config.AgentCoder: coderPrompt,
+		config.AgentPlan:  planSystemPrompt,
+	}
+	key := c.skillToggleKey(ctx)
+	c.skillKeys = map[string]string{
+		config.AgentCoder: key,
+		config.AgentPlan:  key,
+	}
 
 	c.mainAgent = agent
 	c.mainAgentName = config.AgentCoder
@@ -529,6 +563,9 @@ func (c *coordinator) runWithOptions(ctx context.Context, accept *AcceptedRun, r
 	if err := c.updateAgentModels(ctx, agent, agentName); err != nil {
 		return nil, fmt.Errorf("failed to update models: %w", err)
 	}
+	if err := c.refreshSkillPrompt(ctx, agent, agentName); err != nil {
+		slog.Error("Failed to rebuild system prompt after skill toggle", "error", err)
+	}
 
 	model := agent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -684,7 +721,7 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
 		return
 	}
-	if agent.IsSessionBusy(sessionID) || !c.takeWakeSlot(sessionID) {
+	if agent.HasPendingWork(sessionID) || !c.takeWakeSlot(sessionID) {
 		agent.EnqueueNotice(sessionID, notice)
 		return
 	}
@@ -1212,19 +1249,77 @@ func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
 // with disabled_tools. effectiveToolNames is the same list buildTools filters
 // the palette by, so the prompt and the tool block agree.
 func (c *coordinator) agentPrompt(name string, agentCfg config.Agent) (_ *prompt.Prompt, ok bool, _ error) {
-	opts := []prompt.Option{
-		prompt.WithWorkingDir(c.cfg.WorkingDir()),
-		prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)),
-	}
 	switch name {
-	case config.AgentCoder:
-		p, err := coderPrompt(opts...)
-		return p, true, err
-	case config.AgentPlan:
-		p, err := planPrompt(opts...)
-		return p, true, err
+	case config.AgentCoder, config.AgentPlan:
+	default:
+		return nil, false, nil
 	}
-	return nil, false, nil
+	opts := append(c.skillOverrideOptions(), prompt.WithToolNames(c.effectiveToolNames(agentCfg, roleLead)))
+	p, err := c.newPrompt(name, opts...)
+	return p, true, err
+}
+
+// skillOverrideOptions returns the prompt options carrying the
+// repository-scoped skill toggle overrides. They read the DB at Build
+// time, the same point where the config's disabled list is applied;
+// refreshSkillPrompt rebuilds on the next turn after a toggle.
+func (c *coordinator) skillOverrideOptions() []prompt.Option {
+	disabled := func(ctx context.Context) []string {
+		names, err := c.sessions.SkillsDisabled(ctx)
+		if err != nil {
+			slog.Error("Failed to list disabled skills for prompt", "error", err)
+			return nil
+		}
+		return names
+	}
+	enabled := func(ctx context.Context) []string {
+		names, err := c.sessions.SkillsEnabled(ctx)
+		if err != nil {
+			slog.Error("Failed to list enabled skills for prompt", "error", err)
+			return nil
+		}
+		return names
+	}
+	return []prompt.Option{
+		prompt.WithWorkingDir(c.cfg.WorkingDir()),
+		prompt.WithSkillOverrides(disabled, enabled),
+	}
+}
+
+// skillToggleKey fingerprints everything that decides which skills the
+// system prompt lists: the config's disabled list and the repository
+// overrides.
+func (c *coordinator) skillToggleKey(ctx context.Context) string {
+	var configDisabled []string
+	if opts := c.cfg.Config().Options; opts != nil {
+		configDisabled = opts.DisabledSkills
+	}
+	repoDisabled, _ := c.sessions.SkillsDisabled(ctx)
+	repoEnabled, _ := c.sessions.SkillsEnabled(ctx)
+	return fmt.Sprint(configDisabled, repoDisabled, repoEnabled)
+}
+
+// refreshSkillPrompt rebuilds the agent's system prompt when the skill
+// toggles changed since it was last built, so a toggle applies from the
+// next turn. Otherwise the prompt is left alone, keeping the provider's
+// prompt cache warm.
+func (c *coordinator) refreshSkillPrompt(ctx context.Context, agent SessionAgent, name string) error {
+	key := c.skillToggleKey(ctx)
+
+	c.skillKeysMu.Lock()
+	defer c.skillKeysMu.Unlock()
+	p, ok := c.prompts[name]
+	if !ok || c.skillKeys[name] == key {
+		return nil
+	}
+	model := agent.Model().Model
+	systemPrompt, err := p.Build(ctx, model.Provider(), model.Model(), c.cfg)
+	if err != nil {
+		return err
+	}
+	agent.SetSystemPrompt(systemPrompt)
+	c.skillKeys[name] = key
+	return nil
 }
 
 // agentSystemPrompt is where buildAgent takes the base system prompt from.
@@ -1276,6 +1371,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		Messages:             c.messages,
 		History:              c.history,
 		Cfg:                  c.cfg,
+		Prompts:              c.promptTexts,
 		Tools:                nil,
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
@@ -1411,7 +1507,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	allTools = append(
 		allTools,
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions, c.shellOwner),
 		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker, func() string {
 			return modelCatalog(c.cfg.Config())
 		}),
@@ -1581,10 +1677,11 @@ func (c *coordinator) buildModelFromSelection(ctx context.Context, modelCfg conf
 		return Model{}, err
 	}
 
-	// Bound each request with the configured timeout so unreachable or hung
-	// providers fail instead of blocking a session forever. The wrapper is
-	// applied per request, so retries get a fresh budget each attempt.
-	languageModel = newRequestTimeoutModel(languageModel, c.cfg.Config().Options.GetRequestTimeout())
+	// End each request when its turn is cancelled, and bound it with the
+	// configured timeout so unreachable or hung providers fail instead of
+	// blocking a session forever. Retries get a fresh budget each attempt.
+	languageModel = newRequestGuardModel(languageModel, c.cfg.Config().Options.GetRequestTimeout())
+	languageModel = newRefusalRetryModel(languageModel)
 
 	// Hyper completions no longer report the hypercredit balance, so wrap
 	// the Hyper models to fetch it from /v1/credits on every request.
@@ -1664,7 +1761,15 @@ func (c *coordinator) buildFusionStepModel(ctx context.Context, providerCfg conf
 	if err != nil {
 		return nil, err
 	}
-	return provider.LanguageModel(ctx, modelID)
+	languageModel, err := provider.LanguageModel(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	// The same wrapping as every other model, in the same order: the guard
+	// ends a cancelled or silent step stream, and a refused step is retried
+	// with a fresh guard on each attempt.
+	languageModel = newRequestGuardModel(languageModel, c.cfg.Config().Options.GetRequestTimeout())
+	return newRefusalRetryModel(languageModel), nil
 }
 
 // hyperAPIKey resolves the Hyper API key from the live config, so an
@@ -1922,6 +2027,11 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 			opts,
 			openaicompat.WithLanguageModelOptions(
 				openai.WithLanguageModelHeaderFunc(hyper.HeaderFunc),
+			),
+			// Hyper supports both Brotli and GZip for compressed requests.
+			openaicompat.WithRequestCompression(
+				openaicompat.EncodingBrotli,
+				openaicompat.EncodingGzip,
 			),
 		)
 	}
@@ -2239,15 +2349,12 @@ func (c *coordinator) IsBusy() bool {
 // and safe to settle, so it must not miss a subagent running on an agent
 // instance other than the main one.
 func (c *coordinator) IsSessionBusy(sessionID string) bool {
-	return c.currentAgent().IsSessionBusy(sessionID) || c.subSessionBusy(sessionID)
-}
-
-func (c *coordinator) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	// The agent holding the transcript can differ from the one running it:
-	// a dispatched subagent works on an agent of its own, and only this
-	// coordinator sees that run. Pass its check so a read never settles the
-	// calls of a live subagent.
-	return c.currentAgent().ListSettledMessages(ctx, sessionID, c.IsSessionBusy)
+	for _, agent := range c.agents {
+		if agent.HasPendingWork(sessionID) {
+			return true
+		}
+	}
+	return c.subSessionBusy(sessionID)
 }
 
 func (c *coordinator) SetHostContext(hc proto.HostContext) { c.hostContext.Set(hc) }
@@ -2313,11 +2420,24 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	if !ok {
 		return nil
 	}
+	skillKey := c.skillToggleKey(ctx)
 	systemPrompt, err := template.Build(ctx, models.Large.Model.Provider(), models.Large.Model.Model(), c.cfg)
 	if err != nil {
 		return err
 	}
 	agent.SetSystemPrompt(systemPrompt)
+	// The skill refresh rebuilds from this template from now on, so a
+	// toggle cannot bring back the palette the reload replaced.
+	c.skillKeysMu.Lock()
+	if c.prompts == nil {
+		c.prompts = make(map[string]*prompt.Prompt)
+	}
+	if c.skillKeys == nil {
+		c.skillKeys = make(map[string]string)
+	}
+	c.prompts[name] = template
+	c.skillKeys[name] = skillKey
+	c.skillKeysMu.Unlock()
 	c.promptInputsMu.Lock()
 	if c.promptInputs == nil {
 		c.promptInputs = make(map[string]promptInput)
@@ -2656,7 +2776,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	c.finishAgentRun(sess.ID, err)
 	c.askToSignInAgain(err, model)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
+		return subAgentRunError("Failed to generate response", err), nil
 	}
 	return subAgentResponse(result), nil
 }
@@ -2797,6 +2917,16 @@ func subAgentResponse(result *fantasy.AgentResult) fantasy.ToolResponse {
 		return fantasy.NewTextResponse(output)
 	}
 	return fantasy.NewTextErrorResponse(subAgentNoOutput)
+}
+
+// subAgentRunError turns a failed subagent run into the parent's tool
+// result. A refusal arrives as an error once its retries are spent, and it
+// still gets the advice a refused final step gets.
+func subAgentRunError(prefix string, err error) fantasy.ToolResponse {
+	if errors.Is(err, errRefused) {
+		return fantasy.NewTextErrorResponse(subAgentRefused)
+	}
+	return fantasy.NewTextErrorResponse(fmt.Sprintf("%s: %s", prefix, err))
 }
 
 // withLastWords appends whatever text the cut-short step did produce.

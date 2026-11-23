@@ -42,7 +42,7 @@ type Snapshot struct {
 	Session          json.RawMessage       `json:"session,omitempty"`
 	Messages         []json.RawMessage     `json:"messages"`
 	Permissions      []json.RawMessage     `json:"permissions"`
-	Question         json.RawMessage       `json:"question,omitempty"`
+	Questions        []json.RawMessage     `json:"questions,omitempty"`
 	PermissionMode   string                `json:"permission_mode"`
 	InputMode        string                `json:"input_mode"`
 	Model            ModelInfo             `json:"model"`
@@ -84,8 +84,8 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		}
 	}
 	s.Permissions = entities(g.pending.permissions())
-	if q := g.pending.question(); q != nil {
-		s.Question = innerPayload(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: *q})
+	for _, q := range g.pending.questions() {
+		s.Questions = append(s.Questions, innerPayload(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: q}))
 	}
 	if sessionID == "" {
 		return s

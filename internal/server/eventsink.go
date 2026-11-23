@@ -44,12 +44,28 @@ type eventSink struct {
 
 	mu   sync.Mutex
 	subs map[*sinkSub]struct{}
+	// overflowed is set by overflowAll. The pump sets it without the
+	// registry lock, so a connection may still attach afterwards; it is
+	// signalled on attach instead of waiting on a sink that is done.
+	overflowed bool
 }
 
 func newEventSink() *eventSink {
 	return &eventSink{
 		encode: encodeEventPayload,
 		subs:   make(map[*sinkSub]struct{}),
+	}
+}
+
+// overflowAll tells every attached connection that events were lost
+// upstream of the fan-out, so each ends its stream and its client
+// resyncs.
+func (s *eventSink) overflowAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.overflowed = true
+	for sub := range s.subs {
+		sub.signalOverflow()
 	}
 }
 
@@ -66,16 +82,31 @@ type sinkSub struct {
 	order   []string
 	byKey   map[string]sinkFrame
 	dropped atomic.Uint64
+
+	// overflow is closed the first time a frame is dropped for this
+	// connection. A dropped frame may be a permission request or a run's
+	// completion, so the stream is ended rather than left with a silent
+	// gap.
+	overflow     chan struct{}
+	overflowOnce sync.Once
+
+	// closed is closed when the workspace's event stream ends. Nil for a
+	// connection attached to a bare sink, which never ends it.
+	closed <-chan struct{}
 }
 
 func (s *eventSink) attach(cap int) *sinkSub {
 	sub := &sinkSub{
-		cap:    cap,
-		notify: make(chan struct{}, 1),
-		byKey:  make(map[string]sinkFrame, cap),
+		cap:      cap,
+		notify:   make(chan struct{}, 1),
+		byKey:    make(map[string]sinkFrame, cap),
+		overflow: make(chan struct{}),
 	}
 	s.mu.Lock()
 	s.subs[sub] = struct{}{}
+	if s.overflowed {
+		sub.signalOverflow()
+	}
 	s.mu.Unlock()
 	return sub
 }
@@ -118,6 +149,7 @@ func (q *sinkSub) push(f sinkFrame) {
 			q.order = q.order[1:]
 			delete(q.byKey, oldest)
 			q.dropped.Add(1)
+			q.signalOverflow()
 		}
 		q.order = append(q.order, f.key)
 	}
@@ -152,6 +184,22 @@ func (q *sinkSub) drain() []sinkFrame {
 }
 
 func (q *sinkSub) wait() <-chan struct{} { return q.notify }
+
+// rearm raises the wake-up signal again, for a writer that stopped
+// draining with frames possibly still pending.
+func (q *sinkSub) rearm() {
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+}
+
+// overflowed is closed once a frame was dropped for this connection.
+func (q *sinkSub) overflowed() <-chan struct{} { return q.overflow }
+
+func (q *sinkSub) signalOverflow() {
+	q.overflowOnce.Do(func() { close(q.overflow) })
+}
 
 // frameDatas is a test-facing projection of a drained batch.
 func frameDatas(frames []sinkFrame) [][]byte {
@@ -215,6 +263,9 @@ type registeredSink struct {
 	// dead is set when the upstream event channel closes, which means the
 	// workspace is gone and the next attach must build a fresh sink.
 	dead atomic.Bool
+	// closed is closed with dead, so attached connections end their
+	// streams instead of waiting on a sink that will never publish again.
+	closed chan struct{}
 }
 
 func newSinkRegistry() *sinkRegistry {
@@ -228,18 +279,19 @@ func (r *sinkRegistry) attach(ctx context.Context, be *backend.Backend, workspac
 	reg, ok := r.byName[workspaceID]
 	if !ok || reg.dead.Load() {
 		child, cancel := context.WithCancel(context.Background())
-		events, err := be.SubscribeEvents(child, workspaceID)
+		events, overflow, err := be.SubscribeEventsWithOverflow(child, workspaceID)
 		if err != nil {
 			cancel()
 			r.mu.Unlock()
 			return nil, nil, err
 		}
-		reg = &registeredSink{sink: newEventSink(), cancel: cancel}
+		reg = &registeredSink{sink: newEventSink(), cancel: cancel, closed: make(chan struct{})}
 		r.byName[workspaceID] = reg
-		go pumpWorkspaceEvents(reg, events, child.Done())
+		go pumpWorkspaceEvents(reg, events, overflow, child.Done())
 	}
 	reg.refs++
 	sub := reg.sink.attach(sinkBacklog)
+	sub.closed = reg.closed
 	r.mu.Unlock()
 
 	var once sync.Once
@@ -266,10 +318,18 @@ func (r *sinkRegistry) release(workspaceID string, reg *registeredSink) {
 }
 
 // pumpWorkspaceEvents encodes every upstream event once and fans it out.
-func pumpWorkspaceEvents(reg *registeredSink, events <-chan pubsub.Event[tea.Msg], done <-chan struct{}) {
+func pumpWorkspaceEvents(reg *registeredSink, events <-chan pubsub.Event[tea.Msg], overflow <-chan struct{}, done <-chan struct{}) {
 	for {
 		select {
 		case <-done:
+			return
+		case <-overflow:
+			// The shared subscription itself fell behind, so every
+			// attached connection has a gap. End them all so their
+			// clients resync, and let the next attach subscribe afresh.
+			reg.dead.Store(true)
+			reg.sink.overflowAll()
+			reg.cancel()
 			return
 		case ev, ok := <-events:
 			if !ok {
@@ -277,6 +337,7 @@ func pumpWorkspaceEvents(reg *registeredSink, events <-chan pubsub.Event[tea.Msg
 				// the sink so the next attach builds a fresh one instead
 				// of subscribing to a dead stream.
 				reg.dead.Store(true)
+				close(reg.closed)
 				return
 			}
 			reg.sink.publish(ev.Payload)

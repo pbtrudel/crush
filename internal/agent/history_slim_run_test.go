@@ -46,7 +46,7 @@ func coldHistoryEnv(t *testing.T) (fakeEnv, *sql.DB) {
 	workingDir := t.TempDir()
 	permissions := permission.NewPermissionService(workingDir, []string{}, nil)
 	permissions.SetPermissionMode(permission.PermissionModeSysadmin)
-	fileTracker := filetracker.NewService(q)
+	fileTracker := filetracker.NewService(q, workingDir)
 
 	return fakeEnv{
 		workingDir:  workingDir,

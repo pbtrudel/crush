@@ -46,7 +46,7 @@ export const api = {
   grant: (id: string, action: GrantAction) => call<{ resolved: boolean }>('POST', '/api/permissions/grant', { id, action }),
   setMode: (mode: PermissionMode) => call<void>('POST', '/api/permissions/mode', { mode }),
   setInputMode: (mode: InputMode) => call<void>('POST', '/api/input-mode', { mode }),
-  answer: (answers: QuestionAnswer[]) => call<{ resolved: boolean }>('POST', '/api/questions/answer', { answers }),
-  cancelQuestion: () => call<{ resolved: boolean }>('POST', '/api/questions/cancel'),
+  answer: (batchId: string, answers: QuestionAnswer[]) => call<{ resolved: boolean }>('POST', '/api/questions/answer', { batch_id: batchId, answers }),
+  cancelQuestion: (batchId: string) => call<{ resolved: boolean }>('POST', '/api/questions/cancel', { batch_id: batchId }),
   completeFiles: (q: string) => call<{ files: string[]; truncated: boolean }>('GET', `/api/complete/files?q=${encodeURIComponent(q)}`),
 };

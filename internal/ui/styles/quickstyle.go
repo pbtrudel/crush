@@ -226,6 +226,13 @@ func wcagLuminance(c color.Color) float64 {
 func quickStyle(o quickStyleOpts) Styles {
 	o.deriveDiffColors()
 
+	// destructive_subtle is optional: only Charmtone names a softer hue, and
+	// a theme that leaves it unset should still get a banner body instead of
+	// a nil fill that renders as an empty line.
+	if o.destructiveSubtle == nil {
+		o.destructiveSubtle = o.destructive
+	}
+
 	var (
 		base   = lipgloss.NewStyle().Foreground(o.fgBase)
 		muted  = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
@@ -254,6 +261,11 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Chrome.MeterEmpty = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Chrome.MatrixRain = lipgloss.NewStyle().Foreground(o.bgMostVisible)
 	s.Chrome.MatrixRainHead = lipgloss.NewStyle().Foreground(o.successMostSubtle).Bold(true)
+
+	// The terminal's background is restored before the banner is printed.
+	// Keep text on its default foreground so it stays readable after exit.
+	s.ExitBanner.Text = lipgloss.NewStyle()
+	s.ExitBanner.Label = lipgloss.NewStyle().Bold(true)
 
 	// Populate color fields
 	s.WorkingGradFromColor = o.primary
@@ -1163,6 +1175,12 @@ func quickStyle(o quickStyleOpts) Styles {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(o.plan).
 		Padding(1, 2)
+
+	// Channel message metadata styles.
+	s.Messages.ChannelInfoIcon = subtle
+	s.Messages.ChannelInfoSender = muted
+	s.Messages.ChannelInfoProvider = subtle
+	s.Messages.ChannelInfoTimestamp = subtle
 
 	// Thinking section styles
 	s.Messages.ThinkingBox = subtle.Background(o.bgLeastVisible)

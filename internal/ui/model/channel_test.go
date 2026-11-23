@@ -82,6 +82,11 @@ func (w *channelWorkspace) FileTrackerListReadFiles(context.Context, string) ([]
 	return nil, nil
 }
 
+// A session load fetches the repository-scoped skill toggles; no
+// overrides is the empty state.
+func (w *channelWorkspace) SkillsDisabled(context.Context) ([]string, error) { return nil, nil }
+func (w *channelWorkspace) SkillsEnabled(context.Context) ([]string, error)  { return nil, nil }
+
 func (w *channelWorkspace) SetCurrentSession(_ context.Context, sessionID string) error {
 	w.declaredCurrent = sessionID
 	return nil

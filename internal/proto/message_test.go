@@ -344,9 +344,10 @@ func TestUnmarshalPartsErrors(t *testing.T) {
 	_, err := UnmarshalParts([]byte("not json"))
 	assert.Error(t, err)
 
-	_, err = UnmarshalParts([]byte(`[{"type": "nope", "data": {}}]`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown part type")
+	// A part type from a newer server is skipped, not an error.
+	parts, err := UnmarshalParts([]byte(`[{"type": "nope", "data": {}}]`))
+	require.NoError(t, err)
+	assert.Empty(t, parts)
 
 	_, err = UnmarshalParts([]byte(`[{"type": "text", "data": "scalar"}]`))
 	assert.Error(t, err)
@@ -427,4 +428,18 @@ func TestAgentEventJSONRoundTrip(t *testing.T) {
 	decoded = AgentEvent{}
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.NoError(t, decoded.Error)
+}
+
+// TestMessageUnmarshalSkipsUnknownPartType guards that a part type from a
+// newer server is dropped on its own instead of failing the whole decode.
+func TestMessageUnmarshalSkipsUnknownPartType(t *testing.T) {
+	t.Parallel()
+
+	const data = `{"id":"m-1","role":"assistant","parts":[` +
+		`{"type":"text","data":{"text":"hello"}},` +
+		`{"type":"future_widget","data":{"blob":"x"}}]}`
+
+	var msg Message
+	require.NoError(t, json.Unmarshal([]byte(data), &msg))
+	require.Equal(t, []ContentPart{TextContent{Text: "hello"}}, msg.Parts)
 }

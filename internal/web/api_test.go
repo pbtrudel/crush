@@ -205,18 +205,21 @@ func TestPermissionMode(t *testing.T) {
 func TestQuestionAnswerAndCancel(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
 	c := authedClient(t, g)
 	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/questions/answer",
-		`{"answers":[{"question_id":"q1","selected_ids":["a"]}]}`)
+		`{"batch_id":"b1","answers":[{"question_id":"q1","selected_ids":["a"]}]}`)
 	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.JSONEq(t, `{"resolved":true}`, string(body))
 	require.Equal(t, "q1", fake.Answers[0][0].QuestionID)
+	require.Equal(t, []string{"b1"}, fake.AnswerBatches, "the answer must name the pending batch")
 
-	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/questions/cancel", "")
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/questions/cancel", `{"batch_id":"b1"}`)
 	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.JSONEq(t, `{"resolved":true}`, string(body))
+	require.Contains(t, fake.CallLog(), "QuestionCancel:b1")
 }
 
 func TestCancelAndQueue(t *testing.T) {
@@ -294,6 +297,28 @@ func TestHealthAndSnapshot(t *testing.T) {
 	require.Equal(t, "other", snap.CurrentSessionID)
 }
 
+// TestSnapshotExposesEveryPendingBatch checks that a reload restores each
+// open question, not just the one that arrived last.
+func TestSnapshotExposesEveryPendingBatch(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s2"})
+	emitQuestion(t, g, fake, question.Request{ID: "b2", SessionID: "s3"})
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	var snap struct {
+		Questions []struct {
+			ID string `json:"id"`
+		} `json:"questions"`
+	}
+	require.NoError(t, json.Unmarshal(body, &snap))
+	require.Len(t, snap.Questions, 2)
+	require.Equal(t, "b1", snap.Questions[0].ID)
+	require.Equal(t, "b2", snap.Questions[1].ID)
+}
+
 func TestListSessions(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
@@ -340,32 +365,96 @@ func emitPermission(t *testing.T, g *Gateway, fake *webtest.Fake, req permission
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
+// emitQuestion publishes a question batch and waits until the gateway's
+// pending set has it, so an answer can name its batch.
+func emitQuestion(t *testing.T, g *Gateway, fake *webtest.Fake, req question.Request) {
+	t.Helper()
+	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: req})
+	require.Eventually(t, func() bool {
+		_, ok := g.pending.question(req.ID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
 func TestAnswerNotPendingForgetsQuestion(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	fake.Resolve = false
-	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
-	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
 
-	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/answer", `{"answers":[]}`)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/answer", `{"batch_id":"b1","answers":[]}`)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
 	require.JSONEq(t, `{"error":"question batch is no longer pending","code":"not_pending"}`, string(body))
-	require.Nil(t, g.pending.question(), "a batch the service no longer holds must not stay pending")
+	_, ok := g.pending.question("b1")
+	require.False(t, ok, "a batch the service no longer holds must not stay pending")
 }
 
 func TestQuestionCancelNotPendingForgetsQuestion(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	fake.Resolve = false
-	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
-	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
 
-	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/cancel", "")
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/cancel", `{"batch_id":"b1"}`)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
 	require.JSONEq(t, `{"error":"question batch is no longer pending","code":"not_pending"}`, string(body))
-	require.Nil(t, g.pending.question())
+	_, ok := g.pending.question("b1")
+	require.False(t, ok)
+}
+
+// TestQuestionAnswerRoutesByBatchID checks that an answer resolves the
+// batch the browser was looking at. A second batch arriving while the
+// first is open must not steal the answer.
+func TestQuestionAnswerRoutesByBatchID(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
+	emitQuestion(t, g, fake, question.Request{ID: "b2", SessionID: "s2"})
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/answer",
+		`{"batch_id":"b1","answers":[{"question_id":"q1","fill_in_text":"notes"}]}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.Equal(t, []string{"b1"}, fake.AnswerBatches)
+	require.Len(t, fake.Answers, 1)
+	require.Equal(t, "notes", fake.Answers[0][0].FillInText)
+	_, other := g.pending.question("b2")
+	require.True(t, other, "the other batch stays pending")
+}
+
+// TestQuestionCancelRoutesByBatchID checks that a cancel resolves the
+// batch it names, not the one that arrived last.
+func TestQuestionCancelRoutesByBatchID(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
+	emitQuestion(t, g, fake, question.Request{ID: "b2", SessionID: "s2"})
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/cancel", `{"batch_id":"b1"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.Contains(t, fake.CallLog(), "QuestionCancel:b1")
+	require.NotContains(t, fake.CallLog(), "QuestionCancel:b2")
+	_, other := g.pending.question("b2")
+	require.True(t, other, "the other batch stays pending")
+}
+
+// TestQuestionAnswerUnknownBatchKeepsOthers checks that a stale batch ID
+// fails on its own entry without clearing a batch still on screen.
+func TestQuestionAnswerUnknownBatchKeepsOthers(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/questions/answer", `{"batch_id":"gone","answers":[]}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.JSONEq(t, `{"error":"question batch is no longer pending","code":"not_pending"}`, string(body))
+	_, still := g.pending.question("b1")
+	require.True(t, still, "an unknown batch must not clear the pending one")
+	require.Empty(t, fake.AnswerBatches)
 }
 
 func TestRunCompleteClearsPending(t *testing.T) {
@@ -373,13 +462,13 @@ func TestRunCompleteClearsPending(t *testing.T) {
 	g, fake := startTest(t)
 	emitPermission(t, g, fake, permission.PermissionRequest{ID: "p1", SessionID: "s1", ToolCallID: "tc1"})
 	emitPermission(t, g, fake, permission.PermissionRequest{ID: "p2", SessionID: "s2", ToolCallID: "tc2"})
-	fake.Emit(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: question.Request{ID: "b1", SessionID: "s1"}})
-	require.Eventually(t, func() bool { return g.pending.question() != nil }, 2*time.Second, 10*time.Millisecond)
+	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s1"})
 
 	fake.Emit(pubsub.Event[notify.RunComplete]{Type: pubsub.UpdatedEvent, Payload: notify.RunComplete{SessionID: "s1"}})
 	require.Eventually(t, func() bool {
-		_, ok := g.pending.permission("p1")
-		return !ok && g.pending.question() == nil
+		_, permOK := g.pending.permission("p1")
+		_, questionOK := g.pending.question("b1")
+		return !permOK && !questionOK
 	}, 2*time.Second, 10*time.Millisecond)
 	_, ok := g.pending.permission("p2")
 	require.True(t, ok, "another session's pending request must survive")

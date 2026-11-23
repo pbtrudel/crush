@@ -1,6 +1,7 @@
 package message
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -126,6 +127,8 @@ type ToolCall struct {
 	Input            string `json:"input"`
 	ProviderExecuted bool   `json:"provider_executed"`
 	Finished         bool   `json:"finished"`
+	// StartedAtMs is when the call first appeared, in Unix milliseconds.
+	StartedAtMs int64 `json:"started_at_ms,omitempty"`
 }
 
 func (ToolCall) isPart() {}
@@ -138,6 +141,8 @@ type ToolResult struct {
 	MIMEType   string `json:"mime_type"`
 	Metadata   string `json:"metadata"`
 	IsError    bool   `json:"is_error"`
+	// FinishedAtMs is when this reply was recorded, in Unix milliseconds.
+	FinishedAtMs int64 `json:"finished_at_ms,omitempty"`
 }
 
 func (ToolResult) isPart() {}
@@ -373,24 +378,18 @@ func (m *Message) SubAgentReports() []SubAgentReport {
 }
 
 type Message struct {
-	ID               string
-	Role             MessageRole
-	SessionID        string
-	Parts            []ContentPart
-	Model            string
-	Provider         string
-	CreatedAt        int64
-	UpdatedAt        int64
-	IsSummaryMessage bool
-	// PrismModelID and PrismModelName identify the model that actually
-	// served the turn, as reported by the Hyper Prism model router
-	// headers. Empty when the turn was not routed through Prism.
-	PrismModelID   string
-	PrismModelName string
-	// PrismHypercreditSavings and PrismDollarSavings are the savings
-	// from routing through Prism, as reported by its savings trailers.
-	// Nil when not reported. When both are present the hypercredit
-	// figure is the one shown.
+	ID                      string
+	Role                    MessageRole
+	SessionID               string
+	Parts                   []ContentPart
+	Model                   string
+	ModelName               string
+	Provider                string
+	CreatedAt               int64
+	UpdatedAt               int64
+	IsSummaryMessage        bool
+	PrismModelID            string
+	PrismModelName          string
 	PrismHypercreditSavings *float64
 	PrismDollarSavings      *float64
 	// firstTokenAt is when this step's first output token arrived. It is
@@ -660,10 +659,11 @@ func (m *Message) FinishToolCall(toolCallID string) {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
 				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input,
-					Finished: true,
+					ID:          c.ID,
+					Name:        c.Name,
+					Input:       c.Input,
+					Finished:    true,
+					StartedAtMs: c.StartedAtMs,
 				}
 				return
 			}
@@ -680,15 +680,17 @@ func toolCallInput(input string) string {
 	return input
 }
 
+// AddToolCall adds or replaces a tool call by ID, keeping the time the
+// call first appeared.
 func (m *Message) AddToolCall(tc ToolCall) {
 	for i, part := range m.Parts {
-		if c, ok := part.(ToolCall); ok {
-			if c.ID == tc.ID {
-				m.Parts[i] = tc
-				return
-			}
+		if c, ok := part.(ToolCall); ok && c.ID == tc.ID {
+			tc.StartedAtMs = cmp.Or(tc.StartedAtMs, c.StartedAtMs)
+			m.Parts[i] = tc
+			return
 		}
 	}
+	tc.StartedAtMs = cmp.Or(tc.StartedAtMs, time.Now().UnixMilli())
 	m.Parts = append(m.Parts, tc)
 }
 
@@ -902,7 +904,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 				text = shellText
 			}
 		}
-		if text != "" {
+		if strings.TrimSpace(text) != "" {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
 		for _, content := range m.BinaryContent() {
@@ -946,7 +948,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			}
 			parts = append(parts, reasoningPart)
 		}
-		if text != "" {
+		if strings.TrimSpace(text) != "" {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
 		for _, call := range m.ToolCalls() {

@@ -59,7 +59,7 @@ export interface ServerInfo { state: string; diagnostic_count?: number; tool_cou
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
-  question?: QuestionRequest; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
+  questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;
 }

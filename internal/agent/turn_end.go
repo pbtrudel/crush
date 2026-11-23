@@ -45,6 +45,10 @@ func turnEndForError(err error, deadlinePassed bool) message.TurnEnd {
 		return message.TurnEndRepetitionGuard
 	case errors.Is(err, context.Canceled):
 		return message.TurnEndCanceled
+	case errors.Is(err, errRefused):
+		// A refusal that outlasted its retries ends the turn as a refused
+		// final step would.
+		return message.TurnEndContentFilter
 	case errors.As(err, &timeoutErr):
 		return message.TurnEndRequestTimeout
 	case errors.Is(err, context.DeadlineExceeded):
