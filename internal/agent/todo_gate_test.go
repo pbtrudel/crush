@@ -211,7 +211,7 @@ func (s *countingSessions) reset() {
 // The todo list is read only where the gate can ask: on the prompt's last
 // run, after a completed turn, and only when no queued prompt wins.
 func TestTodoGateReadsTheListOnlyWhereItCanAsk(t *testing.T) {
-	t.Parallel()
+	// The subtests share one spy, so they run in order.
 	env := testEnv(t)
 	sa := newGateAgent(t, env, &scriptedModel{})
 	spy := &countingSessions{Service: env.sessions}
@@ -264,8 +264,6 @@ func TestTodoGateSkipsSubagentTurns(t *testing.T) {
 // The gate spends the todo question only on a completed last run: a queued
 // prompt, a stop, another ending and a cancel all win over it.
 func TestTurnGate_TodoGatePrecedence(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name          string
 		checks        []gateCheck
