@@ -260,28 +260,15 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 	}
 	changed, headFrom, headTo := turnChangedFiles(call, endState)
 	in := gateInput{
-		SessionID:     call.SessionID,
-		TurnEnd:       end,
-		Reply:         assistant.Content().String(),
-		ChangedFiles:  changed,
-		HeadFrom:      headFrom,
-		HeadTo:        headTo,
-		Continuations: call.gateContinuations,
-
+		SessionID:          call.SessionID,
+		TurnEnd:            end,
+		Reply:              assistant.Content().String(),
+		ChangedFiles:       changed,
+		HeadFrom:           headFrom,
+		HeadTo:             headTo,
+		Continuations:      call.gateContinuations,
 		StaleTodo:          todo.item,
 		StaleTodoReminders: todo.unanswered,
-	}
-	// The list is read only for a prompt the reminders already escalated
-	// on, and only here: the model can update it in the step that just ran,
-	// so the copy read at the prompt's start can be behind.
-	if in.StaleTodo != "" && in.StaleTodoReminders+1 >= todoReminderEscalateAfter {
-		latest, getErr := a.sessions.Get(ctx, call.SessionID)
-		if getErr != nil {
-			slog.Warn("Turn-end gate: could not read the todo list",
-				"session_id", call.SessionID, "error", getErr)
-		} else {
-			in.Todos = latest.Todos
-		}
 	}
 	// The hooks run even when the user already has a prompt queued, so a
 	// TurnEnd hook keeps its once-per-prompt scope; only its answer is
@@ -293,6 +280,20 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 				"session_id", call.SessionID)
 		}
 		return nil
+	}
+	// The list is read only where a check can act on it: on the prompt's
+	// last run, after a completed turn, and after the queued prompt above
+	// returned. The model can update the list in the step that just ran, so
+	// the copy read at the prompt's start can be behind.
+	if in.StaleTodo != "" && staleTodoEscalated(in.StaleTodoReminders) &&
+		call.gateContinuations == 0 && end == message.TurnEndCompleted {
+		latest, getErr := a.sessions.Get(ctx, call.SessionID)
+		if getErr != nil {
+			slog.Warn("Turn-end gate: could not read the todo list",
+				"session_id", call.SessionID, "error", getErr)
+		} else {
+			in.Todos = latest.Todos
+		}
 	}
 	reasons := hookReasons
 	stopped := hookStop

@@ -148,7 +148,7 @@ func todoReminder(todos []session.Todo, unanswered int) string {
 		return ""
 	}
 
-	if unanswered >= todoReminderEscalateAfter {
+	if staleTodoEscalated(unanswered) {
 		return fmt.Sprintf(
 			"<system_reminder>Your todo list still shows %q as unfinished, and %d reminders about it went unanswered. Check whether that item is actually done. If it is done, update the list now. If it is not done, leave the entry as it is and continue the work, say so in your answer if you cannot finish it this turn, and do not mark it completed just to close this reminder. Do not mention this reminder to the user.</system_reminder>",
 			stale,
@@ -162,12 +162,16 @@ func todoReminder(todos []session.Todo, unanswered int) string {
 	)
 }
 
+// staleTodoEscalated reports whether reminders about the same item have gone
+// unanswered often enough for Crush to stop asking and start insisting.
+func staleTodoEscalated(unanswered int) bool {
+	return unanswered+1 >= todoReminderEscalateAfter
+}
+
 // staleTodoAtTurnEnd reports whether a turn that is finishing should carry
 // the stale list note: the same item stayed open through repeated reminders.
 func staleTodoAtTurnEnd(item string, unanswered int, todos []session.Todo) bool {
-	return item != "" &&
-		unanswered+1 >= todoReminderEscalateAfter &&
-		todoStillOpen(todos, item)
+	return item != "" && staleTodoEscalated(unanswered) && todoStillOpen(todos, item)
 }
 
 // todoGateCheckName labels the todo check's text in the harness row.

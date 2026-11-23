@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +37,7 @@ func TestTodoGateCheck(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "silent once the reminders escalate no further",
+			name: "silent before the reminders escalate",
 			in: gateInput{
 				StaleTodo:          "Deploy it",
 				StaleTodoReminders: todoReminderEscalateAfter - 2,
@@ -177,6 +179,70 @@ func TestTurnGate_AskedReplyIgnoringTheItemStillGetsTheNote(t *testing.T) {
 	require.Contains(t, finalAssistantText(t, env, sess.ID),
 		`Todo list still shows "Deploy it" as unfinished`,
 		"the reply never mentions the item, so the note is owed")
+}
+
+// countingSessions counts the session reads the gate makes, so a test can
+// tell a read the gate can act on from one it would throw away.
+type countingSessions struct {
+	session.Service
+	mu   sync.Mutex
+	gets int
+}
+
+func (s *countingSessions) Get(ctx context.Context, id string) (session.Session, error) {
+	s.mu.Lock()
+	s.gets++
+	s.mu.Unlock()
+	return s.Service.Get(ctx, id)
+}
+
+func (s *countingSessions) getCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gets
+}
+
+func (s *countingSessions) reset() {
+	s.mu.Lock()
+	s.gets = 0
+	s.mu.Unlock()
+}
+
+// The todo list is read only where the gate can ask: on the prompt's last
+// run, after a completed turn, and only when no queued prompt wins.
+func TestTodoGateReadsTheListOnlyWhereItCanAsk(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	sa := newGateAgent(t, env, &scriptedModel{})
+	spy := &countingSessions{Service: env.sessions}
+	sa.sessions = spy
+	sess := staleTodoSession(t, env, "gate read")
+	assistant := &message.Message{Role: message.Assistant, Parts: []message.ContentPart{
+		message.TextContent{Text: "done"},
+	}}
+
+	tests := []struct {
+		name          string
+		continuations int
+		end           message.TurnEnd
+		userQueued    bool
+		wantReads     int
+	}{
+		{name: "reads on the prompt's last completed run", end: message.TurnEndCompleted, wantReads: 1},
+		{name: "no read once a continuation was used", continuations: 1, end: message.TurnEndCompleted},
+		{name: "no read on a turn that did not complete", end: message.TurnEndStepLimit},
+		{name: "no read when a prompt is queued", end: message.TurnEndCompleted, userQueued: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spy.reset()
+			call := SessionAgentCall{SessionID: sess.ID, gateContinuations: tt.continuations}
+			sa.runTurnGate(t.Context(), call, assistant, tt.end, tt.userQueued,
+				gateTodoState{item: "Deploy it", unanswered: 1})
+			require.Equal(t, tt.wantReads, spy.getCount())
+		})
+	}
 }
 
 // A prompt that cannot continue never reaches the gate, so the note is still
