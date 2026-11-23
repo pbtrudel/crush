@@ -243,7 +243,12 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
 	g.cancel()
-	<-g.teamDone
+	// The watcher settles on its own, but a caller's deadline outranks it:
+	// an expired context must not leave Shutdown waiting on a file read.
+	select {
+	case <-g.teamDone:
+	case <-ctx.Done():
+	}
 	err := g.srv.Shutdown(ctx)
 	<-g.done
 	return err

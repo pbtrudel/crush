@@ -103,11 +103,17 @@ func (w *teamWatcher) poll() (team, runs json.RawMessage) {
 	if w.statePath == "" {
 		return nil, nil
 	}
+	// Read both files before taking the lock: a snapshot asks current for
+	// the last good state while a poll is running, and a slow disk must
+	// not hold it up.
+	state, stateErr := agentteam.LoadState(w.statePath)
+	list, runsErr := agentrun.LoadErr(w.runsPath)
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if state, err := agentteam.LoadState(w.statePath); err != nil {
+	if stateErr != nil {
 		if !w.warned {
-			slog.Warn("Web mode could not read the team state", "error", err)
+			slog.Warn("Web mode could not read the team state", "error", stateErr)
 			w.warned = true
 		}
 	} else {
@@ -117,10 +123,9 @@ func (w *teamWatcher) poll() (team, runs json.RawMessage) {
 			w.team, w.teamRaw, team = next, raw, raw
 		}
 	}
-	list, err := agentrun.LoadErr(w.runsPath)
-	if err != nil {
+	if runsErr != nil {
 		if !w.runsWarned {
-			slog.Warn("Web mode could not read the agent runs", "error", err)
+			slog.Warn("Web mode could not read the agent runs", "error", runsErr)
 			w.runsWarned = true
 		}
 		return team, nil
