@@ -14,6 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The terminal reports a pending ready plan through an optional launcher
+// interface, so the real controller must keep matching it.
+var _ interface {
+	SetPlanReady(sessionID string, seq uint64)
+} = (*Controller)(nil)
+
 func TestControllerOpenStartsOnceAndOpensBrowser(t *testing.T) {
 	t.Parallel()
 	c := NewController(webtest.NewFake())
@@ -217,4 +223,67 @@ func TestControllerRestartsAfterShutdown(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
 	require.NotEqual(t, first, second, "a restart gets a new port and token")
+}
+
+// TestPlanReadyPublishesAndSnapshots checks the plan_ready frame and the
+// snapshot field: a set publishes once, a repeat publishes nothing and an
+// empty id clears both.
+func TestPlanReadyPublishesAndSnapshots(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c)
+
+	g.SetPlanReady("s1")
+	f := readFrame(t, c)
+	require.Equal(t, framePlanReady, f.Type)
+	require.JSONEq(t, `{"session_id":"s1"}`, string(f.Payload))
+	require.Equal(t, "s1", g.PlanReadySessionID())
+	require.Equal(t, "s1", g.buildSnapshot(t.Context(), "s1").PlanReadySessionID)
+
+	// A repeat changes nothing, so the next frame the tab sees is the
+	// clear rather than a second report of the same session.
+	g.SetPlanReady("s1")
+	g.SetPlanReady("")
+	f = readFrame(t, c)
+	require.Equal(t, framePlanReady, f.Type)
+	require.JSONEq(t, `{"session_id":""}`, string(f.Payload))
+	require.Empty(t, g.PlanReadySessionID())
+	require.Empty(t, g.buildSnapshot(t.Context(), "s1").PlanReadySessionID)
+}
+
+// TestControllerReportsPlanReadyBeforeStart checks that a pending plan
+// reported before the gateway exists is in the snapshot the first tab
+// receives.
+func TestControllerReportsPlanReadyBeforeStart(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	c.SetPlanReady("s1", 1)
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	rsp, data := doJSON(t, authedClient(t, c.gw), http.MethodGet, c.gw.URL()+"/api/snapshot", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	var snap struct {
+		PlanReadySessionID string `json:"plan_ready_session_id"`
+	}
+	require.NoError(t, json.Unmarshal(data, &snap))
+	require.Equal(t, "s1", snap.PlanReadySessionID)
+}
+
+// TestControllerIgnoresStalePlanReadyReports checks that reports racing in
+// separate commands cannot leave the gateway on the older plan.
+func TestControllerIgnoresStalePlanReadyReports(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	c.SetPlanReady("s2", 2)
+	c.SetPlanReady("s1", 1)
+
+	require.Equal(t, "s2", c.gw.PlanReadySessionID())
 }

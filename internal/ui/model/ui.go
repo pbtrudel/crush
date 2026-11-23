@@ -1238,6 +1238,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.selectSession(msg.ID)...)
 	case WebInputModeMsg:
 		cmds = append(cmds, m.webInputMode(msg))
+	case WebPlanHandoffMsg:
+		cmds = append(cmds, m.webPlanHandoff(msg))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -6520,12 +6522,18 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 	}
 
 	// Any new prompt supersedes a pending, unconfirmed plan.
-	m.setPlanReadyPending("")
+	reportCmd := m.setPlanReadyPending("")
 	m.turnOutcome = ""
 
 	var cmds []tea.Cmd
+	if reportCmd != nil {
+		cmds = append(cmds, reportCmd)
+	}
 	loadCmd, err := m.ensureSession()
 	if err != nil {
+		if reportCmd != nil {
+			return tea.Batch(reportCmd, util.ReportError(err))
+		}
 		return util.ReportError(err)
 	}
 	if loadCmd != nil {
@@ -7251,40 +7259,67 @@ func (m *UI) handlePlanHandoff(rc notify.RunComplete) tea.Cmd {
 		slog.Debug("Plan run completed without ready marker", "session_id", rc.SessionID)
 		return nil
 	}
-	m.setPlanReadyPending(rc.SessionID)
+	reportCmd := m.setPlanReadyPending(rc.SessionID)
 	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
-		return nil
+		return reportCmd
 	}
 	m.openPlanHandoff()
-	return nil
+	return reportCmd
 }
 
 // resetPlanModeState drops any pending plan handoff and, when plan mode is
 // active, switches back to code mode. Used when the UI moves to a different
 // session, since plan mode is scoped to the session it was enabled in.
 func (m *UI) resetPlanModeState() tea.Cmd {
-	m.setPlanReadyPending("")
+	reportCmd := m.setPlanReadyPending("")
 	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
 		m.activeInline = nil
 		m.textarea.Focus()
 	}
 	if m.mode != uiInputModePlan {
-		return nil
+		return reportCmd
 	}
 	// The backend rejects agent switches while a run is active (409). When
 	// one is, keep the mode as-is: the server's active agent still matches
 	// what the editor shows, and the next Shift+Tab lands back in code mode
 	// once the run finishes.
 	if m.isAgentBusy() {
-		return nil
+		return reportCmd
 	}
-	return m.setInputMode(uiInputModeCode)
+	cmd := m.setInputMode(uiInputModeCode)
+	if reportCmd == nil {
+		return cmd
+	}
+	return tea.Batch(reportCmd, cmd)
+}
+
+// planReadyReporter is the optional launcher surface that reports the
+// session with an unconfirmed ready plan. It is asserted at the call site so
+// WebLauncher stays small and a launcher without it, such as a test double,
+// simply reports nothing.
+type planReadyReporter interface {
+	SetPlanReady(sessionID string, seq uint64)
 }
 
 // setPlanReadyPending records (or clears, with an empty ID) the session that
-// has an unconfirmed ready plan.
-func (m *UI) setPlanReadyPending(sessionID string) {
+// has an unconfirmed ready plan and returns the command that tells the
+// gateway. The command runs off the update loop like the other reports, and
+// carries a sequence so a late report cannot undo a newer one.
+func (m *UI) setPlanReadyPending(sessionID string) tea.Cmd {
+	changed := m.planReadySessionID != sessionID
 	m.planReadySessionID = sessionID
+	if !changed || m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	reporter, ok := m.com.Web.(planReadyReporter)
+	if !ok {
+		return nil
+	}
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		reporter.SetPlanReady(sessionID, seq)
+		return nil
+	}
 }
 
 // openPlanHandoff replaces the textarea with the inline "switch to code"
@@ -7292,24 +7327,7 @@ func (m *UI) setPlanReadyPending(sessionID string) {
 // by pressing enter on an empty editor while still in plan mode.
 func (m *UI) openPlanHandoff() {
 	inline := dialog.NewPlanHandoffInline(m.com)
-	inline.OnConfirm = func(yolo bool) tea.Cmd {
-		// The handoff asks a yes/no question about YOLO, so answer it
-		// literally: declining drops the session back to normal.
-		if m.yoloActive() != yolo {
-			m.setYolo(yolo)
-		}
-		m.setPlanReadyPending("")
-		sessionID := m.session.ID
-		cmd := m.setInputMode(uiInputModeCode)
-		return func() tea.Msg {
-			result := cmd()
-			if switched, ok := result.(modeSwitchedMsg); ok {
-				switched.continueSessionID = sessionID
-				return switched
-			}
-			return result
-		}
-	}
+	inline.OnConfirm = m.confirmPlanHandoff
 	inline.OnRequestChanges = func(feedback string) tea.Cmd {
 		return m.sendMessage(feedback)
 	}
@@ -7320,6 +7338,30 @@ func (m *UI) openPlanHandoff() {
 	if m.status != nil {
 		m.updateLayoutAndSize()
 	}
+}
+
+// confirmPlanHandoff applies the answer to the plan handoff, from the inline
+// prompt or the browser: YOLO follows the answer literally, the pending plan
+// clears, and the switch to code mode continues with the implement prompt.
+func (m *UI) confirmPlanHandoff(yolo bool) tea.Cmd {
+	if m.yoloActive() != yolo {
+		m.setYolo(yolo)
+	}
+	reportCmd := m.setPlanReadyPending("")
+	sessionID := m.session.ID
+	cmd := m.setInputMode(uiInputModeCode)
+	continued := func() tea.Msg {
+		result := cmd()
+		if switched, ok := result.(modeSwitchedMsg); ok {
+			switched.continueSessionID = sessionID
+			return switched
+		}
+		return result
+	}
+	if reportCmd == nil {
+		return continued
+	}
+	return tea.Batch(reportCmd, continued)
 }
 
 // handleAgentNotification translates domain agent events into desktop
@@ -7471,6 +7513,36 @@ func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
 		)
 	}
 	return m.setInputMode(target)
+}
+
+// WebPlanHandoffMsg asks the terminal to confirm a ready plan on behalf of
+// the browser, the same yes/no the inline prompt asks.
+type WebPlanHandoffMsg struct {
+	SessionID string
+	Yolo      bool
+}
+
+// webPlanHandoff confirms a ready plan for the browser. The terminal keeps
+// ownership of the switch, so only the plan it still holds can be confirmed,
+// and a busy or switching agent is refused like a browser mode switch.
+func (m *UI) webPlanHandoff(msg WebPlanHandoffMsg) tea.Cmd {
+	if m.mode != uiInputModePlan || !m.hasSession() {
+		return nil
+	}
+	if msg.SessionID == "" || msg.SessionID != m.planReadySessionID || m.planReadySessionID != m.session.ID {
+		return nil
+	}
+	if m.isAgentBusy() || m.modeSwitching {
+		return tea.Batch(
+			util.ReportWarn("Agent is busy, please wait before switching input mode..."),
+			m.reportWebInputModeRefused(webInputModeBusy),
+		)
+	}
+	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
+		m.activeInline = nil
+		m.textarea.Focus()
+	}
+	return m.confirmPlanHandoff(msg.Yolo)
 }
 
 // webStatusTTL keeps the web link on screen long enough to read and copy,

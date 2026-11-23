@@ -22,8 +22,11 @@ type Controller struct {
 
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
+	onPlanHandoff        func(string, bool)
 	inputMode            bool
 	inputModeSeq         uint64
+	planReady            string
+	planReadySeq         uint64
 }
 
 // NewController returns a controller for ws that opens tabs with the
@@ -44,8 +47,10 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 		gw, err := Start(ctx, Options{
 			Workspace:            c.ws,
 			InputMode:            mode,
+			PlanReady:            c.planReady,
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
+			OnPlanHandoff:        c.onPlanHandoff,
 		})
 		if err != nil {
 			return "", err
@@ -81,6 +86,18 @@ func (c *Controller) SetOnInputModeRequested(fn func(bool)) {
 	}
 }
 
+// SetOnPlanHandoff sets the callback for browser plan confirms. It may be
+// called after Start; the running gateway is updated too.
+func (c *Controller) SetOnPlanHandoff(fn func(sessionID string, yolo bool)) {
+	c.mu.Lock()
+	c.onPlanHandoff = fn
+	gw := c.gw
+	c.mu.Unlock()
+	if gw != nil {
+		gw.setOnPlanHandoff(fn)
+	}
+}
+
 // SetInputMode records the terminal's input mode for the snapshot and
 // updates a running gateway. Reports run in separate commands, so seq makes
 // the newest report win even when an older one arrives late. The controller
@@ -95,6 +112,22 @@ func (c *Controller) SetInputMode(plan bool, seq uint64) {
 	c.inputModeSeq = seq
 	if c.gw != nil {
 		c.gw.SetInputMode(plan)
+	}
+}
+
+// SetPlanReady records the session whose ready plan waits for confirmation
+// for the snapshot and updates a running gateway. Like SetInputMode, seq
+// makes the newest report win even when an older one arrives late.
+func (c *Controller) SetPlanReady(sessionID string, seq uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if seq < c.planReadySeq {
+		return
+	}
+	c.planReady = sessionID
+	c.planReadySeq = seq
+	if c.gw != nil {
+		c.gw.SetPlanReady(sessionID)
 	}
 }
 

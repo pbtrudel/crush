@@ -55,40 +55,42 @@ type ServerInfo struct {
 // Snapshot is the full state a tab needs to render from scratch. Entity
 // fields hold the same JSON as the matching live event payloads.
 type Snapshot struct {
-	Version          string                `json:"version"`
-	WorkingDir       string                `json:"working_dir"`
-	Branch           string                `json:"branch,omitempty"`
-	CurrentSessionID string                `json:"current_session_id"`
-	Session          json.RawMessage       `json:"session,omitempty"`
-	Messages         []json.RawMessage     `json:"messages"`
-	Files            []FileSummary         `json:"files"`
-	Permissions      []json.RawMessage     `json:"permissions"`
-	Questions        []json.RawMessage     `json:"questions,omitempty"`
-	PermissionMode   string                `json:"permission_mode"`
-	InputMode        string                `json:"input_mode"`
-	Model            ModelInfo             `json:"model"`
-	AgentReady       bool                  `json:"agent_ready"`
-	Busy             bool                  `json:"busy"`
-	Queued           []string              `json:"queued"`
-	LSP              map[string]ServerInfo `json:"lsp"`
-	MCP              map[string]ServerInfo `json:"mcp"`
-	Team             TeamState             `json:"team"`
-	AgentRuns        []agentrun.Run        `json:"agent_runs"`
+	Version            string                `json:"version"`
+	WorkingDir         string                `json:"working_dir"`
+	Branch             string                `json:"branch,omitempty"`
+	CurrentSessionID   string                `json:"current_session_id"`
+	Session            json.RawMessage       `json:"session,omitempty"`
+	Messages           []json.RawMessage     `json:"messages"`
+	Files              []FileSummary         `json:"files"`
+	Permissions        []json.RawMessage     `json:"permissions"`
+	Questions          []json.RawMessage     `json:"questions,omitempty"`
+	PermissionMode     string                `json:"permission_mode"`
+	InputMode          string                `json:"input_mode"`
+	PlanReadySessionID string                `json:"plan_ready_session_id,omitempty"`
+	Model              ModelInfo             `json:"model"`
+	AgentReady         bool                  `json:"agent_ready"`
+	Busy               bool                  `json:"busy"`
+	Queued             []string              `json:"queued"`
+	LSP                map[string]ServerInfo `json:"lsp"`
+	MCP                map[string]ServerInfo `json:"mcp"`
+	Team               TeamState             `json:"team"`
+	AgentRuns          []agentrun.Run        `json:"agent_runs"`
 }
 
 func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot {
 	s := Snapshot{
-		Version:          version.Version,
-		WorkingDir:       g.ws.WorkingDir(),
-		CurrentSessionID: sessionID,
-		Messages:         []json.RawMessage{},
-		Files:            []FileSummary{},
-		Permissions:      []json.RawMessage{},
-		Queued:           []string{},
-		LSP:              map[string]ServerInfo{},
-		MCP:              map[string]ServerInfo{},
-		PermissionMode:   string(proto.PermissionModeToProto(g.ws.PermissionMode())),
-		InputMode:        g.InputMode(),
+		Version:            version.Version,
+		WorkingDir:         g.ws.WorkingDir(),
+		CurrentSessionID:   sessionID,
+		Messages:           []json.RawMessage{},
+		Files:              []FileSummary{},
+		Permissions:        []json.RawMessage{},
+		Queued:             []string{},
+		LSP:                map[string]ServerInfo{},
+		MCP:                map[string]ServerInfo{},
+		PermissionMode:     string(proto.PermissionModeToProto(g.ws.PermissionMode())),
+		InputMode:          g.InputMode(),
+		PlanReadySessionID: g.PlanReadySessionID(),
 	}
 	// One readiness call feeds both fields, so the snapshot cannot say the
 	// agent is ready while its model says otherwise.

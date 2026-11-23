@@ -126,7 +126,8 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 		"agent_runs": mk(frameAgentRuns, fixtureRuns()),
 		// A detached prompt that failed shows the fixed message, never the
 		// workspace error.
-		"web_error": mk(frameError, promptFailure("s1", errors.New("dial unix /tmp/crush.sock: refused"))),
+		"web_error":  mk(frameError, promptFailure("s1", errors.New("dial unix /tmp/crush.sock: refused"))),
+		"plan_ready": mk(framePlanReady, map[string]string{"session_id": "s1"}),
 		"shell_output": mk(frameShellOutput, shellOutputPayload{
 			RunID: "run-1", SessionID: "s1", Chunk: "line 1\n",
 		}),
@@ -162,7 +163,7 @@ func snapshotFrame(t *testing.T) frame {
 			Path: "/repo/parser.go", Versions: 2, VersionIDs: []int64{0, 1}, Additions: 3, Removals: 1,
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
-		PermissionMode: "normal", InputMode: "code",
+		PermissionMode: "normal", InputMode: "code", PlanReadySessionID: "s1",
 		Model: ModelInfo{
 			ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000,
 			CanReason: true, EffortLevels: []string{"low", "medium", "high"},

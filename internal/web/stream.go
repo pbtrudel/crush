@@ -27,6 +27,7 @@ const (
 	frameError        = "web_error"
 	frameShellOutput  = "shell_output"
 	frameModelChanged = "model_changed"
+	framePlanReady    = "plan_ready"
 )
 
 type frame struct {

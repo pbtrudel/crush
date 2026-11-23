@@ -249,6 +249,13 @@
       }
     }
   },
+  "plan_ready": {
+    "seq": 1,
+    "type": "plan_ready",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
   "question_batch_notification": {
     "seq": 1,
     "type": "question_batch_notification",
@@ -405,6 +412,7 @@
       "permissions": [],
       "permission_mode": "normal",
       "input_mode": "code",
+      "plan_ready_session_id": "s1",
       "model": {
         "id": "claude",
         "name": "Claude",

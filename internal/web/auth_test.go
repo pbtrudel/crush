@@ -262,6 +262,7 @@ func TestEveryRouteRequiresTheCookie(t *testing.T) {
 		"POST /api/lsp/start",
 		"POST /api/lsp/stop",
 		"POST /api/config/reload",
+		"POST /api/plan/handoff",
 	} {
 		require.Contains(t, g.apiRoutes, want)
 	}

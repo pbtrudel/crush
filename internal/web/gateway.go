@@ -33,9 +33,15 @@ type Options struct {
 	// between plan and code mode. The terminal performs the switch. It
 	// may be nil.
 	OnInputModeRequested func(plan bool)
+	// OnPlanHandoff is called when the browser confirms a ready plan.
+	// The terminal makes the switch and clears the plan. It may be nil.
+	OnPlanHandoff func(sessionID string, yolo bool)
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
+	// PlanReady is the session whose ready plan waits for confirmation
+	// when the gateway starts. Empty means none.
+	PlanReady string
 	// AgentTeamsDir holds team.json and agents.json. Empty derives it from
 	// the workspace config's data directory; with no config there is no
 	// team to watch.
@@ -107,9 +113,11 @@ type Gateway struct {
 	onMu                 sync.RWMutex
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
+	onPlanHandoff        func(string, bool)
 
 	modeMu    sync.RWMutex
 	inputMode string
+	planReady string
 
 	// modelMu guards lastModel, the model info the hub last announced. The
 	// handlers and the watch both announce through it, so a switch made in
@@ -161,7 +169,9 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
+		onPlanHandoff:        opts.OnPlanHandoff,
 		inputMode:            normalizeInputMode(opts.InputMode),
+		planReady:            opts.PlanReady,
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
@@ -250,6 +260,28 @@ func (g *Gateway) notifyInputModeRequested(plan bool) {
 	}
 }
 
+// setOnPlanHandoff replaces the callback for browser plan confirms. It is
+// safe to call while a handler is notifying.
+func (g *Gateway) setOnPlanHandoff(fn func(string, bool)) {
+	g.onMu.Lock()
+	g.onPlanHandoff = fn
+	g.onMu.Unlock()
+}
+
+// notifyPlanHandoff asks the terminal to confirm a ready plan. It reports
+// whether a terminal is attached, so the caller can answer the browser
+// instead of pretending the confirm went through.
+func (g *Gateway) notifyPlanHandoff(sessionID string, yolo bool) bool {
+	g.onMu.RLock()
+	fn := g.onPlanHandoff
+	g.onMu.RUnlock()
+	if fn == nil {
+		return false
+	}
+	fn(sessionID, yolo)
+	return true
+}
+
 // InputMode returns the mode the terminal last reported.
 func (g *Gateway) InputMode() string {
 	g.modeMu.RLock()
@@ -273,6 +305,28 @@ func (g *Gateway) SetInputMode(plan bool) {
 	if changed {
 		g.hub.publishJSON(frameInputMode, map[string]string{"mode": mode})
 	}
+}
+
+// PlanReadySessionID returns the session whose ready plan waits for
+// confirmation, or the empty string when none does.
+func (g *Gateway) PlanReadySessionID() string {
+	g.modeMu.RLock()
+	defer g.modeMu.RUnlock()
+	return g.planReady
+}
+
+// SetPlanReady records the terminal's pending ready plan and tells every
+// tab. An empty id clears it. Like SetInputMode it is a pure in-memory call,
+// and the publish happens under the same lock as the update so concurrent
+// reports cannot publish an older plan after a newer one.
+func (g *Gateway) SetPlanReady(sessionID string) {
+	g.modeMu.Lock()
+	defer g.modeMu.Unlock()
+	if g.planReady == sessionID {
+		return
+	}
+	g.planReady = sessionID
+	g.hub.publishJSON(framePlanReady, map[string]string{"session_id": sessionID})
 }
 
 // reportInputModeRefused tells every tab why the terminal kept its mode.
