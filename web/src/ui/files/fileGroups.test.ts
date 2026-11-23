@@ -15,6 +15,11 @@ describe('fileGroups', () => {
     expect(relativePath('C:\\repo\\web\\x.ts', 'C:\\repo')).toBe('web/x.ts');
   });
 
+  it('keeps absolute paths whole for an empty root and for /', () => {
+    expect(relativePath('/repo/a.go', '')).toBe('/repo/a.go');
+    expect(relativePath('/repo/a.go', '/')).toBe('/repo/a.go');
+  });
+
   it('groups by directory, directories and names sorted', () => {
     const groups = fileGroups([f('/repo/web/b.ts'), f('/repo/a.go'), f('/repo/web/a.ts')], '/repo');
     expect(groups.map((g) => g.dir)).toEqual(['', 'web']);

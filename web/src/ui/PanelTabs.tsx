@@ -1,7 +1,7 @@
 import { drawerOpen, panelTab, type PanelTab } from '../state/drawer';
 import { state } from '../state/store';
 
-export function PanelTabs() {
+export function PanelTabs({ inert = false }: { inert?: boolean }) {
   const agentOpen = state.value.inspected !== null;
   const pick = (t: PanelTab) => {
     panelTab.value = t;
@@ -12,7 +12,7 @@ export function PanelTabs() {
     <button type="button" class="hud__mode-btn" aria-pressed={panelTab.value === t} disabled={disabled} onClick={() => pick(t)}>{label}</button>
   );
   return (
-    <div class="panel-tabs" role="group" aria-label="Panel">
+    <div class="panel-tabs" role="group" aria-label="Panel" inert={inert}>
       {tab('log', 'Log')}
       {tab('agent', 'Agent', !agentOpen)}
       {tab('files', 'Files')}

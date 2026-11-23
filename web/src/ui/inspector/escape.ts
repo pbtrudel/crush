@@ -1,4 +1,5 @@
 import { actions, state } from '../../state/store';
+import { panelTab } from '../../state/drawer';
 
 // A draft in the inspector's message box is worth more than one keypress:
 // Escape leaves it alone until the box is empty. An IME also owns Escape
@@ -10,6 +11,14 @@ export function escapeLeavesDraft(e: KeyboardEvent): boolean {
   return e.isComposing || target.value.trim() !== '';
 }
 
+// narrowPanel reports the single-slot layout, where the tabs pick which
+// panel shows.
+function narrowPanel(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 1023px)').matches;
+}
+
 // closeInspector is the one way out, shared by the panel's own Escape and
 // the App's capture handler. It clears the selection and gives focus back to
 // the agent's option, or to the list's own tab stop when the agent has left
@@ -17,6 +26,8 @@ export function escapeLeavesDraft(e: KeyboardEvent): boolean {
 export function closeInspector(): void {
   const sid = state.value.inspected?.sessionId;
   void actions.inspect(null);
+  // The agent tab has nothing left to show below 1024px.
+  if (sid !== undefined && panelTab.value === 'agent' && narrowPanel()) panelTab.value = 'log';
   if (sid === undefined) return;
   const option = document.getElementById(`agent-${sid || 'main'}`);
   if (option) {

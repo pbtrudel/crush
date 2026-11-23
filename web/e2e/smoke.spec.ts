@@ -288,3 +288,124 @@ test('3D tags stay inside the stage and never take the agent list clicks', async
     expect(option.takesClick, `option ${option.text} takes the click at 900px`).toBe(true);
   }
 });
+
+// The drawer handle must stay the topmost thing at its own centre without
+// stealing the inspector's close button or the first agent option, and the
+// closed drawer must not add a sideways scroll. The layout changes with the
+// drawer and the inspector, so every combination is checked at both widths.
+async function reachability(page: Page) {
+  return page.evaluate(() => {
+    const hitSelf = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return hit !== null && (hit === el || el.contains(hit));
+    };
+    const overlaps = (a: Element, b: Element) => {
+      const x = a.getBoundingClientRect();
+      const y = b.getBoundingClientRect();
+      return Math.min(x.right, y.right) > Math.max(x.left, y.left)
+        && Math.min(x.bottom, y.bottom) > Math.max(x.top, y.top);
+    };
+    const handle = document.querySelector('.drawer-handle');
+    const option = document.querySelector('.agent-list [role="option"]');
+    const inspector = document.querySelector('.panel--inspector');
+    const openInspector = inspector !== null && !inspector.hasAttribute('hidden');
+    const close = openInspector ? inspector.querySelector('.inspector__close') : null;
+    const title = openInspector ? inspector.querySelector('#inspector-title') : null;
+    return {
+      handle: handle !== null && hitSelf(handle),
+      option: option !== null && hitSelf(option),
+      close: close === null ? null : hitSelf(close),
+      overlapsOption: handle !== null && option !== null && overlaps(handle, option),
+      overlapsClose: handle !== null && close !== null && overlaps(handle, close),
+      overlapsTitle: handle !== null && title !== null && overlaps(handle, title),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+}
+
+// State changes are setup: call the handlers directly so a handle that
+// covers the control cannot block the change, and so the animated scene
+// does not make every actionability check retry. The hit tests below are
+// what prove the handle is reachable.
+async function setDrawer(page: Page, open: boolean) {
+  const handle = page.locator('.drawer-handle');
+  if (await handle.getAttribute('aria-expanded') === String(open)) return;
+  await page.evaluate(() => document.querySelector<HTMLElement>('.drawer-handle')?.click());
+  await expect(handle).toHaveAttribute('aria-expanded', String(open));
+}
+
+async function setInspector(page: Page, open: boolean) {
+  const panel = page.locator('.panel--inspector');
+  if (await panel.isVisible() === open) return;
+  if (open) {
+    await page.evaluate(() => document.querySelector<HTMLElement>('.agent-list [role="option"]')?.click());
+  } else {
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>('.panel--inspector .inspector__close')?.click();
+    });
+  }
+  await expect.poll(() => panel.isVisible()).toBe(open);
+}
+
+test('the drawer handle and inspector stay reachable at 1440 and 1100', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.drawer-handle')).toBeVisible();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+
+  for (const viewport of [{ width: 1440, height: 860 }, { width: 1100, height: 800 }]) {
+    await page.setViewportSize(viewport);
+    for (const inspector of [false, true]) {
+      await setDrawer(page, false);
+      await setInspector(page, inspector);
+      for (const drawer of [false, true]) {
+        await setDrawer(page, drawer);
+        await expect.poll(async () => {
+          const g = await reachability(page);
+          const problems: string[] = [];
+          if (!g.handle) problems.push('the handle does not take its centre');
+          if (!g.option) problems.push('the first agent option does not take its centre');
+          if (g.overlapsOption) problems.push('the handle overlaps the first agent option');
+          if (inspector && g.close !== true) problems.push('the close button does not take its centre');
+          if (g.overlapsClose) problems.push('the handle overlaps the close button');
+          if (g.overlapsTitle) problems.push('the handle overlaps the inspector title');
+          if (!inspector && g.close !== null) problems.push('the inspector is not the hidden one');
+          if (g.overflow > 0) problems.push(`the page scrolls sideways by ${g.overflow}px`);
+          return problems.length === 0 ? 'ok' : problems.join('; ');
+        }, {
+          message: `${viewport.width}x${viewport.height} drawer ${drawer ? 'open' : 'closed'}, inspector ${inspector ? 'open' : 'closed'}`,
+        }).toBe('ok');
+      }
+    }
+  }
+});
+
+test('the files tab gives the diff room at 900x800', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(page.locator('.panel-tabs')).toBeVisible();
+  // The handle opens the files tab, which is what the narrow layout shows.
+  await page.evaluate(() => document.querySelector<HTMLElement>('.drawer-handle')?.click());
+  const grid = page.locator('.holodeck__grid');
+  await expect(grid).toHaveAttribute('data-panel-tab', 'files');
+  const drawer = page.locator('#file-drawer');
+  await expect(drawer).toBeVisible();
+  await page.evaluate(() => document.querySelector<HTMLElement>('#file-drawer .file-row')?.click());
+  await expect(drawer.locator('.file-row').first()).toHaveAttribute('aria-pressed', 'true');
+
+  // Task 18's diff needs a real box, not the few pixels left over when the
+  // list takes 40% of the 120px panel slot; the panel scrolls instead.
+  await expect.poll(async () => {
+    const d = await page.evaluate(() => {
+      const diff = document.querySelector('.drawer__diff');
+      return {
+        height: diff?.getBoundingClientRect().height ?? 0,
+        path: diff?.querySelector('.hud-label')?.textContent ?? '',
+      };
+    });
+    if (d.path === '') return 'the selected file is not shown in the diff';
+    return d.height >= 240 ? 'ok' : `${Math.round(d.height)}px tall`;
+  }, { message: 'the selected diff is at least 240px tall at 900x800' }).toBe('ok');
+});

@@ -2,6 +2,10 @@
   /* The stacking context the fixed scene canvas's z-index -1 lives in. */
   position: relative;
   z-index: 1;
+  /* The closed drawer waits 105% past the grid's right edge; clipping it
+     keeps that off the page's horizontal scroll. Fixed layers (the scene,
+     the boot overlay, toasts) are viewport-positioned, so they escape. */
+  overflow-x: clip;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   height: 100dvh;
@@ -79,6 +83,19 @@
   grid-template-areas: 'log stage drawer';
 }
 .panel--drawer { grid-area: drawer; }
+/* Between 1024px and 1279px a third column leaves the stage 224px wide,
+   too little for the agent list beside the handle. There the drawer slides
+   over the log column and the stage keeps its closed-layout width. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .holodeck__grid[data-drawer='open'] {
+    grid-template-columns: minmax(22rem, 34rem) 1fr;
+    grid-template-areas: 'log stage';
+  }
+  .holodeck__grid[data-drawer='open'] .panel--drawer {
+    position: absolute; inset-block: 0; inset-inline-start: 0; z-index: 3;
+    inline-size: min(34rem, 100%);
+  }
+}
 /* The tabs only exist in the narrow single-slot layout. */
 .panel-tabs { display: none; }
 .holodeck__deck { grid-row: 4; }
@@ -153,6 +170,11 @@
   .holodeck__grid:not([data-panel-tab='log']) .panel--log,
   .holodeck__grid:not([data-panel-tab='agent']) .panel--inspector,
   .holodeck__grid:not([data-panel-tab='files']) .panel--drawer { display: none; }
+  /* The files tab needs a real diff box in the 120px slot: the drawer
+     scrolls as a whole and the diff keeps a 240px floor. */
+  .holodeck__grid[data-panel-tab='files'] .panel--drawer { overflow-y: auto; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__list { flex: 0 0 auto; max-block-size: none; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__diff { flex: 0 0 auto; min-block-size: 240px; }
 }
 /* Below 768px everything stacks and the constellation collapses to a strip. */
 @media (max-width: 767px) {

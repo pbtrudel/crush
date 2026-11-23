@@ -57,4 +57,27 @@ describe('App layout', () => {
       state.value = initialState();
     }
   });
+
+  it('makes the panel tabs inert with the rest of the page while a dialog is open', async () => {
+    const permission = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    state.value = { ...reduce(initialState(), fx.snapshot), conn: 'live' };
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<App />, root); });
+      const tabs = root.querySelector('.panel-tabs')!;
+      const main = root.querySelector('main')!;
+      expect(tabs.hasAttribute('inert')).toBe(false);
+      await act(() => { state.value = { ...state.value, permissions: [permission] }; });
+      expect(main.hasAttribute('inert')).toBe(true);
+      expect(tabs.hasAttribute('inert')).toBe(true);
+      await act(() => { state.value = { ...state.value, permissions: [] }; });
+      expect(tabs.hasAttribute('inert')).toBe(false);
+    } finally {
+      await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
 });

@@ -5,6 +5,7 @@ import fixtures from '../../state/__fixtures__/events.json';
 import type { Frame, Message, TeamMember, WireEvent } from '../../api/types';
 import { initialState, inspect, reduce, type State } from '../../state/reducer';
 import { actions, state } from '../../state/store';
+import { panelTab } from '../../state/drawer';
 import { Inspector } from './Inspector';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -233,6 +234,40 @@ describe('Inspector', () => {
     expect(send).toHaveBeenCalledWith('alice', 'rebase first');
     expect(bobBox.value).toBe('for bob');
     expect(region().querySelector('[role="status"]')!.textContent).toBe('');
+  });
+
+  it('returns the narrow agent tab to the log when the inspector closes', async () => {
+    const original = window.matchMedia;
+    let narrow = true;
+    window.matchMedia = ((query: string) => ({
+      matches: narrow && query === '(max-width: 1023px)',
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    try {
+      open('sub-1', [child]);
+      await act(() => { render(<Inspector />, root); });
+      await act(() => { panelTab.value = 'agent'; });
+      await act(() => { root.querySelector<HTMLButtonElement>('.inspector__close')!.click(); });
+      expect(close).toHaveBeenCalledWith(null);
+      expect(panelTab.value).toBe('log');
+
+      // Above 1024px the tabs are hidden, so the choice is left alone.
+      narrow = false;
+      await act(() => { panelTab.value = 'agent'; });
+      await act(() => { root.querySelector<HTMLButtonElement>('.inspector__close')!.click(); });
+      expect(panelTab.value).toBe('agent');
+    } finally {
+      window.matchMedia = original;
+      panelTab.value = 'log';
+      vi.restoreAllMocks();
+    }
   });
 
   it('shows the main transcript for the main agent, with no extra actions', async () => {

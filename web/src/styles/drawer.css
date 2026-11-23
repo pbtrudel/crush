@@ -31,6 +31,15 @@
    two-class selector. */
 .drawer-handle { position: absolute; inset-block-start: var(--space-4); inset-inline-end: var(--space-4); z-index: 7; pointer-events: auto; padding: 6px 12px; font: 500 var(--step--1) var(--font-hud); cursor: pointer; }
 .drawer-handle.glass { position: absolute; }
+/* The inspector's close button sits in the same corner; while it is open
+   the handle moves below the inspector header, where both stay reachable.
+   At 1024px the stage is only 432px wide and the inspector fills it, so
+   there is no free strip beside the panel to move into. */
+@media (min-width: 1024px) {
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .drawer-handle {
+    inset-block-start: calc(var(--space-4) + 5rem);
+  }
+}
 .panel-tabs .hud__mode-btn[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
 .panel-tabs .hud__mode-btn:disabled { opacity: 0.5; cursor: default; }
 [data-motion='off'] .panel--drawer, [data-motion='reduced'] .panel--drawer { transition-duration: 1ms; }

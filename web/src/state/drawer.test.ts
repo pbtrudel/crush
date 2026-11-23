@@ -26,6 +26,14 @@ describe('the drawer state', () => {
     localStorage.removeItem('crush-web-diff-mode');
   });
 
+  it('falls back to split when the stored diff mode is not a mode', async () => {
+    localStorage.setItem('crush-web-diff-mode', 'sideways');
+    vi.resetModules();
+    const fresh = await import('./drawer');
+    expect(fresh.diffMode.value).toBe('split');
+    localStorage.removeItem('crush-web-diff-mode');
+  });
+
   it('opens the drawer on the files tab and gives it back on close', () => {
     toggleDrawer();
     expect(drawerOpen.value).toBe(true);

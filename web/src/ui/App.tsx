@@ -79,7 +79,7 @@ export function App() {
       <BootSequence done={s.conn !== 'booting'} />
       <Hud />
       <ConnectionBanner />
-      <PanelTabs />
+      <PanelTabs inert={modal} />
       <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={panelTab.value}>
         <div class="cine-view" ref={view}>
           <div class="cine-camera" ref={camera}>
