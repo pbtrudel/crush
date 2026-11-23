@@ -26,13 +26,14 @@ func newTeammateTestCoordinator(t *testing.T) *coordinator {
 	t.Helper()
 	coord := newGateTestCoordinator(t, true)
 	// The gate coordinator renders its prompt and tools in the background,
-	// and buildTools reads c.team. Let that finish before assigning the
-	// service, or the background read races with the write below.
+	// and buildTools reads the team service. Let that finish before
+	// assigning the service, or the background read races with the write
+	// below.
 	require.NoError(t, coord.readyWg.Wait())
 
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, newTeamFakeRunner())
 	require.NoError(t, err)
-	coord.team = service
+	coord.setTeam(service)
 
 	lead := coord.coderAgent()
 	require.NotNil(t, lead)

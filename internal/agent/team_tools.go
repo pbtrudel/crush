@@ -111,10 +111,11 @@ func (c *coordinator) teamResponse(ctx context.Context, caller string, value any
 		return fantasy.NewTextErrorResponse(err.Error())
 	}
 	text := string(data)
-	if c.team == nil {
+	team := c.teamService()
+	if team == nil {
 		return fantasy.NewTextResponse(text)
 	}
-	pending := c.team.DrainInbox(caller, tools.GetSessionFromContext(ctx))
+	pending := team.DrainInbox(caller, tools.GetSessionFromContext(ctx))
 	if len(pending) == 0 {
 		return fantasy.NewTextResponse(text)
 	}
@@ -138,6 +139,10 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
+			}
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
 			}
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {
@@ -166,7 +171,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				request.ModelProvider = sel.Provider
 				request.Reasoning = strings.TrimSpace(params.Reasoning)
 			}
-			view, err := c.team.SpawnTeammate(ctx, caller, request)
+			view, err := team.SpawnTeammate(ctx, caller, request)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -183,7 +188,11 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			err := c.team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			err := team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
 				Target:  params.Target,
 				Message: params.Message,
 			})
@@ -200,7 +209,11 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 		ListAgentsToolName,
 		"List the Lead and every durable teammate with an addressable target and current availability. inactive means no turn is executing, not a task result. provisioning and failed describe member creation.",
 		func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			members, err := c.team.ListMembers(caller, tools.GetSessionFromContext(ctx))
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			members, err := team.ListMembers(caller, tools.GetSessionFromContext(ctx))
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -214,6 +227,10 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 		WaitAgentToolName,
 		"Wait for the next teammate status, message, or shared-task change after this call starts. Returns the current roster and live task board with every result. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning.",
 		func(ctx context.Context, params waitAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
 			timeout := 30 * time.Second
 			if params.TimeoutMS != nil {
 				ms := *params.TimeoutMS
@@ -222,17 +239,17 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 				}
 				timeout = time.Duration(ms) * time.Millisecond
 			}
-			if !c.team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
+			if !team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
 				return c.teamResponse(ctx, caller, map[string]any{
 					"timedOut": false,
 					"noProgress": map[string]string{
 						"reason":  "no-active-peer",
 						"message": noActivePeerMessage,
 					},
-					"progress": c.team.Progress(caller, tools.GetSessionFromContext(ctx)),
+					"progress": team.Progress(caller, tools.GetSessionFromContext(ctx)),
 				}), nil
 			}
-			result, err := c.team.WaitForChange(ctx, caller, tools.GetSessionFromContext(ctx), timeout)
+			result, err := team.WaitForChange(ctx, caller, tools.GetSessionFromContext(ctx), timeout)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -249,7 +266,11 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			previous, err := c.team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			previous, err := team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -266,7 +287,11 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			view, err := c.team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			view, err := team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,
 				BlockedBy:   params.BlockedBy,
@@ -285,6 +310,10 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 		TeamTaskListToolName,
 		"List shared tasks, including readiness, owner, revision, blockers, and write-scope warnings.",
 		func(ctx context.Context, params teamTaskListParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
 			filter := agentteam.TaskFilter{Ready: params.Ready}
 			if params.Status != nil {
 				status := agentteam.TaskStatus(*params.Status)
@@ -299,7 +328,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if params.Limit != nil {
 				filter.Limit = *params.Limit
 			}
-			list, err := c.team.ListTasks(caller, tools.GetSessionFromContext(ctx), filter)
+			list, err := team.ListTasks(caller, tools.GetSessionFromContext(ctx), filter)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -317,7 +346,11 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 		TeamTaskGetToolName,
 		"Read the complete latest value of one shared task before changing or executing it.",
 		func(ctx context.Context, params teamTaskGetParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			view, err := c.team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			view, err := team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -331,6 +364,10 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 		TeamTaskUpdateToolName,
 		"Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list.",
 		func(ctx context.Context, params teamTaskUpdateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
 			request := agentteam.UpdateTaskRequest{
 				TaskID:           params.TaskID,
 				ExpectedRevision: params.ExpectedRevision,
@@ -348,7 +385,7 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			if params.Owner != nil {
 				request.Owner = *params.Owner
 			}
-			view, err := c.team.UpdateTask(caller, request)
+			view, err := team.UpdateTask(caller, request)
 			if err != nil {
 				return c.teamError(err), nil
 			}

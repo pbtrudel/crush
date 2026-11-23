@@ -24,11 +24,14 @@ var _ TeamController = (*coordinator)(nil)
 
 func (c *coordinator) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
 	// Read the service once, so the nil check and the call use the same one.
-	return sendTeamMessage(ctx, c.team, sessionID, member, text)
+	team := c.teamService()
+	return sendTeamMessage(ctx, team, sessionID, member, text)
 }
 
 func (c *coordinator) TeamInterrupt(_ context.Context, sessionID, member string) error {
-	return interruptTeammate(c.team, sessionID, member)
+	// Read the service once, so the nil check and the call use the same one.
+	team := c.teamService()
+	return interruptTeammate(team, sessionID, member)
 }
 
 // sendTeamMessage speaks as the Lead: the user steers the team through the

@@ -45,7 +45,7 @@ func TestTeammateSessionIDDoesNotCollideWithAnOlderTeam(t *testing.T) {
 	require.NoError(t, coord.readyWg.Wait())
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, nil)
 	require.NoError(t, err)
-	coord.team = service
+	coord.setTeam(service)
 
 	lead, err := coord.sessions.Create(t.Context(), "Lead")
 	require.NoError(t, err)

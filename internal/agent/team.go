@@ -71,12 +71,27 @@ type teamRunner struct {
 	c *coordinator
 }
 
+// teamService returns the live Team service, or nil when Agent Teams is off.
+// Callers load it once and use only that value, so a config reload cannot
+// swap the service out from under them.
+func (c *coordinator) teamService() *agentteam.Service {
+	return c.team.Load()
+}
+
+// setTeam publishes the live Team service; nil retires it.
+func (c *coordinator) setTeam(s *agentteam.Service) {
+	c.team.Store(s)
+}
+
 // syncAgentTeams creates or tears down the Team service to match the
 // persisted option. It runs at startup and on every config reload.
 func (c *coordinator) syncAgentTeams() error {
 	enabled := c.cfg.Config().Options.GetAgentTeams()
+	c.teamSyncMu.Lock()
+	defer c.teamSyncMu.Unlock()
+	team := c.teamService()
 	switch {
-	case enabled && c.team == nil:
+	case enabled && team == nil:
 		teamPath := filepath.Join(c.cfg.Config().Options.DataDirectory, "agent-teams", "team.json")
 		teamService, err := agentteam.New(teamPath, agentteam.Config{}, nil)
 		if err != nil {
@@ -84,10 +99,13 @@ func (c *coordinator) syncAgentTeams() error {
 		}
 		teamService.SetRunner(&teamRunner{c: c})
 		teamService.SetTaskCompletedHook(c.completeMatchingTodo)
-		c.team = teamService
-	case !enabled && c.team != nil:
-		c.team.Shutdown()
-		c.team = nil
+		c.setTeam(teamService)
+	case !enabled && team != nil:
+		// Retire the service before shutting it down, so the next reader
+		// sees Agent Teams as off. A reader that loaded it just before
+		// still holds a valid service and gets its normal shut-down error.
+		c.setTeam(nil)
+		team.Shutdown()
 	}
 	return nil
 }
@@ -330,10 +348,11 @@ func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Membe
 // new Team, so the Team id keeps a fresh team from colliding with the sessions
 // an earlier team left in the same workspace database.
 func (r *teamRunner) teammateSessionID(member agentteam.Member) string {
-	if r.c.team == nil {
+	team := r.c.teamService()
+	if team == nil {
 		return "team-" + member.ID
 	}
-	teamID := strings.TrimPrefix(r.c.team.TeamID(), "team-")
+	teamID := strings.TrimPrefix(team.TeamID(), "team-")
 	if teamID == "" {
 		return "team-" + member.ID
 	}

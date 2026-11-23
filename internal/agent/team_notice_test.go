@@ -63,7 +63,7 @@ func TestBackgroundNoticeWakesTeammateOnItsOwnRun(t *testing.T) {
 	runner := &noticeRunner{sessionID: sess.ID}
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, runner)
 	require.NoError(t, err)
-	coord.team = service
+	coord.setTeam(service)
 
 	_, err = service.SpawnTeammate(t.Context(), "lead", agentteam.SpawnRequest{
 		Name: "reviewer", Description: "d", Prompt: "p", ParentID: lead.ID,

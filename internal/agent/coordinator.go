@@ -235,8 +235,13 @@ type coordinator struct {
 	// filters it to the current session.
 	agentRuns *agentrun.Registry
 
-	// team is the experimental Agent Teams domain. Nil unless enabled.
-	team *agentteam.Service
+	// team is the experimental Agent Teams domain, nil unless enabled. It
+	// is swapped by syncAgentTeams on a config reload while HTTP handlers
+	// and tool calls read it, so it is read through teamService only.
+	team atomic.Pointer[agentteam.Service]
+	// teamSyncMu serializes syncAgentTeams so two reloads cannot both
+	// create a service.
+	teamSyncMu sync.Mutex
 
 	// todoMu serializes the read-modify-write that reconciles a session
 	// todo with a settled team task, so concurrent completions cannot
@@ -717,8 +722,8 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	// ran the teammate's session on the Lead's model, alongside its own
 	// run when it was busy, so the Team delivers the notice to the
 	// teammate's own run instead.
-	if c.team != nil {
-		owned, err := c.team.NotifySession(ctx, sessionID, notice)
+	if team := c.teamService(); team != nil {
+		owned, err := team.NotifySession(ctx, sessionID, notice)
 		if err != nil {
 			slog.Warn("Failed to wake teammate for background completion", "session_id", sessionID, "error", err)
 		}
@@ -1504,7 +1509,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		allTools = append(allTools, agenticFetchTool)
 	}
 
-	if c.team != nil {
+	if c.teamService() != nil {
 		allTools = append(allTools, c.teamTools(agentteam.MemberFromContext(ctx), parentModel)...)
 	}
 
