@@ -1,9 +1,9 @@
 # Lean prompt profile on DeepSeek (w52-lean-1)
 
-Batch `w52-lean-1`, seed 20261126, both variants on `b4703395`, route
-`deepseek-flash-nw`, with the fetch and team tools disabled in both arms. The
-full arm uses the complete coder prompt. The lean arm uses the 6.9 KB shared
-base and the default-family add-on through `prompt_profile: lean`.
+Batch `w52-lean-1`, seed 20261126, both variants on `b4703395`, both on the
+`deepseek-flash-nw` route. The full arm uses the complete coder prompt. The
+lean arm uses the 6.9 KB shared base and the default-family add-on through
+`prompt_profile: lean`.
 
 The first attempt stopped during checkout with `git archive` terminated after
 287 runs. Resuming the same batch id and seed ran the missing DeepSeek lean
