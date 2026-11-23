@@ -127,6 +127,7 @@ export function adoptSession(s: State, id: string): State {
     filesStale: false,
     activity: {},
     inspected: null,
+    shells: {},
   };
 }
 
@@ -287,12 +288,14 @@ export function startShell(s: State, runId: string, sessionId: string, command: 
 }
 
 // capShell keeps the last SHELL_CAP characters and starts the kept text on
-// a line boundary, so a trimmed run never opens mid-line.
+// a line boundary, so a trimmed run never opens mid-line. A tail that is
+// one line, or one unfinished line, keeps all of itself: dropping the line
+// there would leave nothing to show.
 function capShell(output: string): string {
   if (output.length <= SHELL_CAP) return output;
   const tail = output.slice(-SHELL_CAP);
   const nl = tail.indexOf('\n');
-  return nl < 0 ? tail : tail.slice(nl + 1);
+  return nl < 0 || nl === tail.length - 1 ? tail : tail.slice(nl + 1);
 }
 
 // applyShellOutput appends a chunk to its run, creating the run for a frame

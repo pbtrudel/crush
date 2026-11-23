@@ -332,14 +332,45 @@ describe('M3 state', () => {
     expect(s.shells.r9.command).toBe('');
   });
 
-  it('caps a shell run at 256 KiB of output, keeping the tail', () => {
+  it('drops the shells of the session the tab leaves behind', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 62, type: 'session_follow', payload: { session_id: 's2' } });
+    expect(s.sessionId).toBe('s2');
+    expect(s.shells).toEqual({});
+  });
+
+  it('caps a shell run at 256 KiB of output on a line boundary', () => {
     let s = startShell(fromSnapshot(), 'r2', 's1', 'yes');
-    const chunk = 'y\n'.repeat(70_000);
-    s = reduce(s, { seq: 55, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk } });
-    s = reduce(s, { seq: 56, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk } });
-    expect(s.shells.r2.output.length).toBeLessThanOrEqual(256 * 1024);
-    expect(s.shells.r2.output.startsWith('y\n')).toBe(true);
-    expect(s.shells.r2.output.endsWith('y\n')).toBe(true);
+    // The odd split lands the 256 KiB cut inside a line, so only the text
+    // after the first newline can survive.
+    s = reduce(s, { seq: 55, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk: 'abc\n'.repeat(35_000) + 'ab' } });
+    s = reduce(s, { seq: 56, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk: 'abc\n'.repeat(35_000) } });
+    const out = s.shells.r2.output;
+    expect(out.startsWith('abc\n')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(256 * 1024);
+    expect(out.endsWith('abc\n')).toBe(true);
+  });
+
+  it('keeps output that is exactly the cap unchanged', () => {
+    const chunk = 'q'.repeat(256 * 1024);
+    const s = reduce(startShell(fromSnapshot(), 'r3', 's1', 'yes'), {
+      seq: 57, type: 'shell_output', payload: { run_id: 'r3', session_id: 's1', chunk },
+    });
+    expect(s.shells.r3.output).toBe(chunk);
+  });
+
+  it('keeps a tail with no newline in it', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r4', 's1', 'yes'), {
+      seq: 58, type: 'shell_output', payload: { run_id: 'r4', session_id: 's1', chunk: 'a'.repeat(256 * 1024 + 10) },
+    });
+    expect(s.shells.r4.output).toBe('a'.repeat(256 * 1024));
+  });
+
+  it('keeps a tail whose only newline is its last character', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r5', 's1', 'echo'), {
+      seq: 59, type: 'shell_output', payload: { run_id: 'r5', session_id: 's1', chunk: 'x'.repeat(256 * 1024 + 5) + '\n' },
+    });
+    expect(s.shells.r5.output).toBe('x'.repeat(256 * 1024 - 1) + '\n');
   });
 
   it('records and clears the pending plan', () => {
@@ -369,6 +400,15 @@ describe('M3 state', () => {
     const snap = { ...(fx.snapshot.payload as Snapshot), agent_ready: false, plan_ready_session_id: 's1' };
     const s = reduce(initialState(), { seq: 60, type: 'snapshot', payload: snap });
     expect(s.agentReady).toBe(false);
+    expect(s.planReady).toBe('s1');
+  });
+
+  it('applies the shell_output and plan_ready fixtures', () => {
+    let s = reduce(fromSnapshot(), fx.shell_output);
+    expect(s.shells['run-1']).toEqual({
+      sessionId: 's1', command: '', output: 'line 1\n', done: false, exitCode: null,
+    });
+    s = reduce(s, fx.plan_ready);
     expect(s.planReady).toBe('s1');
   });
 
