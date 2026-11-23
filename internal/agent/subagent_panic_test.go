@@ -24,6 +24,7 @@ func TestSubAgentPanicReleasesTheBookkeeping(t *testing.T) {
 	}
 
 	t.Run("synchronous run", func(t *testing.T) {
+		t.Parallel()
 		sub := newMockAgent(providerID, 4096, boom)
 		childID := c.sessions.CreateAgentToolSessionID("msg-1", "call-1")
 		var recovered any
@@ -43,6 +44,7 @@ func TestSubAgentPanicReleasesTheBookkeeping(t *testing.T) {
 	})
 
 	t.Run("dispatched run", func(t *testing.T) {
+		t.Parallel()
 		sub := newMockAgent(providerID, 4096, boom)
 		sess, err := env.sessions.Create(t.Context(), "Dispatched")
 		require.NoError(t, err)

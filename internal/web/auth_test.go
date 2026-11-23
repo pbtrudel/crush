@@ -323,6 +323,7 @@ func TestOriginAllowed(t *testing.T) {
 		{"an unparseable origin", http.MethodPost, "", "http://[::1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, "/api/health", nil)
 			require.NoError(t, err)
 			req.Host = cmp.Or(tc.host, "127.0.0.1:"+port)
