@@ -92,6 +92,18 @@
   resize: none;
 }
 
+/* The orbit hint sits above the deck, centered, and never takes a click. */
+.cine-hint {
+  position: fixed;
+  inset-inline: 0;
+  inset-block-end: calc(var(--space-9) * 2);
+  margin: 0 auto;
+  inline-size: max-content;
+  padding: 4px 12px;
+  z-index: 12;
+  pointer-events: none;
+}
+
 /* The button reads as held while the mode is on. */
 .hud__cinematic[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
 

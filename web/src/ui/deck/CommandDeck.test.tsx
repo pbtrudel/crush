@@ -293,7 +293,7 @@ describe('CommandDeck', () => {
     await flush();
 
     expect(send).not.toHaveBeenCalled();
-    expect(error().textContent).toBe('Attachments must total under 32 MiB.');
+    expect(error().textContent).toBe('The prompt and its attachments must total under 32 MiB.');
     expect(textarea().value).toBe(prompt);
   });
 
@@ -334,5 +334,42 @@ describe('CommandDeck', () => {
     expect(textarea().value).toBe('');
     expect(root.querySelector('.deck__files')).toBeNull();
     expect(error().textContent).toBe('');
+  });
+
+  it('shows an inline error when sending throws', async () => {
+    seed();
+    vi.spyOn(actions, 'sendPrompt').mockRejectedValue(new Error('boom'));
+    await mount();
+    await type('hello');
+    await act(() => { key('Enter'); });
+    await flush();
+    expect(error().textContent).toBe('The prompt did not reach crush.');
+    expect(textarea().value).toBe('hello');
+  });
+
+  it('ignores dropped and pasted files once the session ended', async () => {
+    seed({ conn: 'ended' });
+    await mount();
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [new File(['x'], 'a.txt')] } });
+    await act(() => { root.querySelector('form')!.dispatchEvent(drop); });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [new File(['x'], 'p.png', { type: 'image/png' })] } });
+    await act(() => { textarea().dispatchEvent(paste); });
+    expect(root.querySelector('.deck__files')).toBeNull();
+    expect(error().textContent).toBe('');
+  });
+
+  it('closes the suggestions when the caret leaves the mention', async () => {
+    seed();
+    vi.spyOn(api, 'completeFiles').mockResolvedValue({ files: ['parser.go'], truncated: false });
+    await mount();
+    await type('see @pa');
+    await settle();
+    expect(listbox()).not.toBeNull();
+    textarea().setSelectionRange(0, 0);
+    await act(() => { textarea().dispatchEvent(new KeyboardEvent('keyup', { key: 'Home', bubbles: true })); });
+    await settle();
+    expect(listbox()).toBeNull();
   });
 });

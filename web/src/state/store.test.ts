@@ -109,6 +109,33 @@ describe('actions.answer', () => {
     expect(state.value.question).toBeNull();
     expect(state.value.toasts.map((t) => t.text)).toContain('Already answered in the terminal');
   });
+
+  it('a failed answer still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'answer').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.answer('b1', [])).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('b1');
+    handleFrames([{ seq: 30, type: 'question_batch_notification', payload: { type: 'updated', payload: { batch_id: 'b1', session_id: 's1' } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Question answered in the terminal');
+  });
+
+  it('a failed skip still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'cancelQuestion').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.cancelQuestion('b1')).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('b1');
+    handleFrames([{ seq: 31, type: 'question_batch_notification', payload: { type: 'updated', payload: { batch_id: 'b1', session_id: 's1' } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Question answered in the terminal');
+  });
+
+  it('a failed grant still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'grant').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.grant('p1', 'allow')).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('p1');
+    handleFrames([{ seq: 32, type: 'permission_notification', payload: { type: 'updated', payload: { tool_call_id: 'tc1', cancelled: false } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Permission answered in the terminal');
+  });
 });
 
 describe('actions.sendPrompt', () => {

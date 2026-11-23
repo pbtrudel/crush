@@ -5,6 +5,7 @@ import { drawerOpen, panelTab } from '../state/drawer';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
 import { BootSequence } from './BootSequence';
+import { CineHint } from './CineHint';
 import { ConnectionBanner } from './ConnectionBanner';
 import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
@@ -43,6 +44,10 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const focused = document.activeElement;
+      const target = e.target;
+      // An open Display menu owns Escape: it closes itself, so the inspector
+      // and the cinematic view must not read the same press.
+      if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
       const action = cinematicKey({
         code: e.code,
         altKey: e.altKey,
@@ -99,6 +104,7 @@ export function App() {
       </div>
       <Interrupt />
       <Toasts />
+      <CineHint />
     </div>
   );
 }

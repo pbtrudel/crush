@@ -3,12 +3,13 @@ import { panelTab } from '../../state/drawer';
 
 // A draft in the inspector's message box is worth more than one keypress:
 // Escape leaves it alone until the box is empty. An IME also owns Escape
-// while it is composing.
+// while it is composing, and Safari reports that Escape with keyCode 229
+// after compositionend.
 export function escapeLeavesDraft(e: KeyboardEvent): boolean {
   const target = e.target;
   if (!(target instanceof HTMLTextAreaElement)) return false;
   if (target.closest('.panel--inspector') === null) return false;
-  return e.isComposing || target.value.trim() !== '';
+  return e.isComposing || e.keyCode === 229 || target.value.trim() !== '';
 }
 
 // narrowPanel reports the single-slot layout, where the tabs pick which

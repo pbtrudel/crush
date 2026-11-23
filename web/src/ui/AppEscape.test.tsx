@@ -54,6 +54,22 @@ describe('Escape in cinematic mode', () => {
     expect(cinematic.value).toBe(false);
   });
 
+  it('closes only the display menu when Escape is pressed inside it', async () => {
+    await act(() => { render(<App />, root); });
+    await act(() => { setCinematic(true); });
+    const details = document.querySelector<HTMLDetailsElement>('details.motion-menu')!;
+    details.open = true;
+    const radio = details.querySelector<HTMLInputElement>('input[type="radio"]')!;
+    radio.focus();
+
+    await act(() => { radio.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); });
+
+    expect(details.open).toBe(false);
+    expect(state.value.inspected?.sessionId).toBe('sub-1');
+    expect(cinematic.value).toBe(true);
+    expect(document.activeElement).toBe(details.querySelector('summary'));
+  });
+
   it('keeps a non-empty message draft, then closes once the box is empty', async () => {
     state.value = { ...state.value, inspected: { sessionId: 'team-m-1', session: null, messages: [], loading: false } };
     await act(() => { render(<App />, root); });

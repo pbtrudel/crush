@@ -102,6 +102,7 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
 
   const submit = async () => {
     if (busy.current || settled || disabled) return;
+    const id = req.id;
     const missing = req.questions.findIndex((q) => !isComplete(q, draft[q.id]));
     if (missing >= 0) {
       setTab(missing);
@@ -112,16 +113,20 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
     setSending(true);
     setError('');
     try {
-      const err = await actions.answer(req.id, buildAnswers(req.questions, draft));
+      const err = await actions.answer(id, buildAnswers(req.questions, draft));
       // A response for a batch that was already replaced is stale.
-      if (lastId.current !== req.id) return;
+      if (lastId.current !== id) return;
       if (err) setError(err);
       else setSettled(true);
     } catch {
-      setError(UNREACHABLE);
+      if (lastId.current === id) setError(UNREACHABLE);
     } finally {
-      busy.current = false;
-      setSending(false);
+      // A late answer to a batch that is no longer on screen must not clear
+      // the guard the current batch is holding.
+      if (lastId.current === id) {
+        busy.current = false;
+        setSending(false);
+      }
     }
   };
 
@@ -129,28 +134,32 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
   // A failure re-arms the form so a failed skip cannot wedge the dialog.
   const cancel = async () => {
     if (disabled || settled || busy.current || cancelled.current) return;
+    const id = req.id;
     cancelled.current = true;
     busy.current = true;
     setSending(true);
     setSettled(true);
     setError('');
     try {
-      const err = await actions.cancelQuestion(req.id);
-      if (lastId.current !== req.id) return;
+      const err = await actions.cancelQuestion(id);
+      if (lastId.current !== id) return;
       if (err) {
         cancelled.current = false;
         setSettled(false);
         setError(err);
       }
     } catch {
-      if (lastId.current === req.id) {
+      if (lastId.current === id) {
         cancelled.current = false;
         setSettled(false);
         setError(UNREACHABLE);
       }
     } finally {
-      busy.current = false;
-      setSending(false);
+      // A stale skip must not unlock the next batch, which is already live.
+      if (lastId.current === id) {
+        busy.current = false;
+        setSending(false);
+      }
     }
   };
 
@@ -174,7 +183,16 @@ export function QuestionForm({ req, disabled = false }: { req: QuestionRequest; 
       aria-labelledby="q-title"
       tabIndex={-1}
     >
-      <form class="qform__body interrupt__scroll" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+      <form class="qform__body interrupt__scroll" onSubmit={(e) => {
+        e.preventDefault();
+        // Enter in a multi-question batch walks the tabs: the send only
+        // happens from the confirm tab.
+        if (multi && tab !== confirmTab) {
+          setTab(tab + 1);
+          return;
+        }
+        void submit();
+      }}>
         <p id="q-title" class="hud-label">The agent is asking</p>
         {multi && (
           <div class="qform__tabs" role="tablist">

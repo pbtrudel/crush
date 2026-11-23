@@ -152,6 +152,20 @@ describe('Inspector', () => {
     expect(document.activeElement).toBe(box);
   });
 
+  it('keeps the message box open on the Escape that ends an IME composition', async () => {
+    open('team-m-1');
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    await act(() => { render(<Inspector />, root); });
+    const box = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    box.focus();
+    const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    // Safari reports the Escape that ends a composition with keyCode 229.
+    Object.defineProperty(e, 'keyCode', { value: 229 });
+    await act(() => { box.dispatchEvent(e); });
+    expect(close).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(box);
+  });
+
   it('closes on Escape from the message box once it is empty', async () => {
     open('team-m-1');
     const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);

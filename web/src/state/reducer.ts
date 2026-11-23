@@ -73,6 +73,12 @@ export function markAnswered(s: State, id: string): State {
   return { ...s, answered: [...s.answered, id] };
 }
 
+// unmarkAnswered undoes markAnswered after a request that never reached
+// the workspace, so the terminal's answer still gets its toast.
+export function unmarkAnswered(s: State, id: string): State {
+  return s.answered.includes(id) ? { ...s, answered: s.answered.filter((x) => x !== id) } : s;
+}
+
 // enqueueQuestion shows a batch unless one is already on screen, in which
 // case it waits: several sessions can each hold a batch at once and the
 // form shows one at a time.

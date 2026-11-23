@@ -110,7 +110,7 @@
 /* The scene shows through the stage; only the agent list and the nodes take input. */
 .stage { grid-area: stage; position: relative; min-block-size: 0; pointer-events: none; }
 .banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
-.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
+.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: color-mix(in oklch, var(--amber) 8%, transparent); }
 .banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
 /* The loading overlay is a hologram label over the live scene rather than a
    cover, so the scene's own power-up shows through. `holo` supplies the

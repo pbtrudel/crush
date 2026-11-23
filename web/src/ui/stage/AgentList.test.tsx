@@ -77,6 +77,17 @@ describe('AgentList', () => {
     expect(options().find((o) => o.tabIndex === 0)?.textContent).toContain('alice');
   });
 
+  it('marks only the inspected option selected and leaves no option unstated', async () => {
+    await act(() => { render(<AgentList />, root); });
+    // A listbox option without aria-selected is announced as "not selected"
+    // only by luck; every option states it.
+    expect(options().map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'false', 'false']);
+    await act(() => {
+      state.value = { ...state.value, inspected: { sessionId: 'sub-1', session: null, messages: [], loading: false } };
+    });
+    expect(options().map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
+  });
+
   it('says the status in text', async () => {
     await act(() => { render(<AgentList />, root); });
     expect(options()[1].textContent).toContain('Running');

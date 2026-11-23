@@ -6,7 +6,7 @@ import type {
 } from '../api/types';
 import {
   adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
-  mergeInspected, pushToast, reduce, setConn, type State,
+  mergeInspected, pushToast, reduce, setConn, unmarkAnswered, type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
 import { observe, telemetry } from './telemetry';
@@ -202,6 +202,7 @@ export const actions = {
         dropPermission(id);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, id));
       return errorText(err);
     }
   },
@@ -226,6 +227,7 @@ export const actions = {
         dropQuestion(batchId);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, batchId));
       return errorText(err);
     }
   },
@@ -243,6 +245,7 @@ export const actions = {
         dropQuestion(batchId);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, batchId));
       return errorText(err);
     }
   },

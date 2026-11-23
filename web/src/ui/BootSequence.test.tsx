@@ -33,7 +33,9 @@ describe('BootSequence', () => {
     const boot = root.querySelector('.boot')!;
     expect(boot.classList.contains('holo')).toBe(true);
     expect(boot.querySelector('.boot__rings')).not.toBeNull();
-    expect(root.querySelector('[role="status"]')!.textContent).toBe('Linking to the crush session');
+    expect(root.querySelector('.boot p.hud-label')!.textContent).toBe('Linking to the crush session');
+    // The HUD link status is the one live region for the link.
+    expect(root.querySelector('[role="status"]')).toBeNull();
     render(null, root);
   });
 
@@ -43,13 +45,13 @@ describe('BootSequence', () => {
     const boot = root.querySelector('.boot')!;
     expect(boot.classList.contains('holo')).toBe(true);
     expect(boot.querySelector('.boot__rings')).toBeNull();
-    expect(root.querySelector('[role="status"]')!.textContent).toBe('Linking to the crush session');
+    expect(root.querySelector('.boot p.hud-label')!.textContent).toBe('Linking to the crush session');
     render(null, root);
   });
 
   it('says the link is established once done', async () => {
     const root = await mountBoot(true);
-    expect(root.querySelector('[role="status"]')!.textContent).toBe('Link established');
+    expect(root.querySelector('.boot p.hud-label')!.textContent).toBe('Link established');
     expect(root.querySelector('.boot')!.getAttribute('data-done')).toBe('true');
     render(null, root);
   });
