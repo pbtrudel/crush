@@ -1,0 +1,102 @@
+/* The model selector hangs under the HUD as a modal glass sheet, like the
+   palette and the sessions switcher, and covers the page so a click cannot
+   reach the deck behind it. The HUD model name is its opener. */
+.models-layer {
+  position: fixed; inset: 0; z-index: 30;
+  display: grid; justify-items: center; align-items: start;
+  padding-block-start: calc(var(--hud-h, 96px) + var(--space-4));
+  padding-inline: var(--space-4);
+  background: oklch(0.09 0.04 275 / 0.42);
+}
+.models {
+  inline-size: min(44rem, calc(100vw - 32px));
+  max-block-size: calc(100dvh - var(--hud-h, 96px) - var(--space-4) * 2);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: var(--space-4);
+  overflow: hidden;
+}
+.models__fieldset {
+  margin: 0; padding: 0; border: 0; min-inline-size: 0;
+}
+.models__fieldset:disabled { opacity: 0.6; }
+.models__legend {
+  padding: 0;
+  color: var(--text-muted);
+  font: 500 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.models__radios {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px;
+  margin-block-start: 6px;
+}
+.models__radio {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-block-size: 32px;
+  color: var(--text); cursor: pointer;
+}
+.models__radio input { accent-color: var(--cyan); }
+.models__switch {
+  min-block-size: 32px; padding: 4px 12px;
+  background: none; color: var(--text-muted);
+  border: 1px solid var(--edge); border-radius: 999px;
+  font: 500 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.models__switch[aria-checked='true'] {
+  border-color: var(--cyan); background: var(--cyan-dim); color: var(--text);
+}
+.models__switch:hover { color: var(--cyan); border-color: var(--cyan); }
+.models__switch:disabled { opacity: 0.45; cursor: not-allowed; }
+.models__note {
+  margin: 2px 0 0;
+  color: var(--text-muted); font-size: var(--step--1);
+}
+.models__input {
+  inline-size: 100%; min-block-size: 44px; padding: 8px 12px;
+  background: var(--void-deep); color: var(--text);
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 400 1rem var(--font-prose);
+}
+.models__list {
+  flex: 1 1 auto; min-block-size: 0; max-block-size: 46vh;
+  overflow-y: auto;
+  display: grid; gap: 2px; align-content: start;
+}
+.models__group { display: grid; gap: 2px; }
+.models__provider {
+  margin: 6px 10px 2px;
+  color: var(--text-muted);
+  font: 500 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.models__group:first-child .models__provider { margin-block-start: 0; }
+.models__option {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px;
+  align-items: baseline;
+  padding: 8px 10px; cursor: pointer;
+  border-inline-start: 2px solid transparent; border-radius: var(--radius);
+}
+.models__option[aria-selected='true'] {
+  border-inline-start-color: var(--cyan);
+  background: var(--cyan-dim);
+}
+.models__option:hover { background: color-mix(in oklch, var(--cyan-dim) 60%, transparent); }
+.models__option:focus-visible { outline: 1px solid var(--cyan); outline-offset: -1px; }
+.models__name { overflow-wrap: anywhere; }
+.models__tag { color: var(--cyan); }
+.models__context {
+  color: var(--text-muted);
+  font: 400 var(--step--1) var(--font-code);
+}
+.models__empty { margin: 0; padding: 12px 10px; color: var(--text-muted); }
+.models__more {
+  margin: 0;
+  color: var(--text-muted); font-size: var(--step--1);
+}
+.models__status {
+  display: flex; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--edge); border-radius: var(--radius);
+  font-size: var(--step--1);
+}
+.models__status[data-tone='starting'] { color: var(--amber); border-color: var(--amber); }
+.models__status[data-tone='error'] { color: var(--magenta); border-color: var(--magenta); }

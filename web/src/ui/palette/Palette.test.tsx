@@ -9,7 +9,8 @@ import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { state } from '../../state/store';
 import {
-  argumentItem, closePalette, closeSessions, openPalette, paletteOpen, paletteQuery, sessionsOpen,
+  argumentItem, closeModels, closePalette, closeSessions, modelsOpen, openPalette, paletteOpen,
+  paletteQuery, sessionsOpen,
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { setMotion } from '../../state/motion';
@@ -115,6 +116,7 @@ afterEach(async () => {
   root.remove();
   closePalette();
   closeSessions();
+  closeModels();
   argumentItem.value = null;
   setCinematic(false);
   setMotion('full');
@@ -349,6 +351,35 @@ describe('the command palette', () => {
 
     expect(select).toHaveBeenCalledWith('main', 'p1', 'm2');
     expect(paletteOpen.value).toBeNull();
+  });
+
+  it('opens the model selector from Switch model', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    await type('switch model');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(modelsOpen.value).toBe(true);
+    expect(root.querySelector('[role="dialog"][aria-label="Models"]')).not.toBeNull();
+  });
+
+  it('opens the model selector at the reasoning control', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    await type('reasoning level');
+    await enter();
+
+    expect(modelsOpen.value).toBe(true);
+    const checked = root.querySelector<HTMLInputElement>('input[name="model-effort"]:checked');
+    expect(checked).not.toBeNull();
+    expect(document.activeElement).toBe(checked);
   });
 
   it('opens the Display menu for Display settings', async () => {

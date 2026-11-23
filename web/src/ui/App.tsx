@@ -22,10 +22,12 @@ import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
 import {
-  closeSessions, escapePalette, escapeSessions, paletteOpen, sessionsOpen, togglePalette,
+  closeModels, closeSessions, escapeModels, escapePalette, escapeSessions, modelsOpen, paletteOpen,
+  sessionsOpen, togglePalette,
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
+import { ModelSelector } from './models/ModelSelector';
 
 export function App() {
   const s = state.value;
@@ -66,12 +68,13 @@ export function App() {
       const focused = document.activeElement;
       const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
-      // closed while a dialog owns the page. The sessions switcher makes way
-      // for it, so two dialogs never stack.
+      // closed while a dialog owns the page. The sessions switcher and the
+      // model selector make way for it, so two dialogs never stack.
       if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
         if (needsAttention(state.value)) return;
         e.preventDefault();
         if (sessionsOpen.value) closeSessions();
+        if (modelsOpen.value) closeModels();
         togglePalette();
         return;
       }
@@ -88,6 +91,13 @@ export function App() {
       if (e.key === 'Escape' && sessionsOpen.value) {
         e.preventDefault();
         escapeSessions();
+        return;
+      }
+      // The model selector has no inner layer, so its first Escape closes it
+      // and its focus trap hands focus back to the HUD model name.
+      if (e.key === 'Escape' && modelsOpen.value) {
+        e.preventDefault();
+        escapeModels();
         return;
       }
       // An open Display menu owns Escape: it closes itself, so the inspector
@@ -153,6 +163,7 @@ export function App() {
       <Interrupt />
       <Palette inert={modal} />
       <SessionSwitcher inert={modal} />
+      <ModelSelector inert={modal} />
       <Toasts />
       <CineHint />
     </div>

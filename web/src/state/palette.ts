@@ -78,3 +78,28 @@ export function escapeSessions(): boolean {
   closeSessions();
   return true;
 }
+
+// modelsOpen holds the HUD's model selector. It opens from the HUD model
+// name and from the palette, and it has no inner editor, so Escape closes
+// it whole.
+export const modelsOpen = signal(false);
+// modelsFocus is where the selector puts the focus when it opens: the
+// reasoning control the palette asks for, or the filter.
+export const modelsFocus = signal<'reasoning' | null>(null);
+
+export function openModels(focus?: 'reasoning'): void {
+  modelsFocus.value = focus ?? null;
+  modelsOpen.value = true;
+}
+
+export function closeModels(): void {
+  modelsOpen.value = false;
+  modelsFocus.value = null;
+}
+
+// escapeModels reports whether it consumed the press.
+export function escapeModels(): boolean {
+  if (!modelsOpen.value) return false;
+  closeModels();
+  return true;
+}

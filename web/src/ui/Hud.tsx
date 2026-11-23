@@ -4,7 +4,7 @@ import { contextFill } from '../state/reducer';
 import type { PermissionMode } from '../api/types';
 import { telemetry } from '../state/telemetry';
 import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
-import { openSessions } from '../state/palette';
+import { openModels, openSessions } from '../state/palette';
 import { MotionMenu } from './MotionMenu';
 import { ActivityChart } from './hud/ActivityChart';
 import { ContextGauge } from './hud/ContextGauge';
@@ -78,10 +78,18 @@ export function Hud() {
           >{s.session?.title || 'New session'}</button>
         </h1>
         <p class="hud__meta">
-          <span class="hud__model">
+          {/* The model name opens the selector; cinematic mode hides this
+              block, so the control leaves the tab order with it. */}
+          <button
+            type="button"
+            class="hud__model"
+            tabIndex={cinematic.value ? -1 : 0}
+            aria-label={`Model: ${s.model.name || s.model.id || 'Unknown'}. Switch model`}
+            onClick={() => openModels()}
+          >
             <svg class="hud__provider" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><polygon points="6,1 11,6 6,11 1,6" /></svg>
             {s.model.name || s.model.id || 'Unknown'}
-          </span>
+          </button>
           {s.branch && <span class="hud__branch">{s.branch}</span>}
         </p>
       </div>

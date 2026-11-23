@@ -21,6 +21,7 @@ const EXPECTED_SHEETS = [
   'inspector.css',
   'interrupt.css',
   'log.css',
+  'models.css',
   'palette.css',
   'panels.css',
   'sessions.css',

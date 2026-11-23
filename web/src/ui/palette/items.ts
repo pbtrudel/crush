@@ -47,6 +47,7 @@ export const ACTIONS = {
   newSession: 'new-session',
   sessions: 'sessions',
   model: 'model',
+  reasoningLevel: 'reasoning-level',
   compact: 'compact',
   reloadSkills: 'reload-skills',
   toggleSkills: 'toggle-skills',
@@ -79,6 +80,9 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.sessions, 'Sessions', []),
     action(ACTIONS.model, 'Switch model', ['model']),
   ];
+  if (s.model.can_reason) {
+    actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));
+  }
   if (s.hasSession) actions.push(action(ACTIONS.compact, 'Compact session', ['summarize']));
   actions.push(action(ACTIONS.reloadSkills, 'Reload skills', ['reload-skills']));
   if (s.skills.length > 0) actions.push(action(ACTIONS.toggleSkills, 'Toggle skills', ['skills']));

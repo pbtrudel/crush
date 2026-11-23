@@ -7,7 +7,19 @@
   margin: 2px 0 0; font: 500 var(--step--1)/1.2 var(--font-hud);
   color: var(--text-muted);
 }
-.hud__model { display: inline-flex; align-items: center; gap: 6px; }
+/* The model name is a button that opens the selector. The reset keeps the
+   strip unchanged at rest; only hover or focus adds the cyan edge. */
+.hud__model {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: start; overflow-wrap: inherit; cursor: pointer;
+}
+.hud__model:hover,
+.hud__model:focus-visible {
+  color: var(--cyan);
+  text-shadow: var(--glow-text);
+}
 .hud__provider { fill: var(--violet); flex: none; }
 .hud__branch { color: var(--teal); padding-inline-start: var(--space-4); border-inline-start: 1px solid var(--edge); }
 .hud__metric { display: grid; gap: var(--space-1); justify-items: start; }

@@ -45,6 +45,15 @@ describe('palette items', () => {
     expect(buildItems({ ...sources, model: { ...sources.model, can_reason: false } }).some((i) => i.id === 'toggle:thinking')).toBe(false);
   });
 
+  it('offers the reasoning level only for a model that can reason', () => {
+    expect(buildItems(sources).some((i) => i.id === 'action:reasoning-level')).toBe(true);
+    const level = buildItems(sources).find((i) => i.id === 'action:reasoning-level')!;
+    expect(level.title).toBe('Reasoning level');
+    expect(level.keywords).toEqual(['reasoning', 'effort', 'think']);
+    expect(buildItems({ ...sources, model: { ...sources.model, can_reason: false } })
+      .some((i) => i.id === 'action:reasoning-level')).toBe(false);
+  });
+
   it('hides session actions without a session', () => {
     const ids = buildItems({ ...sources, hasSession: false }).map((i) => i.id);
     expect(ids).not.toContain('action:compact');

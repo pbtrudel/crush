@@ -2,7 +2,8 @@ import { ApiError } from '../api/http';
 
 export type FailureTone = 'starting' | 'error';
 
-const STARTING_TEXT = 'Crush is starting the agent. Try again in a moment.';
+// STARTING_TEXT names the state every surface shows while the agent boots.
+export const STARTING_TEXT = 'Crush is starting the agent. Try again in a moment.';
 const UNREACHABLE_TEXT = 'The request did not reach crush';
 
 // describeFailure names what went wrong in a tone a control can style: a
