@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'preact/hooks';
 import { closeDrawer, drawerOpen, selectedFile } from '../../state/drawer';
 import { state } from '../../state/store';
 import { changeBlocks, fileGroups } from './fileGroups';
@@ -7,6 +8,12 @@ export function FileDrawer() {
   const s = state.value;
   const open = drawerOpen.value;
   const selected = selectedFile.value;
+  // A selection belongs to the session it was made in. The drawer stays
+  // mounted across a switch on the terminal, so the switch clears it here.
+  useLayoutEffect(() => { selectedFile.value = null; }, [s.sessionId]);
+  // The diff panel belongs to one session and one path: the selected path
+  // may not be in this session's files at all.
+  const path = selected !== null && s.files.some((f) => f.path === selected) ? selected : null;
   const groups = fileGroups(s.files, s.workingDir);
   return (
     <aside id="file-drawer" class="panel panel--drawer glass scanlines" aria-labelledby="drawer-title" data-open={open} inert={!open}>
@@ -52,7 +59,7 @@ export function FileDrawer() {
           ))}
         </nav>
       )}
-      <div class="drawer__diff">{selected && <DiffPanel key={selected} path={selected} />}</div>
+      <div class="drawer__diff">{path && <DiffPanel key={`${s.sessionId}:${path}`} path={path} />}</div>
     </aside>
   );
 }
