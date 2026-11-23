@@ -261,6 +261,78 @@ func TestTodoGateSkipsSubagentTurns(t *testing.T) {
 	require.Empty(t, gateRows(t, env, sess.ID))
 }
 
+// The gate spends the todo question only on a completed last run: a queued
+// prompt, a stop, another ending and a cancel all win over it.
+func TestTurnGate_TodoGatePrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		checks        []gateCheck
+		continuations int
+		end           message.TurnEnd
+		userQueued    bool
+		cancelled     bool
+		wantNext      bool
+	}{
+		{name: "asks on a completed last run", end: message.TurnEndCompleted, wantNext: true},
+		{name: "a queued prompt wins", end: message.TurnEndCompleted, userQueued: true},
+		{
+			name:   "a stop wins",
+			checks: []gateCheck{&fakeGateCheck{name: "fake", reason: "halt", stop: true}},
+			end:    message.TurnEndCompleted,
+		},
+		{name: "another ending wins", end: message.TurnEndStepLimit},
+		{name: "a cancel wins", end: message.TurnEndCompleted, cancelled: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := testEnv(t)
+			sa := newGateAgent(t, env, &scriptedModel{}, tt.checks...)
+			sess := staleTodoSession(t, env, tt.name)
+			assistant := &message.Message{Role: message.Assistant, Parts: []message.ContentPart{
+				message.TextContent{Text: "done"},
+			}}
+			ctx := t.Context()
+			if tt.cancelled {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			call := SessionAgentCall{SessionID: sess.ID, gateContinuations: tt.continuations}
+			next := sa.runTurnGate(ctx, call, assistant, tt.end, tt.userQueued,
+				gateTodoState{item: "Deploy it", unanswered: 1})
+
+			if !tt.wantNext {
+				require.Nil(t, next, "no continuation may carry the question")
+				return
+			}
+			require.NotNil(t, next)
+			require.True(t, next.gateTodoAsked)
+			require.Equal(t, "Deploy it", next.gateTodoItem)
+			require.Contains(t, next.Prompt, `"Deploy it"`)
+		})
+	}
+}
+
+// A non-interactive run never reaches the gate, so the note reports the stale
+// list and no continuation is spent on it.
+func TestTurnGate_NonInteractiveRunGetsTheNote(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	sa := newCompactionAgent(env, &scriptedModel{script: stalePromptScript()}, nil, false,
+		&recordingTool{name: tools.BashToolName})
+	sess := staleTodoSession(t, env, "non-interactive todo gate")
+
+	_, err := sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go", NonInteractive: true})
+	require.NoError(t, err)
+
+	require.Empty(t, gateRows(t, env, sess.ID))
+	require.Contains(t, finalAssistantText(t, env, sess.ID),
+		`Todo list still shows "Deploy it" as unfinished`)
+}
+
 // A prompt that cannot continue never reaches the gate, so the note is still
 // written: the user learns the list stayed behind.
 func TestTurnGate_TodoNoteFallsBackWithoutContinuations(t *testing.T) {
