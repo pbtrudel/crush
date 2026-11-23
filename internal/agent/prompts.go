@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
@@ -175,10 +176,40 @@ func loadPrompt(store *config.ConfigStore, name string, opts ...prompt.Option) (
 // coderPromptVariant renders the lean prompt profile. The full profile keeps
 // the base template, so its text stays exactly as it is.
 func coderPromptVariant(profile, provider, model string) (string, bool) {
-	if profile != config.PromptProfileLean {
+	if effectivePromptProfile(profile, provider, model) != config.PromptProfileLean {
 		return "", false
 	}
 	return string(leanPromptTmpl) + leanFamilyAddon(promptFamily(provider, model)), true
+}
+
+// effectivePromptProfile is the profile a coder session really renders. An
+// explicit full or lean is honored on every model, and any other name keeps
+// the full prompt: a typo must not silently shrink what a session is given.
+// An unset profile follows the measurement: DeepSeek gets the lean prompt,
+// since the batch that measured it solved as many tasks on 8.1% fewer tokens,
+// and every other model keeps full until its own measurement lands. The lean
+// add-on families are no evidence of that: the default family also catches
+// Kimi, GLM, Qwen and MiMo, and none of them was measured.
+func effectivePromptProfile(setting, provider, model string) string {
+	switch setting {
+	case config.PromptProfileFull:
+		return config.PromptProfileFull
+	case config.PromptProfileLean:
+		return config.PromptProfileLean
+	case "":
+		if deepSeekModel(provider, model) {
+			return config.PromptProfileLean
+		}
+	}
+	return config.PromptProfileFull
+}
+
+// deepSeekModel reports whether DeepSeek serves the model. The model ID
+// decides, so a gateway that serves several vendors is classified by the model
+// it serves; a provider ID counts only for the provider that serves DeepSeek
+// alone, and only when the model ID says nothing.
+func deepSeekModel(provider, model string) bool {
+	return vendorFamily(model) == "deepseek" || provider == string(catwalk.InferenceProviderDeepSeek)
 }
 
 // Prompt families group the models that need the same lean-profile add-on.

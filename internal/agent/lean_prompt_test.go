@@ -47,7 +47,9 @@ func coderPromptTextFor(t *testing.T, store *config.ConfigStore, dir, provider, 
 }
 
 // The profile decides which template set an agent renders: full is today's
-// prompt, lean is the short base plus the add-on for the model's family.
+// prompt, lean is the short base plus the add-on for the model's family. An
+// unset profile follows the measurement, so the default family gets the lean
+// prompt and the families still waiting on their own batch keep full.
 func TestPromptProfileSelectsTheTemplateSet(t *testing.T) {
 	t.Parallel()
 
@@ -55,15 +57,96 @@ func TestPromptProfileSelectsTheTemplateSet(t *testing.T) {
 	lean := coderPromptForProfile(t, config.PromptProfileLean, "anthropic", "claude-sonnet-4-5")
 	require.NotEqual(t, full, lean)
 
-	// The unset profile is the full prompt, byte for byte: a new option must
-	// not change what every existing session is given.
+	// A model the lean profile was not measured on keeps the full prompt when
+	// the profile is unset, whichever add-on family it belongs to.
 	require.Equal(t, full, coderPromptForProfile(t, "", "anthropic", "claude-sonnet-4-5"))
+	require.Equal(t, full, coderPromptForProfile(t, "", "openai", "gpt-5"))
+	require.Equal(t, full, coderPromptForProfile(t, "", "google", "gemini-2.5-pro"))
+	require.Equal(t, full, coderPromptForProfile(t, "", "moonshot", "kimi-k3.1"))
+
+	// DeepSeek is where the lean profile was measured, so an unset profile
+	// renders the lean prompt for it.
+	unsetDeepSeek := coderPromptForProfile(t, "", "deepseek", "deepseek-v4.1-flash")
+	require.Equal(t,
+		coderPromptForProfile(t, config.PromptProfileLean, "deepseek", "deepseek-v4.1-flash"),
+		unsetDeepSeek)
 
 	// Sections that only the full prompt carries stay out of the lean one,
 	// because the tool descriptions carry the same guidance.
 	for _, fullOnly := range []string{"<tool_usage>", "<editing_files>", "<proactiveness>"} {
 		require.Contains(t, full, fullOnly)
 		require.NotContains(t, lean, fullOnly)
+		require.NotContains(t, unsetDeepSeek, fullOnly)
+	}
+}
+
+// The effective profile is the one a coder session really renders. Only
+// DeepSeek, the vendor the lean profile was measured on, takes the lean
+// default; an explicit setting wins everywhere, and a name the config does not
+// know keeps the full prompt.
+func TestEffectivePromptProfile(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		setting  string
+		provider string
+		model    string
+		want     string
+	}{
+		{name: "unset deepseek provider", provider: "deepseek", model: "chat", want: config.PromptProfileLean},
+		{name: "unset deepseek model", provider: "deepseek", model: "deepseek-v4.1-flash", want: config.PromptProfileLean},
+		{name: "unset deepseek model through a gateway", provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", want: config.PromptProfileLean},
+		{name: "unset deepseek distill", provider: "openrouter", model: "deepseek-r1-distill-qwen-32b", want: config.PromptProfileLean},
+		{name: "unset unclassified model", provider: "google", model: "gemini-2.5-pro", want: config.PromptProfileFull},
+		{name: "unset unknown model", want: config.PromptProfileFull},
+		{name: "unset kimi k3.1", provider: "moonshot", model: "kimi-k3.1", want: config.PromptProfileFull},
+		{name: "unset kimi on a gateway", provider: "commandcode", model: "kimi/kimi-k3.1", want: config.PromptProfileFull},
+		{name: "unset glm", provider: "zai", model: "glm-4.6", want: config.PromptProfileFull},
+		{name: "unset qwen", provider: "alibaba", model: "qwen3-max", want: config.PromptProfileFull},
+		{name: "unset mimo", provider: "xiaomi", model: "mimo-v2-pro", want: config.PromptProfileFull},
+		{name: "unset anthropic provider", provider: "anthropic", model: "claude-sonnet-4-5", want: config.PromptProfileFull},
+		{name: "unset anthropic model on a gateway", provider: "openrouter", model: "anthropic/claude-opus-4-1", want: config.PromptProfileFull},
+		{name: "unset gpt provider", provider: "openai", model: "gpt-5", want: config.PromptProfileFull},
+		{name: "unset gpt model on a gateway", provider: "vercel", model: "openai/gpt-5", want: config.PromptProfileFull},
+		{name: "explicit full on deepseek", setting: config.PromptProfileFull, provider: "deepseek", model: "deepseek-v4.1-flash", want: config.PromptProfileFull},
+		{name: "explicit full on anthropic", setting: config.PromptProfileFull, provider: "anthropic", model: "claude-sonnet-4-5", want: config.PromptProfileFull},
+		{name: "explicit lean on deepseek", setting: config.PromptProfileLean, provider: "deepseek", model: "deepseek-v4.1-flash", want: config.PromptProfileLean},
+		{name: "explicit lean on anthropic", setting: config.PromptProfileLean, provider: "anthropic", model: "claude-sonnet-4-5", want: config.PromptProfileLean},
+		{name: "explicit lean on gpt", setting: config.PromptProfileLean, provider: "openai", model: "gpt-5", want: config.PromptProfileLean},
+		{name: "explicit lean on kimi", setting: config.PromptProfileLean, provider: "moonshot", model: "kimi-k3.1", want: config.PromptProfileLean},
+		{name: "unknown name on deepseek", setting: "tiny", provider: "deepseek", model: "deepseek-v4.1-flash", want: config.PromptProfileFull},
+		{name: "unknown name on anthropic", setting: "tiny", provider: "anthropic", model: "claude-sonnet-4-5", want: config.PromptProfileFull},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, effectivePromptProfile(test.setting, test.provider, test.model))
+		})
+	}
+}
+
+// A coder prompt the user replaced through options.prompts renders as written
+// for every profile, so the measured default cannot reach it.
+func TestCustomCoderPromptIgnoresTheProfileDefault(t *testing.T) {
+	t.Parallel()
+
+	custom := filepath.Join(t.TempDir(), "coder.md")
+	require.NoError(t, os.WriteFile(custom, []byte("CUSTOM-CODER-PROMPT\n"), 0o644))
+	teamsOn := true
+	store := config.NewTestStore(&config.Config{Options: &config.Options{
+		AgentTeams: &teamsOn,
+		Prompts:    config.PromptPaths{"coder": custom},
+	}})
+
+	p, err := loadPrompt(store, "coder", prompt.WithWorkingDir(promptWorkDir(t, false)), prompt.WithPlatform("linux"))
+	require.NoError(t, err)
+	for _, test := range []struct{ provider, model string }{
+		{provider: "deepseek", model: "deepseek-v4.1-flash"},
+		{provider: "anthropic", model: "claude-sonnet-4-5"},
+	} {
+		got, err := p.Build(t.Context(), test.provider, test.model, store)
+		require.NoError(t, err)
+		require.Equal(t, "CUSTOM-CODER-PROMPT\n", got)
 	}
 }
 
@@ -180,21 +263,56 @@ func TestLeanPromptIsSmallerThanFull(t *testing.T) {
 
 // A config reload applies a profile change to the live agent, the way the
 // Agent Teams setting does: the option is written at runtime, so a session
-// must not need a restart to pick it up.
+// must not need a restart to pick it up. The fixture runs a DeepSeek model,
+// so an unset profile is the lean prompt.
 func TestPromptProfileReloadRerendersTheLivePrompt(t *testing.T) {
-	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true})
-	before := coord.agents[config.AgentCoder].SystemPrompt()
-	require.Contains(t, before, "<proactiveness>", "the live prompt is the full one")
-	require.NotContains(t, before, "<family_notes>")
-
-	coord.cfg.Config().Options.PromptProfile = config.PromptProfileLean
-	require.NoError(t, coord.RefreshModels(t.Context()))
-
-	after := coord.agents[config.AgentCoder].SystemPrompt()
-	require.NotContains(t, after, "<proactiveness>")
-	require.Contains(t, after, "<family_notes>")
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive: true,
+		mainModel:   policyTestDeepSeek,
+	})
+	unset := coord.agents[config.AgentCoder].SystemPrompt()
+	require.NotContains(t, unset, "<proactiveness>", "the live prompt follows the measured default")
+	require.Contains(t, unset, "<family_notes>")
 
 	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
 	require.NoError(t, coord.RefreshModels(t.Context()))
-	require.Equal(t, before, coord.agents[config.AgentCoder].SystemPrompt())
+	afterFull := coord.agents[config.AgentCoder].SystemPrompt()
+	require.Contains(t, afterFull, "<proactiveness>", "explicit full beats the measured default")
+	require.NotContains(t, afterFull, "<family_notes>")
+
+	coord.cfg.Config().Options.PromptProfile = ""
+	require.NoError(t, coord.RefreshModels(t.Context()))
+	require.Equal(t, unset, coord.agents[config.AgentCoder].SystemPrompt())
 }
+
+// The reload input has to name the profile the next render really uses, so a
+// setting that changes the effective default re-renders the prompt, and one
+// that does not leaves the cached prefix alone.
+func TestPromptInputFollowsTheEffectiveProfile(t *testing.T) {
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive: true,
+		mainModel:   policyTestDeepSeek,
+	})
+	agentCfg := coord.cfg.Config().Agents[config.AgentCoder]
+
+	require.Equal(t, config.PromptProfileLean, coord.promptInputFor(agentCfg).profile,
+		"an unset profile on DeepSeek is the lean prompt")
+
+	coord.cfg.Config().Options.PromptProfile = config.PromptProfileFull
+	require.Equal(t, config.PromptProfileFull, coord.promptInputFor(agentCfg).profile)
+
+	coord.cfg.Config().Options.PromptProfile = ""
+	coord.models.Set(coordinatorModels{large: Model{Model: &profileModel{provider: "anthropic", id: "claude-sonnet-4-5"}}})
+	require.Equal(t, config.PromptProfileFull, coord.promptInputFor(agentCfg).profile,
+		"an unset profile on a model that was not measured stays full")
+}
+
+// profileModel is a language model whose provider and model ID a test names.
+type profileModel struct {
+	fakeLanguageModel
+	provider string
+	id       string
+}
+
+func (m *profileModel) Provider() string { return m.provider }
+func (m *profileModel) Model() string    { return m.id }

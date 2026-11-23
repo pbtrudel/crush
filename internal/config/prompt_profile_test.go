@@ -6,8 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The default profile has to stay the full prompt: an unset or unrecognised
-// value must not silently shrink the system prompt a model is given.
+// The getter reports what was configured, verbatim, so the agent can tell an
+// unset profile from one the user chose: what an unset profile renders
+// depends on the model family.
 func TestGetPromptProfile(t *testing.T) {
 	t.Parallel()
 
@@ -16,11 +17,11 @@ func TestGetPromptProfile(t *testing.T) {
 		opts *Options
 		want string
 	}{
-		{name: "nil options", want: PromptProfileFull},
-		{name: "unset", opts: &Options{}, want: PromptProfileFull},
+		{name: "nil options", want: ""},
+		{name: "unset", opts: &Options{}, want: ""},
 		{name: "full", opts: &Options{PromptProfile: PromptProfileFull}, want: PromptProfileFull},
 		{name: "lean", opts: &Options{PromptProfile: PromptProfileLean}, want: PromptProfileLean},
-		{name: "unknown name", opts: &Options{PromptProfile: "tiny"}, want: PromptProfileFull},
+		{name: "unknown name", opts: &Options{PromptProfile: "tiny"}, want: "tiny"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

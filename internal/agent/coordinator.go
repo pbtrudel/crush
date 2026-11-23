@@ -366,13 +366,15 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	if err != nil {
 		return nil, err
 	}
-	c.promptInputs[config.AgentCoder] = c.promptInputFor(agentCfg)
 
 	agent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: coderPrompt}, agentCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
 	c.agents[config.AgentCoder] = agent
+	// The input is read once the models are resolved, since the profile an
+	// unset prompt_profile renders depends on the model's family.
+	c.promptInputs[config.AgentCoder] = c.promptInputFor(agentCfg)
 
 	planCfg, ok := c.cfg.Config().Agents[config.AgentPlan]
 	if !ok {
@@ -383,13 +385,13 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	if err != nil {
 		return nil, err
 	}
-	c.promptInputs[config.AgentPlan] = c.promptInputFor(planCfg)
 
 	planAgent, err := c.buildAgent(ctx, &c.readyWg, agentSystemPrompt{Template: planSystemPrompt}, planCfg, roleLead)
 	if err != nil {
 		return nil, err
 	}
 	c.agents[config.AgentPlan] = planAgent
+	c.promptInputs[config.AgentPlan] = c.promptInputFor(planCfg)
 
 	c.prompts = map[string]*prompt.Prompt{
 		config.AgentCoder: coderPrompt,
@@ -1234,11 +1236,18 @@ type promptInput struct {
 }
 
 // promptInputFor reports the inputs the prompt of a lead agent renders from.
+// The profile is the effective one, and it depends on the model, so a setting
+// change that moves the effective profile re-renders the prompt while one
+// that leaves it alone keeps the cached prefix.
 func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
+	provider, model := "", ""
+	if large := c.mainModels().Large; large.Model != nil {
+		provider, model = large.Model.Provider(), large.Model.Model()
+	}
 	return promptInput{
 		agentTeams: !c.agentsOff(),
 		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
-		profile:    c.cfg.Config().Options.GetPromptProfile(),
+		profile:    effectivePromptProfile(c.cfg.Config().Options.GetPromptProfile(), provider, model),
 	}
 }
 

@@ -570,9 +570,10 @@ type Options struct {
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
 	// PromptProfile selects the system prompt template set the coder agent
-	// renders. Full stays the default until an eval shows the lean profile
-	// solves as many tasks.
-	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills.,enum=full,enum=lean,default=full"`
+	// renders. Left unset, the measured default applies: DeepSeek models get
+	// the lean profile, and every other model keeps the full one until its
+	// own measurement lands.
+	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills. Left unset\\, DeepSeek models use lean\\, the profile measured on them\\, and every other model keeps full until its own measurement lands.,enum=full,enum=lean"`
 	// ApplyPatch offers GPT models the apply_patch tool in place of edit
 	// and multiedit. Those models are trained on the *** Begin Patch
 	// format, and exact-string matching is where their edits most often
@@ -863,14 +864,15 @@ const (
 	PromptProfileLean = "lean"
 )
 
-// GetPromptProfile returns the system prompt profile. The nil receiver, the
-// unset field and any unrecognised name all mean the full profile: a typo
-// must not silently shrink the prompt every session is given.
+// GetPromptProfile returns the system prompt profile as configured: full,
+// lean, or empty when the user did not choose one. What an unset or unknown
+// name renders is the agent's decision, because the effective default depends
+// on the model family the prompt is built for.
 func (o *Options) GetPromptProfile() string {
-	if o == nil || o.PromptProfile != PromptProfileLean {
-		return PromptProfileFull
+	if o == nil {
+		return ""
 	}
-	return PromptProfileLean
+	return o.PromptProfile
 }
 
 // GetRepeatToolReminders reports whether advisory repeat-tool reminders are

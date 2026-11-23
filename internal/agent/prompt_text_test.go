@@ -19,6 +19,9 @@ func leadPrompt(t *testing.T) (string, []string) {
 	cfg, err := config.Init(t.Context(), env.workingDir, "", false)
 	require.NoError(t, err)
 	cfg.SetupAgents()
+	// The statements these tests check are the full prompt's: an unset
+	// profile follows the measured default for this fixture's model.
+	cfg.Config().Options.PromptProfile = config.PromptProfileFull
 
 	palette := cfg.Config().Agents[config.AgentCoder].AllowedTools
 	p, err := coderPrompt(
