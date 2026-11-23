@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { actions, state } from '../../state/store';
 import { api } from '../../api/http';
 import { cinematic } from '../../state/cinematic';
+import { openPalette } from '../../state/palette';
 import { activeMention, applyMention } from './mention';
 
 // The gateway reads the whole prompt request through MaxBytesReader with a
@@ -18,6 +19,15 @@ const ATTACH_TOO_LARGE = 'Attachments must total under 32 MiB.';
 const PROMPT_TOO_LARGE = 'The prompt and its attachments must total under 32 MiB.';
 
 export const MENTION_DEBOUNCE_MS = 120;
+
+// attachFiles hands files from another surface (the palette attaches a
+// skill as a File) to the mounted deck. It is a no-op when no deck is
+// mounted.
+let attach: ((files: File[]) => void) | null = null;
+
+export function attachFiles(files: File[]): void {
+  attach?.(files);
+}
 
 export function CommandDeck() {
   const s = state.value;
@@ -39,6 +49,15 @@ export function CommandDeck() {
   // first request is in flight.
   const inFlight = useRef(false);
   const ended = s.conn === 'ended';
+
+  // The palette attaches through this module function; re-register when the
+  // deck's file state moves so it reads the current list and budget.
+  useEffect(() => {
+    attach = addFiles;
+    return () => {
+      if (attach === addFiles) attach = null;
+    };
+  }, [files, ended]);
 
   useEffect(() => {
     const m = activeMention(text, caret);
@@ -112,6 +131,13 @@ export function CommandDeck() {
     // Safari reports the Enter that ends a composition after compositionend
     // with keyCode 229, so isComposing alone is not enough.
     const composing = e.isComposing || e.keyCode === 229;
+    // A slash on an empty deck opens the palette, the terminal's slash
+    // command entry; the character itself never lands in the prompt.
+    if (!composing && e.key === '/' && text === '' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      openPalette('all');
+      return;
+    }
     if (suggest) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();

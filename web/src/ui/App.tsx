@@ -21,6 +21,8 @@ import { Inspector } from './inspector/Inspector';
 import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
+import { escapePalette, paletteOpen, togglePalette } from '../state/palette';
+import { Palette } from './palette/Palette';
 
 export function App() {
   const s = state.value;
@@ -60,6 +62,22 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       const focused = document.activeElement;
       const target = e.target;
+      // The palette opens from anywhere, the prompt included, and stays
+      // closed while a dialog owns the page.
+      if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey) {
+        if (needsAttention(state.value)) return;
+        e.preventDefault();
+        togglePalette();
+        return;
+      }
+      // The palette is the innermost layer: it takes Escape before the
+      // Display menu, the inspector and the cinematic view. Its argument form
+      // hands the list back on the first press.
+      if (e.key === 'Escape' && paletteOpen.value !== null) {
+        e.preventDefault();
+        escapePalette();
+        return;
+      }
       // An open Display menu owns Escape: it closes itself, so the inspector
       // and the cinematic view must not read the same press.
       if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
@@ -121,6 +139,7 @@ export function App() {
         <CommandDeck />
       </div>
       <Interrupt />
+      <Palette inert={modal} />
       <Toasts />
       <CineHint />
     </div>
