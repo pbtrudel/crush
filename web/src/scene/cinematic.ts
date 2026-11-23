@@ -7,12 +7,16 @@ import { cameraCSS, objectCSS, viewCSS } from './cssProjection';
 import { expoOut } from './ease';
 import type { SceneHandle } from './mount';
 
-// The log hangs to the left of the projector, turned toward the wide orbit,
-// with one CSS pixel standing for 0.008 world units: at the wide camera the
-// panel lands at about 0.87x of its CSS size, so body text stays legible.
-// The anchor clears the stage column, which keeps the agent chip off the
-// panel's top-right corner.
-const LOG_ANCHOR = { x: -3.5, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.008 };
+// One screen per panel: the log hangs left of the projector, the inspector
+// right, mirrored, each turned toward the wide orbit. One CSS pixel stands
+// for 0.008 world units, so at the wide camera a panel lands at about 0.87x
+// of its CSS size and body text stays legible. The anchors clear the stage
+// column, which keeps the agent chip off the log's top-right corner, and the
+// inspector's screen turns to face the camera every frame.
+export const PANEL_ANCHORS = [
+  { x: -3.5, y: 1.8, z: 0.6, yaw: 0.55, scale: 0.008, faceCamera: false },
+  { x: 3.5, y: 1.8, z: 0.6, yaw: -0.55, scale: 0.008, faceCamera: true },
+];
 
 // The mount snaps its own pose easing inside this distance, so the fly-back
 // is over by then.
@@ -28,13 +32,14 @@ export interface CinematicHandle {
   stop(): Promise<void>;
 }
 
-// One anchor per panel, all at the log's place: M1 projects the log alone.
-function anchorsFor(panels: HTMLElement[]): THREE.Object3D[] {
-  return panels.map(() => {
+export function anchorsFor(panels: HTMLElement[]): THREE.Object3D[] {
+  return panels.map((_, i) => {
+    const spec = PANEL_ANCHORS[Math.min(i, PANEL_ANCHORS.length - 1)];
     const anchor = new THREE.Object3D();
-    anchor.position.set(LOG_ANCHOR.x, LOG_ANCHOR.y, LOG_ANCHOR.z);
-    anchor.rotation.y = LOG_ANCHOR.yaw;
-    anchor.scale.setScalar(LOG_ANCHOR.scale);
+    anchor.position.set(spec.x, spec.y, spec.z);
+    anchor.rotation.y = spec.yaw;
+    anchor.scale.setScalar(spec.scale);
+    anchor.userData.faceCamera = spec.faceCamera;
     anchor.updateMatrixWorld();
     return anchor;
   });
@@ -108,6 +113,13 @@ export function startCinematic(scene: SceneHandle, els: CinematicEls, motion: Mo
     // so the log follows the stage while the offset eases away.
     els.view.style.transform = viewCSS(camera, width, height);
     els.camera.style.transform = cameraCSS(camera, width, height);
+    // The inspector's screen turns to face the camera, so the agent the user
+    // picked stays readable from wherever they orbit to.
+    for (const anchor of anchors) {
+      if (!anchor.userData.faceCamera) continue;
+      anchor.lookAt(camera.position.x, anchor.position.y, camera.position.z);
+      anchor.updateMatrixWorld();
+    }
     els.panels.forEach((panel, i) => {
       panel.style.transform = objectCSS(anchors[i]);
     });

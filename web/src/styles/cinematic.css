@@ -44,6 +44,21 @@
   pointer-events: auto;
 }
 
+/* The inspector is the second screen, placed the same way; the flight's
+   projection is the only thing that moves it, and a hidden one stays out of
+   the flight. */
+.holodeck[data-cinematic='true'] .panel--inspector {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 34rem;
+  block-size: 70vh;
+  margin: 0;
+  transform: none;
+  transform-origin: 50% 50%;
+  pointer-events: auto;
+}
+
 /* Drags anywhere over the scene reach the canvas and orbit the camera. The
    grid would otherwise swallow them; the agent list keeps its own pointer
    events so it stays clickable. */

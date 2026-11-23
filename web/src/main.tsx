@@ -10,6 +10,7 @@ import './styles/hud.css';
 import './styles/stage.css';
 import './styles/agents.css';
 import './styles/log.css';
+import './styles/inspector.css';
 import './styles/deck.css';
 import './styles/interrupt.css';
 import './styles/panels.css';

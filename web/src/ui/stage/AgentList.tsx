@@ -67,6 +67,14 @@ export function AgentList() {
         e.preventDefault();
         choose(optionAt(e.target) ?? agents[index]);
         break;
+      case 'Escape':
+        // The list owns the pick, so it is the second way out of the
+        // inspector beside the panel's own Escape.
+        if (selected !== null) {
+          e.preventDefault();
+          void actions.inspect(null);
+        }
+        break;
     }
   };
 

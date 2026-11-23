@@ -16,6 +16,7 @@ const EXPECTED_SHEETS = [
   'cinematic.css',
   'deck.css',
   'hud.css',
+  'inspector.css',
   'interrupt.css',
   'log.css',
   'panels.css',

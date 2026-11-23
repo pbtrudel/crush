@@ -14,6 +14,7 @@ import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
 import { Interrupt } from './interrupt/Interrupt';
+import { Inspector } from './inspector/Inspector';
 
 export function App() {
   const s = state.value;
@@ -21,6 +22,7 @@ export function App() {
   const view = useRef<HTMLDivElement>(null);
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
+  const inspector = useRef<HTMLElement>(null);
 
   useEffect(() => {
     document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);
@@ -63,7 +65,7 @@ export function App() {
       data-conn={s.conn}
       data-cinematic={cinematic.value ? 'true' : 'false'}
     >
-      <SceneLayer view={view} camera={camera} panels={[log]} />
+      <SceneLayer view={view} camera={camera} panels={[log, inspector]} />
       <BootSequence done={s.conn !== 'booting'} />
       <Hud />
       <ConnectionBanner />
@@ -73,6 +75,7 @@ export function App() {
             <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log}>
               <TransmissionLog />
             </section>
+            <Inspector panelRef={inspector} />
           </div>
         </div>
         <section class="stage" aria-label="Agent constellation">

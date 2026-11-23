@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { startCinematic } from './cinematic';
+import { anchorsFor, startCinematic } from './cinematic';
 import type { SceneHandle } from './mount';
 
 interface FakeControls {
@@ -130,5 +130,42 @@ describe('startCinematic', () => {
     expect(els.view.style.transform).toBe('');
     expect(els.camera.style.transform).toBe('');
     expect(els.panels[0].style.transform).toBe('');
+  });
+
+  it('turns the inspector screen toward the camera and leaves the log alone', async () => {
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 1000));
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    // Off motion skips the flight, so the camera stays wherever the test
+    // puts it and only the anchors react to the move.
+    const { handle: s, setCameraDriver } = scene();
+    const els = { view: div(), camera: div(), panels: [div(), div()] };
+
+    const started = startCinematic(s, els, 'off');
+    const driver = setCameraDriver.mock.calls.at(-1)![0] as (cam: THREE.PerspectiveCamera, dt: number) => boolean;
+    s.camera.position.set(0, 4.6, 11.5);
+    driver(s.camera, 1 / 60);
+    const log = els.panels[0].style.transform;
+    const inspector = els.panels[1].style.transform;
+
+    // Orbiting around the projector moves the camera, not the screens: only
+    // the inspector follows it.
+    s.camera.position.set(-6, 4.6, 8);
+    driver(s.camera, 1 / 60);
+    expect(els.panels[0].style.transform).toBe(log);
+    expect(els.panels[1].style.transform).not.toBe(inspector);
+
+    await started.stop();
+  });
+});
+
+describe('anchorsFor', () => {
+  it('gives the log and the inspector their own screens', () => {
+    const [log, inspector] = anchorsFor([document.createElement('section'), document.createElement('section')]);
+    expect(log.position.x).toBeLessThan(0);
+    expect(inspector.position.x).toBeGreaterThan(0);
   });
 });

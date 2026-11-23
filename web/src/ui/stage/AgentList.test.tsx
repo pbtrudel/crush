@@ -120,6 +120,14 @@ describe('AgentList', () => {
     expect(plain.defaultPrevented).toBe(true);
   });
 
+  it('closes the inspector on Escape', async () => {
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    state.value = { ...state.value, inspected: { sessionId: 'sub-1', session: null, messages: [], loading: false } };
+    await act(() => { render(<AgentList />, root); });
+    await act(() => { key(options()[1], 'Escape'); });
+    expect(inspect).toHaveBeenCalledWith(null);
+  });
+
   it('keeps one tab stop when the focused agent leaves the roster', async () => {
     await act(() => { render(<AgentList />, root); });
     options()[0].focus();
