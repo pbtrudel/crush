@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -288,6 +289,49 @@ func TestAuthRejectsForeignOriginOnTokenExchange(t *testing.T) {
 	rsp.Body.Close()
 	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
 	require.Empty(t, rsp.Cookies())
+}
+
+// TestOriginAllowed pins the matrix behind the Origin guard: a state
+// changing request needs the tab's own origin, a read may come from a
+// same-host tool without one, and neither scheme, port nor host name may
+// differ from the address the gateway bound.
+func TestOriginAllowed(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	port := strconv.Itoa(g.port)
+	otherPort := strconv.Itoa(g.port + 1)
+	same := "http://127.0.0.1:" + port
+	localhost := "http://localhost:" + port
+	for _, tc := range []struct {
+		name   string
+		method string
+		host   string
+		origin string
+		want   bool
+	}{
+		{"read without an Origin", http.MethodGet, "", "", true},
+		{"head without an Origin", http.MethodHead, "", "", true},
+		{"post without an Origin", http.MethodPost, "", "", false},
+		{"the bound origin", http.MethodPost, "", same, true},
+		{"the localhost origin for 127.0.0.1", http.MethodGet, "", localhost, false},
+		{"the loopback origin for localhost", http.MethodGet, "localhost:" + port, same, false},
+		{"the origin the request was sent to", http.MethodGet, "localhost:" + port, localhost, true},
+		{"a null Origin", http.MethodPost, "", "null", false},
+		{"an https origin", http.MethodPost, "", "https://127.0.0.1:" + port, false},
+		{"a wrong port", http.MethodPost, "", "http://127.0.0.1:" + otherPort, false},
+		{"a foreign host", http.MethodPost, "", "http://evil.example", false},
+		{"an unparseable origin", http.MethodPost, "", "http://[::1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, "/api/health", nil)
+			require.NoError(t, err)
+			req.Host = cmp.Or(tc.host, "127.0.0.1:"+port)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			require.Equal(t, tc.want, g.originAllowed(req))
+		})
+	}
 }
 
 func TestMissingAssetIsNotCachedForever(t *testing.T) {
