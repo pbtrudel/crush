@@ -175,10 +175,41 @@ func loadPrompt(store *config.ConfigStore, name string, opts ...prompt.Option) (
 // coderPromptVariant renders the lean prompt profile. The full profile keeps
 // the base template, so its text stays exactly as it is.
 func coderPromptVariant(profile, provider, model string) (string, bool) {
-	if profile != config.PromptProfileLean {
+	if effectivePromptProfile(profile, provider, model) != config.PromptProfileLean {
 		return "", false
 	}
 	return string(leanPromptTmpl) + leanFamilyAddon(promptFamily(provider, model)), true
+}
+
+// effectivePromptProfile is the profile a coder session really renders. An
+// explicit full or lean is honored on every model, and any other name keeps
+// the full prompt: a typo must not silently shrink what a session is given.
+// An unset profile follows the measurement: DeepSeek gets the lean prompt,
+// since the batch that measured it solved as many tasks on 8.1% fewer tokens,
+// and every other model keeps full until its own measurement lands. The lean
+// add-on families are no evidence of that: the default family also catches
+// Kimi, GLM, Qwen and MiMo, and none of them was measured.
+func effectivePromptProfile(setting, provider, model string) string {
+	switch setting {
+	case config.PromptProfileFull:
+		return config.PromptProfileFull
+	case config.PromptProfileLean:
+		return config.PromptProfileLean
+	case "":
+		if deepSeekModel(model) {
+			return config.PromptProfileLean
+		}
+	}
+	return config.PromptProfileFull
+}
+
+// deepSeekModel reports whether DeepSeek serves the model, matched on the base
+// name of the model ID so a gateway that serves several vendors is classified
+// by the model it serves. A provider ID is no evidence: the production route
+// reports one openai-compatible provider for every vendor behind it. An ID the
+// rule does not match keeps the full prompt, which is the safe direction.
+func deepSeekModel(model string) bool {
+	return vendorFamily(model) == "deepseek"
 }
 
 // Prompt families group the models that need the same lean-profile add-on.

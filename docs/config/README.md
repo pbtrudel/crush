@@ -508,9 +508,11 @@ String Keys:
   initialize-as string             context filename created by crush init
   notifications string             notification style: auto, native, osc, bell,
                                    or disabled
-  prompt-profile string            coder system prompt: full (default) or
-                                   lean, a short base plus a model-family
-                                   add-on
+  prompt-profile string            coder system prompt: full, or lean, a
+                                   short base plus a model-family add-on;
+                                   unset uses lean for DeepSeek models,
+                                   measured on V4.1 Flash, and full for
+                                   every other model
   attribution-trailer-style string attribution trailer: none, co-authored-by,
                                    or assisted-by
 
