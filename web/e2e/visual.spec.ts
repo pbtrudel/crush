@@ -94,22 +94,29 @@ test('agents and the inspector', async ({ page, gateway }) => {
 });
 
 test('file drawer with a diff', async ({ page, gateway }) => {
+  // The scene behind the drawer orbits on the frame clock, and its phase is
+  // the integral of the frames that rendered: a lazy chunk or a resize
+  // observer landing between two clock runs changes how many frames each run
+  // gets, which moved the scene one frame and about 6% of the pixels between
+  // otherwise identical CI runs. Off freezes the scene after the drawer's
+  // resize has moved the projector, so the shot no longer depends on where
+  // the setup's real-time work landed. The drawer and the diff editor keep
+  // animating normally.
+  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
   await page.goto(gateway.launch);
   await settle(page);
   await page.getByRole('button', { name: /^Files/ }).click();
   // The diff is fetched from an effect, and a paused clock only runs effects
   // when it moves: wait for the answer, then step the frame that mounts the
-  // editor. Both steps are a fixed length, so the scene behind the drawer
-  // reaches the same frame on every run.
+  // editor. The drawer changes the stage's box, so the same frames also land
+  // the resize that moves the projector to the stage's new centre.
   const answer = page.waitForResponse((r) => /\/files\/diff\?/.test(r.url()));
   await page.getByRole('button', { name: /parser\.go/ }).click();
   await answer;
   await page.clock.runFor(50);
   await expect(page.locator('.cm-mergeView')).toBeVisible();
-  // The drawer changes the stage's box, so the projector moves to the new
-  // centre once the resize lands. Park the pointer in the middle (no
-  // parallax) and give both the turn and the offset two seconds of frames,
-  // or the object order of the setup clicks decides where the core sits.
+  // Park the pointer off the file row so no hover state leaks into the shot,
+  // then give the editor's deferred measurement a frame to land.
   await page.mouse.move(720, 430);
   await page.clock.runFor(2000);
   await expect(page).toHaveScreenshot('drawer.png', { timeout: 30_000 });
