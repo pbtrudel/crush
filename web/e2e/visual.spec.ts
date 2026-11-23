@@ -80,3 +80,68 @@ test('reduced motion', async ({ page, gateway }) => {
   await expect(page).toHaveScreenshot('reduced.png', { timeout: 30_000 });
   await axe(page);
 });
+
+test('agents and the inspector', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByRole('listbox', { name: 'Agents' }).getByRole('option', { name: /alice/ }).click();
+  // The transcript is fetched after the pick, so wait for its text before
+  // the clock is woken for the shot.
+  await expect(page.locator('.panel--inspector')).toContainText('Porting the parser to the new token stream.');
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('inspector.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+test('file drawer with a diff', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByRole('button', { name: /^Files/ }).click();
+  // The diff is fetched from an effect, and a paused clock only runs effects
+  // when it moves: wait for the answer, then step the frame that mounts the
+  // editor. Both steps are a fixed length, so the scene behind the drawer
+  // reaches the same frame on every run.
+  const answer = page.waitForResponse((r) => /\/files\/diff\?/.test(r.url()));
+  await page.getByRole('button', { name: /parser\.go/ }).click();
+  await answer;
+  await page.clock.runFor(50);
+  await expect(page.locator('.cm-mergeView')).toBeVisible();
+  // The drawer changes the stage's box, so the projector moves to the new
+  // centre once the resize lands. Park the pointer in the middle (no
+  // parallax) and give both the turn and the offset two seconds of frames,
+  // or the object order of the setup clicks decides where the core sits.
+  await page.mouse.move(720, 430);
+  await page.clock.runFor(2000);
+  await expect(page).toHaveScreenshot('drawer.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+test('agents in the 2D view', async ({ page, gateway }) => {
+  await page.addInitScript(() => localStorage.setItem('crush-web-low-power', '1'));
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  // The roster arrives in stream frames, and a paused clock only delivers
+  // them when it moves. The 2D constellation is drawn from state alone, so
+  // how far the clock walked here does not change the picture.
+  await expect.poll(async () => {
+    await page.clock.runFor(100);
+    return page.locator('svg [data-agent-node]').count();
+  }, { message: 'the 2D nodes render', timeout: 20_000 }).toBeGreaterThan(0);
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('agents-2d.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+// G2-43: the HUD strip wraps to a second row on a narrower laptop. Two rows
+// measured 151px in M1; one row stays within a few pixels of the 1440px
+// strip.
+test('the HUD keeps one row at 1280px', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  await page.clock.runFor(500);
+  const wide = (await page.locator('.hud').boundingBox())!.height;
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.clock.runFor(500);
+  const laptop = (await page.locator('.hud').boundingBox())!.height;
+  expect(laptop).toBeLessThanOrEqual(wide + 8);
+});

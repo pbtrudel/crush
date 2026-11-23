@@ -1,0 +1,85 @@
+import { expect, freshTest, test } from './fixture';
+import type { Page } from '@playwright/test';
+
+// A spec that launches its own webfake pays for a `go build` and a server
+// start inside the fixture, so give the setup more than the default.
+test.setTimeout(120_000);
+
+// The HUD's connection strip is one polite live region: the short word sits
+// in an aria-hidden span and a visually hidden sentence repeats it, so the
+// filter reads the text content the way smoke.spec.ts does.
+async function linked(page: Page) {
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+}
+
+test('selects an agent with the keyboard and reads what it is doing', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await linked(page);
+
+  const list = page.getByRole('listbox', { name: 'Agents' });
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await list.getByRole('option', { name: /Coder/ }).focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(list.getByRole('option', { name: /Map the parser/ })).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  const inspector = page.getByRole('region', { name: /Map the parser/ });
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText('grep');
+  await expect(inspector.getByRole('log')).toContainText('Scanning the parser package');
+
+  // Escape closes the inspector and hands the focus back to the option it
+  // was opened from, so the keyboard keeps its place in the list.
+  await page.keyboard.press('Escape');
+  await expect(inspector).toBeHidden();
+  await expect(list.getByRole('option', { name: /Map the parser/ })).toBeFocused();
+});
+
+test('selects an agent node with the pointer and messages it', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await linked(page);
+  // The boot overlay fades over the scene; a raw pointer click while it is
+  // up lands on the overlay instead of the tag.
+  await expect(page.locator('.boot')).toBeHidden();
+
+  const node = page.locator('[data-agent-node="team-m-1"]');
+  await expect(node).toHaveAttribute('data-visible', 'true', { timeout: 15_000 });
+  // A tag tracks its node's projection, so it is never perfectly still:
+  // click it where it is instead of waiting for a stable box.
+  const box = (await node.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+  const inspector = page.getByRole('region', { name: 'alice' });
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText('Port the parser');
+  await inspector.getByLabel('Message alice').fill('rebase first');
+  await inspector.getByRole('button', { name: 'Send' }).click();
+  await expect(inspector.getByRole('status')).toContainText('Sent to alice');
+});
+
+test('selects a 2D node in low power mode', async ({ page, gateway }) => {
+  await page.addInitScript(() => localStorage.setItem('crush-web-low-power', '1'));
+  await page.goto(gateway.launch);
+  await expect(page.locator('svg.constellation-svg')).toBeVisible();
+  await page.locator('svg [data-agent-node="sub-1"]').click();
+  await expect(page.getByRole('region', { name: /Map the parser/ })).toBeVisible();
+});
+
+// The subagent's edit adds a parser.go version, so this test keeps its own
+// webfake instead of changing the versions the smoke specs assert on.
+freshTest('delegated work streams into the inspector and the drawer', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await linked(page);
+
+  await page.getByRole('listbox', { name: 'Agents' }).getByRole('option', { name: /Map the parser/ }).click();
+  await page.getByLabel('Transmit to crush').fill('delegate the tokenizer');
+  await page.keyboard.press('Enter');
+
+  const inspector = page.getByRole('region', { name: /Map the parser/ });
+  await expect(inspector.getByRole('log')).toContainText('Rewriting the tokenizer loop.');
+  await expect(inspector).toContainText('edit');
+
+  await page.getByRole('button', { name: /^Files/ }).click();
+  await page.getByRole('complementary', { name: /Edited files/ }).getByRole('button', { name: /parser\.go/ }).click();
+  await expect(page.locator('.cm-mergeView')).toContainText('func tokenize');
+});

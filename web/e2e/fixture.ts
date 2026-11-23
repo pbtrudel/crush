@@ -129,4 +129,11 @@ export const visualTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({ WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
+// A test that writes history (an edited file gets a new version) gets its own
+// webfake too: the worker's shared session carries every version, and the
+// smoke specs assert on the seeded three.
+export const freshTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({}, use),
+});
+
 export { expect } from '@playwright/test';

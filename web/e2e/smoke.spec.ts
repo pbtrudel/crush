@@ -93,10 +93,11 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'reduced');
   await page.getByText('Display').click();
   await page.getByLabel('Low power (2D constellation)').check();
-  await expect(page.locator('svg.constellation-svg')).toBeVisible();
-  await expect(page.getByRole('listbox', { name: 'Agents' })).toContainText('Coder');
-  // The roster arrives in frames after boot, so wait for the first node.
-  await expect(page.locator('[data-agent-node]').first()).toBeVisible();
+  // The toggle reaches the page on a frame and the roster arrives in frames
+  // after boot, so both wait past a loaded host's frame budget.
+  await expect(page.locator('svg.constellation-svg')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('listbox', { name: 'Agents' })).toContainText('Coder', { timeout: 15_000 });
+  await expect(page.locator('[data-agent-node]').first()).toBeVisible({ timeout: 15_000 });
   const wide = await stageGeometry(page);
   expect(wide.nodes.length).toBeGreaterThan(0);
   expect(inside(wide.svg, wide.stage), 'svg inside the stage').toBe(true);
@@ -731,8 +732,9 @@ test('the covered log leaves the tab order over the overlay drawer', async ({ pa
   await expect(page.locator('.boot')).toBeHidden();
   const log = page.locator('.panel--log');
   // The transcript arrives in frames after boot; the summaries are its tab
-  // stops and have to exist before the walk below means anything.
-  await expect(page.locator('.panel--log summary, .panel--log button').first()).toBeVisible();
+  // stops and have to exist before the walk below means anything. A loaded
+  // host can take most of the default timeout to deliver it.
+  await expect(page.locator('.panel--log summary, .panel--log button').first()).toBeVisible({ timeout: 20_000 });
   const focusLogControl = () => page.evaluate(() => {
     const el = document.querySelector<HTMLElement>('.panel--log summary, .panel--log button');
     if (el === null) return 'no control';
