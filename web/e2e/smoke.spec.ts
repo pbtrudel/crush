@@ -672,6 +672,64 @@ test('a long inspector title stays clear of the drawer handle', async ({ page, g
   }
 });
 
+// The inspector stacks its head, facts and actions above the transcript, so
+// a crowded panel used to leave the log a 44px sliver. Its chrome now takes
+// 270px of the panel: the transcript keeps 207px at 1440x860 (a 479px
+// panel), 52px at 1100x800 (324px) and 20px at 1024x768 (292px). Only the
+// two wider rows are pinned; the short one has 20px to give and no more.
+const TRANSCRIPT_FLOORS = [
+  { width: 1440, height: 860, floor: 160 },
+  { width: 1100, height: 800, floor: 40 },
+  { width: 1024, height: 768, floor: 0 },
+];
+
+test('the inspector transcript keeps a readable box', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  // alice is the teammate, so the panel also carries interrupt and the
+  // message form: the crowded case.
+  await page.evaluate(() => {
+    const options = [...document.querySelectorAll<HTMLElement>('.agent-list [role="option"]')];
+    options.find((o) => (o.textContent ?? '').includes('alice'))?.click();
+  });
+  await expect(page.locator('.panel--inspector')).toBeVisible();
+  await expect(page.locator('.panel--inspector [role="log"]')).toBeAttached();
+
+  for (const { width, height, floor } of TRANSCRIPT_FLOORS) {
+    await page.setViewportSize({ width, height });
+    await expect.poll(async () => {
+      const problems = await page.evaluate(() => {
+        const hitSelf = (el: Element | null) => {
+          if (el === null) return 'missing';
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return hit !== null && (hit === el || el.contains(hit)) ? 'ok' : 'covered';
+        };
+        const panel = document.querySelector('.panel--inspector');
+        const log = panel?.querySelector('[role="log"]');
+        if (panel === null || log === undefined || log === null) return ['no transcript'];
+        const p = panel.getBoundingClientRect();
+        const l = log.getBoundingClientRect();
+        const found: string[] = [];
+        if (l.bottom > p.bottom + 1) found.push(`the transcript ends at ${Math.round(l.bottom)}, past the panel's ${Math.round(p.bottom)}`);
+        const send = panel.querySelector('[data-action="message"]');
+        const interrupt = panel.querySelector('[data-action="interrupt"]');
+        for (const [name, el] of [['Send', send], ['Interrupt', interrupt]] as const) {
+          const hit = hitSelf(el);
+          if (hit !== 'ok') found.push(`${name} is ${hit}`);
+        }
+        const label = panel.querySelector('label[for="inspector-message"]');
+        if (label === null || label.getBoundingClientRect().height < 10) found.push('the message label is not rendered');
+        return found;
+      });
+      return problems.length === 0 ? 'ok' : problems.join('; ');
+    }, { message: `${width}x${height}: the inspector's controls stay reachable` }).toBe('ok');
+    const client = await page.evaluate(() => document.querySelector<HTMLElement>('.panel--inspector .log')!.clientHeight);
+    expect(client, `the transcript is ${client}px tall at ${width}x${height}`).toBeGreaterThanOrEqual(floor);
+  }
+});
+
 // In the row form the list can outgrow the stage. The arrows must bring the
 // option they move to into view, since the row has no scrollbar to drag.
 test('the agent list row keeps the focused option in view', async ({ page, gateway }) => {
