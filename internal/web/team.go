@@ -252,6 +252,6 @@ func writeTeamError(w http.ResponseWriter, err error) {
 		// and the rule it broke, so they are safe to show.
 		writeError(w, http.StatusConflict, "team_refused", err.Error())
 	default:
-		writeInternal(w, "team_failed", err)
+		writeWorkspaceError(w, "team_failed", err)
 	}
 }

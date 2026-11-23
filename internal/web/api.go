@@ -199,7 +199,7 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if err := g.ws.AgentRun(ctx, sid, prompt, atts...); err != nil {
 			slog.Warn("Web prompt failed", "session_id", sid, "error", err)
-			g.hub.publishJSON(frameError, map[string]string{"session_id": sid, "error": err.Error()})
+			g.hub.publishJSON(frameError, promptFailure(sid, err))
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})

@@ -1799,3 +1799,26 @@ func TestClientWorkspaceHistoryMeta(t *testing.T) {
 	_, err = ws.GetHistoryVersion(t.Context(), "nope")
 	require.ErrorIs(t, err, client.ErrNotFound)
 }
+
+// TestClientWorkspaceMapsAgentNotInitialized pins that an agent which is
+// not configured fails the same way in client/server mode as it does in
+// process: the server's machine code becomes the workspace sentinel.
+func TestClientWorkspaceMapsAgentNotInitialized(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(proto.Error{
+			Message: "agent coordinator not initialized",
+			Code:    proto.ErrorCodeAgentNotInitialized,
+		})
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	require.ErrorIs(t, ws.AgentRun(t.Context(), "s1", "hi"), ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.AgentSummarize(t.Context(), "s1"), ErrAgentNotInitialized)
+	_, err := ws.AgentAsk(t.Context(), "s1", "why?")
+	require.ErrorIs(t, err, ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.UpdateAgentModel(t.Context()), ErrAgentNotInitialized)
+}

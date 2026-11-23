@@ -90,3 +90,10 @@ func TestCheckStatus_TypesActionableStatuses(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckStatusMapsAgentNotInitialized(t *testing.T) {
+	t.Parallel()
+	rsp := &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(
+		`{"message":"agent coordinator not initialized","code":"agent_not_initialized"}`))}
+	require.ErrorIs(t, checkStatus(rsp), ErrAgentNotInitialized)
+}

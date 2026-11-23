@@ -48,6 +48,11 @@ type Workspace struct {
 	Skills []SkillState `json:"skills,omitempty"`
 }
 
+// ErrorCodeAgentNotInitialized is the wire code an error body carries when
+// the workspace has no agent coordinator yet. Clients map it back to
+// workspace.ErrAgentNotInitialized.
+const ErrorCodeAgentNotInitialized = "agent_not_initialized"
+
 // Error represents an error response.
 type Error struct {
 	Message string `json:"message"`

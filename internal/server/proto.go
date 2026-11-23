@@ -1005,7 +1005,12 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 	case errors.Is(err, backend.ErrLSPClientNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, backend.ErrAgentNotInitialized):
-		status = http.StatusBadRequest
+		// Keep the status: callers that only read it keep working, and
+		// the code lets newer clients tell "wait for the agent" apart
+		// from a bad request.
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.ErrorCodeAgentNotInitialized)
+		return
 	case errors.Is(err, backend.ErrAgentBusy):
 		// Switching the main agent mid-run could strand the run's
 		// queued prompts on the previous agent; mirror the TUI's

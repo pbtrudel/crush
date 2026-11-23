@@ -79,6 +79,9 @@ type Fake struct {
 	AnswerBatches []string
 	Resolve       bool
 	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+	// ReadyErr is what AgentReadyErr returns. nil means the agent is
+	// ready. Set it before the gateway starts.
+	ReadyErr error
 }
 
 // NewFake returns a fake with one current session "s1".
@@ -224,6 +227,8 @@ func (f *Fake) Config() *config.Config { return nil }
 func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 
 func (f *Fake) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
+
+func (f *Fake) AgentReadyErr() error { return f.ReadyErr }
 
 func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
 

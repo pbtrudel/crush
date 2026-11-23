@@ -537,8 +537,8 @@ func (c *Client) UpdateAgent(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to update agent: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update agent: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to update agent: %w", err)
 	}
 	return nil
 }
@@ -580,26 +580,10 @@ func (c *Client) SendMessage(ctx context.Context, id string, sessionID, runID, p
 		return fmt.Errorf("failed to send message to agent: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK && rsp.StatusCode != http.StatusAccepted {
-		if msg := decodeErrorMessage(rsp.Body); msg != "" {
-			return fmt.Errorf("failed to send message to agent: status code %d: %s", rsp.StatusCode, msg)
-		}
-		return fmt.Errorf("failed to send message to agent: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp, http.StatusOK, http.StatusAccepted); err != nil {
+		return fmt.Errorf("failed to send message to agent: %w", err)
 	}
 	return nil
-}
-
-// decodeErrorMessage attempts to decode the response body as a
-// proto.Error and returns its message. It returns an empty string
-// when the body is empty or cannot be decoded into a proto.Error
-// with a non-empty message, letting callers fall back to a
-// status-only error.
-func decodeErrorMessage(body io.Reader) string {
-	var e proto.Error
-	if err := json.NewDecoder(body).Decode(&e); err != nil {
-		return ""
-	}
-	return e.Message
 }
 
 // RunShellCommand runs a shell command in the workspace without triggering the agent.
@@ -646,8 +630,8 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to summarize session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	return nil
 }
@@ -661,8 +645,8 @@ func (c *Client) AgentAskSession(ctx context.Context, id string, sessionID strin
 		return "", fmt.Errorf("failed to ask side question: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to ask side question: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return "", fmt.Errorf("failed to ask side question: %w", err)
 	}
 	var resp proto.AgentAskResponse
 	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {

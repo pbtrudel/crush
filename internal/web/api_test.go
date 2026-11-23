@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -716,4 +717,94 @@ func TestPromptMustBeMultipart(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 	require.Contains(t, string(body), "bad_form")
 	require.Empty(t, fake.CallLog())
+}
+
+// TestAgentStartingAnswers503 pins the gateway half of the contract: an
+// agent that is not configured yet is a retryable state on every route that
+// reaches it, not a workspace failure.
+func TestAgentStartingAnswers503(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.SetTeamErr(workspace.ErrAgentNotInitialized)
+	rsp, data := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/team/members/alice/message", `{"session_id":"s1","text":"hi"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode)
+	require.JSONEq(t, `{"error":"Crush is starting the agent","code":"agent_starting"}`, string(data))
+}
+
+// TestPromptFailurePublishesSafeError pins that a detached prompt failure
+// never carries the workspace error text, which can name files or sockets,
+// and that a starting agent keeps its own code.
+func TestPromptFailurePublishesSafeError(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"prompt failure", fmt.Errorf("open /home/u/.secret: %w", os.ErrPermission), "prompt_failed"},
+		{"starting agent", fmt.Errorf("run: %w", workspace.ErrAgentNotInitialized), "agent_starting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.OnRun = func(context.Context, string, string, []message.Attachment) error {
+				return tc.err
+			}
+			c := dialStream(t, g, "")
+			readFrame(t, c) // Snapshot.
+
+			var buf bytes.Buffer
+			mw := multipart.NewWriter(&buf)
+			require.NoError(t, mw.WriteField("prompt", "fix the bug"))
+			require.NoError(t, mw.Close())
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			req.Header.Set("Origin", g.URL())
+			rsp := doReq(t, authedClient(t, g), req)
+			rsp.Body.Close()
+			require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+
+			f := readFrame(t, c)
+			require.Equal(t, frameError, f.Type)
+			var payload struct {
+				SessionID string `json:"session_id"`
+				Code      string `json:"code"`
+				Error     string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(f.Payload, &payload))
+			require.Equal(t, "s1", payload.SessionID)
+			require.Equal(t, tc.code, payload.Code)
+			require.NotEmpty(t, payload.Error)
+			require.NotContains(t, payload.Error, "/home/u")
+			require.NotContains(t, payload.Error, "agent coordinator")
+		})
+	}
+}
+
+// TestSnapshotReportsAgentReady pins that a tab can tell on load whether
+// the agent is starting.
+func TestSnapshotReportsAgentReady(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		ready error
+		want  bool
+	}{
+		{"ready", nil, true},
+		{"starting", workspace.ErrAgentNotInitialized, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.ReadyErr = tc.ready
+			rsp, data := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+			rsp.Body.Close()
+			require.Equal(t, http.StatusOK, rsp.StatusCode)
+			var snap Snapshot
+			require.NoError(t, json.Unmarshal(data, &snap))
+			require.Equal(t, tc.want, snap.AgentReady)
+		})
+	}
 }

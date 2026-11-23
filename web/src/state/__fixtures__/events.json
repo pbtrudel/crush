@@ -379,6 +379,7 @@
         "provider": "anthropic",
         "context_window": 200000
       },
+      "agent_ready": true,
       "busy": false,
       "queued": [],
       "lsp": {},
@@ -489,6 +490,15 @@
           "session_id": "s1"
         }
       ]
+    }
+  },
+  "web_error": {
+    "seq": 1,
+    "type": "web_error",
+    "payload": {
+      "code": "prompt_failed",
+      "error": "The prompt could not run. The terminal log has the details.",
+      "session_id": "s1"
     }
   }
 }

@@ -247,6 +247,9 @@ func TestTeamRoutesMapErrors(t *testing.T) {
 		{agent.ErrAgentTeamsDisabled, http.StatusConflict, "teams_disabled"},
 		{&agentteam.Error{Code: agentteam.CodeMemberNotFound, Message: `Team member "bob" not found`}, http.StatusConflict, "team_refused"},
 		{errors.New("dial unix /tmp/crush.sock: refused"), http.StatusInternalServerError, "team_failed"},
+		// A starting agent is a state the caller can wait out, not a
+		// workspace failure.
+		{workspace.ErrAgentNotInitialized, http.StatusServiceUnavailable, "agent_starting"},
 	}
 	for _, tc := range cases {
 		fake.SetTeamErr(tc.err)
@@ -343,14 +346,14 @@ func TestTeamRoutesMapErrorsOverClientWorkspace(t *testing.T) {
 			message:     generic,
 		},
 		{
-			// The gateway has no dedicated code for a workspace whose
-			// agent is still starting, so it answers the generic failure
-			// instead of the error text naming the missing coordinator.
-			name:        "agent not initialized",
+			// A workspace whose agent is still starting answers the
+			// retryable status, never the generic failure or the error
+			// text naming the missing coordinator.
+			name:        "agent not initialized is starting",
 			coordinator: nil,
-			status:      http.StatusInternalServerError,
-			code:        "team_failed",
-			message:     generic,
+			status:      http.StatusServiceUnavailable,
+			code:        "agent_starting",
+			message:     "Crush is starting the agent",
 		},
 	}
 	for _, tc := range cases {

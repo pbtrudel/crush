@@ -39,6 +39,11 @@ var (
 	// what is safe to do with an older server rather than treating the
 	// failure as transient.
 	ErrUnsupported = errors.New("unsupported by the running server")
+
+	// ErrAgentNotInitialized reports that the workspace's agent has not
+	// been configured yet. The call can succeed once it is, so callers
+	// wait and retry rather than treating it as a failure.
+	ErrAgentNotInitialized = errors.New("agent not initialized")
 )
 
 // checkStatus returns nil when rsp's status code is one of ok
@@ -54,10 +59,14 @@ func checkStatus(rsp *http.Response, ok ...int) error {
 		return nil
 	}
 	var err error
-	if msg := decodeErrorMessage(rsp.Body); msg != "" {
+	msg, code := decodeError(rsp.Body)
+	if msg != "" {
 		err = fmt.Errorf("status code %d: %s", rsp.StatusCode, msg)
 	} else {
 		err = fmt.Errorf("status code %d", rsp.StatusCode)
+	}
+	if code == proto.ErrorCodeAgentNotInitialized {
+		return fmt.Errorf("%w: %w", ErrAgentNotInitialized, err)
 	}
 	switch rsp.StatusCode {
 	case http.StatusNotFound:
@@ -66,6 +75,16 @@ func checkStatus(rsp *http.Response, ok ...int) error {
 		return fmt.Errorf("%w: %w", ErrServerShuttingDown, err)
 	}
 	return err
+}
+
+// decodeError decodes an error body into its message and machine code. It
+// returns empty strings when the body is empty or is not a proto.Error.
+func decodeError(body io.Reader) (message, code string) {
+	var e proto.Error
+	if err := json.NewDecoder(body).Decode(&e); err != nil {
+		return "", ""
+	}
+	return e.Message, e.Code
 }
 
 // TeamError is a team action failure as the server sent it: the HTTP

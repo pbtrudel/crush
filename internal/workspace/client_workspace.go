@@ -296,7 +296,7 @@ func (w *ClientWorkspace) AgentRun(ctx context.Context, sessionID, prompt string
 	// The interactive TUI matches notify.RunComplete by session, not
 	// RunID, so passing an empty RunID is correct here: it skips the
 	// correlator stamping path without functional consequences.
-	return w.client.SendMessage(ctx, w.workspaceID(), sessionID, "", prompt, attachments...)
+	return agentErr(w.client.SendMessage(ctx, w.workspaceID(), sessionID, "", prompt, attachments...))
 }
 
 // AgentRunChannel is unreachable in client/server mode: the TUI skips
@@ -399,15 +399,25 @@ func (w *ClientWorkspace) AgentSetMain(agentID string) error {
 }
 
 func (w *ClientWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
-	return w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID)
+	return agentErr(w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID))
 }
 
 func (w *ClientWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
-	return w.client.AgentAskSession(ctx, w.workspaceID(), sessionID, question)
+	answer, err := w.client.AgentAskSession(ctx, w.workspaceID(), sessionID, question)
+	return answer, agentErr(err)
 }
 
 func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context) error {
-	return w.client.UpdateAgent(ctx, w.workspaceID())
+	return agentErr(w.client.UpdateAgent(ctx, w.workspaceID()))
+}
+
+// agentErr restores workspace.ErrAgentNotInitialized from the server's
+// code, so both workspaces fail the same way.
+func agentErr(err error) error {
+	if errors.Is(err, client.ErrAgentNotInitialized) {
+		return fmt.Errorf("%w: %w", ErrAgentNotInitialized, err)
+	}
+	return err
 }
 
 func (w *ClientWorkspace) InitCoderAgent(ctx context.Context) error {

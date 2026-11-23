@@ -116,7 +116,7 @@ func (w *AppWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Messa
 
 func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	_, err := w.app.Agent().Run(ctx, sessionID, prompt, attachments...)
 	return err
@@ -124,7 +124,7 @@ func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, a
 
 func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, prompt string, attachments ...message.Attachment) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	_, err := w.app.Agent().Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
 	return err
@@ -135,7 +135,7 @@ func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, 
 func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
 	coord := w.app.Agent()
 	if coord == nil {
-		return "", errors.New("agent coordinator not initialized")
+		return "", ErrAgentNotInitialized
 	}
 	asker, ok := coord.(agent.SideQuestioner)
 	if !ok {
@@ -254,14 +254,14 @@ func (w *AppWorkspace) AgentClearQueue(sessionID string) {
 
 func (w *AppWorkspace) AgentSetMain(agentID string) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	return w.app.Agent().SetMainAgent(agentID)
 }
 
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	return w.app.Agent().Summarize(ctx, sessionID)
 }

@@ -124,6 +124,9 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 	return map[string]frame{
 		"team_state": mk(frameTeamState, fixtureTeam()),
 		"agent_runs": mk(frameAgentRuns, fixtureRuns()),
+		// A detached prompt that failed shows the fixed message, never the
+		// workspace error.
+		"web_error": mk(frameError, promptFailure("s1", errors.New("dial unix /tmp/crush.sock: refused"))),
 	}
 }
 
@@ -148,8 +151,9 @@ func snapshotFrame(t *testing.T) frame {
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
 		PermissionMode: "normal", InputMode: "code",
-		Model:  ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
-		Queued: []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
+		Model:      ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
+		AgentReady: true,
+		Queued:     []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
 		Team:      fixtureTeam(),
 		AgentRuns: fixtureRuns(),
 	})
