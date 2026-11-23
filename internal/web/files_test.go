@@ -185,6 +185,34 @@ func TestTreeHistoryOrdersTies(t *testing.T) {
 	require.Equal(t, []string{"d", "c", "a", "b"}, ids)
 }
 
+// TestTreeHistoryKeepsSameSecondSessionsTogether pins the tie-break that
+// matters when two sessions write one path in the same second: each
+// session's versions stay together and in their own order, so a session's
+// v0 never lands after its v1 just because another session is in between.
+func TestTreeHistoryKeepsSameSecondSessionsTogether(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "s1", Title: "Root", CreatedAt: 1})
+	fake.AddSession(session.Session{ID: "child", ParentSessionID: "s1", Title: "Child", CreatedAt: 2})
+	for _, f := range []history.File{
+		// Written out of version order, as the store sorts by id alone.
+		{ID: "c1", SessionID: "child", Path: "/repo/t.go", Version: 1, CreatedAt: 10},
+		{ID: "p1", SessionID: "s1", Path: "/repo/t.go", Version: 1, CreatedAt: 10},
+		{ID: "c0", SessionID: "child", Path: "/repo/t.go", Version: 0, CreatedAt: 10},
+		{ID: "p0", SessionID: "s1", Path: "/repo/t.go", Version: 0, CreatedAt: 10},
+	} {
+		fake.AddHistory(f)
+	}
+	byPath, err := g.treeHistory(t.Context(), "s1")
+	require.NoError(t, err)
+	var ids []string
+	for _, f := range byPath["/repo/t.go"] {
+		ids = append(ids, f.ID)
+	}
+	require.Equal(t, []string{"c0", "c1", "p0", "p1"}, ids,
+		"each session's versions stay together and in version order")
+}
+
 // TestFileRoutesRejectUnknownSession pins that both routes answer the same
 // 404 as the messages route for a session the workspace does not have.
 func TestFileRoutesRejectUnknownSession(t *testing.T) {

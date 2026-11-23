@@ -93,7 +93,8 @@ func (g *Gateway) sessionTree(ctx context.Context, root string) ([]string, error
 // treeHistory groups the file history of root's tree by path, each path's
 // versions in creation order. Version numbers are per path and session,
 // so two sessions can both hold a version 0 of one path: creation time
-// decides the order, then the version, then the record id.
+// decides the order, then the session, then the version, then the record
+// id.
 func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]history.File, error) {
 	ids, err := g.sessionTree(ctx, root)
 	if err != nil {
@@ -110,9 +111,14 @@ func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]hi
 		}
 	}
 	for _, versions := range byPath {
-		slices.SortFunc(versions, func(a, b history.File) int {
+		// The session comes before the version so a session's versions stay
+		// together and in their own order when two sessions write the same
+		// path in the same second; the sort is stable so a full tie keeps
+		// the order the workspace listed.
+		slices.SortStableFunc(versions, func(a, b history.File) int {
 			return cmp.Or(
 				cmp.Compare(a.CreatedAt, b.CreatedAt),
+				cmp.Compare(a.SessionID, b.SessionID),
 				cmp.Compare(a.Version, b.Version),
 				cmp.Compare(a.ID, b.ID),
 			)
