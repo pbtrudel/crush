@@ -55,6 +55,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.route(api, "GET /api/complete/files", g.handleCompleteFiles)
 	g.route(api, "POST /api/team/members/{member}/message", g.handleTeamMessage)
 	g.route(api, "POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
+	g.registerCommandRoutes(api)
 }
 
 // route registers an API handler and records its pattern for the auth
@@ -226,14 +227,23 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 			Content:  data,
 		})
 	}
+	g.runDetached(sid, prompt, atts...)
+	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+// runDetached starts text in sessionID without waiting for it, the way the
+// TUI runs a prompt as a background command. The run outlives the request
+// that started it, since a tab can navigate away while the agent works, and
+// a failure reaches the tab as a web_error frame. The prompt, command and
+// MCP prompt routes share it.
+func (g *Gateway) runDetached(sessionID, text string, atts ...message.Attachment) {
 	ctx := context.WithoutCancel(g.ctx)
 	go func() {
-		if err := g.ws.AgentRun(ctx, sid, prompt, atts...); err != nil {
-			slog.Warn("Web prompt failed", "session_id", sid, "error", err)
-			g.hub.publishJSON(frameError, promptFailure(sid, err))
+		if err := g.ws.AgentRun(ctx, sessionID, text, atts...); err != nil {
+			slog.Warn("Web prompt failed", "session_id", sessionID, "error", err)
+			g.hub.publishJSON(frameError, promptFailure(sessionID, err))
 		}
 	}()
-	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
 
 // attachmentMime classifies attachment content the way the TUI does: the

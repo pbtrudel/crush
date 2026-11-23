@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -21,6 +22,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -58,6 +60,15 @@ type Fake struct {
 	diagnostics map[string]lsp.DiagnosticCounts
 	teamErr     error
 	seq         int
+	// skillCatalog is the visible skill set; skillContent and
+	// skillDisabled back ReadSkill and the toggles.
+	skillCatalog  []skills.CatalogEntry
+	skillContent  map[string]string
+	skillDisabled map[string]bool
+	// mcpPrompts is the prompt catalog; mcpPromptText is keyed by
+	// "<client>:<prompt>" and holds what GetMCPPrompt returns.
+	mcpPrompts    []commands.MCPPrompt
+	mcpPromptText map[string]string
 	// sessionSeq hands out CreateSession IDs. A monotonic counter keeps
 	// them unique even after a session is deleted.
 	sessionSeq int
@@ -90,19 +101,22 @@ type Fake struct {
 // NewFake returns a fake with one current session "s1".
 func NewFake() *Fake {
 	f := &Fake{
-		subs:        make(map[*subscriber]struct{}),
-		sessions:    map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
-		messages:    make(map[string][]message.Message),
-		queued:      make(map[string][]string),
-		busy:        make(map[string]bool),
-		history:     make(map[string][]history.File),
-		diagnostics: make(map[string]lsp.DiagnosticCounts),
-		current:     "s1",
-		sessionSeq:  1,
-		decisions:   make(chan permission.PermissionNotification, 16),
-		answers:     make(chan []question.Answer, 16),
-		WorkDir:     "/tmp/project",
-		Resolve:     true,
+		subs:          make(map[*subscriber]struct{}),
+		sessions:      map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
+		messages:      make(map[string][]message.Message),
+		queued:        make(map[string][]string),
+		busy:          make(map[string]bool),
+		history:       make(map[string][]history.File),
+		diagnostics:   make(map[string]lsp.DiagnosticCounts),
+		skillContent:  make(map[string]string),
+		skillDisabled: make(map[string]bool),
+		mcpPromptText: make(map[string]string),
+		current:       "s1",
+		sessionSeq:    1,
+		decisions:     make(chan permission.PermissionNotification, 16),
+		answers:       make(chan []question.Answer, 16),
+		WorkDir:       "/tmp/project",
+		Resolve:       true,
 	}
 	return f
 }
@@ -271,6 +285,95 @@ func (f *Fake) TeamInterrupt(_ context.Context, sessionID, member string) error 
 }
 
 func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }
+
+// AddSkill adds a visible skill and the content ReadSkill returns for it.
+func (f *Fake) AddSkill(entry skills.CatalogEntry, content string) {
+	f.mu.Lock()
+	f.skillCatalog = append(f.skillCatalog, entry)
+	f.skillContent[entry.ID] = content
+	f.mu.Unlock()
+}
+
+func (f *Fake) ListSkills(context.Context) ([]skills.CatalogEntry, error) {
+	f.record("ListSkills")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]skills.CatalogEntry(nil), f.skillCatalog...), nil
+}
+
+func (f *Fake) ReadSkill(_ context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
+	f.record("ReadSkill:" + skillID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	content, ok := f.skillContent[skillID]
+	if !ok {
+		return nil, skills.SkillReadResult{}, fmt.Errorf("read skill %s: %w", skillID, skills.ErrSkillNotFound)
+	}
+	var result skills.SkillReadResult
+	for _, entry := range f.skillCatalog {
+		if entry.ID == skillID {
+			result = skills.SkillReadResult{Name: entry.Name, Description: entry.Description, Source: entry.Source}
+			break
+		}
+	}
+	return []byte(content), result, nil
+}
+
+func (f *Fake) ReloadSkills(context.Context) error {
+	f.record("ReloadSkills")
+	return nil
+}
+
+func (f *Fake) SkillsDisabled(context.Context) ([]string, error) {
+	f.record("SkillsDisabled")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for name, disabled := range f.skillDisabled {
+		if disabled {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func (f *Fake) SkillsEnabled(context.Context) ([]string, error) { return nil, nil }
+
+func (f *Fake) SkillSetDisabled(_ context.Context, name string, disabled bool) error {
+	f.record("SkillSetDisabled:" + name + ":" + strconv.FormatBool(disabled))
+	f.mu.Lock()
+	f.skillDisabled[name] = disabled
+	f.mu.Unlock()
+	return nil
+}
+
+// AddMCPPrompt adds a prompt to the catalog and the text GetMCPPrompt
+// returns for it.
+func (f *Fake) AddMCPPrompt(p commands.MCPPrompt, text string) {
+	f.mu.Lock()
+	f.mcpPrompts = append(f.mcpPrompts, p)
+	f.mcpPromptText[p.ClientID+":"+p.PromptID] = text
+	f.mu.Unlock()
+}
+
+func (f *Fake) ListMCPPrompts(context.Context) ([]commands.MCPPrompt, error) {
+	f.record("ListMCPPrompts")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]commands.MCPPrompt(nil), f.mcpPrompts...), nil
+}
+
+func (f *Fake) GetMCPPrompt(clientID, promptID string, _ map[string]string) (string, error) {
+	f.record("GetMCPPrompt:" + clientID + ":" + promptID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	text, ok := f.mcpPromptText[clientID+":"+promptID]
+	if !ok {
+		return "", fmt.Errorf("mcp prompt %s:%s not found", clientID, promptID)
+	}
+	return text, nil
+}
 
 func (f *Fake) PermissionMode() permission.PermissionMode {
 	f.mu.Lock()

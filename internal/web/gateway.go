@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -38,6 +40,10 @@ type Options struct {
 	// the workspace config's data directory; with no config there is no
 	// team to watch.
 	AgentTeamsDir string
+	// LoadCommands loads the custom commands the browser lists and runs.
+	// Nil uses commands.LoadCustomCommands with the workspace config,
+	// which lists none when there is no config.
+	LoadCommands func(*config.Config) ([]commands.CustomCommand, error)
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -73,6 +79,9 @@ type Gateway struct {
 	// ship without being covered by the cookie check. The login route is
 	// not here: it has to answer without a cookie.
 	apiRoutes []string
+	// loadCommandsFn is Options.LoadCommands; nil falls back to reading
+	// the workspace config.
+	loadCommandsFn func(*config.Config) ([]commands.CustomCommand, error)
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -121,6 +130,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		fileStats:  newFileStatCache(slots),
 		diffs:      slots,
 
+		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		inputMode:            normalizeInputMode(opts.InputMode),
