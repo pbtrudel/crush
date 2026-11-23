@@ -61,10 +61,24 @@ export interface SceneHandle {
   canvas: HTMLCanvasElement;
 }
 
+// toScreen turns a projected node into a tag anchor. A degenerate camera
+// (a zero-size canvas, a NaN pose) can project NaN, and NaN never equals
+// itself, so such a node is reported hidden at the origin: the frame then
+// compares equal to the next one and nothing republishes every frame.
+export function toScreen(id: string, ndc: { x: number; y: number; z: number }, eyeZ: number, width: number, height: number): AgentScreen {
+  const x = Math.round(((ndc.x + 1) / 2) * width);
+  const y = Math.round(((1 - ndc.y) / 2) * height);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(ndc.z) || !Number.isFinite(eyeZ)) {
+    return { id, x: 0, y: 0, visible: false };
+  }
+  const visible = eyeZ < 0 && Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1 && ndc.z >= -1 && ndc.z <= 1;
+  return { id, x, y, visible };
+}
+
 // sameScreens reports whether two projections are the same frame. The
 // anchors are already whole pixels, so a plain comparison is enough and it
 // costs no allocation per frame, unlike serialising them.
-function sameScreens(a: AgentScreen[], b: AgentScreen[]): boolean {
+export function sameScreens(a: AgentScreen[], b: AgentScreen[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const p = a[i];
@@ -307,17 +321,7 @@ function mountWith(
       // cannot: the perspective divide flips the sign of a point behind it.
       viewPoint.copy(projected).applyMatrix4(camera.matrixWorldInverse);
       projected.project(camera);
-      screens.push({
-        id,
-        x: Math.round(((projected.x + 1) / 2) * width),
-        y: Math.round(((1 - projected.y) / 2) * height),
-        visible:
-          viewPoint.z < 0 &&
-          Math.abs(projected.x) <= 1 &&
-          Math.abs(projected.y) <= 1 &&
-          projected.z >= -1 &&
-          projected.z <= 1,
-      });
+      screens.push(toScreen(id, projected, viewPoint.z, width, height));
     }
     if (sameScreens(screens, lastScreens)) return;
     lastScreens = screens;

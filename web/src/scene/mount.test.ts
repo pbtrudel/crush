@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { BOOT_MS, bootFrame } from './boot';
-import { mountScene, resetBootLatch, type SceneHandle, type SceneInput } from './mount';
+import { mountScene, resetBootLatch, sameScreens, toScreen, type SceneHandle, type SceneInput } from './mount';
 
 type Spy = ReturnType<typeof vi.fn>;
 
@@ -604,5 +604,24 @@ describe('mountScene', () => {
     mounted.at(-1)!.update(input({ booting: false }));
     runFrames(90);
     expect(core.setBoot.mock.calls.at(-1)![0].ignite).toBe(1);
+  });
+});
+
+describe('toScreen', () => {
+  it('reports a non-finite projection as hidden at the origin', () => {
+    expect(toScreen('a', { x: NaN, y: 0, z: 0 }, -1, 800, 600)).toEqual({ id: 'a', x: 0, y: 0, visible: false });
+    expect(toScreen('a', { x: 0, y: Infinity, z: 0 }, -1, 800, 600)).toEqual({ id: 'a', x: 0, y: 0, visible: false });
+  });
+
+  it('projects a point in front of the camera', () => {
+    expect(toScreen('a', { x: 0, y: 0, z: 0.5 }, -3, 800, 600)).toEqual({ id: 'a', x: 400, y: 300, visible: true });
+  });
+});
+
+describe('sameScreens', () => {
+  it('treats two hidden non-finite frames as the same frame', () => {
+    const f = [toScreen('a', { x: NaN, y: NaN, z: NaN }, NaN, 800, 600)];
+    const g = [toScreen('a', { x: NaN, y: NaN, z: NaN }, NaN, 800, 600)];
+    expect(sameScreens(f, g)).toBe(true);
   });
 });

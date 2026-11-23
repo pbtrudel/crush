@@ -165,6 +165,81 @@ describe('AgentTags', () => {
     inspector.remove();
   });
 
+  it('hides a tag when the inspector opens with no new projection', async () => {
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 60, 20);
+    publishAgentScreens([{ id: 'sub-1', x: 700, y: 200, visible: true }]);
+    expect(tag.dataset.visible).toBe('true');
+    // Motion off: the scene publishes nothing more. Opening the inspector is
+    // a selection change and must re-run the placement on its own.
+    const panel = dockInspector(box(600, 100, 300, 400));
+    await act(() => { render(<AgentTags agents={[agent]} selected="sub-1" />, root); });
+    expect(tag.dataset.visible).toBe('false');
+    panel.setAttribute('hidden', '');
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    expect(tag.dataset.visible).toBe('true');
+    panel.remove();
+  });
+
+  it('hides a tag whose box overlaps the inspector though its point does not', async () => {
+    const panel = dockInspector(box(600, 100, 300, 400));
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 60, 20);
+    // The point sits 10px left of the panel; the tag is 60px wide and
+    // centered on it, so its right half covers the panel edge.
+    publishAgentScreens([{ id: 'sub-1', x: 590, y: 300, visible: true }]);
+    expect(tag.dataset.visible).toBe('false');
+    publishAgentScreens([{ id: 'sub-1', x: 560, y: 300, visible: true }]);
+    expect(tag.dataset.visible).toBe('true');
+    panel.remove();
+  });
+
+  it('hides a tag whose box overlaps the agent list', async () => {
+    const list = document.createElement('ul');
+    list.className = 'agent-list';
+    document.body.append(list);
+    vi.spyOn(list, 'getBoundingClientRect').mockReturnValue(box(20, 600, 200, 120));
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 60, 20);
+    publishAgentScreens([{ id: 'sub-1', x: 100, y: 640, visible: true }]);
+    expect(tag.dataset.visible).toBe('false');
+    list.remove();
+  });
+
+  it('reapplies when the stage box changes', async () => {
+    stageRect.value = box(100, 100, 400, 300);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    publishAgentScreens([{ id: 'sub-1', x: 700, y: 200, visible: true }]);
+    expect(tag.dataset.visible).toBe('false');
+    await act(() => { stageRect.value = box(0, 0, 1200, 800); });
+    expect(tag.dataset.visible).toBe('true');
+  });
+
+  it('lifts a tag clear of a neighbour tag', async () => {
+    const other: Agent = { ...agent, sessionId: 'sub-2', name: 'Write the tests' };
+    stageRect.value = box(0, 0, 1200, 800);
+    await act(() => { render(<AgentTags agents={[agent, other]} selected={null} />, root); });
+    const a = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    const b = root.querySelector<HTMLElement>('[data-agent-node="sub-2"]')!;
+    sizeTag(a, 80, 20);
+    sizeTag(b, 80, 20);
+    publishAgentScreens([
+      { id: 'sub-1', x: 400, y: 400, visible: true },
+      { id: 'sub-2', x: 420, y: 404, visible: true },
+    ]);
+    // The first tag keeps the default offset (top 372); the second would sit
+    // at top 376, overlapping it, and moves to end 4px above the first.
+    expect(a.style.transform).toBe('translate(400px, 400px) translate(-50%, -140%)');
+    expect(b.style.transform).toBe('translate(420px, 368px) translate(-50%, -100%)');
+  });
+
   it('selects the agent on click', async () => {
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
