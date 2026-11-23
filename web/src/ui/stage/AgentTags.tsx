@@ -31,6 +31,10 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
     const inspectorBox = document.querySelector('.panel--inspector:not([hidden])')?.getBoundingClientRect() ?? null;
     const inspector = inspectorBox !== null && inspectorBox.width > 0 && inspectorBox.height > 0 ? inspectorBox : null;
     const shown = new Set<string>();
+    // Every layout read (the boxes above, then each tag's own size) happens
+    // before the first write. Interleaving them would force a synchronous
+    // layout for every tag.
+    const placements: Array<{ tag: HTMLElement; transform: string; visible: boolean }> = [];
     for (const s of screens) {
       const tag = el.querySelector<HTMLElement>(`[data-agent-node="${CSS.escape(s.id)}"]`);
       if (!tag) continue;
@@ -50,7 +54,6 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
           transform = `translate(${s.x}px, ${raised + h}px) translate(-50%, -100%)`;
         }
       }
-      tag.style.transform = transform;
       const inside =
         box === null ||
         box.width <= 0 ||
@@ -60,8 +63,12 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
         inspector !== null &&
         s.x >= inspector.left && s.x <= inspector.right &&
         s.y >= inspector.top && s.y <= inspector.bottom;
-      tag.dataset.visible = String(s.visible && inside && !overInspector);
+      placements.push({ tag, transform, visible: s.visible && inside && !overInspector });
       shown.add(s.id);
+    }
+    for (const p of placements) {
+      p.tag.style.transform = p.transform;
+      p.tag.dataset.visible = String(p.visible);
     }
     // A node stops projecting while it collapses into the core, and nothing
     // publishes it again. Its tag must not stay behind as a ghost.

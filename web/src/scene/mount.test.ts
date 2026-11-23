@@ -490,6 +490,22 @@ describe('mountScene', () => {
     expect(parts.agents.at(-1)!.flash).toHaveBeenCalledWith('a1', expect.anything());
   });
 
+  // A moved anchor republishes; the comparison is numeric, so it must see a
+  // sub-pixel change in the projection as a move and nothing less.
+  it('publishes again when a node moves by a pixel', () => {
+    const screens = vi.fn();
+    const scene = start({ motion: 'off' }, { onAgentScreens: screens });
+    projection.at = { x: 1, y: 1.6, z: 0 };
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }] }));
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(1);
+    projection.at = { x: 1.02, y: 1.6, z: 0 };
+    scene.requestFrame();
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(2);
+    expect(screens.mock.calls[1][0][0].x).toBeGreaterThan(screens.mock.calls[0][0][0].x);
+  });
+
   it('marks a node off the screen, behind the camera or past the far plane as hidden', () => {
     const screens = vi.fn();
     const scene = start({ motion: 'off' }, { onAgentScreens: screens });

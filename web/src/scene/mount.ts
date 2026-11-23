@@ -61,6 +61,19 @@ export interface SceneHandle {
   canvas: HTMLCanvasElement;
 }
 
+// sameScreens reports whether two projections are the same frame. The
+// anchors are already whole pixels, so a plain comparison is enough and it
+// costs no allocation per frame, unlike serialising them.
+function sameScreens(a: AgentScreen[], b: AgentScreen[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const p = a[i];
+    const q = b[i];
+    if (p.id !== q.id || p.x !== q.x || p.y !== q.y || p.visible !== q.visible) return false;
+  }
+  return true;
+}
+
 // The camera glides toward a requested pose at this rate and snaps once the
 // remaining gap stops showing, so an idle scene stops asking for 60 fps.
 const POSE_RATE = 8;
@@ -275,7 +288,7 @@ function mountWith(
     return frameInterval({ hidden: document.hidden, motion: input.motion, eventActive });
   };
 
-  let lastScreenKey = '';
+  let lastScreens: AgentScreen[] = [];
   const projected = new THREE.Vector3();
   const viewPoint = new THREE.Vector3();
   // publishScreens projects every node after a render and reports only a
@@ -306,9 +319,8 @@ function mountWith(
           projected.z <= 1,
       });
     }
-    const key = JSON.stringify(screens);
-    if (key === lastScreenKey) return;
-    lastScreenKey = key;
+    if (sameScreens(screens, lastScreens)) return;
+    lastScreens = screens;
     hooks.onAgentScreens(screens);
   };
 
