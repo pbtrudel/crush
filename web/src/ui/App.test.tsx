@@ -5,8 +5,8 @@ import fixtures from '../state/__fixtures__/events.json';
 import type { Frame } from '../api/types';
 import { drawerOpen, panelTab } from '../state/drawer';
 import { overlayWidth } from '../state/overlay';
-import { initialState, reduce } from '../state/reducer';
-import { state } from '../state/store';
+import { adoptSession, initialState, reduce } from '../state/reducer';
+import { dispatch, state } from '../state/store';
 import { App } from './App';
 
 vi.mock('../scene/mount', () => ({ mountScene: () => { throw new Error('no webgl'); } }));
@@ -78,6 +78,42 @@ describe('App layout', () => {
       expect(tabs.hasAttribute('inert')).toBe(false);
     } finally {
       await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
+});
+
+// Below 1024px the agent tab is the inspector's slot. A session switch
+// clears the inspector, so the slot must fall back to the log instead of
+// going blank with the agent tab still pressed.
+describe('the narrow panel slot', () => {
+  it('shows the log when the agent tab has no inspector to show', async () => {
+    drawerOpen.value = false;
+    panelTab.value = 'agent';
+    state.value = {
+      ...reduce(initialState(), fx.snapshot),
+      conn: 'live',
+      inspected: { sessionId: 'sub-1', session: null, messages: [], loading: false },
+    };
+    const root = document.createElement('div');
+    const tabs = () => [...root.querySelectorAll<HTMLButtonElement>('.panel-tabs button')];
+    const pressed = (label: string) => tabs().find((b) => b.textContent === label)!.getAttribute('aria-pressed');
+    try {
+      await act(() => { render(<App />, root); });
+      const grid = root.querySelector<HTMLElement>('.holodeck__grid')!;
+      expect(grid.getAttribute('data-panel-tab')).toBe('agent');
+      expect(pressed('Agent')).toBe('true');
+
+      // The terminal switches session, which drops the inspection.
+      await act(() => { dispatch((s) => adoptSession(s, 's2')); });
+      expect(state.value.inspected).toBeNull();
+      expect(grid.getAttribute('data-panel-tab')).toBe('log');
+      expect(pressed('Log')).toBe('true');
+      expect(pressed('Agent')).toBe('false');
+    } finally {
+      await act(() => { render(null, root); });
+      drawerOpen.value = false;
+      panelTab.value = 'log';
       state.value = initialState();
     }
   });

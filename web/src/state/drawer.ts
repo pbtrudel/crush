@@ -17,6 +17,13 @@ export function setDiffMode(m: DiffMode): void {
 export type PanelTab = 'log' | 'agent' | 'files';
 export const panelTab = signal<PanelTab>('log');
 
+// effectivePanelTab is the tab the narrow panel slot actually shows. Below
+// 1024px the agent tab is the inspector's slot, so with no inspector to show
+// the slot falls back to the log instead of going blank.
+export function effectivePanelTab(tab: PanelTab, inspected: boolean): PanelTab {
+  return tab === 'agent' && !inspected ? 'log' : tab;
+}
+
 export function toggleDrawer(): void {
   if (drawerOpen.value) {
     closeDrawer();

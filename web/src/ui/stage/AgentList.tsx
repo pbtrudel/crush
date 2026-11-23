@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { agentsOf, statusLabel, type Agent } from '../../state/agents';
 import { needsAttention } from '../../state/reducer';
 import { actions, state } from '../../state/store';
+import { closeInspector } from '../inspector/escape';
 
 const GLYPH: Record<Agent['kind'], string> = { main: '⬡', teammate: '⬢', subagent: '◈' };
 
@@ -74,10 +75,11 @@ export function AgentList() {
         break;
       case 'Escape':
         // The list owns the pick, so it is the second way out of the
-        // inspector beside the panel's own Escape.
+        // inspector beside the panel's own Escape. It shares that way out,
+        // so the narrow panel slot returns to the log here too.
         if (selected !== null) {
           e.preventDefault();
-          void actions.inspect(null);
+          closeInspector();
         }
         break;
     }

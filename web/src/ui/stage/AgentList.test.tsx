@@ -4,6 +4,7 @@ import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
 import type { Frame } from '../../api/types';
 import { initialState, reduce } from '../../state/reducer';
+import { panelTab } from '../../state/drawer';
 import { actions, state } from '../../state/store';
 import { AgentList } from './AgentList';
 
@@ -151,12 +152,33 @@ describe('AgentList', () => {
     expect(plain.defaultPrevented).toBe(true);
   });
 
-  it('closes the inspector on Escape', async () => {
+  it('closes the inspector on Escape and gives the narrow slot back to the log', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === '(max-width: 1023px)',
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    panelTab.value = 'agent';
     state.value = { ...state.value, inspected: { sessionId: 'sub-1', session: null, messages: [], loading: false } };
-    await act(() => { render(<AgentList />, root); });
-    await act(() => { key(options()[1], 'Escape'); });
-    expect(inspect).toHaveBeenCalledWith(null);
+    try {
+      await act(() => { render(<AgentList />, root); });
+      await act(() => { key(options()[1], 'Escape'); });
+      expect(inspect).toHaveBeenCalledWith(null);
+      // Below 1024px the agent tab is the inspector's slot; leaving the
+      // inspector on the agent tab would leave that slot blank.
+      expect(panelTab.value).toBe('log');
+      expect(document.activeElement).toBe(options()[1]);
+    } finally {
+      window.matchMedia = original;
+      panelTab.value = 'log';
+    }
   });
 
   it('keeps one tab stop when the focused agent leaves the roster', async () => {

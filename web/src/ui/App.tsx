@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
 import { needsAttention } from '../state/reducer';
-import { drawerOpen, panelTab } from '../state/drawer';
+import { drawerOpen, effectivePanelTab, panelTab } from '../state/drawer';
 import { handOffLogFocus, logInert, watchFocusHandoff, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
@@ -87,6 +87,9 @@ export function App() {
 
   if (s.conn === 'unauthorized') return <Unauthorized />;
   const modal = attention && s.conn === 'live';
+  // Below 1024px the agent tab is the inspector's slot; with no inspector
+  // the log shows there, whatever tab was last picked.
+  const tab = effectivePanelTab(panelTab.value, s.inspected !== null);
   return (
     <div
       class="holodeck"
@@ -100,7 +103,7 @@ export function App() {
       <Hud />
       <ConnectionBanner />
       <PanelTabs inert={modal} />
-      <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={panelTab.value}>
+      <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={tab}>
         <div class="cine-view" ref={view}>
           <div class="cine-camera" ref={camera}>
             <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log} inert={modal || logInert.value}>
