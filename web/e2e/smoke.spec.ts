@@ -466,7 +466,8 @@ test('the diff view gives the editor room at 1440x860', async ({ page, gateway }
 // The drawer handle must stay the topmost thing at its own centre without
 // stealing the inspector's close button or the first agent option, and the
 // closed drawer must not add a sideways scroll. The layout changes with the
-// drawer and the inspector, so every combination is checked at both widths.
+// drawer, the inspector and the width, so every case in CASES is checked with
+// the drawer both closed and open.
 async function reachability(page: Page) {
   return page.evaluate(() => {
     const hitSelf = (el: Element) => {
@@ -488,6 +489,7 @@ async function reachability(page: Page) {
     const close = openInspector ? inspector.querySelector('.inspector__close') : null;
     const title = openInspector ? inspector.querySelector('#inspector-title') : null;
     const head = openInspector ? inspector.querySelector('.inspector__head') : null;
+    const titleBox = title === null ? null : title.getBoundingClientRect();
     // An inert drawer is the closed one: it waits off the page edge.
     const drawer = document.querySelector('#file-drawer');
     const openDrawer = drawer !== null && !drawer.hasAttribute('inert');
@@ -498,6 +500,7 @@ async function reachability(page: Page) {
       option: option !== null && hitSelf(option),
       close: close === null ? null : hitSelf(close),
       title: title === null ? null : hitSelf(title),
+      titleHeight: titleBox === null ? null : titleBox.height,
       drawerClose: drawerClose === null ? null : hitSelf(drawerClose),
       firstFile: firstFile === null ? null : hitSelf(firstFile),
       overlapsOption: handle !== null && option !== null && overlaps(handle, option),
@@ -524,7 +527,13 @@ async function setInspector(page: Page, open: boolean) {
   const panel = page.locator('.panel--inspector');
   if (await panel.isVisible() === open) return;
   if (open) {
-    await page.evaluate(() => document.querySelector<HTMLElement>('.agent-list [role="option"]')?.click());
+    // The fake's subagent carries the long name, so an open inspector always
+    // shows a wrapped head: that is the case the head has to survive.
+    await page.evaluate(() => {
+      const options = [...document.querySelectorAll<HTMLElement>('.agent-list [role="option"]')];
+      const long = options.find((o) => (o.textContent ?? '').includes('Map the parser entry points'));
+      (long ?? options[0])?.click();
+    });
   } else {
     await page.evaluate(() => {
       document.querySelector<HTMLElement>('.panel--inspector .inspector__close')?.click();
@@ -533,40 +542,50 @@ async function setInspector(page: Page, open: boolean) {
   await expect.poll(() => panel.isVisible()).toBe(open);
 }
 
-test('the drawer handle and inspector stay reachable at 1440 and 1100', async ({ page, gateway }) => {
+// Every state the layout switches on: the everyday widths with and without
+// the inspector, then either side of the two agents.css bands with it open,
+// where the list and the head compete for the stage.
+const CASES: Array<{ width: number; height: number; inspector: boolean }> = [
+  { width: 1440, height: 860, inspector: false },
+  { width: 1440, height: 860, inspector: true },
+  { width: 1100, height: 800, inspector: false },
+  { width: 1100, height: 800, inspector: true },
+  ...[1279, 1280, 1311, 1312, 1631, 1632].map((width) => ({ width, height: 860, inspector: true })),
+];
+
+test('the drawer handle and inspector stay reachable at every layout', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.locator('.boot')).toBeHidden();
   await expect(page.locator('.drawer-handle')).toBeVisible();
   await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
 
-  for (const viewport of [{ width: 1440, height: 860 }, { width: 1100, height: 800 }]) {
-    await page.setViewportSize(viewport);
-    for (const inspector of [false, true]) {
-      await setDrawer(page, false);
-      await setInspector(page, inspector);
-      for (const drawer of [false, true]) {
-        await setDrawer(page, drawer);
-        await expect.poll(async () => {
-          const g = await reachability(page);
-          const problems: string[] = [];
-          if (!g.handle) problems.push('the handle does not take its centre');
-          if (!g.option) problems.push('the first agent option does not take its centre');
-          if (g.overlapsOption) problems.push('the handle overlaps the first agent option');
-          if (inspector && g.close !== true) problems.push('the close button does not take its centre');
-          if (inspector && g.title !== true) problems.push('the inspector title does not take its centre');
-          if (inspector && g.listOverlapsHead) problems.push('the agent list overlaps the inspector head');
-          if (g.overlapsClose) problems.push('the handle overlaps the close button');
-          if (g.overlapsTitle) problems.push('the handle overlaps the inspector title');
-          if (!inspector && g.close !== null) problems.push('the inspector is not the hidden one');
-          if (drawer && g.drawerClose !== true) problems.push('the drawer close button does not take its centre');
-          if (drawer && g.firstFile !== true) problems.push('the first file row does not take its centre');
-          if (!drawer && g.firstFile !== null) problems.push('the closed drawer still answers');
-          if (g.overflow > 0) problems.push(`the page scrolls sideways by ${g.overflow}px`);
-          return problems.length === 0 ? 'ok' : problems.join('; ');
-        }, {
-          message: `${viewport.width}x${viewport.height} drawer ${drawer ? 'open' : 'closed'}, inspector ${inspector ? 'open' : 'closed'}`,
-        }).toBe('ok');
-      }
+  for (const { width, height, inspector } of CASES) {
+    await page.setViewportSize({ width, height });
+    await setDrawer(page, false);
+    await setInspector(page, inspector);
+    for (const drawer of [false, true]) {
+      await setDrawer(page, drawer);
+      await expect.poll(async () => {
+        const g = await reachability(page);
+        const problems: string[] = [];
+        if (!g.handle) problems.push('the handle does not take its centre');
+        if (!g.option) problems.push('the first agent option does not take its centre');
+        if (g.overlapsOption) problems.push('the handle overlaps the first agent option');
+        if (inspector && g.close !== true) problems.push('the close button does not take its centre');
+        if (inspector && g.title !== true) problems.push('the inspector title does not take its centre');
+        if (inspector && g.titleHeight !== null && g.titleHeight < 40) problems.push(`the title is ${Math.round(g.titleHeight)}px tall, not a wrapped one`);
+        if (inspector && g.listOverlapsHead) problems.push('the agent list overlaps the inspector head');
+        if (g.overlapsClose) problems.push('the handle overlaps the close button');
+        if (g.overlapsTitle) problems.push('the handle overlaps the inspector title');
+        if (!inspector && g.close !== null) problems.push('the inspector is not the hidden one');
+        if (drawer && g.drawerClose !== true) problems.push('the drawer close button does not take its centre');
+        if (drawer && g.firstFile !== true) problems.push('the first file row does not take its centre');
+        if (!drawer && g.firstFile !== null) problems.push('the closed drawer still answers');
+        if (g.overflow > 0) problems.push(`the page scrolls sideways by ${g.overflow}px`);
+        return problems.length === 0 ? 'ok' : problems.join('; ');
+      }, {
+        message: `${width}x${height} drawer ${drawer ? 'open' : 'closed'}, inspector ${inspector ? 'open' : 'closed'}`,
+      }).toBe('ok');
     }
   }
 });
@@ -652,6 +671,58 @@ test('a long inspector title stays clear of the drawer handle', async ({ page, g
   }
 });
 
+// In the row form the list can outgrow the stage. The arrows must bring the
+// option they move to into view, since the row has no scrollbar to drag.
+test('the agent list row keeps the focused option in view', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await setInspector(page, true);
+
+  const view = () => page.evaluate(() => {
+    const list = document.querySelector('.agent-list')!;
+    const options = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+    const box = list.getBoundingClientRect();
+    const focused = document.activeElement instanceof HTMLElement ? options.indexOf(document.activeElement) : -1;
+    const target = options[focused < 0 ? options.length - 1 : focused].getBoundingClientRect();
+    return {
+      row: getComputedStyle(list).display,
+      overflows: list.scrollWidth > list.clientWidth,
+      options: options.length,
+      focused,
+      // With nothing focused this measures the last option, which starts
+      // past the row's right edge.
+      visible: target.left >= box.left - 1 && target.right <= box.right + 1,
+    };
+  });
+
+  const start = await view();
+  expect(start.row, 'the list is a row at 1024 with the inspector open').toBe('flex');
+  expect(start.overflows, 'the row outgrows the stage').toBe(true);
+  expect(start.visible, 'the last option starts out of view').toBe(false);
+
+  // The tab stop is the first option; End walks to the last in one press.
+  await page.locator('.agent-list [role="option"][tabindex="0"]').first().focus();
+  await page.keyboard.press('End');
+  await expect.poll(async () => (await view()).focused, {
+    message: 'End moves the focus to the last option',
+  }).toBe(start.options - 1);
+  expect((await view()).visible, 'the focused last option is inside the row').toBe(true);
+
+  // The arrows step back without leaving the option behind an edge.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(async () => (await view()).focused, {
+    message: 'ArrowLeft steps off the last option',
+  }).toBe(start.options - 2);
+  expect((await view()).visible, 'the option the arrow moved to is inside the row').toBe(true);
+  await page.keyboard.press('Home');
+  await expect.poll(async () => (await view()).focused, {
+    message: 'Home moves the focus back to the first option',
+  }).toBe(0);
+  expect((await view()).visible, 'the focused first option is inside the row').toBe(true);
+});
+
 // Between 1024px and 1279px the open drawer sits over the log column, so the
 // log it covers leaves the tab order. The states either side of the band keep
 // it reachable.
@@ -700,6 +771,57 @@ test('the covered log leaves the tab order over the overlay drawer', async ({ pa
   await setDrawer(page, true);
   await page.setViewportSize({ width: 900, height: 800 });
   await expect(log).not.toHaveAttribute('inert', '');
+});
+
+// The log leaves the tab order over the overlay drawer, so the focus it held
+// needs somewhere better than an inert control: the drawer takes it and gives
+// it back to the handle when it closes over it.
+test('the overlay drawer takes the focus off the covered log', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  const log = page.locator('.panel--log');
+  // A stand-in control keeps this test independent of how full the worker's
+  // shared session is: only the focus inside the log matters here.
+  await page.evaluate(() => {
+    const probe = document.createElement('button');
+    probe.id = 'focus-probe';
+    probe.textContent = 'probe';
+    document.querySelector('.panel--log')?.append(probe);
+  });
+  const focusLog = () => page.evaluate(() => {
+    const el = document.getElementById('focus-probe');
+    el?.focus();
+    return document.activeElement === el;
+  });
+  const focused = () => page.evaluate(() => {
+    const el = document.activeElement;
+    if (el === null || el === document.body) return 'body';
+    if (el.closest('#file-drawer') !== null) return 'drawer';
+    if (el.closest('.panel--log') !== null) return 'log';
+    return el.classList.contains('drawer-handle') ? 'handle' : el.tagName.toLowerCase();
+  });
+
+  // A window that narrows into the band takes the log out of the tab order
+  // under the focus that was reading it.
+  await page.setViewportSize({ width: 1440, height: 860 });
+  await setDrawer(page, true);
+  await expect(log).not.toHaveAttribute('inert', '');
+  expect(await focusLog(), 'the log control takes focus in its own layout').toBe(true);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await expect(log).toHaveAttribute('inert', '');
+  await expect.poll(focused, { message: 'the drawer takes the focus off the log it covers' }).toBe('drawer');
+
+  // The keyboard route in: closing the drawer gives the handle the focus
+  // back, and opening it again takes the focus into the drawer, not the body.
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.drawer-handle')).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(focused, { message: 'the handle takes the focus back' }).toBe('handle');
+  expect(await focusLog(), 'the log control takes focus once the drawer is closed').toBe(true);
+  await page.locator('.drawer-handle').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.drawer-handle')).toHaveAttribute('aria-expanded', 'true');
+  await expect.poll(focused, { message: 'the keyboard open lands in the drawer, not on the body' }).toBe('drawer');
+  await page.evaluate(() => { document.getElementById('focus-probe')?.remove(); });
 });
 
 // The closed drawer waits off the page edge. In the overlay layout it must

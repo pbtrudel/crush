@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
 import { needsAttention } from '../state/reducer';
 import { drawerOpen, panelTab } from '../state/drawer';
-import { logInert, watchOverlayWidth } from '../state/overlay';
+import { handOffLogFocus, logInert, watchFocusHandoff, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
 import { BootSequence } from './BootSequence';
@@ -29,10 +29,20 @@ export function App() {
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
   const inspector = useRef<HTMLElement>(null);
+  const logCovered = useRef(false);
 
   // The log goes inert while the overlay drawer covers it: that is a width
   // plus drawer state, not something a stylesheet can express.
   useEffect(() => watchOverlayWidth(), []);
+
+  // A log that leaves the tab order under the focus would keep it on an
+  // inert control, so the drawer takes the focus and hands it back to the
+  // handle when it closes over it.
+  useEffect(() => {
+    handOffLogFocus(logInert.value, logCovered.current);
+    logCovered.current = logInert.value;
+  }, [logInert.value]);
+  useEffect(() => watchFocusHandoff(), []);
 
   useEffect(() => {
     document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);

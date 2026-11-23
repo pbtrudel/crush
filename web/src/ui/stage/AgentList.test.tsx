@@ -53,6 +53,26 @@ describe('AgentList', () => {
     expect(document.activeElement).toBe(options()[2]);
   });
 
+  it('brings the option it moves to into view', async () => {
+    // jsdom has no scrollIntoView, so the list calls it optionally and the
+    // test supplies the recorder.
+    const proto = Element.prototype as unknown as { scrollIntoView?: (arg?: unknown) => void };
+    const before = proto.scrollIntoView;
+    const scroll = vi.fn();
+    proto.scrollIntoView = scroll;
+    try {
+      await act(() => { render(<AgentList />, root); });
+      options()[0].focus();
+      await act(() => { key(options()[0], 'ArrowDown'); });
+      expect(scroll).toHaveBeenLastCalledWith({ block: 'nearest', inline: 'nearest' });
+      expect(scroll.mock.instances.at(-1), 'the option the arrow moved to').toBe(options()[1]);
+      await act(() => { key(options()[1], 'End'); });
+      expect(scroll.mock.instances.at(-1)).toBe(options()[2]);
+    } finally {
+      proto.scrollIntoView = before;
+    }
+  });
+
   it('selects with Enter, Space and a click', async () => {
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<AgentList />, root); });

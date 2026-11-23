@@ -69,6 +69,7 @@
 .holodeck__grid {
   position: relative;
   display: grid;
+  /* The 34rem log maxima set agents.css's 1311px breakpoint. */
   grid-template-columns: minmax(22rem, 34rem) 1fr;
   grid-template-areas: 'log stage';
   grid-row: 3;
@@ -79,6 +80,8 @@
    at 1440px for the agent list, the tags and the task board; closing it
    removes the column and the panel slides off the right edge (drawer.css). */
 .holodeck__grid[data-drawer='open'] {
+  /* The 24rem log and 28rem drawer maxima set agents.css's 1631px
+     breakpoint; change either and the bands there need re-deriving. */
   grid-template-columns: minmax(20rem, 24rem) minmax(14rem, 1fr) minmax(20rem, 28rem);
   grid-template-areas: 'log stage drawer';
 }
@@ -88,6 +91,7 @@
    over the log column and the stage keeps its closed-layout width. */
 @media (min-width: 1024px) and (max-width: 1279px) {
   .holodeck__grid[data-drawer='open'] {
+    /* The closed pair, so agents.css needs no third band for the overlay. */
     grid-template-columns: minmax(22rem, 34rem) 1fr;
     grid-template-areas: 'log stage';
   }

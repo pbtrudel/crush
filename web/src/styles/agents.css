@@ -31,23 +31,29 @@
    that, the list becomes one row at the stage's top, leaves the handle its
    corner, and the panel starts under it. The row is one option tall, so the
    panel's offset is the stage's own inset twice plus 2.25rem. A row that
-   outgrows the stage scrolls without a bar, which keeps that height fixed. */
+   outgrows the stage scrolls without a bar, which keeps that height fixed.
+   Both widths derive from the column maxima in shell.css (.holodeck__grid,
+   with and without data-drawer='open'); change either and re-derive these. */
 @media (min-width: 1024px) and (max-width: 1311px) {
+  /* shell.css: minmax(22rem, 34rem) 1fr, drawer closed. */
   .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list {
     display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   }
-  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; }
+  /* A row option keeps the list's 14rem cap: an option wider than the stage
+     could never be scrolled into view. */
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
   .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector {
     margin-block-start: calc(2 * var(--space-4) + 2.25rem);
   }
 }
 @media (min-width: 1312px) and (max-width: 1631px) {
+  /* shell.css: 24rem log, 1fr stage, 28rem drawer, drawer open. */
   .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list {
     display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   }
-  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
   .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector {
     margin-block-start: calc(2 * var(--space-4) + 2.25rem);
   }

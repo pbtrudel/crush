@@ -143,4 +143,35 @@ describe('the covered log', () => {
       state.value = initialState();
     }
   });
+
+  it('hands the focus to the drawer that covers it, and back to the handle', async () => {
+    drawerOpen.value = false;
+    overlayWidth.value = false;
+    state.value = { ...initialState(), conn: 'live' };
+    const root = document.createElement('div');
+    // Focus needs a connected tree.
+    document.body.append(root);
+    try {
+      await act(() => { render(<App />, root); });
+      const log = root.querySelector<HTMLElement>('.panel--log')!;
+      // The transcript may be empty at this point, so focus a stand-in: the
+      // handoff only cares about where the focus is.
+      const probe = document.createElement('button');
+      log.append(probe);
+      probe.focus();
+      expect(document.activeElement).toBe(probe);
+      const close = root.querySelector<HTMLElement>('#file-drawer .drawer__head button')!;
+      const handle = root.querySelector<HTMLElement>('.drawer-handle')!;
+      await act(() => { drawerOpen.value = true; overlayWidth.value = true; });
+      expect(document.activeElement, 'the drawer takes the focus off the inert log').toBe(close);
+      await act(() => { drawerOpen.value = false; });
+      expect(document.activeElement, 'the handle gets the focus back').toBe(handle);
+    } finally {
+      await act(() => { render(null, root); });
+      root.remove();
+      drawerOpen.value = false;
+      overlayWidth.value = false;
+      state.value = initialState();
+    }
+  });
 });

@@ -28,7 +28,12 @@ export function AgentList() {
   const move = (to: number) => {
     const next = agents[(to + agents.length) % agents.length];
     setActiveId(next.sessionId);
-    items.current.get(next.sessionId)?.focus();
+    const el = items.current.get(next.sessionId);
+    el?.focus();
+    // The row form can be wider than the stage, and focusing an option only
+    // scrolls when none of it shows, so bring the whole option into view.
+    // jsdom has no scrollIntoView, hence the optional call.
+    el?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   };
   const choose = (a: Agent) => {
     setActiveId(a.sessionId);
