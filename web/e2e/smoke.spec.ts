@@ -674,27 +674,57 @@ test('a long inspector title stays clear of the drawer handle', async ({ page, g
 
 // The inspector stacks its head, facts and actions above the transcript, so
 // a crowded panel used to leave the log a 44px sliver. Its chrome now takes
-// 270px of the panel: the transcript keeps 207px at 1440x860 (a 479px
-// panel), 52px at 1100x800 (324px) and 20px at 1024x768 (292px). Only the
-// two wider rows are pinned; the short one has 20px to give and no more.
+// 270px, and where that is more than the stage's row leaves it (the bands
+// from 1024px where the agents list sits over the stage, and from 1312px
+// with the drawer open) the panel scrolls as a whole while the transcript
+// keeps a floor of its own. The transcript is 207px at 1440x860 (a 479px
+// panel), and 128px at 1100x800 (324px) and 1024x768 (292px), where the
+// panel scrolls to reach the rest.
 const TRANSCRIPT_FLOORS = [
   { width: 1440, height: 860, floor: 160 },
-  { width: 1100, height: 800, floor: 40 },
-  { width: 1024, height: 768, floor: 0 },
+  { width: 1100, height: 800, floor: 120 },
+  { width: 1024, height: 768, floor: 120 },
 ];
 
-test('the inspector transcript keeps a readable box', async ({ page, gateway }) => {
-  await page.goto(gateway.launch);
-  await expect(page.locator('.boot')).toBeHidden();
-  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
-  // alice is the teammate, so the panel also carries interrupt and the
-  // message form: the crowded case.
+// alice is the teammate, so her panel carries interrupt and the message
+// form too: the crowded case.
+async function inspectTeammate(page: Page) {
   await page.evaluate(() => {
     const options = [...document.querySelectorAll<HTMLElement>('.agent-list [role="option"]')];
     options.find((o) => (o.textContent ?? '').includes('alice'))?.click();
   });
   await expect(page.locator('.panel--inspector')).toBeVisible();
   await expect(page.locator('.panel--inspector [role="log"]')).toBeAttached();
+}
+
+// panelView reports the panel's scroll box and whether each control sits
+// inside the part of it that shows.
+const panelView = (page: Page) => page.evaluate(() => {
+  const panel = document.querySelector<HTMLElement>('.panel--inspector')!;
+  const p = panel.getBoundingClientRect();
+  const inside = (selector: string) => {
+    const r = panel.querySelector(selector)?.getBoundingClientRect();
+    return r !== undefined && r.top >= p.top - 1 && r.bottom <= p.bottom + 1;
+  };
+  return {
+    height: Math.round(panel.clientHeight),
+    content: Math.round(panel.scrollHeight),
+    scrolls: panel.scrollHeight > panel.clientHeight + 1,
+    overflow: getComputedStyle(panel).overflowY,
+    top: Math.round(panel.scrollTop),
+    close: inside('.inspector__close'),
+    interrupt: inside('[data-action="interrupt"]'),
+    message: inside('#inspector-message'),
+    send: inside('[data-action="message"]'),
+    log: inside('[role="log"]'),
+  };
+});
+
+test('the inspector transcript keeps a readable box', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  await inspectTeammate(page);
 
   for (const { width, height, floor } of TRANSCRIPT_FLOORS) {
     await page.setViewportSize({ width, height });
@@ -706,13 +736,22 @@ test('the inspector transcript keeps a readable box', async ({ page, gateway }) 
           const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
           return hit !== null && (hit === el || el.contains(hit)) ? 'ok' : 'covered';
         };
-        const panel = document.querySelector('.panel--inspector');
+        const panel = document.querySelector<HTMLElement>('.panel--inspector');
         const log = panel?.querySelector('[role="log"]');
         if (panel === null || log === undefined || log === null) return ['no transcript'];
+        // The controls sit above the transcript, so the rest state is the
+        // top of the panel; the reachability test reads it there.
+        panel.scrollTop = 0;
         const p = panel.getBoundingClientRect();
         const l = log.getBoundingClientRect();
         const found: string[] = [];
-        if (l.bottom > p.bottom + 1) found.push(`the transcript ends at ${Math.round(l.bottom)}, past the panel's ${Math.round(p.bottom)}`);
+        const scrolls = panel.scrollHeight > panel.clientHeight + 1;
+        if (scrolls && getComputedStyle(panel).overflowY !== 'auto') {
+          found.push('the panel cuts its content but does not scroll');
+        }
+        if (!scrolls && l.bottom > p.bottom + 1) {
+          found.push(`the transcript ends at ${Math.round(l.bottom)}, past the panel's ${Math.round(p.bottom)}`);
+        }
         const send = panel.querySelector('[data-action="message"]');
         const interrupt = panel.querySelector('[data-action="interrupt"]');
         for (const [name, el] of [['Send', send], ['Interrupt', interrupt]] as const) {
@@ -728,6 +767,100 @@ test('the inspector transcript keeps a readable box', async ({ page, gateway }) 
     const client = await page.evaluate(() => document.querySelector<HTMLElement>('.panel--inspector .log')!.clientHeight);
     expect(client, `the transcript is ${client}px tall at ${width}x${height}`).toBeGreaterThanOrEqual(floor);
   }
+});
+
+// The row leaves the panel less than its chrome and a transcript it can read
+// need, so the panel scrolls. The controls above the transcript must still
+// be reachable: focus scrolls them into the panel's visible box.
+test('the inspector panel scrolls to its controls at 1024x768', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await inspectTeammate(page);
+
+  const start = await panelView(page);
+  expect(start.scrolls, `the panel keeps ${start.content}px of content in ${start.height}px`).toBe(true);
+  expect(start.overflow, 'the panel scrolls rather than cutting its content').toBe('auto');
+  // At the top the controls show and the transcript runs past the edge.
+  expect(start.interrupt && start.message && start.send, 'the controls start in view').toBe(true);
+  expect(start.log, 'the whole transcript starts past the edge').toBe(false);
+
+  // A draft grows the box to its cap, which pushes the box and Send past
+  // the bottom edge: focusing them must scroll them into view. The draft is
+  // typed without taking focus, so the panel stays where a reader left it.
+  await page.locator('#inspector-message').evaluate((el) => {
+    const box = el as HTMLTextAreaElement;
+    box.value = Array.from({ length: 10 }, (_, i) => `draft line ${i + 1}`).join('\n');
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect.poll(() => page.locator('#inspector-message').evaluate((el) => Math.round((el as HTMLElement).offsetHeight)), {
+    message: 'the box grows with its text',
+  }).toBeGreaterThan(100);
+  const drafted = await panelView(page);
+  expect(drafted.top, 'the panel stays at the top').toBe(0);
+  expect(drafted.message, 'the box hangs past the bottom edge').toBe(false);
+  expect(drafted.interrupt, 'interrupt still shows').toBe(true);
+
+  const focused = () => page.evaluate(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement ? (el.getAttribute('data-action') || el.id || el.className) : null;
+  });
+
+  await page.locator('#inspector-message').focus();
+  await expect.poll(async () => (await panelView(page)).message, {
+    message: 'focusing the message box scrolls it into the panel',
+  }).toBe(true);
+  expect(await focused()).toBe('inspector-message');
+
+  // Tab reaches Send, which is scrolled in with it.
+  await page.keyboard.press('Tab');
+  await expect.poll(focused, { message: 'Tab moves from the box to Send' }).toBe('message');
+  await expect.poll(async () => (await panelView(page)).send, { message: 'Send is in view' }).toBe(true);
+
+  // At the other end, the head is cut off: focusing the close button, the
+  // first stop in the panel, scrolls it back into view.
+  await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.panel--inspector')!;
+    panel.scrollTop = panel.scrollHeight;
+  });
+  await expect.poll(async () => (await panelView(page)).close, { message: 'the head is cut at the bottom' }).toBe(false);
+  await page.locator('.panel--inspector .inspector__close').focus();
+  await expect.poll(async () => (await panelView(page)).close, { message: 'the close button scrolls into view' }).toBe(true);
+  expect(await focused()).toBe('btn btn--ghost inspector__close');
+});
+
+// A long draft grows the box to its cap. Before the panel scrolled, the
+// growth pushed the transcript out of the panel entirely.
+test('a long draft at 1100x800 scrolls instead of hiding the transcript', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await expect(page.locator('.agent-list [role="option"]').first()).toBeVisible();
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await inspectTeammate(page);
+
+  const before = await panelView(page);
+  const box = page.locator('#inspector-message');
+  await box.fill(Array.from({ length: 10 }, (_, i) => `draft line ${i + 1}`).join('\n'));
+  await expect.poll(() => box.evaluate((el) => Math.round((el as HTMLElement).offsetHeight)), {
+    message: 'the box grows with its text',
+  }).toBeGreaterThan(100);
+
+  const after = await panelView(page);
+  expect(after.content, 'the draft makes the panel taller than its box').toBeGreaterThan(after.height);
+  expect(after.scrolls, 'the panel scrolls the draft instead of crushing the transcript').toBe(true);
+  expect(after.height, 'the panel keeps its height').toBe(before.height);
+  const log = await page.evaluate(() => document.querySelector<HTMLElement>('.panel--inspector .log')!.clientHeight);
+  expect(log, `the transcript is ${log}px tall with a ten line draft`).toBeGreaterThanOrEqual(120);
+
+  // The transcript is a scroll away, whole.
+  await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.panel--inspector')!;
+    panel.scrollTop = panel.scrollHeight;
+  });
+  await expect.poll(async () => (await panelView(page)).log, {
+    message: 'the transcript scrolls into view under the draft',
+  }).toBe(true);
 });
 
 // In the row form the list can outgrow the stage. The arrows must bring the
@@ -789,10 +922,19 @@ test('the covered log leaves the tab order over the overlay drawer', async ({ pa
   await page.goto(gateway.launch);
   await expect(page.locator('.boot')).toBeHidden();
   const log = page.locator('.panel--log');
-  // The transcript arrives in frames after boot; the summaries are its tab
-  // stops and have to exist before the walk below means anything. A loaded
-  // host can take most of the default timeout to deliver it.
-  await expect(page.locator('.panel--log summary, .panel--log button').first()).toBeVisible({ timeout: 20_000 });
+  // The summaries are the log's tab stops and have to exist before the walk
+  // below means anything. They come from the worker session's messages,
+  // which a fresh worker (after an earlier failure) does not have, so a
+  // stand-in control keeps the test runnable either way, as the focus test
+  // below does.
+  await page.evaluate(() => {
+    if (document.querySelector('.panel--log summary, .panel--log button') !== null) return;
+    const probe = document.createElement('button');
+    probe.id = 'log-probe';
+    probe.textContent = 'probe';
+    document.querySelector('.panel--log')?.append(probe);
+  });
+  await expect(page.locator('.panel--log summary, .panel--log button').first()).toBeVisible();
   const focusLogControl = () => page.evaluate(() => {
     const el = document.querySelector<HTMLElement>('.panel--log summary, .panel--log button');
     if (el === null) return 'no control';
@@ -831,6 +973,7 @@ test('the covered log leaves the tab order over the overlay drawer', async ({ pa
   await setDrawer(page, true);
   await page.setViewportSize({ width: 900, height: 800 });
   await expect(log).not.toHaveAttribute('inert', '');
+  await page.evaluate(() => { document.getElementById('log-probe')?.remove(); });
 });
 
 // The log leaves the tab order over the overlay drawer, so the focus it held
