@@ -22,6 +22,9 @@ var (
 	// ErrModelUnavailable means the model is not one the current
 	// credentials can serve, so choosing it would need a sign-in first.
 	ErrModelUnavailable = errors.New("model is not available without signing in")
+	// ErrNoAgentConfig means the configuration has no coder agent to
+	// switch models for.
+	ErrNoAgentConfig = errors.New("agent configuration not found")
 )
 
 // ModelChoice is one model the user can switch to without signing in.
@@ -38,8 +41,10 @@ type ModelChoice struct {
 
 // ModelChoices lists the models the configured, enabled providers can
 // serve right now, grouped by provider id and in config order within each
-// provider. Providers the model dialog hides (unconfigured or disabled)
-// are left out, so a choice always skips the sign-in flow.
+// provider. A ChatGPT or Grok login lists only its subscription's models,
+// since the API catalog would 404. Providers the model dialog hides
+// (unconfigured or disabled) are left out, so a choice always skips the
+// sign-in flow.
 func ModelChoices(cfg *config.Config) []ModelChoice {
 	if cfg == nil || cfg.Providers == nil {
 		return nil
@@ -60,7 +65,7 @@ func ModelChoices(cfg *config.Config) []ModelChoice {
 		if !ok {
 			continue
 		}
-		for _, model := range providerConfig.Models {
+		for _, model := range providerConfig.UsableModels() {
 			if !cfg.IsModelAvailable(id, model.ID) {
 				continue
 			}
@@ -81,8 +86,9 @@ func ModelChoices(cfg *config.Config) []ModelChoice {
 
 // SelectModel switches the model of the given type after checking that
 // the agent is idle and that the credentials can serve it, then rebuilds
-// the agent's models. Frontends with their own pre-checks (the TUI keeps
-// them, sign-in included) call ApplyModel directly.
+// the agent's models. Frontends that keep their own pre-checks and side
+// effects between the write and the rebuild, such as the TUI, use
+// ApplyPreferredModel and ReloadAgentModel directly.
 func SelectModel(ctx context.Context, ws Workspace, typ config.SelectedModelType, m config.SelectedModel) error {
 	cfg := ws.Config()
 	if cfg == nil {
@@ -103,14 +109,14 @@ func SelectModel(ctx context.Context, ws Workspace, typ config.SelectedModelType
 // the agent's models. An effort the model does not offer is refused.
 func SetReasoningEffort(ctx context.Context, ws Workspace, effort string) error {
 	cfg := ws.Config()
-	if cfg == nil {
+	if cfg == nil || cfg.Providers == nil {
 		return ErrNoConfig
 	}
 	if ws.AgentIsBusy() {
 		return ErrAgentBusy
 	}
 
-	typ, current, err := coderModel(cfg)
+	_, current, err := coderModel(cfg)
 	if err != nil {
 		return err
 	}
@@ -118,8 +124,19 @@ func SetReasoningEffort(ctx context.Context, ws Workspace, effort string) error 
 	if model == nil || !slices.Contains(model.ReasoningEffortLevels(), effort) {
 		return fmt.Errorf("unknown reasoning effort %q", effort)
 	}
-	current.ReasoningEffort = effort
-	return ApplyModel(ctx, ws, typ, current)
+	return ApplyReasoningEffort(ctx, ws, effort)
+}
+
+// ApplyReasoningEffort sets the coder model's reasoning effort and
+// rebuilds the agent's models. It does not check busy state or validate
+// the level: SetReasoningEffort does both for callers that need them.
+func ApplyReasoningEffort(ctx context.Context, ws Workspace, effort string) error {
+	typ, model, err := coderModel(ws.Config())
+	if err != nil {
+		return err
+	}
+	model.ReasoningEffort = effort
+	return ApplyModel(ctx, ws, typ, model)
 }
 
 // SetThinking turns the coder model's thinking mode on or off and
@@ -176,7 +193,7 @@ func coderModel(cfg *config.Config) (config.SelectedModelType, config.SelectedMo
 	}
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
-		return "", config.SelectedModel{}, errors.New("agent configuration not found")
+		return "", config.SelectedModel{}, ErrNoAgentConfig
 	}
 	return agentCfg.Model, cfg.Models[agentCfg.Model], nil
 }

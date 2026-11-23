@@ -8,6 +8,7 @@ import (
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,6 +74,19 @@ func testModelConfig(t *testing.T) *config.Config {
 	}
 }
 
+// testConfigWithoutProviders is a configured workspace whose provider map
+// never got populated (for example a reload in flight).
+func testConfigWithoutProviders() *config.Config {
+	return &config.Config{
+		Models: map[config.SelectedModelType]config.SelectedModel{
+			config.SelectedModelTypeMain: {Provider: "p1", Model: "m1"},
+		},
+		Agents: map[string]config.Agent{
+			config.AgentCoder: {Model: config.SelectedModelTypeMain},
+		},
+	}
+}
+
 func TestModelChoicesListsEnabledConfiguredModels(t *testing.T) {
 	t.Parallel()
 
@@ -111,6 +125,48 @@ func TestModelChoicesWithoutConfig(t *testing.T) {
 	t.Parallel()
 
 	require.Empty(t, ModelChoices(nil))
+}
+
+// TestModelChoicesWithoutProviders pins that a config whose provider map
+// was never populated answers empty instead of panicking.
+func TestModelChoicesWithoutProviders(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, ModelChoices(testConfigWithoutProviders()))
+}
+
+// TestModelChoicesListsSubscriptionModelsForSignedInProviders mirrors the
+// model dialog: a ChatGPT or Grok login lists only the subscription's
+// models, because the API catalog would 404.
+func TestModelChoicesListsSubscriptionModelsForSignedInProviders(t *testing.T) {
+	t.Parallel()
+
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	providers.Set("openai", config.ProviderConfig{
+		ID:            "openai",
+		Name:          "OpenAI",
+		OAuthToken:    &oauth.Token{AccessToken: "t"},
+		Models:        []catwalk.Model{{ID: "gpt-api"}},
+		ChatGPTModels: []catwalk.Model{{ID: "gpt-sub", Name: "GPT Sub"}},
+	})
+
+	got := ModelChoices(&config.Config{Providers: providers})
+	require.Len(t, got, 1)
+	require.Equal(t, "gpt-sub", got[0].ID)
+	require.Equal(t, "GPT Sub", got[0].Name)
+}
+
+func TestModelChoicesSortsProviders(t *testing.T) {
+	t.Parallel()
+
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	providers.Set("zulu", config.ProviderConfig{ID: "zulu", Models: []catwalk.Model{{ID: "z"}}})
+	providers.Set("alpha", config.ProviderConfig{ID: "alpha", Models: []catwalk.Model{{ID: "a"}}})
+
+	got := ModelChoices(&config.Config{Providers: providers})
+	require.Len(t, got, 2)
+	require.Equal(t, "alpha", got[0].Provider)
+	require.Equal(t, "zulu", got[1].Provider)
 }
 
 func TestSelectModelRefusesWhileBusy(t *testing.T) {
@@ -172,6 +228,16 @@ func TestSetReasoningEffortRejectsUnknownLevel(t *testing.T) {
 	require.Empty(t, ws.calls)
 }
 
+// TestSetReasoningEffortWithoutProviders pins that a config whose provider
+// map was never populated answers ErrNoConfig instead of panicking.
+func TestSetReasoningEffortWithoutProviders(t *testing.T) {
+	t.Parallel()
+
+	ws := &modelDouble{cfg: testConfigWithoutProviders()}
+	require.ErrorIs(t, SetReasoningEffort(t.Context(), ws, "high"), ErrNoConfig)
+	require.Empty(t, ws.calls)
+}
+
 func TestSetReasoningEffortRefusesWhileBusy(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +274,19 @@ func TestApplyThinkingIgnoresBusy(t *testing.T) {
 	ws := &modelDouble{cfg: testModelConfig(t), busy: true}
 	require.NoError(t, ApplyThinking(t.Context(), ws, true))
 	require.True(t, ws.saved.Think)
+	require.Equal(t, []string{"UpdatePreferredModel:global:main:p1/m1", "UpdateAgentModel"}, ws.calls)
+}
+
+// TestApplyReasoningEffortIgnoresBusy pins the TUI path the same way for
+// the reasoning effort: the case has its own busy check, so the unguarded
+// helper does not repeat it.
+func TestApplyReasoningEffortIgnoresBusy(t *testing.T) {
+	t.Parallel()
+
+	ws := &modelDouble{cfg: testModelConfig(t), busy: true}
+	require.NoError(t, ApplyReasoningEffort(t.Context(), ws, "high"))
+	require.Equal(t, "high", ws.saved.ReasoningEffort)
+	require.Equal(t, "m1", ws.saved.Model)
 	require.Equal(t, []string{"UpdatePreferredModel:global:main:p1/m1", "UpdateAgentModel"}, ws.calls)
 }
 

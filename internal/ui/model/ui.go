@@ -3334,19 +3334,24 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			break
 		}
 
-		if _, ok := cfg.Agents[config.AgentCoder]; !ok {
+		agentCfg, ok := cfg.Agents[config.AgentCoder]
+		if !ok {
 			cmds = append(cmds, util.ReportError(errors.New("agent configuration not found")))
+			break
+		}
+
+		currentModel := cfg.Models[agentCfg.Model]
+		currentModel.ReasoningEffort = msg.Effort
+		if err := workspace.ApplyPreferredModel(m.com.Workspace, agentCfg.Model, currentModel); err != nil {
+			cmds = append(cmds, util.ReportError(err))
 			break
 		}
 
 		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
 			ctx, cancel := common.WorkspaceOpContext()
 			defer cancel()
-			if err := workspace.SetReasoningEffort(ctx, m.com.Workspace, msg.Effort); err != nil {
-				if errors.Is(err, workspace.ErrAgentBusy) {
-					return util.ReportWarn("Agent is busy, please wait...")()
-				}
-				return util.ReportError(err)()
+			if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
+				return util.ReportError(err)
 			}
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))
