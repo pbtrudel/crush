@@ -313,6 +313,15 @@
       }
     }
   },
+  "shell_output": {
+    "seq": 1,
+    "type": "shell_output",
+    "payload": {
+      "run_id": "run-1",
+      "session_id": "s1",
+      "chunk": "line 1\n"
+    }
+  },
   "snapshot": {
     "seq": 0,
     "type": "snapshot",

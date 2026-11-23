@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
@@ -95,6 +96,16 @@ type Fake struct {
 	AnswerBatches []string
 	Resolve       bool
 	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+	// OnSummarize, OnAsk and OnShell play a scripted agent for the browser
+	// action routes. A nil OnSummarize succeeds, a nil OnAsk falls back to
+	// AskAnswer, and a nil OnShell returns an empty shell response.
+	OnSummarize func(ctx context.Context, sessionID string) error
+	OnAsk       func(ctx context.Context, sessionID, question string) (string, error)
+	OnShell     func(ctx context.Context, sessionID, command string, onProgress func(string), isFirst bool) (proto.ShellCommandResponse, error)
+	// AskAnswer is what AgentAsk returns when OnAsk is nil.
+	AskAnswer string
+	// NoteErr, when set, makes AgentAddNote fail.
+	NoteErr error
 	// ReadyErr is what AgentReadyErr returns. nil means the agent is
 	// ready. Set it before the first request.
 	ReadyErr error
@@ -572,9 +583,35 @@ func (f *Fake) AgentClearQueue(id string) {
 	f.record("AgentClearQueue:" + id)
 }
 
+func (f *Fake) AgentSummarize(ctx context.Context, sessionID string) error {
+	f.record("AgentSummarize:" + sessionID)
+	if f.OnSummarize != nil {
+		return f.OnSummarize(ctx, sessionID)
+	}
+	return nil
+}
+
+func (f *Fake) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
+	f.record("AgentAsk:" + sessionID + ":" + question)
+	if f.OnAsk != nil {
+		return f.OnAsk(ctx, sessionID, question)
+	}
+	return f.AskAnswer, nil
+}
+
+func (f *Fake) AgentRunShellCommand(ctx context.Context, sessionID, command string, _ int, onProgress func(string), isFirst bool) (proto.ShellCommandResponse, error) {
+	f.record("AgentRunShellCommand:" + sessionID + ":" + command + ":" + strconv.FormatBool(isFirst))
+	if f.OnShell != nil {
+		return f.OnShell(ctx, sessionID, command, onProgress, isFirst)
+	}
+	return proto.ShellCommandResponse{}, nil
+}
+
 func (f *Fake) AgentAddNote(_ context.Context, sessionID, text string) error {
 	f.record("AgentAddNote:" + sessionID + ":" + text)
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.NoteErr
 }
 
 // resolvePermission publishes the outcome the UI would publish and hands

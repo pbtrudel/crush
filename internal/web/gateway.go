@@ -82,6 +82,13 @@ type Gateway struct {
 	// loadCommandsFn is Options.LoadCommands; nil falls back to reading
 	// the workspace config.
 	loadCommandsFn func(*config.Config) ([]commands.CustomCommand, error)
+	// shells holds the cancel func of every running shell command, keyed
+	// by run id. shellWG lets Shutdown wait for them before the hub
+	// closes, and shellsClosed refuses a run started during shutdown.
+	shellMu      sync.Mutex
+	shells       map[string]context.CancelFunc
+	shellWG      sync.WaitGroup
+	shellsClosed bool
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -129,6 +136,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		teamDone:   make(chan struct{}),
 		fileStats:  newFileStatCache(slots),
 		diffs:      slots,
+		shells:     make(map[string]context.CancelFunc),
 
 		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
@@ -264,6 +272,15 @@ func normalizeInputMode(mode string) string {
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	// Cancel and settle every running shell before the hub closes, so no
+	// final frame is published into a closed hub.
+	g.shellMu.Lock()
+	g.shellsClosed = true
+	for _, cancel := range g.shells {
+		cancel()
+	}
+	g.shellMu.Unlock()
+	g.shellWG.Wait()
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
 	g.cancel()

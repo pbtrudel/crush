@@ -40,3 +40,14 @@ func promptFailure(sessionID string, err error) map[string]string {
 	}
 	return webErrorPayload(sessionID, "prompt_failed", "The prompt could not run. The terminal log has the details.")
 }
+
+// summarizeFailure is the web_error payload for a detached compaction that
+// could not run. A not-ready agent reuses the prompt payload, since the
+// browser shows the same starting state; anything else keeps the fixed
+// message, never the workspace error.
+func summarizeFailure(sessionID string, err error) map[string]string {
+	if errors.Is(err, workspace.ErrAgentNotInitialized) {
+		return promptFailure(sessionID, err)
+	}
+	return webErrorPayload(sessionID, "summarize_failed", "The session could not be compacted.")
+}

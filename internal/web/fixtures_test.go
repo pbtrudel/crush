@@ -127,6 +127,9 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 		// A detached prompt that failed shows the fixed message, never the
 		// workspace error.
 		"web_error": mk(frameError, promptFailure("s1", errors.New("dial unix /tmp/crush.sock: refused"))),
+		"shell_output": mk(frameShellOutput, shellOutputPayload{
+			RunID: "run-1", SessionID: "s1", Chunk: "line 1\n",
+		}),
 	}
 }
 

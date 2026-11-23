@@ -310,6 +310,9 @@ func TestShutdownSendsClosing(t *testing.T) {
 	t.Parallel()
 	g, err := Start(t.Context(), Options{Workspace: webtestFake()})
 	require.NoError(t, err)
+	// A failed assertion before the gateway's own shutdown must not leak
+	// the listener. Shutdown is safe to call twice.
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	c := dialStream(t, g, "")
 	readFrame(t, c)
 	done := make(chan error, 1)
