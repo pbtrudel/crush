@@ -447,11 +447,7 @@ type UpdateSessionTitleIfCurrentParams struct {
 }
 
 func (q *Queries) UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error {
-	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent,
-		arg.Title,
-		arg.ID,
-		arg.Title_2,
-	)
+	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent, arg.Title, arg.ID, arg.Title_2)
 	return err
 }
 
@@ -469,9 +465,6 @@ type UpdateSessionTodosParams struct {
 }
 
 func (q *Queries) UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error {
-	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos,
-		arg.Todos,
-		arg.ID,
-	)
+	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos, arg.Todos, arg.ID)
 	return err
 }

@@ -169,7 +169,7 @@ func (w *Workspace) Coordinator() agent.Coordinator {
 	}
 	w.agentMu.RLock()
 	defer w.agentMu.RUnlock()
-	return w.App.Agent()
+	return w.Agent()
 }
 
 // initAgent creates the workspace's coder agent coordinator when it does
