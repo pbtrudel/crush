@@ -2827,8 +2827,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.ToolResponse{}, err
 	}
 	done := c.trackSubSession(sess.ID, params.Agent)
+	// Deferred: a panic in the run must not leave the child session busy.
+	defer done()
 	result, err := params.Agent.Run(ctx, call)
-	done()
 	c.finishAgentRun(sess.ID, err)
 	c.askToSignInAgain(err, model)
 	if err != nil {
@@ -2922,8 +2923,9 @@ func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, s
 	}
 
 	done := c.trackSubSession(sess.ID, agent)
+	// Deferred: a panic in the run must not leave the child session busy.
+	defer done()
 	result, err := agent.Run(ctx, call)
-	done()
 	c.askToSignInAgain(err, model)
 	if err != nil {
 		return "", err
