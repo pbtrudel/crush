@@ -131,6 +131,10 @@ type Workspace interface {
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
+	// SessionRename changes only the title, leaving the usage, cost and
+	// todos a concurrent run wrote intact, and returns the renamed
+	// session. It must not be a full-row Save.
+	SessionRename(ctx context.Context, sessionID, title string) (session.Session, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)

@@ -708,14 +708,33 @@ func (c *Client) GetSession(ctx context.Context, id string, sessionID string) (*
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	var sess proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sess); err != nil {
 		return nil, fmt.Errorf("failed to decode session: %w", err)
 	}
 	return &sess, nil
+}
+
+// RenameSession changes only a session's title, leaving the usage, cost and
+// todos a concurrent run wrote intact. It returns the renamed session.
+func (c *Client) RenameSession(ctx context.Context, id, sessionID, title string) (*proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/rename", id, sessionID), nil,
+		jsonBody(proto.SessionRename{Title: title}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	var renamed proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&renamed); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &renamed, nil
 }
 
 // ListSessionHistoryFiles retrieves history files for a session as proto types.

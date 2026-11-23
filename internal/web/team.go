@@ -185,7 +185,7 @@ func teamDir(opts Options) string {
 func (g *Gateway) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	s, err := g.ws.GetSession(r.Context(), r.PathValue("sid"))
 	if err != nil {
-		if isNotFound(err) {
+		if isSessionNotFound(err) {
 			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
 			return
 		}

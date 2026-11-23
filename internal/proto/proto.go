@@ -53,6 +53,11 @@ type Workspace struct {
 // workspace.ErrAgentNotInitialized.
 const ErrorCodeAgentNotInitialized = "agent_not_initialized"
 
+// ErrorCodeSessionNotFound is the wire code an error body carries when the
+// workspace exists but does not have the requested session. It is distinct
+// from a bare 404, which means the server no longer knows the workspace.
+const ErrorCodeSessionNotFound = "session_not_found"
+
 // Error represents an error response.
 type Error struct {
 	Message string `json:"message"`

@@ -472,7 +472,7 @@ func writeHistoryError(w http.ResponseWriter, code string, err error) {
 // whether the handler may continue.
 func (g *Gateway) sessionExists(w http.ResponseWriter, r *http.Request, sid string) bool {
 	if _, err := g.ws.GetSession(r.Context(), sid); err != nil {
-		if isNotFound(err) {
+		if isSessionNotFound(err) {
 			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
 			return false
 		}

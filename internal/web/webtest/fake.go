@@ -58,6 +58,9 @@ type Fake struct {
 	diagnostics map[string]lsp.DiagnosticCounts
 	teamErr     error
 	seq         int
+	// sessionSeq hands out CreateSession IDs. A monotonic counter keeps
+	// them unique even after a session is deleted.
+	sessionSeq int
 
 	// decisions and answers carry resolutions to a running scripted
 	// agent, so a test or webfake can play the user's part.
@@ -95,6 +98,7 @@ func NewFake() *Fake {
 		history:     make(map[string][]history.File),
 		diagnostics: make(map[string]lsp.DiagnosticCounts),
 		current:     "s1",
+		sessionSeq:  1,
 		decisions:   make(chan permission.PermissionNotification, 16),
 		answers:     make(chan []question.Answer, 16),
 		WorkDir:     "/tmp/project",
@@ -291,6 +295,8 @@ func (f *Fake) GetSession(_ context.Context, id string) (session.Session, error)
 	return s, nil
 }
 
+// ListSessions answers newest updated first, with the ID breaking ties,
+// the same order the real session service and the gateway use.
 func (f *Fake) ListSessions(context.Context) ([]session.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -298,16 +304,63 @@ func (f *Fake) ListSessions(context.Context) ([]session.Session, error) {
 	for _, s := range f.sessions {
 		out = append(out, s)
 	}
+	slices.SortFunc(out, func(a, b session.Session) int {
+		return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
+	})
 	return out, nil
 }
 
 func (f *Fake) CreateSession(_ context.Context, title string) (session.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	id := "s" + string(rune('1'+len(f.sessions)))
+	f.sessionSeq++
+	id := "s" + strconv.Itoa(f.sessionSeq)
 	s := session.Session{ID: id, Title: title}
 	f.sessions[id] = s
 	return s, nil
+}
+
+// SessionRename updates the title only, then publishes the same Updated
+// event the real session service publishes so a tab sees the rename.
+func (f *Fake) SessionRename(_ context.Context, id, title string) (session.Session, error) {
+	f.record("SessionRename:" + id + ":" + title)
+	f.mu.Lock()
+	s, ok := f.sessions[id]
+	if ok {
+		s.Title = title
+		f.sessions[id] = s
+	}
+	f.mu.Unlock()
+	if !ok {
+		return session.Session{}, ErrSessionNotFound
+	}
+	f.Emit(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: s})
+	return s, nil
+}
+
+// DeleteSession removes the session and publishes the Deleted event, like
+// the real session service.
+func (f *Fake) DeleteSession(_ context.Context, id string) error {
+	f.record("DeleteSession:" + id)
+	f.mu.Lock()
+	s, ok := f.sessions[id]
+	if ok {
+		delete(f.sessions, id)
+	}
+	f.mu.Unlock()
+	if !ok {
+		return ErrSessionNotFound
+	}
+	f.Emit(pubsub.Event[session.Session]{Type: pubsub.DeletedEvent, Payload: s})
+	return nil
+}
+
+// SetSessionBusy makes AgentIsSessionBusy report id as busy, as a running
+// agent would.
+func (f *Fake) SetSessionBusy(id string, busy bool) {
+	f.mu.Lock()
+	f.busy[id] = busy
+	f.mu.Unlock()
 }
 
 func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, error) {

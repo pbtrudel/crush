@@ -436,7 +436,7 @@ func (c *controllerV1) handleGetWorkspaceSession(w http.ResponseWriter, r *http.
 	sid := r.PathValue("sid")
 	sess, err := c.backend.GetSession(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
@@ -528,7 +528,7 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 
 	saved, err := c.backend.SaveSession(r.Context(), id, sess)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
@@ -538,12 +538,37 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 	jsonEncode(w, out)
 }
 
+// handlePostWorkspaceSessionRename changes only a session's title, so the
+// usage, cost and todos a concurrent run just wrote survive the rename.
+func (c *controllerV1) handlePostWorkspaceSessionRename(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+
+	var rename proto.SessionRename
+	if err := json.NewDecoder(r.Body).Decode(&rename); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	sess, err := c.backend.RenameSession(r.Context(), id, sid, rename.Title)
+	if err != nil {
+		c.handleSessionError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := wire.SessionToProto(sess)
+	out.IsBusy = isSessionBusy(ws, sess.ID)
+	out.AttachedClients = attachedClients(ws, sess.ID)
+	jsonEncode(w, out)
+}
+
 // handleDeleteWorkspaceSession deletes a session.
 func (c *controllerV1) handleDeleteWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
 	if err := c.backend.DeleteSession(r.Context(), id, sid); err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -985,6 +1010,19 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSessionError answers a failed session call. A session the
+// workspace does not have is a 404 with its own code, distinct from the
+// bare 404 that means the server no longer knows the workspace; everything
+// else falls back to the shared mapping.
+func (c *controllerV1) handleSessionError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusNotFound, "session not found", proto.ErrorCodeSessionNotFound)
+		return
+	}
+	c.handleError(w, r, err)
 }
 
 // handleError maps backend errors to HTTP status codes and writes the

@@ -1869,3 +1869,37 @@ func TestClientWorkspaceAddNotePostsTheNote(t *testing.T) {
 	require.Equal(t, http.MethodPost, method)
 	require.Equal(t, "prefer the small model", note.Text)
 }
+
+// TestClientWorkspaceSessionRename pins the SDK call the rename route
+// needs: a targeted POST to the session's rename subresource, carrying
+// only the title, and a session_not_found 404 mapped to its own sentinel
+// so a workspace-gone 404 keeps meaning recovery.
+func TestClientWorkspaceSessionRename(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/sessions/s1/rename":
+			require.Equal(t, http.MethodPost, r.Method)
+			var rename proto.SessionRename
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&rename))
+			require.Equal(t, "Parser work", rename.Title)
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Session{ID: "s1", Title: rename.Title}))
+		default:
+			require.Equal(t, "/v1/workspaces/ws-1/sessions/nope/rename", r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{Message: "session not found", Code: proto.ErrorCodeSessionNotFound}))
+		}
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got, err := ws.SessionRename(t.Context(), "s1", "Parser work")
+	require.NoError(t, err)
+	require.Equal(t, "Parser work", got.Title)
+
+	_, err = ws.SessionRename(t.Context(), "nope", "Gone")
+	require.ErrorIs(t, err, client.ErrSessionNotFound)
+	require.NotErrorIs(t, err, client.ErrNotFound)
+}

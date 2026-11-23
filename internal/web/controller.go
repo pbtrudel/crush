@@ -56,8 +56,9 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 	return c.gw.LaunchURL(), nil
 }
 
-// SetOnSessionCreated sets the callback for sessions the browser starts.
-// It may be called after Start; the running gateway is updated too.
+// SetOnSessionCreated sets the callback for sessions the terminal should
+// open: ones the browser created, or ones it followed. It may be called
+// after Start; the running gateway is updated too.
 func (c *Controller) SetOnSessionCreated(fn func(string)) {
 	c.mu.Lock()
 	c.onSessionCreated = fn

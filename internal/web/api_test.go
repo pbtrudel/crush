@@ -657,26 +657,33 @@ func TestInternalErrorsDoNotLeakDetails(t *testing.T) {
 	require.JSONEq(t, `{"error":"the workspace could not complete the request","code":"list_sessions"}`, rec.Body.String())
 }
 
-// TestIsNotFoundMatchesBothWorkspaceKinds covers the two shapes a missing
-// session arrives in: sql.ErrNoRows from the in-process workspace and
-// client.ErrNotFound from the server-backed one.
+// TestIsNotFoundMatchesBothWorkspaceKinds covers the shapes a miss
+// arrives in: sql.ErrNoRows from the in-process workspace, and in
+// client/server mode client.ErrNotFound for a workspace the server no
+// longer knows or client.ErrSessionNotFound for a session it does not
+// have. Only the session shapes count as an unknown session.
 func TestIsNotFoundMatchesBothWorkspaceKinds(t *testing.T) {
 	t.Parallel()
 	require.True(t, isNotFound(sql.ErrNoRows))
 	require.True(t, isNotFound(fmt.Errorf("get session s1: %w", sql.ErrNoRows)))
 	require.True(t, isNotFound(client.ErrNotFound))
 	require.True(t, isNotFound(fmt.Errorf("status code 404: %w", client.ErrNotFound)))
+	require.True(t, isNotFound(client.ErrSessionNotFound))
 	require.False(t, isNotFound(errors.New("open crush.db: disk I/O error")))
 	require.False(t, isNotFound(nil))
+
+	require.True(t, isSessionNotFound(sql.ErrNoRows))
+	require.True(t, isSessionNotFound(fmt.Errorf("failed to get session: %w", client.ErrSessionNotFound)))
+	require.False(t, isSessionNotFound(client.ErrNotFound), "a workspace-gone 404 says nothing about the session")
 }
 
-// clientNotFoundWorkspace reports a miss the way ClientWorkspace does in
-// client/server mode, where the server's 404 arrives as a wrapped
-// client.ErrNotFound rather than sql.ErrNoRows.
-type clientNotFoundWorkspace struct{ *webtest.Fake }
+// clientSessionNotFoundWorkspace reports a session miss the way
+// ClientWorkspace does in client/server mode, where the server's
+// session_not_found 404 arrives as a wrapped client.ErrSessionNotFound.
+type clientSessionNotFoundWorkspace struct{ *webtest.Fake }
 
-func (clientNotFoundWorkspace) GetSession(context.Context, string) (session.Session, error) {
-	return session.Session{}, fmt.Errorf("get session: %w", client.ErrNotFound)
+func (clientSessionNotFoundWorkspace) GetSession(context.Context, string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("failed to get session: %w", client.ErrSessionNotFound)
 }
 
 func TestMessagesForUnknownSessionIs404(t *testing.T) {
@@ -689,7 +696,7 @@ func TestMessagesForUnknownSessionIs404(t *testing.T) {
 
 func TestMessagesOverClientWorkspaceNotFoundIs404(t *testing.T) {
 	t.Parallel()
-	g, err := Start(t.Context(), Options{Workspace: clientNotFoundWorkspace{webtest.NewFake()}})
+	g, err := Start(t.Context(), Options{Workspace: clientSessionNotFoundWorkspace{webtest.NewFake()}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/nope/messages", "")

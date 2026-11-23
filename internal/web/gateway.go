@@ -23,8 +23,9 @@ type Options struct {
 	Workspace workspace.Workspace
 	// Assets overrides the embedded frontend; nil uses the embedded dist.
 	Assets fs.FS
-	// OnSessionCreated is called with the id of a session the browser
-	// started, so the terminal can open it. It may be nil.
+	// OnSessionCreated is called with the id of a session the terminal
+	// should open, whether the browser created it or followed it. It may
+	// be nil.
 	OnSessionCreated func(id string)
 	// OnInputModeRequested is called when the browser asks to switch
 	// between plan and code mode. The terminal performs the switch. It
@@ -67,6 +68,10 @@ type Gateway struct {
 	// diffs bounds the diff work every tab shares, so three tabs
 	// refreshing at once queue instead of stacking up.
 	diffs *diffSlots
+	// apiRoutes lists every registered /api pattern, method included, in
+	// registration order. The auth test walks it so a route cannot ship
+	// without being covered by the cookie check.
+	apiRoutes []string
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -162,17 +167,18 @@ func (g *Gateway) LaunchURL() string { return g.URL() + "/#t=" + g.secret }
 
 func (g *Gateway) token() string { return g.secret }
 
-// setOnSessionCreated replaces the callback for sessions the browser
-// starts. It is safe to call while a handler is notifying.
+// setOnSessionCreated replaces the callback for sessions the terminal
+// should open. It is safe to call while a handler is notifying.
 func (g *Gateway) setOnSessionCreated(fn func(string)) {
 	g.onMu.Lock()
 	g.onSessionCreated = fn
 	g.onMu.Unlock()
 }
 
-// notifySessionCreated reports a browser-started session to the terminal.
-// No callback means no terminal is attached, which is fine.
-func (g *Gateway) notifySessionCreated(id string) {
+// notifyOpenSession asks the terminal to open a session, whether the
+// browser created it or followed an existing one. No callback means no
+// terminal is attached, which is fine.
+func (g *Gateway) notifyOpenSession(id string) {
 	g.onMu.RLock()
 	fn := g.onSessionCreated
 	g.onMu.RUnlock()

@@ -63,6 +63,15 @@ func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (s
 	return w.app.Sessions.Save(ctx, sess)
 }
 
+// SessionRename updates the title in place: a Save of the whole row could
+// overwrite the usage, cost and todos a busy run just wrote.
+func (w *AppWorkspace) SessionRename(ctx context.Context, sessionID, title string) (session.Session, error) {
+	if err := w.app.Sessions.Rename(ctx, sessionID, title); err != nil {
+		return session.Session{}, err
+	}
+	return w.app.Sessions.Get(ctx, sessionID)
+}
+
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.app.Sessions.Delete(ctx, sessionID)
 }

@@ -397,17 +397,16 @@ func TestTeamRoutesMapErrorsOverClientWorkspace(t *testing.T) {
 			message:     "Crush is starting the agent",
 		},
 		{
-			// The server has no 404 for a missing session: it keeps 404
-			// meaning "the server lost this workspace", so the lookup
-			// fails with the generic 500 and the gateway answers its
-			// generic get_session failure. In-process mode answers 404
-			// unknown_session for the same state.
+			// A session the workspace does not have travels as its own
+			// 404 code, distinct from the bare 404 that means the server
+			// lost the workspace, so the gateway answers the same
+			// unknown_session it gives in-process mode.
 			name:        "unknown session",
 			coordinator: &teamStubCoordinator{},
 			sessionID:   "nope",
-			status:      http.StatusInternalServerError,
-			code:        "get_session",
-			message:     generic,
+			status:      http.StatusNotFound,
+			code:        "unknown_session",
+			message:     "no such session",
 		},
 	}
 	for _, tc := range cases {

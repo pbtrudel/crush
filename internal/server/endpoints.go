@@ -216,6 +216,17 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleDeleteWorkspaceSession),
 
+		apigen.Post("/v1/workspaces/{id}/sessions/{sid}/rename").
+			Summary("Rename session").
+			Description("Changes only the title, leaving the usage, cost and todos a concurrent run wrote intact.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Accepts(proto.SessionRename{}).
+			Responds(proto.Session{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceSessionRename),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history").
 			Summary("Get session history").
 			Tags("sessions").

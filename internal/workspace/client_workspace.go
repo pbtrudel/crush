@@ -214,6 +214,14 @@ func (w *ClientWorkspace) SaveSession(ctx context.Context, sess session.Session)
 	return protoToSession(*saved), nil
 }
 
+func (w *ClientWorkspace) SessionRename(ctx context.Context, sessionID, title string) (session.Session, error) {
+	renamed, err := w.client.RenameSession(ctx, w.workspaceID(), sessionID, title)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*renamed), nil
+}
+
 func (w *ClientWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.client.DeleteSession(ctx, w.workspaceID(), sessionID)
 }
