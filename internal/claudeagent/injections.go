@@ -49,6 +49,17 @@ func injectionText(msg fantasy.Message) (string, bool) {
 	return text, true
 }
 
+// attachToLastResult appends the harness reminders to the last tool result of
+// a continuation, which is the one the model reads last. The reminders are
+// separated by a blank line, so two of them do not run together.
+func attachToLastResult(pairs []toolResultPair, harness []string) {
+	if len(pairs) == 0 || len(harness) == 0 {
+		return
+	}
+	last := len(pairs) - 1
+	pairs[last].result = attachInjection(pairs[last].result, strings.Join(harness, "\n\n"))
+}
+
 // attachInjection appends harness text to a tool result, so the model reads
 // the reminder as part of the tool's output.
 func attachInjection(result toolResult, text string) toolResult {

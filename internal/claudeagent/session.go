@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -255,15 +254,9 @@ func (s *session) prepare(ctx context.Context, req turnRequest, cfg launchConfig
 			prep := &prepared{continuation: results, start: end}
 			if end < len(req.Prompt) {
 				harness, user := trailingInjections(req.Prompt[end:])
-				if len(harness) > 0 {
-					// A reminder added after the results belongs with
-					// them: steering it would label it as the user's.
-					// A pair always exists to carry it, because
-					// collectContinuation reports ok only with one.
-					last := len(prep.continuation) - 1
-					prep.continuation[last].result = attachInjection(
-						prep.continuation[last].result, strings.Join(harness, "\n\n"))
-				}
+				// A reminder added after the results belongs with them:
+				// steering it would label it as the user's.
+				attachToLastResult(prep.continuation, harness)
 				if len(user) > 0 {
 					prep.steer = ConvertPrompt(user)
 				}
