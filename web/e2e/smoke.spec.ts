@@ -183,53 +183,69 @@ async function tagGeometry(page: Page) {
         hitSelf: hit !== null && el.contains(hit),
       };
     });
-    const options = [...document.querySelectorAll('.agent-list [role="option"]')].map((o) => {
+    const optionEls = [...document.querySelectorAll('.agent-list [role="option"]')];
+    const options = optionEls.map((o) => {
       const box = rect(o);
       const hit = document.elementFromPoint(box.x + box.w / 2, box.y + box.h / 2);
       return { text: o.textContent, takesClick: hit !== null && hit.closest('.agent-list') !== null };
     });
-    return { stage, tags, options };
+    // Every child agent gets a tag; the main agent only has a list entry.
+    const roster = optionEls.filter((o) => o.getAttribute('data-kind') !== 'main').length;
+    return { stage, tags, options, roster };
   });
 }
 
 test('3D tags stay inside the stage and never take the agent list clicks', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
-  // The roster arrives in frames after boot, and the first painted tag waits
-  // for the first published projection.
-  await expect(page.locator('.agent-tag[data-visible="true"]').first()).toBeVisible();
 
+  // The roster arrives in frames after boot, each tag is drawn by its own
+  // published projection, and the boot overlay covers the page until it
+  // fades. Every check therefore runs inside one poll per viewport, so a
+  // page that is still settling retries instead of failing; the poll is
+  // bounded by the default expect timeout.
+  const tagsSettled = (where: string, wantHidden: boolean) => expect.poll(async () => {
+    const g = await tagGeometry(page);
+    if (g.roster === 0 || g.tags.length !== g.roster) return `${where}: ${g.tags.length} of ${g.roster} tags`;
+    // The overlay is the last thing above the page; no option takes a click
+    // until it is gone, and neither does a tag.
+    if (g.options.some((o) => !o.takesClick)) return `${where}: the list does not take its clicks`;
+    const hidden = g.tags.filter((t) => !t.visible);
+    if (wantHidden && hidden.length === 0) return `${where}: no tag has left the stage`;
+    if (!wantHidden && hidden.length > 0) return `${where}: ${hidden[0].id} is hidden`;
+    for (const tag of g.tags) {
+      if (!tag.visible) {
+        if (tag.pointerEvents !== 'none' || tag.hitSelf) return `${where}: hidden ${tag.id} takes clicks`;
+        continue;
+      }
+      if (tag.anchor === null) return `${where}: ${tag.id} has no projected point`;
+      const a = tag.anchor;
+      if (a.x < g.stage.x || a.x > g.stage.right || a.y < g.stage.y || a.y > g.stage.bottom) {
+        return `${where}: ${tag.id} point outside the stage`;
+      }
+      if (tag.pointerEvents !== 'auto') return `${where}: ${tag.id} does not take input`;
+      if (!tag.hitSelf) return `${where}: ${tag.id} does not take its centre`;
+    }
+    return 'settled';
+  }, { message: `${where}: tags settle` }).toBe('settled');
+
+  await tagsSettled('1440px', false);
   const wide = await tagGeometry(page);
-  expect(wide.tags.length).toBeGreaterThan(0);
-  for (const tag of wide.tags) {
-    expect(tag.visible, `tag ${tag.id} is visible at 1440px`).toBe(true);
-    expect(tag.anchor, `tag ${tag.id} has a projected point`).not.toBeNull();
-    const a = tag.anchor!;
-    expect(a.x >= wide.stage.x && a.x <= wide.stage.right, `tag ${tag.id} x inside the stage`).toBe(true);
-    expect(a.y >= wide.stage.y && a.y <= wide.stage.bottom, `tag ${tag.id} y inside the stage`).toBe(true);
-    expect(tag.hitSelf, `tag ${tag.id} takes the click at its center`).toBe(true);
-  }
+  expect(wide.tags.length).toBe(wide.roster);
   for (const option of wide.options) {
     expect(option.takesClick, `option ${option.text} takes the click at 1440px`).toBe(true);
   }
 
-  // 900px shrinks the stage under both nodes, so their tags must go away
-  // instead of floating over the HUD and the deck.
+  // 900px shrinks the stage under the nodes, so their tags have to go away
+  // instead of floating over the HUD and the deck. A tag starts hidden
+  // before its first projection, so the wait is for a node to actually
+  // leave the stage after the resize.
   await page.setViewportSize({ width: 900, height: 860 });
-  await expect(page.locator('.agent-tag[data-visible="false"]').first()).toBeAttached();
+  await tagsSettled('900px', true);
+
   const narrow = await tagGeometry(page);
-  expect(narrow.tags.length).toBeGreaterThan(0);
+  expect(narrow.tags.length).toBe(narrow.roster);
   expect(narrow.tags.some((t) => !t.visible), 'a node leaves the stage at 900px').toBe(true);
-  for (const tag of narrow.tags) {
-    const a = tag.anchor;
-    if (tag.visible) {
-      expect(a !== null && a.x >= narrow.stage.x && a.x <= narrow.stage.right, `tag ${tag.id} x inside the stage`).toBe(true);
-      expect(a !== null && a.y >= narrow.stage.y && a.y <= narrow.stage.bottom, `tag ${tag.id} y inside the stage`).toBe(true);
-    } else {
-      expect(tag.pointerEvents, `hidden tag ${tag.id} takes no clicks`).toBe('none');
-      expect(tag.hitSelf, `hidden tag ${tag.id} is not the topmost element`).toBe(false);
-    }
-  }
   for (const option of narrow.options) {
     expect(option.takesClick, `option ${option.text} takes the click at 900px`).toBe(true);
   }
