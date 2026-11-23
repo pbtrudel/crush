@@ -456,7 +456,8 @@ func finalAssistantText(t *testing.T, env fakeEnv, sessionID string) string {
 
 // The note is written after the end-of-turn compaction, so it cannot borrow
 // the turn's cleanup context: a compaction that outlasts that context would
-// expire it and the note would be lost.
+// expire it and the note would be lost. The prompt has no continuation left,
+// so the note is the fallback the turn-end gate does not replace.
 func TestStaleTodoNoteSurvivesASlowCompaction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits out the cleanup context's 5 s budget")
@@ -480,7 +481,7 @@ func TestStaleTodoNoteSurvivesASlowCompaction(t *testing.T) {
 		// lower it.
 		delay: 6 * time.Second,
 	}
-	agent := newCompactionAgent(env, model, nil, false, &recordingTool{name: tools.BashToolName})
+	agent := cappedTodoAgent(t, env, model, 0)
 	sess, err := env.sessions.Create(t.Context(), "slow compaction")
 	require.NoError(t, err)
 	require.NoError(t, env.sessions.UpdateTodos(t.Context(), sess.ID, []session.Todo{

@@ -219,6 +219,10 @@ type SessionAgentCall struct {
 	// gateContinued marks a call the turn-end gate started, so its run
 	// does not fire TurnStart again.
 	gateContinued bool
+	// gateTodoAsked marks a call whose gate asked the model about a todo
+	// item that stayed open, so the end of that continuation does not
+	// repeat the question as a note in the reply.
+	gateTodoAsked bool
 	// gateBaseline is the working tree at the prompt's start, so the gate
 	// can see a change no tool call made. Nil when nothing reads it, or
 	// when it could not be taken.
@@ -2137,7 +2141,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if !overflowRecovery && !shouldSummarize && currentAssistant != nil &&
 		!call.NonInteractive && !call.Ephemeral {
 		gateRan = true
-		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID))
+		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID),
+			gateTodoState{item: todoStaleItem, unanswered: todoReminderUnanswered})
 	}
 	// Compact when the mid-turn overflow guard tripped, when a provider
 	// context overflow is being recovered, or when the finished turn left
