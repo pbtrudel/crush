@@ -675,9 +675,10 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 }
 
 // LSPDiagnosticsByFile asks the server for every client's per-file
-// counts in one call. A server that predates that route answers 404;
-// only then fall back to asking each server, leaving out the ones that
-// fail. Every failure is logged.
+// counts in one call. When that call fails for any reason (an older
+// server without the route, a transient error), fall back to asking
+// each server, leaving out the ones that fail. Every failure is
+// logged.
 func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts {
 	out := map[string]lsp.DiagnosticCounts{}
 	byFile, err := w.client.GetLSPDiagnosticsByFile(ctx, w.workspaceID())
@@ -690,10 +691,6 @@ func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]l
 				Hint:        counts.Hint,
 			}
 		}
-		return out
-	}
-	if !errors.Is(err, client.ErrNotFound) {
-		slog.Debug("Batch diagnostics failed", "error", err)
 		return out
 	}
 

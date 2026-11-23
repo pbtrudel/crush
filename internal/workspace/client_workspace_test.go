@@ -1606,6 +1606,50 @@ func TestClientWorkspaceDiagnosticsByFileFallsBack(t *testing.T) {
 	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/gopls/diagnostics", "the fallback really asks each server")
 }
 
+// TestClientWorkspaceDiagnosticsByFileFallsBackOnServerError pins that
+// a transient batch failure still counts every server, as the old
+// per-server loop did, instead of dropping all counts.
+func TestClientWorkspaceDiagnosticsByFileFallsBackOnServerError(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/lsps/diagnostics/by-file":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/v1/workspaces/ws-1/lsps":
+			_ = json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{
+				"gopls": {Name: "gopls"},
+				"tsls":  {Name: "tsls"},
+			})
+		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
+			})
+		case "/v1/workspaces/ws-1/lsps/tsls/diagnostics":
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityHint}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 1, Hint: 1}, got["/repo/a.go"], "a transient batch failure still counts every server")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/gopls/diagnostics")
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/tsls/diagnostics")
+}
+
 func TestClientWorkspaceTeamActions(t *testing.T) {
 	t.Parallel()
 	type call struct{ path, body string }
