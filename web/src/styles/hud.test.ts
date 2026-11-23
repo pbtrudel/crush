@@ -37,6 +37,18 @@ describe('HUD server groups', () => {
     // The label text keeps a readable gap from the divider.
     expect(hud).toMatch(/\.hud__servers \.hexes \+ \.hud-label \{[^}]*padding-inline-start: 8px/);
   });
+
+  it('keeps the group button unchanged at rest', () => {
+    const button = rule(hud, '.hud__servers-btn');
+    expect(button).toContain('margin: 0');
+    expect(button).toContain('padding: 0');
+    expect(button).toContain('border: 0');
+    expect(button).toContain('background: none');
+    expect(button).toContain('font: inherit');
+    expect(hud).toMatch(
+      /\.hud__servers-btn:hover,\s*\.hud__servers-btn:focus-visible \{[^}]*color: var\(--cyan\)/,
+    );
+  });
 });
 
 describe('HUD instrument row', () => {

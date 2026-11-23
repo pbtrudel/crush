@@ -54,6 +54,13 @@ describe('palette items', () => {
       .some((i) => i.id === 'action:reasoning-level')).toBe(false);
   });
 
+  it('offers the systems panel', () => {
+    const item = buildItems(sources).find((i) => i.id === 'action:systems')!;
+    expect(item.title).toBe('Systems');
+    expect(item.keywords).toEqual(['mcp', 'lsp', 'servers', 'systems']);
+    expect(item.run).toEqual({ kind: 'action', action: 'systems' });
+  });
+
   it('hides session actions without a session', () => {
     const ids = buildItems({ ...sources, hasSession: false }).map((i) => i.id);
     expect(ids).not.toContain('action:compact');

@@ -9,7 +9,7 @@ import { motion, setMotion, type Motion } from '../../state/motion';
 import { toggleDrawer } from '../../state/drawer';
 import { dispatch, state } from '../../state/store';
 import {
-  argumentItem, closePalette, openModels, openPalette, openSessions, paletteOpen, paletteQuery,
+  argumentItem, closePalette, openModels, openPalette, openSessions, openSystems, paletteOpen, paletteQuery,
   setPaletteQuery, type PaletteSection,
 } from '../../state/palette';
 import { useDialogFocus } from '../interrupt/focus';
@@ -195,6 +195,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
       case ACTIONS.sessions: closePalette(); openSessions(); return;
       case ACTIONS.model: closePalette(); openModels(); return;
       case ACTIONS.reasoningLevel: closePalette(); openModels('reasoning'); return;
+      case ACTIONS.systems: closePalette(); openSystems(); return;
       case ACTIONS.compact:
         if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to compact');
         await api.summarize(sid);

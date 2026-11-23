@@ -22,12 +22,13 @@ import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
 import {
-  closeModels, closeSessions, escapeModels, escapePalette, escapeSessions, modelsOpen, paletteOpen,
-  sessionsOpen, togglePalette,
+  closeModels, closeSessions, closeSystems, escapeModels, escapePalette, escapeSessions, escapeSystems,
+  modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
 import { ModelSelector } from './models/ModelSelector';
+import { SystemsPanel } from './systems/SystemsPanel';
 
 export function App() {
   const s = state.value;
@@ -75,6 +76,7 @@ export function App() {
         e.preventDefault();
         if (sessionsOpen.value) closeSessions();
         if (modelsOpen.value) closeModels();
+        if (systemsOpen.value !== null) closeSystems();
         togglePalette();
         return;
       }
@@ -98,6 +100,13 @@ export function App() {
       if (e.key === 'Escape' && modelsOpen.value) {
         e.preventDefault();
         escapeModels();
+        return;
+      }
+      // The systems panel has no inner layer either; its trap returns focus
+      // to the HUD group that opened it.
+      if (e.key === 'Escape' && systemsOpen.value !== null) {
+        e.preventDefault();
+        escapeSystems();
         return;
       }
       // An open Display menu owns Escape: it closes itself, so the inspector
@@ -164,6 +173,7 @@ export function App() {
       <Palette inert={modal} />
       <SessionSwitcher inert={modal} />
       <ModelSelector inert={modal} />
+      <SystemsPanel inert={modal} />
       <Toasts />
       <CineHint />
     </div>

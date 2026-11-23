@@ -9,8 +9,8 @@ import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { state } from '../../state/store';
 import {
-  argumentItem, closeModels, closePalette, closeSessions, modelsOpen, openPalette, paletteOpen,
-  paletteQuery, sessionsOpen,
+  argumentItem, closeModels, closePalette, closeSessions, closeSystems, modelsOpen, openPalette, paletteOpen,
+  paletteQuery, sessionsOpen, systemsOpen,
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { setMotion } from '../../state/motion';
@@ -117,6 +117,7 @@ afterEach(async () => {
   closePalette();
   closeSessions();
   closeModels();
+  closeSystems();
   argumentItem.value = null;
   setCinematic(false);
   setMotion('full');
@@ -380,6 +381,20 @@ describe('the command palette', () => {
     const checked = root.querySelector<HTMLInputElement>('input[name="model-effort"]:checked');
     expect(checked).not.toBeNull();
     expect(document.activeElement).toBe(checked);
+  });
+
+  it('opens the systems panel from Systems', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    await type('systems');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(systemsOpen.value).toBe('all');
+    expect(root.querySelector('[role="dialog"][aria-label="Systems"]')).not.toBeNull();
   });
 
   it('opens the Display menu for Display settings', async () => {

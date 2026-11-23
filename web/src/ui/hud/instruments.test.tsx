@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'preact';
+import { closeSystems, systemsOpen } from '../../state/palette';
+import { setCinematic } from '../../state/cinematic';
+import { resetWebglProbe } from '../../state/effects';
 import { ContextGauge } from './ContextGauge';
 import { Numeral } from './Numeral';
-import { ServerHexes } from './ServerHexes';
+import { HexTile, ServerHexes } from './ServerHexes';
 import { Sparkline } from './Sparkline';
+
+// The cinematic rule needs a live 3D scene, and the probe reads the canvas
+// context, so the stub has to be in place before the rule first evaluates.
+const originalGetContext = HTMLCanvasElement.prototype.getContext;
+
+beforeEach(() => {
+  HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof originalGetContext;
+  resetWebglProbe();
+});
+
+afterEach(() => {
+  closeSystems();
+  setCinematic(false);
+  HTMLCanvasElement.prototype.getContext = originalGetContext;
+  resetWebglProbe();
+});
 
 const mount = (vnode: preact.VNode) => {
   const root = document.createElement('div');
@@ -51,16 +70,74 @@ describe('Sparkline', () => {
 });
 
 describe('ServerHexes', () => {
-  it('names each hex with a readable tone and its counts', () => {
-    const root = mount(<ServerHexes kind="lsp" servers={{ gopls: { state: '2', diagnostics: 3, tools: 0 } }} />);
-    const hex = root.querySelector('.hex')!;
-    expect(hex.getAttribute('aria-label')).toBe('gopls: ready, 3 diag');
-    expect(hex.querySelector('title')!.textContent).toBe('gopls: ready, 3 diag');
+  it('is one button per group that opens the systems panel', () => {
+    const root = mount(
+      <ServerHexes
+        kind="lsp"
+        servers={{
+          gopls: { state: '2', diagnostics: 0, tools: 0 },
+          tsserver: { state: '3', diagnostics: 4, tools: 0 },
+        }}
+      />,
+    );
+    const button = root.querySelector<HTMLButtonElement>('button.hexes')!;
+    expect(button.getAttribute('aria-label'))
+      .toBe('LSP servers: gopls ready, tsserver error, 4 diagnostics. Open systems');
+    expect(button.tabIndex).toBe(0);
+
+    // The tiles themselves stay decorative and keep their mouse tooltip.
+    for (const hex of Array.from(root.querySelectorAll('.hex'))) {
+      expect(hex.getAttribute('aria-hidden')).toBe('true');
+      expect(hex.getAttribute('role')).toBeNull();
+      expect(hex.getAttribute('aria-label')).toBeNull();
+    }
+    expect(Array.from(root.querySelectorAll('.hex title')).map((t) => t.textContent))
+      .toEqual(['gopls: ready', 'tsserver: error, 4 diag']);
+
+    button.click();
+    expect(systemsOpen.value).toBe('lsp');
   });
 
-  it('fills an empty group with a placeholder', () => {
+  it('names an MCP group with its tools', () => {
+    const root = mount(
+      <ServerHexes
+        kind="mcp"
+        servers={{
+          fs: { state: 'connected', diagnostics: 0, tools: 3 },
+          gh: { state: 'needs auth', diagnostics: 0, tools: 0 },
+        }}
+      />,
+    );
+    expect(root.querySelector('button.hexes')!.getAttribute('aria-label'))
+      .toBe('MCP servers: fs ready, 3 tools, gh error. Open systems');
+  });
+
+  it('names an empty group none', () => {
     const root = mount(<ServerHexes kind="mcp" servers={{}} />);
-    expect(root.querySelectorAll('.hex')).toHaveLength(0);
-    expect(root.querySelector('.hexes__none')!.textContent).toBe('none');
+    const button = root.querySelector<HTMLButtonElement>('button.hexes')!;
+    expect(button.getAttribute('aria-label')).toBe('MCP servers: none. Open systems');
+    expect(button.querySelectorAll('.hex')).toHaveLength(0);
+    expect(button.querySelector('.hexes__none')!.textContent).toBe('none');
+    button.click();
+    expect(systemsOpen.value).toBe('mcp');
+  });
+
+  it('leaves the tab order with the HUD in cinematic mode', () => {
+    setCinematic(true);
+    const root = mount(<ServerHexes kind="lsp" servers={{ gopls: { state: '2', diagnostics: 0, tools: 0 } }} />);
+    expect(root.querySelector<HTMLButtonElement>('button.hexes')!.tabIndex).toBe(-1);
+  });
+});
+
+describe('HexTile', () => {
+  it('marks only an error tile with the bang glyph', () => {
+    const error = mount(<HexTile tone="error" />).querySelector('.hex')!;
+    expect(error.getAttribute('data-tone')).toBe('error');
+    expect(error.getAttribute('aria-hidden')).toBe('true');
+    expect(error.querySelector('.hex__bang')!.textContent).toBe('!');
+
+    const ready = mount(<HexTile tone="lit" />).querySelector('.hex')!;
+    expect(ready.querySelector('.hex__bang')).toBeNull();
+    expect(ready.querySelector('title')).toBeNull();
   });
 });

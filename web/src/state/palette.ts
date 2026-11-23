@@ -103,3 +103,25 @@ export function escapeModels(): boolean {
   closeModels();
   return true;
 }
+
+// systemsOpen holds the HUD's systems panel for MCP and LSP servers. Its
+// focus names the section the opener wants, or all of the panel.
+export const systemsOpen = signal<'lsp' | 'mcp' | 'all' | null>(null);
+export const systemsFocus = signal<'lsp' | 'mcp' | 'all'>('all');
+
+export function openSystems(focus: 'lsp' | 'mcp' | 'all' = 'all'): void {
+  systemsFocus.value = focus;
+  systemsOpen.value = focus;
+}
+
+export function closeSystems(): void {
+  systemsOpen.value = null;
+  systemsFocus.value = 'all';
+}
+
+// escapeSystems reports whether it consumed the press.
+export function escapeSystems(): boolean {
+  if (systemsOpen.value === null) return false;
+  closeSystems();
+  return true;
+}

@@ -25,6 +25,20 @@
 .hud__metric { display: grid; gap: var(--space-1); justify-items: start; }
 .hud__chart { display: grid; gap: var(--space-1); justify-items: start; }
 .hud__servers { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* Each server group is one button that opens the systems panel. The reset
+   keeps the strip unchanged at rest; hover or focus adds the cyan edge. */
+.hud__servers-btn {
+  margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: start; cursor: pointer;
+}
+.hud__servers-btn:hover,
+.hud__servers-btn:focus-visible {
+  color: var(--cyan);
+  text-shadow: var(--glow-text);
+  outline: 1px solid var(--cyan);
+  outline-offset: 2px;
+}
 /* A divider separates the LSP group from the MCP one, so an empty "none"
    never reads as part of the next label. */
 .hud__servers .hexes + .hud-label { padding-inline-start: 8px; border-inline-start: 1px solid var(--edge); }
@@ -86,6 +100,9 @@
 .hex[data-tone='dim'] polygon { fill: var(--text-muted); opacity: 0.4; }
 .hex[data-tone='error'] polygon { fill: var(--magenta); }
 .hex__bang { fill: var(--void-deep); font: 700 10px var(--font-hud); }
+/* The group is one control, so its tiles light up together on hover. */
+.hud__servers-btn:hover .hex polygon,
+.hud__servers-btn:focus-visible .hex polygon { fill: var(--cyan); opacity: 1; }
 
 /* Below 1024px the strips go, with the chart caption; the numbers and the
    gauge stay. */

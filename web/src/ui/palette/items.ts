@@ -48,6 +48,7 @@ export const ACTIONS = {
   sessions: 'sessions',
   model: 'model',
   reasoningLevel: 'reasoning-level',
+  systems: 'systems',
   compact: 'compact',
   reloadSkills: 'reload-skills',
   toggleSkills: 'toggle-skills',
@@ -79,6 +80,7 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.newSession, 'New session', ['clear']),
     action(ACTIONS.sessions, 'Sessions', []),
     action(ACTIONS.model, 'Switch model', ['model']),
+    action(ACTIONS.systems, 'Systems', ['mcp', 'lsp', 'servers', 'systems']),
   ];
   if (s.model.can_reason) {
     actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));
