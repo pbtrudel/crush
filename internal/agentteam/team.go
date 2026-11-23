@@ -978,6 +978,12 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 
 	view, err := s.startRun(ctx, member, req.Prompt)
 	if err != nil {
+		if errors.Is(err, errShutdown) {
+			// Shutdown owns the Team now. Failing the member here would
+			// write after Shutdown returned and leave a teammate a later
+			// enable resumes as failed.
+			return MemberView{}, err
+		}
 		s.failMember(member.Name, err)
 		return s.viewFor(member.Name), nil
 	}
@@ -1010,6 +1016,16 @@ func (s *Service) startRun(ctx context.Context, member Member, prompt string) (M
 // launch runs one turn for a member the caller already marked as starting,
 // so the member reads as running from that mark until the run settles.
 func (s *Service) launch(ctx context.Context, runner Runner, member Member, prompt string) (MemberView, error) {
+	// A turned-off Team starts no work. Checking before the start also keeps
+	// a refused turn from briefly running only to be cancelled below.
+	s.mu.Lock()
+	if s.closed {
+		delete(s.starting, member.Name)
+		s.mu.Unlock()
+		return MemberView{}, errShutdown
+	}
+	s.mu.Unlock()
+
 	var run Run
 	err := errNoRunner
 	if runner != nil {
