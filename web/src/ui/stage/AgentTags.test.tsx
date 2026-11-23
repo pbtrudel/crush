@@ -59,6 +59,63 @@ describe('AgentTags', () => {
     expect(tag.dataset.visible).toBe('true');
   });
 
+  // The task board is a docked panel over the bottom of the stage. A tag
+  // that lands on it covers a lane heading, and the board takes clicks, so
+  // that tag alone moves up to sit clear above the board.
+  function dockBoard(rect: DOMRectReadOnly) {
+    const board = document.createElement('section');
+    board.className = 'taskboard';
+    document.body.append(board);
+    vi.spyOn(board, 'getBoundingClientRect').mockReturnValue(rect);
+    return board;
+  }
+
+  function sizeTag(tag: HTMLElement, width: number, height: number) {
+    Object.defineProperty(tag, 'offsetWidth', { configurable: true, get: () => width });
+    Object.defineProperty(tag, 'offsetHeight', { configurable: true, get: () => height });
+  }
+
+  it('raises a tag that would sit on the task board', async () => {
+    const board = dockBoard(box(592, 489, 816, 147));
+    stageRect.value = box(576, 173, 848, 463);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 64, 40);
+    publishAgentScreens([{ id: 'sub-1', x: 900, y: 560, visible: true }]);
+    // The default offset puts the tag at 504..544, inside the board; it moves
+    // to sit just above the board's top edge instead.
+    expect(tag.style.transform).toBe('translate(900px, 481px) translate(-50%, -100%)');
+    expect(tag.dataset.visible).toBe('true');
+    board.remove();
+  });
+
+  it('keeps the default offset for a tag that clears the board', async () => {
+    const board = dockBoard(box(592, 489, 816, 147));
+    stageRect.value = box(576, 173, 848, 463);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 64, 40);
+    // Above the board's top edge: the default offset already clears it.
+    publishAgentScreens([{ id: 'sub-1', x: 900, y: 400, visible: true }]);
+    expect(tag.style.transform).toBe('translate(900px, 400px) translate(-50%, -140%)');
+    // Level with the board but far to its left: no overlap either.
+    publishAgentScreens([{ id: 'sub-1', x: 100, y: 560, visible: true }]);
+    expect(tag.style.transform).toBe('translate(100px, 560px) translate(-50%, -140%)');
+    board.remove();
+  });
+
+  it('keeps a raised tag inside the stage', async () => {
+    const board = dockBoard(box(592, 180, 816, 400));
+    stageRect.value = box(576, 173, 848, 463);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 64, 40);
+    publishAgentScreens([{ id: 'sub-1', x: 900, y: 560, visible: true }]);
+    // The board's top is under the stage's top, so the stage edge wins.
+    expect(tag.style.transform).toBe('translate(900px, 221px) translate(-50%, -100%)');
+    board.remove();
+  });
+
   it('selects the agent on click', async () => {
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });

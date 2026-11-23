@@ -133,6 +133,7 @@ export function CommandDeck() {
   return (
     <form
       class={`deck glass${cinematic.value ? ' deck--slim' : ''}`}
+      aria-label="Command deck"
       data-busy={s.busy}
       onSubmit={(e) => { e.preventDefault(); void submit(); }}
       onDragOver={(e) => e.preventDefault()}

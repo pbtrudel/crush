@@ -119,7 +119,7 @@
 .panel--log { grid-area: log; transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
 /* The inspector shares the stage's grid area and sits at the end of the
    column, so the constellation keeps the space beside it. */
-.panel--inspector { grid-area: stage; align-self: stretch; justify-self: end; inline-size: min(30rem, 100%); z-index: 2; display: flex; flex-direction: column; min-block-size: 0; }
+.panel--inspector { grid-area: stage; align-self: stretch; justify-self: end; inline-size: min(30rem, 100%); z-index: 2; display: flex; flex-direction: column; min-block-size: 0; overflow: hidden; }
 .panel--inspector[hidden] { display: none; }
 /* The scene shows through the stage; only the agent list and the nodes take input. */
 .stage { grid-area: stage; position: relative; min-block-size: 0; pointer-events: none; }

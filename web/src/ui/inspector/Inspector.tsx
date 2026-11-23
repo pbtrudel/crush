@@ -128,7 +128,7 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
                       }, `Sent to ${agent.name}`, () => setText(''));
                     }}>
                       <label class="hud-label" for="inspector-message">Message {agent.name}</label>
-                      <textarea id="inspector-message" rows={2} value={text} onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)} />
+                      <textarea id="inspector-message" rows={1} value={text} onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)} />
                       <button type="submit" class="btn btn--primary" data-action="message">Send</button>
                     </form>
                   )}

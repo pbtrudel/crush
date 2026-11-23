@@ -107,6 +107,14 @@ afterEach(async () => {
 });
 
 describe('CommandDeck', () => {
+  it('names the deck as a landmark', async () => {
+    seed();
+    await mount();
+    // A form with an accessible name is a landmark, so the deck's input,
+    // label and help text sit inside one instead of loose in the page.
+    expect(root.querySelector('form.deck')!.getAttribute('aria-label')).toBe('Command deck');
+  });
+
   it('badges the deck while plan mode is on', async () => {
     seed({ inputMode: 'plan' });
     await mount();

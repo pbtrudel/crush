@@ -20,7 +20,34 @@ describe('the inspector message box', () => {
     expect(box).toContain('background: var(--void-deep)');
     expect(box).toContain('color: var(--text)');
     expect(box).toContain('border: 1px solid var(--edge)');
-    // The panel is a fixed grid cell, so the box does not resize.
+    // The user handle stays off; the box grows with its text instead.
     expect(box).toContain('resize: none');
+    expect(box).toContain('field-sizing: content');
+    expect(box).toContain('max-block-size: 8rem');
+  });
+});
+
+// The panel is a stack of head, facts, actions and transcript inside a fixed
+// grid cell, so every row the chrome gives up is a row the transcript keeps.
+describe('the inspector stack', () => {
+  it('puts Send beside the message box, not under it', () => {
+    const form = rule('.inspector__message');
+    expect(form).toContain('grid-template-columns: minmax(0, 1fr) auto');
+    expect(form).toContain('align-items: end');
+    expect(rule(".inspector__message [data-action='message']")).toContain('grid-row: 2');
+  });
+
+  it('reads each fact as one label and value pair', () => {
+    expect(rule('.inspector__facts')).toContain('display: flex');
+    expect(rule('.inspector__facts > div')).toContain('display: flex');
+  });
+
+  it('gives an empty result line no room', () => {
+    expect(rule('.inspector__notice:empty')).toContain('display: none');
+  });
+
+  it('lets the transcript keep the height the chrome leaves', () => {
+    expect(rule('.panel--inspector .log')).toContain('flex: 1');
+    expect(rule('.panel--inspector .log')).toContain('padding-block: 8px');
   });
 });

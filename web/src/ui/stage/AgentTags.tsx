@@ -3,6 +3,11 @@ import { statusLabel, type Agent } from '../../state/agents';
 import { currentAgentScreens, stageRect, subscribeAgentScreens, type AgentScreen } from '../../state/layout';
 import { actions } from '../../state/store';
 
+// A tag sits above its node by 140% of its own height. One that lands on the
+// task board moves to just above the board, with this much air.
+const OFFSET_ABOVE = 1.4;
+const BOARD_GAP = 8;
+
 // The tags are the pointer targets of the 3D nodes. They are hidden from
 // assistive technology: the Agents listbox is the accessible path.
 export function AgentTags({ agents, selected }: { agents: Agent[]; selected: string | null }) {
@@ -13,11 +18,31 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
     // A tag is only ever visible over the stage. A node projected onto the
     // deck or the HUD would otherwise put a click target there.
     const box = stageRect.value;
+    // The task board is docked over the bottom of the stage and takes clicks,
+    // so a tag that lands on it covers a lane heading. Its box is read once
+    // per pass; only the tags that collide move.
+    const board = document.querySelector('.taskboard')?.getBoundingClientRect() ?? null;
     const shown = new Set<string>();
     for (const s of screens) {
       const tag = el.querySelector<HTMLElement>(`[data-agent-node="${CSS.escape(s.id)}"]`);
       if (!tag) continue;
-      tag.style.transform = `translate(${s.x}px, ${s.y}px) translate(-50%, -140%)`;
+      let transform = `translate(${s.x}px, ${s.y}px) translate(-50%, -${OFFSET_ABOVE * 100}%)`;
+      // A node above the board's top edge parks its tag above itself, so only
+      // the nodes at or below the board need the tag measured.
+      if (board !== null && s.y >= board.top) {
+        const w = tag.offsetWidth;
+        const h = tag.offsetHeight;
+        const top = s.y - OFFSET_ABOVE * h;
+        const hits = h > 0
+          && s.x + w / 2 > board.left && s.x - w / 2 < board.right
+          && top + h > board.top && top < board.bottom;
+        if (hits) {
+          // Sit it just above the board, never above the stage it belongs to.
+          const raised = Math.max(board.top - BOARD_GAP - h, (box?.top ?? 0) + BOARD_GAP);
+          transform = `translate(${s.x}px, ${raised + h}px) translate(-50%, -100%)`;
+        }
+      }
+      tag.style.transform = transform;
       const inside =
         box === null ||
         box.width <= 0 ||
