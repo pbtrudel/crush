@@ -6,6 +6,9 @@
 .inspector__facts dd[data-status='failed'] { color: var(--magenta); }
 .inspector__actions { display: grid; gap: var(--space-1); padding: var(--space-4); }
 .inspector__message { display: grid; gap: var(--space-1); }
+/* A textarea takes the user agent's field colour by default, which read as
+   an olive block inside the glass panel. It takes the deck's surface. */
+.inspector__message textarea { background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-prose); resize: none; }
 .inspector__error { color: var(--magenta); margin: 0; }
 .inspector__gone { margin: 0; padding: 0 var(--space-4) var(--space-4); }
 .panel--inspector .log { flex: 1; min-block-size: 0; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { createAgentNodes, type SceneAgent } from './agents';
+import { BODY_INTENSITY, createAgentNodes, type SceneAgent } from './agents';
 import { readColors } from './colors';
 import { ORBIT } from './orbit';
 
@@ -13,6 +13,8 @@ function nodes() {
   return { colors, n: createAgentNodes(colors, CORE) };
 }
 
+const tinted = (c: THREE.Color) => c.clone().multiplyScalar(BODY_INTENSITY);
+
 describe('agent nodes', () => {
   it('builds one prism and one filament per agent, colored by kind', () => {
     const { colors, n } = nodes();
@@ -22,8 +24,8 @@ describe('agent nodes', () => {
     expect(bodies).toHaveLength(2);
     expect(n.group.children.filter((c) => c.name === 'agent-filament')).toHaveLength(2);
     const color = (id: string) => ((bodies.find((b) => b.userData.id === id)!.material) as THREE.MeshBasicMaterial).color;
-    expect(color('team-m-1').getHex()).toBe(colors.cyan.getHex());
-    expect(color('sub-1').getHex()).toBe(colors.violet.getHex());
+    expect(color('team-m-1').getHex()).toBe(tinted(colors.cyan).getHex());
+    expect(color('sub-1').getHex()).toBe(tinted(colors.violet).getHex());
   });
 
   it('dims an inactive node and shows only the wireframe while provisioning', () => {
@@ -41,7 +43,23 @@ describe('agent nodes', () => {
     n.sync([{ ...teammate, status: 'failed' }], null);
     n.update(0.016, 0, 'full');
     const body = n.group.children.find((c) => c.name === 'agent-node') as THREE.Mesh;
-    expect((body.material as THREE.MeshBasicMaterial).color.getHex()).toBe(colors.magenta.getHex());
+    expect((body.material as THREE.MeshBasicMaterial).color.getHex()).toBe(tinted(colors.magenta).getHex());
+  });
+
+  it('paints the prism over the frame so the projector halo cannot wash it out', () => {
+    const { colors, n } = nodes();
+    n.sync([teammate, subagent], null);
+    n.update(0.016, 0, 'off');
+    const body = (id: string) => (n.group.children.find((c) => c.name === 'agent-node' && c.userData.id === id) as THREE.Mesh);
+    const material = (id: string) => body(id).material as THREE.MeshBasicMaterial;
+    // Additive cyan summed into the core's white pedestal, which left the
+    // near teammate node an invisible pale blob at 1440x860. The body is
+    // composited over the frame instead, at an intensity that keeps it a
+    // saturated prism beside the halo.
+    expect(material('team-m-1').blending).toBe(THREE.NormalBlending);
+    expect(material('team-m-1').color.getHex()).toBe(tinted(colors.cyan).getHex());
+    expect(material('sub-1').color.getHex()).toBe(tinted(colors.violet).getHex());
+    expect(BODY_INTENSITY).toBeLessThan(1);
   });
 
   it('collapses a node that leaves the roster into the core, then removes it', () => {

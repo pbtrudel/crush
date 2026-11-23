@@ -31,6 +31,10 @@ const FLASH_S = 0.5;
 const FLICKER_S = 0.09;
 const SELECTED_SCALE = 1.3;
 const DIM = 0.35;
+// The body paints its own colour instead of adding to the frame: additive
+// cyan summed into the projector's white halo and the near node vanished.
+// Scaling it keeps the prism a saturated cyan beside that halo.
+export const BODY_INTENSITY = 0.75;
 
 interface Node {
   agent: SceneAgent;
@@ -65,9 +69,10 @@ export function createAgentNodes(colors: SceneColors, core: THREE.Vector3): Agen
   let count = 0;
 
   const kindColor = (a: SceneAgent) => (a.kind === 'teammate' ? colors.cyan : colors.violet);
+  const bodyColor = (c: THREE.Color) => c.clone().multiplyScalar(BODY_INTENSITY);
 
   const build = (agent: SceneAgent): Node => {
-    const material = new THREE.MeshBasicMaterial({ color: kindColor(agent).clone(), transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false });
+    const material = new THREE.MeshBasicMaterial({ color: bodyColor(kindColor(agent)), transparent: true, opacity: 1, depthWrite: false });
     const body = new THREE.Mesh(prism, material);
     body.name = 'agent-node';
     body.userData.id = agent.id;
@@ -161,7 +166,7 @@ export function createAgentNodes(colors: SceneColors, core: THREE.Vector3): Agen
       }
       const failed = agent.status === 'failed';
       const base = failed ? colors.magenta : kindColor(agent);
-      n.material.color.copy(base);
+      n.material.color.copy(base).multiplyScalar(BODY_INTENSITY);
       n.wireMaterial.color.copy(base);
       if (n.flashAge < FLASH_S) {
         n.flashAge += dt;
