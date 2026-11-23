@@ -573,7 +573,7 @@ type Options struct {
 	// renders. Left unset, the measured default applies: DeepSeek models get
 	// the lean profile, and every other model keeps the full one until its
 	// own measurement lands.
-	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills. Left unset\\, DeepSeek models use lean\\, the profile measured on them\\, and every other model keeps full until its own measurement lands.,enum=full,enum=lean"`
+	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills. Left unset\\, DeepSeek models use lean\\, measured on DeepSeek V4.1 Flash\\, and every other model keeps full until its own measurement lands.,enum=full,enum=lean"`
 	// ApplyPatch offers GPT models the apply_patch tool in place of edit
 	// and multiedit. Those models are trained on the *** Begin Patch
 	// format, and exact-string matching is where their edits most often

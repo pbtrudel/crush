@@ -37,6 +37,13 @@ non-inferiority at the predeclared 10-point margin for DeepSeek V4.1 Flash on
 this suite, not superiority. An explicit `prompt_profile: full` remains an
 override.
 
+What was measured is one model on one route: DeepSeek V4.1 Flash through
+`deepseek-flash-nw`. Selecting lean by default for every `deepseek*` model ID
+is a family-level extrapolation from that run, not individually measured
+evidence. Other DeepSeek models, and other routes that serve DeepSeek, inherit
+the default through the roadmap's per-family rule; a valid comparison for each
+of them would still be the evidence that settles it.
+
 Kimi, GLM, Qwen and MiMo also use the default-family add-on when lean is
 explicitly selected, but they were not in this batch. They keep the full
 prompt by default until each family has its own valid comparison. The default

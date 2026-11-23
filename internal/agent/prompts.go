@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
@@ -197,19 +196,20 @@ func effectivePromptProfile(setting, provider, model string) string {
 	case config.PromptProfileLean:
 		return config.PromptProfileLean
 	case "":
-		if deepSeekModel(provider, model) {
+		if deepSeekModel(model) {
 			return config.PromptProfileLean
 		}
 	}
 	return config.PromptProfileFull
 }
 
-// deepSeekModel reports whether DeepSeek serves the model. The model ID
-// decides, so a gateway that serves several vendors is classified by the model
-// it serves; a provider ID counts only for the provider that serves DeepSeek
-// alone, and only when the model ID says nothing.
-func deepSeekModel(provider, model string) bool {
-	return vendorFamily(model) == "deepseek" || provider == string(catwalk.InferenceProviderDeepSeek)
+// deepSeekModel reports whether DeepSeek serves the model, matched on the base
+// name of the model ID so a gateway that serves several vendors is classified
+// by the model it serves. A provider ID is no evidence: the production route
+// reports one openai-compatible provider for every vendor behind it. An ID the
+// rule does not match keeps the full prompt, which is the safe direction.
+func deepSeekModel(model string) bool {
+	return vendorFamily(model) == "deepseek"
 }
 
 // Prompt families group the models that need the same lean-profile add-on.

@@ -48,8 +48,8 @@ func coderPromptTextFor(t *testing.T, store *config.ConfigStore, dir, provider, 
 
 // The profile decides which template set an agent renders: full is today's
 // prompt, lean is the short base plus the add-on for the model's family. An
-// unset profile follows the measurement, so the default family gets the lean
-// prompt and the families still waiting on their own batch keep full.
+// unset profile follows the measurement, so DeepSeek gets the lean prompt and
+// every other model keeps full until its own batch lands.
 func TestPromptProfileSelectsTheTemplateSet(t *testing.T) {
 	t.Parallel()
 
@@ -94,12 +94,13 @@ func TestEffectivePromptProfile(t *testing.T) {
 		model    string
 		want     string
 	}{
-		{name: "unset deepseek provider", provider: "deepseek", model: "chat", want: config.PromptProfileLean},
 		{name: "unset deepseek model", provider: "deepseek", model: "deepseek-v4.1-flash", want: config.PromptProfileLean},
+		{name: "unset deepseek model on another provider", provider: "neuralwatt", model: "deepseek-v4.1-flash", want: config.PromptProfileLean},
 		{name: "unset deepseek model through a gateway", provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", want: config.PromptProfileLean},
 		{name: "unset deepseek distill", provider: "openrouter", model: "deepseek-r1-distill-qwen-32b", want: config.PromptProfileLean},
 		{name: "unset unclassified model", provider: "google", model: "gemini-2.5-pro", want: config.PromptProfileFull},
 		{name: "unset unknown model", want: config.PromptProfileFull},
+		{name: "unset bedrock deepseek id fails safe", provider: "bedrock", model: "us.deepseek.r1-v1:0", want: config.PromptProfileFull},
 		{name: "unset kimi k3.1", provider: "moonshot", model: "kimi-k3.1", want: config.PromptProfileFull},
 		{name: "unset kimi on a gateway", provider: "commandcode", model: "kimi/kimi-k3.1", want: config.PromptProfileFull},
 		{name: "unset glm", provider: "zai", model: "glm-4.6", want: config.PromptProfileFull},

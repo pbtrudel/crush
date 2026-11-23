@@ -511,7 +511,7 @@ String Keys:
   prompt-profile string            coder system prompt: full, or lean, a
                                    short base plus a model-family add-on;
                                    unset uses lean for DeepSeek models,
-                                   where it was measured, and full for
+                                   measured on V4.1 Flash, and full for
                                    every other model
   attribution-trailer-style string attribution trailer: none, co-authored-by,
                                    or assisted-by

@@ -39,8 +39,9 @@ func promptWorkDir(t *testing.T, repo bool) string {
 // drops the policy.
 func coderPromptTextIn(t *testing.T, workDir string, teamsOn bool) string {
 	t.Helper()
-	// The golden pins the full coder prompt, so the profile is explicit: an
-	// unset profile renders lean for the default family the mock model is in.
+	// The golden pins the full coder prompt, so the profile is explicit: what
+	// an unset profile renders depends on the model, and nothing here asserts
+	// the lean text.
 	store := config.NewTestStore(&config.Config{Options: &config.Options{
 		AgentTeams:    &teamsOn,
 		PromptProfile: config.PromptProfileFull,
@@ -121,8 +122,7 @@ func TestCoderPromptDropsDelegationWhenAgentTeamsAreOff(t *testing.T) {
 // A config reload re-renders the prompt of the live agents, so the setting
 // takes effect in the session that changed it, both ways.
 func TestAgentTeamsToggleReRendersTheLivePrompt(t *testing.T) {
-	// The lines below are the full prompt's: an unset profile follows the
-	// measured default for this fixture's model.
+	// The lines below belong to the full prompt, so the profile is explicit.
 	coord := newPolicyTestCoordinator(t, policyTestSetup{
 		interactive: true,
 		profile:     config.PromptProfileFull,

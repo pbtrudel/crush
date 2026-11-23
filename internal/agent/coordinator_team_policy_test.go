@@ -131,8 +131,7 @@ func TestCoderPromptRendersTeamPolicyOnlyWithTeamTools(t *testing.T) {
 
 // Dropping the policy must not take the rest of the prompt with it.
 func TestCoderPromptWithDisabledTeamToolsKeepsTheRest(t *testing.T) {
-	// The rest of the prompt is the full one: an unset profile follows the
-	// measured default for this fixture's model.
+	// The prompt asserted here is the full one, so the profile is explicit.
 	coord := newPolicyTestCoordinator(t, policyTestSetup{
 		interactive:   true,
 		disabledTools: teamToolNames,
