@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/web"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 )
@@ -47,11 +49,27 @@ func main() {
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
-	g, err := web.Start(ctx, web.Options{
+	opts := web.Options{
 		Workspace:            fake,
 		AgentTeamsDir:        teamDir,
 		OnInputModeRequested: func(plan bool) { modeRequests <- plan },
-	})
+	}
+	// The m3 scenario carries the M3 seeds and the plan handoff the terminal
+	// would confirm; the default scenario stays exactly as it was.
+	planRequests := make(chan struct{}, 8)
+	m3 := os.Getenv("WEBFAKE_SCENARIO") == "m3"
+	if m3 {
+		if err := webtest.SeedM3(fake, clock); err != nil {
+			fmt.Fprintln(os.Stderr, "webfake:", err)
+			os.RemoveAll(teamDir)
+			os.Exit(1)
+		}
+		opts.LoadCommands = func(*config.Config) ([]commands.CustomCommand, error) {
+			return webtest.M3Commands(), nil
+		}
+		opts.OnPlanHandoff = func(string, bool) { planRequests <- struct{}{} }
+	}
+	g, err := web.Start(ctx, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "webfake:", err)
 		os.RemoveAll(teamDir)
@@ -62,6 +80,16 @@ func main() {
 			g.SetInputMode(plan)
 		}
 	}()
+	if m3 {
+		go func() {
+			for range planRequests {
+				g.SetPlanReady("")
+			}
+		}()
+	}
+	if os.Getenv("WEBFAKE_PLAN_READY") == "1" {
+		g.SetPlanReady(fake.CurrentSessionID())
+	}
 	fmt.Println(g.LaunchURL())
 	if u, err := url.Parse(g.URL()); err == nil {
 		fmt.Fprintf(os.Stderr, "Dev server: CRUSH_WEB_DEV_PORT=%s npm --prefix web run dev, then open http://localhost:5173/#t=%s\n",

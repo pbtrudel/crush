@@ -1,6 +1,7 @@
 import type {
   AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, PermissionMode, PermissionNotification,
-  PermissionRequest, QuestionRequest, ServerInfo, Session, Snapshot, TeamState, ToolResultData, WireEvent,
+  PermissionRequest, QuestionRequest, ServerInfo, Session, ShellOutput, Snapshot, TeamState, ToolResultData,
+  WebError, WireEvent,
 } from '../api/types';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
@@ -10,6 +11,9 @@ export interface Toast { id: number; tone: Tone; text: string; action?: ToastAct
 export interface ServerState { state: string; diagnostics: number; tools: number }
 export interface AgentCall { callId: string; tool: string }
 export interface Inspected { sessionId: string; session: Session | null; messages: Message[]; loading: boolean }
+export interface ShellRun {
+  sessionId: string; command: string; output: string; done: boolean; exitCode: number | null;
+}
 
 export interface State {
   conn: Conn;
@@ -19,6 +23,8 @@ export interface State {
   project: string;
   branch: string;
   model: ModelInfo;
+  agentReady: boolean;
+  planReady: string;
   permissionMode: PermissionMode;
   inputMode: InputMode;
   sessionId: string;
@@ -41,16 +47,18 @@ export interface State {
   runs: AgentRun[];
   activity: Record<string, AgentCall>;
   inspected: Inspected | null;
+  shells: Record<string, ShellRun>;
 }
 
 export function initialState(): State {
   return {
     conn: 'booting', lastSeq: 0, version: '', workingDir: '', project: '', branch: '',
-    model: { id: '', name: '', provider: '', context_window: 0 },
+    model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
+    agentReady: true, planReady: '',
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
     permissions: [], question: null, questionQueue: [], busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
-    files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null,
+    files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null, shells: {},
   };
 }
 
@@ -243,6 +251,11 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     project: projectName(snap.working_dir),
     branch: snap.branch ?? '',
     model: snap.model,
+    // The snapshot carries the agent's readiness twice; the top-level field
+    // is the same read as model.agent_ready, so either one is authoritative.
+    agentReady: snap.agent_ready ?? true,
+    planReady: snap.plan_ready_session_id ?? '',
+    shells: snap.current_session_id === s.sessionId ? s.shells : {},
     permissionMode: snap.permission_mode,
     inputMode: snap.input_mode,
     sessionId: snap.current_session_id,
@@ -263,6 +276,41 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
   };
 }
 
+// SHELL_CAP bounds one shell run's retained output. A command that prints
+// without end would otherwise grow the tab's memory with every chunk.
+const SHELL_CAP = 256 * 1024;
+
+// startShell records a run the tab just started, so its first frame and
+// the command it came from already have a place to land.
+export function startShell(s: State, runId: string, sessionId: string, command: string): State {
+  return { ...s, shells: { ...s.shells, [runId]: { sessionId, command, output: '', done: false, exitCode: null } } };
+}
+
+// capShell keeps the last SHELL_CAP characters and starts the kept text on
+// a line boundary, so a trimmed run never opens mid-line.
+function capShell(output: string): string {
+  if (output.length <= SHELL_CAP) return output;
+  const tail = output.slice(-SHELL_CAP);
+  const nl = tail.indexOf('\n');
+  return nl < 0 ? tail : tail.slice(nl + 1);
+}
+
+// applyShellOutput appends a chunk to its run, creating the run for a frame
+// from another tab (which carries no command), and settles it on the done
+// frame.
+function applyShellOutput(s: State, e: ShellOutput): State {
+  const prev = s.shells[e.run_id] ?? {
+    sessionId: e.session_id, command: '', output: '', done: false, exitCode: null,
+  };
+  const run: ShellRun = {
+    ...prev,
+    output: capShell(prev.output + (e.chunk ?? '')),
+    done: prev.done || !!e.done,
+    exitCode: e.done ? e.exit_code ?? null : prev.exitCode,
+  };
+  return { ...s, shells: { ...s.shells, [e.run_id]: run } };
+}
+
 export function reduce(s: State, f: Frame): State {
   const next = { ...s, lastSeq: Math.max(s.lastSeq, f.seq) };
   const ev = f.payload as WireEvent<any>;
@@ -278,11 +326,20 @@ export function reduce(s: State, f: Frame): State {
     case 'gateway_closing':
       return { ...next, conn: 'ended', busy: false };
     case 'web_error': {
-      const text = (f.payload as { error: string }).error;
+      const e = f.payload as WebError;
       // A replay after a reconnect repeats a seq the state already holds;
       // only a new frame is a new error.
-      return f.seq <= s.lastSeq ? next : pushToast(next, 'error', text);
+      if (f.seq <= s.lastSeq) return next;
+      return pushToast(next, e.code === 'agent_starting' ? 'warn' : 'error', e.error);
     }
+    case 'model_changed': {
+      const m = f.payload as ModelInfo;
+      return { ...next, model: m, agentReady: m.agent_ready };
+    }
+    case 'shell_output':
+      return applyShellOutput(next, f.payload as ShellOutput);
+    case 'plan_ready':
+      return { ...next, planReady: (f.payload as { session_id: string }).session_id };
     case 'message': {
       const m = ev.payload as Message;
       let base: State = next;

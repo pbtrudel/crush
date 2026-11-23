@@ -9,6 +9,7 @@ import {
   mergeInspected, pushToast, reduce, setConn, unmarkAnswered, type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
+import { describeFailure } from './failure';
 import { observe, telemetry } from './telemetry';
 
 export const state = signal<State>(initialState());
@@ -27,7 +28,7 @@ export function dispatch(fn: (s: State) => State) {
 }
 
 function errorText(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'The request did not reach crush';
+  return describeFailure(err).text;
 }
 
 // report toasts an error for actions with no control to show it on.

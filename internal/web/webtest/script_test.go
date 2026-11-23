@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -95,6 +96,35 @@ func TestSeedHolodeckWritesTeamFiles(t *testing.T) {
 	team, err := os.ReadFile(filepath.Join(dir, "team.json"))
 	require.NoError(t, err)
 	require.True(t, strings.Contains(string(team), `"alice"`))
+	// The seeded history of parser.go runs 0, 1, 2 in version order, so a
+	// drawer opens the latest version and the diff of the first one.
+	s1Files, err := f.ListSessionHistory(t.Context(), "s1")
+	require.NoError(t, err)
+	var s1Versions []int64
+	for _, file := range s1Files {
+		if file.Path == f.parserPath() {
+			s1Versions = append(s1Versions, file.Version)
+		}
+	}
+	require.Equal(t, []int64{0, 1}, s1Versions)
+	teamFiles, err := f.ListSessionHistory(t.Context(), "team-m-1")
+	require.NoError(t, err)
+	require.Len(t, teamFiles, 3)
+	app := filepath.Join(f.WorkingDir(), "web", "src", "app.ts")
+	var parserVersion int64 = -1
+	var appVersions []int64
+	for _, file := range teamFiles {
+		switch file.Path {
+		case f.parserPath():
+			parserVersion = file.Version
+		case app:
+			appVersions = append(appVersions, file.Version)
+		}
+	}
+	require.EqualValues(t, 2, parserVersion)
+	require.Equal(t, []int64{0, 1}, appVersions)
+	// The parser file reports one error, which the drawer and the HUD read.
+	require.Equal(t, lsp.DiagnosticCounts{Error: 1}, f.LSPDiagnosticsByFile(t.Context())[f.parserPath()])
 }
 
 // TestScriptedDelegates pins the delegation prompt: the subagent starts an

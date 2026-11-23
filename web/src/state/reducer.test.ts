@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
-import type { Frame, Snapshot } from '../api/types';
+import type { Frame, ModelInfo, Snapshot } from '../api/types';
 import {
   adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, reduce,
-  setConn, toolResults,
+  setConn, startShell, toolResults,
 } from './reducer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -13,8 +13,8 @@ const snapshot = (over: Partial<Snapshot> = {}): Frame => ({
   payload: {
     version: 'v1', working_dir: '/repo/holodeck', current_session_id: 's1',
     messages: [], permissions: [], permission_mode: 'normal', input_mode: 'code',
-    model: { id: 'm', name: 'Model', provider: 'p', context_window: 200000 },
-    busy: false, queued: [], ...over,
+    model: { id: 'm', name: 'Model', provider: 'p', context_window: 200000, agent_ready: true },
+    agent_ready: true, busy: false, queued: [], ...over,
   },
 });
 const live = () => reduce(initialState(), snapshot());
@@ -291,5 +291,102 @@ describe('M2 state', () => {
     expect(s.inspected).toBeNull();
     expect(s.activity).toEqual({});
     expect(s.files).toEqual([]);
+  });
+});
+
+describe('M3 state', () => {
+  const fromSnapshot = () => reduce(initialState(), fx.snapshot);
+
+  it('applies the wire model fields the fixtures carry', () => {
+    const m = fx.model_changed.payload as ModelInfo;
+    expect(m).toMatchObject({
+      id: 'claude-sonnet', provider: 'anthropic', context_window: 200000,
+      can_reason: true, effort_levels: ['low', 'medium', 'high'], reasoning_effort: 'high',
+      think: true, small: { id: 'claude-haiku', provider: 'anthropic' }, agent_ready: true,
+    });
+  });
+
+  it('applies model_changed and agent readiness', () => {
+    let s = reduce(fromSnapshot(), fx.model_changed);
+    expect(s.model.id).toBe('claude-sonnet');
+    expect(s.agentReady).toBe(true);
+    const payload: ModelInfo = {
+      id: 'm2', name: 'Model Two', provider: 'p1', context_window: 1000, agent_ready: false,
+    };
+    s = reduce(s, { seq: 50, type: 'model_changed', payload });
+    expect(s.model.id).toBe('m2');
+    expect(s.agentReady).toBe(false);
+  });
+
+  it('streams shell output into its run and settles it', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 51, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, { seq: 52, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'b\n' } });
+    s = reduce(s, { seq: 53, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r1).toEqual({ sessionId: 's1', command: 'ls', output: 'a\nb\n', done: true, exitCode: 0 });
+  });
+
+  it('keeps shell output from another tab as its own run', () => {
+    const s = reduce(fromSnapshot(), { seq: 54, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', chunk: 'x' } });
+    expect(s.shells.r9.output).toBe('x');
+    expect(s.shells.r9.command).toBe('');
+  });
+
+  it('caps a shell run at 256 KiB of output, keeping the tail', () => {
+    let s = startShell(fromSnapshot(), 'r2', 's1', 'yes');
+    const chunk = 'y\n'.repeat(70_000);
+    s = reduce(s, { seq: 55, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk } });
+    s = reduce(s, { seq: 56, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk } });
+    expect(s.shells.r2.output.length).toBeLessThanOrEqual(256 * 1024);
+    expect(s.shells.r2.output.startsWith('y\n')).toBe(true);
+    expect(s.shells.r2.output.endsWith('y\n')).toBe(true);
+  });
+
+  it('records and clears the pending plan', () => {
+    let s = reduce(fromSnapshot(), { seq: 57, type: 'plan_ready', payload: { session_id: 's1' } });
+    expect(s.planReady).toBe('s1');
+    s = reduce(s, { seq: 58, type: 'plan_ready', payload: { session_id: '' } });
+    expect(s.planReady).toBe('');
+  });
+
+  it('shows agent_starting web errors as a warning, not an error', () => {
+    const s = reduce(fromSnapshot(), { seq: 59, type: 'web_error', payload: { session_id: 's1', code: 'agent_starting', error: 'Crush is starting the agent; send the prompt again in a moment' } });
+    expect(s.toasts.at(-1)?.tone).toBe('warn');
+  });
+
+  it('keeps other web errors an error', () => {
+    const s = reduce(fromSnapshot(), { ...fx.web_error, seq: 61 });
+    expect(s.toasts.at(-1)?.tone).toBe('error');
+  });
+
+  it('does not repeat a replayed agent_starting warning', () => {
+    const f: Frame = { seq: 59, type: 'web_error', payload: { code: 'agent_starting', error: 'starting' } };
+    const s = reduce(reduce(fromSnapshot(), f), f);
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('takes agent_ready and the pending plan from the snapshot', () => {
+    const snap = { ...(fx.snapshot.payload as Snapshot), agent_ready: false, plan_ready_session_id: 's1' };
+    const s = reduce(initialState(), { seq: 60, type: 'snapshot', payload: snap });
+    expect(s.agentReady).toBe(false);
+    expect(s.planReady).toBe('s1');
+  });
+
+  it('starts ready with no plan and no shells', () => {
+    const s = initialState();
+    expect(s.agentReady).toBe(true);
+    expect(s.planReady).toBe('');
+    expect(s.shells).toEqual({});
+  });
+
+  it('follows the snapshot model readiness and keeps shells within a session', () => {
+    let s = reduce(initialState(), snapshot());
+    expect(s.agentReady).toBe(true);
+    expect(s.planReady).toBe('');
+    s = startShell(s, 'r1', 's1', 'ls');
+    s = reduce(s, snapshot({ current_session_id: 's1' }));
+    expect(s.shells.r1.command).toBe('ls');
+    s = reduce(s, snapshot({ current_session_id: 's2' }));
+    expect(s.shells).toEqual({});
   });
 });
