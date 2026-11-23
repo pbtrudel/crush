@@ -21,6 +21,10 @@ const (
 	// and new texts are dropped and the unified diff is cut, so one
 	// generated file cannot stall the tab.
 	maxDiffBytes = 1 << 20
+	// maxDiffInputBytes bounds one side of a diff. A pair of files under it
+	// is always diffed: the unified text is what a big answer falls back
+	// to, so only a side larger than this gives up on the diff entirely.
+	maxDiffInputBytes = 8 << 20
 	// maxTreeSessions bounds the child-session walk. A real tree is a few
 	// dozen sessions; the cap only stops a runaway or cyclic parent chain.
 	maxTreeSessions = 256
@@ -177,8 +181,8 @@ func newFileStatCache() *fileStatCache {
 }
 
 // totals returns the line counts between the first and the latest version
-// of path. A version over the diff cap makes the counts unknown instead of
-// paying for a diff whose spans the drawer cannot use.
+// of path. A version over the per-side diff limit makes the counts unknown
+// instead of paying for a diff whose spans the drawer cannot use.
 func (c *fileStatCache) totals(path string, versions []history.File) (additions, removals int, unknown bool) {
 	first, last := versions[0], versions[len(versions)-1]
 	firstID, lastID := versionIdentity(first), versionIdentity(last)
@@ -192,7 +196,7 @@ func (c *fileStatCache) totals(path string, versions []history.File) (additions,
 	// Diff outside the lock: a megabyte file must not block the snapshots
 	// of every other tab. A racing identical lookup recomputes the same
 	// numbers and stores them again.
-	if len(first.Content) > maxDiffBytes || len(last.Content) > maxDiffBytes {
+	if len(first.Content) > maxDiffInputBytes || len(last.Content) > maxDiffInputBytes {
 		unknown = true
 	} else {
 		_, additions, removals = diff.GenerateDiff(first.Content, last.Content, path)
@@ -246,9 +250,10 @@ func buildDiff(path string, versions []history.File, from, to *int64) (FileDiff,
 		return FileDiff{}, err
 	}
 	d := FileDiff{Path: path, From: fromIdx, To: toIdx, Language: languageFor(path)}
-	// Two texts over the cap are not diffed at all: the diff itself is the
-	// expensive part, and the drawer shows the same too-large fallback.
-	if len(a.Content)+len(b.Content) > maxDiffBytes {
+	// Only a side over the per-side limit is refused: the diff of two such
+	// files would cost far more than the drawer can render, and there is no
+	// unified text to fall back to either.
+	if len(a.Content) > maxDiffInputBytes || len(b.Content) > maxDiffInputBytes {
 		d.Truncated = true
 		return d, nil
 	}

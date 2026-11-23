@@ -123,14 +123,14 @@ export function DiffPanel({ path }: { path: string }) {
       )}
       {!diff && !error && <p class="hud-label">Loading the diff</p>}
       {diff?.truncated
-        ? (
-          <>
-            <p class="hud-label">This diff is over 1 MB, so only the unified text is shown.</p>
-            {diff.unified
-              ? <UnifiedText text={diff.unified} />
-              : <p class="hud-label">Diff text not available.</p>}
-          </>
-        )
+        ? (diff.unified
+            ? (
+              <>
+                <p class="hud-label">This diff is over 1 MB, so only the unified text is shown.</p>
+                <UnifiedText text={diff.unified} />
+              </>
+            )
+            : <p class="hud-label">These files are too large to diff.</p>)
         : <div class="diffpanel__view" ref={host} />}
     </section>
   );

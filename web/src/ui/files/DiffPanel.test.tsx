@@ -67,15 +67,15 @@ describe('DiffPanel', () => {
     expect(root.querySelector('.diff-unified [data-kind="hunk"]')).not.toBeNull();
   });
 
-  // A truncated answer can carry no text at all: the notice still has to
-  // show, without an empty box below it.
-  it('shows the truncated notice without an empty diff body', async () => {
+  // A side too large to diff is the one truncated answer with no unified
+  // text: the notice says so instead of blaming the size of the render.
+  it('says a file is too large to diff instead of showing an empty body', async () => {
     vi.spyOn(api, 'diff').mockResolvedValue(diff({ old: '', new: '', unified: '', truncated: true }));
     await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
     await flush();
     expect(mounted.modes).toEqual([]);
-    expect(root.textContent).toContain('over 1 MB');
-    expect(root.textContent).toContain('Diff text not available');
+    expect(root.textContent).toContain('These files are too large to diff');
+    expect(root.textContent).not.toContain('over 1 MB');
     expect(root.querySelector('pre.diff-unified')).toBeNull();
   });
 

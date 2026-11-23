@@ -59,11 +59,12 @@ func TestFileSummariesAggregateChildSessions(t *testing.T) {
 }
 
 // TestFileSummariesSkipOversizedDiff pins ruling I3: a version above the
-// diff cap is never diffed, and its counts are reported as unknown so the
-// drawer does not show a misleading zero. Either end of the pair counts.
+// per-side diff limit is never diffed, and its counts are reported as
+// unknown so the drawer does not show a misleading zero. Either end of the
+// pair counts, and the limit is the diff limit, not the answer cap.
 func TestFileSummariesSkipOversizedDiff(t *testing.T) {
 	t.Parallel()
-	huge := strings.Repeat("o", maxDiffBytes+1)
+	huge := strings.Repeat("o", maxDiffInputBytes+1)
 	for _, tc := range []struct {
 		name        string
 		first, last string
@@ -254,10 +255,11 @@ func TestFileDiffRejectsPathOutsideTree(t *testing.T) {
 
 func lines(c string, n int) string { return strings.Repeat(strings.Repeat(c, 1023)+"\n", n) }
 
-// TestFileDiffTruncatesOversizedPair pins that the route never diffs two
-// texts whose sum is over the cap: the answer is the truncated fallback
-// with no content at all.
-func TestFileDiffTruncatesOversizedPair(t *testing.T) {
+// TestFileDiffTruncatesLargePair pins spec 2.7 for a large pair: two texts
+// whose sum is over the cap are still diffed, and the answer keeps the
+// unified text alone. A 600 KB file edited by one line is far under the
+// per-side limit, so the pair is diffed and only the texts are dropped.
+func TestFileDiffTruncatesLargePair(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	fake.AddHistory(history.File{
@@ -266,33 +268,66 @@ func TestFileDiffTruncatesOversizedPair(t *testing.T) {
 	})
 	fake.AddHistory(history.File{
 		ID: "big-1", SessionID: "s1", Path: "/repo/big.txt", Version: 1, CreatedAt: 2, UpdatedAt: 2,
-		Content: lines("n", 600),
+		Content: lines("o", 599) + "one more line\n",
 	})
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/big.txt", ""), "")
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
-	require.NotContains(t, string(body), "oooo", "no old content in the payload")
-	require.NotContains(t, string(body), "nnnn", "no new content in the payload")
 	var d FileDiff
 	require.NoError(t, json.Unmarshal(body, &d))
 	require.True(t, d.Truncated)
 	require.Empty(t, d.Old)
 	require.Empty(t, d.New)
-	require.Empty(t, d.Unified)
+	require.NotEmpty(t, d.Unified, "a large pair still gets its unified diff")
+	require.Contains(t, d.Unified, "+one more line")
+	require.LessOrEqual(t, len(d.Unified), maxDiffBytes)
 	require.Equal(t, "text", d.Language)
 }
 
-func TestBuildDiffSkipsOversizedPair(t *testing.T) {
+// TestBuildDiffKeepsUnifiedForLargePair is the unit-level twin: the old and
+// new texts are dropped once the payload is over the cap, and the unified
+// text stays.
+func TestBuildDiffKeepsUnifiedForLargePair(t *testing.T) {
 	t.Parallel()
+	old := lines("o", 600)
+	next := lines("o", 599) + "one more line\n"
+	require.Greater(t, len(old)+len(next), maxDiffBytes)
 	d, err := buildDiff("/repo/big.txt", []history.File{
-		{Version: 0, Content: lines("o", 600)},
-		{Version: 1, Content: lines("n", 600)},
+		{Version: 0, Content: old},
+		{Version: 1, Content: next},
 	}, nil, nil)
 	require.NoError(t, err)
 	require.True(t, d.Truncated)
 	require.Empty(t, d.Old)
 	require.Empty(t, d.New)
-	require.Empty(t, d.Unified)
+	require.Contains(t, d.Unified, "+one more line")
 	require.Equal(t, "text", d.Language)
+}
+
+// TestBuildDiffRefusesAHugeSide pins the only answer with no unified text:
+// a single side over the per-side limit is never diffed, because the diff
+// of two such files would cost far more than the render can hold.
+func TestBuildDiffRefusesAHugeSide(t *testing.T) {
+	t.Parallel()
+	huge := strings.Repeat("x", maxDiffInputBytes+1)
+	for _, tc := range []struct {
+		name        string
+		first, last string
+	}{
+		{"huge first side", huge, "small\n"},
+		{"huge last side", "small\n", huge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := buildDiff("/repo/huge.txt", []history.File{
+				{Version: 0, Content: tc.first},
+				{Version: 1, Content: tc.last},
+			}, nil, nil)
+			require.NoError(t, err)
+			require.True(t, d.Truncated)
+			require.Empty(t, d.Unified)
+			require.Empty(t, d.Old)
+			require.Empty(t, d.New)
+		})
+	}
 }
 
 // TestBuildDiffCutsUnifiedAtLineBoundary keeps the cut path honest: a pair
