@@ -46,6 +46,7 @@ func TestFileSummariesAggregateChildSessions(t *testing.T) {
 	g, fake := startTest(t)
 	seedTree(fake)
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/s1/files", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	var got []FileSummary
 	require.NoError(t, json.Unmarshal(body, &got))
@@ -73,6 +74,7 @@ func TestFileSummariesSkipOversizedDiff(t *testing.T) {
 		{"oversized last version", "small\n", huge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			g, fake := startTest(t)
 			fake.AddHistory(history.File{
 				ID: "big-0", SessionID: "s1", Path: "/repo/big.txt", Version: 0, CreatedAt: 1, UpdatedAt: 1,
@@ -144,6 +146,7 @@ func TestFileSummariesMergeCollidingVersions(t *testing.T) {
 
 	c := authedClient(t, g)
 	rsp, body := doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", ""), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	var d FileDiff
 	require.NoError(t, json.Unmarshal(body, &d))
@@ -153,12 +156,14 @@ func TestFileSummariesMergeCollidingVersions(t *testing.T) {
 	require.Equal(t, "one\ntwo\nthree\nfour\n", d.New)
 
 	rsp, body = doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", "&from=1&to=2"), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	require.NoError(t, json.Unmarshal(body, &d))
 	require.Equal(t, "one\ntwo\n", d.Old, "position 1 is the parent's version 1 at t=11")
 	require.Equal(t, "one\ntwo\nthree\n", d.New, "position 2 is the child's version 0 at t=12")
 
 	rsp, body = doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/x.go", "&from=4"), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
 	require.Contains(t, string(body), "bad_version")
 }
@@ -225,6 +230,7 @@ func TestFileRoutesRejectUnknownSession(t *testing.T) {
 		diffURL(g, "nope", "/repo/a.go", ""),
 	} {
 		rsp, body := doJSON(t, c, http.MethodGet, target, "")
+		rsp.Body.Close()
 		require.Equal(t, http.StatusNotFound, rsp.StatusCode, target)
 		require.Contains(t, string(body), "unknown_session", target)
 	}
@@ -237,6 +243,7 @@ func TestFileDiffAcrossChildSessions(t *testing.T) {
 	c := authedClient(t, g)
 
 	rsp, body := doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/a.go", ""), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	var d FileDiff
 	require.NoError(t, json.Unmarshal(body, &d))
@@ -250,6 +257,7 @@ func TestFileDiffAcrossChildSessions(t *testing.T) {
 	require.False(t, d.Truncated)
 
 	rsp, body = doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/a.go", "&from=1&to=2"), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.NoError(t, json.Unmarshal(body, &d))
 	require.Equal(t, "a\nb\n", d.Old, "version 1 is the subagent's edit")
@@ -262,6 +270,7 @@ func TestFileDiffRejectsUnknownVersion(t *testing.T) {
 	c := authedClient(t, g)
 	for _, extra := range []string{"&from=5", "&to=abc", "&from=-1"} {
 		rsp, body := doJSON(t, c, http.MethodGet, diffURL(g, "s1", "/repo/a.go", extra), "")
+		rsp.Body.Close()
 		require.Equal(t, http.StatusBadRequest, rsp.StatusCode, extra)
 		require.Contains(t, string(body), "bad_version")
 	}
@@ -274,10 +283,12 @@ func TestFileDiffRejectsPathOutsideTree(t *testing.T) {
 	c := authedClient(t, g)
 	for _, p := range []string{"/repo/c.go", "../../etc/passwd", "/etc/passwd"} {
 		rsp, body := doJSON(t, c, http.MethodGet, diffURL(g, "s1", p, ""), "")
+		rsp.Body.Close()
 		require.Equal(t, http.StatusNotFound, rsp.StatusCode, p)
 		require.Contains(t, string(body), "unknown_path")
 	}
 	rsp, _ := doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/s1/files/diff", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 }
 
@@ -299,6 +310,7 @@ func TestFileDiffTruncatesLargePair(t *testing.T) {
 		Content: lines("o", 599) + "one more line\n",
 	})
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/big.txt", ""), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	var d FileDiff
 	require.NoError(t, json.Unmarshal(body, &d))
@@ -345,6 +357,7 @@ func TestBuildDiffRefusesAHugeSide(t *testing.T) {
 		{"huge last side", "small\n", huge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d, err := buildDiff("/repo/huge.txt", []history.File{
 				{Version: 0, Content: tc.first},
 				{Version: 1, Content: tc.last},
@@ -392,6 +405,7 @@ func TestFileDiffKeepsAngleBrackets(t *testing.T) {
 		Content: "<p>a&b</p>\n",
 	})
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/page.html", ""), "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	require.NotContains(t, string(body), `\u003c`, "the body is not HTML-escaped")
 	require.NotContains(t, string(body), `\u0026`)

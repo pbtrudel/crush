@@ -682,6 +682,7 @@ func TestMessagesForUnknownSessionIs404(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/nope/messages", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
 }
 
@@ -700,8 +701,10 @@ func TestMalformedAndOversizedBodies(t *testing.T) {
 	g, _ := startTest(t)
 	c := authedClient(t, g)
 	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/mode", `{"mode":`)
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 	rsp, _ = doJSON(t, c, http.MethodPost, g.URL()+"/api/permissions/mode", `{"mode":"`+strings.Repeat("x", maxJSONBytes)+`"}`)
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 }
 
@@ -709,6 +712,7 @@ func TestPromptMustBeMultipart(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", `{"prompt":"hi"}`)
+	rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 	require.Contains(t, string(body), "bad_form")
 	require.Empty(t, fake.CallLog())

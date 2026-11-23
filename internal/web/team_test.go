@@ -129,6 +129,7 @@ func TestTeamFramesKeepLastGoodRuns(t *testing.T) {
 	}
 	// The snapshot keeps the last good runs as well.
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	var later Snapshot
 	require.NoError(t, json.Unmarshal(body, &later))
@@ -196,9 +197,11 @@ func TestGetSessionRoute(t *testing.T) {
 	g, _ := startTest(t)
 	c := authedClient(t, g)
 	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/s1", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.Contains(t, string(body), `"id":"s1"`)
 	rsp, _ = doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/nope", "")
+	rsp.Body.Close()
 	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
 }
 
@@ -207,8 +210,10 @@ func TestTeamRoutesCallTheWorkspace(t *testing.T) {
 	g, fake := startTest(t)
 	c := authedClient(t, g)
 	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/alice/message", `{"session_id":"s1","text":"rebase first"}`)
+	rsp.Body.Close()
 	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
 	rsp, _ = doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/alice/interrupt", `{"session_id":"s1"}`)
+	rsp.Body.Close()
 	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
 	require.Equal(t, []string{"TeamSendMessage:s1:alice:rebase first", "TeamInterrupt:s1:alice"}, fake.CallLog())
 }
@@ -223,6 +228,7 @@ func TestTeamRoutesValidate(t *testing.T) {
 		`{"session_id":"s1","text":"` + strings.Repeat("x", agentteam.DefaultMaxMessageBytes+1) + `"}`: "message_too_large",
 	} {
 		rsp, data := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/alice/message", body)
+		rsp.Body.Close()
 		require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 		require.Contains(t, string(data), code)
 	}
@@ -245,6 +251,7 @@ func TestTeamRoutesMapErrors(t *testing.T) {
 	for _, tc := range cases {
 		fake.SetTeamErr(tc.err)
 		rsp, data := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/bob/interrupt", `{"session_id":"s1"}`)
+		rsp.Body.Close()
 		require.Equal(t, tc.status, rsp.StatusCode, tc.code)
 		require.Contains(t, string(data), tc.code)
 		require.NotContains(t, string(data), "/tmp/crush.sock")
@@ -352,6 +359,7 @@ func TestTeamRoutesMapErrorsOverClientWorkspace(t *testing.T) {
 			g := startClientGateway(t, tc.coordinator)
 			c := authedClient(t, g)
 			rsp, data := doJSON(t, c, http.MethodPost, g.URL()+"/api/team/members/bob/interrupt", `{"session_id":"s1"}`)
+			rsp.Body.Close()
 			require.Equal(t, tc.status, rsp.StatusCode, string(data))
 			var answer struct {
 				Error string `json:"error"`
