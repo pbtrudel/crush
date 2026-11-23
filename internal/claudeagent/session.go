@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -253,7 +254,17 @@ func (s *session) prepare(ctx context.Context, req turnRequest, cfg launchConfig
 			s.pending.reset()
 			prep := &prepared{continuation: results, start: end}
 			if end < len(req.Prompt) {
-				prep.steer = ConvertPrompt(req.Prompt[end:])
+				harness, user := trailingInjections(req.Prompt[end:])
+				if len(harness) > 0 {
+					// A reminder added after the results belongs with
+					// them: steering it would label it as the user's.
+					last := len(prep.continuation) - 1
+					prep.continuation[last].result = attachInjection(
+						prep.continuation[last].result, strings.Join(harness, "\n\n"))
+				}
+				if len(user) > 0 {
+					prep.steer = ConvertPrompt(user)
+				}
 			}
 			return prep, nil
 		}

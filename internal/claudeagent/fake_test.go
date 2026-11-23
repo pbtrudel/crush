@@ -159,6 +159,98 @@ func TestFakeCLIContinuationSendsOnlyNewContent(t *testing.T) {
 	require.Contains(t, users[0].Text, "CALL_TOOL")
 }
 
+// A harness reminder that trails the tool results is attached to the tool
+// result, not steered: the CLI reports steered text as sent by the user, and
+// the user never wrote the reminder.
+func TestFakeCLIReminderRidesTheToolResult(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fake.log")
+	manager, req, parts := fakeToolSession(t, logPath)
+
+	var call *fantasy.StreamPart
+	for i := range parts {
+		if parts[i].Type == fantasy.StreamPartTypeToolCall {
+			call = &parts[i]
+		}
+	}
+	require.NotNil(t, call, "the fake should have asked for a tool call")
+
+	req.Prompt = append(fakeContinuation(req.Prompt, *call),
+		fantasy.Message{
+			Role:    fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{fantasy.TextPart{Text: "<system_reminder>Your todo list still shows an item as unfinished.</system_reminder>"}},
+		},
+	)
+	parts = fakeStream(t, manager, req)
+	require.Equal(t, fantasy.FinishReasonStop, fakeFinish(t, parts).FinishReason)
+
+	// Stop the process so the fake has flushed its log.
+	manager.Close()
+
+	var users []fakeLogEntry
+	var results []fakeLogEntry
+	for _, entry := range readFakeLog(t, logPath) {
+		switch entry.Kind {
+		case "user":
+			users = append(users, entry)
+		case "tool_result":
+			results = append(results, entry)
+		}
+	}
+	require.Len(t, users, 1, "the reminder must not be steered as a user message")
+	require.Contains(t, users[0].Text, "CALL_TOOL")
+	require.Len(t, results, 1)
+	require.Contains(t, results[0].Text, "hello", "the tool result keeps its output")
+	require.Contains(t, results[0].Text, "Your todo list still shows an item as unfinished",
+		"the reminder reaches the model inside the tool result")
+}
+
+// A message the user typed after the tool results still steers, in the order
+// it was typed, while a reminder in the same gap rides the tool result.
+func TestFakeCLIUserMessageAfterToolResultsStillSteers(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "fake.log")
+	manager, req, parts := fakeToolSession(t, logPath)
+
+	var call *fantasy.StreamPart
+	for i := range parts {
+		if parts[i].Type == fantasy.StreamPartTypeToolCall {
+			call = &parts[i]
+		}
+	}
+	require.NotNil(t, call, "the fake should have asked for a tool call")
+
+	req.Prompt = append(fakeContinuation(req.Prompt, *call),
+		fantasy.Message{
+			Role:    fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{fantasy.TextPart{Text: "<system_reminder>Check the list.</system_reminder>"}},
+		},
+		fantasy.Message{
+			Role:    fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{fantasy.TextPart{Text: "PLEASE_TYPE"}},
+		},
+	)
+	parts = fakeStream(t, manager, req)
+	require.Equal(t, fantasy.FinishReasonStop, fakeFinish(t, parts).FinishReason)
+
+	manager.Close()
+
+	var users []fakeLogEntry
+	var results []fakeLogEntry
+	for _, entry := range readFakeLog(t, logPath) {
+		switch entry.Kind {
+		case "user":
+			users = append(users, entry)
+		case "tool_result":
+			results = append(results, entry)
+		}
+	}
+	require.Len(t, users, 2, "the typed message steers on its own")
+	require.Contains(t, users[1].Text, "PLEASE_TYPE")
+	require.NotContains(t, users[1].Text, "Check the list",
+		"the reminder must not ride the typed message")
+	require.Len(t, results, 1)
+	require.Contains(t, results[0].Text, "Check the list")
+}
+
 // TestFakeCLIUtilityRequest checks the throwaway process a title or compaction
 // request gets: its own system prompt, no tools, and no transcript.
 func TestFakeCLIUtilityRequest(t *testing.T) {
