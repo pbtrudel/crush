@@ -35,7 +35,17 @@ type policyTestSetup struct {
 	// agentTeams forces the Agent Teams setting on or off. nil leaves the
 	// default, which is on.
 	agentTeams *bool
+	// profile is the prompt_profile the config carries. Empty leaves it
+	// unset, which follows the measured default for the model's family.
+	profile string
+	// mainModel is the model ID the provider serves and the config selects.
+	// Empty selects model-a.
+	mainModel string
 }
+
+// policyTestDeepSeek is the model ID a test selects when it wants a model the
+// measured lean default covers.
+const policyTestDeepSeek = "deepseek-v4.1-flash"
 
 // newPolicyTestCoordinator builds a real coordinator against a hermetic config
 // so the coder's system prompt comes from the production path, the same one a
@@ -56,14 +66,20 @@ func newPolicyTestCoordinator(t *testing.T, setup policyTestSetup) *coordinator 
 		APIKey:  "test",
 		Models: []catwalk.Model{
 			{ID: "model-a", DefaultMaxTokens: 4096},
+			{ID: policyTestDeepSeek, DefaultMaxTokens: 4096},
 		},
 	})
+	modelID := setup.mainModel
+	if modelID == "" {
+		modelID = "model-a"
+	}
 	cfg.OverridePreferredModel(config.SelectedModelTypeMain,
-		config.SelectedModel{Provider: providerID, Model: "model-a"})
+		config.SelectedModel{Provider: providerID, Model: modelID})
 	cfg.OverridePreferredModel(config.SelectedModelTypeSmall,
-		config.SelectedModel{Provider: providerID, Model: "model-a"})
+		config.SelectedModel{Provider: providerID, Model: modelID})
 	cfg.Config().Options.DisabledTools = setup.disabledTools
 	cfg.Config().Options.AgentTeams = setup.agentTeams
+	cfg.Config().Options.PromptProfile = setup.profile
 	cfg.SetupAgents()
 
 	coord, err := NewCoordinator(t.Context(), CoordinatorOptions{
@@ -115,7 +131,12 @@ func TestCoderPromptRendersTeamPolicyOnlyWithTeamTools(t *testing.T) {
 
 // Dropping the policy must not take the rest of the prompt with it.
 func TestCoderPromptWithDisabledTeamToolsKeepsTheRest(t *testing.T) {
-	coord := newPolicyTestCoordinator(t, policyTestSetup{interactive: true, disabledTools: teamToolNames})
+	// The prompt asserted here is the full one, so the profile is explicit.
+	coord := newPolicyTestCoordinator(t, policyTestSetup{
+		interactive:   true,
+		disabledTools: teamToolNames,
+		profile:       config.PromptProfileFull,
+	})
 
 	prompt := coord.agents[config.AgentCoder].SystemPrompt()
 	require.Contains(t, prompt, "<critical_rules>")

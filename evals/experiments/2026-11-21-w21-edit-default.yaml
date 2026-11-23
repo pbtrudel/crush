@@ -1,0 +1,25 @@
+date: 2026-11-21
+name: w21-edit-default
+variants:
+  - name: control
+    ref: 9b617481
+  - name: edit
+    ref: 9b617481
+    overlay: {edit_without_read: true}
+routes: [deepseek-flash-nw]
+repetitions: 6
+# Batch w21-default-1 (route deepseek-flash) was void at 3.1% contamination:
+# runs probed the sibling run directories their own path advertised. The
+# rerun runs on Neuralwatt, after the jail moved the child to a neutral path.
+# Decides whether edit_without_read turns on by default. Batch w21-edit-3
+# (3 repetitions) cut refused edits by 15.5 points, but its pass-rate guard
+# interval [-16.7, +5.6] was too wide to clear the margin; twice the
+# repetitions narrow it. Only the total refused compares across arms: with
+# edit_without_read on, the not_read and no_match kinds split differently.
+primary_metric: edit_refusals
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.06424518204221902
+# Both variants run the same build, the ref below. The overlay reaches the
+# child through its generated config, not the environment, so only the
+# overlay differs between them.

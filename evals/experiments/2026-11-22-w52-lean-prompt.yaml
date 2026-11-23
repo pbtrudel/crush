@@ -1,0 +1,22 @@
+date: 2026-11-22
+name: w52-lean-prompt
+variants:
+  - name: full
+    ref: b47033951c3de39140daa3d6168c3d95052df9d7
+  - name: lean
+    ref: b47033951c3de39140daa3d6168c3d95052df9d7
+    overlay: {prompt_profile: lean}
+routes: [deepseek-flash-nw]
+repetitions: 6
+# Roadmap W5.2 and W5.3: does the lean prompt profile (a 7 KB shared base plus
+# a family add-on, against the 25 KB full coder prompt) keep DeepSeek's pass
+# rate? The roadmap accepts the short prompt per model family, and DeepSeek
+# V4.1 Flash writes most of this workspace's messages, so it runs first. The
+# lean profile gives DeepSeek the default add-on. Pass rate is the primary
+# metric with a 10-point margin; tokens, steps and false completions come from
+# the compare tables. Both variants build the same commit, so only the
+# overlay differs.
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.06424518204221902
