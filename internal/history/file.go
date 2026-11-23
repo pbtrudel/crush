@@ -25,6 +25,18 @@ type File struct {
 	UpdatedAt int64
 }
 
+// FileMeta is one file version without its content. Size is the number
+// of bytes in the version's content.
+type FileMeta struct {
+	ID        string
+	SessionID string
+	Path      string
+	Version   int64
+	CreatedAt int64
+	UpdatedAt int64
+	Size      int64
+}
+
 // Service manages file versions and history for sessions.
 type Service interface {
 	pubsub.Subscriber[File]
@@ -36,6 +48,11 @@ type Service interface {
 	Get(ctx context.Context, id string) (File, error)
 	GetByPathAndSession(ctx context.Context, path, sessionID string) (File, error)
 	ListBySession(ctx context.Context, sessionID string) ([]File, error)
+
+	// ListMetaBySession lists every version of every file in the
+	// session without loading its content, with the byte size of each
+	// version.
+	ListMetaBySession(ctx context.Context, sessionID string) ([]FileMeta, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
@@ -163,6 +180,26 @@ func (s *service) ListBySession(ctx context.Context, sessionID string) ([]File, 
 		files[i] = s.fromDBItem(dbFile)
 	}
 	return files, nil
+}
+
+func (s *service) ListMetaBySession(ctx context.Context, sessionID string) ([]FileMeta, error) {
+	rows, err := s.q.ListFileVersionsBySession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	metas := make([]FileMeta, len(rows))
+	for i, row := range rows {
+		metas[i] = FileMeta{
+			ID:        row.ID,
+			SessionID: row.SessionID,
+			Path:      row.Path,
+			Version:   row.Version,
+			CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt,
+			Size:      row.Size,
+		}
+	}
+	return metas, nil
 }
 
 func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error) {

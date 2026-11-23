@@ -718,6 +718,41 @@ func (c *Client) ListSessionHistoryFiles(ctx context.Context, id string, session
 	return files, nil
 }
 
+// ListSessionHistoryMeta retrieves history metadata for a session: one
+// entry per file version, without content.
+func (c *Client) ListSessionHistoryMeta(ctx context.Context, id string, sessionID string) ([]proto.FileMeta, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/history/meta", id, sessionID), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session history metadata: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get session history metadata: %w", err)
+	}
+	var metas []proto.FileMeta
+	if err := json.NewDecoder(rsp.Body).Decode(&metas); err != nil {
+		return nil, fmt.Errorf("failed to decode session history metadata: %w", err)
+	}
+	return metas, nil
+}
+
+// GetHistoryFile retrieves one file version with its content.
+func (c *Client) GetHistoryFile(ctx context.Context, id string, fileID string) (proto.File, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/history/%s", id, fileID), nil, nil)
+	if err != nil {
+		return proto.File{}, fmt.Errorf("failed to get file version: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.File{}, fmt.Errorf("failed to get file version: %w", err)
+	}
+	var file proto.File
+	if err := json.NewDecoder(rsp.Body).Decode(&file); err != nil {
+		return proto.File{}, fmt.Errorf("failed to decode file version: %w", err)
+	}
+	return file, nil
+}
+
 // ListChildSessions returns the sessions a session spawned.
 func (c *Client) ListChildSessions(ctx context.Context, id string, sessionID string) ([]proto.Session, error) {
 	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/children", id, sessionID), nil, nil)

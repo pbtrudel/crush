@@ -616,6 +616,22 @@ func (w *ClientWorkspace) ListSessionHistory(ctx context.Context, sessionID stri
 	return protoToFiles(files), nil
 }
 
+func (w *ClientWorkspace) ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	metas, err := w.client.ListSessionHistoryMeta(ctx, w.workspaceID(), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return protoToFileMetas(metas), nil
+}
+
+func (w *ClientWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	file, err := w.client.GetHistoryFile(ctx, w.workspaceID(), id)
+	if err != nil {
+		return history.File{}, err
+	}
+	return protoToFile(file), nil
+}
+
 // -- LSP --
 
 func (w *ClientWorkspace) LSPStart(ctx context.Context, path string) {
@@ -1767,6 +1783,26 @@ func protoToTodos(todos []proto.Todo) []session.Todo {
 			Status:     session.TodoStatus(t.Status),
 			ActiveForm: t.ActiveForm,
 		}
+	}
+	return out
+}
+
+func protoToFileMeta(f proto.FileMeta) history.FileMeta {
+	return history.FileMeta{
+		ID:        f.ID,
+		SessionID: f.SessionID,
+		Path:      f.Path,
+		Version:   f.Version,
+		CreatedAt: f.CreatedAt,
+		UpdatedAt: f.UpdatedAt,
+		Size:      f.Size,
+	}
+}
+
+func protoToFileMetas(files []proto.FileMeta) []history.FileMeta {
+	out := make([]history.FileMeta, len(files))
+	for i, f := range files {
+		out[i] = protoToFileMeta(f)
 	}
 	return out
 }

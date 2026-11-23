@@ -51,6 +51,7 @@ type Querier interface {
 	// prompt history.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
 	ListChildSessions(ctx context.Context, parentSessionID sql.NullString) ([]Session, error)
+	ListFileVersionsBySession(ctx context.Context, sessionID string) ([]ListFileVersionsBySessionRow, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)

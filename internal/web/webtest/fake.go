@@ -335,6 +335,39 @@ func (f *Fake) ListSessionHistory(_ context.Context, sessionID string) ([]histor
 	return append([]history.File(nil), f.history[sessionID]...), nil
 }
 
+func (f *Fake) ListSessionHistoryMeta(_ context.Context, sessionID string) ([]history.FileMeta, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	files := f.history[sessionID]
+	metas := make([]history.FileMeta, len(files))
+	for i, file := range files {
+		metas[i] = history.FileMeta{
+			ID:        file.ID,
+			SessionID: file.SessionID,
+			Path:      file.Path,
+			Version:   file.Version,
+			CreatedAt: file.CreatedAt,
+			UpdatedAt: file.UpdatedAt,
+			Size:      int64(len(file.Content)),
+		}
+	}
+	return metas, nil
+}
+
+func (f *Fake) GetHistoryVersion(_ context.Context, id string) (history.File, error) {
+	f.record("GetHistoryVersion:" + id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, files := range f.history {
+		for _, file := range files {
+			if file.ID == id {
+				return file, nil
+			}
+		}
+	}
+	return history.File{}, fmt.Errorf("history version %s: %w", id, sql.ErrNoRows)
+}
+
 func (f *Fake) AgentRun(ctx context.Context, sessionID, prompt string, att ...message.Attachment) error {
 	f.record("AgentRun:" + sessionID + ":" + prompt)
 	if f.OnRun != nil {

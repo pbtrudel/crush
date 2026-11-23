@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,6 +444,35 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 		return
 	}
 	jsonEncode(w, history)
+}
+
+// handleGetWorkspaceSessionHistoryMeta returns the file version
+// metadata for a session, without content.
+func (c *controllerV1) handleGetWorkspaceSessionHistoryMeta(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	metas, err := c.backend.ListSessionHistoryMeta(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.FileMetasToProto(metas))
+}
+
+// handleGetWorkspaceHistoryFile returns one file version with content.
+func (c *controllerV1) handleGetWorkspaceHistoryFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	fid := r.PathValue("fid")
+	file, err := c.backend.GetHistoryFile(r.Context(), id, fid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusNotFound, "file version not found")
+			return
+		}
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.FileToProto(file))
 }
 
 // handleGetWorkspaceSessionChildren returns the sessions a session spawned.

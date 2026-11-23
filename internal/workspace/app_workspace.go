@@ -381,6 +381,14 @@ func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string)
 	return w.app.History.ListBySession(ctx, sessionID)
 }
 
+func (w *AppWorkspace) ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	return w.app.History.ListMetaBySession(ctx, sessionID)
+}
+
+func (w *AppWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	return w.app.History.Get(ctx, id)
+}
+
 // -- LSP --
 
 func (w *AppWorkspace) LSPStart(ctx context.Context, path string) {

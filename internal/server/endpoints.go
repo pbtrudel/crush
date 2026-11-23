@@ -224,6 +224,25 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSessionHistory),
 
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history/meta").
+			Summary("List session history metadata").
+			Description("Lists every file version of a session without its content, with its size in bytes.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.FileMeta{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionHistoryMeta),
+
+		apigen.Get("/v1/workspaces/{id}/history/{fid}").
+			Summary("Get one file version").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("fid", "File version ID").
+			Responds(proto.File{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceHistoryFile),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/children").
 			Summary("List child sessions").
 			Description("Lists the subagent, teammate and helper sessions a session spawned, oldest first.").

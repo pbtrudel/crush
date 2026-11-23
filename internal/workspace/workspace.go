@@ -240,6 +240,15 @@ type Workspace interface {
 	// History
 	ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error)
 
+	// ListSessionHistoryMeta lists every file version of a session
+	// without its content, with its size in bytes.
+	ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error)
+
+	// GetHistoryVersion returns one file version with its content. A
+	// missing version wraps sql.ErrNoRows in process and
+	// client.ErrNotFound in client mode.
+	GetHistoryVersion(ctx context.Context, id string) (history.File, error)
+
 	// LSP
 	LSPStart(ctx context.Context, path string)
 	LSPStopAll(ctx context.Context)

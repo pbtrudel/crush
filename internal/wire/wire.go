@@ -339,6 +339,29 @@ func FileToProto(f history.File) proto.File {
 	}
 }
 
+// FileMetaToProto converts a file version without its content into its
+// wire form.
+func FileMetaToProto(f history.FileMeta) proto.FileMeta {
+	return proto.FileMeta{
+		ID:        f.ID,
+		SessionID: f.SessionID,
+		Path:      f.Path,
+		Version:   f.Version,
+		CreatedAt: f.CreatedAt,
+		UpdatedAt: f.UpdatedAt,
+		Size:      f.Size,
+	}
+}
+
+// FileMetasToProto converts file version metadata into its wire form.
+func FileMetasToProto(files []history.FileMeta) []proto.FileMeta {
+	out := make([]proto.FileMeta, len(files))
+	for i, f := range files {
+		out[i] = FileMetaToProto(f)
+	}
+	return out
+}
+
 // MessageToProto converts a message into its wire form.
 func MessageToProto(m message.Message) proto.Message {
 	msg := proto.Message{

@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -1659,4 +1660,52 @@ func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
 	require.NoError(t, err)
 	got := <-sent
 	require.Equal(t, []proto.Todo{{Content: "ship", Status: "in_progress", ActiveForm: "Shipping"}}, got.Todos)
+}
+
+// TestClientWorkspaceHistoryMeta pins the two history calls the gateway
+// makes: metadata without content, one full version by id, and a 404
+// mapping to client.ErrNotFound.
+func TestClientWorkspaceHistoryMeta(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/sessions/s1/history/meta":
+			require.NoError(t, json.NewEncoder(w).Encode([]proto.FileMeta{
+				{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
+				{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5},
+			}))
+		case "/v1/workspaces/ws-1/history/h2":
+			require.NoError(t, json.NewEncoder(w).Encode(proto.File{
+				ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13,
+			}))
+		default:
+			require.Equal(t, "/v1/workspaces/ws-1/history/nope", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{Message: "file version not found"}))
+		}
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	metas, err := ws.ListSessionHistoryMeta(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Equal(t, []history.FileMeta{
+		{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
+		{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5},
+	}, metas)
+
+	got, err := ws.GetHistoryVersion(t.Context(), "h2")
+	require.NoError(t, err)
+	require.Equal(t, history.File{
+		ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13,
+	}, got)
+
+	_, err = ws.GetHistoryVersion(t.Context(), "nope")
+	require.ErrorIs(t, err, client.ErrNotFound)
 }

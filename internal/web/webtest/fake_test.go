@@ -2,10 +2,12 @@ package webtest
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/stretchr/testify/require"
@@ -53,4 +55,24 @@ func TestEmitRacesCancel(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestFakeHistoryMeta pins the fake's metadata projection: sizes come
+// from the stored content and a missing version wraps sql.ErrNoRows.
+func TestFakeHistoryMeta(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	f.AddHistory(history.File{ID: "h1", SessionID: "s1", Path: "/a", Content: "abc", Version: 0})
+
+	metas, err := f.ListSessionHistoryMeta(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Equal(t, []history.FileMeta{{ID: "h1", SessionID: "s1", Path: "/a", Size: 3}}, metas)
+
+	got, err := f.GetHistoryVersion(t.Context(), "h1")
+	require.NoError(t, err)
+	require.Equal(t, "abc", got.Content)
+
+	_, err = f.GetHistoryVersion(t.Context(), "nope")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+	require.Contains(t, f.CallLog(), "GetHistoryVersion:h1")
 }

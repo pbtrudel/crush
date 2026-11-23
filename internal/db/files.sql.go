@@ -122,6 +122,55 @@ func (q *Queries) GetFileByPathAndSession(ctx context.Context, arg GetFileByPath
 	return i, err
 }
 
+const listFileVersionsBySession = `-- name: ListFileVersionsBySession :many
+SELECT id, session_id, path, version, created_at, updated_at,
+       CAST(octet_length(content) AS INTEGER) AS size
+FROM files
+WHERE session_id = ?
+ORDER BY version ASC, created_at ASC
+`
+
+type ListFileVersionsBySessionRow struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+	Version   int64  `json:"version"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+	Size      int64  `json:"size"`
+}
+
+func (q *Queries) ListFileVersionsBySession(ctx context.Context, sessionID string) ([]ListFileVersionsBySessionRow, error) {
+	rows, err := q.query(ctx, q.listFileVersionsBySessionStmt, listFileVersionsBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFileVersionsBySessionRow{}
+	for rows.Next() {
+		var i ListFileVersionsBySessionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Path,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Size,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFilesByPath = `-- name: ListFilesByPath :many
 SELECT id, session_id, path, content, version, created_at, updated_at
 FROM files

@@ -93,6 +93,10 @@ func (m *mockHistoryService) ListLatestSessionFiles(ctx context.Context, session
 	return nil, nil
 }
 
+func (m *mockHistoryService) ListMetaBySession(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	return nil, nil
+}
+
 func (m *mockHistoryService) Delete(ctx context.Context, id string) error {
 	return nil
 }

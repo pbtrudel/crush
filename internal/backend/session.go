@@ -5,6 +5,7 @@ import (
 
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/session"
@@ -94,6 +95,25 @@ func (b *Backend) ListSessionHistory(ctx context.Context, workspaceID, sessionID
 	}
 
 	return ws.History.ListBySession(ctx, sessionID)
+}
+
+// ListSessionHistoryMeta returns the metadata for a session's file
+// versions, without their content.
+func (b *Backend) ListSessionHistoryMeta(ctx context.Context, workspaceID, sessionID string) ([]history.FileMeta, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return ws.History.ListMetaBySession(ctx, sessionID)
+}
+
+// GetHistoryFile returns one file version with its content.
+func (b *Backend) GetHistoryFile(ctx context.Context, workspaceID, fileID string) (history.File, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return history.File{}, err
+	}
+	return ws.History.Get(ctx, fileID)
 }
 
 // ListChildSessions returns the sessions a session spawned.
