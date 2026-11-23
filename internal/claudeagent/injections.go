@@ -25,8 +25,10 @@ func trailingInjections(trail fantasy.Prompt) (harness []string, user fantasy.Pr
 }
 
 // injectionText returns the text of a harness reminder, and false for
-// anything else. A reminder is a user message made of text only, opened with
-// one of the tags the log report names for the rows the harness writes.
+// anything else. A reminder is a user message made of text only that opens
+// with one of the tags the log report names and closes with the matching end
+// tag: a message that starts with a tag but goes on after it is the user
+// quoting one, and it has to reach the model as the user's.
 func injectionText(msg fantasy.Message) (string, bool) {
 	if msg.Role != fantasy.MessageRoleUser || len(msg.Content) == 0 {
 		return "", false
@@ -39,8 +41,9 @@ func injectionText(msg fantasy.Message) (string, bool) {
 		}
 		b.WriteString(text.Text)
 	}
-	text := b.String()
-	if logreport.InjectionTag(text) == "" {
+	text := strings.TrimSpace(b.String())
+	tag := logreport.InjectionTag(text)
+	if tag == "" || !strings.HasSuffix(text, "</"+tag+">") {
 		return "", false
 	}
 	return text, true

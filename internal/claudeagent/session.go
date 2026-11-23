@@ -258,6 +258,8 @@ func (s *session) prepare(ctx context.Context, req turnRequest, cfg launchConfig
 				if len(harness) > 0 {
 					// A reminder added after the results belongs with
 					// them: steering it would label it as the user's.
+					// A pair always exists to carry it, because
+					// collectContinuation reports ok only with one.
 					last := len(prep.continuation) - 1
 					prep.continuation[last].result = attachInjection(
 						prep.continuation[last].result, strings.Join(harness, "\n\n"))

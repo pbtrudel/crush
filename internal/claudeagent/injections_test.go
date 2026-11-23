@@ -56,6 +56,16 @@ func TestTrailingInjections(t *testing.T) {
 			user:    []string{"carry on"},
 		},
 		{
+			name:  "a tag that is not the whole message",
+			trail: fantasy.Prompt{injectionMessage("<system_reminder>Check the list.</system_reminder> and also fix the tests")},
+			user:  []string{"<system_reminder>Check the list.</system_reminder> and also fix the tests"},
+		},
+		{
+			name:    "a reminder with whitespace after its close tag",
+			trail:   fantasy.Prompt{injectionMessage("\n<system_reminder>Check the list.</system_reminder>\n")},
+			harness: []string{"<system_reminder>Check the list.</system_reminder>"},
+		},
+		{
 			name:  "nothing trailing",
 			trail: nil,
 		},
