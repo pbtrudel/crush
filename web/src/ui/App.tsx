@@ -64,7 +64,7 @@ export function App() {
       const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
       // closed while a dialog owns the page.
-      if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
         if (needsAttention(state.value)) return;
         e.preventDefault();
         togglePalette();

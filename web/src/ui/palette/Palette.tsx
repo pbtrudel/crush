@@ -43,28 +43,33 @@ function nextMotion(m: Motion): Motion {
   return m === 'full' ? 'reduced' : m === 'reduced' ? 'off' : 'full';
 }
 
-// loadSources loads every source in parallel. One failure leaves its group
-// out and is reported without a page log.
-async function loadSources(): Promise<{ loaded: Loaded; errors: unknown[] }> {
-  const [commands, prompts, skills, sessions, models] = await Promise.allSettled([
-    api.commands(), api.mcpPrompts(), api.skills(), api.sessions(), api.providers(),
-  ]);
-  const errors: unknown[] = [];
-  const take = <T,>(r: PromiseSettledResult<T>, fallback: T): T => {
-    if (r.status === 'fulfilled') return r.value;
-    errors.push(r.reason);
-    return fallback;
-  };
-  return {
-    loaded: {
-      commands: take(commands, { commands: [] }).commands,
-      prompts: take(prompts, { prompts: [] }).prompts,
-      skills: take(skills, { skills: [] }).skills,
-      sessions: take(sessions, [] as Session[]).map(({ id, title }) => ({ id, title })),
-      models: take(models, { choices: [] }).choices,
-    },
-    errors,
-  };
+// Every group has its own source, so a refetch can name just the groups it
+// needs and a failure only touches that group.
+type SourceKey = 'commands' | 'prompts' | 'skills' | 'sessions' | 'models';
+
+const SOURCE_KEYS: SourceKey[] = ['commands', 'prompts', 'skills', 'sessions', 'models'];
+
+// FETCH reads one source, shaped like the Loaded field it belongs to.
+const FETCH: { [K in SourceKey]: () => Promise<Loaded[K]> } = {
+  commands: async () => (await api.commands()).commands,
+  prompts: async () => (await api.mcpPrompts()).prompts,
+  skills: async () => (await api.skills()).skills,
+  sessions: async () => (await api.sessions()).map(({ id, title }) => ({ id, title })),
+  models: async () => (await api.providers()).choices,
+};
+
+function merge<K extends SourceKey>(loaded: Loaded, key: K, value: Loaded[K]): Loaded {
+  return { ...loaded, [key]: value };
+}
+
+function without(
+  errors: Partial<Record<SourceKey, unknown>>,
+  key: SourceKey,
+): Partial<Record<SourceKey, unknown>> {
+  if (!(key in errors)) return errors;
+  const next = { ...errors };
+  delete next[key];
+  return next;
 }
 
 // openDisplayMenu opens the HUD's Display menu, the surface the terminal's
@@ -89,10 +94,12 @@ export function Palette({ inert }: { inert: boolean }) {
 function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boolean }) {
   const s = state.value;
   const [loaded, setLoaded] = useState<Loaded>(EMPTY);
-  const [errors, setErrors] = useState<unknown[]>([]);
+  const [errors, setErrors] = useState<Partial<Record<SourceKey, unknown>>>({});
   const [failure, setFailure] = useState<unknown | null>(null);
   const [active, setActive] = useState(0);
   const dialog = useRef<HTMLDivElement>(null);
+  const alive = useRef(true);
+  const generations = useRef<Partial<Record<SourceKey, number>>>({});
   const argumentId = argumentItem.value;
   const query = paletteQuery.value;
 
@@ -100,10 +107,37 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   // re-focuses the first control when the argument form comes and goes.
   useDialogFocus(dialog, `${section}:${argumentId ?? ''}`);
 
-  const reload = async () => {
-    const next = await loadSources();
-    setLoaded(next.loaded);
-    setErrors(next.errors);
+  // A source can answer after the dialog closed; the flag keeps that answer
+  // from reaching an unmounted tree.
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  // reload fetches the named sources (all by default) and merges each answer
+  // into its own group. A failure keeps that group's previous value and
+  // records the error, so one bad source never wipes the list.
+  const reload = async (only?: SourceKey[]) => {
+    await Promise.all((only ?? SOURCE_KEYS).map(async (key) => {
+      // A slower answer from an earlier request must not overwrite a newer
+      // one for the same source.
+      const generation = (generations.current[key] ?? 0) + 1;
+      generations.current[key] = generation;
+      try {
+        const value = await FETCH[key]();
+        if (!alive.current || generations.current[key] !== generation) return;
+        setLoaded((cur) => merge(cur, key, value));
+        setErrors((cur) => without(cur, key));
+      } catch (err) {
+        if (!alive.current || generations.current[key] !== generation) return;
+        setErrors((cur) => ({ ...cur, [key]: err }));
+      }
+    }));
+  };
+
+  const retry = async () => {
+    setFailure(null);
+    await reload(SOURCE_KEYS.filter((key) => key in errors));
   };
 
   useEffect(() => {
@@ -134,6 +168,19 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   const visible = filterItems(inSection, query);
   const argument = argumentId === null ? undefined : inSection.find((i) => i.id === argumentId);
   const current = visible.length === 0 ? -1 : Math.min(active, visible.length - 1);
+
+  // Bring the keyboard selection into view as the arrows and the filter move
+  // it, as the agent list does. jsdom has no scrollIntoView, hence the
+  // optional call.
+  useEffect(() => {
+    if (current < 0) return;
+    document.getElementById(`palette-option-${current}`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [current]);
+
+  const sourceError = SOURCE_KEYS.find((key) => key in errors);
+  const shownError = failure ?? (sourceError === undefined ? null : errors[sourceError]);
+  const shown = shownError === null || shownError === undefined ? null : describeFailure(shownError);
+  const canRetry = failure === null && sourceError !== undefined;
 
   const runAction = async (action: string) => {
     const sid = s.sessionId;
@@ -197,7 +244,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
           const name = item.run.name;
           const skill = loaded.skills.find((k) => k.name === name);
           await api.setSkillDisabled(name, !skill?.disabled);
-          await reload();
+          await reload(['skills']);
           return;
         }
       }
@@ -228,9 +275,6 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     else groups.push({ group: item.group, items: [{ item, index }] });
   });
 
-  const err = failure ?? errors[0];
-  const shown = err === undefined || err === null ? null : describeFailure(err);
-
   return (
     <div class="palette-layer" inert={inert}>
       <div class="palette glass enter" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialog}>
@@ -250,7 +294,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
               role="combobox"
               aria-label="Command palette"
               aria-autocomplete="list"
-              aria-expanded="true"
+              aria-expanded={visible.length > 0}
               aria-controls="palette-list"
               aria-activedescendant={current >= 0 ? `palette-option-${current}` : undefined}
               placeholder="Search commands, sessions and models"
@@ -287,8 +331,8 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
         {shown && (
           <div class="palette__status" role={shown.tone === 'starting' ? 'status' : 'alert'} data-tone={shown.tone}>
             <span>{shown.text}</span>
-            {errors.length > 0 && (
-              <button type="button" class="link-button" onClick={() => void reload()}>Retry</button>
+            {canRetry && (
+              <button type="button" class="link-button" onClick={() => void retry()}>Retry</button>
             )}
           </div>
         )}

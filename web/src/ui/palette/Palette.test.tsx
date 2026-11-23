@@ -75,6 +75,10 @@ function dialog() {
   return root.querySelector<HTMLElement>('[role="dialog"]');
 }
 
+function retryButton() {
+  return [...root.querySelectorAll('button')].find((b) => b.textContent === 'Retry') ?? null;
+}
+
 async function pressKey(target: EventTarget, init: KeyboardEventInit) {
   const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
   await act(() => { target.dispatchEvent(e); });
@@ -434,5 +438,133 @@ describe('the command palette', () => {
     expect(paletteQuery.value).toBe('');
     expect(deck().value).toBe('');
     expect(document.activeElement).toBe(combobox());
+  });
+
+  it('retries only the sources that failed', async () => {
+    seed();
+    stubSources();
+    vi.mocked(api.sessions).mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openWithKey();
+
+    expect(vi.mocked(api.sessions)).toHaveBeenCalledTimes(1);
+    expect(dialog()!.textContent).toContain('New session');
+    const retry = retryButton();
+    expect(retry).not.toBeNull();
+    await act(() => { retry!.click(); });
+    await flush();
+
+    expect(vi.mocked(api.sessions)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.commands)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.mcpPrompts)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.skills)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.providers)).toHaveBeenCalledTimes(1);
+    expect(dialog()!.textContent).toContain('Fix the lexer');
+    expect(dialog()!.textContent).toContain('New session');
+    expect(dialog()!.textContent).toContain('go-tests');
+    expect(retryButton()).toBeNull();
+  });
+
+  it('keeps the old skills when the refetch after a toggle fails', async () => {
+    seed();
+    stubSources({ skills: [{ name: 'go-tests', description: 'Write Go tests', disabled: false }] });
+    const disable = vi.spyOn(api, 'setSkillDisabled').mockResolvedValue(undefined);
+    await mount();
+    await act(() => { openPalette('skills'); });
+    await flush();
+    vi.mocked(api.skills).mockRejectedValueOnce(new ApiError(500, 'internal', 'boom'));
+
+    await enter();
+
+    expect(disable).toHaveBeenCalledWith('go-tests', true);
+    expect(paletteOpen.value).toBe('skills');
+    expect(dialog()!.textContent).toContain('go-tests');
+    expect(dialog()!.textContent).toContain('Enabled');
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toContain('boom');
+    expect(vi.mocked(api.commands)).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides Retry while an action failure is the one on the line', async () => {
+    seed();
+    stubSources();
+    vi.mocked(api.sessions).mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    vi.spyOn(api, 'summarize').mockRejectedValueOnce(new ApiError(409, 'agent_busy', 'Crush is busy right now'));
+    await mount();
+    await openWithKey();
+
+    expect(retryButton()).not.toBeNull();
+
+    await type('compact');
+    await enter();
+
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe('Crush is busy right now');
+    expect(retryButton()).toBeNull();
+  });
+
+  it('clears a stale action failure on the next attempt', async () => {
+    seed();
+    stubSources();
+    vi.spyOn(api, 'summarize').mockRejectedValueOnce(new ApiError(409, 'agent_busy', 'Crush is busy right now'));
+    await mount();
+    await openWithKey();
+
+    await type('compact');
+    await enter();
+    expect(dialog()!.querySelector('[role="alert"]')).not.toBeNull();
+
+    await type('toggle skills');
+    await enter();
+
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+    expect(dialog()!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('ignores a held Ctrl+K', async () => {
+    seed();
+    stubSources();
+    await mount();
+    deck().focus();
+
+    const held = await pressKey(deck(), { key: 'k', code: 'KeyK', ctrlKey: true, repeat: true });
+
+    expect(held.defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBeNull();
+
+    await pressKey(deck(), { key: 'k', code: 'KeyK', ctrlKey: true });
+    expect(paletteOpen.value).toBe('all');
+  });
+
+  it('reports the combobox expanded only while there are matches', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    expect(combobox()!.getAttribute('aria-expanded')).toBe('true');
+    await type('zzz no such command');
+
+    expect(dialog()!.textContent).toContain('No matches');
+    expect(combobox()!.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('scrolls the active option into view as the arrows move it', async () => {
+    seed();
+    stubSources();
+    await mount();
+    const proto = Element.prototype as unknown as { scrollIntoView?: (arg?: unknown) => void };
+    const before = proto.scrollIntoView;
+    const scroll = vi.fn();
+    proto.scrollIntoView = scroll;
+    try {
+      await openWithKey();
+      expect(scroll.mock.instances.at(-1)).toBe(root.querySelector('#palette-option-0'));
+
+      await pressKey(combobox()!, { key: 'ArrowDown', code: 'ArrowDown' });
+
+      expect(scroll).toHaveBeenLastCalledWith({ block: 'nearest' });
+      expect(scroll.mock.instances.at(-1)).toBe(root.querySelector('#palette-option-1'));
+    } finally {
+      proto.scrollIntoView = before;
+    }
   });
 });
