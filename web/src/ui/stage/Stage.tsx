@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { deriveAgents } from '../../state/agents';
 import { actions, state } from '../../state/store';
+import { drawerOpen, toggleDrawer } from '../../state/drawer';
 import { contextFill, needsAttention } from '../../state/reducer';
 import { use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
@@ -51,6 +52,9 @@ export function Stage() {
       <AgentList />
       <TodoOrbit />
       <TaskBoard />
+      <button type="button" class="drawer-handle glass" aria-expanded={drawerOpen.value} aria-controls="file-drawer" onClick={toggleDrawer}>
+        Files <span class="chip">{s.files.length}</span>
+      </button>
     </div>
   );
 }

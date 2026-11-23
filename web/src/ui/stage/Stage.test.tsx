@@ -8,6 +8,7 @@ import { resetWebglProbe, sceneFailed, use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
 import { initialState, reduce } from '../../state/reducer';
 import { actions, state } from '../../state/store';
+import { drawerOpen } from '../../state/drawer';
 import fixtures from '../../state/__fixtures__/events.json';
 import type { Frame } from '../../api/types';
 
@@ -112,6 +113,23 @@ describe('Stage', () => {
       HTMLCanvasElement.prototype.getContext = original;
       sceneFailed.value = false;
       resetWebglProbe();
+    }
+  });
+
+  it('toggles the drawer from the handle', async () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    const root = document.createElement('div');
+    try {
+      await act(() => { render(<Stage />, root); });
+      const handle = root.querySelector<HTMLButtonElement>('.drawer-handle')!;
+      expect(handle.getAttribute('aria-expanded')).toBe('false');
+      expect(handle.textContent).toContain('1');
+      await act(() => { handle.click(); });
+      expect(drawerOpen.value).toBe(true);
+      expect(handle.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      render(null, root);
+      drawerOpen.value = false;
     }
   });
 

@@ -63,6 +63,7 @@
 /* The banner is absent while linked, so the grid and deck are placed on
    explicit rows; auto-placement would move them up and stretch the deck. */
 .holodeck__grid {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(22rem, 34rem) 1fr;
   grid-template-areas: 'log stage';
@@ -70,6 +71,16 @@
   gap: var(--space-4);
   min-block-size: 0;
 }
+/* The drawer takes the third column. Its maxima keep the stage wide enough
+   at 1440px for the agent list, the tags and the task board; closing it
+   removes the column and the panel slides off the right edge (drawer.css). */
+.holodeck__grid[data-drawer='open'] {
+  grid-template-columns: minmax(20rem, 24rem) minmax(14rem, 1fr) minmax(20rem, 28rem);
+  grid-template-areas: 'log stage drawer';
+}
+.panel--drawer { grid-area: drawer; }
+/* The tabs only exist in the narrow single-slot layout. */
+.panel-tabs { display: none; }
 .holodeck__deck { grid-row: 4; }
 .panel { min-block-size: 0; }
 /* The curve is drawn on the panel itself: a perspective on an ancestor
@@ -132,8 +143,16 @@
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
 }
 @media (max-width: 1023px) {
-  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; grid-template-areas: 'stage' 'log'; }
-  .panel--log { transform: none; order: 2; }
+  /* Below 1024px the stage keeps a 220px row and the log, the inspector and
+     the drawer share one slot under it; the tabs pick which one shows. */
+  .holodeck__grid, .holodeck__grid[data-drawer='open'] {
+    grid-template-columns: 1fr; grid-template-rows: 220px 1fr; grid-template-areas: 'stage' 'panel';
+  }
+  .panel--log, .panel--inspector, .panel--drawer { grid-area: panel; transform: none; inline-size: auto; }
+  .panel-tabs { display: flex; gap: var(--space-1); }
+  .holodeck__grid:not([data-panel-tab='log']) .panel--log,
+  .holodeck__grid:not([data-panel-tab='agent']) .panel--inspector,
+  .holodeck__grid:not([data-panel-tab='files']) .panel--drawer { display: none; }
 }
 /* Below 768px everything stacks and the constellation collapses to a strip. */
 @media (max-width: 767px) {

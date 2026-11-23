@@ -1,0 +1,36 @@
+/* The edited-files drawer (spec 3.8). The open state is a grid column; the
+   closed one leaves the column and waits off the right edge, inert and
+   click-through, so it cannot cover the stage or the deck. */
+.panel--drawer { display: flex; flex-direction: column; min-block-size: 0; transition: transform var(--dur-in) var(--ease-out), opacity var(--dur-in) var(--ease-out); }
+.holodeck__grid[data-drawer='closed'] .panel--drawer {
+  position: absolute; inset-block: 0; inset-inline-end: 0; inline-size: min(40rem, 90vw);
+  transform: translateX(105%); opacity: 0; pointer-events: none;
+}
+.drawer__head { display: flex; align-items: center; justify-content: space-between; padding: var(--space-4); }
+.drawer__head h2 { margin: 0; font: 600 var(--step-1) var(--font-hud); }
+.drawer__empty { padding: 0 var(--space-4); color: var(--text-muted); }
+.drawer__list { overflow: auto; padding: 0 var(--space-4); max-block-size: 40%; }
+.drawer__group h3 { margin: var(--space-4) 0 var(--space-1); }
+.drawer__group ul { list-style: none; margin: 0 0 var(--space-4); padding: 0; display: grid; gap: 2px; }
+.file-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items: center; inline-size: 100%; text-align: start; background: none; color: var(--text); border: 1px solid transparent; border-radius: var(--radius); padding: 4px 8px; cursor: pointer; font: inherit; }
+.file-row[aria-pressed='true'] { border-color: var(--cyan); background: var(--cyan-dim); }
+.file-row__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-code); }
+.file-row__bars { display: inline-flex; gap: 2px; }
+.file-row__bar { inline-size: 6px; block-size: 10px; background: var(--edge); }
+.file-row__bar[data-kind='add'] { background: var(--teal); }
+.file-row__bar[data-kind='rem'] { background: var(--amber); }
+.file-row__add { color: var(--teal); }
+.file-row__rem { color: var(--amber); }
+.file-row__unknown { color: var(--text-muted); }
+.file-row__diag[data-level='error'] { color: var(--magenta); }
+.file-row__diag[data-level='warning'] { color: var(--amber); }
+.drawer__diff { flex: 1; min-block-size: 0; display: flex; flex-direction: column; padding: 0 var(--space-4) var(--space-4); }
+/* The handle sits in the stage's top right corner, above the list and the
+   tags so the way to the drawer stays clickable. panels.css loads later and
+   gives `.glass` position: relative, so the placement is restated with a
+   two-class selector. */
+.drawer-handle { position: absolute; inset-block-start: var(--space-4); inset-inline-end: var(--space-4); z-index: 7; pointer-events: auto; padding: 6px 12px; font: 500 var(--step--1) var(--font-hud); cursor: pointer; }
+.drawer-handle.glass { position: absolute; }
+.panel-tabs .hud__mode-btn[aria-pressed='true'] { background: var(--cyan-dim); color: var(--cyan); }
+.panel-tabs .hud__mode-btn:disabled { opacity: 0.5; cursor: default; }
+[data-motion='off'] .panel--drawer, [data-motion='reduced'] .panel--drawer { transition-duration: 1ms; }

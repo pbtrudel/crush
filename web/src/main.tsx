@@ -12,6 +12,7 @@ import './styles/agents.css';
 import './styles/team.css';
 import './styles/log.css';
 import './styles/inspector.css';
+import './styles/drawer.css';
 import './styles/deck.css';
 import './styles/interrupt.css';
 import './styles/panels.css';

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
 import { needsAttention } from '../state/reducer';
+import { drawerOpen, panelTab } from '../state/drawer';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
 import { BootSequence } from './BootSequence';
@@ -16,6 +17,8 @@ import { faviconFor, projectHue, tabTitle } from './tabIdentity';
 import { Interrupt } from './interrupt/Interrupt';
 import { Inspector } from './inspector/Inspector';
 import { closeInspector, escapeLeavesDraft } from './inspector/escape';
+import { PanelTabs } from './PanelTabs';
+import { FileDrawer } from './files/FileDrawer';
 
 export function App() {
   const s = state.value;
@@ -76,7 +79,8 @@ export function App() {
       <BootSequence done={s.conn !== 'booting'} />
       <Hud />
       <ConnectionBanner />
-      <main class="holodeck__grid" inert={modal}>
+      <PanelTabs />
+      <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={panelTab.value}>
         <div class="cine-view" ref={view}>
           <div class="cine-camera" ref={camera}>
             <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log}>
@@ -88,6 +92,7 @@ export function App() {
         <section class="stage" aria-label="Agent constellation">
           <Stage />
         </section>
+        <FileDrawer />
       </main>
       <div class="holodeck__deck" inert={modal}>
         <CommandDeck />
