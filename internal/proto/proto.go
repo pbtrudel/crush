@@ -551,3 +551,15 @@ func (i *LSPClientInfo) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
+
+// DiagnosticCounts holds one file's diagnostic counts by severity.
+type DiagnosticCounts struct {
+	Error       int `json:"error"`
+	Warning     int `json:"warning"`
+	Information int `json:"information"`
+	Hint        int `json:"hint"`
+}
+
+// LSPFileDiagnostics maps file paths to the diagnostic counts every LSP
+// server reported for them.
+type LSPFileDiagnostics map[string]DiagnosticCounts

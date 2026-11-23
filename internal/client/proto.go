@@ -336,6 +336,24 @@ func (c *Client) GetLSPDiagnostics(ctx context.Context, id string, lspName strin
 	return diagnostics, nil
 }
 
+// GetLSPDiagnosticsByFile retrieves the diagnostic counts every LSP
+// client reported, keyed by file path, in one call.
+func (c *Client) GetLSPDiagnosticsByFile(ctx context.Context, id string) (proto.LSPFileDiagnostics, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/lsps/diagnostics/by-file", id), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LSP diagnostics by file: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get LSP diagnostics by file: %w", err)
+	}
+	var counts proto.LSPFileDiagnostics
+	if err := json.NewDecoder(rsp.Body).Decode(&counts); err != nil {
+		return nil, fmt.Errorf("failed to decode LSP diagnostics by file: %w", err)
+	}
+	return counts, nil
+}
+
 // GetLSPs retrieves the LSP client states for a workspace.
 func (c *Client) GetLSPs(ctx context.Context, id string) (map[string]proto.LSPClientInfo, error) {
 	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/lsps", id), nil, nil)

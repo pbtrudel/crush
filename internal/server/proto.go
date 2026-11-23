@@ -377,6 +377,18 @@ func (c *controllerV1) handleGetWorkspaceLSPDiagnostics(w http.ResponseWriter, r
 	jsonEncode(w, diagnostics)
 }
 
+// handleGetWorkspaceLSPDiagnosticsByFile returns the per-file
+// diagnostic counts of every LSP client in one answer.
+func (c *controllerV1) handleGetWorkspaceLSPDiagnosticsByFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	counts, err := c.backend.LSPDiagnosticsByFile(id)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.LSPFileDiagnosticsToProto(counts))
+}
+
 // handleGetWorkspaceSessions lists sessions for a workspace.
 func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

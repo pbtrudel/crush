@@ -426,7 +426,7 @@ func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.Diag
 	out := map[string]lsp.DiagnosticCounts{}
 	for _, state := range app.GetLSPStates() {
 		if state.Client != nil {
-			addDiagnostics(out, state.Client.GetDiagnostics())
+			lsp.CountByFile(out, state.Client.GetDiagnostics())
 		}
 	}
 	return out

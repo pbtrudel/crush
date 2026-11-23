@@ -674,20 +674,42 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 	return counts
 }
 
-// LSPDiagnosticsByFile asks every server for its diagnostics. A server
-// that fails to answer is left out rather than failing the whole list.
+// LSPDiagnosticsByFile asks the server for every client's per-file
+// counts in one call. A server that predates that route answers 404;
+// only then fall back to asking each server, leaving out the ones that
+// fail. Every failure is logged.
 func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts {
 	out := map[string]lsp.DiagnosticCounts{}
+	byFile, err := w.client.GetLSPDiagnosticsByFile(ctx, w.workspaceID())
+	if err == nil {
+		for path, counts := range byFile {
+			out[path] = lsp.DiagnosticCounts{
+				Error:       counts.Error,
+				Warning:     counts.Warning,
+				Information: counts.Information,
+				Hint:        counts.Hint,
+			}
+		}
+		return out
+	}
+	if !errors.Is(err, client.ErrNotFound) {
+		slog.Debug("Batch diagnostics failed", "error", err)
+		return out
+	}
+
+	slog.Debug("Batch diagnostics failed, asking each server", "error", err)
 	states, err := w.client.GetLSPs(ctx, w.workspaceID())
 	if err != nil {
+		slog.Debug("LSP list failed", "error", err)
 		return out
 	}
 	for name := range states {
 		diags, err := w.client.GetLSPDiagnostics(ctx, w.workspaceID(), name)
 		if err != nil {
+			slog.Debug("LSP diagnostics failed", "lsp", name, "error", err)
 			continue
 		}
-		addDiagnostics(out, diags)
+		lsp.CountByFile(out, diags)
 	}
 	return out
 }

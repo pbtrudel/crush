@@ -40,6 +40,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newTestClientWorkspace returns a ClientWorkspace for workspace ws-1
+// backed by an SDK client pointed at srv.
+func newTestClientWorkspace(t *testing.T, srv *httptest.Server) *ClientWorkspace {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	return NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+}
+
 // TestProtoToMessageToolResult ensures that ToolResult metadata,
 // data, and MIME type survive the conversion from proto on the
 // client. Without these fields the TUI cannot render rich tool
@@ -1532,28 +1543,67 @@ func TestClientWorkspaceListChildSessions(t *testing.T) {
 	require.Equal(t, "s1", got[0].ParentSessionID)
 }
 
-func TestClientWorkspaceLSPDiagnosticsByFile(t *testing.T) {
+// TestClientWorkspaceDiagnosticsByFileIsOneCall pins the batch route:
+// one request answers every server's per-file counts.
+func TestClientWorkspaceDiagnosticsByFileIsOneCall(t *testing.T) {
 	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path != "/v1/workspaces/ws-1/lsps/diagnostics/by-file" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(proto.LSPFileDiagnostics{
+			"/repo/a.go": {Error: 2, Warning: 1},
+		})
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 2, Warning: 1}, got["/repo/a.go"])
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"/v1/workspaces/ws-1/lsps/diagnostics/by-file"}, calls)
+}
+
+// TestClientWorkspaceDiagnosticsByFileFallsBack pins the older-server
+// path: a 404 from the batch route falls back to asking each server.
+func TestClientWorkspaceDiagnosticsByFileFallsBack(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
 		switch r.URL.Path {
 		case "/v1/workspaces/ws-1/lsps":
-			require.NoError(t, json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{"gopls": {Name: "gopls"}}))
+			_ = json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{"gopls": {Name: "gopls"}})
 		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
-			require.NoError(t, json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
 				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
-			}))
+			})
 		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
-	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+	ws := newTestClientWorkspace(t, srv)
 
-	require.Equal(t, map[string]lsp.DiagnosticCounts{"/repo/a.go": {Error: 1}}, ws.LSPDiagnosticsByFile(t.Context()))
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 1}, got["/repo/a.go"], "an older server without the batch route still answers")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/gopls/diagnostics", "the fallback really asks each server")
 }
 
 func TestClientWorkspaceTeamActions(t *testing.T) {
@@ -1649,12 +1699,8 @@ func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(got)
 	}))
 	defer srv.Close()
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
-	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
-	_, err = ws.SaveSession(t.Context(), session.Session{ID: "s1", Todos: []session.Todo{
+	ws := newTestClientWorkspace(t, srv)
+	_, err := ws.SaveSession(t.Context(), session.Session{ID: "s1", Todos: []session.Todo{
 		{Content: "ship", Status: session.TodoStatusInProgress, ActiveForm: "Shipping"},
 	}})
 	require.NoError(t, err)

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pinentry"
@@ -358,6 +359,27 @@ func FileMetasToProto(files []history.FileMeta) []proto.FileMeta {
 	out := make([]proto.FileMeta, len(files))
 	for i, f := range files {
 		out[i] = FileMetaToProto(f)
+	}
+	return out
+}
+
+// DiagnosticCountsToProto converts one file's diagnostic counts into
+// their wire form.
+func DiagnosticCountsToProto(c lsp.DiagnosticCounts) proto.DiagnosticCounts {
+	return proto.DiagnosticCounts{
+		Error:       c.Error,
+		Warning:     c.Warning,
+		Information: c.Information,
+		Hint:        c.Hint,
+	}
+}
+
+// LSPFileDiagnosticsToProto converts per-file diagnostic counts into
+// their wire form.
+func LSPFileDiagnosticsToProto(counts map[string]lsp.DiagnosticCounts) proto.LSPFileDiagnostics {
+	out := make(proto.LSPFileDiagnostics, len(counts))
+	for path, c := range counts {
+		out[path] = DiagnosticCountsToProto(c)
 	}
 	return out
 }
