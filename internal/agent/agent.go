@@ -223,6 +223,9 @@ type SessionAgentCall struct {
 	// item that stayed open, so the end of that continuation does not
 	// repeat the question as a note in the reply.
 	gateTodoAsked bool
+	// gateTodoItem is the item the gate asked about, so the end of that
+	// continuation can report the item if the reply ignored it.
+	gateTodoItem string
 	// gateBaseline is the working tree at the prompt's start, so the gate
 	// can see a change no tool call made. Nil when nothing reads it, or
 	// when it could not be taken.

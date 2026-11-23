@@ -119,7 +119,7 @@ func staleTodoSession(t *testing.T, env fakeEnv, title string) session.Session {
 func TestTurnGate_AsksAboutTheStaleTodoOnce(t *testing.T) {
 	t.Parallel()
 	env := testEnv(t)
-	script := append(stalePromptScript(), answer("still working", fantasy.FinishReasonStop, 1_000))
+	script := append(stalePromptScript(), answer("Deploy it is still unfinished", fantasy.FinishReasonStop, 1_000))
 	sa := newCompactionAgent(env, &scriptedModel{script: script}, nil, false, &recordingTool{name: tools.BashToolName})
 	sess := staleTodoSession(t, env, "todo gate")
 
@@ -132,8 +132,51 @@ func TestTurnGate_AsksAboutTheStaleTodoOnce(t *testing.T) {
 	require.Contains(t, rows[0].Content().Text, "Do not mark it completed just to close this check")
 
 	reply := finalAssistantText(t, env, sess.ID)
-	require.Equal(t, "still working", reply,
-		"the reply carries the gate's answer alone, not a repeated note")
+	require.Contains(t, reply, "Deploy it is still unfinished")
+	require.NotContains(t, reply, "Todo list still shows",
+		"the reply names the item, so no note is repeated")
+}
+
+// Once the gate asked, the reply is all the user gets: a model that says the
+// item is unfinished must not get a note saying the same thing twice.
+func TestTurnGate_AskedReplyNamingTheItemSkipsTheNote(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	script := append(stalePromptScript(),
+		answer(`"Deploy it" is still unfinished: the release window is open.`, fantasy.FinishReasonStop, 1_000))
+	sa := newCompactionAgent(env, &scriptedModel{script: script}, nil, false, &recordingTool{name: tools.BashToolName})
+	sess := staleTodoSession(t, env, "todo gate answered")
+
+	_, err := sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Len(t, gateRows(t, env, sess.ID), 1)
+	reply := finalAssistantText(t, env, sess.ID)
+	require.Contains(t, reply, "the release window is open")
+	require.NotContains(t, reply, "Todo list still shows",
+		"the reply already reports the item, so no note is owed")
+}
+
+// A reply that ignores the item leaves the user with nothing to see, so the
+// note is written even though the gate asked.
+func TestTurnGate_AskedReplyIgnoringTheItemStillGetsTheNote(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	script := append(stalePromptScript(), answer("done and dusted", fantasy.FinishReasonStop, 1_000))
+	sa := newCompactionAgent(env, &scriptedModel{script: script}, nil, false, &recordingTool{name: tools.BashToolName})
+	sess := staleTodoSession(t, env, "todo gate ignored")
+
+	_, err := sa.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.NoError(t, err)
+
+	require.Len(t, gateRows(t, env, sess.ID), 1)
+	t.Logf("texts=%q", assistantTexts(t, env, sess.ID))
+	for _, m := range gateRows(t, env, sess.ID) {
+		t.Logf("gate row=%q", m.Content().Text)
+	}
+	require.Contains(t, finalAssistantText(t, env, sess.ID),
+		`Todo list still shows "Deploy it" as unfinished`,
+		"the reply never mentions the item, so the note is owed")
 }
 
 // A prompt that cannot continue never reaches the gate, so the note is still
