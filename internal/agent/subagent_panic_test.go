@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -60,4 +62,35 @@ func TestSubAgentPanicReleasesTheBookkeeping(t *testing.T) {
 		require.Equal(t, "the provider client blew up", recovered)
 		require.False(t, c.subSessionBusy(sess.ID), "the panicked run must leave the bookkeeping")
 	})
+}
+
+// TestSubAgentPanicSettlesTheRun pins that a panicking run is not left
+// listed as running: the finish is deferred and records a failure.
+func TestSubAgentPanicSettlesTheRun(t *testing.T) {
+	t.Parallel()
+	const providerID = "test-provider"
+	env := testEnv(t)
+	c := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+	c.agentRuns = agentrun.New(filepath.Join(t.TempDir(), "agents.json"))
+	parent, err := env.sessions.Create(t.Context(), "Parent")
+	require.NoError(t, err)
+	sub := newMockAgent(providerID, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		panic("the provider client blew up")
+	})
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = c.runSubAgent(t.Context(), subAgentParams{
+			Agent: sub, SessionID: parent.ID, AgentMessageID: "msg-9", ToolCallID: "call-9",
+			Prompt: "do something", SessionTitle: "Subagent",
+		})
+	}()
+	childID := c.sessions.CreateAgentToolSessionID("msg-9", "call-9")
+	var found bool
+	for _, r := range c.agentRuns.List() {
+		if r.ID == childID {
+			found = true
+			require.Equal(t, agentrun.StatusFailed, r.Status)
+		}
+	}
+	require.True(t, found, "the run must stay listed, settled as failed")
 }

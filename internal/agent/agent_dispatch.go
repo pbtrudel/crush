@@ -1028,6 +1028,29 @@ func (c *coordinator) trackSubSession(sessionID string, agent SessionAgent) func
 	}
 }
 
+// errSubAgentCancelled is the cause a user cancel leaves on a subagent's
+// context.
+var errSubAgentCancelled = errors.New("cancelled by the user")
+
+// beginSubSession makes sessionID cancellable before its run is listed
+// running. The returned release drops the entry; call it when the run
+// ends however it ends.
+func (c *coordinator) beginSubSession(ctx context.Context, sessionID string) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	c.subSessionsMu.Lock()
+	if c.subCancels == nil {
+		c.subCancels = map[string]context.CancelCauseFunc{}
+	}
+	c.subCancels[sessionID] = cancel
+	c.subSessionsMu.Unlock()
+	return ctx, func() {
+		c.subSessionsMu.Lock()
+		delete(c.subCancels, sessionID)
+		c.subSessionsMu.Unlock()
+		cancel(nil)
+	}
+}
+
 func (c *coordinator) subSessionBusy(sessionID string) bool {
 	c.subSessionsMu.Lock()
 	defer c.subSessionsMu.Unlock()
