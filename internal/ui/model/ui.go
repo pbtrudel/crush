@@ -298,6 +298,7 @@ type UI struct {
 	liveTPSTokens      int64
 	sessionTPSOutput   int64
 	sessionTPSDuration time.Duration
+	sessionTPSModel    tpsModel
 
 	// The width and height of the terminal in cells.
 	width  int
