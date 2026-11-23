@@ -1983,6 +1983,36 @@ func (c *coordinator) buildVercelProvider(_, apiKey string, headers map[string]s
 	return vercel.New(opts...)
 }
 
+// requestEncodings is the provider's request_compression as fantasy
+// encodings, most preferred first. Hyper takes br and gzip when the option
+// is unset; every other provider sends plain JSON unless it opts in.
+func (c *coordinator) requestEncodings(providerID, baseURL string) []openaicompat.RequestEncoding {
+	providerCfg, _ := c.cfg.Config().Providers.Get(providerID)
+	names := providerCfg.RequestCompression
+	if len(names) == 0 && providerID == hyper.Name {
+		names = []string{config.RequestCompressionBrotli, config.RequestCompressionGzip}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	// The Vibe transport signs the plain body; compression stays off until
+	// it is tested with that signing.
+	if isMistralBaseURL(baseURL) {
+		slog.Warn("Ignoring request_compression for Mistral", "provider", providerID)
+		return nil
+	}
+	encodings := make([]openaicompat.RequestEncoding, 0, len(names))
+	for _, name := range names {
+		switch name {
+		case config.RequestCompressionBrotli:
+			encodings = append(encodings, openaicompat.EncodingBrotli)
+		case config.RequestCompressionGzip:
+			encodings = append(encodings, openaicompat.EncodingGzip)
+		}
+	}
+	return encodings
+}
+
 func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers map[string]string, extraBody map[string]any, providerID string, isSubAgent bool, wireType catwalk.Type) (fantasy.Provider, error) {
 	opts := []openaicompat.Option{
 		openaicompat.WithBaseURL(baseURL),
@@ -2028,12 +2058,10 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 			openaicompat.WithLanguageModelOptions(
 				openai.WithLanguageModelHeaderFunc(hyper.HeaderFunc),
 			),
-			// Hyper supports both Brotli and GZip for compressed requests.
-			openaicompat.WithRequestCompression(
-				openaicompat.EncodingBrotli,
-				openaicompat.EncodingGzip,
-			),
 		)
+	}
+	if encodings := c.requestEncodings(providerID, baseURL); len(encodings) > 0 {
+		opts = append(opts, openaicompat.WithRequestCompression(encodings...))
 	}
 	if httpClient == nil && c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()

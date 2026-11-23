@@ -159,6 +159,7 @@ Flags:
       --extra-header key value      add an HTTP header (repeatable)
       --extra-body JSON             merge a JSON object into request bodies
       --provider-options JSON       merge a provider-specific JSON object
+      --request-compression list    compress request bodies (br,gzip; most preferred first)
 ```
 
 ```bash
@@ -173,6 +174,12 @@ The type describes the API format the provider speaks: `completions`
 (Anthropic messages). Local providers with a registered enricher (ollama,
 litellm, lmstudio, …) keep their own type. Legacy values (`openai`,
 `openai-compat`, `anthropic`, …) are migrated automatically at load.
+
+`--request-compression br,gzip` (`request_compression` in JSON) compresses
+the request bodies an OpenAI-compatible provider is sent, most preferred
+encoding first. A refused encoding falls back to the next one, then to plain
+JSON. Only set it for an endpoint that accepts compressed bodies. Hyper uses
+`br,gzip` when it is unset; Mistral ignores it.
 
 Headers whose value resolves to the empty string (an unset `$VAR`, a
 `$(...)` that prints nothing, or a literal `""`) are dropped from the

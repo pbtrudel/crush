@@ -77,7 +77,9 @@ type like `ollama`, `lmstudio`, `llamacpp`; legacy values `openai`, `openai-comp
 `anthropic` are migrated automatically), `--api-key`, `--base-url`,
 `--disable BOOL`, `--flat-rate BOOL`, `--discover-models BOOL`,
 `--system-prompt-prefix TEXT`, `--extra-header KEY VALUE` (repeatable),
-`--extra-body JSON`, `--provider-options JSON`.
+`--extra-body JSON`, `--provider-options JSON`, `--request-compression br,gzip`
+(compress OpenAI-compatible request bodies, most preferred first; only for
+endpoints that accept it; Hyper defaults to `br,gzip`, Mistral ignores it).
 
 ```bash
 provider add deepseek \

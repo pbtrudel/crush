@@ -389,6 +389,10 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		return nil, fmt.Errorf("invalid prompt configuration: %w", err)
 	}
 
+	if err := cfg.ValidateRequestCompression(); err != nil {
+		return nil, fmt.Errorf("invalid provider configuration: %w", err)
+	}
+
 	if !isInsideWorktree(workingDir) {
 		const depth = 2
 		const items = 100

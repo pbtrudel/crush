@@ -1517,6 +1517,10 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}
 
+	if err := cfg.ValidateRequestCompression(); err != nil {
+		return fmt.Errorf("invalid provider configuration on reload: %w", err)
+	}
+
 	// Preserve runtime overrides
 	overrides := s.overrides
 

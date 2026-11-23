@@ -111,15 +111,20 @@ func generateWithCacheKey(t *testing.T, baseURL string) error {
 	require.NoError(t, err)
 	lm, err := provider.LanguageModel(t.Context(), "test-model")
 	require.NoError(t, err)
-	_, err = lm.Generate(t.Context(), fantasy.Call{
+	_, err = lm.Generate(t.Context(), cacheKeyCall())
+	return err
+}
+
+// cacheKeyCall is a long call carrying a prompt_cache_key.
+func cacheKeyCall() fantasy.Call {
+	return fantasy.Call{
 		Prompt: longPrompt(),
 		ProviderOptions: fantasy.ProviderOptions{
 			openaicompat.Name: &openaicompat.ProviderOptions{
 				ExtraBody: map[string]any{promptCacheKeyField: "cache-key"},
 			},
 		},
-	})
-	return err
+	}
 }
 
 func TestPromptCacheKeyRetryUnderHyperCompression(t *testing.T) {

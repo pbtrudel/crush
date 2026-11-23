@@ -1035,6 +1035,21 @@
           "type": "object",
           "description": "Additional provider-specific options for this provider"
         },
+        "request_compression": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "br",
+              "gzip"
+            ],
+            "examples": [
+              "br",
+              "gzip"
+            ]
+          },
+          "type": "array",
+          "description": "Encodings to compress request bodies with, most preferred first; only works with openai-compatible providers"
+        },
         "aws_auth_refresh": {
           "type": "string",
           "description": "Shell command to run when AWS credentials expire (Bedrock only)."

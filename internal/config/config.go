@@ -135,6 +135,12 @@ type ProviderConfig struct {
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
 
+	// RequestCompression lists the encodings an OpenAI-compatible provider
+	// accepts for request bodies, most preferred first. A refused encoding
+	// falls back to the next one, then to plain JSON. Unset means plain
+	// JSON, except for Hyper, which takes br and gzip.
+	RequestCompression []string `json:"request_compression,omitempty" jsonschema:"description=Encodings to compress request bodies with\\, most preferred first; only works with openai-compatible providers,enum=br,enum=gzip,example=br,example=gzip"`
+
 	// Used to pass extra parameters to the provider.
 	ExtraParams map[string]string `json:"-"`
 
