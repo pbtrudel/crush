@@ -33,6 +33,7 @@ const LSP_WORDS: Record<string, string> = {
 };
 
 const SIGN_IN_TERMINAL = 'Finish signing in from the terminal';
+const NO_WEB_ADDRESS = 'The MCP server did not return a web address';
 
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
@@ -53,7 +54,7 @@ function diagnosticText(counts: DiagnosticCounts | undefined, live: number): str
 function webAddress(raw: string): string | null {
   try {
     const url = new URL(raw);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? raw : null;
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
   } catch {
     return null;
   }
@@ -112,6 +113,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const [failures, setFailures] = useState<Record<string, unknown>>({});
   const [lspFailure, setLspFailure] = useState<unknown | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [warnings, setWarnings] = useState<Record<string, string>>({});
   const [links, setLinks] = useState<Record<string, string>>({});
   const dialog = useRef<HTMLDivElement>(null);
   const lspHeading = useRef<HTMLHeadingElement>(null);
@@ -210,6 +212,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const clearServer = (name: string) => {
     setFailures((current) => without(current, name));
     setNotes((current) => without(current, name));
+    setWarnings((current) => without(current, name));
     setLinks((current) => without(current, name));
   };
 
@@ -244,6 +247,8 @@ function SystemsDialog({ inert }: { inert: boolean }) {
         setLinks((current) => ({ ...current, [name]: href }));
       } else if (url === '') {
         setNotes((current) => ({ ...current, [name]: SIGN_IN_TERMINAL }));
+      } else {
+        setWarnings((current) => ({ ...current, [name]: NO_WEB_ADDRESS }));
       }
     } catch (err) {
       if (!alive.current) return;
@@ -374,12 +379,19 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const mcpCard = (row: Row<McpServer>) => {
     const { state: liveState, word, tone } = mcpWord(row);
     const tools = row.live?.tools ?? row.item?.tools ?? 0;
-    const disabled = row.item?.disabled ?? liveState === 'disabled';
-    const needsAuth = row.item?.needs_auth ?? liveState === 'needs auth';
+    // A frame is fresher than the list, so when one exists it decides both
+    // flags; a fetched false never masks a live change.
+    const disabled = row.live === undefined
+      ? row.item?.disabled === true
+      : liveState === 'disabled';
+    const needsAuth = row.live === undefined
+      ? row.item?.needs_auth === true
+      : liveState === 'needs auth';
     const failure = failures[row.name];
     const shown = failure === undefined ? null : describeFailure(failure);
     const link = links[row.name];
     const note = notes[row.name];
+    const warning = warnings[row.name];
     return (
       <li key={row.name} class="systems__card" data-server={row.name} data-tone={tone}>
         <HexTile tone={tone} />
@@ -399,6 +411,9 @@ function SystemsDialog({ inert }: { inert: boolean }) {
             </p>
           )}
           {note !== undefined && <p class="systems__note">{note}</p>}
+          {warning !== undefined && (
+            <div class="systems__status" role="alert" data-tone="error">{warning}</div>
+          )}
           {shown && (
             <div
               class="systems__status"

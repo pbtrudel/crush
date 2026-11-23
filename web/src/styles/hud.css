@@ -100,9 +100,10 @@
 .hex[data-tone='dim'] polygon { fill: var(--text-muted); opacity: 0.4; }
 .hex[data-tone='error'] polygon { fill: var(--magenta); }
 .hex__bang { fill: var(--void-deep); font: 700 10px var(--font-hud); }
-/* The group is one control, so its tiles light up together on hover. */
-.hud__servers-btn:hover .hex polygon,
-.hud__servers-btn:focus-visible .hex polygon { fill: var(--cyan); opacity: 1; }
+/* The group is one control, so its ready tiles light up together on hover;
+   a stopped or failed tile keeps the tone that says so. */
+.hud__servers-btn:hover .hex[data-tone='lit'] polygon,
+.hud__servers-btn:focus-visible .hex[data-tone='lit'] polygon { fill: var(--cyan); opacity: 1; }
 
 /* Below 1024px the strips go, with the chart caption; the numbers and the
    gauge stay. */

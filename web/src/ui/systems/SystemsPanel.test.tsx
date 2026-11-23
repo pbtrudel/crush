@@ -369,6 +369,54 @@ describe('SystemsPanel actions', () => {
     expect(document.activeElement).toBe(refresh);
   });
 
+  it('turns Disable into Enable when a frame says the server is disabled', async () => {
+    seed();
+    stubLists();
+    await mount();
+    await openFromHud('mcp');
+
+    const disable = cardButton('github', 'Disable');
+    disable.focus();
+    await click(disable);
+    await act(() => { dispatch((s) => reduce(s, mcpFrame('github', 'disabled', 12))); });
+    await flush();
+
+    expect(cardText('github', '.systems__state')).toBe('disabled');
+    expect(buttonNames('github')).toEqual(['Enable']);
+    expect(card('github')!.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('turns Enable into Disable and Refresh as the server comes up', async () => {
+    seed();
+    state.value = { ...state.value, mcp: { ...state.value.mcp, legacy: { state: 'disabled', diagnostics: 0, tools: 0 } } };
+    stubLists([...MCP, mcpServer({ name: 'legacy', state: 'disabled', disabled: true })]);
+    await mount();
+    await openFromHud('mcp');
+
+    const enable = cardButton('legacy', 'Enable');
+    enable.focus();
+    await click(enable);
+    await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'starting', 0))); });
+    await flush();
+    expect(buttonNames('legacy')).toEqual(['Disable']);
+
+    await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'connected', 3))); });
+    await flush();
+    expect(buttonNames('legacy')).toEqual(['Refresh', 'Disable']);
+    expect(card('legacy')!.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('takes the disabled flag from the list when no frame knows the server', async () => {
+    seed();
+    stubLists([...MCP, mcpServer({ name: 'idle', state: 'disabled', disabled: true })]);
+    await mount();
+    await openFromHud('mcp');
+
+    expect(buttonNames('idle')).toEqual(['Enable']);
+  });
+
   it('keeps focus inside the card when the pressed button goes away', async () => {
     seed();
     stubLists();
@@ -449,6 +497,26 @@ describe('SystemsPanel authentication', () => {
 
     expect(open).not.toHaveBeenCalled();
     expect(card('notes')!.querySelector('a')).toBeNull();
+    const alert = card('notes')!.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toBe('The MCP server did not return a web address');
+  });
+
+  it('drops Authenticate once a frame says the server is connected', async () => {
+    seed();
+    state.value = { ...state.value, mcp: { notes: { state: 'needs auth', diagnostics: 0, tools: 0 } } };
+    stubLists([mcpServer({ name: 'notes', state: 'needs auth', needs_auth: true })]);
+    await mount();
+    await openFromHud('mcp');
+
+    const auth = cardButton('notes', 'Authenticate');
+    auth.focus();
+    await click(auth);
+    await act(() => { dispatch((s) => reduce(s, mcpFrame('notes', 'connected', 4))); });
+    await flush();
+
+    expect(buttonNames('notes')).toEqual(['Refresh', 'Disable']);
+    expect(card('notes')!.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it('shows the server message when auth is not needed or the URL is refused', async () => {
