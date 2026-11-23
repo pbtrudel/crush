@@ -485,10 +485,7 @@ func (m *Models) setProviderItems() error {
 		}
 
 		providerConfig, providerConfigured := cfg.Providers.Get(providerID)
-		if providerConfigured && providerConfig.Disable {
-			continue
-		}
-		if !providerConfigured && !m.showAllProviders {
+		if !cfg.ProviderListed(providerID, m.showAllProviders) {
 			continue
 		}
 

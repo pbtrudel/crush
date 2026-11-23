@@ -1335,6 +1335,22 @@ func (c *Config) IsConfigured() bool {
 	return len(c.EnabledProviders()) > 0
 }
 
+// ProviderListed reports whether the model picker lists provider id. A
+// configured provider is listed unless it is disabled; an unconfigured
+// one is listed only when includeUnconfigured is set (the picker's "show
+// all"). The model dialog and the shared model choices apply this same
+// rule.
+func (c *Config) ProviderListed(id string, includeUnconfigured bool) bool {
+	if c == nil || c.Providers == nil {
+		return false
+	}
+	providerConfig, configured := c.Providers.Get(id)
+	if configured && providerConfig.Disable {
+		return false
+	}
+	return configured || includeUnconfigured
+}
+
 func (c *Config) GetModel(provider, model string) *catwalk.Model {
 	if providerConfig, ok := c.Providers.Get(provider); ok {
 		for _, m := range providerConfig.Models {

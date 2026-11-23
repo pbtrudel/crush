@@ -3027,16 +3027,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 				return util.ReportError(errors.New("agent configuration not found"))()
 			}
 
-			currentModel := cfg.Models[agentCfg.Model]
-			currentModel.Think = !currentModel.Think
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
-				return util.ReportError(err)()
-			}
+			on := !cfg.Models[agentCfg.Model].Think
 			ctx, cancel := common.WorkspaceOpContext()
 			defer cancel()
-			m.com.Workspace.UpdateAgentModel(ctx)
+			if err := workspace.ApplyThinking(ctx, m.com.Workspace, on); err != nil {
+				return util.ReportError(err)()
+			}
 			status := "disabled"
-			if currentModel.Think {
+			if on {
 				status = "enabled"
 			}
 			return util.NewInfoMsg("Thinking mode " + status)
@@ -3336,23 +3334,20 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			break
 		}
 
-		agentCfg, ok := cfg.Agents[config.AgentCoder]
-		if !ok {
+		if _, ok := cfg.Agents[config.AgentCoder]; !ok {
 			cmds = append(cmds, util.ReportError(errors.New("agent configuration not found")))
-			break
-		}
-
-		currentModel := cfg.Models[agentCfg.Model]
-		currentModel.ReasoningEffort = msg.Effort
-		if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
-			cmds = append(cmds, util.ReportError(err))
 			break
 		}
 
 		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
 			ctx, cancel := common.WorkspaceOpContext()
 			defer cancel()
-			m.com.Workspace.UpdateAgentModel(ctx)
+			if err := workspace.SetReasoningEffort(ctx, m.com.Workspace, msg.Effort); err != nil {
+				if errors.Is(err, workspace.ErrAgentBusy) {
+					return util.ReportWarn("Agent is busy, please wait...")()
+				}
+				return util.ReportError(err)()
+			}
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))
 		m.dialog.CloseDialog(dialog.ReasoningID)
@@ -3738,7 +3733,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	previousModel := cfg.Models[msg.ModelType]
-	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
+	if err := workspace.ApplyPreferredModel(m.com.Workspace, msg.ModelType, msg.Model); err != nil {
 		cmds = append(cmds, util.ReportError(err))
 	} else {
 		if msg.ModelType == config.SelectedModelTypeMain {
@@ -3757,7 +3752,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
 			// Ensure small model is set is unset.
 			smallModel := m.com.Workspace.GetDefaultSmallModel(providerID)
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel); err != nil {
+			if err := workspace.ApplyPreferredModel(m.com.Workspace, config.SelectedModelTypeSmall, smallModel); err != nil {
 				cmds = append(cmds, util.ReportError(err))
 			}
 		}
@@ -3766,7 +3761,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
-		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
+		if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
 			return util.ReportError(err)
 		}
 
