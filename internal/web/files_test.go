@@ -350,6 +350,29 @@ func TestBuildDiffCutsUnifiedAtLineBoundary(t *testing.T) {
 	require.Equal(t, "text", d.Language)
 }
 
+// TestFileDiffKeepsAngleBrackets pins the wire encoding: a diff of markup
+// is already near the cap, so escaping <, > and & would only inflate it.
+func TestFileDiffKeepsAngleBrackets(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddHistory(history.File{
+		ID: "h-0", SessionID: "s1", Path: "/repo/page.html", Version: 0, CreatedAt: 1, UpdatedAt: 1,
+		Content: "<p>a</p>\n",
+	})
+	fake.AddHistory(history.File{
+		ID: "h-1", SessionID: "s1", Path: "/repo/page.html", Version: 1, CreatedAt: 2, UpdatedAt: 2,
+		Content: "<p>a&b</p>\n",
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/page.html", ""), "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.NotContains(t, string(body), `\u003c`, "the body is not HTML-escaped")
+	require.NotContains(t, string(body), `\u0026`)
+	require.Contains(t, string(body), "+<p>a&b</p>")
+	var d FileDiff
+	require.NoError(t, json.Unmarshal(body, &d))
+	require.Contains(t, d.Unified, "+<p>a&b</p>")
+}
+
 func TestTruncateLinesKeepsRunes(t *testing.T) {
 	t.Parallel()
 	got := truncateLines(strings.Repeat("é", 10), 5)
