@@ -1876,20 +1876,37 @@ func TestClientWorkspaceAddNotePostsTheNote(t *testing.T) {
 // so a workspace-gone 404 keeps meaning recovery.
 func TestClientWorkspaceSessionRename(t *testing.T) {
 	t.Parallel()
+	type renameCall struct {
+		path   string
+		method string
+		title  string
+	}
+	var (
+		mu    sync.Mutex
+		calls []renameCall
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/workspaces/ws-1/sessions/s1/rename":
-			require.Equal(t, http.MethodPost, r.Method)
 			var rename proto.SessionRename
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&rename))
-			require.Equal(t, "Parser work", rename.Title)
+			if err := json.NewDecoder(r.Body).Decode(&rename); err != nil {
+				http.Error(w, "failed to decode rename", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			calls = append(calls, renameCall{path: r.URL.Path, method: r.Method, title: rename.Title})
+			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Session{ID: "s1", Title: rename.Title}))
-		default:
-			require.Equal(t, "/v1/workspaces/ws-1/sessions/nope/rename", r.URL.Path)
+			_ = json.NewEncoder(w).Encode(proto.Session{ID: "s1", Title: rename.Title})
+		case "/v1/workspaces/ws-1/sessions/nope/rename":
+			mu.Lock()
+			calls = append(calls, renameCall{path: r.URL.Path, method: r.Method})
+			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{Message: "session not found", Code: proto.ErrorCodeSessionNotFound}))
+			_ = json.NewEncoder(w).Encode(proto.Error{Message: "session not found", Code: proto.ErrorCodeSessionNotFound})
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
 		}
 	}))
 	defer srv.Close()
@@ -1902,4 +1919,14 @@ func TestClientWorkspaceSessionRename(t *testing.T) {
 	_, err = ws.SessionRename(t.Context(), "nope", "Gone")
 	require.ErrorIs(t, err, client.ErrSessionNotFound)
 	require.NotErrorIs(t, err, client.ErrNotFound)
+
+	mu.Lock()
+	gotCalls := append([]renameCall(nil), calls...)
+	mu.Unlock()
+	require.Len(t, gotCalls, 2)
+	require.Equal(t, "/v1/workspaces/ws-1/sessions/s1/rename", gotCalls[0].path)
+	require.Equal(t, http.MethodPost, gotCalls[0].method)
+	require.Equal(t, "Parser work", gotCalls[0].title)
+	require.Equal(t, "/v1/workspaces/ws-1/sessions/nope/rename", gotCalls[1].path)
+	require.Equal(t, http.MethodPost, gotCalls[1].method)
 }

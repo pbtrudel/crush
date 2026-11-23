@@ -686,6 +686,29 @@ func (clientSessionNotFoundWorkspace) GetSession(context.Context, string) (sessi
 	return session.Session{}, fmt.Errorf("failed to get session: %w", client.ErrSessionNotFound)
 }
 
+// workspaceGoneWorkspace reports the 404 a client/server workspace gets
+// when the server no longer knows the workspace. That says nothing about
+// the session, so a session route must not answer it as a session miss.
+type workspaceGoneWorkspace struct{ *webtest.Fake }
+
+func (workspaceGoneWorkspace) GetSession(context.Context, string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("failed to get session: %w", client.ErrNotFound)
+}
+
+func TestSessionRouteReportsWorkspaceGoneAsFailure(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: workspaceGoneWorkspace{webtest.NewFake()}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/s1", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode, string(body))
+	var got apiError
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, "get_session", got.Code, "a workspace-gone 404 must surface as a workspace failure")
+	require.NotEqual(t, "unknown_session", got.Code)
+}
+
 func TestMessagesForUnknownSessionIs404(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)

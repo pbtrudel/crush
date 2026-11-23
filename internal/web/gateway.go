@@ -68,9 +68,10 @@ type Gateway struct {
 	// diffs bounds the diff work every tab shares, so three tabs
 	// refreshing at once queue instead of stacking up.
 	diffs *diffSlots
-	// apiRoutes lists every registered /api pattern, method included, in
-	// registration order. The auth test walks it so a route cannot ship
-	// without being covered by the cookie check.
+	// apiRoutes lists every cookie-guarded /api pattern, method included,
+	// in registration order. The auth test walks it so a route cannot
+	// ship without being covered by the cookie check. The login route is
+	// not here: it has to answer without a cookie.
 	apiRoutes []string
 
 	// onMu guards the callbacks, which the controller may replace while
@@ -152,6 +153,8 @@ func (g *Gateway) routes(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	g.registerAPI(api)
+	// The login route must work without the cookie, so it bypasses
+	// requireAuth and the registry g.route fills.
 	mux.HandleFunc("POST /api/auth", g.handleAuth)
 	mux.Handle("/api/", g.requireAuth(api))
 	mux.Handle("/", assetHandler(assets))

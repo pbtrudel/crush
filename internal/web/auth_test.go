@@ -218,7 +218,8 @@ var routeParam = regexp.MustCompile(`\{[^}]+\}`)
 
 // TestEveryRouteRequiresTheCookie walks the gateway's own route registry,
 // so a route cannot ship without proving it refuses a request that has no
-// cookie. The registry is filled by g.route, which every /api route uses.
+// cookie. The registry is filled by g.route, which every cookie-guarded
+// /api route uses.
 func TestEveryRouteRequiresTheCookie(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
@@ -234,6 +235,9 @@ func TestEveryRouteRequiresTheCookie(t *testing.T) {
 		rsp.Body.Close()
 		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, "%s %s", method, path)
 	}
+	// The login route must answer without a cookie, so it is not in the
+	// walk and must never be added to it.
+	require.NotContains(t, g.apiRoutes, "POST /api/auth")
 	// The session routes added with the registry are part of the walk.
 	for _, want := range []string{
 		"PUT /api/sessions/{sid}",
