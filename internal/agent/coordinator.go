@@ -2458,8 +2458,16 @@ func (c *coordinator) skillsSnapshot() (all, active []*skills.Skill, tracker *sk
 // RefreshSkills re-reads the workspace's skill snapshot after a reload
 // and rebuilds every agent's tools so skill-dependent tools (crush_info,
 // view) serve the new set. Bookkeeping for skills that survive the
-// reload is preserved.
+// reload is preserved. Each system prompt is rebuilt once, on its agent's
+// next turn, so its skill list matches the reload.
 func (c *coordinator) RefreshSkills(ctx context.Context) error {
+	// The prompt discovers skills when it is built, so forgetting the key it
+	// was built with is enough for refreshSkillPrompt to rebuild it. The
+	// key is never empty, so a missing one always differs.
+	c.skillKeysMu.Lock()
+	clear(c.skillKeys)
+	c.skillKeysMu.Unlock()
+
 	if c.skillsMgr == nil {
 		return nil
 	}
