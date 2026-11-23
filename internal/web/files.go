@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,11 @@ const (
 	// is always diffed: the unified text is what a big answer falls back
 	// to, so only a side larger than this gives up on the diff entirely.
 	maxDiffInputBytes = 8 << 20
+	// maxDiffInputLines bounds one side of a diff by lines. The diff splits
+	// each side into a slice of lines, so a side of short lines costs far
+	// more than its bytes: 200,000 lines is about 3 MB of slice headers per
+	// side, about 7 MB for a pair, on top of the text itself.
+	maxDiffInputLines = 200_000
 	// maxTreeSessions bounds the child-session walk. A real tree is a few
 	// dozen sessions; the cap only stops a runaway or cyclic parent chain.
 	maxTreeSessions = 256
@@ -91,18 +97,18 @@ func (g *Gateway) sessionTree(ctx context.Context, root string) ([]string, error
 }
 
 // treeHistory groups the file history of root's tree by path, each path's
-// versions in creation order. Version numbers are per path and session,
-// so two sessions can both hold a version 0 of one path: creation time
-// decides the order, then the session, then the version, then the record
-// id.
-func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]history.File, error) {
+// versions in creation order, without loading any content. Version numbers
+// are per path and session, so two sessions can both hold a version 0 of
+// one path: creation time decides the order, then the session, then the
+// version, then the record id.
+func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]history.FileMeta, error) {
 	ids, err := g.sessionTree(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	byPath := map[string][]history.File{}
+	byPath := map[string][]history.FileMeta{}
 	for _, id := range ids {
-		files, err := g.ws.ListSessionHistory(ctx, id)
+		files, err := g.ws.ListSessionHistoryMeta(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -115,7 +121,7 @@ func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]hi
 		// together and in their own order when two sessions write the same
 		// path in the same second; the sort is stable so a full tie keeps
 		// the order the workspace listed.
-		slices.SortStableFunc(versions, func(a, b history.File) int {
+		slices.SortStableFunc(versions, func(a, b history.FileMeta) int {
 			return cmp.Or(
 				cmp.Compare(a.CreatedAt, b.CreatedAt),
 				cmp.Compare(a.SessionID, b.SessionID),
@@ -128,17 +134,21 @@ func (g *Gateway) treeHistory(ctx context.Context, root string) (map[string][]hi
 }
 
 // fileSummaries lists root's edited files, newest first. The counts are
-// first against latest, the same numbers the TUI sidebar shows.
+// first against latest, the same numbers the TUI sidebar shows. Only those
+// two versions of a path are ever loaded, and only on a stats cache miss.
 func (g *Gateway) fileSummaries(ctx context.Context, root string) ([]FileSummary, error) {
 	byPath, err := g.treeHistory(ctx, root)
 	if err != nil {
 		return nil, err
 	}
 	diags := g.ws.LSPDiagnosticsByFile(ctx)
+	load := func(id string) (history.File, error) {
+		return g.ws.GetHistoryVersion(ctx, id)
+	}
 	out := make([]FileSummary, 0, len(byPath))
 	for path, versions := range byPath {
 		last := versions[len(versions)-1]
-		additions, removals, unknown := g.fileStats.totals(path, versions)
+		additions, removals, unknown := g.fileStats.totals(ctx, path, versions, load)
 		ids := make([]int64, len(versions))
 		var sessions []string
 		for i, v := range versions {
@@ -170,6 +180,9 @@ func (g *Gateway) fileSummaries(ctx context.Context, root string) ([]FileSummary
 type fileStatCache struct {
 	mu      sync.Mutex
 	entries map[string]fileStat
+	// slots bounds the diff work of a cache miss, together with the diffs
+	// the browser asks for.
+	slots *diffSlots
 	// diffed counts the diffs computed, so a test can tell a hit from a
 	// recompute.
 	diffed int
@@ -182,15 +195,16 @@ type fileStat struct {
 	unknown     bool
 }
 
-func newFileStatCache() *fileStatCache {
-	return &fileStatCache{entries: map[string]fileStat{}}
+func newFileStatCache(slots *diffSlots) *fileStatCache {
+	return &fileStatCache{entries: map[string]fileStat{}, slots: slots}
 }
 
 // totals returns the line counts between the first and the latest version
-// of path. A version over the per-side diff limit makes the counts unknown
-// instead of paying for a diff whose spans the drawer cannot use.
-func (c *fileStatCache) totals(path string, versions []history.File) (additions, removals int, unknown bool) {
-	first, last := versions[0], versions[len(versions)-1]
+// of path, loading just those two through load. A side the metadata already
+// reports over the per-side limits, or one that cannot be loaded, makes the
+// counts unknown instead of failing the whole file list.
+func (c *fileStatCache) totals(ctx context.Context, path string, metas []history.FileMeta, load func(id string) (history.File, error)) (additions, removals int, unknown bool) {
+	first, last := metas[0], metas[len(metas)-1]
 	firstID, lastID := versionIdentity(first), versionIdentity(last)
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.first == firstID && entry.last == lastID {
@@ -202,19 +216,49 @@ func (c *fileStatCache) totals(path string, versions []history.File) (additions,
 	// Diff outside the lock: a megabyte file must not block the snapshots
 	// of every other tab. A racing identical lookup recomputes the same
 	// numbers and stores them again.
-	if len(first.Content) > maxDiffInputBytes || len(last.Content) > maxDiffInputBytes {
-		unknown = true
-	} else {
-		_, additions, removals = diff.GenerateDiff(first.Content, last.Content, path)
-	}
+	additions, removals, unknown = c.compute(ctx, path, first, last, load)
 
 	c.mu.Lock()
-	if !unknown {
-		c.diffed++
+	// A cancelled request stores nothing: the slot or load failure it hit
+	// says nothing about the versions, so caching it would keep the counts
+	// unknown until the next version.
+	if ctx.Err() == nil {
+		if !unknown {
+			c.diffed++
+		}
+		c.entries[path] = fileStat{first: firstID, last: lastID, additions: additions, removals: removals, unknown: unknown}
 	}
-	c.entries[path] = fileStat{first: firstID, last: lastID, additions: additions, removals: removals, unknown: unknown}
 	c.mu.Unlock()
 	return additions, removals, unknown
+}
+
+// compute loads the first and the latest version of a path and diffs them
+// under a diff slot. Every failure is unknown: a stale or unreadable
+// version must not fail the whole list.
+func (c *fileStatCache) compute(ctx context.Context, path string, first, last history.FileMeta, load func(id string) (history.File, error)) (additions, removals int, unknown bool) {
+	if first.Size > maxDiffInputBytes || last.Size > maxDiffInputBytes {
+		return 0, 0, true
+	}
+	release, err := c.slots.acquire(ctx)
+	if err != nil {
+		return 0, 0, true
+	}
+	defer release()
+	a, err := load(first.ID)
+	if err != nil {
+		slog.Debug("Failed to load a file version for stats", "path", path, "version", first.ID, "error", err)
+		return 0, 0, true
+	}
+	b, err := load(last.ID)
+	if err != nil {
+		slog.Debug("Failed to load a file version for stats", "path", path, "version", last.ID, "error", err)
+		return 0, 0, true
+	}
+	if tooManyLines(a.Content) || tooManyLines(b.Content) {
+		return 0, 0, true
+	}
+	_, additions, removals = diff.GenerateDiff(a.Content, b.Content, path)
+	return additions, removals, false
 }
 
 // diffCount reports how many diffs the cache has computed.
@@ -227,41 +271,49 @@ func (c *fileStatCache) diffCount() int {
 // versionIdentity names one history record for the stats cache. The record
 // id is unique per version; a record without one falls back to its session
 // and version, which is unique for a path.
-func versionIdentity(v history.File) string {
-	if v.ID != "" {
-		return v.ID
+func versionIdentity(m history.FileMeta) string {
+	if m.ID != "" {
+		return m.ID
 	}
-	return v.SessionID + ":" + strconv.FormatInt(v.Version, 10)
+	return m.SessionID + ":" + strconv.FormatInt(m.Version, 10)
 }
 
-// buildDiff diffs two versions of one path, addressed by their position in
-// versions. A nil bound picks the first or the latest version.
-func buildDiff(path string, versions []history.File, from, to *int64) (FileDiff, error) {
-	pick := func(want *int64, fallback int64) (history.File, int64, error) {
+// pickVersions resolves the two versions of a diff by their position in
+// metas, the path's history. A nil bound picks the first or the latest
+// version.
+func pickVersions(metas []history.FileMeta, from, to *int64) (a, b history.FileMeta, fromIdx, toIdx int64, err error) {
+	pick := func(want *int64, fallback int64) (history.FileMeta, int64, error) {
 		i := fallback
 		if want != nil {
 			i = *want
 		}
-		if i < 0 || i >= int64(len(versions)) {
-			return history.File{}, 0, errUnknownVersion
+		if i < 0 || i >= int64(len(metas)) {
+			return history.FileMeta{}, 0, errUnknownVersion
 		}
-		return versions[i], i, nil
+		return metas[i], i, nil
 	}
-	a, fromIdx, err := pick(from, 0)
+	a, fromIdx, err = pick(from, 0)
 	if err != nil {
-		return FileDiff{}, err
+		return history.FileMeta{}, history.FileMeta{}, 0, 0, err
 	}
-	b, toIdx, err := pick(to, int64(len(versions)-1))
+	b, toIdx, err = pick(to, int64(len(metas)-1))
 	if err != nil {
-		return FileDiff{}, err
+		return history.FileMeta{}, history.FileMeta{}, 0, 0, err
 	}
+	return a, b, fromIdx, toIdx, nil
+}
+
+// buildDiff diffs two loaded versions of one path, addressed by their
+// position in the path's history.
+func buildDiff(path string, a, b history.File, fromIdx, toIdx int64) FileDiff {
 	d := FileDiff{Path: path, From: fromIdx, To: toIdx, Language: languageFor(path)}
-	// Only a side over the per-side limit is refused: the diff of two such
+	// Only a side over a per-side limit is refused: the diff of two such
 	// files would cost far more than the drawer can render, and there is no
 	// unified text to fall back to either.
-	if len(a.Content) > maxDiffInputBytes || len(b.Content) > maxDiffInputBytes {
+	if len(a.Content) > maxDiffInputBytes || len(b.Content) > maxDiffInputBytes ||
+		tooManyLines(a.Content) || tooManyLines(b.Content) {
 		d.Truncated = true
-		return d, nil
+		return d
 	}
 	unified, _, _ := diff.GenerateDiff(a.Content, b.Content, path)
 	d.Old, d.New, d.Unified = a.Content, b.Content, unified
@@ -269,7 +321,13 @@ func buildDiff(path string, versions []history.File, from, to *int64) (FileDiff,
 		d.Old, d.New, d.Truncated = "", "", true
 		d.Unified = truncateLines(d.Unified, maxDiffBytes)
 	}
-	return d, nil
+	return d
+}
+
+// tooManyLines reports a side the diff would split into more lines than
+// the cap allows.
+func tooManyLines(c string) bool {
+	return strings.Count(c, "\n") > maxDiffInputLines
 }
 
 // truncateLines cuts s to at most limit bytes, at the last line break when
@@ -319,7 +377,7 @@ func (g *Gateway) handleFiles(w http.ResponseWriter, r *http.Request) {
 
 // handleFileDiff answers only for paths in the session tree's history, and
 // reads nothing but that history: a path is a lookup key, never a file to
-// open.
+// open. Just the two versions the answer shows are loaded.
 func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 	sid := r.PathValue("sid")
 	if !g.sessionExists(w, r, sid) {
@@ -342,21 +400,54 @@ func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, "file_history", err)
 		return
 	}
-	versions, ok := byPath[path]
+	metas, ok := byPath[path]
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_path", "the session has no history for this path")
 		return
 	}
-	d, err := buildDiff(path, versions, from, to)
+	a, b, fromIdx, toIdx, err := pickVersions(metas, from, to)
 	if errors.Is(err, errUnknownVersion) {
 		writeError(w, http.StatusBadRequest, "bad_version", err.Error())
 		return
 	}
-	if err != nil {
-		writeInternal(w, "build_diff", err)
+	// The metadata already carries both sizes: a side over the per-side
+	// limit answers the truncated refusal without loading either version.
+	if a.Size > maxDiffInputBytes || b.Size > maxDiffInputBytes {
+		writeJSON(w, http.StatusOK, FileDiff{
+			Path: path, From: fromIdx, To: toIdx,
+			Language: languageFor(path), Truncated: true,
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	release, err := g.diffs.acquire(r.Context())
+	if err != nil {
+		// The client went away while the request waited for a diff slot.
+		return
+	}
+	defer release()
+	first, err := g.ws.GetHistoryVersion(r.Context(), a.ID)
+	if err != nil {
+		writeHistoryError(w, "file_diff", err)
+		return
+	}
+	last, err := g.ws.GetHistoryVersion(r.Context(), b.ID)
+	if err != nil {
+		writeHistoryError(w, "file_diff", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buildDiff(path, first, last, fromIdx, toIdx))
+}
+
+// writeHistoryError answers a version load that failed after the metadata
+// listed it. A miss is the gateway's own answer, so a version deleted
+// between the listing and the load reads as gone; anything else is the
+// generic internal error, never the upstream message.
+func writeHistoryError(w http.ResponseWriter, code string, err error) {
+	if isNotFound(err) {
+		writeError(w, http.StatusNotFound, "unknown_version", "a version of this file is no longer available")
+		return
+	}
+	writeInternal(w, code, err)
 }
 
 // sessionExists answers 404 unknown_session for a session the workspace

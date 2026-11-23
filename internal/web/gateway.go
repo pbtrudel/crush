@@ -64,6 +64,9 @@ type Gateway struct {
 	// fileStats memoizes the edited-file line counts every snapshot and
 	// file list asks for.
 	fileStats *fileStatCache
+	// diffs bounds the diff work every tab shares, so three tabs
+	// refreshing at once queue instead of stacking up.
+	diffs *diffSlots
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -94,6 +97,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	port := ln.Addr().(*net.TCPAddr).Port
+	slots := newDiffSlots(maxConcurrentDiffs)
 	g := &Gateway{
 		ws:         opts.Workspace,
 		secret:     secret,
@@ -108,7 +112,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
 		team:       newTeamWatcher(teamDir(opts)),
 		teamDone:   make(chan struct{}),
-		fileStats:  newFileStatCache(),
+		fileStats:  newFileStatCache(slots),
+		diffs:      slots,
 
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,

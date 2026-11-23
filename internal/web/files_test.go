@@ -1,13 +1,18 @@
 package web
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -331,11 +336,9 @@ func TestBuildDiffKeepsUnifiedForLargePair(t *testing.T) {
 	old := lines("o", 600)
 	next := lines("o", 599) + "one more line\n"
 	require.Greater(t, len(old)+len(next), maxDiffBytes)
-	d, err := buildDiff("/repo/big.txt", []history.File{
-		{Version: 0, Content: old},
-		{Version: 1, Content: next},
-	}, nil, nil)
-	require.NoError(t, err)
+	d := buildDiff("/repo/big.txt",
+		history.File{Version: 0, Content: old},
+		history.File{Version: 1, Content: next}, 0, 1)
 	require.True(t, d.Truncated)
 	require.Empty(t, d.Old)
 	require.Empty(t, d.New)
@@ -358,11 +361,9 @@ func TestBuildDiffRefusesAHugeSide(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			d, err := buildDiff("/repo/huge.txt", []history.File{
-				{Version: 0, Content: tc.first},
-				{Version: 1, Content: tc.last},
-			}, nil, nil)
-			require.NoError(t, err)
+			d := buildDiff("/repo/huge.txt",
+				history.File{Version: 0, Content: tc.first},
+				history.File{Version: 1, Content: tc.last}, 0, 1)
 			require.True(t, d.Truncated)
 			require.Empty(t, d.Unified)
 			require.Empty(t, d.Old)
@@ -380,8 +381,9 @@ func TestBuildDiffCutsUnifiedAtLineBoundary(t *testing.T) {
 	// while the unified diff carries more than a byte of prefix per line.
 	old, next := lines("o", 512), lines("n", 512)
 	require.LessOrEqual(t, len(old)+len(next), maxDiffBytes)
-	d, err := buildDiff("/repo/big.txt", []history.File{{Version: 0, Content: old}, {Version: 1, Content: next}}, nil, nil)
-	require.NoError(t, err)
+	d := buildDiff("/repo/big.txt",
+		history.File{Version: 0, Content: old},
+		history.File{Version: 1, Content: next}, 0, 1)
 	require.True(t, d.Truncated)
 	require.Empty(t, d.Old)
 	require.Empty(t, d.New)
@@ -476,4 +478,190 @@ func TestLanguageFor(t *testing.T) {
 	} {
 		require.Equal(t, want, languageFor(path), path)
 	}
+}
+
+// TestBuildDiffRefusesTooManyLines pins the line cap: a side of short
+// lines stays under the byte cap but would split into millions of lines,
+// so it is refused before any diff runs.
+func TestBuildDiffRefusesTooManyLines(t *testing.T) {
+	t.Parallel()
+	lines := strings.Repeat("\n", maxDiffInputLines+1)
+	d := buildDiff("/repo/lock.json",
+		history.File{Content: "a\n"}, history.File{Content: lines}, 0, 1)
+	require.True(t, d.Truncated)
+	require.Empty(t, d.Unified, "a side over the line cap is not diffed")
+	require.Empty(t, d.Old)
+	require.Empty(t, d.New)
+}
+
+// TestFileSummariesLoadOnlyFirstAndLast pins that a summary reads the
+// metadata, not the content: only the first and the latest version are
+// loaded, and a second summary with no new version loads nothing.
+func TestFileSummariesLoadOnlyFirstAndLast(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	for i := range 5 {
+		f.AddHistory(history.File{
+			ID: fmt.Sprintf("v%d", i), SessionID: "s1", Path: "/repo/a.go",
+			Content: strings.Repeat("x\n", i+1), Version: int64(i), CreatedAt: int64(100 + i),
+		})
+	}
+	got, err := g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, 4, got[0].Additions)
+	require.ElementsMatch(t, []string{"GetHistoryVersion:v0", "GetHistoryVersion:v4"}, loads(f))
+	// A second summary with no new version hits the stats cache: no load.
+	_, err = g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, loads(f), 2)
+}
+
+// TestFileSummariesSkipOversizedByMetadata pins that the size in the
+// metadata decides: an oversized side is never loaded just to learn that
+// it cannot be diffed.
+func TestFileSummariesSkipOversizedByMetadata(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.AddHistory(history.File{ID: "v0", SessionID: "s1", Path: "/repo/big.bin", Content: "a", CreatedAt: 1})
+	f.AddHistory(history.File{
+		ID: "v1", SessionID: "s1", Path: "/repo/big.bin",
+		Content: strings.Repeat("b", maxDiffInputBytes+1), Version: 1, CreatedAt: 2,
+	})
+	files, err := g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.True(t, files[0].StatsUnknown)
+	require.Empty(t, loads(f), "the size in the metadata decides; no content is loaded")
+}
+
+// TestFileDiffLoadsOnlyTheTwoVersions pins that a diff loads just the
+// versions it shows, not the whole history of the path.
+func TestFileDiffLoadsOnlyTheTwoVersions(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	for i := range 4 {
+		f.AddHistory(history.File{
+			ID: fmt.Sprintf("v%d", i), SessionID: "s1", Path: "/repo/a.go",
+			Content: fmt.Sprintf("line %d\n", i), Version: int64(i), CreatedAt: int64(100 + i),
+		})
+	}
+	f.AddSession(session.Session{ID: "s1", Title: "Root"})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/a.go", "&from=1&to=2"), "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.ElementsMatch(t, []string{"GetHistoryVersion:v1", "GetHistoryVersion:v2"}, loads(f))
+}
+
+// TestFileDiffRefusesOversizedSideByMetadata pins that a side whose size
+// the metadata already reports as over the cap answers the truncated
+// refusal without loading either version.
+func TestFileDiffRefusesOversizedSideByMetadata(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.AddSession(session.Session{ID: "s1", Title: "Root"})
+	f.AddHistory(history.File{ID: "v0", SessionID: "s1", Path: "/repo/big.txt", Content: "a\n", CreatedAt: 1})
+	f.AddHistory(history.File{
+		ID: "v1", SessionID: "s1", Path: "/repo/big.txt",
+		Content: strings.Repeat("b", maxDiffInputBytes+1), Version: 1, CreatedAt: 2,
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/big.txt", ""), "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	var d FileDiff
+	require.NoError(t, json.Unmarshal(body, &d))
+	require.True(t, d.Truncated)
+	require.Empty(t, d.Unified)
+	require.Empty(t, d.Old)
+	require.Empty(t, d.New)
+	require.Empty(t, loads(f), "an oversized side is refused before either version is loaded")
+}
+
+// versionErrorWorkspace fails every history version load, the way a
+// deleted version or a failing server reaches the gateway.
+type versionErrorWorkspace struct {
+	*webtest.Fake
+	err error
+}
+
+func (w versionErrorWorkspace) GetHistoryVersion(context.Context, string) (history.File, error) {
+	return history.File{}, w.err
+}
+
+// TestFileDiffVersionLoadErrors pins the answers to a load that fails
+// after the metadata listed the version: a miss is the gateway's own 404,
+// and any other error is the generic 500 that never carries the upstream
+// message.
+func TestFileDiffVersionLoadErrors(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("get history version h0: open /home/user/.crush/crush.db: disk I/O error")
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"missing version", fmt.Errorf("get history version h0: %w", sql.ErrNoRows), http.StatusNotFound, "unknown_version"},
+		{"missing version over the client", fmt.Errorf("status code 404: %w", client.ErrNotFound), http.StatusNotFound, "unknown_version"},
+		{"unexpected error", boom, http.StatusInternalServerError, "file_diff"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := webtest.NewFake()
+			fake.AddSession(session.Session{ID: "s1", Title: "Root"})
+			fake.AddHistory(history.File{
+				ID: "h0", SessionID: "s1", Path: "/repo/a.go", Version: 0, CreatedAt: 1, Content: "a\n",
+			})
+			g, err := Start(t.Context(), Options{Workspace: versionErrorWorkspace{Fake: fake, err: tc.err}})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+			rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, diffURL(g, "s1", "/repo/a.go", ""), "")
+			rsp.Body.Close()
+			require.Equal(t, tc.wantStatus, rsp.StatusCode, string(body))
+			require.Contains(t, string(body), tc.wantCode)
+			require.NotContains(t, string(body), "/home/user", "an upstream error never reaches the browser")
+		})
+	}
+}
+
+// loads lists the content fetches the fake saw, in order.
+func loads(f *webtest.Fake) []string {
+	var out []string
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "GetHistoryVersion:") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestFileSummariesDoNotCacheACancelledRequest pins that a request whose
+// tab went away leaves no entry behind: the next summary still loads the
+// two versions and reports real counts.
+func TestFileSummariesDoNotCacheACancelledRequest(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.AddHistory(history.File{ID: "v0", SessionID: "s1", Path: "/repo/a.go", Content: "a\n", Version: 0, CreatedAt: 1})
+	f.AddHistory(history.File{ID: "v1", SessionID: "s1", Path: "/repo/a.go", Content: "a\nb\n", Version: 1, CreatedAt: 2})
+	// Hold every slot, so the cancelled request gives up waiting for one.
+	releaseFirst, err := g.diffs.acquire(t.Context())
+	require.NoError(t, err)
+	releaseLast, err := g.diffs.acquire(t.Context())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	got, err := g.fileSummaries(ctx, "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.True(t, got[0].StatsUnknown, "a cancelled request gives up its wait for a slot")
+	require.Empty(t, loads(f), "a cancelled request loads nothing")
+	releaseFirst()
+	releaseLast()
+
+	got, err = g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.False(t, got[0].StatsUnknown)
+	require.Equal(t, 1, got[0].Additions)
+	require.ElementsMatch(t, []string{"GetHistoryVersion:v0", "GetHistoryVersion:v1"}, loads(f))
 }
