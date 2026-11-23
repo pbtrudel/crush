@@ -996,6 +996,53 @@ func TestPermissionService_AutoReview(t *testing.T) {
 		require.True(t, granted)
 		require.False(t, called)
 	})
+
+	// The user's own grants come before the reviewer: a denying reviewer
+	// must not override "allow for session", nor cost a model call on it.
+	countingDenier := func(calls *atomic.Int32) Reviewer {
+		return func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			calls.Add(1)
+			return ReviewDeny, nil
+		}
+	}
+
+	t.Run("session grant skips the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.sessionPermissions.Set(permissionKeyFor(PermissionRequest{
+			SessionID: req.SessionID, ToolName: req.ToolName, Action: req.Action, Path: req.Path,
+		}), true)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+		require.Zero(t, calls.Load())
+	})
+
+	t.Run("inherited auto-approval skips the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.AutoApproveSession("lead")
+		svc.InheritAutoApproval("lead", req.SessionID)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+		require.Zero(t, calls.Load())
+	})
+
+	t.Run("a grant for another session still consults the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.sessionPermissions.Set(permissionKeyFor(PermissionRequest{
+			SessionID: "other", ToolName: req.ToolName, Action: req.Action, Path: req.Path,
+		}), true)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.False(t, granted)
+		require.Equal(t, int32(1), calls.Load())
+	})
 }
 
 // A teammate inherits the approval of its Lead, so the service has to report

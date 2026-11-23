@@ -350,6 +350,19 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		return true, nil
 	}
 
+	// The user's own approvals (auto-approve for the session, inherited
+	// or not, and "allow for session" grants) come before the reviewer, so
+	// a reviewer cannot override them and they cost no model call.
+	dir := s.requestDir(opts.Path)
+	if s.preApproved(opts, dir) {
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			SessionID:  opts.SessionID,
+			ToolCallID: opts.ToolCallID,
+			Granted:    true,
+		})
+		return true, nil
+	}
+
 	// An automatic reviewer gets first refusal, before the prompt lock is
 	// taken: it calls a model, and holding the lock across that call would
 	// serialize every other request behind it.
@@ -395,11 +408,9 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		ToolCallID: opts.ToolCallID,
 	})
 
-	s.autoApproveSessionsMu.RLock()
-	autoApprove := s.autoApproveSessions[opts.SessionID]
-	s.autoApproveSessionsMu.RUnlock()
-
-	if autoApprove {
+	// Checked again under the lock: a request that waited behind a prompt
+	// may have been covered by the grant that prompt just recorded.
+	if s.preApproved(opts, dir) {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			SessionID:  opts.SessionID,
 			ToolCallID: opts.ToolCallID,
@@ -408,19 +419,6 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		return true, nil
 	}
 
-	fileInfo, err := os.Stat(opts.Path)
-	dir := opts.Path
-	if err == nil {
-		if fileInfo.IsDir() {
-			dir = opts.Path
-		} else {
-			dir = filepath.Dir(opts.Path)
-		}
-	}
-
-	if dir == "." {
-		dir = s.workingDir
-	}
 	permission := PermissionRequest{
 		ID:          uuid.New().String(),
 		Path:        dir,
@@ -432,15 +430,6 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		Params:      opts.Params,
 		Danger:      opts.Danger,
 		GrantKey:    opts.GrantKey,
-	}
-
-	if _, ok := s.sessionPermissions.Get(permissionKeyFor(permission)); ok {
-		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
-			SessionID:  opts.SessionID,
-			ToolCallID: opts.ToolCallID,
-			Granted:    true,
-		})
-		return true, nil
 	}
 
 	s.activeRequests.Set(permission.ID, permission)
@@ -474,6 +463,39 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		resolved(outcomeOf(granted))
 		return granted, nil
 	}
+}
+
+// requestDir returns the directory a request's grants are keyed on: the
+// path itself for a directory, its parent for a file, and the working
+// directory for ".".
+func (s *permissionService) requestDir(path string) string {
+	dir := path
+	if fileInfo, err := os.Stat(path); err == nil && !fileInfo.IsDir() {
+		dir = filepath.Dir(path)
+	}
+	if dir == "." {
+		dir = s.workingDir
+	}
+	return dir
+}
+
+// preApproved reports whether the session is auto-approved or holds an
+// "allow for session" grant matching the request.
+func (s *permissionService) preApproved(opts CreatePermissionRequest, dir string) bool {
+	s.autoApproveSessionsMu.RLock()
+	autoApprove := s.autoApproveSessions[opts.SessionID]
+	s.autoApproveSessionsMu.RUnlock()
+	if autoApprove {
+		return true
+	}
+	_, ok := s.sessionPermissions.Get(permissionKeyFor(PermissionRequest{
+		SessionID: opts.SessionID,
+		ToolName:  opts.ToolName,
+		Action:    opts.Action,
+		Path:      dir,
+		GrantKey:  opts.GrantKey,
+	}))
+	return ok
 }
 
 // lockScope waits until no earlier request in the scope of sessionID is
