@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -78,7 +79,8 @@ func (g *Gateway) registerCommandRoutes(api *http.ServeMux) {
 
 // customCommands lists what the palette offers: the custom commands the
 // config provides followed by the user-invocable skills, exactly as the
-// TUI builds them.
+// TUI builds them. A broken skill catalog leaves the custom commands
+// usable, the way the TUI keeps going after a failed skill load.
 func (g *Gateway) customCommands(ctx context.Context) ([]commands.CustomCommand, error) {
 	var cmds []commands.CustomCommand
 	if g.loadCommandsFn != nil {
@@ -96,7 +98,8 @@ func (g *Gateway) customCommands(ctx context.Context) ([]commands.CustomCommand,
 	}
 	entries, err := g.ws.ListSkills(ctx)
 	if err != nil {
-		return nil, err
+		slog.Warn("Failed to load skill commands", "error", err)
+		return cmds, nil
 	}
 	return append(cmds, commands.FromSkillCatalog(entries)...), nil
 }
@@ -110,9 +113,10 @@ func (g *Gateway) handleListCommands(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string][]commandInfo{"commands": commandInfos(cmds)})
 }
 
-// handleRunCommand runs a custom command as a prompt, or a skill as its
-// loaded-skill prompt, through the same helper the TUI uses. Neither kind
-// answers with an attachment; POST /api/skills/{name}/attach does that.
+// handleRunCommand runs a custom command as a prompt through the same
+// helper the TUI uses. Skills are refused: the TUI palette attaches a skill
+// to the editor instead of running it, so the browser uses
+// POST /api/skills/{name}/attach.
 func (g *Gateway) handleRunCommand(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string            `json:"session_id"`
@@ -138,6 +142,10 @@ func (g *Gateway) handleRunCommand(w http.ResponseWriter, r *http.Request) {
 	cmd, ok := findCommand(cmds, body.ID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_command", "no such command")
+		return
+	}
+	if cmd.Skill != nil {
+		writeError(w, http.StatusBadRequest, "skill_attach_only", "Skills are attached, not run")
 		return
 	}
 	if !checkArgs(w, cmd.Arguments, body.Args) {
@@ -252,7 +260,17 @@ func (g *Gateway) handleDisableSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) setSkillDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
-	if err := g.ws.SkillSetDisabled(r.Context(), r.PathValue("name"), disabled); err != nil {
+	name := r.PathValue("name")
+	entries, err := g.ws.ListSkills(r.Context())
+	if err != nil {
+		writeWorkspaceError(w, "toggle_skill", err)
+		return
+	}
+	if _, ok := findSkill(entries, name); !ok {
+		writeError(w, http.StatusNotFound, "unknown_skill", "no such skill")
+		return
+	}
+	if err := g.ws.SkillSetDisabled(r.Context(), name, disabled); err != nil {
 		writeWorkspaceError(w, "toggle_skill", err)
 		return
 	}
@@ -270,14 +288,8 @@ func (g *Gateway) handleAttachSkill(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceError(w, "list_skills", err)
 		return
 	}
-	var entry *skills.CatalogEntry
-	for i := range entries {
-		if entries[i].Name == name {
-			entry = &entries[i]
-			break
-		}
-	}
-	if entry == nil {
+	entry, ok := findSkill(entries, name)
+	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_skill", "no such skill")
 		return
 	}
@@ -341,6 +353,16 @@ func findCommand(cmds []commands.CustomCommand, id string) (commands.CustomComma
 	return commands.CustomCommand{}, false
 }
 
+// findSkill returns the catalog entry a skill name refers to.
+func findSkill(entries []skills.CatalogEntry, name string) (skills.CatalogEntry, bool) {
+	for _, entry := range entries {
+		if entry.Name == name {
+			return entry, true
+		}
+	}
+	return skills.CatalogEntry{}, false
+}
+
 func findMCPPrompt(prompts []commands.MCPPrompt, clientID, promptID string) (commands.MCPPrompt, bool) {
 	for _, p := range prompts {
 		if p.ClientID == clientID && p.PromptID == promptID {
@@ -352,7 +374,7 @@ func findMCPPrompt(prompts []commands.MCPPrompt, clientID, promptID string) (com
 
 // checkArgs enforces the argument dialog's rules: at most maxCommandArgs
 // values of at most maxCommandArgBytes each, and every required argument
-// filled in, named in the declared order.
+// filled in, named by its ID in the declared order.
 func checkArgs(w http.ResponseWriter, args []commands.Argument, values map[string]string) bool {
 	if len(values) > maxCommandArgs {
 		writeError(w, http.StatusBadRequest, "args_too_large", "at most 32 arguments are accepted")
@@ -366,7 +388,7 @@ func checkArgs(w http.ResponseWriter, args []commands.Argument, values map[strin
 	}
 	for _, arg := range args {
 		if arg.Required && strings.TrimSpace(values[arg.ID]) == "" {
-			writeError(w, http.StatusBadRequest, "missing_args", "argument "+arg.Title+" is required")
+			writeError(w, http.StatusBadRequest, "missing_args", "argument "+arg.ID+" is required")
 			return false
 		}
 	}

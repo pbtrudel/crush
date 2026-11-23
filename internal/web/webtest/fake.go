@@ -65,6 +65,8 @@ type Fake struct {
 	skillCatalog  []skills.CatalogEntry
 	skillContent  map[string]string
 	skillDisabled map[string]bool
+	// skillsErr, when set, makes ListSkills fail.
+	skillsErr error
 	// mcpPrompts is the prompt catalog; mcpPromptText is keyed by
 	// "<client>:<prompt>" and holds what GetMCPPrompt returns.
 	mcpPrompts    []commands.MCPPrompt
@@ -294,10 +296,20 @@ func (f *Fake) AddSkill(entry skills.CatalogEntry, content string) {
 	f.mu.Unlock()
 }
 
+// SetSkillsErr makes ListSkills fail, the way a broken catalog does.
+func (f *Fake) SetSkillsErr(err error) {
+	f.mu.Lock()
+	f.skillsErr = err
+	f.mu.Unlock()
+}
+
 func (f *Fake) ListSkills(context.Context) ([]skills.CatalogEntry, error) {
 	f.record("ListSkills")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.skillsErr != nil {
+		return nil, f.skillsErr
+	}
 	return append([]skills.CatalogEntry(nil), f.skillCatalog...), nil
 }
 
