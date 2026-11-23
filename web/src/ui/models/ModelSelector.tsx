@@ -17,11 +17,11 @@ function describeModelFailure(err: unknown): ReturnType<typeof describeFailure> 
 }
 
 // formatContext shortens a context window for the choice rows: thousands
-// under a million, at most one decimal above it. Zero or a missing window
-// shows nothing.
+// below the point where they would read 1000k, at most one decimal above
+// it. Zero or a missing window shows nothing.
 export function formatContext(window: number | undefined): string {
   if (!window || window < 0) return '';
-  if (window < 1_000_000) return `${Math.round(window / 1_000)}k`;
+  if (window < 999_500) return `${Math.round(window / 1_000)}k`;
   const millions = Math.round(window / 100_000) / 10;
   return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}M`;
 }
@@ -105,20 +105,28 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     filterInput.current?.focus();
   });
 
+  const levels = model.effort_levels ?? [];
+  // One source for the fieldset and for the focus fallback: whichever
+  // control the fieldset renders, a frame that swaps or removes it can
+  // leave a focused control unmounted.
+  const reasoningKind: 'levels' | 'switch' | 'none' = levels.length > 0
+    ? 'levels'
+    : showThinkingToggle(model) ? 'switch' : 'none';
+  const checkedEffort = effortDraft ?? model.reasoning_effort ?? '';
+
   // The frame is the model state: a settled effort clears the draft, and a
-  // model that just started reasoning (or stopped) takes focus with it when
-  // its fieldset leaves the tree.
-  const reasoningShown = !!model.can_reason;
-  const shownBefore = useRef(reasoningShown);
+  // model whose control just changed hands focus to the filter when the
+  // focused control left the tree with it.
+  const kindBefore = useRef(reasoningKind);
   useEffect(() => { setEffortDraft(null); }, [model.reasoning_effort]);
   useEffect(() => {
-    const was = shownBefore.current;
-    shownBefore.current = reasoningShown;
-    if (was === reasoningShown) return;
+    const was = kindBefore.current;
+    kindBefore.current = reasoningKind;
+    if (was === reasoningKind) return;
     const focused = document.activeElement;
     if (focused !== null && dialog.current?.contains(focused)) return;
     filterInput.current?.focus();
-  }, [reasoningShown]);
+  }, [reasoningKind]);
 
   const currentRef = type === 'main'
     ? { provider: model.provider, id: model.id }
@@ -174,8 +182,18 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     closeModels();
   };
 
+  // A radio group moves in the DOM before any handler runs, so an ignored
+  // change has to put the checked radio back itself.
+  const restoreEffort = () => {
+    dialog.current?.querySelectorAll<HTMLInputElement>('input[name="model-effort"]')
+      .forEach((input) => { input.checked = input.value === checkedEffort; });
+  };
+
   const changeEffort = async (effort: string) => {
-    if (reasoningRef.current) return;
+    if (reasoningRef.current) {
+      restoreEffort();
+      return;
+    }
     reasoningRef.current = true;
     setActionError(null);
     setEffortDraft(effort);
@@ -184,11 +202,14 @@ function ModelsDialog({ inert }: { inert: boolean }) {
       await api.setReasoning({ effort });
     } catch (err) {
       if (!alive.current) return;
-      setEffortDraft(null);
+      // The draft clears below either way; this names what went wrong.
       setActionError(err);
     } finally {
       reasoningRef.current = false;
-      if (alive.current) setReasoningBusy(false);
+      if (alive.current) {
+        setReasoningBusy(false);
+        setEffortDraft(null);
+      }
     }
   };
 
@@ -219,9 +240,6 @@ function ModelsDialog({ inert }: { inert: boolean }) {
 
   const shownAction = actionError === null ? null : describeModelFailure(actionError);
   const shownLoad = loadError === null ? null : describeFailure(loadError);
-  const checkedEffort = effortDraft ?? model.reasoning_effort ?? '';
-  const levels = model.effort_levels ?? [];
-  const canThink = showThinkingToggle(model);
 
   return (
     <div class="models-layer" inert={inert}>
@@ -276,7 +294,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
             focusOption(currentIndex);
           }}
         />
-        <div class="models__list" role="listbox" aria-label="Models">
+        <div class="models__list" role="listbox" aria-label="Model choices">
           {groups.map((group) => {
             const headingId = `models-provider-${group.provider}`;
             return (
@@ -320,15 +338,15 @@ function ModelsDialog({ inert }: { inert: boolean }) {
         </div>
         {list.length === 0 && <p class="models__empty">No models match</p>}
         <p class="models__more">More providers: sign in from the terminal</p>
-        {canThink || levels.length > 0 ? (
+        {reasoningKind !== 'none' ? (
           <fieldset
-            class="models__fieldset models__reasoning"
-            disabled={reasoningBusy}
+            class={`models__fieldset models__reasoning${reasoningBusy ? ' models__reasoning--busy' : ''}`}
+            aria-busy={reasoningBusy ? 'true' : undefined}
             aria-describedby="models-reasoning-note"
           >
             <legend class="models__legend">Reasoning</legend>
             <p id="models-reasoning-note" class="models__note">Applies to the large model</p>
-            {levels.length > 0 ? (
+            {reasoningKind === 'levels' ? (
               <div class="models__radios">
                 {levels.map((level) => (
                   <label key={level} class="models__radio">

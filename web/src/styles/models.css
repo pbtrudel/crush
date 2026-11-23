@@ -18,7 +18,7 @@
 .models__fieldset {
   margin: 0; padding: 0; border: 0; min-inline-size: 0;
 }
-.models__fieldset:disabled { opacity: 0.6; }
+.models__reasoning--busy { opacity: 0.6; }
 .models__legend {
   padding: 0;
   color: var(--text-muted);
@@ -46,7 +46,6 @@
   border-color: var(--cyan); background: var(--cyan-dim); color: var(--text);
 }
 .models__switch:hover { color: var(--cyan); border-color: var(--cyan); }
-.models__switch:disabled { opacity: 0.45; cursor: not-allowed; }
 .models__note {
   margin: 2px 0 0;
   color: var(--text-muted); font-size: var(--step--1);

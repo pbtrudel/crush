@@ -313,7 +313,93 @@ describe('the model selector', () => {
     expect(thinkingSwitch()).toBeNull();
   });
 
-  it('disables the reasoning fieldset while the change is in flight', async () => {
+  it('keeps the reasoning controls focusable while a change is in flight', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    const reasoning = vi.spyOn(api, 'setReasoning').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    const low = radio('model-effort', 'low');
+    low.focus();
+    await act(() => { low.click(); });
+    await flush();
+
+    const fieldset = dialog()!.querySelector<HTMLFieldSetElement>('fieldset.models__reasoning')!;
+    expect(reasoning).toHaveBeenCalledWith({ effort: 'low' });
+    // A disabled fieldset takes the focus with it, so it stays enabled.
+    expect(fieldset.disabled).toBe(false);
+    expect(low.disabled).toBe(false);
+    expect(fieldset.getAttribute('aria-busy')).toBe('true');
+    expect(fieldset.classList.contains('models__reasoning--busy')).toBe(true);
+    expect(document.activeElement).toBe(low);
+
+    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    await flush();
+
+    expect(fieldset.getAttribute('aria-busy')).toBeNull();
+    expect(fieldset.classList.contains('models__reasoning--busy')).toBe(false);
+    expect(document.activeElement).toBe(low);
+  });
+
+  it('keeps focus on the thinking switch while a change is in flight', async () => {
+    seed({ effort_levels: undefined, reasoning_effort: undefined, think: false });
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    const reasoning = vi.spyOn(api, 'setReasoning').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    const control = thinkingSwitch()!;
+    control.focus();
+    await act(() => { control.click(); });
+    await flush();
+
+    expect(reasoning).toHaveBeenCalledWith({ think: true });
+    expect(control.disabled).toBe(false);
+    expect(document.activeElement).toBe(control);
+
+    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    await flush();
+
+    expect(document.activeElement).toBe(control);
+  });
+
+  it('ignores a second reasoning change while one is in flight', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    const reasoning = vi.spyOn(api, 'setReasoning').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    const low = radio('model-effort', 'low');
+    low.focus();
+    await act(() => { low.click(); });
+    await flush();
+
+    const fieldset = dialog()!.querySelector<HTMLFieldSetElement>('fieldset.models__reasoning')!;
+    expect(fieldset.disabled).toBe(false);
+    const medium = radio('model-effort', 'medium');
+    await act(() => { medium.click(); });
+    await flush();
+
+    expect(reasoning).toHaveBeenCalledTimes(1);
+    expect(reasoning).toHaveBeenCalledWith({ effort: 'low' });
+    // The ignored choice never shows: the pending one stays checked.
+    expect(low.checked).toBe(true);
+    expect(medium.checked).toBe(false);
+
+    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    await flush();
+
+    expect(reasoning).toHaveBeenCalledTimes(1);
+    expect(medium.checked).toBe(false);
+    expect(radio('model-effort', 'high').checked).toBe(true);
+  });
+
+  it('clears the effort draft when the answer settles on the same effort', async () => {
     seed();
     stubProviders();
     const answer = deferred<ModelInfo>();
@@ -323,14 +409,32 @@ describe('the model selector', () => {
 
     await act(() => { radio('model-effort', 'low').click(); });
     await flush();
-
-    const fieldset = dialog()!.querySelector<HTMLFieldSetElement>('fieldset.models__reasoning')!;
-    expect(fieldset.disabled).toBe(true);
+    expect(radio('model-effort', 'low').checked).toBe(true);
 
     await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
     await flush();
 
-    expect(fieldset.disabled).toBe(false);
+    // The settled answer leaves the model's value showing, not the draft.
+    expect(radio('model-effort', 'high').checked).toBe(true);
+    expect(radio('model-effort', 'low').checked).toBe(false);
+
+    await frame({ reasoning_effort: 'high' });
+    expect(radio('model-effort', 'high').checked).toBe(true);
+    expect(radio('model-effort', 'low').checked).toBe(false);
+  });
+
+  it('moves focus to the filter when the frame swaps the control', async () => {
+    seed();
+    stubProviders();
+    await mount();
+    await openFromHud();
+
+    radio('model-effort', 'high').focus();
+    await frame({ effort_levels: undefined, reasoning_effort: undefined, can_reason: true, think: false });
+
+    expect(thinkingSwitch()).not.toBeNull();
+    expect(dialog()!.querySelector('input[name="model-effort"]')).toBeNull();
+    expect(document.activeElement).toBe(filter());
   });
 
   it('reverts the effort to the model state when the change fails', async () => {
@@ -408,6 +512,16 @@ describe('the model selector', () => {
     expect(status.textContent).toContain('Crush is starting the agent. Try again in a moment.');
     expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
     expect(modelsOpen.value).toBe(true);
+  });
+
+  it('names the listbox apart from the dialog', async () => {
+    seed();
+    stubProviders();
+    await mount();
+    await openFromHud();
+
+    expect(dialog()!.getAttribute('aria-label')).toBe('Models');
+    expect(dialog()!.querySelector('[role="listbox"]')!.getAttribute('aria-label')).toBe('Model choices');
   });
 
   it('shows a load failure with a Retry that focuses the filter', async () => {
@@ -645,6 +759,12 @@ describe('formatContext', () => {
     expect(formatContext(1_500_000)).toBe('1.5M');
     expect(formatContext(1_050_000)).toBe('1.1M');
     expect(formatContext(1_200_000)).toBe('1.2M');
+  });
+
+  it('switches to millions before the thousands round to a thousand k', () => {
+    expect(formatContext(999_500)).toBe('1M');
+    expect(formatContext(999_999)).toBe('1M');
+    expect(formatContext(999_499)).toBe('999k');
   });
 
   it('shows nothing for a missing window', () => {
