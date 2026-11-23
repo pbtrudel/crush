@@ -20,8 +20,10 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
     const box = stageRect.value;
     // The task board is docked over the bottom of the stage and takes clicks,
     // so a tag that lands on it covers a lane heading. Its box is read once
-    // per pass; only the tags that collide move.
-    const board = document.querySelector('.taskboard')?.getBoundingClientRect() ?? null;
+    // per pass; only the tags that collide move. A hidden board reports a
+    // degenerate rect, which reads as an overlap, so it counts as absent.
+    const docked = document.querySelector('.taskboard')?.getBoundingClientRect() ?? null;
+    const board = docked !== null && docked.width > 0 && docked.height > 0 ? docked : null;
     const shown = new Set<string>();
     for (const s of screens) {
       const tag = el.querySelector<HTMLElement>(`[data-agent-node="${CSS.escape(s.id)}"]`);

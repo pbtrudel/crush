@@ -116,6 +116,19 @@ describe('AgentTags', () => {
     board.remove();
   });
 
+  it('treats a board with no box as absent', async () => {
+    // A hidden or collapsed board reports a degenerate rect, which a tag
+    // straddling it would read as an overlap and climb above. It is absent.
+    const board = dockBoard(box(600, 520, 0, 0));
+    stageRect.value = box(576, 173, 848, 463);
+    await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+    const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+    sizeTag(tag, 64, 40);
+    publishAgentScreens([{ id: 'sub-1', x: 600, y: 560, visible: true }]);
+    expect(tag.style.transform).toBe('translate(600px, 560px) translate(-50%, -140%)');
+    board.remove();
+  });
+
   it('selects the agent on click', async () => {
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });

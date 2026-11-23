@@ -46,6 +46,14 @@
   .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
   .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector {
     margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+    /* The row leaves the panel less than its chrome and a readable
+       transcript need, so it scrolls as a whole instead of crushing the
+       transcript, and the transcript keeps a floor of its own: eight rem
+       shows several messages, and the rest is a scroll away. */
+    overflow-y: auto;
+  }
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector .log {
+    min-block-size: 8rem;
   }
 }
 @media (min-width: 1312px) and (max-width: 1631px) {
@@ -57,6 +65,12 @@
   .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
   .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector {
     margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+    /* The open drawer narrows the stage back into the row band's shape, so
+       the panel scrolls here for the same reason. */
+    overflow-y: auto;
+  }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector .log {
+    min-block-size: 8rem;
   }
 }
 .cs-node { cursor: pointer; pointer-events: auto; }
