@@ -10,6 +10,7 @@ import { CineHint } from './CineHint';
 import { ConnectionBanner } from './ConnectionBanner';
 import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
+import { SideAnswer } from './log/SideAnswer';
 import { TransmissionLog } from './log/TransmissionLog';
 import { Stage } from './stage/Stage';
 import { SceneLayer } from './stage/SceneLayer';
@@ -22,8 +23,8 @@ import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
 import {
-  closeModels, closeSessions, closeSystems, escapeModels, escapePalette, escapeSessions, escapeSystems,
-  modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
+  closeModels, closeSessions, closeSystems, deckMode, escapeModels, escapePalette, escapeSessions,
+  escapeSystems, modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
@@ -112,6 +113,10 @@ export function App() {
       // An open Display menu owns Escape: it closes itself, so the inspector
       // and the cinematic view must not read the same press.
       if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
+      // Escape in the deck's note mode leaves that mode and does nothing
+      // else, so this capture listener must not read the same press for the
+      // inspector or the cinematic view.
+      if (e.key === 'Escape' && focused instanceof HTMLElement && focused.id === 'deck-input' && deckMode.value === 'note') return;
       const action = cinematicKey({
         code: e.code,
         altKey: e.altKey,
@@ -167,6 +172,7 @@ export function App() {
         <FileDrawer />
       </main>
       <div class="holodeck__deck" inert={modal}>
+        <SideAnswer />
         <CommandDeck />
       </div>
       <Interrupt />

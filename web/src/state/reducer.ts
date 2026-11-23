@@ -1,7 +1,7 @@
 import type {
-  AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, PermissionMode, PermissionNotification,
-  PermissionRequest, QuestionRequest, ServerInfo, Session, ShellOutput, Snapshot, TeamState, ToolResultData,
-  WebError, WireEvent,
+  AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, Part, PermissionMode,
+  PermissionNotification, PermissionRequest, QuestionRequest, ServerInfo, Session, ShellOutput, Snapshot,
+  TeamState, ToolResultData, WebError, WireEvent,
 } from '../api/types';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
@@ -13,6 +13,11 @@ export interface AgentCall { callId: string; tool: string }
 export interface Inspected { sessionId: string; session: Session | null; messages: Message[]; loading: boolean }
 export interface ShellRun {
   sessionId: string; command: string; output: string; done: boolean; exitCode: number | null;
+  error: string | null;
+  // persisted marks a run whose result the log already renders. The done
+  // frame can beat or follow that message, so the card leaves on whichever
+  // of the two arrives last.
+  persisted?: boolean;
 }
 
 export interface State {
@@ -281,10 +286,25 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
 // without end would otherwise grow the tab's memory with every chunk.
 const SHELL_CAP = 256 * 1024;
 
-// startShell records a run the tab just started, so its first frame and
-// the command it came from already have a place to land.
+// startShell records a run the tab just started. The gateway starts the
+// command before it answers with the run id, so frames can create the run
+// first; the start then only adds the command and the session and keeps the
+// output and the outcome those frames already carried.
 export function startShell(s: State, runId: string, sessionId: string, command: string): State {
-  return { ...s, shells: { ...s.shells, [runId]: { sessionId, command, output: '', done: false, exitCode: null } } };
+  const prev = s.shells[runId];
+  const run: ShellRun = prev
+    ? { ...prev, sessionId, command }
+    : { sessionId, command, output: '', done: false, exitCode: null, error: null };
+  return { ...s, shells: { ...s.shells, [runId]: run } };
+}
+
+// removeShell drops one run, which the card does once the run has finished
+// and its persisted message has had time to arrive.
+export function removeShell(s: State, runId: string): State {
+  if (!(runId in s.shells)) return s;
+  const shells = { ...s.shells };
+  delete shells[runId];
+  return { ...s, shells };
 }
 
 // capShell keeps the last SHELL_CAP characters and starts the kept text on
@@ -302,16 +322,43 @@ function capShell(output: string): string {
 // from another tab (which carries no command), and settles it on the done
 // frame.
 function applyShellOutput(s: State, e: ShellOutput): State {
+  // The message that persists the result can arrive before the done frame.
+  // Once both are in, the log's own rendering has the card's place.
+  if (e.done && s.shells[e.run_id]?.persisted) {
+    const shells = { ...s.shells };
+    delete shells[e.run_id];
+    return { ...s, shells };
+  }
   const prev = s.shells[e.run_id] ?? {
-    sessionId: e.session_id, command: '', output: '', done: false, exitCode: null,
+    sessionId: e.session_id, command: '', output: '', done: false, exitCode: null, error: null,
   };
   const run: ShellRun = {
     ...prev,
     output: capShell(prev.output + (e.chunk ?? '')),
     done: prev.done || !!e.done,
     exitCode: e.done ? e.exit_code ?? null : prev.exitCode,
+    error: e.done ? e.error ?? null : prev.error,
   };
   return { ...s, shells: { ...s.shells, [e.run_id]: run } };
+}
+
+// dropPersistedShells removes the live cards a persisted shell message now
+// renders: one done run per shell_command part, oldest first, so a card
+// never lingers twice beside the log's own rendering.
+function dropPersistedShells(shells: Record<string, ShellRun>, m: Message): Record<string, ShellRun> {
+  const commands = m.parts
+    .filter((p): p is Extract<Part, { type: 'shell_command' }> => p.type === 'shell_command')
+    .map((p) => p.data.command);
+  if (commands.length === 0) return shells;
+  const out = { ...shells };
+  for (const command of commands) {
+    const oldest = Object.keys(out).find((id) => out[id].command === command
+      && (out[id].done || !out[id].persisted));
+    if (oldest === undefined) continue;
+    if (out[oldest].done) delete out[oldest];
+    else out[oldest] = { ...out[oldest], persisted: true };
+  }
+  return out;
 }
 
 export function reduce(s: State, f: Frame): State {
@@ -359,8 +406,14 @@ export function reduce(s: State, f: Frame): State {
       }
       if (m.session_id !== s.sessionId) return base;
       if (ev.type === 'deleted') return { ...base, messages: s.messages.filter((x) => x.id !== m.id) };
+      base = { ...base, shells: dropPersistedShells(base.shells, m) };
       const messages = upsertMessage(s.messages, m);
-      const busy = m.role === 'assistant' ? isOpenAssistant(m) : s.busy || m.role === 'user';
+      // A bang command's result is a user message, but it starts no agent
+      // turn, so it leaves the session as busy as it found it.
+      const shellResult = m.parts.some((p) => p.type === 'shell_command');
+      const busy = m.role === 'assistant'
+        ? isOpenAssistant(m)
+        : shellResult ? s.busy : s.busy || m.role === 'user';
       return { ...base, messages, busy };
     }
     case 'session': {

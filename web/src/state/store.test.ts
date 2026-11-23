@@ -3,8 +3,9 @@ import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
 import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent } from '../api/types';
 import { effectsLevel } from './effects';
+import { STARTING_TEXT } from './failure';
 import { adoptSession, initialState } from './reducer';
-import { actions, boot, dispatch, handleFrames, state } from './store';
+import { actions, boot, dismissSideAnswer, dispatch, handleFrames, sideAnswer, state } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
 
 vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
@@ -381,5 +382,144 @@ describe('stream and boot hardening', () => {
     } finally {
       history.replaceState(null, '', '/');
     }
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('actions.runShell', () => {
+  it('starts a session, runs the command and records the run', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const shell = vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r1' });
+
+    await expect(actions.runShell('ls -la')).resolves.toBeNull();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shell).toHaveBeenCalledWith('s2', 'ls -la');
+    expect(state.value.shells.r1).toMatchObject({
+      sessionId: 's2', command: 'ls -la', output: '', done: false, exitCode: null, error: null,
+    });
+  });
+
+  it('keeps the created session when the command fails, so a retry does not start another', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const shell = vi.spyOn(api, 'shell')
+      .mockRejectedValueOnce(new ApiError(500, 'http_error', 'gateway on fire'))
+      .mockResolvedValueOnce({ run_id: 'r2' });
+
+    await expect(actions.runShell('ls')).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
+    expect(state.value.sessionId).toBe('s2');
+
+    await expect(actions.runShell('ls')).resolves.toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shell).toHaveBeenNthCalledWith(1, 's2', 'ls');
+    expect(shell).toHaveBeenNthCalledWith(2, 's2', 'ls');
+  });
+
+  it('reports a starting agent as a wait, not an error', async () => {
+    seed();
+    vi.spyOn(api, 'shell').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await expect(actions.runShell('ls')).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
+    expect(state.value.shells).toEqual({});
+  });
+});
+
+describe('actions.addNote', () => {
+  it('keeps the note and toasts it, clearing nothing else', async () => {
+    seed();
+    const note = vi.spyOn(api, 'addNote').mockResolvedValue(undefined);
+    await expect(actions.addNote('prefer table tests')).resolves.toBeNull();
+    expect(note).toHaveBeenCalledWith('s1', 'prefer table tests');
+    expect(state.value.toasts.map((t) => t.text)).toContain('Note kept for the next prompt');
+  });
+
+  it('reports a starting agent as a wait, not an error', async () => {
+    seed();
+    vi.spyOn(api, 'addNote').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await expect(actions.addNote('a note')).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
+  });
+
+  it('reports a note kept with no session', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const note = vi.spyOn(api, 'addNote');
+    const failure = await actions.addNote('a note');
+    expect(failure?.tone).toBe('error');
+    expect(failure?.text).toContain('no session');
+    expect(note).not.toHaveBeenCalled();
+  });
+});
+
+describe('the side answer', () => {
+  it('shows the pending question then the answer', async () => {
+    seed();
+    const ask = vi.spyOn(api, 'ask').mockResolvedValue({ answer: 'Because the tests say so.' });
+    await actions.ask('Why?');
+    expect(ask).toHaveBeenCalledWith('s1', 'Why?');
+    expect(sideAnswer.value).toEqual({ question: 'Why?', answer: 'Because the tests say so.', error: null });
+  });
+
+  it('asks nobody without a session', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const ask = vi.spyOn(api, 'ask');
+    await actions.ask('Why?');
+    expect(ask).not.toHaveBeenCalled();
+    expect(sideAnswer.value?.error?.tone).toBe('error');
+  });
+
+  it('shows a starting agent as the starting line', async () => {
+    seed();
+    vi.spyOn(api, 'ask').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await actions.ask('Why?');
+    expect(sideAnswer.value?.error).toEqual({ tone: 'starting', text: STARTING_TEXT });
+  });
+
+  it('shows another failure through its message', async () => {
+    seed();
+    vi.spyOn(api, 'ask').mockRejectedValue(new ApiError(502, 'ask_failed', 'the model did not answer'));
+    await actions.ask('Why?');
+    expect(sideAnswer.value?.error).toEqual({ tone: 'error', text: 'the model did not answer' });
+  });
+
+  it('lets a newer question win over an answer that arrives late', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask')
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce({ answer: 'newer answer' });
+
+    const first = actions.ask('first');
+    const second = actions.ask('second');
+    await expect(second).resolves.toBeUndefined();
+    slow.resolve({ answer: 'older answer' });
+    await expect(first).resolves.toBeUndefined();
+
+    expect(sideAnswer.value).toEqual({ question: 'second', answer: 'newer answer', error: null });
+  });
+
+  it('makes a late answer after Dismiss a no-op', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask').mockReturnValue(slow.promise);
+
+    const pending = actions.ask('Why?');
+    expect(sideAnswer.value).toEqual({ question: 'Why?', answer: null, error: null });
+    dismissSideAnswer();
+    expect(sideAnswer.value).toBeNull();
+
+    slow.resolve({ answer: 'late answer' });
+    await expect(pending).resolves.toBeUndefined();
+    expect(sideAnswer.value).toBeNull();
   });
 });

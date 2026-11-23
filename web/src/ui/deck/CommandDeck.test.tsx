@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
-import { api } from '../../api/http';
+import { ApiError, api } from '../../api/http';
 import { initialState } from '../../state/reducer';
+import { STARTING_TEXT } from '../../state/failure';
+import { deckMode } from '../../state/palette';
 import { actions, state } from '../../state/store';
-import { CommandDeck, MAX_ATTACHMENT_BYTES } from './CommandDeck';
+import { CommandDeck, MAX_ATTACHMENT_BYTES, shellFromPalette } from './CommandDeck';
 
 type Files = { files: string[]; truncated: boolean };
 
@@ -34,6 +36,10 @@ function listbox() {
 
 function error() {
   return root.querySelector('#deck-error')!;
+}
+
+function modeBadge() {
+  return root.querySelector('.deck__mode-badge');
 }
 
 // jsdom does not run form submission from a button click, so the Transmit
@@ -379,5 +385,183 @@ describe('CommandDeck', () => {
     await act(() => { textarea().dispatchEvent(new KeyboardEvent('keyup', { key: 'Home', bubbles: true })); });
     await settle();
     expect(listbox()).toBeNull();
+  });
+});
+
+describe('deck modes', () => {
+  beforeEach(() => {
+    document.body.append(root);
+  });
+
+  afterEach(() => {
+    deckMode.value = null;
+    root.remove();
+  });
+
+  it('sends a bang command to the shell route', async () => {
+    seed();
+    deckMode.value = null;
+    const shell = vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r1' });
+    await mount();
+    await type('!ls -la');
+    expect(modeBadge()!.textContent).toBe('Shell');
+
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(shell).toHaveBeenCalledWith('s1', 'ls -la');
+    expect(state.value.shells.r1).toMatchObject({ sessionId: 's1', command: 'ls -la', done: false });
+    expect(textarea().value).toBe('');
+  });
+
+  it('shows the shell badge only in shell mode', async () => {
+    seed();
+    await mount();
+    expect(modeBadge()).toBeNull();
+    expect(transmit().textContent).toBe('Transmit');
+
+    await type('!ls');
+    const badge = modeBadge()!;
+    expect(badge.textContent).toBe('Shell');
+    expect(badge.getAttribute('data-mode')).toBe('shell');
+    expect(root.querySelector('#deck-help')!.textContent).toBe('Run a shell command in the workspace');
+    expect(transmit().textContent).toBe('Run');
+
+    await type('ls');
+    expect(modeBadge()).toBeNull();
+    expect(root.querySelector('#deck-help')!.textContent).toContain('Enter to send');
+    expect(transmit().textContent).toBe('Transmit');
+  });
+
+  it('keeps attachments out of a shell command', async () => {
+    seed();
+    vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r1' });
+    await mount();
+    await attach(new File(['x'], 'notes.txt'));
+    await type('!make test');
+
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(root.querySelector('.deck__files')!.textContent).toContain('notes.txt');
+  });
+
+  it('keeps a shell command and reports a failure inline', async () => {
+    seed();
+    vi.spyOn(api, 'shell').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await mount();
+    await type('!ls');
+
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(textarea().value).toBe('!ls');
+    expect(error().textContent).toBe('gateway on fire');
+    expect(error().getAttribute('role')).toBe('alert');
+    expect(error().getAttribute('data-tone')).toBe('error');
+  });
+
+  it('adds a note in note mode and leaves the mode on Escape', async () => {
+    seed();
+    deckMode.value = 'note';
+    const note = vi.spyOn(api, 'addNote').mockResolvedValue(undefined);
+    await mount();
+
+    const badge = modeBadge()!;
+    expect(badge.textContent).toBe('Note');
+    expect(badge.getAttribute('data-mode')).toBe('note');
+    expect(root.querySelector('#deck-help')!.textContent).toBe('Kept for the next prompt; starts no run');
+    expect(transmit().textContent).toBe('Keep note');
+
+    await type('prefer tests');
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(note).toHaveBeenCalledWith('s1', 'prefer tests');
+    expect(state.value.toasts.map((t) => t.text)).toContain('Note kept for the next prompt');
+    expect(textarea().value).toBe('');
+    expect(deckMode.value).toBe('note');
+    expect(modeBadge()!.textContent).toBe('Note');
+
+    await type('kept draft');
+    await act(() => { key('Escape'); });
+    expect(deckMode.value).toBeNull();
+    expect(textarea().value).toBe('kept draft');
+    expect(modeBadge()).toBeNull();
+  });
+
+  it('does not cancel a busy run on the Escape that leaves note mode', async () => {
+    seed({ busy: true });
+    deckMode.value = 'note';
+    const cancel = vi.spyOn(actions, 'cancel').mockResolvedValue(undefined);
+    await mount();
+    await type('draft');
+
+    await act(() => { key('Escape'); });
+
+    expect(deckMode.value).toBeNull();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(textarea().value).toBe('draft');
+  });
+
+  it('keeps a note draft and shows the starting line while the agent boots', async () => {
+    seed();
+    deckMode.value = 'note';
+    vi.spyOn(api, 'addNote').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await mount();
+    await type('prefer tests');
+
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(textarea().value).toBe('prefer tests');
+    expect(error().textContent).toBe(STARTING_TEXT);
+    expect(error().getAttribute('role')).toBe('status');
+    expect(error().getAttribute('data-tone')).toBe('starting');
+  });
+
+  it('puts a bang in a draft from the palette', async () => {
+    seed();
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    await mount();
+    await type('make test');
+
+    await act(() => { shellFromPalette(); });
+
+    expect(textarea().value).toBe('!make test');
+    expect(modeBadge()!.textContent).toBe('Shell');
+    expect(document.activeElement).toBe(textarea());
+    expect(textarea().selectionStart).toBe('!make test'.length);
+
+    // A second visit leaves the only bang in place.
+    await act(() => { shellFromPalette(); });
+    expect(textarea().value).toBe('!make test');
+  });
+
+  it('fills an empty deck with a bang from the palette', async () => {
+    seed();
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    await mount();
+
+    await act(() => { shellFromPalette(); });
+
+    expect(textarea().value).toBe('!');
+    expect(modeBadge()!.textContent).toBe('Shell');
+    expect(document.activeElement).toBe(textarea());
+    expect(textarea().selectionStart).toBe(1);
+  });
+
+  it('leaves note mode when the palette starts a shell command', async () => {
+    seed();
+    deckMode.value = 'note';
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    await mount();
+    await type('unfinished');
+
+    await act(() => { shellFromPalette(); });
+
+    expect(deckMode.value).toBeNull();
+    expect(textarea().value).toBe('!unfinished');
+    expect(modeBadge()!.textContent).toBe('Shell');
   });
 });

@@ -7,8 +7,9 @@ import { MessageView } from './MessageView';
 const WINDOW = 200;
 const PIN_SLACK = 80;
 
-export function Transcript({ messages, resetKey, label, empty }: {
+export function Transcript({ messages, resetKey, label, empty, footer }: {
   messages: Message[]; resetKey: string; label: string; empty?: ComponentChildren;
+  footer?: ComponentChildren;
 }) {
   const [limit, setLimit] = useState(WINDOW);
   const scroller = useRef<HTMLDivElement>(null);
@@ -67,6 +68,7 @@ export function Transcript({ messages, resetKey, label, empty }: {
       )}
       {shown.length === 0 && empty}
       {shown.map((m) => <MessageView key={m.id} m={m} results={results} />)}
+      {footer}
     </div>
   );
 }

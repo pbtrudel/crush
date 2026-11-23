@@ -43,6 +43,10 @@ export function escapePalette(): boolean {
   return true;
 }
 
+// deckMode keeps the deck in note mode until the user leaves it. A shell
+// command needs no flag: a leading bang in the text is the mode.
+export const deckMode = signal<'note' | null>(null);
+
 // sessionsOpen holds the HUD's session switcher. Its inline rename and delete
 // confirm live here too, so the App's Escape handler can cancel those before
 // it closes the dialog, as the palette's argument form does.

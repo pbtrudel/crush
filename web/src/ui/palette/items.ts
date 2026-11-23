@@ -50,6 +50,9 @@ export const ACTIONS = {
   reasoningLevel: 'reasoning-level',
   systems: 'systems',
   compact: 'compact',
+  runShell: 'run-shell',
+  addNote: 'add-note',
+  askSide: 'ask-side',
   reloadSkills: 'reload-skills',
   toggleSkills: 'toggle-skills',
   drawer: 'drawer',
@@ -63,8 +66,8 @@ export const ACTIONS = {
   motionToggle: 'cycle-motion',
 } as const;
 
-function action(id: string, title: string, keywords: string[], hint?: string): PaletteItem {
-  return { id: `action:${id}`, group: 'Actions', title, keywords, run: { kind: 'action', action: id }, hint };
+function action(id: string, title: string, keywords: string[], hint?: string, args?: CommandArg[]): PaletteItem {
+  return { id: `action:${id}`, group: 'Actions', title, keywords, args, run: { kind: 'action', action: id }, hint };
 }
 
 function toggle(id: string, title: string, hint: string, keywords: string[], act: string): PaletteItem {
@@ -85,7 +88,16 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
   if (s.model.can_reason) {
     actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));
   }
-  if (s.hasSession) actions.push(action(ACTIONS.compact, 'Compact session', ['summarize']));
+  actions.push(action(ACTIONS.runShell, 'Run shell command', ['shell', 'command', 'bang']));
+  if (s.hasSession) {
+    actions.push(
+      action(ACTIONS.compact, 'Compact session', ['summarize']),
+      action(ACTIONS.addNote, 'Add note', ['note', 'remember', 'keep']),
+      action(ACTIONS.askSide, 'Ask side question', ['ask', 'question', 'side'], undefined, [
+        { id: 'question', title: 'Question', required: true },
+      ]),
+    );
+  }
   actions.push(action(ACTIONS.reloadSkills, 'Reload skills', ['reload-skills']));
   if (s.skills.length > 0) actions.push(action(ACTIONS.toggleSkills, 'Toggle skills', ['skills']));
   actions.push(

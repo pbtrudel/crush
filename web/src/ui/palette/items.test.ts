@@ -61,6 +61,26 @@ describe('palette items', () => {
     expect(item.run).toEqual({ kind: 'action', action: 'systems' });
   });
 
+  it('offers the shell command, the note and the side question', () => {
+    const items = buildItems(sources);
+    const shell = items.find((i) => i.id === 'action:run-shell')!;
+    expect(shell.title).toBe('Run shell command');
+    expect(shell.run).toEqual({ kind: 'action', action: 'run-shell' });
+
+    const note = items.find((i) => i.id === 'action:add-note')!;
+    expect(note.title).toBe('Add note');
+    expect(note.run).toEqual({ kind: 'action', action: 'add-note' });
+
+    const ask = items.find((i) => i.id === 'action:ask-side')!;
+    expect(ask.title).toBe('Ask side question');
+    expect(ask.args).toEqual([{ id: 'question', title: 'Question', required: true }]);
+
+    const noSession = buildItems({ ...sources, hasSession: false }).map((i) => i.id);
+    expect(noSession).toContain('action:run-shell');
+    expect(noSession).not.toContain('action:add-note');
+    expect(noSession).not.toContain('action:ask-side');
+  });
+
   it('hides session actions without a session', () => {
     const ids = buildItems({ ...sources, hasSession: false }).map((i) => i.id);
     expect(ids).not.toContain('action:compact');

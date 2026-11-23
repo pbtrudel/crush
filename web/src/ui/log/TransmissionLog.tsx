@@ -1,4 +1,5 @@
 import { state } from '../../state/store';
+import { ShellCard } from './ShellCard';
 import { Transcript } from './Transcript';
 
 export function TransmissionLog() {
@@ -8,6 +9,7 @@ export function TransmissionLog() {
       messages={messages}
       resetKey={sessionId}
       label="Transmissions"
+      footer={<ShellCard />}
       empty={conn !== 'booting' && (
         <div class="log__empty">
           <p class="hud-label">No transmissions yet</p>

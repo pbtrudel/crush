@@ -7,13 +7,14 @@ import { adoptSession } from '../../state/reducer';
 import { cinematic, setCinematic } from '../../state/cinematic';
 import { motion, setMotion, type Motion } from '../../state/motion';
 import { toggleDrawer } from '../../state/drawer';
-import { dispatch, state } from '../../state/store';
+import { actions, dispatch, state } from '../../state/store';
 import {
-  argumentItem, closePalette, openModels, openPalette, openSessions, openSystems, paletteOpen, paletteQuery,
-  setPaletteQuery, type PaletteSection,
+  argumentItem, closePalette, deckMode, openModels, openPalette, openSessions, openSystems, paletteOpen,
+  paletteQuery, setPaletteQuery, type PaletteSection,
 } from '../../state/palette';
 import { useDialogFocus } from '../interrupt/focus';
-import { attachFiles } from '../deck/CommandDeck';
+import { attachFiles, shellFromPalette } from '../deck/CommandDeck';
+import { focusDeck } from '../deck/modes';
 import { ArgumentForm } from './ArgumentForm';
 import {
   ACTIONS, buildItems, buildSkillToggles, filterItems, type PaletteItem, type PaletteSources,
@@ -183,7 +184,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   const shown = shownError === null || shownError === undefined ? null : describeFailure(shownError);
   const canRetry = failure === null && sourceError !== undefined;
 
-  const runAction = async (action: string) => {
+  const runAction = async (action: string, values?: Record<string, string>) => {
     const sid = s.sessionId;
     switch (action) {
       case ACTIONS.newSession: {
@@ -201,6 +202,13 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
         await api.summarize(sid);
         closePalette();
         return;
+      case ACTIONS.runShell: closePalette(); shellFromPalette(); return;
+      case ACTIONS.addNote: deckMode.value = 'note'; closePalette(); queueMicrotask(focusDeck); return;
+      case ACTIONS.askSide: {
+        closePalette();
+        void actions.ask((values?.question ?? '').trim());
+        return;
+      }
       case ACTIONS.reloadSkills: await api.reloadSkills(); closePalette(); return;
       case ACTIONS.toggleSkills: openPalette('skills'); return;
       case ACTIONS.drawer: toggleDrawer(); closePalette(); return;
@@ -221,7 +229,10 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     try {
       switch (item.run.kind) {
         case 'action':
-          await runAction(item.run.action);
+          // An action that declares arguments opens the same form a command
+          // does; runAction receives the filled values.
+          if (!values && item.args?.length) { argumentItem.value = item.id; return; }
+          await runAction(item.run.action, values);
           return;
         case 'command':
           if (!values && item.args?.length) { argumentItem.value = item.id; return; }

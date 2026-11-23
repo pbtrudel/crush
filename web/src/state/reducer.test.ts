@@ -18,6 +18,22 @@ const snapshot = (over: Partial<Snapshot> = {}): Frame => ({
   },
 });
 const live = () => reduce(initialState(), snapshot());
+// shellMessage is the user message the workspace persists for a finished
+// shell command, one shell_command part per command.
+const shellMessage = (sessionId: string, ...commands: string[]): Frame => ({
+  seq: 78,
+  type: 'message',
+  payload: {
+    type: 'created',
+    payload: {
+      id: `m-${commands.join('-')}`, role: 'user', session_id: sessionId,
+      parts: commands.map((command) => ({
+        type: 'shell_command', data: { command, output: `${command} output`, exit_code: 0 },
+      })),
+      model: '', provider: '', created_at: 0, updated_at: 0,
+    },
+  },
+});
 
 describe('wire contract', () => {
   it('fixtures carry the fields the UI reads', () => {
@@ -323,7 +339,7 @@ describe('M3 state', () => {
     s = reduce(s, { seq: 51, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'a\n' } });
     s = reduce(s, { seq: 52, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'b\n' } });
     s = reduce(s, { seq: 53, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
-    expect(s.shells.r1).toEqual({ sessionId: 's1', command: 'ls', output: 'a\nb\n', done: true, exitCode: 0 });
+    expect(s.shells.r1).toEqual({ sessionId: 's1', command: 'ls', output: 'a\nb\n', done: true, exitCode: 0, error: null });
   });
 
   it('keeps shell output from another tab as its own run', () => {
@@ -373,6 +389,78 @@ describe('M3 state', () => {
     expect(s.shells.r5.output).toBe('x'.repeat(256 * 1024 - 1) + '\n');
   });
 
+  it('keeps the early frames of a run whose start lands afterwards', () => {
+    let s = reduce(fromSnapshot(), { seq: 70, type: 'shell_output', payload: { run_id: 'r6', session_id: 's1', chunk: 'early\n' } });
+    s = reduce(s, { seq: 71, type: 'shell_output', payload: { run_id: 'r6', session_id: 's1', done: true, exit_code: 2, error: 'The shell command failed' } });
+    s = startShell(s, 'r6', 's1', 'boom');
+    expect(s.shells.r6).toEqual({
+      sessionId: 's1', command: 'boom', output: 'early\n', done: true, exitCode: 2, error: 'The shell command failed',
+    });
+  });
+
+  it('stores the failure the done frame carries', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r7', 's1', 'boom'), {
+      seq: 72, type: 'shell_output', payload: { run_id: 'r7', session_id: 's1', done: true, exit_code: 1, error: 'The shell command failed' },
+    });
+    expect(s.shells.r7.error).toBe('The shell command failed');
+  });
+
+  it('keeps the deck idle when a persisted shell message arrives', () => {
+    // A bang command's result is persisted as a user message, but it starts
+    // no agent turn, so it must not read as a busy session.
+    const s = reduce(live(), shellMessage('s1', 'ls'));
+    expect(s.busy).toBe(false);
+  });
+
+  it('drops a done run when its persisted shell message arrives', () => {
+    let s = startShell(fromSnapshot(), 'r8', 's1', 'ls');
+    s = reduce(s, { seq: 73, type: 'shell_output', payload: { run_id: 'r8', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r8).toBeUndefined();
+  });
+
+  it('drops one done run per persisted part, oldest first', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 74, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = startShell(s, 'r2', 's1', 'ls');
+    s = reduce(s, { seq: 75, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).toBeUndefined();
+    expect(s.shells.r2).not.toBeUndefined();
+  });
+
+  it('keeps a run the persisted message does not match', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'make');
+    s = reduce(s, { seq: 76, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
+  it('keeps a run that is still streaming when the persisted message arrives', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
+  it('drops the card when the done frame lands after the persisted message', () => {
+    // The workspace persists the result before the gateway publishes done,
+    // so the message can win the race to the tab.
+    let s = startShell(fromSnapshot(), 'r9', 's1', 'ls');
+    s = reduce(s, { seq: 79, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r9).not.toBeUndefined();
+
+    s = reduce(s, { seq: 80, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r9).toBeUndefined();
+  });
+
+  it('ignores a shell message for another session', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 77, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s2', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
   it('records and clears the pending plan', () => {
     let s = reduce(fromSnapshot(), { seq: 57, type: 'plan_ready', payload: { session_id: 's1' } });
     expect(s.planReady).toBe('s1');
@@ -406,7 +494,7 @@ describe('M3 state', () => {
   it('applies the shell_output and plan_ready fixtures', () => {
     let s = reduce(fromSnapshot(), fx.shell_output);
     expect(s.shells['run-1']).toEqual({
-      sessionId: 's1', command: '', output: 'line 1\n', done: false, exitCode: null,
+      sessionId: 's1', command: '', output: 'line 1\n', done: false, exitCode: null, error: null,
     });
     s = reduce(s, fx.plan_ready);
     expect(s.planReady).toBe('s1');

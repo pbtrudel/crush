@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { actions, state } from '../../state/store';
 import { api } from '../../api/http';
 import { cinematic } from '../../state/cinematic';
-import { openPalette } from '../../state/palette';
+import type { FailureTone } from '../../state/failure';
+import { deckMode, openPalette } from '../../state/palette';
 import { activeMention, applyMention } from './mention';
+import { modeFor, payloadFor } from './modes';
 
 // The gateway reads the whole prompt request through MaxBytesReader with a
 // 32 MiB limit (maxPromptBytes, internal/web/api.go), so the multipart
@@ -29,11 +31,22 @@ export function attachFiles(files: File[]): void {
   attach?.(files);
 }
 
+// shellFromPalette starts a shell command from the palette's action: it
+// puts a bang in the deck and focuses it. It is a no-op when no deck is
+// mounted.
+let enterShell: (() => void) | null = null;
+
+export function shellFromPalette(): void {
+  enterShell?.();
+}
+
+interface Failure { tone: FailureTone; text: string }
+
 export function CommandDeck() {
   const s = state.value;
   const [text, setText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [error, setError] = useState('');
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [sending, setSending] = useState(false);
   // The caret drives the suggestion list: a cursor that leaves the mention
   // closes it, and the effect below cannot read it from the element because
@@ -49,6 +62,7 @@ export function CommandDeck() {
   // first request is in flight.
   const inFlight = useRef(false);
   const ended = s.conn === 'ended';
+  const mode = modeFor(text, deckMode.value);
 
   // The palette attaches through this module function; re-register when the
   // deck's file state moves so it reads the current list and budget.
@@ -58,6 +72,29 @@ export function CommandDeck() {
       if (attach === addFiles) attach = null;
     };
   }, [files, ended]);
+
+  // The palette's shell action goes through this module function, like the
+  // file attachment above, so it reads the deck's current text.
+  useEffect(() => {
+    const enter = () => {
+      if (ended) return;
+      const next = text.startsWith('!') ? text : `!${text}`;
+      // The action leaves note mode: the bang is what makes the mode here.
+      deckMode.value = null;
+      setText(next);
+      setCaret(next.length);
+      requestAnimationFrame(() => {
+        const el = area.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(next.length, next.length);
+      });
+    };
+    enterShell = enter;
+    return () => {
+      if (enterShell === enter) enterShell = null;
+    };
+  }, [text, ended]);
 
   useEffect(() => {
     const m = activeMention(text, caret);
@@ -86,10 +123,10 @@ export function CommandDeck() {
     const added = Array.from(list);
     const total = files.concat(added).reduce((n, f) => n + f.size, 0);
     if (total >= MAX_ATTACHMENT_BYTES) {
-      setError(ATTACH_TOO_LARGE);
+      setFailure({ tone: 'error', text: ATTACH_TOO_LARGE });
       return;
     }
-    setError('');
+    setFailure(null);
     setFiles((cur) => [...cur, ...added]);
   };
 
@@ -106,21 +143,47 @@ export function CommandDeck() {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      if (!text.trim()) { setError('Type a task before transmitting.'); return; }
-      const attachmentBytes = files.reduce((n, f) => n + f.size, 0);
-      const promptBytes = new TextEncoder().encode(text).length;
-      if (attachmentBytes + promptBytes + MULTIPART_OVERHEAD >= MAX_ATTACHMENT_BYTES) {
-        setError(PROMPT_TOO_LARGE);
+      // The mode is read here, not from the render: a palette action and
+      // the submit can land in the same tick.
+      const current = modeFor(text, deckMode.value);
+      const payload = payloadFor(current, text);
+      if (!payload.trim()) {
+        setFailure({
+          tone: 'error',
+          text: current === 'shell'
+            ? 'Type a command to run.'
+            : current === 'note' ? 'Type a note to keep.' : 'Type a task before transmitting.',
+        });
         return;
       }
-      setError('');
+      if (current === 'prompt') {
+        const attachmentBytes = files.reduce((n, f) => n + f.size, 0);
+        const promptBytes = new TextEncoder().encode(text).length;
+        if (attachmentBytes + promptBytes + MULTIPART_OVERHEAD >= MAX_ATTACHMENT_BYTES) {
+          setFailure({ tone: 'error', text: PROMPT_TOO_LARGE });
+          return;
+        }
+      }
+      setFailure(null);
       setSending(true);
+      if (current === 'shell') {
+        const failed = await actions.runShell(payload);
+        if (failed) { setFailure(failed); return; }
+        setText('');
+        return;
+      }
+      if (current === 'note') {
+        const failed = await actions.addNote(payload);
+        if (failed) { setFailure(failed); return; }
+        setText('');
+        return;
+      }
       const err = await actions.sendPrompt(text, files);
-      if (err) { setError(err); return; }
+      if (err) { setFailure({ tone: 'error', text: err }); return; }
       setText('');
       setFiles([]);
     } catch {
-      setError('The prompt did not reach crush.');
+      setFailure({ tone: 'error', text: 'The prompt did not reach crush.' });
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -152,6 +215,14 @@ export function CommandDeck() {
       }
       if (e.key === 'Escape') { e.preventDefault(); setSuggest(null); return; }
     }
+    // Escape leaves note mode and keeps the draft; the same press does
+    // nothing else, so it never reaches the run cancel below or the App's
+    // inspector and cinematic handlers.
+    if (e.key === 'Escape' && deckMode.value === 'note') {
+      e.preventDefault();
+      deckMode.value = null;
+      return;
+    }
     if (!composing && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); }
     if (e.key === 'Escape' && s.busy) { e.preventDefault(); void actions.cancel(); }
   };
@@ -182,7 +253,14 @@ export function CommandDeck() {
           ))}
         </ul>
       )}
-      {s.inputMode === 'plan' && <p class="deck__plan-badge">Plan mode</p>}
+      {(s.inputMode === 'plan' || mode !== 'prompt') && (
+        <div class="deck__badges">
+          {s.inputMode === 'plan' && <p class="deck__plan-badge">Plan mode</p>}
+          {mode !== 'prompt' && (
+            <p class="deck__mode-badge" data-mode={mode}>{mode === 'shell' ? 'Shell' : 'Note'}</p>
+          )}
+        </div>
+      )}
       <label class="hud-label" for="deck-input">Transmit to crush</label>
       <div class="deck__row">
         <textarea
@@ -215,7 +293,9 @@ export function CommandDeck() {
           <button type="button" class="btn btn--ghost" disabled={ended} onClick={() => picker.current?.click()}>Attach</button>
           {s.busy && <button type="button" class="btn btn--danger" onClick={() => void actions.cancel()}>Cancel run</button>}
           <button type="submit" class="btn btn--primary" disabled={ended || sending} aria-busy={sending}>
-            {sending ? 'Transmitting' : s.busy ? 'Queue task' : 'Transmit'}
+            {mode === 'shell'
+              ? (sending ? 'Running' : 'Run')
+              : mode === 'note' ? (sending ? 'Keeping' : 'Keep note') : (sending ? 'Transmitting' : s.busy ? 'Queue task' : 'Transmit')}
           </button>
         </div>
       </div>
@@ -233,11 +313,19 @@ export function CommandDeck() {
         </ul>
       )}
       <p id="deck-help" class="deck__help">
-        {ended
-          ? 'This crush process has exited. Start crush with --web to link a new tab.'
-          : 'Enter to send, Shift+Enter for a new line, Esc to cancel a run. Drop or paste files to attach.'}
+        {mode === 'shell'
+          ? 'Run a shell command in the workspace'
+          : mode === 'note' ? 'Kept for the next prompt; starts no run'
+            : ended
+              ? 'This crush process has exited. Start crush with --web to link a new tab.'
+              : 'Enter to send, Shift+Enter for a new line, Esc to cancel a run. Drop or paste files to attach.'}
       </p>
-      <p id="deck-error" class="deck__error" role="alert">{error}</p>
+      <p
+        id="deck-error"
+        class="deck__error"
+        data-tone={failure?.tone ?? 'error'}
+        role={failure?.tone === 'starting' ? 'status' : 'alert'}
+      >{failure?.text ?? ''}</p>
     </form>
   );
 }

@@ -5,8 +5,9 @@ import fixtures from '../state/__fixtures__/events.json';
 import type { Frame } from '../api/types';
 import { cinematic, setCinematic } from '../state/cinematic';
 import { resetWebglProbe } from '../state/effects';
+import { deckMode } from '../state/palette';
 import { initialState, reduce } from '../state/reducer';
-import { state } from '../state/store';
+import { actions, state } from '../state/store';
 import { App } from './App';
 
 // The Escape routing is the App's: the scene layer would otherwise fail the
@@ -30,6 +31,7 @@ afterEach(async () => {
   await act(() => { render(null, root); });
   root.remove();
   setCinematic(false);
+  deckMode.value = null;
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
   vi.restoreAllMocks();
@@ -68,6 +70,30 @@ describe('Escape in cinematic mode', () => {
     expect(state.value.inspected?.sessionId).toBe('sub-1');
     expect(cinematic.value).toBe(true);
     expect(document.activeElement).toBe(details.querySelector('summary'));
+  });
+
+  it('leaves note mode without closing the inspector or the cinematic view', async () => {
+    state.value = { ...state.value, busy: true };
+    const cancel = vi.spyOn(actions, 'cancel').mockResolvedValue(undefined);
+    await act(() => { render(<App />, root); });
+    await act(() => { setCinematic(true); });
+    await act(() => { deckMode.value = 'note'; });
+    const deck = document.querySelector<HTMLTextAreaElement>('#deck-input')!;
+    deck.focus();
+    await act(() => {
+      deck.value = 'kept draft';
+      deck.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(() => {
+      deck.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    });
+
+    expect(deckMode.value).toBeNull();
+    expect(deck.value).toBe('kept draft');
+    expect(state.value.inspected?.sessionId).toBe('sub-1');
+    expect(cinematic.value).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it('keeps a non-empty message draft, then closes once the box is empty', async () => {

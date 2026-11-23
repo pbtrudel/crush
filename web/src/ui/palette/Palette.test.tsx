@@ -7,10 +7,10 @@ import type {
 } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
-import { state } from '../../state/store';
+import { sideAnswer, state } from '../../state/store';
 import {
-  argumentItem, closeModels, closePalette, closeSessions, closeSystems, modelsOpen, openPalette, paletteOpen,
-  paletteQuery, sessionsOpen, systemsOpen,
+  argumentItem, closeModels, closePalette, closeSessions, closeSystems, deckMode, modelsOpen, openPalette,
+  paletteOpen, paletteQuery, sessionsOpen, systemsOpen,
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { setMotion } from '../../state/motion';
@@ -119,6 +119,9 @@ afterEach(async () => {
   closeModels();
   closeSystems();
   argumentItem.value = null;
+  deckMode.value = null;
+  sideAnswer.value = null;
+  vi.unstubAllGlobals();
   setCinematic(false);
   setMotion('full');
   state.value = initialState();
@@ -395,6 +398,77 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBeNull();
     expect(systemsOpen.value).toBe('all');
     expect(root.querySelector('[role="dialog"][aria-label="Systems"]')).not.toBeNull();
+  });
+
+  it('puts a bang in the deck for Run shell command', async () => {
+    seed();
+    stubSources();
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    await mount();
+    deck().focus();
+    await openWithKey();
+
+    await type('run shell');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(deck().value).toBe('!');
+    expect(root.querySelector('.deck__mode-badge')!.textContent).toBe('Shell');
+    expect(document.activeElement).toBe(deck());
+  });
+
+  it('turns the deck to note mode for Add note', async () => {
+    seed();
+    stubSources();
+    await mount();
+    deck().focus();
+    await openWithKey();
+
+    await type('add note');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(deckMode.value).toBe('note');
+    expect(root.querySelector('.deck__mode-badge')!.textContent).toBe('Note');
+    expect(document.activeElement).toBe(deck());
+  });
+
+  it('asks a side question through the argument form', async () => {
+    seed();
+    stubSources();
+    const ask = vi.spyOn(api, 'ask').mockResolvedValue({ answer: 'Because the tests say so.' });
+    await mount();
+    deck().focus();
+    await openWithKey();
+
+    await type('ask side');
+    await enter();
+
+    const form = root.querySelector<HTMLFormElement>('form.palette__form')!;
+    expect(form.getAttribute('aria-label')).toBe('Arguments for Ask side question');
+    expect(root.querySelector('[role="combobox"]')).toBeNull();
+    const question = root.querySelector<HTMLInputElement>('#argument-question')!;
+    expect(question).not.toBeNull();
+    expect(document.activeElement).toBe(question);
+
+    await act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    expect(form.querySelector('.palette__error')!.textContent).toBe('Question is required.');
+    expect(ask).not.toHaveBeenCalled();
+
+    await act(() => {
+      question.value = 'Why the lexer?';
+      question.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+
+    expect(ask).toHaveBeenCalledWith('s1', 'Why the lexer?');
+    expect(paletteOpen.value).toBeNull();
+    expect(sideAnswer.value?.question).toBe('Why the lexer?');
+    const card = root.querySelector('.side-answer')!;
+    expect(card.textContent).toContain('Side answer, not added to the conversation');
+    expect(card.textContent).toContain('Because the tests say so.');
+    expect(document.activeElement).toBe(deck());
   });
 
   it('opens the Display menu for Display settings', async () => {
