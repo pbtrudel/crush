@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -664,4 +665,67 @@ func TestFileSummariesDoNotCacheACancelledRequest(t *testing.T) {
 	require.False(t, got[0].StatsUnknown)
 	require.Equal(t, 1, got[0].Additions)
 	require.ElementsMatch(t, []string{"GetHistoryVersion:v0", "GetHistoryVersion:v1"}, loads(f))
+}
+
+// flakyVersionWorkspace fails its first history version load, the way a
+// busy database or a network blip does, and succeeds afterwards.
+type flakyVersionWorkspace struct {
+	*webtest.Fake
+
+	mu    sync.Mutex
+	fails int
+}
+
+func (w *flakyVersionWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	w.mu.Lock()
+	if w.fails > 0 {
+		w.fails--
+		w.mu.Unlock()
+		return history.File{}, errors.New("database is locked")
+	}
+	w.mu.Unlock()
+	return w.Fake.GetHistoryVersion(ctx, id)
+}
+
+// TestFileSummariesRetryAfterTransientLoadError pins that a transient load
+// failure is not memoized: the next summary loads again and reports real
+// counts instead of unknown until the path gets a new version.
+func TestFileSummariesRetryAfterTransientLoadError(t *testing.T) {
+	t.Parallel()
+	f := webtest.NewFake()
+	f.AddHistory(history.File{ID: "v0", SessionID: "s1", Path: "/repo/a.go", Content: "a\n", Version: 0, CreatedAt: 1})
+	f.AddHistory(history.File{ID: "v1", SessionID: "s1", Path: "/repo/a.go", Content: "a\nb\n", Version: 1, CreatedAt: 2})
+	g, err := Start(t.Context(), Options{Workspace: &flakyVersionWorkspace{Fake: f, fails: 1}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	got, err := g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.True(t, got[0].StatsUnknown, "the failed load leaves the counts unknown")
+
+	got, err = g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.False(t, got[0].StatsUnknown, "a transient failure is not cached")
+	require.Equal(t, 1, got[0].Additions)
+}
+
+// TestFileSummariesLoadOneVersionOnce pins the single-version path: there
+// is nothing to diff, so the version is never loaded and the counts are a
+// known 0/0.
+func TestFileSummariesLoadOneVersionOnce(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.AddHistory(history.File{
+		ID: "v0", SessionID: "s1", Path: "/repo/a.go", Content: "x\n", Version: 0, CreatedAt: 1,
+	})
+	files, err := g.fileSummaries(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.False(t, files[0].StatsUnknown)
+	require.Zero(t, files[0].Additions)
+	require.Zero(t, files[0].Removals)
+	require.Empty(t, loads(f), "one version has nothing to diff, so it is never loaded")
+	require.Equal(t, 1, g.fileStats.diffCount(), "the counts are known, so the accounting matches a diff")
 }

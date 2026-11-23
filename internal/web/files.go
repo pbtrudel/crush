@@ -204,6 +204,7 @@ func newFileStatCache(slots *diffSlots) *fileStatCache {
 // reports over the per-side limits, or one that cannot be loaded, makes the
 // counts unknown instead of failing the whole file list.
 func (c *fileStatCache) totals(ctx context.Context, path string, metas []history.FileMeta, load func(id string) (history.File, error)) (additions, removals int, unknown bool) {
+	var cacheable bool
 	first, last := metas[0], metas[len(metas)-1]
 	firstID, lastID := versionIdentity(first), versionIdentity(last)
 	c.mu.Lock()
@@ -216,13 +217,13 @@ func (c *fileStatCache) totals(ctx context.Context, path string, metas []history
 	// Diff outside the lock: a megabyte file must not block the snapshots
 	// of every other tab. A racing identical lookup recomputes the same
 	// numbers and stores them again.
-	additions, removals, unknown = c.compute(ctx, path, first, last, load)
+	additions, removals, unknown, cacheable = c.compute(ctx, path, first, last, load)
 
 	c.mu.Lock()
-	// A cancelled request stores nothing: the slot or load failure it hit
-	// says nothing about the versions, so caching it would keep the counts
-	// unknown until the next version.
-	if ctx.Err() == nil {
+	// Only a deterministic outcome is stored. A transient load failure says
+	// nothing about the versions, so caching it would keep the counts
+	// unknown until the next version; a cancelled request says even less.
+	if cacheable && ctx.Err() == nil {
 		if !unknown {
 			c.diffed++
 		}
@@ -234,31 +235,37 @@ func (c *fileStatCache) totals(ctx context.Context, path string, metas []history
 
 // compute loads the first and the latest version of a path and diffs them
 // under a diff slot. Every failure is unknown: a stale or unreadable
-// version must not fail the whole list.
-func (c *fileStatCache) compute(ctx context.Context, path string, first, last history.FileMeta, load func(id string) (history.File, error)) (additions, removals int, unknown bool) {
+// version must not fail the whole list. cacheable reports that the answer
+// follows from the versions themselves, so a transient failure is retried
+// on the next summary instead of being memoized.
+func (c *fileStatCache) compute(ctx context.Context, path string, first, last history.FileMeta, load func(id string) (history.File, error)) (additions, removals int, unknown, cacheable bool) {
 	if first.Size > maxDiffInputBytes || last.Size > maxDiffInputBytes {
-		return 0, 0, true
+		return 0, 0, true, true
+	}
+	// One version has nothing to diff, so there is no load and no diff.
+	if versionIdentity(first) == versionIdentity(last) {
+		return 0, 0, false, true
 	}
 	release, err := c.slots.acquire(ctx)
 	if err != nil {
-		return 0, 0, true
+		return 0, 0, true, false
 	}
 	defer release()
 	a, err := load(first.ID)
 	if err != nil {
 		slog.Debug("Failed to load a file version for stats", "path", path, "version", first.ID, "error", err)
-		return 0, 0, true
+		return 0, 0, true, false
 	}
 	b, err := load(last.ID)
 	if err != nil {
 		slog.Debug("Failed to load a file version for stats", "path", path, "version", last.ID, "error", err)
-		return 0, 0, true
+		return 0, 0, true, false
 	}
 	if tooManyLines(a.Content) || tooManyLines(b.Content) {
-		return 0, 0, true
+		return 0, 0, true, true
 	}
 	_, additions, removals = diff.GenerateDiff(a.Content, b.Content, path)
-	return additions, removals, false
+	return additions, removals, false, true
 }
 
 // diffCount reports how many diffs the cache has computed.
@@ -424,18 +431,28 @@ func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 		// The client went away while the request waited for a diff slot.
 		return
 	}
-	defer release()
+	var once sync.Once
+	releaseOnce := func() { once.Do(release) }
+	defer releaseOnce()
 	first, err := g.ws.GetHistoryVersion(r.Context(), a.ID)
 	if err != nil {
-		writeHistoryError(w, "file_diff", err)
+		// A client that left mid-load gets no answer and no warning log.
+		if r.Context().Err() == nil {
+			writeHistoryError(w, "file_diff", err)
+		}
 		return
 	}
 	last, err := g.ws.GetHistoryVersion(r.Context(), b.ID)
 	if err != nil {
-		writeHistoryError(w, "file_diff", err)
+		if r.Context().Err() == nil {
+			writeHistoryError(w, "file_diff", err)
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, buildDiff(path, first, last, fromIdx, toIdx))
+	d := buildDiff(path, first, last, fromIdx, toIdx)
+	// Free the slot before writing: a stalled reader must not pin diff work.
+	releaseOnce()
+	writeJSON(w, http.StatusOK, d)
 }
 
 // writeHistoryError answers a version load that failed after the metadata

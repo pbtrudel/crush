@@ -20,6 +20,11 @@ func TestDiffSlotsBoundConcurrency(t *testing.T) {
 	started := make(chan struct{}, 6)
 	unblock := make(chan struct{})
 	errs := make(chan error, 6)
+	var unblockOnce sync.Once
+	releaseAll := func() { unblockOnce.Do(func() { close(unblock) }) }
+	// Let every worker go even when an assertion below fails, so none stays
+	// blocked past the test.
+	defer releaseAll()
 	var wg sync.WaitGroup
 	for range 6 {
 		wg.Go(func() {
@@ -47,7 +52,7 @@ func TestDiffSlotsBoundConcurrency(t *testing.T) {
 	}
 	require.Equal(t, 2, len(d.ch), "both slots are taken")
 	require.Equal(t, int32(2), running.Load(), "no third diff starts while the slots are taken")
-	close(unblock)
+	releaseAll()
 	wg.Wait()
 	close(errs)
 	for err := range errs {
