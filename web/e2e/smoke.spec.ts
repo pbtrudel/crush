@@ -160,6 +160,44 @@ test('Alt+C enters and Esc leaves cinematic mode', async ({ page, gateway }) => 
   await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'false');
 });
 
+// The inspector is the second projected screen: at the end of the flight it
+// has to sit whole inside the viewport, with its close button reachable, not
+// just have its body text on screen.
+test('the cinematic inspector fits the viewport', async ({ page, gateway }) => {
+  // Motion off settles the flight in one frame, so the geometry below is the
+  // layout the full flight lands on without waiting out the clock.
+  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  await page.locator('.agent-list [role="option"]', { hasText: 'Map the parser' }).click();
+  const panel = page.locator('.panel--inspector');
+  await expect(panel).toBeVisible();
+  await page.keyboard.press('Alt+KeyC');
+  await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'true');
+
+  // The projection is written a frame after the mode flips, so the poll
+  // retries until the panel carries its matrix; it is bounded by the default
+  // expect timeout.
+  await expect.poll(async () => panel.evaluate((el) => {
+    if (!(el instanceof HTMLElement)) return 'not an element';
+    if (el.hidden) return 'closed';
+    if (getComputedStyle(document.querySelector('.cine-view')!).opacity !== '1') return 'fading';
+    if (!el.style.transform) return 'unprojected';
+    const box = el.getBoundingClientRect();
+    if (box.x < 0 || box.y < 0 || box.right > window.innerWidth || box.bottom > window.innerHeight) {
+      return `box ${Math.round(box.x)},${Math.round(box.y)} to ${Math.round(box.right)},${Math.round(box.bottom)}`
+        + ` leaves ${window.innerWidth}x${window.innerHeight}`;
+    }
+    const close = el.querySelector<HTMLElement>('.inspector__close');
+    if (close === null) return 'no close button';
+    const c = close.getBoundingClientRect();
+    const hit = document.elementFromPoint(c.x + c.width / 2, c.y + c.height / 2);
+    if (hit === null || !(hit === close || close.contains(hit))) return 'the close button is not reachable';
+    return 'inside';
+  })).toBe('inside');
+});
+
 // The 3D tags are DOM labels the scene moves over the canvas. A tag may only
 // be visible while its node projects inside the stage, and a hidden one takes
 // no input; the agent list is the accessible path and keeps the clicks it

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { agentTask, currentTool, findAgent, statusLabel, type Agent } from '../../state/agents';
 import { actions, state } from '../../state/store';
 import { Transcript } from '../log/Transcript';
+import { closeInspector, escapeLeavesDraft } from './escape';
 
 const KIND = { main: 'Main agent', teammate: 'Teammate', subagent: 'Subagent' } as const;
 
@@ -60,25 +61,35 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
     if (open && !(document.activeElement instanceof HTMLElement && document.activeElement.closest('.agent-list'))) title.current?.focus();
   }, [ins?.sessionId, open]);
 
-  const run = async (fn: () => Promise<string | null>, done: string) => {
+  // run reports the action's result on the panel it was started from: a
+  // notice or a cleared draft belongs to that selection, so a result that
+  // arrives after the picker moved on is dropped instead of landing on the
+  // new agent's panel.
+  const run = async (fn: () => Promise<string | null>, done: string, after?: () => void) => {
     setError('');
     setNotice('');
-    const err = await fn();
-    if (err) setError(err);
-    else setNotice(done);
-  };
-
-  const close = () => {
     const sid = ins?.sessionId;
-    void actions.inspect(null);
-    if (sid !== undefined) document.getElementById(`agent-${sid || 'main'}`)?.focus();
+    const current = () => state.value.inspected?.sessionId === sid;
+    try {
+      const err = await fn();
+      if (!current()) return;
+      if (err) {
+        setError(err);
+        return;
+      }
+      setNotice(done);
+      after?.();
+    } catch (err) {
+      if (current()) setError(err instanceof Error && err.message ? err.message : 'The action failed');
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || e.isComposing) return;
+    if (e.key !== 'Escape') return;
     e.preventDefault();
+    if (escapeLeavesDraft(e)) return;
     e.stopPropagation();
-    close();
+    closeInspector();
   };
 
   return (
@@ -88,7 +99,7 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
           <header class="inspector__head">
             <span class="hud-label">{agent ? KIND[agent.kind] : 'Agent'}</span>
             <h2 id="inspector-title" ref={title} tabIndex={-1}>{agent ? agent.name : 'Agent gone'}</h2>
-            <button type="button" class="btn btn--ghost inspector__close" aria-label="Close inspector" onClick={close}>×</button>
+            <button type="button" class="btn btn--ghost inspector__close" aria-label="Close inspector" onClick={closeInspector}>×</button>
           </header>
           {agent ? (
             <>
@@ -113,10 +124,8 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
                       const body = text.trim();
                       if (!body) return;
                       void run(async () => {
-                        const err = await actions.messageTeammate(agent.member ?? agent.name, body);
-                        if (!err) setText('');
-                        return err;
-                      }, `Sent to ${agent.name}`);
+                        return actions.messageTeammate(agent.member ?? agent.name, body);
+                      }, `Sent to ${agent.name}`, () => setText(''));
                     }}>
                       <label class="hud-label" for="inspector-message">Message {agent.name}</label>
                       <textarea id="inspector-message" rows={2} value={text} onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)} />

@@ -46,12 +46,13 @@
 
 /* The inspector is the second screen, placed the same way; the flight's
    projection is the only thing that moves it, and a hidden one stays out of
-   the flight. */
+   the flight. It is narrower than the log: at the right anchor the whole
+   screen, close button included, has to fit the viewport. */
 .holodeck[data-cinematic='true'] .panel--inspector {
   position: absolute;
   inset-block-start: 0;
   inset-inline-start: 0;
-  inline-size: 34rem;
+  inline-size: 28rem;
   block-size: 70vh;
   margin: 0;
   transform: none;

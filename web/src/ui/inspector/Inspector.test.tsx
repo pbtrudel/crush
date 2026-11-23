@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
-import type { Frame, Message, WireEvent } from '../../api/types';
-import { initialState, inspect, reduce } from '../../state/reducer';
+import type { Frame, Message, TeamMember, WireEvent } from '../../api/types';
+import { initialState, inspect, reduce, type State } from '../../state/reducer';
 import { actions, state } from '../../state/store';
 import { Inspector } from './Inspector';
 
@@ -15,6 +15,22 @@ const child = (fx.message_child.payload as WireEvent<Message>).payload;
 function open(sid: string, messages: Message[] = []) {
   const s = inspect(reduce(initialState(), fx.snapshot), sid);
   state.value = { ...s, inspected: { ...s.inspected!, messages, loading: false } };
+}
+
+const bob: TeamMember = {
+  id: 'm-2', name: 'bob', role: 'teammate', session_id: 'team-m-2',
+  parent_session_id: 's1', status: 'running',
+};
+
+// withBob adds a second teammate, so a test can move the picker while an
+// action for the first one is still in flight.
+function withBob(s: State): State {
+  return { ...s, team: { ...s.team, members: [...s.team.members, bob] } };
+}
+
+function select(sid: string) {
+  const next = inspect(state.value, sid);
+  state.value = { ...next, inspected: { ...next.inspected!, loading: false } };
 }
 
 beforeEach(() => {
@@ -117,6 +133,106 @@ describe('Inspector', () => {
     expect(close).toHaveBeenCalledWith(null);
     expect(document.activeElement).toBe(option);
     option.remove();
+  });
+
+  it('keeps a non-empty draft when Escape is pressed in the message box', async () => {
+    open('team-m-1');
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    await act(() => { render(<Inspector />, root); });
+    const box = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    await act(() => {
+      box.value = 'half a thought';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    box.focus();
+    await act(() => { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(close).not.toHaveBeenCalled();
+    expect(box.value).toBe('half a thought');
+    expect(document.activeElement).toBe(box);
+  });
+
+  it('closes on Escape from the message box once it is empty', async () => {
+    open('team-m-1');
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    await act(() => { render(<Inspector />, root); });
+    const box = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    box.focus();
+    await act(() => { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(close).toHaveBeenCalledWith(null);
+  });
+
+  it('closes on Escape pressed inside the transcript', async () => {
+    open('sub-1', [child]);
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    await act(() => { render(<Inspector />, root); });
+    const log = root.querySelector<HTMLElement>('[role="log"]')!;
+    await act(() => { log.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(close).toHaveBeenCalledWith(null);
+  });
+
+  it('gives focus to the list tab stop when the agent option is gone', async () => {
+    const s = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...s,
+      runs: s.runs.filter((r) => r.session_id !== 'sub-1'),
+      inspected: { sessionId: 'sub-1', session: null, messages: [], loading: false },
+    };
+    const close = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    const list = document.createElement('ul');
+    list.className = 'agent-list';
+    const other = document.createElement('li');
+    other.setAttribute('role', 'option');
+    other.tabIndex = 0;
+    list.append(other);
+    document.body.append(list);
+    await act(() => { render(<Inspector />, root); });
+    root.querySelector<HTMLElement>('#inspector-title')!.focus();
+    await act(() => { region().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(close).toHaveBeenCalledWith(null);
+    expect(document.activeElement).toBe(other);
+    // With no option left to take focus, the listbox itself does.
+    other.remove();
+    root.querySelector<HTMLElement>('#inspector-title')!.focus();
+    await act(() => { region().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.activeElement).toBe(list);
+    expect(list.tabIndex).toBe(-1);
+    list.remove();
+  });
+
+  it('shows a thrown action error in the alert', async () => {
+    open('sub-1', [child]);
+    vi.spyOn(actions, 'cancelAgent').mockRejectedValue(new Error('boom'));
+    await act(() => { render(<Inspector />, root); });
+    await act(async () => { root.querySelector<HTMLButtonElement>('button[data-action="cancel"]')!.click(); });
+    await act(async () => {});
+    expect(region().querySelector('[role="alert"]')!.textContent).toContain('boom');
+  });
+
+  it('drops a result that arrives after the selection moved on', async () => {
+    const s = withBob(reduce(initialState(), fx.snapshot));
+    state.value = { ...s, inspected: { sessionId: 'team-m-1', session: null, messages: [], loading: false } };
+    let settle!: (value: string | null) => void;
+    const send = vi.spyOn(actions, 'messageTeammate').mockImplementation(
+      () => new Promise((resolve) => { settle = resolve; }),
+    );
+    await act(() => { render(<Inspector />, root); });
+    const alice = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    await act(() => {
+      alice.value = 'rebase first';
+      alice.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => { root.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await act(() => { select('team-m-2'); });
+    const bobBox = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    await act(() => {
+      bobBox.value = 'for bob';
+      bobBox.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { settle(null); });
+    await act(async () => {});
+    expect(send).toHaveBeenCalledWith('alice', 'rebase first');
+    expect(bobBox.value).toBe('for bob');
+    expect(region().querySelector('[role="status"]')!.textContent).toBe('');
   });
 
   it('shows the main transcript for the main agent, with no extra actions', async () => {

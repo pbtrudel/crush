@@ -15,6 +15,7 @@ import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
 import { Interrupt } from './interrupt/Interrupt';
 import { Inspector } from './inspector/Inspector';
+import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 
 export function App() {
   const s = state.value;
@@ -49,6 +50,12 @@ export function App() {
       });
       if (!action) return;
       e.preventDefault();
+      // Escape closes the innermost thing first: an open inspector, then the
+      // cinematic view. A draft in the message box outranks both.
+      if (action === 'exit' && state.value.inspected) {
+        if (!escapeLeavesDraft(e)) closeInspector();
+        return;
+      }
       setCinematic(action === 'toggle' ? !cinematic.value : false);
     };
     window.addEventListener('keydown', onKeyDown, true);
