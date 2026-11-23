@@ -5,8 +5,8 @@ import type {
   Frame, InputMode, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
 } from '../api/types';
 import {
-  adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, markAnswered, pushToast,
-  reduce, setConn, type State,
+  adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
+  mergeInspected, pushToast, reduce, setConn, unmarkAnswered, type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
 import { observe, telemetry } from './telemetry';
@@ -64,6 +64,41 @@ function queueChanged(f: Frame): boolean {
   return (f.payload as WireEvent<Message>).payload.role === 'user';
 }
 
+const FILES_DEBOUNCE_MS = 400;
+let filesTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function refreshFiles(sid: string) {
+  try {
+    const files = await api.files(sid);
+    dispatch((s) => (s.sessionId === sid ? { ...s, files, filesStale: false } : s));
+  } catch {
+    // The list stays as it is; the next file frame or snapshot repairs it.
+    dispatch((s) => ({ ...s, filesStale: false }));
+  }
+}
+
+// scheduleFiles coalesces a burst of file frames (a multiedit writes one
+// version per edit) into one list request.
+function scheduleFiles() {
+  if (filesTimer !== null) return;
+  filesTimer = setTimeout(() => {
+    filesTimer = null;
+    const sid = state.value.sessionId;
+    if (sid) void refreshFiles(sid);
+  }, FILES_DEBOUNCE_MS);
+}
+
+async function loadInspected(sid: string) {
+  try {
+    const [messages, session] = await Promise.all([api.messages(sid), api.session(sid).catch(() => null)]);
+    dispatch((s) => mergeInspected(s, sid, messages, session));
+  } catch (err) {
+    dispatch((s) => (s.inspected?.sessionId === sid
+      ? pushToast({ ...s, inspected: { ...s.inspected, loading: false } }, 'error', `Could not load the agent: ${errorText(err)}`)
+      : s));
+  }
+}
+
 // refreshQueue reloads the queue chips. A failure is silent: the chips
 // stay as they are and the next snapshot or refresh repairs them.
 async function refreshQueue(sid: string) {
@@ -91,7 +126,7 @@ export async function boot() {
   const token = new URLSearchParams(location.hash.slice(1)).get('t');
   if (token) {
     await api.auth(token).catch(() => undefined);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', location.pathname + location.search);
   }
   connectStream({
     onFrames: handleFrames,
@@ -113,6 +148,11 @@ export function handleFrames(frames: Frame[]) {
   }
   const sid = state.value.sessionId;
   if (sid && frames.some(queueChanged)) void refreshQueue(sid);
+  if (state.value.filesStale) scheduleFiles();
+  // A snapshot means frames may have been missed, so the inspected child
+  // transcript is fetched again.
+  const ins = state.value.inspected;
+  if (ins && ins.sessionId !== state.value.sessionId && frames.some((f) => f.type === 'snapshot')) void loadInspected(ins.sessionId);
 }
 
 export const actions = {
@@ -162,6 +202,7 @@ export const actions = {
         dropPermission(id);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, id));
       return errorText(err);
     }
   },
@@ -186,6 +227,7 @@ export const actions = {
         dropQuestion(batchId);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, batchId));
       return errorText(err);
     }
   },
@@ -203,6 +245,41 @@ export const actions = {
         dropQuestion(batchId);
         return null;
       }
+      dispatch((s) => unmarkAnswered(s, batchId));
+      return errorText(err);
+    }
+  },
+  async inspect(sid: string | null) {
+    dispatch((s) => inspect(s, sid));
+    if (sid && sid !== state.value.sessionId) await loadInspected(sid);
+  },
+  async messageTeammate(member: string, text: string): Promise<string | null> {
+    const sid = state.value.sessionId;
+    if (!sid) return 'There is no session to message from';
+    try {
+      await api.teamMessage(member, sid, text);
+      return null;
+    } catch (err) {
+      return errorText(err);
+    }
+  },
+  async interruptTeammate(member: string): Promise<string | null> {
+    const sid = state.value.sessionId;
+    if (!sid) return 'There is no session to interrupt from';
+    try {
+      await api.teamInterrupt(member, sid);
+      return null;
+    } catch (err) {
+      return errorText(err);
+    }
+  },
+  // cancelAgent stops a subagent through its own session, which is how the
+  // coordinator reaches a dispatched subagent's run.
+  async cancelAgent(sessionId: string): Promise<string | null> {
+    try {
+      await api.cancel(sessionId);
+      return null;
+    } catch (err) {
       return errorText(err);
     }
   },

@@ -14,7 +14,8 @@ export const MAX_ATTACHMENT_BYTES = 32 << 20;
 // the attachments are measured separately.
 const MULTIPART_OVERHEAD = 64 << 10;
 
-const TOO_LARGE_ERROR = 'Attachments must total under 32 MiB.';
+const ATTACH_TOO_LARGE = 'Attachments must total under 32 MiB.';
+const PROMPT_TOO_LARGE = 'The prompt and its attachments must total under 32 MiB.';
 
 export const MENTION_DEBOUNCE_MS = 120;
 
@@ -24,6 +25,10 @@ export function CommandDeck() {
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
+  // The caret drives the suggestion list: a cursor that leaves the mention
+  // closes it, and the effect below cannot read it from the element because
+  // the text state and the DOM selection move on separate renders.
+  const [caret, setCaret] = useState(0);
   const [suggest, setSuggest] = useState<{ start: number; items: string[]; index: number } | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -36,9 +41,7 @@ export function CommandDeck() {
   const ended = s.conn === 'ended';
 
   useEffect(() => {
-    const el = area.current;
-    if (!el) return;
-    const m = activeMention(text, el.selectionStart);
+    const m = activeMention(text, caret);
     const id = ++request.current;
     if (!m) { setSuggest(null); return; }
     const t = window.setTimeout(async () => {
@@ -57,14 +60,14 @@ export function CommandDeck() {
       request.current++;
       window.clearTimeout(t);
     };
-  }, [text]);
+  }, [text, caret]);
 
   const addFiles = (list: FileList | File[] | null) => {
-    if (!list) return;
+    if (!list || ended) return;
     const added = Array.from(list);
     const total = files.concat(added).reduce((n, f) => n + f.size, 0);
     if (total >= MAX_ATTACHMENT_BYTES) {
-      setError(TOO_LARGE_ERROR);
+      setError(ATTACH_TOO_LARGE);
       return;
     }
     setError('');
@@ -75,6 +78,7 @@ export function CommandDeck() {
     const el = area.current!;
     const next = applyMention(text, suggest!.start, el.selectionStart, path);
     setText(next.text);
+    setCaret(next.caret);
     setSuggest(null);
     requestAnimationFrame(() => { el.focus(); el.setSelectionRange(next.caret, next.caret); });
   };
@@ -87,7 +91,7 @@ export function CommandDeck() {
       const attachmentBytes = files.reduce((n, f) => n + f.size, 0);
       const promptBytes = new TextEncoder().encode(text).length;
       if (attachmentBytes + promptBytes + MULTIPART_OVERHEAD >= MAX_ATTACHMENT_BYTES) {
-        setError(TOO_LARGE_ERROR);
+        setError(PROMPT_TOO_LARGE);
         return;
       }
       setError('');
@@ -96,6 +100,8 @@ export function CommandDeck() {
       if (err) { setError(err); return; }
       setText('');
       setFiles([]);
+    } catch {
+      setError('The prompt did not reach crush.');
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -127,6 +133,7 @@ export function CommandDeck() {
   return (
     <form
       class={`deck glass${cinematic.value ? ' deck--slim' : ''}`}
+      aria-label="Command deck"
       data-busy={s.busy}
       onSubmit={(e) => { e.preventDefault(); void submit(); }}
       onDragOver={(e) => e.preventDefault()}
@@ -163,8 +170,15 @@ export function CommandDeck() {
           aria-autocomplete="list"
           aria-controls={suggest ? 'deck-suggest' : undefined}
           aria-activedescendant={suggest ? `deck-suggest-${suggest.index}` : undefined}
-          onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)}
+          onInput={(e) => {
+            const el = e.currentTarget as HTMLTextAreaElement;
+            setText(el.value);
+            setCaret(el.selectionStart);
+          }}
           onKeyDown={onKeyDown}
+          onKeyUp={(e) => setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart)}
+          onClick={(e) => setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart)}
+          onSelect={(e) => setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart)}
           onPaste={(e) => {
             const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'));
             if (imgs.length) addFiles(imgs);

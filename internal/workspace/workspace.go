@@ -134,6 +134,9 @@ type Workspace interface {
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
+	// ListChildSessions returns the sessions parentID spawned, such as
+	// subagent and teammate sessions, oldest first.
+	ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error)
 	// SetCurrentSession reports the session this client is currently
 	// viewing. Empty sessionID clears the entry (e.g. landing screen).
 	// In single-client local mode this is a no-op. In client/server
@@ -242,6 +245,18 @@ type Workspace interface {
 	LSPStopAll(ctx context.Context)
 	LSPGetStates() map[string]LSPClientInfo
 	LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts
+	// LSPDiagnosticsByFile returns the diagnostic counts every LSP server
+	// holds, summed per file and keyed by absolute path.
+	LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts
+
+	// Team
+	//
+	// TeamSendMessage sends text to member of sessionID's Agent Team as its
+	// Lead, starting the member when it is inactive. TeamInterrupt stops the
+	// member's current turn. Both fail with agent.ErrAgentTeamsDisabled when
+	// Agent Teams is off.
+	TeamSendMessage(ctx context.Context, sessionID, member, text string) error
+	TeamInterrupt(ctx context.Context, sessionID, member string) error
 
 	// Config (read-only data)
 	Config() *config.Config

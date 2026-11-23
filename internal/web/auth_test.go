@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -31,6 +32,11 @@ func do(t *testing.T, c *http.Client, method, target string, body io.Reader) *ht
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), method, target, body)
 	require.NoError(t, err)
+	// Browsers send Origin on every state-changing request, and the
+	// gateway requires it.
+	if method != http.MethodGet && method != http.MethodHead {
+		req.Header.Set("Origin", (&url.URL{Scheme: req.URL.Scheme, Host: req.URL.Host}).String())
+	}
 	return doReq(t, c, req)
 }
 
@@ -89,6 +95,7 @@ func TestAuthWrongTokenRejected(t *testing.T) {
 		strings.NewReader(`{"token":"nope"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", g.URL())
 	rsp := doReq(t, nil, req)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
@@ -202,5 +209,140 @@ func TestAPIResponsesAreNotStored(t *testing.T) {
 	rsp := do(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/health", nil)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, "no-store", rsp.Header.Get("Cache-Control"))
+}
+
+// protectedRoutes lists every API route; each must refuse a request with no
+// cookie. Later tasks append their routes here.
+var protectedRoutes = []struct{ method, path string }{
+	{http.MethodGet, "/api/health"},
+	{http.MethodGet, "/api/snapshot"},
+	{http.MethodGet, "/api/sessions"},
+	{http.MethodPost, "/api/sessions"},
+	{http.MethodGet, "/api/sessions/s1/messages"},
+	{http.MethodPost, "/api/sessions/s1/prompt"},
+	{http.MethodPost, "/api/sessions/s1/cancel"},
+	{http.MethodGet, "/api/sessions/s1/queue"},
+	{http.MethodDelete, "/api/sessions/s1/queue"},
+	{http.MethodPost, "/api/permissions/grant"},
+	{http.MethodPost, "/api/permissions/mode"},
+	{http.MethodPost, "/api/input-mode"},
+	{http.MethodPost, "/api/questions/answer"},
+	{http.MethodPost, "/api/questions/cancel"},
+	{http.MethodGet, "/api/complete/files"},
+	{http.MethodGet, "/api/sessions/s1/files"},
+	{http.MethodGet, "/api/sessions/s1/files/diff?path=x"},
+	{http.MethodGet, "/api/sessions/s1"},
+	{http.MethodPost, "/api/team/members/alice/message"},
+	{http.MethodPost, "/api/team/members/alice/interrupt"},
+}
+
+func TestEveryRouteRequiresTheCookie(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	for _, rt := range protectedRoutes {
+		req, err := http.NewRequestWithContext(t.Context(), rt.method, g.URL()+rt.path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Set("Origin", g.URL())
+		rsp := doReq(t, nil, req)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, "%s %s", rt.method, rt.path)
+	}
+}
+
+func TestStateChangingRequestsNeedAnOrigin(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := authedClient(t, g)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/cancel", nil)
+	require.NoError(t, err)
+	rsp := doReq(t, c, req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+	require.NotContains(t, fake.CallLog(), "AgentCancel:s1")
+
+	// Reads stay open to same-host tools without an Origin.
+	rsp = do(t, c, http.MethodGet, g.URL()+"/api/health", nil)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+}
+
+func TestMissingCookieWithForeignOriginIsForbidden(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/cancel", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "http://evil.example")
+	rsp := doReq(t, nil, req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+}
+
+func TestAuthRejectsForeignOriginOnTokenExchange(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth",
+		strings.NewReader(`{"token":"`+g.token()+`"}`))
+	require.NoError(t, err)
+	req.Header.Set("Origin", "http://evil.example")
+	rsp := doReq(t, nil, req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+	require.Empty(t, rsp.Cookies())
+}
+
+// TestOriginAllowed pins the matrix behind the Origin guard: a state
+// changing request needs the tab's own origin, a read may come from a
+// same-host tool without one, and neither scheme, port nor host name may
+// differ from the address the gateway bound.
+func TestOriginAllowed(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	port := strconv.Itoa(g.port)
+	otherPort := strconv.Itoa(g.port + 1)
+	same := "http://127.0.0.1:" + port
+	localhost := "http://localhost:" + port
+	for _, tc := range []struct {
+		name   string
+		method string
+		host   string
+		origin string
+		want   bool
+	}{
+		{"read without an Origin", http.MethodGet, "", "", true},
+		{"head without an Origin", http.MethodHead, "", "", true},
+		{"post without an Origin", http.MethodPost, "", "", false},
+		{"the bound origin", http.MethodPost, "", same, true},
+		{"the localhost origin for 127.0.0.1", http.MethodGet, "", localhost, false},
+		{"the loopback origin for localhost", http.MethodGet, "localhost:" + port, same, false},
+		{"the origin the request was sent to", http.MethodGet, "localhost:" + port, localhost, true},
+		{"a null Origin", http.MethodPost, "", "null", false},
+		{"an https origin", http.MethodPost, "", "https://127.0.0.1:" + port, false},
+		{"a wrong port", http.MethodPost, "", "http://127.0.0.1:" + otherPort, false},
+		{"a foreign host", http.MethodPost, "", "http://evil.example", false},
+		{"an unparseable origin", http.MethodPost, "", "http://[::1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, "/api/health", nil)
+			require.NoError(t, err)
+			req.Host = cmp.Or(tc.host, "127.0.0.1:"+port)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			require.Equal(t, tc.want, g.originAllowed(req))
+		})
+	}
+}
+
+func TestMissingAssetIsNotCachedForever(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	rsp := do(t, nil, http.MethodGet, g.URL()+"/assets/missing-0000.js", nil)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.NotContains(t, rsp.Header.Get("Cache-Control"), "immutable")
+	// net/http already strips Cache-Control from a file-server error, so
+	// only the explicit header pins that this handler sets it.
 	require.Equal(t, "no-store", rsp.Header.Get("Cache-Control"))
 }

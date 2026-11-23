@@ -224,6 +224,16 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSessionHistory),
 
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/children").
+			Summary("List child sessions").
+			Description("Lists the subagent, teammate and helper sessions a session spawned, oldest first.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.Session{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionChildren),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/messages").
 			Summary("Get session messages").
 			Tags("sessions").
@@ -510,6 +520,26 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Responds(proto.AgentAskResponse{}).
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceAgentSessionAsk),
+
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/message").
+			Summary("Message a teammate").
+			Description("Sends a message to a teammate as the Lead of the session's Agent Team.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamMessageRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberMessage),
+
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/interrupt").
+			Summary("Interrupt a teammate").
+			Description("Stops a teammate's current turn.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamInterruptRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberInterrupt),
 
 		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/shell").
 			Summary("Run shell command").

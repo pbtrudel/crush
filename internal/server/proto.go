@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/backend"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/session"
@@ -443,6 +445,22 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	jsonEncode(w, history)
 }
 
+// handleGetWorkspaceSessionChildren returns the sessions a session spawned.
+func (c *controllerV1) handleGetWorkspaceSessionChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	children, err := c.backend.ListChildSessions(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result := make([]proto.Session, len(children))
+	for i, s := range children {
+		result[i] = wire.SessionToProto(s)
+	}
+	jsonEncode(w, result)
+}
+
 // handleGetWorkspaceSessionMessages returns all messages for a session.
 func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -762,6 +780,36 @@ func (c *controllerV1) handlePostWorkspaceAgentSessionAsk(w http.ResponseWriter,
 	jsonEncode(w, proto.AgentAskResponse{Answer: answer})
 }
 
+// handlePostWorkspaceTeamMemberMessage sends a message to a teammate.
+func (c *controllerV1) handlePostWorkspaceTeamMemberMessage(w http.ResponseWriter, r *http.Request) {
+	var req proto.TeamMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.TeamSendMessage(r.Context(), r.PathValue("id"), req.SessionID, r.PathValue("member"), req.Text); err != nil {
+		c.writeTeamError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handlePostWorkspaceTeamMemberInterrupt stops a teammate's current turn.
+func (c *controllerV1) handlePostWorkspaceTeamMemberInterrupt(w http.ResponseWriter, r *http.Request) {
+	var req proto.TeamInterruptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.TeamInterrupt(r.Context(), r.PathValue("id"), req.SessionID, r.PathValue("member")); err != nil {
+		c.writeTeamError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceAgentSessionShell runs a shell command in the workspace.
 func (c *controllerV1) handlePostWorkspaceAgentSessionShell(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -953,13 +1001,41 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 	jsonError(w, status, err.Error())
 }
 
+// writeTeamError answers a Team action failure. A Team failure carries
+// its machine code so a client can restore the original error identity;
+// everything else falls back to the generic mapper.
+func (c *controllerV1) writeTeamError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, backend.ErrAgentNotInitialized) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.TeamCodeAgentNotInitialized)
+		return
+	}
+	if errors.Is(err, agent.ErrAgentTeamsDisabled) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusConflict, err.Error(), proto.TeamCodeDisabled)
+		return
+	}
+	if code := agentteam.ErrorCode(err); code != "" {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), code)
+		return
+	}
+	c.handleError(w, r, err)
+}
+
 func jsonEncode(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 func jsonError(w http.ResponseWriter, status int, message string) {
+	jsonErrorCode(w, status, message, "")
+}
+
+// jsonErrorCode writes a JSON error response with an optional
+// machine-readable code.
+func jsonErrorCode(w http.ResponseWriter, status int, message, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(proto.Error{Message: message})
+	_ = json.NewEncoder(w).Encode(proto.Error{Message: message, Code: code})
 }

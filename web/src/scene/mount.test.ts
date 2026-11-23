@@ -21,6 +21,22 @@ interface StubWorld extends StubPart {
 
 interface StubCore extends StubPart {
   setBoot: Spy;
+  flash: Spy;
+}
+
+interface StubBursts extends StubPart {
+  spawn: Spy;
+  spawnAt: Spy;
+}
+
+interface StubAgents extends StubPart {
+  group: unknown;
+  sync: Spy;
+  update: Spy;
+  position: Spy;
+  pulse: Spy;
+  flash: Spy;
+  ids: Spy;
 }
 
 // The stubs record what the mount does to them. They are hoisted above the
@@ -30,9 +46,16 @@ const composers = vi.hoisted(() => [] as Array<{ disposed: number; renders: numb
 const parts = vi.hoisted(() => ({
   worlds: [] as StubWorld[],
   cores: [] as StubCore[],
-  bursts: [] as StubPart[],
+  bursts: [] as StubBursts[],
+  agents: [] as StubAgents[],
 }));
 const failing = vi.hoisted(() => ({ composer: false }));
+// The node stand-in reports this point as the node's world position, and
+// reports no position at all when missing is set.
+const projection = vi.hoisted(() => ({
+  at: null as null | { x: number; y: number; z: number },
+  missing: false,
+}));
 
 vi.mock('three', async (importOriginal) => {
   const actual = await importOriginal<typeof import('three')>();
@@ -160,12 +183,42 @@ vi.mock('./bursts', async (importOriginal) => {
       const bursts = {
         group: new Group(),
         spawn: vi.fn(),
+        spawnAt: vi.fn(),
         update: vi.fn(() => false),
         active: vi.fn(() => 0),
         dispose: vi.fn(),
       };
       parts.bursts.push(bursts);
       return bursts;
+    },
+  };
+});
+
+// The nodes build real GPU resources too, so the mount is tested against a
+// stand-in that reports one fixed projection.
+vi.mock('./agents', async (importOriginal) => {
+  const { Group } = await import('three');
+  return {
+    ...(await importOriginal<typeof import('./agents')>()),
+    createAgentNodes: () => {
+      const agents = {
+        group: new Group(),
+        sync: vi.fn(),
+        update: vi.fn(() => false),
+        position: vi.fn((_id: string, out: THREE.Vector3) => {
+          if (projection.missing) return false;
+          const at = projection.at;
+          if (at) out.set(at.x, at.y, at.z);
+          else out.set(1, 1.6, 0);
+          return true;
+        }),
+        pulse: vi.fn(),
+        flash: vi.fn(),
+        ids: vi.fn(() => ['a1']),
+        dispose: vi.fn(),
+      };
+      parts.agents.push(agents);
+      return agents;
     },
   };
 });
@@ -208,10 +261,10 @@ function canvas(): HTMLCanvasElement {
   return el;
 }
 
-const hooks = () => ({ onStepDown: vi.fn(), onFail: vi.fn() });
+const hooks = (): Parameters<typeof mountScene>[2] => ({ onStepDown: vi.fn(), onFail: vi.fn() });
 
-function start(over: Partial<SceneInput> = {}): SceneHandle {
-  const scene = mountScene(canvas(), input(over), hooks());
+function start(over: Partial<SceneInput> = {}, extra: Partial<Parameters<typeof mountScene>[2]> = {}): SceneHandle {
+  const scene = mountScene(canvas(), input(over), { ...hooks(), ...extra });
   mounted.push(scene);
   return scene;
 }
@@ -224,6 +277,8 @@ function input(over: Partial<SceneInput> = {}): SceneInput {
     effects: { bloom: true, beams: true, particleShare: 1, cinematic: true },
     booting: false,
     focus: null,
+    agents: [],
+    selected: null,
     ...over,
   };
 }
@@ -240,6 +295,8 @@ beforeEach(() => {
   parts.cores.length = 0;
   parts.bursts.length = 0;
   failing.composer = false;
+  projection.at = null;
+  projection.missing = false;
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
     frames.push(callback);
@@ -398,6 +455,91 @@ describe('mountScene', () => {
     expect(frames).toHaveLength(1);
   });
 
+  it('syncs the nodes only when the roster or the selection changes', () => {
+    const scene = start({ motion: 'off' });
+    const agents = parts.agents.at(-1)!;
+    agents.sync.mockClear();
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }] }));
+    expect(agents.sync).toHaveBeenCalledTimes(1);
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }] }));
+    expect(agents.sync).toHaveBeenCalledTimes(1);
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }], selected: 'a1' }));
+    expect(agents.sync).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes projected node positions after a render, and again only when they move', () => {
+    const screens = vi.fn();
+    const scene = start({ motion: 'off' }, { onAgentScreens: screens });
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }] }));
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(1);
+    expect(screens.mock.calls[0][0]).toEqual([expect.objectContaining({ id: 'a1', visible: true })]);
+    scene.requestFrame();
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(1);
+  });
+
+  it('bursts toward a node in full motion and flashes it in reduced motion', () => {
+    const full = start({ motion: 'full' });
+    full.burst('write', 'a1');
+    expect(parts.bursts.at(-1)!.spawnAt).toHaveBeenCalled();
+    expect(parts.agents.at(-1)!.pulse).toHaveBeenCalledWith('a1', expect.anything());
+    full.dispose();
+    const reduced = start({ motion: 'reduced' });
+    reduced.burst('write', 'a1');
+    expect(parts.agents.at(-1)!.flash).toHaveBeenCalledWith('a1', expect.anything());
+  });
+
+  // A moved anchor republishes; the comparison is numeric, so it must see a
+  // sub-pixel change in the projection as a move and nothing less.
+  it('publishes again when a node moves by a pixel', () => {
+    const screens = vi.fn();
+    const scene = start({ motion: 'off' }, { onAgentScreens: screens });
+    projection.at = { x: 1, y: 1.6, z: 0 };
+    scene.update(input({ motion: 'off', agents: [{ id: 'a1', kind: 'teammate', status: 'running' }] }));
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(1);
+    projection.at = { x: 1.02, y: 1.6, z: 0 };
+    scene.requestFrame();
+    advance(1);
+    expect(screens).toHaveBeenCalledTimes(2);
+    expect(screens.mock.calls[1][0][0].x).toBeGreaterThan(screens.mock.calls[0][0][0].x);
+  });
+
+  it('marks a node off the screen, behind the camera or past the far plane as hidden', () => {
+    const screens = vi.fn();
+    const scene = start({ motion: 'off' }, { onAgentScreens: screens });
+    // The camera looks from (0, 2.2, 7.4) toward the core, so these points
+    // are respectively in frame, far to the side, behind it and beyond the
+    // far plane.
+    const visibleAt = (x: number, y: number, z: number) => {
+      projection.at = { x, y, z };
+      scene.requestFrame();
+      advance(1);
+      return screens.mock.calls.at(-1)![0][0].visible;
+    };
+    expect(visibleAt(0, 1.6, 0)).toBe(true);
+    expect(visibleAt(50, 1.6, 0)).toBe(false);
+    expect(visibleAt(0, 1.6, 20)).toBe(false);
+    expect(visibleAt(0, 1.6, -200)).toBe(false);
+  });
+
+  it('bursts at the core when the target node is not on the orbit', () => {
+    projection.missing = true;
+    const full = start({ motion: 'full' });
+    full.burst('write', 'ghost');
+    const bursts = parts.bursts.at(-1)!;
+    expect(bursts.spawn).toHaveBeenCalled();
+    expect(bursts.spawnAt).not.toHaveBeenCalled();
+    expect(parts.agents.at(-1)!.pulse).not.toHaveBeenCalled();
+    full.dispose();
+
+    const reduced = start({ motion: 'reduced' });
+    reduced.burst('write', 'ghost');
+    expect(parts.cores.at(-1)!.flash).toHaveBeenCalled();
+    expect(parts.agents.at(-1)!.flash).not.toHaveBeenCalled();
+  });
+
   it('disposes everything it built and stops every frame source', () => {
     const scene = start({ motion: 'full' });
     const renderer = renderers.at(-1)!;
@@ -405,6 +547,7 @@ describe('mountScene', () => {
     const world = parts.worlds.at(-1)!;
     const core = parts.cores.at(-1)!;
     const bursts = parts.bursts.at(-1)!;
+    const agents = parts.agents.at(-1)!;
     const observer = StubResizeObserver.instances.at(-1)!;
     expect(frames.length).toBeGreaterThan(0);
 
@@ -414,6 +557,7 @@ describe('mountScene', () => {
     expect(world.dispose).toHaveBeenCalledTimes(1);
     expect(core.dispose).toHaveBeenCalledTimes(1);
     expect(bursts.dispose).toHaveBeenCalledTimes(1);
+    expect(agents.dispose).toHaveBeenCalledTimes(1);
     expect(composer.disposed).toBe(1);
     expect(renderer.disposed).toBe(1);
     expect(renderer.lost).toBe(1);

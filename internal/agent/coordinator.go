@@ -202,10 +202,12 @@ type coordinator struct {
 	// reconciled records parent sessions already checked for subagents a
 	// previous process left unreported. Keys are session IDs.
 	reconciled sync.Map
-	// subSessions counts the runs in flight on each subagent session, so
-	// the busy check sees subagents the main agent is not running itself.
+	// subSessions is the in-flight state of each subagent session, so the
+	// busy check sees subagents the main agent is not running itself and a
+	// cancel can reach the agent instance a synchronous subagent runs on.
 	subSessionsMu sync.Mutex
-	subSessions   map[string]int
+	subSessions   map[string]*subSessionRun
+	subSessionSeq uint64
 	// settleMu serializes transcript repairs so two readers cannot both
 	// settle one orphaned call.
 	settleMu sync.Mutex
@@ -2350,7 +2352,25 @@ func (c *coordinator) Cancel(sessionID string) {
 			entry.stop("cancelled by the user")
 		}
 	}
+	c.cancelSubSessions(sessionID)
 	c.currentAgent().Cancel(sessionID)
+}
+
+// cancelSubSessions stops the synchronous runs of sessionID on the agent
+// instances that run them. Such a subagent runs on an agent of its own, so
+// the current agent cannot reach it.
+func (c *coordinator) cancelSubSessions(sessionID string) {
+	c.subSessionsMu.Lock()
+	var agents []SessionAgent
+	if run := c.subSessions[sessionID]; run != nil {
+		for _, agent := range run.agents {
+			agents = append(agents, agent)
+		}
+	}
+	c.subSessionsMu.Unlock()
+	for _, agent := range agents {
+		agent.Cancel(sessionID)
+	}
 }
 
 // CancelBackgroundCompaction stops the summary a session wrote ahead of the
@@ -2815,9 +2835,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		c.finishAgentRun(sess.ID, err)
 		return fantasy.ToolResponse{}, err
 	}
-	done := c.trackSubSession(sess.ID)
+	done := c.trackSubSession(sess.ID, params.Agent)
+	// Deferred: a panic in the run must not leave the child session busy.
+	defer done()
 	result, err := params.Agent.Run(ctx, call)
-	done()
 	c.finishAgentRun(sess.ID, err)
 	c.askToSignInAgain(err, model)
 	if err != nil {
@@ -2910,9 +2931,10 @@ func (c *coordinator) executeSubAgent(ctx context.Context, agent SessionAgent, s
 		return "", err
 	}
 
-	done := c.trackSubSession(sess.ID)
+	done := c.trackSubSession(sess.ID, agent)
+	// Deferred: a panic in the run must not leave the child session busy.
+	defer done()
 	result, err := agent.Run(ctx, call)
-	done()
 	c.askToSignInAgain(err, model)
 	if err != nil {
 		return "", err

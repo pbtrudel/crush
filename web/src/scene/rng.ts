@@ -1,3 +1,5 @@
+import { readStored } from '../state/storage';
+
 // mulberry32 is a small, fast seeded generator. The scene uses it so a
 // reload with the same seed lays out the same dust and beams.
 export function mulberry32(seed: number): () => number {
@@ -16,8 +18,8 @@ const KEY_SEED = 'crush-web-seed';
 // sceneSeed lets the user pin the layout from the console
 // (localStorage['crush-web-seed'] = '7'), and otherwise changes per load.
 export function sceneSeed(): number {
-  const saved = localStorage.getItem(KEY_SEED);
-  if (saved !== null) {
+  const saved = readStored(KEY_SEED);
+  if (saved !== null && saved.trim() !== '') {
     const parsed = Number(saved);
     if (Number.isInteger(parsed)) return parsed;
   }

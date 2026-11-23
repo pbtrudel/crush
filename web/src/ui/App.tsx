@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
 import { needsAttention } from '../state/reducer';
+import { drawerOpen, effectivePanelTab, panelTab } from '../state/drawer';
+import { handOffLogFocus, logInert, watchFocusHandoff, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
 import { cinematic, cinematicAllowed, cinematicKey, setCinematic } from '../state/cinematic';
 import { BootSequence } from './BootSequence';
+import { CineHint } from './CineHint';
 import { ConnectionBanner } from './ConnectionBanner';
 import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
@@ -14,6 +17,10 @@ import { Toasts } from './Toasts';
 import { Unauthorized } from './Unauthorized';
 import { faviconFor, projectHue, tabTitle } from './tabIdentity';
 import { Interrupt } from './interrupt/Interrupt';
+import { Inspector } from './inspector/Inspector';
+import { closeInspector, escapeLeavesDraft } from './inspector/escape';
+import { PanelTabs } from './PanelTabs';
+import { FileDrawer } from './files/FileDrawer';
 
 export function App() {
   const s = state.value;
@@ -21,6 +28,21 @@ export function App() {
   const view = useRef<HTMLDivElement>(null);
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
+  const inspector = useRef<HTMLElement>(null);
+  const logCovered = useRef(false);
+
+  // The log goes inert while the overlay drawer covers it: that is a width
+  // plus drawer state, not something a stylesheet can express.
+  useEffect(() => watchOverlayWidth(), []);
+
+  // A log that leaves the tab order under the focus would keep it on an
+  // inert control, so the drawer takes the focus and hands it back to the
+  // handle when it closes over it.
+  useEffect(() => {
+    handOffLogFocus(logInert.value, logCovered.current);
+    logCovered.current = logInert.value;
+  }, [logInert.value]);
+  useEffect(() => watchFocusHandoff(), []);
 
   useEffect(() => {
     document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);
@@ -37,6 +59,10 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const focused = document.activeElement;
+      const target = e.target;
+      // An open Display menu owns Escape: it closes itself, so the inspector
+      // and the cinematic view must not read the same press.
+      if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
       const action = cinematicKey({
         code: e.code,
         altKey: e.altKey,
@@ -47,6 +73,12 @@ export function App() {
       });
       if (!action) return;
       e.preventDefault();
+      // Escape closes the innermost thing first: an open inspector, then the
+      // cinematic view. A draft in the message box outranks both.
+      if (action === 'exit' && state.value.inspected) {
+        if (!escapeLeavesDraft(e)) closeInspector();
+        return;
+      }
       setCinematic(action === 'toggle' ? !cinematic.value : false);
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -55,6 +87,9 @@ export function App() {
 
   if (s.conn === 'unauthorized') return <Unauthorized />;
   const modal = attention && s.conn === 'live';
+  // Below 1024px the agent tab is the inspector's slot; with no inspector
+  // the log shows there, whatever tab was last picked.
+  const tab = effectivePanelTab(panelTab.value, s.inspected !== null);
   return (
     <div
       class="holodeck"
@@ -63,27 +98,31 @@ export function App() {
       data-conn={s.conn}
       data-cinematic={cinematic.value ? 'true' : 'false'}
     >
-      <SceneLayer view={view} camera={camera} panels={[log]} />
+      <SceneLayer view={view} camera={camera} panels={[log, inspector]} />
       <BootSequence done={s.conn !== 'booting'} />
       <Hud />
       <ConnectionBanner />
-      <main class="holodeck__grid" inert={modal}>
+      <PanelTabs inert={modal} />
+      <main class="holodeck__grid" inert={modal} data-drawer={drawerOpen.value ? 'open' : 'closed'} data-panel-tab={tab}>
         <div class="cine-view" ref={view}>
           <div class="cine-camera" ref={camera}>
-            <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log}>
+            <section class="panel panel--log glass scanlines" aria-label="Transmission log" ref={log} inert={modal || logInert.value}>
               <TransmissionLog />
             </section>
+            <Inspector panelRef={inspector} />
           </div>
         </div>
         <section class="stage" aria-label="Agent constellation">
           <Stage />
         </section>
+        <FileDrawer />
       </main>
       <div class="holodeck__deck" inert={modal}>
         <CommandDeck />
       </div>
       <Interrupt />
       <Toasts />
+      <CineHint />
     </div>
   );
 }

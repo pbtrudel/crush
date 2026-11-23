@@ -17,20 +17,25 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1502,4 +1507,156 @@ func TestTranslateEvent_ConfigStale(t *testing.T) {
 	require.True(t, ok, "expected app.ConfigStaleMsg, got %T", out)
 	require.Equal(t, ev.Payload.Changed, got.Changed)
 	require.Equal(t, ev.Payload.Missing, got.Missing)
+}
+
+func TestClientWorkspaceListChildSessions(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/workspaces/ws-1/sessions/s1/children", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode([]proto.Session{
+			{ID: "sub-1", ParentSessionID: "s1", Title: "Subagent"},
+		}))
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	got, err := ws.ListChildSessions(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "sub-1", got[0].ID)
+	require.Equal(t, "s1", got[0].ParentSessionID)
+}
+
+func TestClientWorkspaceLSPDiagnosticsByFile(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/lsps":
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{"gopls": {Name: "gopls"}}))
+		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
+			require.NoError(t, json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
+			}))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	require.Equal(t, map[string]lsp.DiagnosticCounts{"/repo/a.go": {Error: 1}}, ws.LSPDiagnosticsByFile(t.Context()))
+}
+
+func TestClientWorkspaceTeamActions(t *testing.T) {
+	t.Parallel()
+	type call struct{ path, body string }
+	calls := make(chan call, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		calls <- call{r.URL.Path, string(data)}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	require.NoError(t, ws.TeamSendMessage(t.Context(), "s1", "alice", "rebase first"))
+	got := <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/message", got.path)
+	require.JSONEq(t, `{"session_id":"s1","text":"rebase first"}`, got.body)
+
+	require.NoError(t, ws.TeamInterrupt(t.Context(), "s1", "alice"))
+	got = <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/interrupt", got.path)
+	require.JSONEq(t, `{"session_id":"s1"}`, got.body)
+}
+
+// TestClientWorkspaceTeamErrorsKeepIdentity pins ruling I1: a team
+// failure keeps its identity across client/server mode, so the gateway
+// can branch on the disabled sentinel and the original Team code.
+func TestClientWorkspaceTeamErrorsKeepIdentity(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(proto.Error{
+				Message: "agent teams are not enabled",
+				Code:    proto.TeamCodeDisabled,
+			})
+		case strings.HasSuffix(r.URL.Path, "/interrupt"):
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(proto.Error{
+				Message: `Team member "alice" not found`,
+				Code:    agentteam.CodeMemberNotFound,
+			})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	err = ws.TeamSendMessage(t.Context(), "s1", "alice", "hi")
+	require.ErrorIs(t, err, agent.ErrAgentTeamsDisabled)
+	require.EqualError(t, err, agent.ErrAgentTeamsDisabled.Error())
+
+	err = ws.TeamInterrupt(t.Context(), "s1", "alice")
+	require.Equal(t, agentteam.CodeMemberNotFound, agentteam.ErrorCode(err))
+	require.EqualError(t, err, `Team member "alice" not found`)
+}
+
+// TestAppWorkspaceTeamWithoutCoordinator keeps local and client/server
+// mode reporting the same error for the same state: a workspace with no
+// coordinator is not initialized, not a disabled team.
+func TestAppWorkspaceTeamWithoutCoordinator(t *testing.T) {
+	t.Parallel()
+	w := NewAppWorkspace(&app.App{}, nil)
+	require.ErrorIs(t, w.TeamSendMessage(t.Context(), "s1", "alice", "hi"), ErrAgentNotInitialized)
+	require.ErrorIs(t, w.TeamInterrupt(t.Context(), "s1", "alice"), ErrAgentNotInitialized)
+}
+
+// TestClientWorkspaceSaveSessionSendsTodos pins the wire converter the
+// SDK uses to save a session: the todos must reach the server.
+func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
+	t.Parallel()
+	sent := make(chan proto.Session, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got proto.Session
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sent <- got
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(got)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+	_, err = ws.SaveSession(t.Context(), session.Session{ID: "s1", Todos: []session.Todo{
+		{Content: "ship", Status: session.TodoStatusInProgress, ActiveForm: "Shipping"},
+	}})
+	require.NoError(t, err)
+	got := <-sent
+	require.Equal(t, []proto.Todo{{Content: "ship", Status: "in_progress", ActiveForm: "Shipping"}}, got.Todos)
 }

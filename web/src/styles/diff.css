@@ -1,0 +1,52 @@
+/* Adopted inside the diff view's shadow root, next to CodeMirror's own
+   constructed sheets, so the CSP never sees an inline style element. The
+   custom properties inherit through the shadow boundary. Additions take the
+   add colour and removals the amber one; magenta stays for needs-you states
+   and failures. */
+:host { display: block; block-size: 100%; }
+.diff {
+  box-sizing: border-box; block-size: 100%;
+  color: var(--text); background: var(--void-deep);
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 400 var(--step--1)/1.5 var(--font-code);
+}
+/* One scroll area inside the editor: a unified view scrolls its scroller,
+   a merge view scrolls as a whole, and the drawer never sees a third. */
+.diff > .cm-editor { block-size: 100%; background: transparent; color: var(--text); }
+.diff > .cm-editor .cm-scroller { overflow: auto; }
+.diff .cm-mergeView { block-size: 100%; }
+.diff .cm-editor { background: transparent; color: var(--text); }
+.diff .cm-editor.cm-focused { outline: 2px dashed var(--cyan); outline-offset: 2px; }
+.diff .cm-gutters { background: transparent; color: var(--text-muted); border-inline-end: 1px solid var(--edge); }
+.diff .cm-merge-a .cm-changedLine, .diff .cm-deletedChunk, .diff .cm-deletedLine {
+  background: color-mix(in oklch, var(--amber) 14%, transparent);
+}
+.diff .cm-merge-b .cm-changedLine, .diff .cm-insertedLine {
+  background: color-mix(in oklch, var(--teal) 14%, transparent);
+}
+/* The merge base theme paints deletion gutters #e43 and addition gutters
+   #2b2. These selectors outrank it (four classes to three) so a removal
+   stays amber and an addition teal. */
+.diff .cm-editor.cm-merge-a .cm-changedLineGutter,
+.diff .cm-editor .cm-deletedLineGutter { background-color: var(--amber); }
+.diff .cm-editor.cm-merge-b .cm-changedLineGutter { background-color: var(--teal); }
+.diff .cm-merge-a .cm-changedText {
+  background: color-mix(in oklch, var(--amber) 32%, transparent);
+}
+/* The base theme draws its underline as a bottom red gradient and tints
+   deleted text #ff000033; both give way to the amber tint. */
+.diff .cm-editor .cm-deletedChunk .cm-deletedText,
+.diff .cm-editor.cm-merge-b .cm-deletedText {
+  background: color-mix(in oklch, var(--amber) 32%, transparent);
+  text-decoration-line: none;
+}
+.diff .cm-merge-b .cm-changedText {
+  background: color-mix(in oklch, var(--teal) 32%, transparent);
+}
+.diff .cm-collapsedLines { color: var(--text-muted); background: var(--surface); }
+.diff .tok-keyword { color: var(--violet); }
+.diff .tok-string { color: var(--teal); }
+.diff .tok-comment { color: var(--text-muted); font-style: italic; }
+.diff .tok-number, .diff .tok-bool { color: var(--amber); }
+.diff .tok-typeName, .diff .tok-className, .diff .tok-definition { color: var(--cyan); }
+.diff .tok-operator, .diff .tok-punctuation { color: var(--text-muted); }

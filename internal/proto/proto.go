@@ -51,6 +51,10 @@ type Workspace struct {
 // Error represents an error response.
 type Error struct {
 	Message string `json:"message"`
+	// Code is an optional machine-readable failure code. Callers that
+	// must distinguish failures across the wire branch on it; everyone
+	// else keeps reading Message.
+	Code string `json:"code,omitempty"`
 }
 
 // ConfigChanged is published whenever the workspace's configuration is

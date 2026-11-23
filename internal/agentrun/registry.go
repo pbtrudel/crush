@@ -173,12 +173,22 @@ func (r *Registry) prune(runs []Run) []Run {
 }
 
 // Load reads the runs worth showing from path without taking the write lock.
+// An unreadable file reads as no runs; [LoadErr] reports the failure instead.
 func Load(path string) []Run {
+	runs, _ := LoadErr(path)
+	return runs
+}
+
+// LoadErr reads the runs worth showing from path without taking the write
+// lock. A missing file is an empty list with no error. Any other read or
+// decode failure is reported, so a caller that already shows runs can keep
+// them rather than blank the list.
+func LoadErr(path string) ([]Run, error) {
 	runs, err := loadRuns(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return sortRuns(New(path).prune(runs))
+	return sortRuns(New(path).prune(runs)), nil
 }
 
 type runFile struct {

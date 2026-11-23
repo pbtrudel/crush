@@ -1,8 +1,8 @@
 .log { flex: 1; overflow-y: auto; padding: var(--space-4); display: grid; align-content: start; gap: var(--space-4); scrollbar-color: var(--edge) transparent; }
 .log__empty { margin-block: 20%; text-align: center; color: var(--text-muted); max-inline-size: 34ch; justify-self: center; }
 .msg { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid transparent; }
-.msg[data-role='user'] { background: oklch(0.60 0.20 290 / 0.12); border-color: var(--violet-dim); }
-.msg[data-role='assistant'] { background: oklch(0.82 0.14 210 / 0.05); border-color: oklch(0.82 0.14 210 / 0.14); }
+.msg[data-role='user'] { background: color-mix(in oklch, var(--violet) 12%, transparent); border-color: var(--violet-dim); }
+.msg[data-role='assistant'] { background: color-mix(in oklch, var(--cyan) 5%, transparent); border-color: color-mix(in oklch, var(--cyan) 14%, transparent); }
 .msg__who { color: var(--cyan); }
 .msg[data-role='user'] .msg__who { color: var(--violet); }
 .md { overflow-wrap: anywhere; }
@@ -29,6 +29,7 @@
 .msg__finish[data-reason='error'] { color: var(--magenta); }
 .msg__marker { text-align: center; color: var(--violet); }
 .msg__image { max-inline-size: 100%; border-radius: var(--radius); border: 1px solid var(--edge); }
+.msg a { color: var(--cyan); overflow-wrap: anywhere; }
 .msg__cursor { inline-size: 8px; block-size: 16px; background: var(--cyan); animation: blink 0.8s steps(2) infinite; }
 .shell code { color: var(--teal); }
 .report { border: 1px solid var(--violet-dim); border-radius: var(--radius); padding: 10px; }

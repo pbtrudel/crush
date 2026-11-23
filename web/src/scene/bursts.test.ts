@@ -29,6 +29,16 @@ describe('createBursts', () => {
     expect(b.update(0.016)).toBe(false);
   });
 
+  it('spawns a ring at a node instead of the core', () => {
+    const b = createBursts(readColors(), new THREE.Vector3(0, 1.6, 0));
+    b.spawnAt('write', new THREE.Vector3(2, 1.6, 0));
+    const ring = b.group.children.find((c) => c.visible)!;
+    expect(ring.position.x).toBeCloseTo(2);
+    b.spawn('read');
+    const atCore = b.group.children.filter((c) => c.visible).find((c) => c !== ring)!;
+    expect(atCore.position.length()).toBe(0);
+  });
+
   it('disposes the shared geometry and the materials, and empties the group', () => {
     const b = createBursts(colors, new THREE.Vector3());
     b.spawn('read');

@@ -1,0 +1,30 @@
+.inspector__head { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 2px var(--space-4); padding: var(--space-4); }
+.inspector__head h2 { grid-column: 1; margin: 0; font: 600 var(--step-1) var(--font-hud); }
+.inspector__close { grid-column: 2; grid-row: 1 / span 2; }
+.inspector__facts { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 0; padding: 0 var(--space-4); }
+/* The panel is a stack of chrome over the transcript, so each fact reads as
+   one line, its label then its value, instead of a label stacked over a
+   value: the five facts take 76px instead of 123px. */
+.inspector__facts > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-1); }
+.inspector__facts dd { margin: 0; overflow-wrap: anywhere; }
+.inspector__facts dd[data-status='failed'] { color: var(--magenta); }
+.inspector__actions { display: grid; gap: var(--space-1); padding: var(--space-1) var(--space-4); }
+/* Send sits beside the message box rather than under it, which takes a whole
+   button row out of the stack above the transcript. */
+.inspector__message { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-1); }
+.inspector__message label { grid-column: 1 / -1; }
+.inspector__message [data-action='message'] { grid-column: 2; grid-row: 2; }
+/* A textarea takes the user agent's field colour by default, which read as
+   an olive block inside the glass panel. It takes the deck's surface. It
+   starts at one row and grows with its text where field-sizing is supported;
+   elsewhere one row scrolls. */
+.inspector__message textarea { grid-column: 1; grid-row: 2; background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-prose); resize: none; field-sizing: content; min-block-size: 2.75rem; max-block-size: 8rem; }
+/* The result line is a live region that is empty most of the time. It keeps
+   its place in the accessibility tree while taking no room in the stack:
+   display: none would stop it announcing anything at all. */
+.inspector__notice:empty { block-size: 0; margin: 0; padding: 0; overflow: hidden; }
+.inspector__error { color: var(--magenta); margin: 0; }
+.inspector__gone { margin: 0; padding: 0 var(--space-4) var(--space-4); }
+/* The panel is a stack with a fixed height: the transcript takes what the
+   chrome above it leaves, so its own padding gives some of that back. */
+.panel--inspector .log { flex: 1; min-block-size: 0; padding-block: 8px; }

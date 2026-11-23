@@ -43,6 +43,38 @@ describe('Markdown', () => {
     const href = root.querySelector('a')?.getAttribute('href') ?? '';
     expect(href.toLowerCase()).not.toContain('javascript:');
   });
+  it('turns a remote image into a link', () => {
+    const root = renderText('![chart](https://example.com/c.png)');
+    expect(root.querySelector('img')).toBeNull();
+    const a = root.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('https://example.com/c.png');
+    expect(a.textContent).toBe('Image: chart');
+  });
+  it('forbids every element that can carry a remote image', () => {
+    const root = renderText(
+      '<img srcset="https://e/x.png 1x">'
+      + '<picture><source srcset="https://e/x.png"></picture>'
+      + '<svg><image href="https://e/x.png"></image></svg>',
+    );
+    expect(root.querySelector('source')).toBeNull();
+    expect(root.querySelector('picture')).toBeNull();
+    expect(root.querySelector('image')).toBeNull();
+    expect(root.querySelector('[srcset]')).toBeNull();
+    expect(root.innerHTML).not.toContain('https://e/');
+  });
+  it('links an image source only when it is http or https', () => {
+    const https = renderText('![x](https://example.com/x.png)');
+    expect(https.querySelector('a')?.getAttribute('href')).toBe('https://example.com/x.png');
+    expect(https.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
+    const ftp = renderText('![x](ftp://example.com/x.png)');
+    expect(ftp.querySelector('a')).toBeNull();
+    const js = renderText('![x](javascript:alert(1))');
+    expect(js.querySelector('a')).toBeNull();
+    expect(js.innerHTML.toLowerCase()).not.toContain('javascript:');
+    const data = renderText('![x](data:image/png;base64,AAAA)');
+    expect(data.querySelector('a')).toBeNull();
+    expect(data.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+  });
   it('does not re-parse unchanged text on re-render', () => {
     const spy = vi.spyOn(DOMPurify, 'sanitize');
     const root = document.createElement('div');

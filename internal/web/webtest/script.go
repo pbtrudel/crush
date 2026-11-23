@@ -17,6 +17,7 @@ import (
 // request; prompts containing "question" raise a question batch.
 func Scripted(f *Fake) func(ctx context.Context, sid, prompt string, att []message.Attachment) error {
 	return func(ctx context.Context, sid, prompt string, _ []message.Attachment) error {
+		f.drainResolutions()
 		now := time.Now().Unix()
 		user := message.Message{
 			ID: f.nextID("u"), SessionID: sid, Role: message.User, CreatedAt: now, UpdatedAt: now,
@@ -78,13 +79,33 @@ func Scripted(f *Fake) func(ctx context.Context, sid, prompt string, att []messa
 				}
 				text += "\n\nYou chose " + choice + "."
 			}
+		case strings.Contains(prompt, "delegate"):
+			f.delegate()
+			text += "\n\nHanded the tokenizer to the subagent."
 		}
 		final := message.Finish{Reason: message.FinishReasonEndTurn, Time: time.Now().Unix()}
 		emit(thinking, message.TextContent{Text: text}, final)
 		f.AddMessage(asst)
-		f.Emit(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: session.Session{
-			ID: sid, Title: "Holodeck test", PromptTokens: 1200, CompletionTokens: 340, Cost: 0.0123,
-		}})
+		sess, err := f.GetSession(ctx, sid)
+		if err != nil {
+			sess = session.Session{ID: sid, Title: "Holodeck test"}
+		}
+		sess.PromptTokens, sess.CompletionTokens, sess.Cost = 1200, 340, 0.0123
+		f.AddSession(sess)
+		f.Emit(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: sess})
 		return nil
+	}
+}
+
+// drainResolutions forgets answers left over from an earlier run, so a
+// stale grant cannot resolve this run's request.
+func (f *Fake) drainResolutions() {
+	for {
+		select {
+		case <-f.decisions:
+		case <-f.answers:
+		default:
+			return
+		}
 	}
 }

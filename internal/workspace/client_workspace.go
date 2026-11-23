@@ -11,8 +11,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	internalbrowser "github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/client"
@@ -35,7 +37,7 @@ import (
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
-	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/charmbracelet/crush/internal/wire"
 )
 
 // ClientWorkspace implements the Workspace interface by delegating all
@@ -77,9 +79,14 @@ type ClientWorkspace struct {
 	herdrClient *herdr.Client
 
 	// fanMu guards fanSubs, the non-TUI event subscribers fed from the
-	// same SSE stream the TUI consumes.
-	fanMu   sync.Mutex
-	fanSubs map[chan any]struct{}
+	// same SSE stream the TUI consumes, and fanClosed, which stops new
+	// subscriptions once the workspace shuts down.
+	fanMu     sync.Mutex
+	fanSubs   map[chan any]struct{}
+	fanClosed bool
+	// fanDrops counts events dropped for slow subscribers and spaces the
+	// warnings about them.
+	fanDrops dropWarner
 
 	// respawnServer brings a server back on the client's address after the
 	// previous one died. Nil leaves the loop retrying the address.
@@ -200,7 +207,7 @@ func (w *ClientWorkspace) ListSessions(ctx context.Context) ([]session.Session, 
 }
 
 func (w *ClientWorkspace) SaveSession(ctx context.Context, sess session.Session) (session.Session, error) {
-	saved, err := w.client.SaveSession(ctx, w.workspaceID(), sessionToProto(sess))
+	saved, err := w.client.SaveSession(ctx, w.workspaceID(), wire.SessionToProto(sess))
 	if err != nil {
 		return session.Session{}, err
 	}
@@ -221,6 +228,18 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func (w *ClientWorkspace) ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error) {
+	list, err := w.client.ListChildSessions(ctx, w.workspaceID(), parentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, len(list))
+	for i, s := range list {
+		out[i] = protoToSession(s)
+	}
+	return out, nil
 }
 
 // SetCurrentSession reports the session this client is currently
@@ -633,19 +652,57 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 	var counts lsp.DiagnosticCounts
 	for _, fileDiags := range diags {
 		for _, d := range fileDiags {
-			switch d.Severity {
-			case protocol.SeverityError:
-				counts.Error++
-			case protocol.SeverityWarning:
-				counts.Warning++
-			case protocol.SeverityInformation:
-				counts.Information++
-			case protocol.SeverityHint:
-				counts.Hint++
-			}
+			countSeverity(&counts, d.Severity)
 		}
 	}
 	return counts
+}
+
+// LSPDiagnosticsByFile asks every server for its diagnostics. A server
+// that fails to answer is left out rather than failing the whole list.
+func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts {
+	out := map[string]lsp.DiagnosticCounts{}
+	states, err := w.client.GetLSPs(ctx, w.workspaceID())
+	if err != nil {
+		return out
+	}
+	for name := range states {
+		diags, err := w.client.GetLSPDiagnostics(ctx, w.workspaceID(), name)
+		if err != nil {
+			continue
+		}
+		addDiagnostics(out, diags)
+	}
+	return out
+}
+
+// -- Team --
+
+func (w *ClientWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
+	return mapTeamError(w.client.TeamSendMessage(ctx, w.workspaceID(), sessionID, member, text))
+}
+
+func (w *ClientWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
+	return mapTeamError(w.client.TeamInterrupt(ctx, w.workspaceID(), sessionID, member))
+}
+
+// mapTeamError restores the error identity the server attached to a Team
+// action failure. Errors without a wire code pass through unchanged.
+func mapTeamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *client.TeamError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	switch apiErr.Code {
+	case proto.TeamCodeDisabled:
+		return agent.ErrAgentTeamsDisabled
+	case proto.TeamCodeAgentNotInitialized:
+		return ErrAgentNotInitialized
+	}
+	return &agentteam.Error{Code: apiErr.Code, Message: apiErr.Message}
 }
 
 // -- Config (read-only) --
@@ -1326,6 +1383,11 @@ const fanBuffer = 512
 func (w *ClientWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	ch := make(chan any, fanBuffer)
 	w.fanMu.Lock()
+	if w.fanClosed {
+		w.fanMu.Unlock()
+		close(ch)
+		return ch
+	}
 	if w.fanSubs == nil {
 		w.fanSubs = make(map[chan any]struct{})
 	}
@@ -1353,8 +1415,21 @@ func (w *ClientWorkspace) broadcast(ev any) {
 		select {
 		case ch <- ev:
 		default:
-			slog.Warn("Dropped workspace event for slow subscriber", "type", fmt.Sprintf("%T", ev))
+			if total, warn := w.fanDrops.drop(time.Now()); warn {
+				slog.Warn("Dropped workspace events for a slow subscriber", "type", fmt.Sprintf("%T", ev), "dropped_total", total)
+			}
 		}
+	}
+}
+
+// closeFan closes every non-TUI subscription and refuses new ones.
+func (w *ClientWorkspace) closeFan() {
+	w.fanMu.Lock()
+	defer w.fanMu.Unlock()
+	w.fanClosed = true
+	for ch := range w.fanSubs {
+		delete(w.fanSubs, ch)
+		close(ch)
 	}
 }
 
@@ -1383,12 +1458,7 @@ const shutdownDrainTimeout = 5 * time.Second
 var shutdownRetireTimeout = 5 * time.Second
 
 func (w *ClientWorkspace) Shutdown() {
-	w.fanMu.Lock()
-	for ch := range w.fanSubs {
-		delete(w.fanSubs, ch)
-		close(ch)
-	}
-	w.fanMu.Unlock()
+	w.closeFan()
 
 	// Stop the reconnect/recovery loop first, then wait for it: cancelling
 	// alone does not unwind a workspace recovery that is already in
@@ -1815,24 +1885,6 @@ func protoToFiles(files []proto.File) []history.File {
 	return out
 }
 
-func sessionToProto(s session.Session) proto.Session {
-	return proto.Session{
-		ID:                  s.ID,
-		ParentSessionID:     s.ParentSessionID,
-		Title:               s.Title,
-		SummaryMessageID:    s.SummaryMessageID,
-		SummaryCutMessageID: s.SummaryCutMessageID,
-		MessageCount:        s.MessageCount,
-		PromptTokens:        s.PromptTokens,
-		CompletionTokens:    s.CompletionTokens,
-		Cost:                s.Cost,
-		Todos:               todosToProto(s.Todos),
-		Channel:             s.Channel,
-		CreatedAt:           s.CreatedAt,
-		UpdatedAt:           s.UpdatedAt,
-	}
-}
-
 // protoToSkillStates reconstructs internal skill state slices from
 // their wire representation. Non-empty Error strings are turned into
 // synthetic error values; the TUI never type-asserts on Err.
@@ -1851,21 +1903,6 @@ func protoToSkillStates(in []proto.SkillState) []*skills.SkillState {
 			state.Err = errors.New(s.Error)
 		}
 		out[i] = state
-	}
-	return out
-}
-
-func todosToProto(todos []session.Todo) []proto.Todo {
-	if len(todos) == 0 {
-		return nil
-	}
-	out := make([]proto.Todo, len(todos))
-	for i, t := range todos {
-		out[i] = proto.Todo{
-			Content:    t.Content,
-			Status:     string(t.Status),
-			ActiveForm: t.ActiveForm,
-		}
 	}
 	return out
 }

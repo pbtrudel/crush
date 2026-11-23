@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
-import type { Frame, PermissionRequest, QuestionRequest, Session } from '../api/types';
+import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent } from '../api/types';
 import { effectsLevel } from './effects';
 import { adoptSession, initialState } from './reducer';
-import { actions, dispatch, handleFrames, state } from './store';
+import { actions, boot, dispatch, handleFrames, state } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
+
+vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
 
 const fx = fixtures as unknown as Record<string, Frame>;
 
@@ -106,6 +108,33 @@ describe('actions.answer', () => {
     await expect(actions.answer('b1', [])).resolves.toBeNull();
     expect(state.value.question).toBeNull();
     expect(state.value.toasts.map((t) => t.text)).toContain('Already answered in the terminal');
+  });
+
+  it('a failed answer still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'answer').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.answer('b1', [])).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('b1');
+    handleFrames([{ seq: 30, type: 'question_batch_notification', payload: { type: 'updated', payload: { batch_id: 'b1', session_id: 's1' } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Question answered in the terminal');
+  });
+
+  it('a failed skip still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'cancelQuestion').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.cancelQuestion('b1')).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('b1');
+    handleFrames([{ seq: 31, type: 'question_batch_notification', payload: { type: 'updated', payload: { batch_id: 'b1', session_id: 's1' } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Question answered in the terminal');
+  });
+
+  it('a failed grant still toasts when the terminal answers later', async () => {
+    seed();
+    vi.spyOn(api, 'grant').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
+    await expect(actions.grant('p1', 'allow')).resolves.toBe('gateway on fire');
+    expect(state.value.answered).not.toContain('p1');
+    handleFrames([{ seq: 32, type: 'permission_notification', payload: { type: 'updated', payload: { tool_call_id: 'tc1', cancelled: false } } }]);
+    expect(state.value.toasts.map((t) => t.text)).toContain('Permission answered in the terminal');
   });
 });
 
@@ -277,5 +306,80 @@ describe('actions.effectsReduced', () => {
     expect(toast.text).toBe('Reduced effects to keep things smooth');
     expect(toast.action).toBe('restore-effects');
     effectsLevel.value = 0;
+  });
+});
+
+describe('M2 actions', () => {
+  it('inspect loads the transcript and the session of a child agent', async () => {
+    seed();
+    const msgs = [(fx.message_child.payload as WireEvent<Message>).payload];
+    vi.spyOn(api, 'messages').mockResolvedValue(msgs);
+    vi.spyOn(api, 'session').mockResolvedValue({ id: 'sub-1', title: 'Map the parser' } as Session);
+    await actions.inspect('sub-1');
+    expect(state.value.inspected).toMatchObject({ sessionId: 'sub-1', loading: false });
+    expect(state.value.inspected?.messages).toHaveLength(1);
+    expect(state.value.inspected?.session?.title).toBe('Map the parser');
+  });
+
+  it('a failed transcript load toasts and stops loading', async () => {
+    seed();
+    vi.spyOn(api, 'messages').mockRejectedValue(new ApiError(404, 'unknown_session', 'no such session'));
+    vi.spyOn(api, 'session').mockRejectedValue(new ApiError(404, 'unknown_session', 'no such session'));
+    await actions.inspect('sub-1');
+    expect(state.value.inspected?.loading).toBe(false);
+    expect(state.value.toasts.at(-1)?.text).toBe('Could not load the agent: no such session');
+  });
+
+  it('refreshes the file list once after a burst of file frames', async () => {
+    vi.useFakeTimers();
+    try {
+      seed();
+      const files = vi.spyOn(api, 'files').mockResolvedValue([]);
+      handleFrames([fx.file, fx.file, fx.file]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(1);
+      expect(files).toHaveBeenCalledWith('s1');
+      expect(state.value.filesStale).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('messages a teammate from the followed session', async () => {
+    seed();
+    const post = vi.spyOn(api, 'teamMessage').mockResolvedValue(undefined);
+    await expect(actions.messageTeammate('alice', 'rebase first')).resolves.toBeNull();
+    expect(post).toHaveBeenCalledWith('alice', 's1', 'rebase first');
+  });
+
+  it('returns the gateway message when an interrupt is refused', async () => {
+    seed();
+    vi.spyOn(api, 'teamInterrupt').mockRejectedValue(new ApiError(409, 'teams_disabled', 'Agent Teams is not enabled'));
+    await expect(actions.interruptTeammate('alice')).resolves.toBe('Agent Teams is not enabled');
+  });
+});
+
+describe('stream and boot hardening', () => {
+  it('reloads a followed session as a baseline, not as new activity', async () => {
+    seed();
+    telemetry.value = emptyTelemetry();
+    vi.spyOn(api, 'snapshot').mockResolvedValue({
+      ...(fx.snapshot.payload as Snapshot), current_session_id: 's2',
+    });
+    handleFrames([{ seq: 20, type: 'session_follow', payload: { session_id: 's2' } }]);
+    await vi.waitFor(() => expect(state.value.messages.length).toBeGreaterThan(0));
+    expect(telemetry.value.tools).toEqual([]);
+  });
+
+  it('keeps the query string when it scrubs the token', async () => {
+    history.replaceState(null, '', '/?debug=1#t=abc');
+    vi.spyOn(api, 'auth').mockResolvedValue(undefined);
+    const replace = vi.spyOn(history, 'replaceState');
+    try {
+      await boot();
+      expect(replace).toHaveBeenCalledWith(null, '', '/?debug=1');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
   });
 });

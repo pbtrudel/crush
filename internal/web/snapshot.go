@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
@@ -41,6 +42,7 @@ type Snapshot struct {
 	CurrentSessionID string                `json:"current_session_id"`
 	Session          json.RawMessage       `json:"session,omitempty"`
 	Messages         []json.RawMessage     `json:"messages"`
+	Files            []FileSummary         `json:"files"`
 	Permissions      []json.RawMessage     `json:"permissions"`
 	Questions        []json.RawMessage     `json:"questions,omitempty"`
 	PermissionMode   string                `json:"permission_mode"`
@@ -50,6 +52,8 @@ type Snapshot struct {
 	Queued           []string              `json:"queued"`
 	LSP              map[string]ServerInfo `json:"lsp"`
 	MCP              map[string]ServerInfo `json:"mcp"`
+	Team             TeamState             `json:"team"`
+	AgentRuns        []agentrun.Run        `json:"agent_runs"`
 }
 
 func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot {
@@ -58,6 +62,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		WorkingDir:       g.ws.WorkingDir(),
 		CurrentSessionID: sessionID,
 		Messages:         []json.RawMessage{},
+		Files:            []FileSummary{},
 		Permissions:      []json.RawMessage{},
 		Queued:           []string{},
 		LSP:              map[string]ServerInfo{},
@@ -66,6 +71,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		InputMode:        g.InputMode(),
 		Model:            modelInfo(g),
 	}
+	s.Team, s.AgentRuns = g.team.current()
 	if branch, err := g.ws.GitBranch(ctx); err == nil {
 		s.Branch = branch
 	}
@@ -97,6 +103,11 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 	}
 	if msgs, err := g.ws.ListMessages(ctx, sessionID); err == nil {
 		s.Messages = entities(msgs)
+	}
+	if files, err := g.fileSummaries(ctx, sessionID); err == nil {
+		s.Files = files
+	} else {
+		slog.Debug("Web snapshot could not list edited files", "session_id", sessionID, "error", err)
 	}
 	s.Busy = g.ws.AgentIsSessionBusy(sessionID)
 	if q := g.ws.AgentQueuedPromptsList(sessionID); q != nil {

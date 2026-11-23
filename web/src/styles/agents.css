@@ -1,0 +1,102 @@
+.agent-list {
+  position: absolute; inset-block-start: var(--space-4); inset-inline-start: var(--space-4);
+  margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+  pointer-events: auto;
+  /* A long agent name would widen its option and reach the inspector's half
+     of the stage, so the list keeps a fixed column and truncates the name
+     instead. The full text stays in the DOM for assistive technology. */
+  max-inline-size: 14rem;
+  /* A tag may project over the list; the list is the accessible path, so it
+     wins the click there. Both stay under the HUD at 20. */
+  z-index: 6;
+}
+.agent-list li {
+  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 500 var(--step--1) var(--font-hud);
+  cursor: pointer;
+}
+.agent-list__name { flex: 1 1 auto; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-list li[data-status='running'] .agent-list__glyph { color: var(--cyan); }
+.agent-list li[data-status='attention'] { border-color: var(--magenta); }
+.agent-list li[data-status='attention'] .agent-list__glyph { color: var(--magenta); }
+.agent-list li[aria-selected='true'] { border-color: var(--cyan); box-shadow: var(--glow-cyan); }
+.agent-list li[data-kind='subagent'] .agent-list__glyph { color: var(--violet); }
+.agent-list li[data-kind='teammate'] .agent-list__glyph { color: var(--cyan); }
+.agent-list li[data-status='inactive'], .agent-list li[data-status='done'] { opacity: 0.7; }
+.agent-list li[data-status='failed'] { border-color: var(--magenta); }
+.agent-list__status { margin-inline-start: auto; flex: 0 0 auto; }
+/* The stage holds the list beside the inspector from 1312px up, or from
+   1632px up once the drawer's third column takes its share. Narrower than
+   that, the list becomes one row at the stage's top, leaves the handle its
+   corner, and the panel starts under it. The row is one option tall, so the
+   panel's offset is the stage's own inset twice plus 2.25rem. A row that
+   outgrows the stage scrolls without a bar, which keeps that height fixed.
+   Both widths derive from the column maxima in shell.css (.holodeck__grid,
+   with and without data-drawer='open'); change either and re-derive these. */
+@media (min-width: 1024px) and (max-width: 1311px) {
+  /* Covers every width with the drawer closed, and the open drawer below
+     1312px (the overlay pair below 1280px, the triple above it). */
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list {
+    display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  /* A row option keeps the list's 14rem cap: an option wider than the stage
+     could never be scrolled into view. */
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector {
+    margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+    /* The row leaves the panel less than its chrome and a readable
+       transcript need, so it scrolls as a whole instead of crushing the
+       transcript, and the transcript keeps a floor of its own: eight rem
+       shows several messages, and the rest is a scroll away. */
+    overflow-y: auto;
+  }
+  .holodeck__grid:has(.panel--inspector:not([hidden])) .panel--inspector .log {
+    min-block-size: 8rem;
+  }
+}
+@media (min-width: 1312px) and (max-width: 1631px) {
+  /* shell.css: 24rem log, 1fr stage, 28rem drawer, drawer open. */
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list {
+    display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .agent-list li { flex: 0 0 auto; max-inline-size: 14rem; }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector {
+    margin-block-start: calc(2 * var(--space-4) + 2.25rem);
+    /* The open drawer narrows the stage back into the row band's shape, so
+       the panel scrolls here for the same reason. */
+    overflow-y: auto;
+  }
+  .holodeck__grid[data-drawer='open']:has(.panel--inspector:not([hidden])) .panel--inspector .log {
+    min-block-size: 8rem;
+  }
+}
+.cs-node { cursor: pointer; pointer-events: auto; }
+.cs-node__hex { fill: var(--void-deep); stroke: var(--cyan); stroke-width: 1.5; }
+.cs-node[data-kind='subagent'] .cs-node__hex { stroke: var(--violet); }
+.cs-node[data-status='inactive'] .cs-node__hex, .cs-node[data-status='done'] .cs-node__hex { opacity: 0.4; }
+.cs-node[data-status='failed'] .cs-node__hex { stroke: var(--magenta); }
+.cs-node[data-selected='true'] .cs-node__hex { stroke-width: 3; }
+.cs-node__icon { fill: var(--magenta); font: 700 10px var(--font-hud); text-anchor: middle; }
+.cs-filament { stroke: var(--cyan); stroke-opacity: 0.35; }
+.cs-node[data-kind='subagent'] .cs-filament { stroke: var(--violet); }
+
+/* The 3D tags are DOM labels the scene moves with a transform written
+   through the CSSOM. The layer covers the viewport but takes no input; each
+   tag does, so a click reaches the agent instead of the scene. */
+.agent-tags { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+.agent-tag {
+  position: absolute; inset-block-start: 0; inset-inline-start: 0;
+  display: grid; gap: 2px; padding: 4px 8px; pointer-events: auto; cursor: pointer;
+  font: 500 var(--step--1) var(--font-hud); white-space: nowrap;
+}
+/* .holo sets position: relative for its brackets, so the tag needs the
+   compound selector to stay on the scene's coordinates. */
+.agent-tag.holo { position: absolute; }
+.agent-tag[data-visible='false'] { opacity: 0; pointer-events: none; }
+.agent-tag[data-kind='subagent'] { --bracket: var(--violet); }
+.agent-tag[data-status='failed'] { --bracket: var(--magenta); }
+.agent-tag[data-selected='true'] { filter: brightness(1.4); }
+.agent-tag__status { color: var(--text-muted); font-size: 0.85em; }

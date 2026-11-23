@@ -115,3 +115,9 @@ WHERE id = ?;
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
+
+-- name: ListChildSessions :many
+SELECT *
+FROM sessions
+WHERE parent_session_id = ?
+ORDER BY created_at ASC;

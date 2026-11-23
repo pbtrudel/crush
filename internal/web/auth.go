@@ -32,10 +32,15 @@ func (g *Gateway) hostAllowed(host string) bool {
 	return host == "127.0.0.1:"+port || host == "localhost:"+port
 }
 
+// originAllowed checks Origin. Browsers send it on every request that can
+// change state (any fetch that is not a GET or HEAD, and the WebSocket
+// upgrade), so a state-changing request without one did not come from the
+// tab and is refused. Reads without an Origin stay allowed: SameSite=Strict
+// and the Host guard already cover them.
 func (g *Gateway) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		return r.Method == http.MethodGet || r.Method == http.MethodHead
 	}
 	u, err := url.Parse(origin)
 	if err != nil {
@@ -119,8 +124,12 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, apiError{Error: msg, Code: code})
 }
 
+// writeJSON answers v as JSON. The encoder leaves <, > and & alone: escaping
+// them triples their size, which matters on a diff already near the cap.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
 }

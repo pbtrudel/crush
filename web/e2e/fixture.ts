@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
+import { redact, stderrBuffer } from './stderr';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -13,10 +14,6 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const LAUNCH_LINE = /^http:\/\/127\.0\.0\.1:\d+\/#t=\S+$/;
 const LAUNCH_TIMEOUT_MS = 60_000;
 const EXIT_TIMEOUT_MS = 5_000;
-
-function redact(text: string): string {
-  return text.replace(/#t=\S+/g, '#t=<redacted>').trim();
-}
 
 // waitForLaunch resolves with the first stdout line webfake prints and
 // rejects when the process goes away before printing one.
@@ -100,7 +97,7 @@ export interface Gateway {
   origin: string;
 }
 
-async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<void> {
+async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
   // `go run` does not forward SIGTERM to the program it starts, which
   // would orphan webfake. Build once and run the binary directly.
   const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
@@ -110,12 +107,10 @@ async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<
     execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, stdio: 'inherit' });
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
-    proc = spawn(bin, [], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderrText = '';
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      stderrText = (stderrText + chunk.toString()).slice(-4096);
-    });
-    const launch = await waitForLaunch(proc, () => stderrText);
+    proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stderr = stderrBuffer();
+    proc.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk.toString()));
+    const launch = await waitForLaunch(proc, () => stderr.text());
     await use({ launch, origin: launch.split('/#')[0] });
   } finally {
     if (proc) await stop(proc);
@@ -124,14 +119,21 @@ async function launchGateway(use: (gateway: Gateway) => Promise<void>): Promise<
 }
 
 export const test = base.extend<{}, { gateway: Gateway }>({
-  gateway: [async ({}, use) => launchGateway(use), { scope: 'worker', timeout: 180_000 }],
+  gateway: [async ({}, use) => launchGateway({}, use), { scope: 'worker', timeout: 180_000 }],
 });
 
 // Visual tests get their own webfake: the worker's shared session keeps every
 // message an earlier test sent, and the log and token counts in a screenshot
 // must not depend on which tests ran first.
 export const visualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway(use),
+  gateway: async ({}, use) => launchGateway({ WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+});
+
+// A test that writes history (an edited file gets a new version) gets its own
+// webfake too: the worker's shared session carries every version, and the
+// smoke specs assert on the seeded three.
+export const freshTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({}, use),
 });
 
 export { expect } from '@playwright/test';

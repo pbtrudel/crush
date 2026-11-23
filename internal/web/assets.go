@@ -31,6 +31,12 @@ func assetHandler(assets fs.FS) http.Handler {
 			case err != nil && !strings.HasPrefix(r.URL.Path, "/assets/"):
 				// Unknown paths render the app, which routes them.
 				r.URL.Path = "/"
+			case err != nil:
+				// A missing hashed asset must not carry the year-long
+				// cache header: a stale tab would keep asking for it.
+				w.Header().Set("Cache-Control", "no-store")
+				http.NotFound(w, r)
+				return
 			case err == nil && info.IsDir():
 				http.NotFound(w, r)
 				return

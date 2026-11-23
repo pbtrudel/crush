@@ -31,6 +31,16 @@ function freeText(): QuestionRequest {
   return batch({ questions: [{ id: 'q1', type: 'free_text', question: 'Notes?' }] });
 }
 
+function twoQuestions(): QuestionRequest {
+  return {
+    id: 'b2', session_id: 's1', tool_call_id: 'tc2',
+    questions: [
+      { id: 'q1', type: 'yes_no', label: 'Q1', question: 'Ship it?' },
+      { id: 'q2', type: 'multi_choice', label: 'Q2', question: 'Which?', choices: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }] },
+    ],
+  };
+}
+
 function seed(patch: Partial<typeof state.value> = {}) {
   state.value = { ...initialState(), conn: 'live', sessionId: 's1', ...patch };
 }
@@ -209,6 +219,59 @@ describe('Interrupt', () => {
     await flush();
     expect(answer).not.toHaveBeenCalled();
     expect(errorBox()!.textContent).toBe('Answer "Theme?" before sending.');
+  });
+
+  it('does not wrap the dialogs in an assertive live region', async () => {
+    seed({ permissions: [permission()] });
+    await mount();
+    expect(root.querySelector('.interrupt-layer')!.hasAttribute('aria-live')).toBe(false);
+  });
+
+  it('moves to the next tab instead of submitting on Enter in a multi-question batch', async () => {
+    const answer = vi.spyOn(actions, 'answer').mockResolvedValue(null);
+    seed({ question: twoQuestions() });
+    await mount();
+    await act(() => { root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    expect(answer).not.toHaveBeenCalled();
+    expect(root.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('Q2');
+  });
+
+  it('sends yes_no and multi_choice answers in the wire shape', async () => {
+    const answer = vi.spyOn(actions, 'answer').mockResolvedValue(null);
+    seed({ question: twoQuestions() });
+    await mount();
+    await act(() => { root.querySelectorAll<HTMLInputElement>('input[type="radio"]')[0].click(); });
+    await act(() => { root.querySelector<HTMLButtonElement>('.interrupt__actions .btn--primary')!.click(); });
+    // Both boxes are checked inside one act: a second answer that lands
+    // before the re-render still has to keep the first one.
+    const boxes = root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    await act(() => {
+      boxes[0].click();
+      boxes[2].click();
+    });
+    expect([boxes[0].checked, boxes[2].checked]).toEqual([true, true]);
+    await act(() => { root.querySelector<HTMLButtonElement>('.interrupt__actions .btn--primary')!.click(); });
+    await act(async () => { root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
+    expect(answer).toHaveBeenCalledWith('b2', [
+      expect.objectContaining({ question_id: 'q1', yes: true }),
+      expect.objectContaining({ question_id: 'q2', selected_ids: ['a', 'c'] }),
+    ]);
+  });
+
+  it('a late cancel of an old batch does not unlock the next batch', async () => {
+    let finishCancel!: (v: string | null) => void;
+    vi.spyOn(actions, 'cancelQuestion').mockImplementation(() => new Promise((r) => { finishCancel = r; }));
+    const answer = vi.spyOn(actions, 'answer').mockImplementation(() => new Promise(() => {}));
+    seed({ question: batch() });
+    await mount();
+    await act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await act(() => { state.value = { ...state.value, question: { ...freeText(), id: 'b9' } }; });
+    const text = root.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(() => { text.value = 'notes'; text.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(() => { root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
+    await act(async () => { finishCancel(null); });
+    await act(() => { root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
+    expect(answer).toHaveBeenCalledTimes(1);
   });
 
   it('cancels once on Escape and ignores decision shortcuts in the form', async () => {

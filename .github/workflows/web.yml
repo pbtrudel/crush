@@ -37,6 +37,24 @@ jobs:
         run: |
           npm --prefix web run build
           git diff --exit-code -- internal/web/dist
+          stray=$(git status --porcelain --untracked-files=all -- internal/web/dist)
+          if [ -n "$stray" ]; then
+            echo "$stray"
+            echo "internal/web/dist has files the commit does not carry"
+            exit 1
+          fi
       - run: go test ./internal/web/... ./internal/wire/...
       - run: npx playwright install --with-deps chromium && npm run e2e
         working-directory: web
+      # The screenshot comparison is a diff against a baseline, so a failure
+      # without the actual/expected/diff images tells nobody why. Upload what
+      # Playwright wrote: traces and screenshots land in test-results, and the
+      # HTML report when the reporter writes one.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: playwright-results
+          path: |
+            web/test-results
+            web/playwright-report
+          if-no-files-found: ignore

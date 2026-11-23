@@ -136,4 +136,12 @@ describe('SceneLayer', () => {
     });
     expect(mount.burst.mock.calls.map((c) => c[0])).toEqual(['run', 'network']);
   });
+
+  it('bursts toward the agent that started a call, never for calls it saw at mount', async () => {
+    state.value = { ...initialState(), sessionId: 's1', activity: { 'sub-1': { callId: 'c0', tool: 'grep' } } };
+    await mountLayer();
+    expect(mount.burst).not.toHaveBeenCalled();
+    await act(() => { state.value = { ...state.value, activity: { 'sub-1': { callId: 'c1', tool: 'edit' } } }; });
+    expect(mount.burst).toHaveBeenCalledWith('write', 'sub-1');
+  });
 });

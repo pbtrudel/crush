@@ -24,6 +24,13 @@ export function Hud() {
   const canFly = cinematicAllowed();
   const root = useRef<HTMLElement>(null);
   const link = s.conn === 'live' ? 'Linked' : s.conn === 'reconnecting' ? 'Reconnecting' : s.conn === 'ended' ? 'Ended' : 'Linking';
+  // The short word is all the strip has room for; a lost or ended link
+  // carries a sentence the live region reads instead.
+  const linkDetail = s.conn === 'reconnecting'
+    ? 'Signal lost. Reconnecting to crush.'
+    : s.conn === 'ended'
+      ? 'Session ended. The log stays readable. Start crush with --web or run /web to link a new tab.'
+      : '';
 
   // shell.css places the toasts from --hud-h, so the strip publishes its own
   // height instead of a hard-coded offset.
@@ -127,9 +134,12 @@ export function Hud() {
             onClick={() => setCinematic(!cinematic.value)}
           >Cinematic</button>
         )}
+        {/* The one polite live region for the connection: the banner below
+            repeats it for sighted users and stays out of the a11y tree. */}
         <span class="hud__link" data-conn={s.conn} role="status">
           <svg aria-hidden="true" viewBox="0 0 12 12" width="12" height="12"><polygon points="6,1 11,3.5 11,8.5 6,11 1,8.5 1,3.5" /></svg>
-          {link}
+          <span aria-hidden="true">{link}</span>
+          <span class="visually-hidden">{linkDetail || link}</span>
         </span>
       </div>
     </header>

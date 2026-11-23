@@ -31,7 +31,9 @@ func assistantAt(seconds int64, text string) message.Message {
 // callAt builds an assistant message carrying one tool call.
 func callAt(seconds int64, id, name, input string) message.Message {
 	msg := message.Message{Role: message.Assistant, CreatedAt: seconds}
-	msg.AddToolCall(message.ToolCall{ID: id, Name: name, Input: input, Finished: true})
+	// A fixed start makes two builds of the same history byte-identical;
+	// AddToolCall would otherwise stamp the wall clock at each build.
+	msg.AddToolCall(message.ToolCall{ID: id, Name: name, Input: input, Finished: true, StartedAtMs: seconds * 1_000})
 	return msg
 }
 

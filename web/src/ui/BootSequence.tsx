@@ -13,7 +13,7 @@ export function BootSequence({ done }: { done: boolean }) {
           <span />
         </div>
       )}
-      <p class="hud-label" role="status">{done ? 'Link established' : 'Linking to the crush session'}</p>
+      <p class="hud-label">{done ? 'Link established' : 'Linking to the crush session'}</p>
     </div>
   );
 }

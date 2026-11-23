@@ -1,8 +1,14 @@
 import { useEffect, useRef } from 'preact/hooks';
-import { state } from '../../state/store';
+import { deriveAgents } from '../../state/agents';
+import { actions, state } from '../../state/store';
+import { drawerOpen, toggleDrawer } from '../../state/drawer';
 import { contextFill, needsAttention } from '../../state/reducer';
 import { use3D } from '../../state/effects';
 import { stageRect } from '../../state/layout';
+import { TaskBoard } from '../team/TaskBoard';
+import { TodoOrbit } from '../team/TodoOrbit';
+import { AgentList } from './AgentList';
+import { AgentTags } from './AgentTags';
 import { ConstellationSvg } from './ConstellationSvg';
 
 export function Stage() {
@@ -11,6 +17,10 @@ export function Stage() {
   const attention = needsAttention(s);
   const threeD = use3D();
   const root = useRef<HTMLDivElement>(null);
+  const agents = deriveAgents(s.sessionId, s.team, s.runs);
+  const nodes = agents.map((a) => ({
+    id: a.sessionId, kind: a.kind as 'teammate' | 'subagent', status: a.status, name: a.name,
+  }));
 
   // The projector is centered on this box. jsdom has no ResizeObserver, so
   // there the window listener alone publishes it.
@@ -32,17 +42,19 @@ export function Stage() {
     };
   }, []);
 
-  const status = attention ? 'Waiting for you' : s.busy ? 'Working' : 'Idle';
   return (
     <div class="stage__inner" ref={root}>
-      {!threeD && <ConstellationSvg fill={fill} busy={s.busy} attention={attention} />}
-      <ul class="agent-list" aria-label="Agents">
-        <li tabIndex={0} data-status={attention ? 'attention' : s.busy ? 'running' : 'idle'}>
-          <span class="agent-list__glyph" aria-hidden="true">⬡</span>
-          <span>Coder</span>
-          <span class="hud-label">{status}</span>
-        </li>
-      </ul>
+      {!threeD && (
+        <ConstellationSvg fill={fill} busy={s.busy} attention={attention} agents={nodes}
+          selected={s.inspected?.sessionId ?? null} onSelect={(id) => void actions.inspect(id)} />
+      )}
+      {threeD && <AgentTags agents={agents} selected={s.inspected?.sessionId ?? null} />}
+      <AgentList />
+      <TodoOrbit />
+      <TaskBoard />
+      <button type="button" class="drawer-handle glass" aria-expanded={drawerOpen.value} aria-controls="file-drawer" onClick={toggleDrawer}>
+        Files <span class="chip">{s.files.length}</span>
+      </button>
     </div>
   );
 }

@@ -24,15 +24,37 @@ func main() {
 	if wd, err := os.Getwd(); err == nil {
 		fake.WorkDir = wd
 	}
+	clock := time.Now()
+	if v := os.Getenv("WEBFAKE_CLOCK"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_CLOCK:", err)
+			os.Exit(1)
+		}
+		clock = t
+	}
+	teamDir, err := os.MkdirTemp("", "webfake-team-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "webfake:", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(teamDir)
+	if err := webtest.SeedHolodeck(fake, teamDir, clock); err != nil {
+		fmt.Fprintln(os.Stderr, "webfake:", err)
+		os.RemoveAll(teamDir)
+		os.Exit(1)
+	}
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
 	g, err := web.Start(ctx, web.Options{
 		Workspace:            fake,
+		AgentTeamsDir:        teamDir,
 		OnInputModeRequested: func(plan bool) { modeRequests <- plan },
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "webfake:", err)
+		os.RemoveAll(teamDir)
 		os.Exit(1)
 	}
 	go func() {
@@ -48,5 +70,7 @@ func main() {
 	<-ctx.Done()
 	sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = g.Shutdown(sctx)
+	if err := g.Shutdown(sctx); err != nil {
+		fmt.Fprintln(os.Stderr, "webfake: shutdown:", err)
+	}
 }

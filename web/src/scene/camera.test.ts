@@ -20,6 +20,10 @@ describe('parallax', () => {
     expect(parallax({ x: 5, y: 0 }, 'full').yaw).toBeCloseTo(max);
   });
 
+  it('treats a non-finite pointer as centered', () => {
+    expect(parallax({ x: Number.NaN, y: Number.POSITIVE_INFINITY }, 'full')).toEqual({ yaw: 0, pitch: 0 });
+  });
+
   it('is still in reduced and off motion', () => {
     expect(parallax({ x: 1, y: 1 }, 'reduced')).toEqual({ yaw: 0, pitch: 0 });
     expect(parallax({ x: 1, y: 1 }, 'off')).toEqual({ yaw: 0, pitch: 0 });

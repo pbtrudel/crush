@@ -3,12 +3,19 @@
 package webtest
 
 import (
+	"cmp"
 	"context"
-	"errors"
+	"database/sql"
+	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -17,8 +24,9 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
-// ErrSessionNotFound is returned by GetSession for unknown IDs.
-var ErrSessionNotFound = errors.New("session not found")
+// ErrSessionNotFound is returned by GetSession for unknown IDs. It wraps
+// sql.ErrNoRows, which is what the real session service returns.
+var ErrSessionNotFound = fmt.Errorf("session not found: %w", sql.ErrNoRows)
 
 // subscriber is one SubscribeEvents channel. mu serialises Emit's send
 // against the cleanup close so an event can never race with close(ch).
@@ -39,14 +47,17 @@ type Fake struct {
 	subsMu sync.Mutex
 	subs   map[*subscriber]struct{}
 
-	mu       sync.Mutex
-	current  string
-	sessions map[string]session.Session
-	messages map[string][]message.Message
-	mode     permission.PermissionMode
-	queued   map[string][]string
-	busy     map[string]bool
-	seq      int
+	mu          sync.Mutex
+	current     string
+	sessions    map[string]session.Session
+	messages    map[string][]message.Message
+	mode        permission.PermissionMode
+	queued      map[string][]string
+	busy        map[string]bool
+	history     map[string][]history.File
+	diagnostics map[string]lsp.DiagnosticCounts
+	teamErr     error
+	seq         int
 
 	// decisions and answers carry resolutions to a running scripted
 	// agent, so a test or webfake can play the user's part.
@@ -58,8 +69,9 @@ type Fake struct {
 	WorkDir string
 	// LSP and MCP are what LSPGetStates and MCPGetStates return. Set them
 	// before the gateway starts.
-	LSP     map[string]workspace.LSPClientInfo
-	MCP     map[string]mcp.ClientInfo
+	LSP map[string]workspace.LSPClientInfo
+	MCP map[string]mcp.ClientInfo
+	// Calls is guarded by mu; read it through CallLog.
 	Calls   []string
 	Granted []string
 	Answers [][]question.Answer
@@ -72,16 +84,18 @@ type Fake struct {
 // NewFake returns a fake with one current session "s1".
 func NewFake() *Fake {
 	f := &Fake{
-		subs:      make(map[*subscriber]struct{}),
-		sessions:  map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
-		messages:  make(map[string][]message.Message),
-		queued:    make(map[string][]string),
-		busy:      make(map[string]bool),
-		current:   "s1",
-		decisions: make(chan permission.PermissionNotification, 16),
-		answers:   make(chan []question.Answer, 16),
-		WorkDir:   "/tmp/project",
-		Resolve:   true,
+		subs:        make(map[*subscriber]struct{}),
+		sessions:    map[string]session.Session{"s1": {ID: "s1", Title: "Holodeck test"}},
+		messages:    make(map[string][]message.Message),
+		queued:      make(map[string][]string),
+		busy:        make(map[string]bool),
+		history:     make(map[string][]history.File),
+		diagnostics: make(map[string]lsp.DiagnosticCounts),
+		current:     "s1",
+		decisions:   make(chan permission.PermissionNotification, 16),
+		answers:     make(chan []question.Answer, 16),
+		WorkDir:     "/tmp/project",
+		Resolve:     true,
 	}
 	return f
 }
@@ -138,6 +152,20 @@ func (f *Fake) AddMessage(m message.Message) {
 	f.mu.Unlock()
 }
 
+// AddSession stores a session, such as a child session with a parent.
+func (f *Fake) AddSession(s session.Session) {
+	f.mu.Lock()
+	f.sessions[s.ID] = s
+	f.mu.Unlock()
+}
+
+// AddHistory stores one file version for ListSessionHistory.
+func (f *Fake) AddHistory(file history.File) {
+	f.mu.Lock()
+	f.history[file.SessionID] = append(f.history[file.SessionID], file)
+	f.mu.Unlock()
+}
+
 // SubscribeEvents registers a subscriber before it returns, so no event
 // emitted after registration can be lost. The channel closes when ctx is
 // done.
@@ -152,11 +180,33 @@ func (f *Fake) SubscribeEvents(ctx context.Context) <-chan any {
 		delete(f.subs, s)
 		f.subsMu.Unlock()
 		s.mu.Lock()
-		s.closed = true
-		close(s.ch)
+		if !s.closed {
+			s.closed = true
+			close(s.ch)
+		}
 		s.mu.Unlock()
 	}()
 	return s.ch
+}
+
+// CloseSubscribers closes every SubscribeEvents channel, the way a
+// workspace that shut down does.
+func (f *Fake) CloseSubscribers() {
+	f.subsMu.Lock()
+	subs := make([]*subscriber, 0, len(f.subs))
+	for s := range f.subs {
+		subs = append(subs, s)
+		delete(f.subs, s)
+	}
+	f.subsMu.Unlock()
+	for _, s := range subs {
+		s.mu.Lock()
+		if !s.closed {
+			s.closed = true
+			close(s.ch)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (f *Fake) CurrentSessionID() string {
@@ -167,11 +217,49 @@ func (f *Fake) CurrentSessionID() string {
 
 func (f *Fake) WorkingDir() string { return f.WorkDir }
 
+// Config returns nil: the fake has no data directory, so the gateway's team
+// watcher stays off unless a test sets Options.AgentTeamsDir.
+func (f *Fake) Config() *config.Config { return nil }
+
 func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 
 func (f *Fake) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
 
 func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
+
+// SetDiagnostics sets what LSPDiagnosticsByFile returns.
+func (f *Fake) SetDiagnostics(m map[string]lsp.DiagnosticCounts) {
+	f.mu.Lock()
+	f.diagnostics = maps.Clone(m)
+	f.mu.Unlock()
+}
+
+func (f *Fake) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCounts {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.diagnostics)
+}
+
+// SetTeamErr sets the error both team calls return.
+func (f *Fake) SetTeamErr(err error) {
+	f.mu.Lock()
+	f.teamErr = err
+	f.mu.Unlock()
+}
+
+func (f *Fake) TeamSendMessage(_ context.Context, sessionID, member, text string) error {
+	f.record("TeamSendMessage:" + sessionID + ":" + member + ":" + text)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teamErr
+}
+
+func (f *Fake) TeamInterrupt(_ context.Context, sessionID, member string) error {
+	f.record("TeamInterrupt:" + sessionID + ":" + member)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teamErr
+}
 
 func (f *Fake) MCPGetStates() map[string]mcp.ClientInfo { return f.MCP }
 
@@ -221,6 +309,30 @@ func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]message.Message(nil), f.messages[id]...), nil
+}
+
+func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []session.Session
+	for _, s := range f.sessions {
+		if s.ParentSessionID == parentID {
+			out = append(out, s)
+		}
+	}
+	if out == nil {
+		out = []session.Session{}
+	}
+	slices.SortFunc(out, func(a, b session.Session) int {
+		return cmp.Or(cmp.Compare(a.CreatedAt, b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return out, nil
+}
+
+func (f *Fake) ListSessionHistory(_ context.Context, sessionID string) ([]history.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]history.File(nil), f.history[sessionID]...), nil
 }
 
 func (f *Fake) AgentRun(ctx context.Context, sessionID, prompt string, att ...message.Attachment) error {

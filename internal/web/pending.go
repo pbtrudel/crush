@@ -36,6 +36,10 @@ func (p *pending) observe(ev any) {
 		}
 		p.perms[e.Payload.ID] = e.Payload
 	case pubsub.Event[permission.PermissionNotification]:
+		// An empty tool call id would match every request that lacks one.
+		if e.Payload.ToolCallID == "" {
+			break
+		}
 		for id, req := range p.perms {
 			if req.ToolCallID == e.Payload.ToolCallID {
 				delete(p.perms, id)

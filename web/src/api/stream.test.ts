@@ -71,6 +71,37 @@ describe('connectStream', () => {
     expect(conns.at(-1)).toBe('ended');
   });
 
+  it('skips a frame that is not JSON and keeps the connection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const frames: number[] = [];
+    connectStream({ onFrames: (fs) => fs.forEach((f) => frames.push(f.seq)), onConn: () => {}, lastSeq: () => 0 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const sock = FakeSocket.last;
+    sock.onopen?.();
+    expect(() => sock.onmessage?.({ data: 'not json' })).not.toThrow();
+    sock.onmessage?.({ data: JSON.stringify({ seq: 2, type: 'web_error', payload: { error: 'x' } }) });
+    expect(frames).toEqual([2]);
+    expect(sock.closed).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('skips JSON that is not a frame and keeps the connection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const frames: number[] = [];
+    connectStream({ onFrames: (fs) => fs.forEach((f) => frames.push(f.seq)), onConn: () => {}, lastSeq: () => 0 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    const sock = FakeSocket.last;
+    sock.onopen?.();
+    expect(() => sock.onmessage?.({ data: 'null' })).not.toThrow();
+    expect(() => sock.onmessage?.({ data: '{"seq":"a"}' })).not.toThrow();
+    sock.onmessage?.({ data: JSON.stringify({ seq: 3, type: 'web_error', payload: { error: 'x' } }) });
+    expect(frames).toEqual([3]);
+    expect(sock.closed).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('returns to live after a ring resume that sends no snapshot', async () => {
     const conns: string[] = [];
     connectStream({ onFrames: () => {}, onConn: (c) => conns.push(c), lastSeq: () => 5 }, env());

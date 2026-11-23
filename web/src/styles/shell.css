@@ -2,6 +2,10 @@
   /* The stacking context the fixed scene canvas's z-index -1 lives in. */
   position: relative;
   z-index: 1;
+  /* The closed drawer waits 105% past the grid's right edge; clipping it
+     keeps that off the page's horizontal scroll. Fixed layers (the scene,
+     the boot overlay, toasts) are viewport-positioned, so they escape. */
+  overflow-x: clip;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   height: 100dvh;
@@ -63,21 +67,64 @@
 /* The banner is absent while linked, so the grid and deck are placed on
    explicit rows; auto-placement would move them up and stretch the deck. */
 .holodeck__grid {
+  position: relative;
   display: grid;
+  /* The 34rem log maxima set agents.css's 1311px breakpoint. */
   grid-template-columns: minmax(22rem, 34rem) 1fr;
+  grid-template-areas: 'log stage';
   grid-row: 3;
   gap: var(--space-4);
   min-block-size: 0;
 }
+/* The drawer takes the third column. Its maxima keep the stage wide enough
+   at 1440px for the agent list, the tags and the task board; closing it
+   removes the column and the panel slides off the right edge (drawer.css). */
+.holodeck__grid[data-drawer='open'] {
+  /* The 24rem log and 28rem drawer maxima set agents.css's 1631px
+     breakpoint; change either and the bands there need re-deriving. */
+  grid-template-columns: minmax(20rem, 24rem) minmax(14rem, 1fr) minmax(20rem, 28rem);
+  grid-template-areas: 'log stage drawer';
+}
+.panel--drawer { grid-area: drawer; }
+/* Between 1024px and 1279px a third column leaves the stage 224px wide,
+   too little for the agent list beside the handle. There the drawer slides
+   over the log column and the stage keeps its closed-layout width. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .holodeck__grid[data-drawer='open'] {
+    /* The closed pair, so agents.css needs no third band for the overlay. */
+    grid-template-columns: minmax(22rem, 34rem) 1fr;
+    grid-template-areas: 'log stage';
+  }
+  .holodeck__grid[data-drawer='open'] .panel--drawer {
+    position: absolute; inset-block: 0; inset-inline-start: 0; z-index: 3;
+    inline-size: min(34rem, 100%);
+    /* Over the log, the 0.70 glass lets the text underneath read through,
+       so the overlay takes the solid token and keeps the two-tone edge. */
+    background-image: linear-gradient(var(--surface-solid), var(--surface-solid)),
+      linear-gradient(135deg, var(--cyan), var(--violet));
+  }
+  /* The closed drawer keeps the open one's anchor: opening then only changes
+     transform and opacity, instead of jumping across the grid first. While
+     it waits off the edge it is transparent, inert and click-through. */
+  .holodeck__grid[data-drawer='closed'] .panel--drawer {
+    inset-inline-start: 0; inset-inline-end: auto; inline-size: min(34rem, 100%);
+  }
+}
+/* The tabs only exist in the narrow single-slot layout. */
+.panel-tabs { display: none; }
 .holodeck__deck { grid-row: 4; }
 .panel { min-block-size: 0; }
 /* The curve is drawn on the panel itself: a perspective on an ancestor
    would make it the containing block of the fixed scene canvas. */
-.panel--log { transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
-/* The scene shows through the stage; only the agent list takes input. */
-.stage { position: relative; min-block-size: 0; pointer-events: none; }
+.panel--log { grid-area: log; transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+/* The inspector shares the stage's grid area and sits at the end of the
+   column, so the constellation keeps the space beside it. */
+.panel--inspector { grid-area: stage; align-self: stretch; justify-self: end; inline-size: min(30rem, 100%); z-index: 2; display: flex; flex-direction: column; min-block-size: 0; overflow: hidden; }
+.panel--inspector[hidden] { display: none; }
+/* The scene shows through the stage; only the agent list and the nodes take input. */
+.stage { grid-area: stage; position: relative; min-block-size: 0; pointer-events: none; }
 .banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
-.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
+.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: color-mix(in oklch, var(--amber) 8%, transparent); }
 .banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
 /* The loading overlay is a hologram label over the live scene rather than a
    cover, so the scene's own power-up shows through. `holo` supplies the
@@ -127,8 +174,21 @@
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
 }
 @media (max-width: 1023px) {
-  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
-  .panel--log { transform: none; order: 2; }
+  /* Below 1024px the stage keeps a 220px row and the log, the inspector and
+     the drawer share one slot under it; the tabs pick which one shows. */
+  .holodeck__grid, .holodeck__grid[data-drawer='open'] {
+    grid-template-columns: 1fr; grid-template-rows: 220px 1fr; grid-template-areas: 'stage' 'panel';
+  }
+  .panel--log, .panel--inspector, .panel--drawer { grid-area: panel; transform: none; inline-size: auto; }
+  .panel-tabs { display: flex; gap: var(--space-1); }
+  .holodeck__grid:not([data-panel-tab='log']) .panel--log,
+  .holodeck__grid:not([data-panel-tab='agent']) .panel--inspector,
+  .holodeck__grid:not([data-panel-tab='files']) .panel--drawer { display: none; }
+  /* The files tab needs a real diff box in the 120px slot: the drawer
+     scrolls as a whole and the diff keeps a 240px floor. */
+  .holodeck__grid[data-panel-tab='files'] .panel--drawer { overflow-y: auto; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__list { flex: 0 0 auto; max-block-size: none; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__diff { flex: 0 0 auto; min-block-size: 240px; }
 }
 /* Below 768px everything stacks and the constellation collapses to a strip. */
 @media (max-width: 767px) {

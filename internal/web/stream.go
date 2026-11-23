@@ -21,6 +21,8 @@ const (
 	frameSnapshot  = "snapshot"
 	frameFollow    = "session_follow"
 	frameInputMode = "input_mode_changed"
+	frameTeamState = "team_state"
+	frameAgentRuns = "agent_runs"
 	frameClosing   = "gateway_closing"
 	frameError     = "web_error"
 )
@@ -43,6 +45,7 @@ type hub struct {
 	mu     sync.Mutex
 	seq    uint64
 	ring   []frame
+	start  int
 	subs   map[*conn]struct{}
 	closed bool
 }
@@ -62,11 +65,13 @@ func (h *hub) publish(typ string, raw json.RawMessage) frame {
 	defer h.mu.Unlock()
 	h.seq++
 	f := frame{Seq: h.seq, Type: typ, Payload: raw}
-	if len(h.ring) == ringSize {
-		copy(h.ring, h.ring[1:])
-		h.ring[ringSize-1] = f
-	} else {
+	// A head index instead of a shift: publishing stays O(1) under the
+	// lock however full the ring is.
+	if len(h.ring) < ringSize {
 		h.ring = append(h.ring, f)
+	} else {
+		h.ring[h.start] = f
+		h.start = (h.start + 1) % ringSize
 	}
 	for c := range h.subs {
 		select {
@@ -77,6 +82,19 @@ func (h *hub) publish(typ string, raw json.RawMessage) frame {
 		}
 	}
 	return f
+}
+
+// frames returns the ring oldest first. The caller holds no lock.
+func (h *hub) frames() []frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.orderedLocked()
+}
+
+func (h *hub) orderedLocked() []frame {
+	out := make([]frame, 0, len(h.ring))
+	out = append(out, h.ring[h.start:]...)
+	return append(out, h.ring[:h.start]...)
 }
 
 func (h *hub) publishJSON(typ string, v any) {
@@ -102,19 +120,13 @@ func (h *hub) attach(since int64) (*conn, []frame, bool, uint64) {
 	if since < 0 || uint64(since) > h.seq {
 		return c, nil, true, h.seq
 	}
-	if uint64(since) == h.seq {
-		return c, nil, false, h.seq
-	}
-	if len(h.ring) == 0 || h.ring[0].Seq > uint64(since)+1 {
+	ordered := h.orderedLocked()
+	if len(ordered) == 0 || ordered[0].Seq > uint64(since)+1 {
 		return c, nil, true, h.seq
 	}
-	var replay []frame
-	for _, f := range h.ring {
-		if f.Seq > uint64(since) {
-			replay = append(replay, f)
-		}
-	}
-	return c, replay, false, h.seq
+	// Seqs are contiguous, so the replay starts at a computed offset.
+	offset := int(uint64(since) + 1 - ordered[0].Seq)
+	return c, append([]frame(nil), ordered[offset:]...), false, h.seq
 }
 
 func (h *hub) detach(c *conn) {
@@ -191,11 +203,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // readLoop consumes client pings and cancels the connection when the
-// client goes quiet for idleTimeout.
+// client goes quiet for the idle timeout.
 func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn) {
 	defer cancel()
 	for {
-		rctx, rcancel := context.WithTimeout(ctx, idleTimeout)
+		rctx, rcancel := context.WithTimeout(ctx, g.idle)
 		_, _, err := ws.Read(rctx)
 		rcancel()
 		if err != nil {

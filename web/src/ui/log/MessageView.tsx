@@ -1,10 +1,13 @@
+import { Component } from 'preact';
 import type { Message, Part, ToolResultData } from '../../api/types';
-import { Markdown } from './Markdown';
+import { Clipped } from './Clipped';
+import { isHttpUrl, isLocalUrl, Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 
 type FinishPart = Extract<Part, { type: 'finish' }>;
+type Props = { m: Message; results: Map<string, ToolResultData> };
 
-export function MessageView({ m, results }: { m: Message; results: Map<string, ToolResultData> }) {
+function MessageViewBody({ m, results }: Props) {
   if (m.role === 'tool') return null;
   const finish = m.parts.find((p): p is FinishPart => p.type === 'finish');
   const streaming = m.role === 'assistant' && !finish;
@@ -36,14 +39,19 @@ export function MessageView({ m, results }: { m: Message; results: Map<string, T
               />
             );
           case 'image_url':
-            return <img key={i} class="msg__image" src={p.data.url} alt="Attached image" />;
+            if (isLocalUrl(p.data.url)) return <img key={i} class="msg__image" src={p.data.url} alt="Attached image" />;
+            // Only an http(s) source becomes a link: any other scheme would
+            // reach the href unfiltered.
+            return isHttpUrl(p.data.url)
+              ? <a key={i} href={p.data.url} target="_blank" rel="noopener noreferrer">Image: {p.data.url}</a>
+              : <span key={i}>Image: {p.data.url}</span>;
           case 'binary':
             return <p key={i} class="msg__attachment">Attachment: {p.data.path ?? p.data.mime_type ?? 'file'}</p>;
           case 'shell_command':
             return (
               <div key={i} class="shell">
                 <code>$ {p.data.command}</code>
-                <pre>{p.data.output}</pre>
+                <Clipped text={p.data.output} label="output" />
                 <span class="hud-label">Exit {p.data.exit_code}</span>
               </div>
             );
@@ -69,4 +77,21 @@ export function MessageView({ m, results }: { m: Message; results: Map<string, T
       {streaming && <span class="msg__cursor" aria-hidden="true" />}
     </article>
   );
+}
+
+// The log re-renders on every streamed token, and only the last message
+// changes. Upserts keep unchanged messages and results by reference, so a
+// reference check per message and per tool call is enough.
+function sameResults(m: Message, a: Props['results'], b: Props['results']): boolean {
+  for (const p of m.parts) if (p.type === 'tool_call' && a.get(p.data.id) !== b.get(p.data.id)) return false;
+  return true;
+}
+
+export class MessageView extends Component<Props> {
+  shouldComponentUpdate(next: Props) {
+    return next.m !== this.props.m || !sameResults(next.m, this.props.results, next.results);
+  }
+  render() {
+    return <MessageViewBody m={this.props.m} results={this.props.results} />;
+  }
 }

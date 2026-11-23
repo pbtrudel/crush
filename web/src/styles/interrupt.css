@@ -16,7 +16,7 @@
    blurred glass would repaint that backdrop every frame (spec 3.9). */
 .interrupt[data-danger='high']::before {
   content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
-  box-shadow: 0 0 0 1px var(--magenta), 0 0 64px oklch(0.68 0.24 330 / 0.7);
+  box-shadow: 0 0 0 1px var(--magenta), 0 0 64px color-mix(in oklch, var(--magenta) 70%, transparent);
   opacity: 0; animation: danger-pulse 1.4s ease-in-out 280ms infinite;
 }
 .interrupt__title { margin: 0; font: 600 var(--step-2)/1.2 var(--font-hud); }

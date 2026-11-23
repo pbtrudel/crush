@@ -360,7 +360,7 @@ func TestListSettledMessages_SkipsBusySessions(t *testing.T) {
 			c.mainAgent.(*sessionAgent).activeRequests.Set(sessionID, &activeCancel{cancel: func() {}})
 		},
 		"subagent": func(t *testing.T, c *coordinator, sessionID string) {
-			t.Cleanup(c.trackSubSession(sessionID))
+			t.Cleanup(c.trackSubSession(sessionID, nil))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -392,7 +392,7 @@ func TestListSettledMessages_LeavesALiveSubagentAlone(t *testing.T) {
 
 	// Marked busy the same way a dispatched run does, on the coordinator
 	// rather than on the agent instance the reader holds.
-	untrack := c.trackSubSession(child.ID)
+	untrack := c.trackSubSession(child.ID, nil)
 
 	msgs, err := c.ListSettledMessages(ctx, child.ID)
 	require.NoError(t, err)

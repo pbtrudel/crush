@@ -1,7 +1,7 @@
 .deck {
   position: relative; display: grid; gap: 8px; padding: var(--space-4);
 }
-.deck[data-busy='true'] { box-shadow: 0 0 0 1px var(--edge-strong), 0 0 32px oklch(0.82 0.14 210 / 0.28); }
+.deck[data-busy='true'] { box-shadow: 0 0 0 1px var(--edge-strong), 0 0 32px color-mix(in oklch, var(--cyan) 28%, transparent); }
 .deck__row { display: grid; grid-template-columns: 1fr auto; gap: var(--space-4); align-items: end; }
 .deck textarea {
   inline-size: 100%; min-block-size: 56px; max-block-size: 40vh; resize: vertical;

@@ -30,7 +30,7 @@ export function viewOffset(viewport: Viewport, focus: FocusRect | null): { x: nu
 
 const MAX_TILT = (2 * Math.PI) / 180;
 
-const clampAxis = (value: number) => Math.max(-1, Math.min(1, value));
+const clampAxis = (value: number) => (Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0);
 
 // parallax turns the pointer into the small head-turn the camera follows.
 // Reduced and off motion keep the camera still, so nothing drifts.

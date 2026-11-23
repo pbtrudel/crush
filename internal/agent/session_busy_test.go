@@ -95,7 +95,7 @@ func TestCoordinatorIsSessionBusy_LiveSubSession(t *testing.T) {
 
 	require.False(t, coord.IsSessionBusy("child"))
 
-	forget := coord.trackSubSession("child")
+	forget := coord.trackSubSession("child", nil)
 	require.True(t, coord.IsSessionBusy("child"),
 		"a live sub-session is busy even when no parent run is registered")
 	require.False(t, coord.IsSessionBusy("other"))
@@ -124,7 +124,7 @@ func TestCoordinatorIsSessionBusy_NeedsNoSessionService(t *testing.T) {
 	coord := newBusyTestCoordinator(main)
 	require.Nil(t, coord.sessions, "no session service wired")
 
-	forget := coord.trackSubSession("child")
+	forget := coord.trackSubSession("child", nil)
 	defer forget()
 	require.True(t, coord.IsSessionBusy("child"))
 	require.False(t, coord.IsSessionBusy("unrelated"))

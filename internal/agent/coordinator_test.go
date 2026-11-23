@@ -26,6 +26,9 @@ type mockSessionAgent struct {
 	model     Model
 	runFunc   func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
 	cancelled []string
+	// onCancel, when set, runs after Cancel records the session, letting a
+	// test model an agent that stops its own run.
+	onCancel func(sessionID string)
 	// tools records the most recent SetTools call, if any.
 	tools []fantasy.AgentTool
 	// systemPrompt records the most recent SetSystemPrompt call, if any.
@@ -63,6 +66,9 @@ func (m *mockSessionAgent) AdoptedToolOrder(string) []string {
 func (m *mockSessionAgent) SetAdoptedToolOrder(string, []string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
 	m.cancelled = append(m.cancelled, sessionID)
+	if m.onCancel != nil {
+		m.onCancel(sessionID)
+	}
 }
 func (m *mockSessionAgent) CancelAll()                                  {}
 func (m *mockSessionAgent) CancelBackgroundCompaction(string)           {}

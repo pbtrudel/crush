@@ -75,6 +75,10 @@ func (w *AppWorkspace) ParseAgentToolSessionID(sessionID string) (string, string
 	return w.app.Sessions.ParseAgentToolSessionID(sessionID)
 }
 
+func (w *AppWorkspace) ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error) {
+	return w.app.Sessions.ListChildren(ctx, parentID)
+}
+
 // SetCurrentSession reports the active session to herdr so the pane
 // can persist a resumable reference. Multi-client presence tracking
 // is irrelevant in single-client local mode, but herdr still needs
@@ -410,6 +414,47 @@ func (w *AppWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts 
 	return state.Client.GetDiagnosticCounts()
 }
 
+func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCounts {
+	out := map[string]lsp.DiagnosticCounts{}
+	for _, state := range app.GetLSPStates() {
+		if state.Client != nil {
+			addDiagnostics(out, state.Client.GetDiagnostics())
+		}
+	}
+	return out
+}
+
+// -- Team --
+
+func (w *AppWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
+	tc, err := w.teamController()
+	if err != nil {
+		return err
+	}
+	return tc.TeamSendMessage(ctx, sessionID, member, text)
+}
+
+func (w *AppWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
+	tc, err := w.teamController()
+	if err != nil {
+		return err
+	}
+	return tc.TeamInterrupt(ctx, sessionID, member)
+}
+
+// teamController returns the coordinator as a TeamController, or the
+// reason it cannot steer a team.
+func (w *AppWorkspace) teamController() (agent.TeamController, error) {
+	if w.app.AgentCoordinator == nil {
+		return nil, ErrAgentNotInitialized
+	}
+	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
+	if !ok {
+		return nil, agent.ErrAgentTeamsDisabled
+	}
+	return tc, nil
+}
+
 // -- Config (read-only) --
 
 func (w *AppWorkspace) Config() *config.Config {
@@ -651,6 +696,10 @@ func (w *AppWorkspace) Subscribe(program *tea.Program) {
 	w.app.Subscribe(program)
 }
 
+// SubscribeEvents returns the app's events for a non-TUI consumer such as
+// the web gateway. A stalled consumer blocks only this bridge; the broker
+// keeps buffering and drops for this subscriber once its buffer is full.
+// The channel closes when ctx is done or the app shuts down.
 func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	in := w.app.Events(ctx)
 	out := make(chan any, 256)
@@ -667,6 +716,7 @@ func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
 	return out
 }
 
+// CurrentSessionID returns the session the TUI last reported.
 func (w *AppWorkspace) CurrentSessionID() string {
 	return w.app.CurrentSessionID()
 }

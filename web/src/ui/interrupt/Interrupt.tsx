@@ -13,7 +13,7 @@ export function Interrupt() {
   const [first, ...rest] = s.permissions;
   const disabled = s.conn !== 'live';
   return (
-    <div class="interrupt-layer" aria-live="assertive">
+    <div class="interrupt-layer">
       {first
         ? <PermissionDialog req={first} more={rest.length} disabled={disabled} />
         : s.question && <QuestionForm req={s.question} disabled={disabled} />}
