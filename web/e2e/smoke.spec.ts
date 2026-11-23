@@ -350,6 +350,117 @@ test('the diff editor mounts in a shadow root without a CSP violation', async ({
   // Our diff sheet and CodeMirror's share the root, both constructed.
   expect(report.adopted).toBeGreaterThanOrEqual(2);
   expect(report.keywords).toBeGreaterThan(0);
+
+  // CodeMirror's merge base theme paints removal gutters red and addition
+  // gutters green; the diff sheet has to win with the amber and teal tokens.
+  const splitColours = await page.evaluate(() => {
+    const root = document.querySelector('.diffpanel__view')!.shadowRoot!;
+    const bg = (sel: string) => {
+      const el = root.querySelector(sel);
+      return el === null ? null : getComputedStyle(el).backgroundColor;
+    };
+    return {
+      removed: bg('.cm-merge-a .cm-changedLineGutter'),
+      added: bg('.cm-merge-b .cm-changedLineGutter'),
+    };
+  });
+  expect(splitColours.removed).toContain('0.83 0.17 75');
+  expect(splitColours.added).toContain('0.82 0.16 170');
+  expect([splitColours.removed, splitColours.added]).not.toContain('rgb(238, 68, 51)');
+  expect([splitColours.removed, splitColours.added]).not.toContain('rgb(34, 187, 34)');
+
+  await page.locator('.diffpanel button[data-mode="unified"]').click();
+  await expect.poll(async () => page.evaluate(() => {
+    const root = document.querySelector('.diffpanel__view')?.shadowRoot;
+    return root ? root.querySelectorAll('.cm-editor').length : 0;
+  }), { message: 'the unified view mounts exactly one editor' }).toBe(1);
+
+  const unifiedColours = await page.evaluate(() => {
+    const root = document.querySelector('.diffpanel__view')!.shadowRoot!;
+    const style = (sel: string) => {
+      const el = root.querySelector(sel);
+      return el === null ? null : getComputedStyle(el);
+    };
+    const text = style('.cm-deletedText');
+    const gutter = style('.cm-deletedLineGutter');
+    return {
+      text: text === null ? null : { background: text.backgroundColor, image: text.backgroundImage },
+      gutter: gutter === null ? null : gutter.backgroundColor,
+      violations: (window as unknown as { __cspViolations: string[] }).__cspViolations,
+    };
+  });
+  expect(unifiedColours.text).not.toBeNull();
+  expect(unifiedColours.text!.background).toContain('0.83 0.17 75');
+  expect(unifiedColours.text!.background).not.toBe('rgba(255, 0, 0, 0.2)');
+  // The base theme's red underline is a background gradient, not a border.
+  expect(unifiedColours.text!.image).toBe('none');
+  expect(unifiedColours.gutter).toContain('0.83 0.17 75');
+  expect(unifiedColours.gutter).not.toBe('rgb(238, 68, 51)');
+  expect(unifiedColours.violations).toEqual([]);
+});
+
+test('the diff view gives the editor room at 1440x860', async ({ page, gateway }) => {
+  await page.addInitScript(() => {
+    const violations: string[] = [];
+    Object.assign(window, { __cspViolations: violations });
+    window.addEventListener('securitypolicyviolation', (e) => {
+      violations.push(`${e.violatedDirective} ${e.blockedURI}`);
+    });
+  });
+  await page.goto(gateway.launch);
+  await expect(page.locator('.boot')).toBeHidden();
+  await page.setViewportSize({ width: 1440, height: 860 });
+  await page.evaluate(() => document.querySelector<HTMLElement>('.drawer-handle')?.click());
+  const drawer = page.locator('#file-drawer');
+  await expect(drawer).toBeVisible();
+  await drawer.locator('.file-row', { hasText: 'parser.go' }).click();
+
+  const measure = () => page.evaluate(() => {
+    const host = document.querySelector('.diffpanel__view');
+    const root = host?.shadowRoot;
+    const drawerEl = document.querySelector('#file-drawer')!;
+    const diff = document.querySelector('.drawer__diff')!;
+    const editors = root === null || root === undefined ? [] : [...root.querySelectorAll('.cm-editor')];
+    // The pane the editor draws in: the merge view in split mode, the
+    // editor itself in unified mode. Its visible height is what the view,
+    // the drawer and the viewport all leave it.
+    const surface = root === null || root === undefined
+      ? null
+      : root.querySelector('.cm-mergeView') ?? root.querySelector('.cm-editor');
+    const visible = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      const d = drawerEl.getBoundingClientRect();
+      const v = host!.getBoundingClientRect();
+      return Math.min(r.bottom, d.bottom, v.bottom) - Math.max(r.top, d.top, v.top);
+    };
+    return {
+      editors: editors.length,
+      heights: surface === null ? [] : [visible(surface)],
+      diffScroll: [diff.clientHeight, diff.scrollHeight],
+      drawerScroll: [drawerEl.clientHeight, drawerEl.scrollHeight],
+      violations: (window as unknown as { __cspViolations: string[] }).__cspViolations,
+    };
+  });
+
+  const check = async (label: string, count: number) => {
+    await expect.poll(async () => {
+      const m = await measure();
+      if (m.editors !== count) return `${m.editors} editors`;
+      if (m.heights.some((h) => h < 240)) return `the editor is ${Math.round(Math.min(...m.heights))}px tall`;
+      if (m.diffScroll[1] > m.diffScroll[0] + 2) {
+        return `the diff slot scrolls on its own (${m.diffScroll[0]}/${m.diffScroll[1]})`;
+      }
+      if (m.drawerScroll[1] > m.drawerScroll[0] + 2) {
+        return `the drawer scrolls (${m.drawerScroll[0]}/${m.drawerScroll[1]})`;
+      }
+      if (m.violations.length > 0) return m.violations.join('; ');
+      return 'ok';
+    }, { message: `${label}: the editor is at least 240px tall with no competing scroll` }).toBe('ok');
+  };
+
+  await check('split', 2);
+  await page.locator('.diffpanel button[data-mode="unified"]').click();
+  await check('unified', 1);
 });
 
 // The drawer handle must stay the topmost thing at its own centre without

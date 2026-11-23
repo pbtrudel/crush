@@ -8,9 +8,16 @@ import { diffMode } from '../../state/drawer';
 import { initialState, reduce } from '../../state/reducer';
 import { actions, state } from '../../state/store';
 
-const mounted = vi.hoisted(() => ({ modes: [] as string[], destroyed: 0 }));
+const mounted = vi.hoisted(() => ({ modes: [] as string[], destroyed: 0, fail: false }));
 vi.mock('./diff/codemirror', () => ({
-  mountDiff: async (_host: HTMLElement, _d: unknown, mode: string) => {
+  mountDiff: async (host: HTMLElement, _d: unknown, mode: string) => {
+    if (mounted.fail) {
+      const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
+      const box = document.createElement('div');
+      box.className = 'diff';
+      shadow.append(box);
+      throw new Error('the editor could not start');
+    }
     mounted.modes.push(mode);
     return () => { mounted.destroyed++; };
   },
@@ -29,6 +36,7 @@ beforeEach(() => {
   state.value = reduce(initialState(), fx.snapshot);
   mounted.modes = [];
   mounted.destroyed = 0;
+  mounted.fail = false;
   diffMode.value = 'split';
 });
 afterEach(async () => {
@@ -122,6 +130,38 @@ describe('DiffPanel', () => {
     await act(() => { root.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(); });
     await flush();
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  // A mount that rejects after attaching the host would otherwise leave an
+  // empty diff box beside the error.
+  it('clears the diff box when the editor cannot mount', async () => {
+    mounted.fail = true;
+    vi.spyOn(api, 'diff').mockResolvedValue(diff());
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    expect(root.querySelector('[role="alert"]')!.textContent).toContain('The diff view could not load');
+    const view = root.querySelector('.diffpanel__view')!;
+    expect(view.shadowRoot?.childElementCount).toBe(0);
+  });
+
+  // A newer history version refetches the diff; when the range and the text
+  // are the same, the editor must stay mounted so the scroll position holds.
+  it('keeps the editor when the refresh repeats the diff', async () => {
+    const d = diff();
+    const get = vi.spyOn(api, 'diff').mockImplementation(async () => ({ ...d }));
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    expect(mounted.modes).toEqual(['split']);
+    const s = state.value;
+    state.value = {
+      ...s,
+      files: s.files.map((f) => (f.path === '/repo/parser.go' ? { ...f, versions: 3, version_ids: [0, 1, 2] } : f)),
+    };
+    await flush();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(mounted.modes).toEqual(['split']);
+    expect(mounted.destroyed).toBe(0);
+    expect(root.querySelector('select[name="to"]')).not.toBeNull();
   });
 
   it('links the agents that edited the file', async () => {

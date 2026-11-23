@@ -24,8 +24,21 @@
 .diff .cm-merge-b .cm-changedLine, .diff .cm-insertedLine {
   background: color-mix(in oklch, var(--teal) 14%, transparent);
 }
-.diff .cm-merge-a .cm-changedText, .diff .cm-deletedText {
+/* The merge base theme paints deletion gutters #e43 and addition gutters
+   #2b2. These selectors outrank it (four classes to three) so a removal
+   stays amber and an addition teal. */
+.diff .cm-editor.cm-merge-a .cm-changedLineGutter,
+.diff .cm-editor .cm-deletedLineGutter { background-color: var(--amber); }
+.diff .cm-editor.cm-merge-b .cm-changedLineGutter { background-color: var(--teal); }
+.diff .cm-merge-a .cm-changedText {
   background: color-mix(in oklch, var(--amber) 32%, transparent);
+}
+/* The base theme draws its underline as a bottom red gradient and tints
+   deleted text #ff000033; both give way to the amber tint. */
+.diff .cm-editor .cm-deletedChunk .cm-deletedText,
+.diff .cm-editor.cm-merge-b .cm-deletedText {
+  background: color-mix(in oklch, var(--amber) 32%, transparent);
+  text-decoration-line: none;
 }
 .diff .cm-merge-b .cm-changedText {
   background: color-mix(in oklch, var(--teal) 32%, transparent);

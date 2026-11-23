@@ -22,7 +22,7 @@ function UnifiedText({ text }: { text: string }) {
   );
 }
 
-const LAYOUTS: Array<[DiffMode, string]> = [['split', 'Side by side'], ['unified', 'Unified']];
+const LAYOUTS: Array<[DiffMode, string]> = [['split', 'Split'], ['unified', 'Unified']];
 
 export function DiffPanel({ path }: { path: string }) {
   const s = state.value;
@@ -48,7 +48,12 @@ export function DiffPanel({ path }: { path: string }) {
     let live = true;
     setError('');
     api.diff(sid, path, range.from, range.to)
-      .then((d) => { if (live) setDiff(d); })
+      .then((d) => {
+        if (!live) return;
+        // A newer history version refetches the same range; keeping the old
+        // object keeps the mounted editor and its scroll position.
+        setDiff((prev) => (prev && prev.from === d.from && prev.to === d.to && prev.unified === d.unified ? prev : d));
+      })
       .catch((err) => { if (live) setError(err instanceof ApiError ? err.message : 'The diff did not load'); });
     return () => { live = false; };
   }, [sid, path, range.from, range.to, latest, attempt]);
@@ -61,7 +66,13 @@ export function DiffPanel({ path }: { path: string }) {
     import('./diff/codemirror')
       .then(({ mountDiff }) => mountDiff(el, diff, mode, rel))
       .then((stop) => { if (live) destroy = stop; else stop(); })
-      .catch(() => { if (live) setError('The diff view could not load'); });
+      .catch(() => {
+        if (!live) return;
+        // The host is already in the DOM: drop the box mountDiff attached
+        // before it failed, so no empty frame sits beside the error.
+        el.shadowRoot?.replaceChildren();
+        setError('The diff view could not load');
+      });
     return () => {
       live = false;
       destroy?.();
@@ -79,30 +90,32 @@ export function DiffPanel({ path }: { path: string }) {
   return (
     <section class="diffpanel" aria-labelledby="diff-title">
       <header class="diffpanel__head">
-        <h3 id="diff-title" class="diffpanel__title">{rel}</h3>
-        <label class="hud-label">From{' '}
-          <select class="hud__select" name="from" value={String(diff?.from ?? '')} disabled={!diff} onChange={pick('from')}>
-            {versionOptions}
-          </select>
-        </label>
-        <label class="hud-label">To{' '}
-          <select class="hud__select" name="to" value={String(diff?.to ?? '')} disabled={!diff} onChange={pick('to')}>
-            {versionOptions}
-          </select>
-        </label>
-        <div class="hud__mode" role="group" aria-label="Diff layout">
-          {LAYOUTS.map(([m, label]) => (
-            <button key={m} type="button" class="hud__mode-btn" data-mode={m} data-active={mode === m} aria-pressed={mode === m} onClick={() => setDiffMode(m)}>{label}</button>
-          ))}
+        <h3 id="diff-title" class="diffpanel__title" title={rel}>{rel}</h3>
+        {editors.length > 0 && (
+          <p class="diffpanel__editors hud-label">Edited by{' '}
+            {editors.map((a) => (
+              <button key={a.sessionId} type="button" class="chip" aria-label={`Inspect ${a.name}`} onClick={() => void actions.inspect(a.sessionId)}>{a.name}</button>
+            ))}
+          </p>
+        )}
+        <div class="diffpanel__controls">
+          <label class="hud-label">From{' '}
+            <select class="hud__select" name="from" value={String(diff?.from ?? '')} disabled={!diff} onChange={pick('from')}>
+              {versionOptions}
+            </select>
+          </label>
+          <label class="hud-label">To{' '}
+            <select class="hud__select" name="to" value={String(diff?.to ?? '')} disabled={!diff} onChange={pick('to')}>
+              {versionOptions}
+            </select>
+          </label>
+          <div class="hud__mode" role="group" aria-label="Diff layout">
+            {LAYOUTS.map(([m, label]) => (
+              <button key={m} type="button" class="hud__mode-btn" data-mode={m} data-active={mode === m} aria-pressed={mode === m} onClick={() => setDiffMode(m)}>{label}</button>
+            ))}
+          </div>
         </div>
       </header>
-      {editors.length > 0 && (
-        <p class="diffpanel__editors hud-label">Edited by{' '}
-          {editors.map((a) => (
-            <button key={a.sessionId} type="button" class="chip" aria-label={`Inspect ${a.name}`} onClick={() => void actions.inspect(a.sessionId)}>{a.name}</button>
-          ))}
-        </p>
-      )}
       {error && (
         <p class="diffpanel__error" role="alert">{error}{' '}
           <button type="button" class="link-button" onClick={() => setAttempt((n) => n + 1)}>Retry</button>
