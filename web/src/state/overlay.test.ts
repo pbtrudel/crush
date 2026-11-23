@@ -137,11 +137,44 @@ describe('the focus the browser drops with the panel', () => {
     }
   });
 
+  it('leaves the focus the open drawer drops alone', () => {
+    const dom = buildDrawerDom();
+    const stop = watchFocusHandoff();
+    try {
+      drawerOpen.value = true;
+      dom.close!.focus();
+      // A click on the drawer's own padding drops the focus on the body; the
+      // drawer is still open, so it keeps it there rather than the handle.
+      dom.close!.blur();
+      expect(document.activeElement).toBe(document.body);
+    } finally {
+      stop();
+    }
+  });
+
+  it('leaves the focus alone when the window goes away', () => {
+    const dom = buildDrawerDom();
+    const stop = watchFocusHandoff();
+    try {
+      drawerOpen.value = true;
+      dom.close!.focus();
+      // A window switch blurs the page: a focusout with no related target
+      // while the element keeps the focus.
+      dom.close!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      expect(document.activeElement).toBe(dom.close);
+    } finally {
+      stop();
+    }
+  });
+
   it('gives the handle the focus the drawer dropped on the body', () => {
     const dom = buildDrawerDom();
     const stop = watchFocusHandoff();
     try {
+      drawerOpen.value = true;
       dom.close!.focus();
+      // Closing takes the drawer out from under the focus.
+      drawerOpen.value = false;
       dom.close!.blur();
       expect(document.activeElement).toBe(dom.handle);
     } finally {

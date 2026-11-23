@@ -35,7 +35,8 @@
    Both widths derive from the column maxima in shell.css (.holodeck__grid,
    with and without data-drawer='open'); change either and re-derive these. */
 @media (min-width: 1024px) and (max-width: 1311px) {
-  /* shell.css: minmax(22rem, 34rem) 1fr, drawer closed. */
+  /* Covers every width with the drawer closed, and the open drawer below
+     1312px (the overlay pair below 1280px, the triple above it). */
   .holodeck__grid:has(.panel--inspector:not([hidden])) .agent-list {
     display: flex; inset-inline-end: calc(var(--space-4) + 7rem); max-inline-size: none;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none;

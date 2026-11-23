@@ -60,8 +60,11 @@ export function watchFocusHandoff(): () => void {
       return;
     }
     // Closing the drawer under its own controls gives the handle the focus
-    // back instead of the body.
-    if (target.closest('#file-drawer') !== null) document.querySelector<HTMLElement>('.drawer-handle')?.focus();
+    // back instead of the body. While the drawer stays open and focusable it
+    // keeps whatever it dropped (a click on its padding, a window switch).
+    const drawer = target.closest<HTMLElement>('#file-drawer');
+    if (drawer === null || (drawerOpen.value && !drawer.inert)) return;
+    document.querySelector<HTMLElement>('.drawer-handle')?.focus();
   };
   document.addEventListener('focusout', onFocusOut, true);
   return () => document.removeEventListener('focusout', onFocusOut, true);

@@ -780,8 +780,8 @@ test('the overlay drawer takes the focus off the covered log', async ({ page, ga
   await page.goto(gateway.launch);
   await expect(page.locator('.boot')).toBeHidden();
   const log = page.locator('.panel--log');
-  // A stand-in control keeps this test independent of how full the worker's
-  // shared session is: only the focus inside the log matters here.
+  // The log has no tab stop until the session has a message, so a stand-in
+  // control keeps this test runnable on a fresh worker session.
   await page.evaluate(() => {
     const probe = document.createElement('button');
     probe.id = 'focus-probe';
@@ -810,6 +810,12 @@ test('the overlay drawer takes the focus off the covered log', async ({ page, ga
   await page.setViewportSize({ width: 1100, height: 800 });
   await expect(log).toHaveAttribute('inert', '');
   await expect.poll(focused, { message: 'the drawer takes the focus off the log it covers' }).toBe('drawer');
+
+  // The open drawer keeps a focus it dropped (a click on its padding or a
+  // window switch): only closing hands it to the handle.
+  await page.evaluate(() => document.querySelector<HTMLElement>('#file-drawer .drawer__head button')?.blur());
+  expect(await focused(), 'the open drawer keeps the focus it dropped').toBe('body');
+  await page.locator('#file-drawer .drawer__head button').focus();
 
   // The keyboard route in: closing the drawer gives the handle the focus
   // back, and opening it again takes the focus into the drawer, not the body.
