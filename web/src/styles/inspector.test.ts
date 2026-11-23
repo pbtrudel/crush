@@ -42,8 +42,13 @@ describe('the inspector stack', () => {
     expect(rule('.inspector__facts > div')).toContain('display: flex');
   });
 
-  it('gives an empty result line no room', () => {
-    expect(rule('.inspector__notice:empty')).toContain('display: none');
+  it('gives an empty result line no room but keeps it in the tree', () => {
+    // The line is a live region: display: none would take it out of the
+    // accessibility tree, so the region could never announce anything.
+    const notice = rule('.inspector__notice:empty');
+    expect(notice).toContain('block-size: 0');
+    expect(notice).toContain('overflow: hidden');
+    expect(notice).not.toContain('display: none');
   });
 
   it('lets the transcript keep the height the chrome leaves', () => {

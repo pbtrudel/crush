@@ -19,9 +19,10 @@
    starts at one row and grows with its text where field-sizing is supported;
    elsewhere one row scrolls. */
 .inspector__message textarea { grid-column: 1; grid-row: 2; background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-prose); resize: none; field-sizing: content; min-block-size: 2.75rem; max-block-size: 8rem; }
-/* The result line is a live region that is empty most of the time; an empty
-   one takes no room in the stack. */
-.inspector__notice:empty { display: none; }
+/* The result line is a live region that is empty most of the time. It keeps
+   its place in the accessibility tree while taking no room in the stack:
+   display: none would stop it announcing anything at all. */
+.inspector__notice:empty { block-size: 0; margin: 0; padding: 0; overflow: hidden; }
 .inspector__error { color: var(--magenta); margin: 0; }
 .inspector__gone { margin: 0; padding: 0 var(--space-4) var(--space-4); }
 /* The panel is a stack with a fixed height: the transcript takes what the
