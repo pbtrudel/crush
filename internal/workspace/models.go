@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 )
 
@@ -26,6 +27,17 @@ var (
 	// switch models for.
 	ErrNoAgentConfig = errors.New("agent configuration not found")
 )
+
+// ReasoningControls reports whether a model can reason and the effort
+// levels it accepts. A nil model (a config with no providers yet) cannot
+// reason. The model dialog's choices and the web model info read the pair
+// from here, so a model's controls look the same in both.
+func ReasoningControls(model *catwalk.Model) (canReason bool, effortLevels []string) {
+	if model == nil {
+		return false, nil
+	}
+	return model.CanReason(), model.ReasoningEffortLevels()
+}
 
 // ModelChoice is one model the user can switch to without signing in.
 type ModelChoice struct {
@@ -73,14 +85,15 @@ func ModelChoices(cfg *config.Config) []ModelChoice {
 			if !cfg.IsModelAvailable(id, model.ID) {
 				continue
 			}
+			canReason, effortLevels := ReasoningControls(&model)
 			choices = append(choices, ModelChoice{
 				Provider:      id,
 				ProviderName:  cmp.Or(providerConfig.Name, id),
 				ID:            model.ID,
 				Name:          cmp.Or(model.Name, model.ID),
 				ContextWindow: model.ContextWindow,
-				CanReason:     model.CanReason(),
-				EffortLevels:  model.ReasoningEffortLevels(),
+				CanReason:     canReason,
+				EffortLevels:  effortLevels,
 				DefaultEffort: model.Reasoning.DefaultEffortLevel,
 			})
 		}

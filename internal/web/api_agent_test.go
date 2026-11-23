@@ -152,7 +152,7 @@ func TestShellRejectsOversizedCommand(t *testing.T) {
 func TestAgentStartingOnAgentRoutes(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
-	fake.ReadyErr = workspace.ErrAgentNotInitialized
+	fake.SetReadyErr(workspace.ErrAgentNotInitialized)
 	c := authedClient(t, g)
 	for _, tc := range []struct{ target, body string }{
 		{"/api/sessions/s1/summarize", ""},

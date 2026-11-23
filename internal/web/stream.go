@@ -13,19 +13,20 @@ import (
 )
 
 const (
-	ringSize         = 2048
-	sendQueue        = 512
-	idleTimeout      = 45 * time.Second
-	writeTimeout     = 5 * time.Second
-	closeResync      = websocket.StatusCode(4001)
-	frameSnapshot    = "snapshot"
-	frameFollow      = "session_follow"
-	frameInputMode   = "input_mode_changed"
-	frameTeamState   = "team_state"
-	frameAgentRuns   = "agent_runs"
-	frameClosing     = "gateway_closing"
-	frameError       = "web_error"
-	frameShellOutput = "shell_output"
+	ringSize          = 2048
+	sendQueue         = 512
+	idleTimeout       = 45 * time.Second
+	writeTimeout      = 5 * time.Second
+	closeResync       = websocket.StatusCode(4001)
+	frameSnapshot     = "snapshot"
+	frameFollow       = "session_follow"
+	frameInputMode    = "input_mode_changed"
+	frameTeamState    = "team_state"
+	frameAgentRuns    = "agent_runs"
+	frameClosing      = "gateway_closing"
+	frameError        = "web_error"
+	frameShellOutput  = "shell_output"
+	frameModelChanged = "model_changed"
 )
 
 type frame struct {

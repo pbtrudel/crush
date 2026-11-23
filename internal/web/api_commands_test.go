@@ -216,7 +216,7 @@ func TestRunSkillAttachOnly(t *testing.T) {
 func TestRunCommandAgentStarting(t *testing.T) {
 	t.Parallel()
 	g, f := startCommands(t)
-	f.ReadyErr = workspace.ErrAgentNotInitialized
+	f.SetReadyErr(workspace.ErrAgentNotInitialized)
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/commands/run",
 		`{"session_id":"s1","id":"user:fix","args":{"FILE":"a.go"}}`)
 	rsp.Body.Close()

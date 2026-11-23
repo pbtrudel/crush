@@ -130,6 +130,15 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 		"shell_output": mk(frameShellOutput, shellOutputPayload{
 			RunID: "run-1", SessionID: "s1", Chunk: "line 1\n",
 		}),
+		// A model switch made in the browser or the terminal: the HUD and
+		// the selector render the new model from this payload.
+		"model_changed": mk(frameModelChanged, ModelInfo{
+			ID: "claude-sonnet", Name: "Claude Sonnet", Provider: "anthropic", ContextWindow: 200000,
+			CanReason: true, EffortLevels: []string{"low", "medium", "high"},
+			ReasoningEffort: "high", Think: true,
+			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
+			AgentReady: true,
+		}),
 	}
 }
 
@@ -154,7 +163,13 @@ func snapshotFrame(t *testing.T) frame {
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
 		PermissionMode: "normal", InputMode: "code",
-		Model:      ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
+		Model: ModelInfo{
+			ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000,
+			CanReason: true, EffortLevels: []string{"low", "medium", "high"},
+			ReasoningEffort: "high", Think: true,
+			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
+			AgentReady: true,
+		},
 		AgentReady: true,
 		Queued:     []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
 		Team:      fixtureTeam(),

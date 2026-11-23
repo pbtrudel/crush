@@ -839,7 +839,7 @@ func TestSnapshotReportsAgentReady(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			g, fake := startTest(t)
-			fake.ReadyErr = tc.ready
+			fake.SetReadyErr(tc.ready)
 			rsp, data := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
 			rsp.Body.Close()
 			require.Equal(t, http.StatusOK, rsp.StatusCode)

@@ -57,6 +57,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.route(api, "POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
 	g.registerCommandRoutes(api)
 	g.registerAgentRoutes(api)
+	g.registerModelRoutes(api)
 }
 
 // route registers an API handler and records its pattern for the auth

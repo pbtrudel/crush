@@ -7,14 +7,55 @@ import (
 	"path/filepath"
 	"time"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
 )
+
+// ModelConfig is the model set the browser model tests use, mirroring the
+// shared helper tests: p1 serves m1 (which reasons with low and high effort
+// levels) and m2, the disabled p2 would serve the same pair, and m2 is the
+// small model. CanReason needs a reasoning mode or effort levels, never
+// just a default effort.
+func ModelConfig() *config.Config {
+	models := func() []catwalk.Model {
+		return []catwalk.Model{
+			{
+				ID:            "m1",
+				Name:          "Model One",
+				ContextWindow: 200_000,
+				Reasoning: catwalk.Reasoning{
+					Thinking:           catwalk.ThinkingToggleable,
+					EffortLevels:       catwalk.NewEffortLevels("low", "high"),
+					DefaultEffortLevel: "low",
+				},
+			},
+			{ID: "m2", Name: "Model Two", ContextWindow: 100_000},
+		}
+	}
+
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	providers.Set("p1", config.ProviderConfig{ID: "p1", Name: "Provider One", Models: models()})
+	providers.Set("p2", config.ProviderConfig{ID: "p2", Name: "Provider Two", Models: models(), Disable: true})
+
+	return &config.Config{
+		Providers: providers,
+		Models: map[config.SelectedModelType]config.SelectedModel{
+			config.SelectedModelTypeMain:  {Provider: "p1", Model: "m1"},
+			config.SelectedModelTypeSmall: {Provider: "p1", Model: "m2"},
+		},
+		Agents: map[string]config.Agent{
+			config.AgentCoder: {Model: config.SelectedModelTypeMain},
+		},
+	}
+}
 
 const parserV2 = "package parser\n\n// Parse reads one token stream.\nfunc Parse(src string) []Token {\n\treturn tokenize(src)\n}\n"
 

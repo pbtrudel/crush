@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
@@ -106,9 +107,16 @@ type Fake struct {
 	AskAnswer string
 	// NoteErr, when set, makes AgentAddNote fail.
 	NoteErr error
-	// ReadyErr is what AgentReadyErr returns. nil means the agent is
-	// ready. Set it before the first request.
-	ReadyErr error
+	// readyErr is what AgentReadyErr returns; set it with SetReadyErr.
+	readyErr error
+	// Cfg is what Config returns, so a test can give the gateway the
+	// provider and model set it reads. A model switch swaps in a copy, so
+	// a reader of a published config never sees its models change.
+	Cfg *config.Config
+	// agentBusy is what AgentIsBusy reports; set it with SetAgentBusy.
+	agentBusy bool
+	// agentModel is what AgentModel returns; set it with SetAgentModel.
+	agentModel workspace.AgentModel
 }
 
 // NewFake returns a fake with one current session "s1".
@@ -251,15 +259,115 @@ func (f *Fake) CurrentSessionID() string {
 
 func (f *Fake) WorkingDir() string { return f.WorkDir }
 
-// Config returns nil: the fake has no data directory, so the gateway's team
-// watcher stays off unless a test sets Options.AgentTeamsDir.
-func (f *Fake) Config() *config.Config { return nil }
+// Config returns the test's config, or nil: the fake has no data
+// directory, so the gateway's team watcher stays off unless a test sets
+// Options.AgentTeamsDir.
+func (f *Fake) Config() *config.Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Cfg
+}
 
 func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 
-func (f *Fake) AgentModel() workspace.AgentModel { return workspace.AgentModel{} }
+func (f *Fake) AgentModel() workspace.AgentModel {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.agentModel
+}
 
-func (f *Fake) AgentReadyErr() error { return f.ReadyErr }
+// SetAgentModel replaces what AgentModel returns, as a terminal model
+// switch would.
+func (f *Fake) SetAgentModel(m workspace.AgentModel) {
+	f.mu.Lock()
+	f.agentModel = m
+	f.mu.Unlock()
+}
+
+// SetAgentBusy makes AgentIsBusy report busy, as a running turn would.
+func (f *Fake) SetAgentBusy(busy bool) {
+	f.mu.Lock()
+	f.agentBusy = busy
+	f.mu.Unlock()
+}
+
+// UpdatePreferredModel records a model choice and replaces the selected
+// model, the way the config store does, so the model info a handler sends
+// back already describes the new model.
+func (f *Fake) UpdatePreferredModel(scope config.Scope, typ config.SelectedModelType, m config.SelectedModel) error {
+	f.record("UpdatePreferredModel:" + scope.String() + ":" + string(typ) + ":" + m.Provider + "/" + m.Model)
+	f.mu.Lock()
+	f.Cfg = withModel(f.Cfg, typ, m)
+	f.mu.Unlock()
+	return nil
+}
+
+// UpdateAgentModel points the agent model at the config's main model, the
+// way the real workspace rebuilds the agent after a switch.
+func (f *Fake) UpdateAgentModel(context.Context) error {
+	f.record("UpdateAgentModel")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Cfg == nil {
+		return nil
+	}
+	selected, ok := f.Cfg.Models[config.SelectedModelTypeMain]
+	if !ok {
+		return nil
+	}
+	m := workspace.AgentModel{ModelCfg: selected}
+	if model := catalogModel(f.Cfg, selected); model != nil {
+		m.CatwalkCfg = *model
+	}
+	f.agentModel = m
+	return nil
+}
+
+// catalogModel returns the catalog entry of a selected model, or nil when
+// the config has no providers (a reload in flight).
+func catalogModel(cfg *config.Config, selected config.SelectedModel) *catwalk.Model {
+	if cfg.Providers == nil {
+		return nil
+	}
+	return cfg.GetModel(selected.Provider, selected.Model)
+}
+
+// withModel copies cfg with one selected model replaced. The copy keeps a
+// published config's model map immutable, so reads of it never race the
+// switch.
+func withModel(cfg *config.Config, typ config.SelectedModelType, m config.SelectedModel) *config.Config {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clone := *cfg
+	clone.Models = maps.Clone(cfg.Models)
+	if clone.Models == nil {
+		clone.Models = make(map[config.SelectedModelType]config.SelectedModel)
+	}
+	clone.Models[typ] = m
+	return &clone
+}
+
+func (f *Fake) AgentIsBusy() bool {
+	f.record("AgentIsBusy")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.agentBusy
+}
+
+func (f *Fake) AgentReadyErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.readyErr
+}
+
+// SetReadyErr makes AgentReadyErr report err. nil means the agent is
+// ready.
+func (f *Fake) SetReadyErr(err error) {
+	f.mu.Lock()
+	f.readyErr = err
+	f.mu.Unlock()
+}
 
 func (f *Fake) LSPGetStates() map[string]workspace.LSPClientInfo { return f.LSP }
 

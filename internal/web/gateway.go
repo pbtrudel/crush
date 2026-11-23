@@ -98,6 +98,12 @@ type Gateway struct {
 
 	modeMu    sync.RWMutex
 	inputMode string
+
+	// modelMu guards lastModel, the model info the hub last announced. The
+	// handlers and the watch both announce through it, so a switch made in
+	// the browser reaches every tab once and the watch does not repeat it.
+	modelMu   sync.Mutex
+	lastModel ModelInfo
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -309,11 +315,23 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 // terminal is viewing. Polling keeps the TUI free of web-specific hooks.
 const followInterval = 250 * time.Millisecond
 
-// pump turns workspace events into frames and reports session changes.
-// last is the session the terminal was viewing when the gateway started.
+// modelWatchTicks is how many follow ticks pass between model checks. A
+// change made in the terminal reaches a tab within two seconds, which is
+// often enough for the HUD and cheap enough to poll.
+const modelWatchTicks = 8
+
+// pump turns workspace events into frames and reports session and model
+// changes the terminal makes. last is the session the terminal was viewing
+// when the gateway started.
 func (g *Gateway) pump(events <-chan any, last string) {
+	// The model the hub starts from is the one at load, so an unchanged
+	// model never publishes a frame.
+	g.modelMu.Lock()
+	g.lastModel = modelInfo(g)
+	g.modelMu.Unlock()
 	ticker := time.NewTicker(followInterval)
 	defer ticker.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-g.ctx.Done():
@@ -321,7 +339,8 @@ func (g *Gateway) pump(events <-chan any, last string) {
 		case ev, ok := <-events:
 			if !ok {
 				// The workspace stopped sending events, but the terminal
-				// can still switch sessions; keep following it.
+				// can still switch sessions and models; keep following it.
+				slog.Warn("Workspace events stopped; the tab keeps following the terminal")
 				events = nil
 				continue
 			}
@@ -333,6 +352,10 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			if cur := g.ws.CurrentSessionID(); cur != last {
 				last = cur
 				g.hub.publishJSON(frameFollow, map[string]string{"session_id": cur})
+			}
+			ticks++
+			if ticks%modelWatchTicks == 0 {
+				g.announceModel()
 			}
 		}
 	}

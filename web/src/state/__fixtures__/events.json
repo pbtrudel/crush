@@ -182,6 +182,29 @@
       }
     }
   },
+  "model_changed": {
+    "seq": 1,
+    "type": "model_changed",
+    "payload": {
+      "id": "claude-sonnet",
+      "name": "Claude Sonnet",
+      "provider": "anthropic",
+      "context_window": 200000,
+      "can_reason": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "reasoning_effort": "high",
+      "think": true,
+      "small": {
+        "id": "claude-haiku",
+        "provider": "anthropic"
+      },
+      "agent_ready": true
+    }
+  },
   "permission_mode_changed": {
     "seq": 1,
     "type": "permission_mode_changed",
@@ -386,7 +409,20 @@
         "id": "claude",
         "name": "Claude",
         "provider": "anthropic",
-        "context_window": 200000
+        "context_window": 200000,
+        "can_reason": true,
+        "effort_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning_effort": "high",
+        "think": true,
+        "small": {
+          "id": "claude-haiku",
+          "provider": "anthropic"
+        },
+        "agent_ready": true
       },
       "agent_ready": true,
       "busy": false,
