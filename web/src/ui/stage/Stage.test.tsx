@@ -83,6 +83,38 @@ describe('Stage', () => {
     }
   });
 
+  it('never shows 2D nodes and 3D tags at once, so an agent id appears once', async () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof original;
+    resetWebglProbe();
+    lowPower.value = false;
+    sceneFailed.value = false;
+    state.value = reduce(initialState(), fx.snapshot);
+    const root = document.createElement('div');
+    const ids = () => [...root.querySelectorAll('[data-agent-node]')].map((n) => n.getAttribute('data-agent-node'));
+    try {
+      await act(() => { render(<Stage />, root); });
+      expect(use3D()).toBe(true);
+      expect(root.querySelector('svg.constellation-svg')).toBeNull();
+      expect(root.querySelector('.agent-tag')).not.toBeNull();
+      expect(ids().length).toBeGreaterThan(0);
+      expect(new Set(ids()).size).toBe(ids().length);
+
+      // The 2D fallback replaces the tags rather than joining them.
+      await act(() => { sceneFailed.value = true; });
+      expect(root.querySelector('svg.constellation-svg')).not.toBeNull();
+      expect(root.querySelector('.agent-tag')).toBeNull();
+      expect(ids().length).toBeGreaterThan(0);
+      expect(new Set(ids()).size).toBe(ids().length);
+    } finally {
+      render(null, root);
+      state.value = initialState();
+      HTMLCanvasElement.prototype.getContext = original;
+      sceneFailed.value = false;
+      resetWebglProbe();
+    }
+  });
+
   it('keeps the ring and every node inside the 2D viewBox', () => {
     for (const count of [1, 2, 3, 5]) {
       const root = document.createElement('div');

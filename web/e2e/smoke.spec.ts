@@ -159,3 +159,78 @@ test('Alt+C enters and Esc leaves cinematic mode', async ({ page, gateway }) => 
   await page.keyboard.press('Escape');
   await expect(page.locator('.holodeck')).toHaveAttribute('data-cinematic', 'false');
 });
+
+// The 3D tags are DOM labels the scene moves over the canvas. A tag may only
+// be visible while its node projects inside the stage, and a hidden one takes
+// no input; the agent list is the accessible path and keeps the clicks it
+// shares with a tag.
+async function tagGeometry(page: Page) {
+  return page.evaluate(() => {
+    const rect = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom };
+    };
+    const stage = rect(document.querySelector('.stage')!);
+    const tags = [...document.querySelectorAll('.agent-tag')].map((el) => {
+      const at = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(el.getAttribute('style') ?? '');
+      const box = rect(el);
+      const hit = document.elementFromPoint(box.x + box.w / 2, box.y + box.h / 2);
+      return {
+        id: el.getAttribute('data-agent-node'),
+        visible: el.getAttribute('data-visible') === 'true',
+        anchor: at === null ? null : { x: Number(at[1]), y: Number(at[2]) },
+        pointerEvents: getComputedStyle(el).pointerEvents,
+        hitSelf: hit !== null && el.contains(hit),
+      };
+    });
+    const options = [...document.querySelectorAll('.agent-list [role="option"]')].map((o) => {
+      const box = rect(o);
+      const hit = document.elementFromPoint(box.x + box.w / 2, box.y + box.h / 2);
+      return { text: o.textContent, takesClick: hit !== null && hit.closest('.agent-list') !== null };
+    });
+    return { stage, tags, options };
+  });
+}
+
+test('3D tags stay inside the stage and never take the agent list clicks', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  // The roster arrives in frames after boot, and the first painted tag waits
+  // for the first published projection.
+  await expect(page.locator('.agent-tag[data-visible="true"]').first()).toBeVisible();
+
+  const wide = await tagGeometry(page);
+  expect(wide.tags.length).toBeGreaterThan(0);
+  for (const tag of wide.tags) {
+    expect(tag.visible, `tag ${tag.id} is visible at 1440px`).toBe(true);
+    expect(tag.anchor, `tag ${tag.id} has a projected point`).not.toBeNull();
+    const a = tag.anchor!;
+    expect(a.x >= wide.stage.x && a.x <= wide.stage.right, `tag ${tag.id} x inside the stage`).toBe(true);
+    expect(a.y >= wide.stage.y && a.y <= wide.stage.bottom, `tag ${tag.id} y inside the stage`).toBe(true);
+    expect(tag.hitSelf, `tag ${tag.id} takes the click at its center`).toBe(true);
+  }
+  for (const option of wide.options) {
+    expect(option.takesClick, `option ${option.text} takes the click at 1440px`).toBe(true);
+  }
+
+  // 900px shrinks the stage under both nodes, so their tags must go away
+  // instead of floating over the HUD and the deck.
+  await page.setViewportSize({ width: 900, height: 860 });
+  await expect(page.locator('.agent-tag[data-visible="false"]').first()).toBeAttached();
+  const narrow = await tagGeometry(page);
+  expect(narrow.tags.length).toBeGreaterThan(0);
+  expect(narrow.tags.some((t) => !t.visible), 'a node leaves the stage at 900px').toBe(true);
+  for (const tag of narrow.tags) {
+    const a = tag.anchor;
+    if (tag.visible) {
+      expect(a !== null && a.x >= narrow.stage.x && a.x <= narrow.stage.right, `tag ${tag.id} x inside the stage`).toBe(true);
+      expect(a !== null && a.y >= narrow.stage.y && a.y <= narrow.stage.bottom, `tag ${tag.id} y inside the stage`).toBe(true);
+    } else {
+      expect(tag.pointerEvents, `hidden tag ${tag.id} takes no clicks`).toBe('none');
+      expect(tag.hitSelf, `hidden tag ${tag.id} is not the topmost element`).toBe(false);
+    }
+  }
+  for (const option of narrow.options) {
+    expect(option.takesClick, `option ${option.text} takes the click at 900px`).toBe(true);
+  }
+});

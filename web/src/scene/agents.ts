@@ -80,6 +80,10 @@ export function createAgentNodes(colors: SceneColors, core: THREE.Vector3): Agen
     const filament = new THREE.Line(filamentGeometry, filamentMaterial);
     filament.name = 'agent-filament';
     filament.userData.id = agent.id;
+    // The bounding sphere is computed once from the two points at the core,
+    // and the moving end is an attribute update, so three would cull the
+    // filament whenever the core leaves the view.
+    filament.frustumCulled = false;
     const sparkMaterial = new THREE.MeshBasicMaterial({ color: colors.cyan.clone(), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
     const spark = new THREE.Mesh(sparkGeometry, sparkMaterial);
     spark.name = 'agent-spark';

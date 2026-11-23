@@ -90,18 +90,48 @@ describe('agent nodes', () => {
     expect(scale('sub-1')).toBeGreaterThan(scale('team-m-1'));
   });
 
-  it('disposes its geometries and materials and empties the group', () => {
+  it('keeps a filament out of frustum culling while its far end moves', () => {
+    const { n } = nodes();
+    n.sync([teammate], null);
+    const filament = n.group.children.find((c) => c.name === 'agent-filament') as THREE.Line;
+    // The bounding sphere comes from the two points at the core; the moving
+    // end is an attribute update, so three would cull a filament whose node
+    // is on screen whenever the core is not.
+    expect(filament.frustumCulled).toBe(false);
+  });
+
+  it('disposes the prism, the edges, every filament and the spark', () => {
     const { n } = nodes();
     n.sync([teammate, subagent], null);
-    const disposed: string[] = [];
-    n.group.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.geometry) m.geometry.addEventListener('dispose', () => disposed.push('g'));
-      if (m.material) (m.material as THREE.Material).addEventListener('dispose', () => disposed.push('m'));
-    });
+    const named = (name: string) => n.group.children.filter((c) => c.name === name);
+    const bodies = named('agent-node') as THREE.Mesh[];
+    const wires = named('agent-wire') as THREE.LineSegments[];
+    const filaments = named('agent-filament') as THREE.Line[];
+    const sparks = named('agent-spark') as THREE.Mesh[];
+    // The prism, the edge list and the spark are shared; a filament is not.
+    const shared = [bodies[0].geometry, wires[0].geometry, sparks[0].geometry];
+    expect(new Set(shared).size).toBe(3);
+    expect(bodies[1].geometry).toBe(bodies[0].geometry);
+    expect(wires[1].geometry).toBe(wires[0].geometry);
+    expect(sparks[1].geometry).toBe(sparks[0].geometry);
+    expect(filaments[0].geometry).not.toBe(filaments[1].geometry);
+
+    const gone = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const materialsGone = new Set<THREE.Material>();
+    const expected = [...shared, ...filaments.map((f) => f.geometry)];
+    for (const geometry of expected) geometry.addEventListener('dispose', () => gone.add(geometry));
+    for (const object of [...bodies, ...wires, ...filaments, ...sparks]) {
+      const material = object.material as THREE.Material;
+      materials.add(material);
+      material.addEventListener('dispose', () => materialsGone.add(material));
+    }
+
     n.dispose();
-    expect(disposed.filter((d) => d === 'm').length).toBeGreaterThanOrEqual(6);
-    expect(disposed).toContain('g');
+    for (const geometry of expected) expect(gone.has(geometry)).toBe(true);
+    // Four materials per node: the body, the wire, the filament and the spark.
+    expect(materials.size).toBe(8);
+    for (const material of materials) expect(materialsGone.has(material)).toBe(true);
     expect(n.group.children).toHaveLength(0);
   });
 });

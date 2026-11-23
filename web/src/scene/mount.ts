@@ -277,8 +277,12 @@ function mountWith(
 
   let lastScreenKey = '';
   const projected = new THREE.Vector3();
+  const viewPoint = new THREE.Vector3();
   // publishScreens projects every node after a render and reports only a
-  // change of at least a pixel, so idle frames cost the page nothing.
+  // change of at least a pixel, so idle frames cost the page nothing. A node
+  // behind the camera or outside the frustum is reported hidden: its
+  // projection is mirrored or off the canvas, and the tag it drives may not
+  // float over the deck.
   const publishScreens = () => {
     if (!hooks.onAgentScreens) return;
     const width = canvas.clientWidth;
@@ -286,12 +290,20 @@ function mountWith(
     const screens: AgentScreen[] = [];
     for (const id of agents.ids()) {
       if (!agents.position(id, projected)) continue;
+      // The eye-space depth decides the behind-camera case, which project()
+      // cannot: the perspective divide flips the sign of a point behind it.
+      viewPoint.copy(projected).applyMatrix4(camera.matrixWorldInverse);
       projected.project(camera);
       screens.push({
         id,
         x: Math.round(((projected.x + 1) / 2) * width),
         y: Math.round(((1 - projected.y) / 2) * height),
-        visible: projected.z < 1,
+        visible:
+          viewPoint.z < 0 &&
+          Math.abs(projected.x) <= 1 &&
+          Math.abs(projected.y) <= 1 &&
+          projected.z >= -1 &&
+          projected.z <= 1,
       });
     }
     const key = JSON.stringify(screens);

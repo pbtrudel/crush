@@ -21,6 +21,7 @@ interface StubWorld extends StubPart {
 
 interface StubCore extends StubPart {
   setBoot: Spy;
+  flash: Spy;
 }
 
 interface StubBursts extends StubPart {
@@ -49,6 +50,12 @@ const parts = vi.hoisted(() => ({
   agents: [] as StubAgents[],
 }));
 const failing = vi.hoisted(() => ({ composer: false }));
+// The node stand-in reports this point as the node's world position, and
+// reports no position at all when missing is set.
+const projection = vi.hoisted(() => ({
+  at: null as null | { x: number; y: number; z: number },
+  missing: false,
+}));
 
 vi.mock('three', async (importOriginal) => {
   const actual = await importOriginal<typeof import('three')>();
@@ -199,7 +206,10 @@ vi.mock('./agents', async (importOriginal) => {
         sync: vi.fn(),
         update: vi.fn(() => false),
         position: vi.fn((_id: string, out: THREE.Vector3) => {
-          out.set(1, 1.6, 0);
+          if (projection.missing) return false;
+          const at = projection.at;
+          if (at) out.set(at.x, at.y, at.z);
+          else out.set(1, 1.6, 0);
           return true;
         }),
         pulse: vi.fn(),
@@ -285,6 +295,8 @@ beforeEach(() => {
   parts.cores.length = 0;
   parts.bursts.length = 0;
   failing.composer = false;
+  projection.at = null;
+  projection.missing = false;
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
     frames.push(callback);
@@ -476,6 +488,40 @@ describe('mountScene', () => {
     const reduced = start({ motion: 'reduced' });
     reduced.burst('write', 'a1');
     expect(parts.agents.at(-1)!.flash).toHaveBeenCalledWith('a1', expect.anything());
+  });
+
+  it('marks a node off the screen, behind the camera or past the far plane as hidden', () => {
+    const screens = vi.fn();
+    const scene = start({ motion: 'off' }, { onAgentScreens: screens });
+    // The camera looks from (0, 2.2, 7.4) toward the core, so these points
+    // are respectively in frame, far to the side, behind it and beyond the
+    // far plane.
+    const visibleAt = (x: number, y: number, z: number) => {
+      projection.at = { x, y, z };
+      scene.requestFrame();
+      advance(1);
+      return screens.mock.calls.at(-1)![0][0].visible;
+    };
+    expect(visibleAt(0, 1.6, 0)).toBe(true);
+    expect(visibleAt(50, 1.6, 0)).toBe(false);
+    expect(visibleAt(0, 1.6, 20)).toBe(false);
+    expect(visibleAt(0, 1.6, -200)).toBe(false);
+  });
+
+  it('bursts at the core when the target node is not on the orbit', () => {
+    projection.missing = true;
+    const full = start({ motion: 'full' });
+    full.burst('write', 'ghost');
+    const bursts = parts.bursts.at(-1)!;
+    expect(bursts.spawn).toHaveBeenCalled();
+    expect(bursts.spawnAt).not.toHaveBeenCalled();
+    expect(parts.agents.at(-1)!.pulse).not.toHaveBeenCalled();
+    full.dispose();
+
+    const reduced = start({ motion: 'reduced' });
+    reduced.burst('write', 'ghost');
+    expect(parts.cores.at(-1)!.flash).toHaveBeenCalled();
+    expect(parts.agents.at(-1)!.flash).not.toHaveBeenCalled();
   });
 
   it('disposes everything it built and stops every frame source', () => {
