@@ -402,8 +402,14 @@ type Service struct {
 	runner   Runner
 	runs     map[string]Run
 	starting map[string]bool
-	changes  chan struct{}
-	now      func() time.Time
+	// watchers tracks the goroutines settling runs, so Shutdown can wait
+	// for the last state write instead of returning while one is pending.
+	watchers sync.WaitGroup
+	// closed is set by Shutdown. A settling run must not resume its member
+	// once it is set, or it would add a watcher after the wait began.
+	closed  bool
+	changes chan struct{}
+	now     func() time.Time
 	// stamp is the state file this process last read or wrote. A different
 	// stamp means another process wrote since.
 	stamp fileStamp
@@ -978,7 +984,10 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 	return view, nil
 }
 
-var errNoRunner = errors.New("no teammate runner is configured")
+var (
+	errNoRunner = errors.New("no teammate runner is configured")
+	errShutdown = errors.New("agent team is shut down")
+)
 
 // startRun starts one turn and records the live run.
 func (s *Service) startRun(ctx context.Context, member Member, prompt string) (MemberView, error) {
@@ -1013,10 +1022,16 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 		return MemberView{}, err
 	}
 	var view MemberView
+	tracked := false
 	// The run already started, so this record must land: the member would
 	// otherwise read as idle and its inbox would never be drained.
 	_ = s.write(mustApply, func() (bool, error) {
 		delete(s.starting, member.Name)
+		if s.closed {
+			// Shutdown took the live runs while this one was starting, so
+			// it is not counted and must not outlive the wait below.
+			return false, nil
+		}
 		s.runs[member.Name] = run
 		s.mine[member.Name] = true
 		for i := range s.state.Members {
@@ -1029,9 +1044,20 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 		}
 		view = s.viewLocked(s.stateMemberLocked(member.Name))
 		s.notifyLocked()
+		// Counted under the lock Shutdown takes before it waits, so the
+		// watcher is either counted before the wait starts or never started.
+		s.watchers.Add(1)
+		tracked = true
 		return true, nil
 	})
-	go s.watch(member.Name, run)
+	if !tracked {
+		run.Cancel()
+		return MemberView{}, errShutdown
+	}
+	go func() {
+		defer s.watchers.Done()
+		s.watch(member.Name, run)
+	}()
 	return view, nil
 }
 
@@ -1091,9 +1117,15 @@ func (s *Service) watch(name string, run Run) {
 		complete = completed
 		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 		s.notifyLocked()
+		hook = s.taskCompletedHook
+		if s.closed {
+			// Shutdown owns the member now. Leave its inbox queued on disk
+			// for a later Service instead of starting a turn that would
+			// outlive the wait.
+			return true, nil
+		}
 		pending = s.drainLocked(name, member.ParentID)
 		runner = s.runner
-		hook = s.taskCompletedHook
 		if len(pending) > 0 {
 			// Marked under the lock that took the messages, so the member
 			// never reads as idle between losing its inbox and starting its
@@ -1111,6 +1143,22 @@ func (s *Service) watch(name string, run Run) {
 		return
 	}
 	if _, err := s.launch(context.WithoutCancel(context.Background()), runner, member, resumePrompt(pending)); err != nil {
+		if errors.Is(err, errShutdown) {
+			// Shutdown took the member after this turn drained its inbox.
+			// Hand the messages back so a later Service delivers them.
+			_ = s.write(mustApply, func() (bool, error) {
+				for _, message := range pending {
+					for i := range s.state.Messages {
+						if s.state.Messages[i].ID == message.ID {
+							s.state.Messages[i].Delivered = false
+						}
+					}
+				}
+				s.notifyLocked()
+				return true, nil
+			})
+			return
+		}
 		text := fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending))
 		_ = s.write(mustApply, func() (bool, error) {
 			s.appendMessageLocked(name, leadName, text)
@@ -1689,11 +1737,14 @@ func (s *Service) Changed() <-chan struct{} {
 }
 
 // Shutdown cancels this process's live teammate runs and marks its members
-// inactive. Other processes run their own members and keep doing so, and the
-// durable state is kept so a later enable resumes the same Team.
+// inactive. It waits for every settling run to write the state, so no write
+// lands after it returns. Other processes run their own members and keep
+// doing so, and the durable state is kept so a later enable resumes the same
+// Team.
 func (s *Service) Shutdown() {
 	var runs []Run
 	_ = s.write(mustApply, func() (bool, error) {
+		s.closed = true
 		changed := false
 		for name, run := range s.runs {
 			runs = append(runs, run)
@@ -1715,6 +1766,7 @@ func (s *Service) Shutdown() {
 	for _, run := range runs {
 		run.Cancel()
 	}
+	s.watchers.Wait()
 }
 
 // CreateTask adds one unowned pending task to the caller's team board.
