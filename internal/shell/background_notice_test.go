@@ -20,7 +20,7 @@ func TestBackgroundJobCompletionNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	_, err := manager.StartWithSession(ctx, t.TempDir(), nil, "echo hello-notice", "", "session-notice", testMaxJobs)
+	_, err := manager.StartWithSession(ctx, nil, t.TempDir(), nil, "echo hello-notice", "", "session-notice", testMaxJobs)
 	require.NoError(t, err)
 
 	deadline := time.After(5 * time.Second)
@@ -48,7 +48,7 @@ func TestForegroundJobPublishesNoNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	bgShell, err := manager.Start(ctx, t.TempDir(), nil, "echo hello-inline", "", testMaxJobs)
+	bgShell, err := manager.Start(ctx, nil, t.TempDir(), nil, "echo hello-inline", "", testMaxJobs)
 	require.NoError(t, err)
 	bgShell.Wait()
 
@@ -76,7 +76,7 @@ func TestBackgroundJobSessionAttachedLateStillNotifies(t *testing.T) {
 	dir := t.TempDir()
 	release := filepath.Join(dir, "release")
 	command := fmt.Sprintf("while [ ! -f %q ]; do sleep 0.01; done; echo late-session", release)
-	bgShell, err := manager.Start(ctx, dir, nil, command, "", testMaxJobs)
+	bgShell, err := manager.Start(ctx, nil, dir, nil, command, "", testMaxJobs)
 	require.NoError(t, err)
 
 	// The job outlived the foreground window, so the tool layer attaches the
@@ -110,7 +110,7 @@ func TestBackgroundJobAwaitedSuppressesNotice(t *testing.T) {
 	dir := t.TempDir()
 	release := filepath.Join(dir, "release")
 	command := fmt.Sprintf("while [ ! -f %q ]; do sleep 0.01; done; echo awaited", release)
-	bgShell, err := manager.StartWithSession(ctx, dir, nil, command, "", "session-awaited", testMaxJobs)
+	bgShell, err := manager.StartWithSession(ctx, nil, dir, nil, command, "", "session-awaited", testMaxJobs)
 	require.NoError(t, err)
 	bgShell.MarkAwaited()
 	require.NoError(t, os.WriteFile(release, nil, 0o644))
@@ -137,10 +137,10 @@ func TestBackgroundJobKillSuppressesNotice(t *testing.T) {
 	events := SubscribeBackgroundJobs(ctx)
 
 	manager := newBackgroundShellManager()
-	bgShell, err := manager.StartWithSession(ctx, t.TempDir(), nil, "sleep 30", "", "session-killed", testMaxJobs)
+	bgShell, err := manager.StartWithSession(ctx, nil, t.TempDir(), nil, "sleep 30", "", "session-killed", testMaxJobs)
 	require.NoError(t, err)
 	bgShell.MarkKilledByModel()
-	require.NoError(t, manager.Kill(bgShell.ID))
+	require.NoError(t, manager.Kill(ctx, bgShell.ID))
 
 	deadline := time.After(200 * time.Millisecond)
 	for {

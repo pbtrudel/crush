@@ -67,6 +67,16 @@ func ReportWarn(warn string) tea.Cmd {
 	return CmdHandler(NewWarnMsg(warn))
 }
 
+// ReportInfoWithTTL reports an info message that stays on screen for ttl.
+func ReportInfoWithTTL(info string, ttl time.Duration) tea.Cmd {
+	return CmdHandler(InfoMsg{Type: InfoTypeInfo, Msg: info, TTL: ttl})
+}
+
+// ReportWarnWithTTL reports a warning that stays on screen for ttl.
+func ReportWarnWithTTL(warn string, ttl time.Duration) tea.Cmd {
+	return CmdHandler(InfoMsg{Type: InfoTypeWarn, Msg: warn, TTL: ttl})
+}
+
 type (
 	InfoMsg struct {
 		Type InfoType

@@ -151,16 +151,6 @@ func (g *ActivityGroupItem) Bump() {
 	g.ver.Bump()
 }
 
-// Finished implements [list.Item].
-func (g *ActivityGroupItem) Finished() bool {
-	for _, item := range g.items {
-		if !item.Finished() {
-			return false
-		}
-	}
-	return true
-}
-
 // SetFocused implements [list.Focusable].
 func (g *ActivityGroupItem) SetFocused(focused bool) {
 	if g.focused != focused {

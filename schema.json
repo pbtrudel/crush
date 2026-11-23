@@ -615,6 +615,11 @@
           "description": "Disable automatic conversation summarization",
           "default": false
         },
+        "web": {
+          "type": "boolean",
+          "description": "Open a browser tab that mirrors the session (web mode)",
+          "default": false
+        },
         "auto_compact_threshold": {
           "type": "number",
           "description": "Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.",
@@ -863,6 +868,10 @@
           "examples": [
             300
           ]
+        },
+        "prompts": {
+          "$ref": "#/$defs/PromptPaths",
+          "description": "Files that replace Crush's built-in prompts, keyed by prompt name. A replacement is used verbatim, so anything the built-in template injected (skills, context files, LSP status) is lost unless the replacement asks for it too."
         }
       },
       "additionalProperties": false,
@@ -945,6 +954,12 @@
         "output"
       ]
     },
+    "PromptPaths": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
     "ProviderConfig": {
       "properties": {
         "id": {
@@ -1019,6 +1034,21 @@
         "provider_options": {
           "type": "object",
           "description": "Additional provider-specific options for this provider"
+        },
+        "request_compression": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "br",
+              "gzip"
+            ],
+            "examples": [
+              "br",
+              "gzip"
+            ]
+          },
+          "type": "array",
+          "description": "Encodings to compress request bodies with, most preferred first; only works with openai-compatible providers"
         },
         "aws_auth_refresh": {
           "type": "string",
@@ -1166,7 +1196,9 @@
           "examples": [
             "charmtone-panther",
             "gruvbox-dark",
-            "keanu"
+            "rose-pine",
+            "keanu",
+            "kitt"
           ]
         },
         "completions": {
@@ -1192,6 +1224,10 @@
           "type": "boolean",
           "description": "Enable terminal mouse capture for selection, clicks, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste",
           "default": true
+        },
+        "nerd_fonts": {
+          "type": "boolean",
+          "description": "Override Nerd Font glyph detection for the TUI: true forces glyphs on, false forces them off, and unset keeps automatic detection"
         },
         "exit_banner": {
           "type": "string",

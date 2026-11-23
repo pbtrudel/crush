@@ -91,8 +91,8 @@ func (w *AppWorkspace) RoutesChannelEvents() bool { return false }
 // -- Messages --
 
 func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	if w.app.AgentCoordinator != nil {
-		return w.app.AgentCoordinator.ListSettledMessages(ctx, sessionID)
+	if coord := w.app.Agent(); coord != nil {
+		return coord.ListSettledMessages(ctx, sessionID)
 	}
 	if err := w.app.Messages.FlushAll(ctx); err != nil {
 		return nil, err
@@ -111,28 +111,29 @@ func (w *AppWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Messa
 // -- Agent --
 
 func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	_, err := w.app.AgentCoordinator.Run(ctx, sessionID, prompt, attachments...)
+	_, err := w.app.Agent().Run(ctx, sessionID, prompt, attachments...)
 	return err
 }
 
 func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, prompt string, attachments ...message.Attachment) error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	_, err := w.app.AgentCoordinator.Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
+	_, err := w.app.Agent().Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
 	return err
 }
 
 // AgentAsk answers a side question about the session without persisting
 // the exchange or touching the workspace.
 func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
-	if w.app.AgentCoordinator == nil {
+	coord := w.app.Agent()
+	if coord == nil {
 		return "", errors.New("agent coordinator not initialized")
 	}
-	asker, ok := w.app.AgentCoordinator.(agent.SideQuestioner)
+	asker, ok := coord.(agent.SideQuestioner)
 	if !ok {
 		return "", errors.New("side questions are not supported by this coordinator")
 	}
@@ -174,9 +175,9 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 	}
 
 	// Generate a title from the shell command if it was the first message.
-	if isFirstMessage && w.app.AgentCoordinator != nil {
+	if isFirstMessage && w.app.Agent() != nil {
 		titleCtx := context.WithoutCancel(ctx)
-		w.app.AgentCoordinator.GenerateTitle(titleCtx, sessionID, "$ "+command)
+		w.app.Agent().GenerateTitle(titleCtx, sessionID, "$ "+command)
 	}
 
 	return proto.ShellCommandResponse{
@@ -186,30 +187,30 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 }
 
 func (w *AppWorkspace) AgentCancel(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.Cancel(sessionID)
+	if w.app.Agent() != nil {
+		w.app.Agent().Cancel(sessionID)
 	}
 }
 
 func (w *AppWorkspace) AgentIsBusy() bool {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsBusy()
+	return w.app.Agent().IsBusy()
 }
 
 func (w *AppWorkspace) AgentIsSessionBusy(sessionID string) bool {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsSessionBusy(sessionID)
+	return w.app.Agent().IsSessionBusy(sessionID)
 }
 
 func (w *AppWorkspace) AgentModel() AgentModel {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return AgentModel{}
 	}
-	m := w.app.AgentCoordinator.Model()
+	m := w.app.Agent().Model()
 	return AgentModel{
 		CatwalkCfg: m.CatwalkCfg,
 		ModelCfg:   m.ModelCfg,
@@ -217,48 +218,48 @@ func (w *AppWorkspace) AgentModel() AgentModel {
 }
 
 func (w *AppWorkspace) AgentIsReady() bool {
-	return w.app.AgentCoordinator != nil
+	return w.app.Agent() != nil
 }
 
 func (w *AppWorkspace) AgentReadyErr() error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return ErrAgentNotInitialized
 	}
 	return nil
 }
 
 func (w *AppWorkspace) AgentQueuedPrompts(sessionID string) int {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return 0
 	}
-	return w.app.AgentCoordinator.QueuedPrompts(sessionID)
+	return w.app.Agent().QueuedPrompts(sessionID)
 }
 
 func (w *AppWorkspace) AgentQueuedPromptsList(sessionID string) []string {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return nil
 	}
-	return w.app.AgentCoordinator.QueuedPromptsList(sessionID)
+	return w.app.Agent().QueuedPromptsList(sessionID)
 }
 
 func (w *AppWorkspace) AgentClearQueue(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.ClearQueue(sessionID)
+	if w.app.Agent() != nil {
+		w.app.Agent().ClearQueue(sessionID)
 	}
 }
 
 func (w *AppWorkspace) AgentSetMain(agentID string) error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	return w.app.AgentCoordinator.SetMainAgent(agentID)
+	return w.app.Agent().SetMainAgent(agentID)
 }
 
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	return w.app.AgentCoordinator.Summarize(ctx, sessionID)
+	return w.app.Agent().Summarize(ctx, sessionID)
 }
 
 func (w *AppWorkspace) UpdateAgentModel(ctx context.Context) error {
@@ -319,20 +320,21 @@ func (w *AppWorkspace) PermissionSkipRequests() bool {
 // -- Host context --
 
 func (w *AppWorkspace) HostContext(_ context.Context) (proto.HostContext, error) {
-	if w.app.AgentCoordinator == nil {
+	coord := w.app.Agent()
+	if coord == nil {
 		return proto.HostContext{}, nil
 	}
-	return w.app.AgentCoordinator.HostContext(), nil
+	return coord.HostContext(), nil
 }
 
 // -- Questions --
 
-func (w *AppWorkspace) QuestionAnswer(responses []question.Answer) bool {
-	return w.app.Questions.Answer(responses)
+func (w *AppWorkspace) QuestionAnswer(batchID string, responses []question.Answer) bool {
+	return w.app.Questions.Answer(batchID, responses)
 }
 
-func (w *AppWorkspace) QuestionCancel() bool {
-	return w.app.Questions.Cancel()
+func (w *AppWorkspace) QuestionCancel(batchID string) bool {
+	return w.app.Questions.Cancel(batchID)
 }
 
 // -- Pinentry --
@@ -609,6 +611,28 @@ func (w *AppWorkspace) MCPStartServer(ctx context.Context, name string) error {
 	return mcptools.InitializeSingleForced(ctx, name, w.store)
 }
 
+// SkillsDisabled returns the skills disabled for this repository.
+func (w *AppWorkspace) SkillsDisabled(ctx context.Context) ([]string, error) {
+	return w.app.Sessions.SkillsDisabled(ctx)
+}
+
+// SkillsEnabled returns the skills with a repository-scoped enabled
+// override (config-disabled skills re-enabled here).
+func (w *AppWorkspace) SkillsEnabled(ctx context.Context) ([]string, error) {
+	return w.app.Sessions.SkillsEnabled(ctx)
+}
+
+// SkillSetDisabled adds or removes a repository-scoped skill override.
+func (w *AppWorkspace) SkillSetDisabled(ctx context.Context, name string, disabled bool) error {
+	return w.app.Sessions.SetSkillDisabled(ctx, name, disabled, w.store.SkillConfigDisabled(name))
+}
+
+// SkillSetConfigDisabled toggles a skill's disabled flag in the global
+// config's options.disabled_skills list.
+func (w *AppWorkspace) SkillSetConfigDisabled(ctx context.Context, name string, disabled bool) error {
+	return w.store.SetSkillDisabledConfig(config.ScopeGlobal, name, disabled)
+}
+
 func (w *AppWorkspace) MCPAuthenticate(ctx context.Context, name string) error {
 	return mcptools.AuthenticateMCP(ctx, w.store, name)
 }
@@ -625,6 +649,26 @@ func (w *AppWorkspace) MCPAuthURL(name string) string {
 
 func (w *AppWorkspace) Subscribe(program *tea.Program) {
 	w.app.Subscribe(program)
+}
+
+func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
+	in := w.app.Events(ctx)
+	out := make(chan any, 256)
+	go func() {
+		defer close(out)
+		for ev := range in {
+			select {
+			case out <- ev.Payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+func (w *AppWorkspace) CurrentSessionID() string {
+	return w.app.CurrentSessionID()
 }
 
 func (w *AppWorkspace) Shutdown() {

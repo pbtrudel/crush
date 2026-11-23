@@ -544,7 +544,7 @@ func (e *fakeEnv) PermissionSkipRequests() bool {
 	return e.yolo
 }
 
-func (e *fakeEnv) QuestionAnswer(responses []question.Answer) bool {
+func (e *fakeEnv) QuestionAnswer(_ string, responses []question.Answer) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.answers = append(e.answers, responses...)

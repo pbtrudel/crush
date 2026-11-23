@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"charm.land/x/nerdfont"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -67,6 +68,7 @@ func (h *header) drawHeader(
 	lspErrorCount int,
 	hyperCredits *int,
 	gitBranch string,
+	gitBranchLabel string,
 	busy bool,
 	animPhase float64,
 	modelName string,
@@ -99,7 +101,7 @@ func (h *header) drawHeader(
 		detailsOpen,
 		availDetailWidth,
 		hyperCredits,
-		gitBranch,
+		gitBranchLabel,
 		contextWindow,
 		runningSubAgents,
 	)
@@ -249,7 +251,7 @@ func renderHeaderDetails(
 	}
 
 	if lspErrorCount > 0 {
-		parts = append(parts, t.LSP.ErrorDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPErrorIcon, lspErrorCount)))
+		parts = append(parts, t.LSP.ErrorDiagnostic.Render(fmt.Sprintf("%s%d", nerdfont.Glyph(styles.LSPErrorIcon, "E"), lspErrorCount)))
 	}
 
 	if contextWindow > 0 {

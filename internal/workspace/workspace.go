@@ -205,11 +205,13 @@ type Workspace interface {
 
 	// Questions
 	//
-	// QuestionAnswer resolves the pending question with responses.
-	QuestionAnswer(responses []question.Answer) bool
+	// QuestionAnswer submits responses to the pending question batch
+	// with the given ID.
+	QuestionAnswer(batchID string, responses []question.Answer) bool
 
-	// QuestionCancel cancels the pending question.
-	QuestionCancel() bool
+	// QuestionCancel cancels the pending question batch with the
+	// given ID.
+	QuestionCancel(batchID string) bool
 
 	// Pinentry
 	//
@@ -285,7 +287,21 @@ type Workspace interface {
 	MCPPendingAuth() []mcptools.PendingAuthServer
 	MCPAuthURL(name string) string
 
+	// Skills toggles
+	SkillsDisabled(ctx context.Context) ([]string, error)
+	SkillSetDisabled(ctx context.Context, name string, disabled bool) error
+	SkillsEnabled(ctx context.Context) ([]string, error)
+	SkillSetConfigDisabled(ctx context.Context, name string, disabled bool) error
+
 	// Events
+	// SubscribeEvents returns workspace events for a non-TUI consumer,
+	// such as the web gateway. Values are the same domain events the TUI
+	// receives. The channel closes when ctx is done or the workspace
+	// shuts down.
+	SubscribeEvents(ctx context.Context) <-chan any
+	// CurrentSessionID returns the session last reported through
+	// SetCurrentSession, or an empty string.
+	CurrentSessionID() string
 	Subscribe(program *tea.Program)
 	Shutdown()
 }

@@ -1,0 +1,64 @@
+import { describe, expect, it } from 'vitest';
+import { parseOklch, token } from './palette';
+
+// close compares two 0..1 sRGB channels; the tolerance absorbs rounding
+// differences between conversion implementations.
+const close = (a: number, b: number) => Math.abs(a - b) < 0.01;
+
+// channels decodes a sRGB hex string from three's getHexString.
+function channels(hex: string): number[] {
+  return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+}
+
+describe('palette', () => {
+  it('parses oklch tokens', () => {
+    const c = parseOklch('oklch(0.82 0.14 210)')!;
+    expect(c.b).toBeGreaterThan(c.r);
+    expect(c.g).toBeGreaterThan(c.r);
+    expect(parseOklch('#52d8ff')).toBeNull();
+  });
+
+  it('converts a known oklch value to its sRGB color', () => {
+    // oklch(0.82 0.14 210) is the --cyan token. The expected sRGB comes from
+    // the OKLab to sRGB matrices, not from this implementation.
+    const rgb = channels(parseOklch('oklch(0.82 0.14 210)')!.getHexString());
+    expect(close(rgb[0], 0.0745)).toBe(true);
+    expect(close(rgb[1], 0.8627)).toBe(true);
+    expect(close(rgb[2], 0.9647)).toBe(true);
+    expect(parseOklch('oklch(1 0 0)')!.getHexString()).toBe('ffffff');
+  });
+
+  it('parses the percentage form a browser returns for a custom property', () => {
+    const percent = parseOklch('oklch(12% .05 275)')!;
+    const plain = parseOklch('oklch(0.12 0.05 275)')!;
+    expect(percent.getHexString()).toBe(plain.getHexString());
+    // The void token is nearly black; reading 12 as a lightness would clamp
+    // every channel to white.
+    expect(percent.r).toBeLessThan(0.1);
+    // A percentage chroma is relative to 0.4.
+    expect(parseOklch('oklch(12% 12.5% 275)')!.getHexString()).toBe(plain.getHexString());
+  });
+
+  it('reads a component the browser serialized as none as zero', () => {
+    expect(parseOklch('oklch(0.82 0.14 none)')!.getHexString()).toBe(parseOklch('oklch(0.82 0.14 0)')!.getHexString());
+    expect(parseOklch('oklch(0.82 none 210)')!.getHexString()).toBe(parseOklch('oklch(0.82 0 210)')!.getHexString());
+    // No lightness at all is black, not a parse failure.
+    expect(parseOklch('oklch(none none none)')!.getHexString()).toBe('000000');
+  });
+
+  it('falls back when the token is missing, as in jsdom', () => {
+    expect(token('--missing', '#52d8ff').getHexString()).toBe('52d8ff');
+  });
+
+  it('reads and converts a color token set on the document', () => {
+    document.documentElement.style.setProperty('--test-cyan', 'oklch(0.82 0.14 210)');
+    try {
+      const rgb = channels(token('--test-cyan', '#000000').getHexString());
+      expect(close(rgb[0], 0.0745)).toBe(true);
+      expect(close(rgb[1], 0.8627)).toBe(true);
+      expect(close(rgb[2], 0.9647)).toBe(true);
+    } finally {
+      document.documentElement.style.removeProperty('--test-cyan');
+    }
+  });
+});

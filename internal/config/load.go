@@ -300,6 +300,17 @@ type LoadOption func(*loadOptions)
 
 type loadOptions struct {
 	skipProviderUpdate bool
+	dataDirFrom        string
+}
+
+// WithDefaultDataDirFrom resolves the default data directory from dir
+// instead of the working directory. It applies only when no data directory
+// is set by the dataDir argument, CRUSH_DATA_DIR or the data_directory
+// option. A run in a new Git worktree passes the checkout it was started
+// from, so it shares that checkout's sessions instead of starting an empty
+// database in the worktree.
+func WithDefaultDataDirFrom(dir string) LoadOption {
+	return func(o *loadOptions) { o.dataDirFrom = dir }
 }
 
 // WithoutProviderUpdate keeps the provider catalog refresh off. The load
@@ -319,6 +330,11 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		opt(&o)
 	}
 
+	// The CRUSH_DATA_DIR env var overrides the per-project data directory
+	// when no --data-dir flag is given. Relative paths resolve against the
+	// working directory, like the data_directory config option.
+	dataDir = cmp.Or(dataDir, os.Getenv("CRUSH_DATA_DIR"))
+
 	// Migrate deprecated disable_notifications before loading config.
 	migrateDisableNotifications()
 
@@ -329,6 +345,9 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
 
+	if dataDir == "" && o.dataDirFrom != "" && (cfg.Options == nil || cfg.Options.DataDirectory == "") {
+		dataDir = defaultDataDirFor(o.dataDirFrom)
+	}
 	cfg.setDefaults(workingDir, dataDir)
 
 	store := &ConfigStore{
@@ -366,7 +385,15 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
 	}
 
-	if !isInsideWorktree() {
+	if err := cfg.ValidatePrompts(); err != nil {
+		return nil, fmt.Errorf("invalid prompt configuration: %w", err)
+	}
+
+	if err := cfg.ValidateRequestCompression(); err != nil {
+		return nil, fmt.Errorf("invalid provider configuration: %w", err)
+	}
+
+	if !isInsideWorktree(workingDir) {
 		const depth = 2
 		const items = 100
 		slog.Warn("No git repository detected in working directory, will limit file walk operations", "depth", depth, "items", items)
@@ -445,7 +472,7 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 
 	env := env.New()
 	// Configure providers
-	valueResolver := NewShellVariableResolver(env)
+	valueResolver := NewShellVariableResolver(env, WithWorkingDir(workingDir))
 	store.resolver = valueResolver
 
 	// Hold writeMu during initial load to prevent configureProviders
@@ -847,6 +874,16 @@ func (c *Config) NormalizeOptions() {
 	}
 }
 
+// defaultDataDirFor returns the data directory a project at workingDir
+// uses when none is configured: the closest existing one within the
+// project, or a new one in workingDir.
+func defaultDataDirFor(workingDir string) string {
+	if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
+		return path
+	}
+	return filepath.Join(workingDir, defaultDataDirectory)
+}
+
 func (c *Config) setDefaults(workingDir, dataDir string) {
 	c.NormalizeOptions()
 	if len(c.Options.GlobalContextPaths) == 0 {
@@ -862,11 +899,7 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	if dataDir != "" {
 		c.Options.DataDirectory = dataDir
 	} else if c.Options.DataDirectory == "" {
-		if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
-			c.Options.DataDirectory = path
-		} else {
-			c.Options.DataDirectory = filepath.Join(workingDir, defaultDataDirectory)
-		}
+		c.Options.DataDirectory = defaultDataDirFor(workingDir)
 	}
 	c.Options.DataDirectory = filepath.Clean(filepathext.SmartJoin(workingDir, c.Options.DataDirectory))
 	if c.Providers == nil {
@@ -1226,6 +1259,7 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 				if !json.Valid(jsonBytes) {
 					return nil, nil, fmt.Errorf("shell config %s produced invalid JSON", path)
 				}
+				jsonBytes = anchorPromptPaths(jsonBytes, dir)
 				addTopLevelKeys(shDirKeys, dir, jsonBytes)
 				configs = append(configs, jsonBytes)
 				loaded = append(loaded, path)
@@ -1235,6 +1269,7 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 				return nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
 			}
 			data = migrateConfigFile(path, data)
+			data = anchorPromptPaths(data, dir)
 			addTopLevelKeys(jsonDirKeys, dir, data)
 			configs = append(configs, data)
 			loaded = append(loaded, path)
@@ -1267,6 +1302,29 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 		return nil, nil, err
 	}
 	return cfg, loaded, nil
+}
+
+// anchorPromptPaths makes the relative options.prompts paths in one config
+// file absolute against that file's directory, before the files merge and
+// lose track of where each path came from. Otherwise a relative path in the
+// global config would point at a different file in every project. Paths
+// starting with ~ or $ are left for expansion when the prompt is read.
+func anchorPromptPaths(data []byte, dir string) []byte {
+	gjson.GetBytes(data, "options.prompts").ForEach(func(name, path gjson.Result) bool {
+		p := path.String()
+		if p == "" || strings.HasPrefix(p, "~") || strings.HasPrefix(p, "$") || filepathext.SmartIsAbs(p) {
+			return true
+		}
+		abs, err := filepath.Abs(filepath.Join(dir, p))
+		if err != nil {
+			return true
+		}
+		if out, err := sjson.SetBytes(data, "options.prompts."+gjson.Escape(name.String()), abs); err == nil {
+			data = out
+		}
+		return true
+	})
+	return data
 }
 
 // addTopLevelKeys records the top-level JSON keys present in data into the
@@ -1511,12 +1569,17 @@ func assignIfNil[T any](ptr **T, val T) {
 	}
 }
 
-func isInsideWorktree() bool {
-	bts, err := exec.CommandContext(
+// isInsideWorktree reports whether dir is inside a git working tree. It
+// checks dir rather than the process working directory, which a server
+// shares across every workspace it hosts.
+func isInsideWorktree(dir string) bool {
+	cmd := exec.CommandContext(
 		context.Background(),
 		"git", "rev-parse",
 		"--is-inside-work-tree",
-	).CombinedOutput()
+	)
+	cmd.Dir = dir
+	bts, err := cmd.CombinedOutput()
 	return err == nil && strings.TrimSpace(string(bts)) == "true"
 }
 
@@ -1651,3 +1714,23 @@ func ProjectSkillsDir(workingDir string) []string {
 }
 
 func isAppleTerminal() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Terminal" }
+
+// ValidatePrompts rejects prompt names that do not name a built-in prompt, so
+// a typo fails at startup instead of silently leaving the built-in in place.
+func (c *Config) ValidatePrompts() error {
+	if c.Options == nil {
+		return nil
+	}
+	return ValidatePromptNames(c.Options.Prompts)
+}
+
+// ValidatePromptNames rejects any key in prompts that is not a built-in
+// prompt name. Config files and the --prompt flag both go through it.
+func ValidatePromptNames(prompts PromptPaths) error {
+	for _, name := range slices.Sorted(maps.Keys(prompts)) {
+		if !slices.Contains(PromptNames, name) {
+			return fmt.Errorf("unknown prompt %q, expected one of %s", name, strings.Join(PromptNames, ", "))
+		}
+	}
+	return nil
+}

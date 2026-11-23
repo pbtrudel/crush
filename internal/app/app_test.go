@@ -271,10 +271,13 @@ func TestCoordinatorContextLivesWithTheApp(t *testing.T) {
 	t.Parallel()
 
 	app := &App{globalCtx: t.Context()}
-	first := app.coordinatorContext()
+	first, stopFirst := app.newCoordinatorContext()
+	app.adoptCoordinatorContext(stopFirst)
 	require.NoError(t, first.Err())
 
-	second := app.coordinatorContext()
+	second, stopSecond := app.newCoordinatorContext()
+	require.NoError(t, first.Err(), "the current coordinator runs while its replacement is built")
+	app.adoptCoordinatorContext(stopSecond)
 	require.ErrorIs(t, first.Err(), context.Canceled, "the replaced coordinator's context ends")
 	require.NoError(t, second.Err(), "the new coordinator's context is live")
 }
@@ -288,6 +291,7 @@ func TestCoordinatorContextEndsWithTheApp(t *testing.T) {
 	app := &App{globalCtx: globalCtx}
 	cancel()
 
-	coordinatorCtx := app.coordinatorContext()
+	coordinatorCtx, stop := app.newCoordinatorContext()
+	defer stop()
 	require.ErrorIs(t, coordinatorCtx.Err(), context.Canceled)
 }

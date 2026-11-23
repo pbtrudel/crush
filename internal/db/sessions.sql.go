@@ -376,8 +376,7 @@ SET
     summary_message_id = ?,
     summary_cut_message_id = ?,
     cost = ?,
-    todos = ?,
-    channel = ?
+    todos = ?
 WHERE id = ?
 RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, channel, total_cache_read_tokens, total_context_tokens, summary_cut_message_id, archived
 `
@@ -392,10 +391,12 @@ type UpdateSessionParams struct {
 	SummaryCutMessageID  sql.NullString `json:"summary_cut_message_id"`
 	Cost                 float64        `json:"cost"`
 	Todos                sql.NullString `json:"todos"`
-	Channel              sql.NullString `json:"channel"`
 	ID                   string         `json:"id"`
 }
 
+// channel is deliberately not written here: SetSessionChannel owns the
+// binding, so a load-modify-Save cycle with a stale session cannot
+// clobber the channel the coordinator just set.
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.updateSessionStmt, updateSession,
 		arg.Title,
@@ -407,7 +408,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		arg.SummaryCutMessageID,
 		arg.Cost,
 		arg.Todos,
-		arg.Channel,
 		arg.ID,
 	)
 	var i Session
@@ -447,11 +447,7 @@ type UpdateSessionTitleIfCurrentParams struct {
 }
 
 func (q *Queries) UpdateSessionTitleIfCurrent(ctx context.Context, arg UpdateSessionTitleIfCurrentParams) error {
-	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent,
-		arg.Title,
-		arg.ID,
-		arg.Title_2,
-	)
+	_, err := q.exec(ctx, q.updateSessionTitleIfCurrentStmt, updateSessionTitleIfCurrent, arg.Title, arg.ID, arg.Title_2)
 	return err
 }
 
@@ -469,9 +465,6 @@ type UpdateSessionTodosParams struct {
 }
 
 func (q *Queries) UpdateSessionTodos(ctx context.Context, arg UpdateSessionTodosParams) error {
-	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos,
-		arg.Todos,
-		arg.ID,
-	)
+	_, err := q.exec(ctx, q.updateSessionTodosStmt, updateSessionTodos, arg.Todos, arg.ID)
 	return err
 }

@@ -141,3 +141,28 @@ func TestReloadConfigCommandReloads(t *testing.T) {
 
 	require.Equal(t, 1, ws.reloads)
 }
+
+func TestEditorSlashWebStartsWebMode(t *testing.T) {
+	t.Parallel()
+
+	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
+	m := newSlashUI(ws)
+	web := &fakeWeb{}
+	m.com.Web = web
+
+	submitEditor(t, m, "/web")
+
+	require.Equal(t, 1, web.starts)
+	require.Zero(t, web.opens, "/web must not block on the browser opener")
+	require.Empty(t, ws.prompts, "/web must not be sent to the agent")
+}
+
+func TestEditorSlashWebWithoutLauncherDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
+	m := newSlashUI(ws)
+
+	require.NotPanics(t, func() { submitEditor(t, m, "/web") })
+	require.Empty(t, ws.prompts, "/web must not be sent to the agent")
+}

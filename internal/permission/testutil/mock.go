@@ -29,6 +29,8 @@ func (m *MockPermissionService) AutoApproveSession(sessionID string) {}
 
 func (m *MockPermissionService) IsSessionAutoApproved(sessionID string) bool { return false }
 
+func (m *MockPermissionService) InheritAutoApproval(parentSessionID, childSessionID string) {}
+
 func (m *MockPermissionService) SetSkipRequests(skip bool) {}
 
 func (m *MockPermissionService) SkipRequests() bool {
@@ -49,6 +51,8 @@ func (m *MockPermissionService) SubscribeModeChanges(ctx context.Context) <-chan
 	return make(<-chan pubsub.Event[permission.ModeChangedEvent])
 }
 
-func (m *MockPermissionService) ActiveRequest() (permission.PermissionRequest, bool) {
-	return permission.PermissionRequest{}, false
+func (m *MockPermissionService) ActiveRequests() []permission.PermissionRequest {
+	return nil
 }
+
+func (m *MockPermissionService) SetSessionScope(scope permission.SessionScope) {}

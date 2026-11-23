@@ -135,6 +135,12 @@ type ProviderConfig struct {
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
 
+	// RequestCompression lists the encodings an OpenAI-compatible provider
+	// accepts for request bodies, most preferred first. A refused encoding
+	// falls back to the next one, then to plain JSON. Unset means plain
+	// JSON, except for Hyper, which takes br and gzip.
+	RequestCompression []string `json:"request_compression,omitempty" jsonschema:"description=Encodings to compress request bodies with\\, most preferred first; only works with openai-compatible providers,enum=br,enum=gzip,example=br,example=gzip"`
+
 	// Used to pass extra parameters to the provider.
 	ExtraParams map[string]string `json:"-"`
 
@@ -328,11 +334,12 @@ type LSPConfig struct {
 type TUIOptions struct {
 	CompactMode bool        `json:"compact_mode,omitempty" jsonschema:"description=Enable compact mode for the TUI interface,default=false"`
 	DiffMode    string      `json:"diff_mode,omitempty" jsonschema:"description=Diff mode for the TUI interface,enum=unified,enum=split"`
-	ActiveTheme string      `json:"active_theme,omitempty" jsonschema:"description=Name of the currently active theme,default=charmtone-panther,example=charmtone-panther,example=gruvbox-dark,example=keanu"`
+	ActiveTheme string      `json:"active_theme,omitempty" jsonschema:"description=Name of the currently active theme,default=charmtone-panther,example=charmtone-panther,example=gruvbox-dark,example=rose-pine,example=keanu,example=kitt"`
 	Completions Completions `json:"completions,omitzero" jsonschema:"description=Completions UI options"`
 	Transparent *bool       `json:"transparent,omitempty" jsonschema:"description=Enable transparent background for the TUI interface,default=false"`
 	Scrollbar   string      `json:"scrollbar,omitempty" jsonschema:"description=Chat scrollbar visibility,enum=default,enum=always,enum=never,default=default"`
 	Mouse       *bool       `json:"mouse,omitempty" jsonschema:"description=Enable terminal mouse capture for selection\\, clicks\\, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste,default=true"`
+	NerdFonts   *bool       `json:"nerd_fonts,omitempty" jsonschema:"description=Override Nerd Font glyph detection for the TUI: true forces glyphs on\\, false forces them off\\, and unset keeps automatic detection"`
 	ExitBanner  ExitBanner  `json:"exit_banner,omitempty" jsonschema:"description=Exit banner style after quitting Crush,enum=default,enum=compact,enum=none,default=default"`
 	Verbosity   string      `json:"verbosity,omitempty" jsonschema:"description=Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place,enum=low,enum=high,default=high"`
 }
@@ -500,6 +507,7 @@ type Options struct {
 	Debug                bool           `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
 	DebugLSP             bool           `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
 	DisableAutoSummarize bool           `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	Web                  bool           `json:"web,omitempty" jsonschema:"description=Open a browser tab that mirrors the session (web mode),default=false"`
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
 	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`
@@ -587,8 +595,9 @@ type Options struct {
 	// Crush dialog (loopback pinentry) instead of handing the terminal
 	// over to an external pinentry program. No GPG or git configuration
 	// is modified: the redirect only applies to processes Crush spawns.
-	PinentryIntegrated   *bool `json:"pinentry_integrated,omitempty" jsonschema:"description=Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.,default=true"`
-	PinentryCacheTimeout *int  `json:"pinentry_cache_timeout,omitempty" jsonschema:"description=Seconds Crush keeps an entered GPG passphrase in memory so repeated signing operations do not re-prompt. 0 (the default) disables it; gpg-agent's own cache applies regardless.,default=0,example=300"`
+	PinentryIntegrated   *bool       `json:"pinentry_integrated,omitempty" jsonschema:"description=Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.,default=true"`
+	PinentryCacheTimeout *int        `json:"pinentry_cache_timeout,omitempty" jsonschema:"description=Seconds Crush keeps an entered GPG passphrase in memory so repeated signing operations do not re-prompt. 0 (the default) disables it; gpg-agent's own cache applies regardless.,default=0,example=300"`
+	Prompts              PromptPaths `json:"prompts,omitempty" jsonschema:"description=Files that replace Crush's built-in prompts\\, keyed by prompt name. A replacement is used verbatim\\, so anything the built-in template injected (skills\\, context files\\, LSP status) is lost unless the replacement asks for it too."`
 }
 
 // ModelsOptions configures the model picker.
@@ -631,6 +640,13 @@ func (o *Options) GetMaxBackgroundJobs() int {
 	}
 	return *o.MaxBackgroundJobs
 }
+
+// PromptPaths maps a built-in prompt name to a file that replaces it.
+type PromptPaths map[string]string
+
+// PromptNames are the built-in prompts that options.prompts can replace. The
+// agent package owns the templates themselves and asserts it covers this list.
+var PromptNames = []string{"coder", "task", "plan", "summary", "title", "initialize"}
 
 // DefaultRequestTimeout bounds each LLM API request when the user has not
 // configured a timeout. Slow or unreachable providers fail after it instead

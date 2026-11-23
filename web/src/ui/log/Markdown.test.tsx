@@ -1,0 +1,53 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'preact';
+import DOMPurify from 'dompurify';
+import { Markdown } from './Markdown';
+
+function renderText(text: string): HTMLDivElement {
+  const root = document.createElement('div');
+  render(<Markdown text={text} />, root);
+  return root;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('Markdown', () => {
+  it('renders markdown and strips scripts and handlers', () => {
+    const root = renderText('**bold** <img src=x onerror="alert(1)"><script>alert(2)</script>');
+    expect(root.querySelector('strong')?.textContent).toBe('bold');
+    expect(root.innerHTML).not.toContain('onerror');
+    expect(root.innerHTML).not.toContain('<script');
+  });
+  it('opens links safely', () => {
+    const root = renderText('[site](https://charm.land)');
+    const a = root.querySelector('a')!;
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+  it('drops inline style attributes the page CSP would block', () => {
+    const root = renderText('<span style="color:red">x</span>');
+    expect(root.querySelector('span')?.textContent).toBe('x');
+    expect(root.querySelector('span')?.hasAttribute('style')).toBe(false);
+    expect(root.innerHTML).not.toContain('style=');
+  });
+  it('drops style, form and input elements', () => {
+    const root = renderText('<style>body{color:red}</style><form><input value="x"></form>');
+    expect(root.innerHTML).not.toContain('<style');
+    expect(root.innerHTML).not.toContain('<form');
+    expect(root.innerHTML).not.toContain('<input');
+  });
+  it('strips javascript URLs', () => {
+    const root = renderText('[click](javascript:alert(1))');
+    const href = root.querySelector('a')?.getAttribute('href') ?? '';
+    expect(href.toLowerCase()).not.toContain('javascript:');
+  });
+  it('does not re-parse unchanged text on re-render', () => {
+    const spy = vi.spyOn(DOMPurify, 'sanitize');
+    const root = document.createElement('div');
+    render(<Markdown text="stable" />, root);
+    render(<Markdown text="stable" />, root);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});

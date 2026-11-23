@@ -49,7 +49,9 @@ func (m *UI) handlePinentryEvent(ev pinentry.Event) tea.Cmd {
 				Msg:  pinentryTouchMessage,
 			}))
 		} else {
-			m.status.ClearInfoMsg(m.status.msgSeq)
+			if cmd := m.status.ClearInfoMsg(m.status.msgSeq); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 

@@ -1506,7 +1506,7 @@ func lastCardID(cards [][]string, questionIndex int) string {
 // card resolved. The question notification that follows is a no-op
 // because the batch is already removed here.
 func (b *Bridge) submitQuestionAnswers(in gatewayInteraction, req question.Request, selections map[string]map[string]bool, fillIns map[string]string, cards [][]string, originIndex int) {
-	if !b.env.QuestionAnswer(answersFromSelections(req, selections, fillIns)) {
+	if !b.env.QuestionAnswer(req.ID, answersFromSelections(req, selections, fillIns)) {
 		b.answerInteraction(in, iconError+" That question was already resolved.")
 		return
 	}

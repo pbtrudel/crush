@@ -1,0 +1,136 @@
+.holodeck {
+  /* The stacking context the fixed scene canvas's z-index -1 lives in. */
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100dvh;
+  padding: var(--space-4);
+  gap: var(--space-4);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left));
+}
+/* Every instrument keeps its own column, so the strip stays on one row at
+   1440px; the identity block takes the slack. The z-index lifts the HUD's
+   Display menu over the panels below, which the scan-line isolation would
+   otherwise paint on top; toasts and the interrupt layer stay above it. */
+.hud {
+  position: relative;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) auto auto auto auto auto auto;
+  align-items: center;
+  gap: var(--space-4) calc(var(--space-4) * 1.5);
+  padding: var(--space-4) calc(var(--space-4) * 1.5);
+}
+.hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.hud__controls { display: flex; align-items: center; gap: var(--space-4); }
+.hud__select {
+  appearance: none; color: var(--text); background-color: var(--glass-solid);
+  /* The chevron is two 45 degree strokes side by side, so no data URI. */
+  background-image:
+    linear-gradient(45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%);
+  background-size: 7px 7px;
+  background-position: calc(100% - 17px) 50%, calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 6px 28px 6px 10px; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px;
+}
+.hud__select option { background: var(--void-deep); color: var(--text); }
+.hud__select[data-mode='yolo'] { border-color: var(--amber); color: var(--amber); }
+.hud__select[data-mode='sysadmin'] { border-color: var(--magenta); color: var(--magenta); }
+.hud__mode { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+.hud__mode[data-mode='plan'] { border-color: var(--amber); }
+.hud__mode-btn {
+  background: transparent; color: var(--text-muted); border: 0; padding: 6px 10px;
+  min-block-size: 36px; font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__mode-btn[data-active='true'] { background: var(--cyan-dim); color: var(--cyan); }
+.hud__mode[data-mode='plan'] .hud__mode-btn[data-active='true'] { background: var(--void-deep); color: var(--amber); }
+.hud__link { display: inline-flex; gap: 6px; align-items: center; font: 500 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.12em; }
+.hud__link svg { fill: var(--teal); }
+.hud__link[data-conn='reconnecting'] svg { fill: var(--amber); animation: blink 1s steps(2) infinite; }
+.hud__link[data-conn='ended'] svg { fill: var(--magenta); }
+.motion-menu { position: relative; }
+.motion-menu summary { cursor: pointer; list-style: none; padding: 8px; }
+.motion-menu__panel {
+  position: absolute; inset-inline-end: 0; z-index: 30; display: grid; gap: 10px;
+  padding: var(--space-4); min-inline-size: 15rem;
+  background: var(--surface-solid); border: 1px solid var(--edge); border-radius: var(--radius);
+}
+.motion-menu fieldset { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.motion-menu label { display: flex; gap: 8px; align-items: center; min-block-size: 32px; }
+/* The banner is absent while linked, so the grid and deck are placed on
+   explicit rows; auto-placement would move them up and stretch the deck. */
+.holodeck__grid {
+  display: grid;
+  grid-template-columns: minmax(22rem, 34rem) 1fr;
+  grid-row: 3;
+  gap: var(--space-4);
+  min-block-size: 0;
+}
+.holodeck__deck { grid-row: 4; }
+.panel { min-block-size: 0; }
+/* The curve is drawn on the panel itself: a perspective on an ancestor
+   would make it the containing block of the fixed scene canvas. */
+.panel--log { transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+/* The scene shows through the stage; only the agent list takes input. */
+.stage { position: relative; min-block-size: 0; pointer-events: none; }
+.banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
+.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: oklch(0.80 0.15 75 / 0.08); }
+.banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
+/* The loading overlay is a hologram label over the live scene rather than a
+   cover, so the scene's own power-up shows through. `holo` supplies the
+   translucent veil and the corner brackets. */
+.boot {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; gap: var(--space-9);
+  justify-items: center; background: none; transition: opacity var(--dur-out) var(--ease-out), visibility 0s linear var(--dur-out);
+}
+/* `.holo` sets position: relative for its brackets and panels.css loads
+   last, so the fixed placement is restated with a two-class selector. */
+.boot.holo { position: fixed; }
+.boot[data-done='true'] { opacity: 0; visibility: hidden; }
+/* A 2D view has no scene to draw the boot, so it keeps the CSS rings. */
+.boot__rings { position: relative; inline-size: 160px; block-size: 160px; }
+.boot__rings span { position: absolute; inset: 0; border: 1px solid var(--cyan); border-radius: 50%; animation: boot-ring 1.6s var(--ease-out) infinite; }
+.boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }
+.boot__rings span:nth-child(3) { animation-delay: 0.53s; }
+@keyframes boot-ring { from { transform: scale(0.2); opacity: 1; } to { transform: scale(1); opacity: 0; } }
+/* Toasts sit top right, below the HUD strip. --hud-h is the height the HUD
+   publishes; the 80px fallback keeps the old 112px offset until it
+   reports. */
+.toasts { position: fixed; inset-block-start: calc(var(--hud-h, 80px) + var(--space-4) * 2); inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
+.toast {
+  display: flex; gap: 10px; align-items: center; padding: 10px 12px; min-inline-size: 18rem; max-inline-size: 26rem;
+  border-radius: var(--radius);
+}
+/* A toast is a hologram: the tone colors its corner brackets, not a fill. */
+.toast[data-tone='error'] { --bracket: var(--magenta); }
+.toast[data-tone='warn'] { --bracket: var(--amber); }
+.toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
+.unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
+/* From 1280px up the seven columns share one row: the strip keeps its
+   height by giving up gutter and gap instead of wrapping the controls. */
+@media (max-width: 1439px) {
+  .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  .hud__controls { gap: var(--space-1); }
+}
+@media (max-width: 1279px) {
+  /* The one-row grid, captions and empty-server placeholders included,
+     needs about 1280px of content, so the instruments wrap below it and
+     take back the wide gutter the tightened layout gave up. */
+  .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); padding: var(--space-4) calc(var(--space-4) * 1.5); }
+  .hud__id { flex: 1 1 12rem; }
+  .hud__controls { flex: 1 1 100%; flex-wrap: wrap; gap: var(--space-4); }
+  /* The wrapped HUD is taller, so until the HUD reports its height the
+     fallback keeps the old 216px offset. */
+  .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
+}
+@media (max-width: 1023px) {
+  .holodeck__grid { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
+  .panel--log { transform: none; order: 2; }
+}
+/* Below 768px everything stacks and the constellation collapses to a strip. */
+@media (max-width: 767px) {
+  .holodeck__grid { grid-template-rows: 96px 1fr; }
+}

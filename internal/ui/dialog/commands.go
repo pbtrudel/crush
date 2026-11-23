@@ -509,6 +509,7 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
+		NewCommandItem(c.com.Styles, "open_web", "Open Web Mode", "", ActionOpenWeb{}).WithAliases("web").WithIcon("◈"),
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
 	}
 	if c.hasSession && c.com.Config().Options.GetAgentTeams() {
@@ -619,6 +620,13 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		}))
 	}
 
+	// Toggle skills for this repository when any are configured.
+	if cfg.Options != nil && len(cfg.Options.SkillsPaths) > 0 {
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_skills", "Toggle Skills", "", ActionOpenDialog{
+			DialogID: SkillsTogglesID,
+		}))
+	}
+
 	if c.hasTodos || c.hasQueue {
 		var label string
 		switch {
@@ -664,6 +672,9 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		mouseLabel = "Enable Mouse"
 	}
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_mouse", mouseLabel, "", ActionToggleMouseSupport{}))
+
+	// Add Channels command — opens the channels management dialog.
+	commands = append(commands, NewCommandItem(c.com.Styles, "channels", "Channels", "", ActionOpenDialog{DialogID: ChannelsID}))
 
 	commands = append(
 		commands,

@@ -53,6 +53,7 @@ type ActionSelectAgent struct {
 // Messages for commands
 type (
 	ActionNewSession              struct{}
+	ActionOpenWeb                 struct{}
 	ActionToggleHelp              struct{}
 	ActionToggleCompactMode       struct{}
 	ActionToggleThinking          struct{}

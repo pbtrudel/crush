@@ -62,6 +62,15 @@ type SessionFile struct {
 	Deletions     int
 }
 
+// selectSession opens sessionID the way picking it in the sessions dialog
+// does: another session's agent viewer closes and the session loads.
+func (m *UI) selectSession(sessionID string) []tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	return []tea.Cmd{m.closeAgentViewerForSession(sessionID), m.loadSession(sessionID)}
+}
+
 // loadSession loads the session along with its associated files and computes
 // the diff statistics (additions and deletions) for each file in the session.
 // It returns a tea.Cmd that, when executed, fetches the session data and
@@ -104,7 +113,7 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 			messages:  messages,
 		}
 	}
-	return tea.Batch(load, m.reportCurrentSession(sessionID))
+	return tea.Batch(load, m.refreshSkillOverrides(), m.reportCurrentSession(sessionID))
 }
 
 // reportCurrentSession returns a fire-and-forget tea.Cmd that

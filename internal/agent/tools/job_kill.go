@@ -57,7 +57,7 @@ func NewJobKillTool() fantasy.AgentTool {
 			}
 			bgShell.MarkKilledByModel()
 
-			err := bgManager.Kill(params.ShellID)
+			err := bgManager.Kill(ctx, params.ShellID)
 			if err != nil {
 				// The shell can be reaped between Get and Kill, so a
 				// missing ID here is the same harmless race as above.

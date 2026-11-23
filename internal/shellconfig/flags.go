@@ -28,6 +28,9 @@ const (
 	flagJSONObject
 	// flagJSONAny parses the value as arbitrary JSON.
 	flagJSONAny
+	// flagStringList parses a comma-separated list, e.g. br,gzip, into
+	// []any, trimming each entry and rejecting empty ones.
+	flagStringList
 )
 
 // flagOp is how a parsed flag value is written into the target map.
@@ -176,6 +179,21 @@ func parseFlagValue(spec flagSpec, args []string, i int) (any, int, error) {
 			return nil, 0, fmt.Errorf("%s: --%s expects valid JSON, got %q: %s", args[0], name, v, err)
 		}
 		return parsed, i + 2, nil
+
+	case flagStringList:
+		v, err := nextArg(args, i, name)
+		if err != nil {
+			return nil, 0, err
+		}
+		var list []any
+		for entry := range strings.SplitSeq(v, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				return nil, 0, fmt.Errorf("%s: --%s expects a comma-separated list without empty entries, got %q", args[0], name, v)
+			}
+			list = append(list, entry)
+		}
+		return list, i + 2, nil
 
 	default:
 		return nil, 0, fmt.Errorf("%s: --%s has unknown flag kind", args[0], name)
