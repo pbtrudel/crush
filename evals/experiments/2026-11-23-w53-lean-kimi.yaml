@@ -1,0 +1,20 @@
+date: 2026-11-23
+name: w53-lean-kimi
+variants:
+  - name: full
+    ref: bea9c91ebfc781ff790ed4e655041c2b25ae9933
+    overlay: {prompt_profile: full}
+  - name: lean
+    ref: bea9c91ebfc781ff790ed4e655041c2b25ae9933
+    overlay: {prompt_profile: lean}
+routes: [kimi-3.1-pro]
+repetitions: 6
+# Roadmap W5.2 and W5.3: Kimi K3.1 Pro uses the default-family add-on when
+# lean is selected, but DeepSeek's accepted result says nothing about Kimi's
+# pass rate. Both arms pin the profile explicitly so the new DeepSeek-only
+# automatic default cannot affect the comparison. The DeepSeek baseline is a
+# planning stand-in for the detectable effect, not evidence about Kimi.
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.06424518204221902

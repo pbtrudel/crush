@@ -376,7 +376,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	c.agents[config.AgentCoder] = agent
 	// The input is read once the models are resolved, since the profile an
 	// unset prompt_profile renders depends on the model's family.
-	c.promptInputs[config.AgentCoder] = c.promptInputFor(agentCfg)
+	c.promptInputs[config.AgentCoder] = c.promptInputFor(config.AgentCoder, agentCfg, c.mainModels())
 
 	planCfg, ok := c.cfg.Config().Agents[config.AgentPlan]
 	if !ok {
@@ -393,7 +393,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 	c.agents[config.AgentPlan] = planAgent
-	c.promptInputs[config.AgentPlan] = c.promptInputFor(planCfg)
+	c.promptInputs[config.AgentPlan] = c.promptInputFor(config.AgentPlan, planCfg, c.mainModels())
 
 	c.prompts = map[string]*prompt.Prompt{
 		config.AgentCoder: coderPrompt,
@@ -1235,22 +1235,44 @@ type promptInput struct {
 	agentTeams bool
 	toolNames  string
 	profile    string
+	// family is the add-on family the lean profile renders from. It is
+	// empty under the full profile, which renders no add-on, so a model
+	// switch alone does not re-render there.
+	family string
 }
 
 // promptInputFor reports the inputs the prompt of a lead agent renders from.
-// The profile is the effective one, and it depends on the model, so a setting
-// change that moves the effective profile re-renders the prompt while one
-// that leaves it alone keeps the cached prefix.
-func (c *coordinator) promptInputFor(agentCfg config.Agent) promptInput {
+// The profile is the effective one, and both it and the lean add-on's family
+// depend on the model, so a switch that moves either re-renders the prompt
+// while one that leaves both alone keeps the cached prefix. The models are the
+// caller's, already resolved for this reload.
+func (c *coordinator) promptInputFor(name string, agentCfg config.Agent, models ModelSet) promptInput {
 	provider, model := "", ""
-	if large := c.mainModels().Large; large.Model != nil {
-		provider, model = large.Model.Provider(), large.Model.Model()
+	if models.Large.Model != nil {
+		provider, model = models.Large.Model.Provider(), models.Large.Model.Model()
+	}
+	profile := effectivePromptProfile(c.cfg.Config().Options.GetPromptProfile(), provider, model)
+	// The family decides the lean add-on, so a switch into another family
+	// has to re-render. The full profile renders no add-on, and neither does
+	// a prompt that is not the built-in coder one.
+	family := ""
+	if profile == config.PromptProfileLean && c.leanPromptAgent(name) {
+		family = promptFamily(provider, model)
 	}
 	return promptInput{
 		agentTeams: !c.agentsOff(),
 		toolNames:  strings.Join(c.effectiveToolNames(agentCfg, roleLead), "\x00"),
-		profile:    effectivePromptProfile(c.cfg.Config().Options.GetPromptProfile(), provider, model),
+		profile:    profile,
+		family:     family,
 	}
+}
+
+// leanPromptAgent reports whether the named agent renders the built-in coder
+// prompt, the only template with a lean variant and so the only one with a
+// family add-on to pick. The plan agent renders the plan template, and a
+// coder prompt replaced through options.prompts renders its own text.
+func (c *coordinator) leanPromptAgent(name string) bool {
+	return name == config.AgentCoder && promptPath(c.cfg, config.AgentCoder) == ""
 }
 
 // agentPrompt builds a lead agent's base system prompt from the current
@@ -2463,7 +2485,7 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	// The prompt is rendered from the tool palette and the Agent Teams
 	// setting, so a reload that changes either has to re-render it. Every
 	// other edit leaves the prompt, and its cached prefix, alone.
-	input := c.promptInputFor(agentCfg)
+	input := c.promptInputFor(name, agentCfg, models)
 	c.promptInputsMu.Lock()
 	rendered, renderedBefore := c.promptInputs[name]
 	c.promptInputsMu.Unlock()
