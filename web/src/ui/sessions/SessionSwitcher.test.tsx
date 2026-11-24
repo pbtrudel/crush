@@ -892,6 +892,53 @@ describe('session switcher', () => {
     expect(root.querySelector('input[aria-label="Rename Port the parser"]')).not.toBeNull();
   });
 
+  it('leaves a confirm reopened on the same row open when the first answer lands', async () => {
+    seed();
+    stubSessions();
+    const answer = deferred<void>();
+    vi.spyOn(api, 'deleteSession').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    await act(async () => { answer.resolve(undefined); await Promise.resolve(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).not.toBeNull();
+  });
+
+  it('leaves a rename reopened on the same row open when the first answer lands', async () => {
+    seed();
+    stubSessions();
+    const answer = deferred<Session>();
+    vi.spyOn(api, 'renameSession').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    await pressKey(root.querySelector('.sessions__rename')!, { key: 'Enter', code: 'Enter' });
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+
+    await act(async () => { answer.resolve(session('s-2', 'Fix the lexer')); await Promise.resolve(); });
+    await flush();
+
+    expect(root.querySelector('.sessions__rename')).not.toBeNull();
+  });
+
   it('clears the failure line when a new action starts', async () => {
     seed();
     stubSessions();

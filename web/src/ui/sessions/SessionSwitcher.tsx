@@ -46,6 +46,9 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const reloadFailed = useRef(false);
   // A close that carries a fresh server answer must keep its message line.
   const keepsError = useRef(false);
+  // Every editor a user opens is a new generation, so an answer to an older
+  // one cannot close or clear the editor that replaced it.
+  const editorGen = useRef(0);
   // One request at a time, even when a double click or a double Enter arrives.
   const following = useRef(false);
   const renamingBusy = useRef(false);
@@ -200,6 +203,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const startRename = (sess: Session) => {
     setActionError(null);
     sessionDeleteId.value = null;
+    editorGen.current++;
     setDraft(sess.title);
     sessionRenameId.value = sess.id;
   };
@@ -207,6 +211,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const submitRename = async (sess: Session) => {
     if (renamingBusy.current) return;
     renamingBusy.current = true;
+    const gen = editorGen.current;
     setActionError(null);
     let failure: unknown | null = null;
     try {
@@ -223,19 +228,21 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     }
     // An editor the user reopened after this request started owns the row
     // now, so only the one that is still open closes.
-    if (sessionRenameId.value === sess.id) sessionRenameId.value = null;
+    if (editorGen.current === gen && sessionRenameId.value === sess.id) sessionRenameId.value = null;
     await load();
   };
 
   const askDelete = (sess: Session) => {
     setActionError(null);
     sessionRenameId.value = null;
+    editorGen.current++;
     sessionDeleteId.value = sess.id;
   };
 
   const deleteSession = async (sess: Session) => {
     if (deletingBusy.current) return;
     deletingBusy.current = true;
+    const gen = editorGen.current;
     setActionError(null);
     const index = visible.findIndex((s) => s.id === sess.id);
     let failure: unknown | null = null;
@@ -257,7 +264,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     }
     // A confirm the user reopened after this request started owns the row
     // now, so only the one that is still open closes and takes the focus.
-    const ownsConfirm = sessionDeleteId.value === sess.id;
+    const ownsConfirm = editorGen.current === gen && sessionDeleteId.value === sess.id;
     if (ownsConfirm) {
       deletedIndex.current = Math.max(index, 0);
       reloadFailed.current = false;
