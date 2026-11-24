@@ -3,6 +3,7 @@ package csync
 import (
 	"encoding/json"
 	"maps"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -71,6 +72,22 @@ func TestNewLazyMap(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, 1, value)
 	})
+}
+
+func TestMap_JSONSchemaAlias(t *testing.T) {
+	t.Parallel()
+
+	// The method has to live in Map's value method set because
+	// jsonschema checks interface satisfaction on the non-pointer type.
+	type aliased interface{ JSONSchemaAlias() any }
+
+	typ := reflect.TypeFor[Map[string, int]]()
+	require.Implements(t, (*aliased)(nil), reflect.Zero(typ).Interface())
+
+	var zero Map[string, int]
+	alias, ok := zero.JSONSchemaAlias().(map[string]int)
+	require.True(t, ok)
+	require.Empty(t, alias)
 }
 
 func TestMap_Reset(t *testing.T) {
