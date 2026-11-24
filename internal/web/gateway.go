@@ -17,6 +17,7 @@ import (
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -56,6 +57,9 @@ type Options struct {
 	// TestAPIKey checks a provider API key before it is saved. Nil builds a
 	// config.ProviderConfig from the catalog entry and runs TestConnection.
 	TestAPIKey func(ctx context.Context, p catwalk.Provider, key string, r config.VariableResolver) error
+	// SignInFlow creates the OAuth flow a browser sign-in runs. Nil uses
+	// the shared flows in internal/oauth/signin.
+	SignInFlow func(providerID string) (signin.Flow, error)
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -126,6 +130,17 @@ type Gateway struct {
 	authsClosed bool
 	// authPoll overrides how long an auth request waits for the URL.
 	authPoll time.Duration
+	// signinMu guards signin, the one sign-in flow the gateway runs, and
+	// signinClosed, which refuses a flow started during shutdown.
+	// signinWG lets Shutdown wait for the flow's goroutines before the hub
+	// closes. Add is called under signinMu after the signinClosed check,
+	// so a goroutine can never start after Shutdown began waiting.
+	signinMu     sync.Mutex
+	signin       *signinRun
+	signinWG     sync.WaitGroup
+	signinClosed bool
+	// signInFlowFn is Options.SignInFlow; nil falls back to signin.New.
+	signInFlowFn func(string) (signin.Flow, error)
 	// launchMu guards launch, the private redirect file handed to the
 	// browser opener so the token stays out of its arguments.
 	launchMu  sync.Mutex
@@ -180,6 +195,10 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 			return testAPIKey(ctx, p, key, r, ws.Resolver())
 		}
 	}
+	signInFlowFn := opts.SignInFlow
+	if signInFlowFn == nil {
+		signInFlowFn = signin.New
+	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	port := ln.Addr().(*net.TCPAddr).Port
 	slots := newDiffSlots(maxConcurrentDiffs)
@@ -207,6 +226,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		loadCommandsFn:       opts.LoadCommands,
 		knownProvidersFn:     knownProvidersFn,
 		testAPIKeyFn:         testAPIKeyFn,
+		signInFlowFn:         signInFlowFn,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,
@@ -409,10 +429,18 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	g.authMu.Unlock()
+	// A running sign-in is cancelled and its listener freed here, before
+	// the wait below, so its goroutines settle while the hub is still
+	// open.
+	g.signinMu.Lock()
+	g.signinClosed = true
+	g.stopRunLocked(g.signin)
+	g.signinMu.Unlock()
 	workDone := make(chan struct{})
 	go func() {
 		g.shellWG.Wait()
 		g.authWG.Wait()
+		g.signinWG.Wait()
 		close(workDone)
 	}()
 	select {

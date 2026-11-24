@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
@@ -21,6 +22,7 @@ import (
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -1176,3 +1178,123 @@ func (f *Fake) CallLog() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.Calls...)
 }
+
+// FakeFlow is a signin.Flow for tests and webfake. Wait returns Next once,
+// at once, when it is set; otherwise it blocks until Finish or the context
+// ends, then returns Token or WaitErr.
+type FakeFlow struct {
+	FlowName     string // Name; "Fake provider" when empty
+	HasCodeEntry bool   // CodeEntry
+	Challenge    signin.Challenge
+	StartErr     error
+	Next         *signin.Challenge
+	Token        *oauth.Token
+	WaitErr      error
+	CodeOK       string // SubmitCode accepts only this code
+
+	release  chan struct{}
+	finish   sync.Once
+	mu       sync.Mutex
+	nextUsed bool
+	closed   bool
+}
+
+// NewFakeFlow returns a flow whose Wait blocks until Finish, and registers
+// Finish in t.Cleanup so no test leaves a goroutine waiting.
+func NewFakeFlow(t testing.TB) *FakeFlow {
+	t.Helper()
+	f := &FakeFlow{release: make(chan struct{})}
+	t.Cleanup(f.Finish)
+	return f
+}
+
+// NewFakeFlowFor returns a flow whose Wait blocks until done closes, for
+// callers without a *testing.T, such as webfake. Finish still releases it.
+func NewFakeFlowFor(done <-chan struct{}) *FakeFlow {
+	f := &FakeFlow{release: make(chan struct{})}
+	go func() {
+		select {
+		case <-done:
+			f.Finish()
+		case <-f.release:
+		}
+	}()
+	return f
+}
+
+// Finish completes the flow, the way a token arriving would.
+func (f *FakeFlow) Finish() {
+	f.finish.Do(func() {
+		f.mu.Lock()
+		if f.release == nil {
+			f.release = make(chan struct{})
+		}
+		release := f.release
+		f.mu.Unlock()
+		close(release)
+	})
+}
+
+// Closed reports whether the gateway closed the flow.
+func (f *FakeFlow) Closed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// Name is the provider name the dialog shows.
+func (f *FakeFlow) Name() string {
+	if f.FlowName == "" {
+		return "Fake provider"
+	}
+	return f.FlowName
+}
+
+// Start returns Challenge, or StartErr.
+func (f *FakeFlow) Start(context.Context) (signin.Challenge, error) {
+	if f.StartErr != nil {
+		return signin.Challenge{}, f.StartErr
+	}
+	return f.Challenge, nil
+}
+
+// Wait returns Next once when it is set. Otherwise it blocks until Finish
+// or the context ends.
+func (f *FakeFlow) Wait(ctx context.Context, _ signin.Challenge) (*oauth.Token, *signin.Challenge, error) {
+	f.mu.Lock()
+	if f.Next != nil && !f.nextUsed {
+		f.nextUsed = true
+		next := f.Next
+		f.mu.Unlock()
+		return nil, next, nil
+	}
+	release := f.release
+	f.mu.Unlock()
+	select {
+	case <-release:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	return f.Token, nil, f.WaitErr
+}
+
+// CodeEntry is the flow's code entry capability.
+func (f *FakeFlow) CodeEntry() bool { return f.HasCodeEntry }
+
+// SubmitCode accepts only CodeOK. Its error quotes the code, so a gateway
+// that logged or forwarded the text fails the test.
+func (f *FakeFlow) SubmitCode(_ context.Context, code string) (*oauth.Token, error) {
+	if f.CodeOK != "" && code == f.CodeOK {
+		return f.Token, nil
+	}
+	return nil, fmt.Errorf("invalid code %q", code)
+}
+
+// Close records that the flow's listener was released.
+func (f *FakeFlow) Close() {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+}
+
+var _ signin.Flow = (*FakeFlow)(nil)

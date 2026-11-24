@@ -414,6 +414,19 @@
       "chunk": "line 1\n"
     }
   },
+  "signin": {
+    "seq": 1,
+    "type": "signin",
+    "payload": {
+      "flow_id": "f1",
+      "provider": "copilot",
+      "provider_name": "GitHub Copilot",
+      "state": "waiting",
+      "kind": "device",
+      "user_code": "WDJB-MJHT",
+      "verification_url": "https://github.com/login/device"
+    }
+  },
   "snapshot": {
     "seq": 0,
     "type": "snapshot",

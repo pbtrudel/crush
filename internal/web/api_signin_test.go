@@ -2,20 +2,28 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/env"
+	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -419,4 +427,557 @@ func TestAPIKeySignInWhenCatalogUnavailable(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, rsp.StatusCode)
 	require.Contains(t, string(body), "providers_unavailable")
 	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+}
+
+// signInGatewayWithFlows starts a gateway whose sign-in flows come from
+// next, one call per start.
+func signInGatewayWithFlows(t *testing.T, next func() signin.Flow) (*Gateway, *webtest.Fake) {
+	t.Helper()
+	g, f := startWith(t, Options{
+		KnownProviders: testKnownProviders, TestAPIKey: acceptOnlyValidKey,
+		SignInFlow: func(string) (signin.Flow, error) { return next(), nil },
+	})
+	known, _ := testKnownProviders(nil)
+	f.SetCatalog(known)
+	return g, f
+}
+
+// signInGatewayWithFlow starts a gateway that runs f for every start.
+func signInGatewayWithFlow(t *testing.T, f *webtest.FakeFlow) (*Gateway, *webtest.Fake) {
+	t.Helper()
+	return signInGatewayWithFlows(t, func() signin.Flow { return f })
+}
+
+// frameUntil reads signin frames on the test goroutine until one contains
+// want, failing at the deadline.
+func frameUntil(t *testing.T, c *websocket.Conn, want string) testFrame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		fr := nextFrameOfType(ctx, t, c, frameSignIn)
+		if strings.Contains(string(fr.Payload), want) {
+			return fr
+		}
+	}
+}
+
+// statusUntil polls the status route on the test goroutine.
+func statusUntil(t *testing.T, c *http.Client, g *Gateway, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rsp, s := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+		rsp.Body.Close()
+		if strings.Contains(string(s), want) {
+			return
+		}
+		require.True(t, time.Now().Before(deadline), "status never reached %s: %s", want, s)
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// startSignIn starts a flow and returns its state.
+func startSignIn(t *testing.T, c *http.Client, g *Gateway, provider string) SignInState {
+	t.Helper()
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"`+provider+`"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	return st
+}
+
+// submitCode sends a pasted code for a flow.
+func submitCode(t *testing.T, c *http.Client, g *Gateway, flowID, code string) (*http.Response, []byte) {
+	t.Helper()
+	return doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/code",
+		`{"flow_id":"`+flowID+`","code":"`+code+`"}`)
+}
+
+func TestSignInDeviceFlowCompletes(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.FlowName = "GitHub Copilot"
+	flow.Challenge = signin.Challenge{
+		DeviceCode: "dc", UserCode: "WDJB-MJHT",
+		VerificationURL: "https://github.com/login/device", ExpiresIn: 900,
+	}
+	flow.Token = &oauth.Token{AccessToken: "gho_secret"}
+	g, f := signInGatewayWithFlow(t, flow)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Contains(t, string(body), `"state":"waiting","kind":"device","user_code":"WDJB-MJHT"`)
+	require.NotContains(t, string(body), `"dc"`, "the device code stays in the process")
+	_ = frameUntil(t, c, `"state":"waiting"`)
+	flow.Finish()
+	_ = frameUntil(t, c, `"state":"done"`)
+	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:copilot:oauth")
+	for _, fr := range g.hub.frames() {
+		require.NotContains(t, string(fr.Payload), "gho_secret")
+	}
+}
+
+func TestSignInStartReplacesFlow(t *testing.T) {
+	t.Parallel()
+	first := webtest.NewFakeFlow(t)
+	first.Challenge = signin.Challenge{UserCode: "ONE"}
+	second := webtest.NewFakeFlow(t)
+	second.Challenge = signin.Challenge{UserCode: "TWO"}
+	var mu sync.Mutex
+	flows := []*webtest.FakeFlow{first, second}
+	g, _ := signInGatewayWithFlows(t, func() signin.Flow {
+		mu.Lock()
+		defer mu.Unlock()
+		f := flows[0]
+		flows = flows[1:]
+		return f
+	})
+	c := authedClient(t, g)
+	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Contains(t, string(body), `"user_code":"TWO"`)
+	require.Eventually(t, first.Closed, time.Second, 10*time.Millisecond, "the replaced flow frees its listener")
+	statusUntil(t, c, g, `"user_code":"TWO"`)
+}
+
+func TestSignInCancel(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1455/start"}
+	g, f := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"openai"}`)
+	rsp.Body.Close()
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	require.Equal(t, "browser", st.Kind)
+	rsp, _ = doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/cancel", `{"flow_id":"`+st.FlowID+`"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
+	require.True(t, flow.Closed())
+	statusUntil(t, c, g, `"state":"cancelled"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.NotContains(t, string(status), `"error":`, "a cancelled state carries no sentence")
+	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+}
+
+func TestSignInCancelledOnShutdown(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	fake := webtest.NewFake()
+	g, err := Start(t.Context(), Options{
+		Workspace: fake, KnownProviders: testKnownProviders,
+		SignInFlow: func(string) (signin.Flow, error) { return flow, nil },
+	})
+	require.NoError(t, err)
+	rsp, _ := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, g.Shutdown(ctx))
+	require.True(t, flow.Closed())
+}
+
+func TestSignInFallbackShowsTheNextChallenge(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.Next = &signin.Challenge{DeviceCode: "dc", UserCode: "NEXT-CODE", VerificationURL: "https://x.ai/device"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	rsp, _ := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"xai"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	_ = frameUntil(t, c, `"kind":"device","user_code":"NEXT-CODE"`)
+}
+
+func TestSignInStartFailureHidesProviderText(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.StartErr = errors.New("upstream said: client_secret=abc")
+	g, _ := signInGatewayWithFlow(t, flow)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadGateway, rsp.StatusCode)
+	require.Contains(t, string(body), "signin_start_failed")
+	require.NotContains(t, string(body), "client_secret")
+}
+
+func TestSignInImportsCopilot(t *testing.T) {
+	t.Parallel()
+	var called atomic.Bool
+	g, f := signInGatewayWithFlows(t, func() signin.Flow { called.Store(true); return webtest.NewFakeFlow(t) })
+	f.SetCopilotImport(&oauth.Token{AccessToken: "imported"})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Contains(t, string(body), `"state":"done"`)
+	require.Contains(t, string(body), `"imported":true`)
+	require.False(t, called.Load(), "no flow starts when an existing login was imported")
+}
+
+func TestSignInRefusesAPIKeyOnlyProvider(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"anthropic"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Contains(t, string(body), "oauth_not_supported")
+}
+
+// TestSignInLogsOnlyTheErrorClass is not parallel: captureLogs replaces
+// the logger.
+func TestSignInLogsOnlyTheErrorClass(t *testing.T) {
+	logs := captureLogs(t)
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.WaitErr = errors.New(`poll failed: {"error":"bad","body":"provider-body-7731"}`)
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"error"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), "The sign-in did not finish. Try again.")
+	require.NotContains(t, string(status), "provider-body-7731")
+	require.NotContains(t, logs.String(), "provider-body-7731")
+	require.Contains(t, logs.String(), "reason=provider")
+}
+
+// TestSignInCodeNeverLogged is not parallel: captureLogs replaces the logger.
+func TestSignInCodeNeverLogged(t *testing.T) {
+	logs := captureLogs(t)
+	const code = "ac_9f8e7d6c5b4a"
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.CodeOK = "something-else"
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"xai"}`)
+	rsp.Body.Close()
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	require.True(t, st.CodeEntry)
+	rsp, body = submitCode(t, c, g, st.FlowID, code)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	require.NotContains(t, string(body), code)
+	statusUntil(t, c, g, `"state":"error"`)
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/code?code="+code, `{"flow_id":"x"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.NotContains(t, string(body), code)
+	for _, fr := range g.hub.frames() {
+		require.NotContains(t, string(fr.Payload), code)
+	}
+	require.NotContains(t, logs.String(), code)
+}
+
+// TestSignInCodeCompletesABrowserFlow pins the code path from the tab to a
+// saved token. The token never reaches an answer or a frame.
+func TestSignInCodeCompletesABrowserFlow(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.CodeOK = "good-code"
+	flow.Token = &oauth.Token{AccessToken: "tok-from-code"}
+	g, f := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	rsp, body := submitCode(t, c, g, st.FlowID, "good-code")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	require.NotContains(t, string(body), "tok-from-code")
+	statusUntil(t, c, g, `"state":"done"`)
+	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:xai:oauth")
+	for _, fr := range g.hub.frames() {
+		require.NotContains(t, string(fr.Payload), "tok-from-code")
+	}
+}
+
+// TestSignInGrokDeviceStartRefusesACode pins Ruling A4-a: Grok's flow
+// reports code entry as a capability, so the gateway gates a code on the
+// challenge in force. A device start shows a user code, not a paste field.
+func TestSignInGrokDeviceStartRefusesACode(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.FlowName = "Grok"
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{
+		DeviceCode: "dc", UserCode: "GROK-CODE",
+		VerificationURL: "https://accounts.x.ai/device",
+	}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	require.Equal(t, "device", st.Kind)
+	require.False(t, st.CodeEntry)
+	rsp, body := submitCode(t, c, g, st.FlowID, "GROK-CODE")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "code_entry_unavailable")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"state":"waiting"`)
+	require.NotContains(t, string(status), "That code did not work")
+}
+
+// TestSignInDeviceFallbackRefusesACode pins that a device challenge the
+// flow falls back to takes no pasted code, even though the flow reports
+// code entry as a capability.
+func TestSignInDeviceFallbackRefusesACode(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.Next = &signin.Challenge{DeviceCode: "dc", UserCode: "NEXT-CODE", VerificationURL: "https://x.ai/device"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	require.True(t, st.CodeEntry, "a browser challenge takes a pasted code")
+	statusUntil(t, c, g, `"kind":"device","user_code":"NEXT-CODE"`)
+	rsp, body := submitCode(t, c, g, st.FlowID, "some-code")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "code_entry_unavailable")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"state":"waiting"`)
+	require.NotContains(t, string(status), "That code did not work")
+}
+
+// TestSignInCodeHeaderIsIgnored is not parallel: captureLogs replaces the
+// logger. A code in a header is never read; the body code is the one the
+// flow sees.
+func TestSignInCodeHeaderIsIgnored(t *testing.T) {
+	logs := captureLogs(t)
+	const headerCode = "hdr-code-7731"
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.CodeOK = "body-code"
+	flow.Token = &oauth.Token{AccessToken: "tok-from-body"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth/provider/oauth/code",
+		strings.NewReader(`{"flow_id":"`+st.FlowID+`","code":"body-code"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", g.URL())
+	req.Header.Set("X-Code", headerCode)
+	rsp := doReq(t, c, req)
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	rsp.Body.Close()
+	statusUntil(t, c, g, `"state":"done"`)
+	require.NotContains(t, logs.String(), headerCode)
+	for _, fr := range g.hub.frames() {
+		require.NotContains(t, string(fr.Payload), headerCode)
+	}
+}
+
+func TestSignInStatusWithoutAFlow(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.Contains(t, string(body), "no_flow")
+}
+
+// TestSignInStatusKeepsTheLastState pins that a finished sign-in stays
+// readable, so a tab that loads later still shows the outcome.
+func TestSignInStatusKeepsTheLastState(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "LAST"}
+	flow.Token = &oauth.Token{AccessToken: "tok-last"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "copilot")
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"done"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"flow_id":"`+st.FlowID+`"`)
+	// A finished flow is not running, so there is nothing to cancel.
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/cancel", `{"flow_id":"`+st.FlowID+`"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.Contains(t, string(body), "no_flow")
+}
+
+// TestSignInSnapshotCarriesTheState pins the snapshot field a reloading tab
+// reads.
+func TestSignInSnapshotCarriesTheState(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "SNAP"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "copilot")
+	rsp, snap := doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Contains(t, string(snap), `"signin":{"flow_id":"`+st.FlowID+`"`)
+}
+
+func TestSignInCancelUnknownFlow(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/cancel", `{"flow_id":"nope"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.Contains(t, string(body), "no_flow")
+}
+
+func TestSignInStartDuringShutdown(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	g.signinMu.Lock()
+	g.signinClosed = true
+	g.signinMu.Unlock()
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode)
+	require.Contains(t, string(body), "shutting_down")
+}
+
+func TestSignInCodeDuringShutdown(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	g.signinMu.Lock()
+	g.signinClosed = true
+	g.signinMu.Unlock()
+	rsp, body := submitCode(t, c, g, st.FlowID, "late-code")
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode)
+	require.Contains(t, string(body), "shutting_down")
+}
+
+func TestSignInStartUnknownProvider(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"nobody"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.Contains(t, string(body), "unknown_provider")
+}
+
+func TestSignInStartBadModelType(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start",
+		`{"provider":"copilot","model":{"type":"huge","model":"claude"}}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Contains(t, string(body), "bad_type")
+}
+
+// TestSignInBusyCallbackPort pins the 409 a second browser flow on a busy
+// port answers: the first one holds 1455, so the tab is told to finish or
+// cancel it.
+func TestSignInBusyCallbackPort(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.StartErr = fmt.Errorf("listen tcp 127.0.0.1:1455: %w", syscall.EADDRINUSE)
+	g, _ := signInGatewayWithFlow(t, flow)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"openai"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "signin_busy")
+	require.Contains(t, string(body), "Another sign-in is using the callback port. Finish or cancel it first.")
+	require.True(t, flow.Closed(), "a refused start frees its listener")
+}
+
+// TestSignInSaveFailureShowsTheSentence pins the fixed save sentence, never
+// the workspace error.
+func TestSignInSaveFailureShowsTheSentence(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.Token = &oauth.Token{AccessToken: "tok-save"}
+	g, f := signInGatewayWithFlow(t, flow)
+	f.SetProviderKeyErr(errors.New("the config could not be written: /home/u/.config/crush/crush.json"))
+	c := authedClient(t, g)
+	startSignIn(t, c, g, "copilot")
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"error"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), "Crush could not save the sign-in.")
+	require.NotContains(t, string(status), "the config could not be written")
+}
+
+func TestSignInErrorClass(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"canceled", context.Canceled, "canceled"},
+		{"timeout", context.DeadlineExceeded, "timeout"},
+		{"port_busy", fmt.Errorf("listen tcp 127.0.0.1:1455: %w", syscall.EADDRINUSE), "port_busy"},
+		{"network", &net.DNSError{Err: "no such host", Name: "accounts.x.ai"}, "network"},
+		{"provider", errors.New(`upstream said: {"error":"bad"}`), "provider"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, signInErrorClass(tc.err))
+		})
+	}
+}
+
+// TestSignInOAuthAppliesTheChosenModel pins that a start's model switches
+// once the token is saved, and that the done state says so.
+func TestSignInOAuthAppliesTheChosenModel(t *testing.T) {
+	t.Parallel()
+	known := []catwalk.Provider{
+		{ID: catwalk.InferenceProviderXAI, Name: "xAI", Models: []catwalk.Model{{ID: "grok-4", Name: "Grok 4"}}},
+	}
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.Token = &oauth.Token{AccessToken: "tok-model"}
+	fake := webtest.NewFake()
+	g, err := Start(t.Context(), Options{
+		Workspace: fake,
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) {
+			return known, nil
+		},
+		SignInFlow: func(string) (signin.Flow, error) { return flow, nil },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	fake.SetCatalog(known)
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start",
+		`{"provider":"xai","model":{"type":"main","model":"grok-4"}}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"done"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"model_applied":true`)
+	require.Contains(t, fake.CallLog(), "UpdatePreferredModel:global:main:xai/grok-4")
 }

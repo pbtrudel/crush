@@ -29,6 +29,7 @@ const (
 	frameModelChanged = "model_changed"
 	framePlanReady    = "plan_ready"
 	frameSecurePrompt = "secure_prompt"
+	frameSignIn       = "signin"
 )
 
 type frame struct {

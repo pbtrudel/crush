@@ -161,6 +161,13 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 			fromPinentry(pinentryReq("p1")),
 			fromSSH(sshaskpass.PromptRequest{ID: "s2", Kind: sshaskpass.KindConfirm, Prompt: "Are you sure you want to continue connecting (yes/no)?"}),
 		}}),
+		// A provider sign-in waiting for the user: the device code, the
+		// link to open and the provider's display name.
+		"signin": mk(frameSignIn, SignInState{
+			FlowID: "f1", Provider: "copilot", ProviderName: "GitHub Copilot",
+			State: signInWaiting, Kind: signInKindDevice,
+			UserCode: "WDJB-MJHT", VerificationURL: "https://github.com/login/device",
+		}),
 	}
 }
 

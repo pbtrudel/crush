@@ -66,6 +66,7 @@ type Snapshot struct {
 	Permissions        []json.RawMessage     `json:"permissions"`
 	Questions          []json.RawMessage     `json:"questions,omitempty"`
 	SecurePrompts      []SecurePrompt        `json:"secure_prompts,omitempty"`
+	SignIn             *SignInState          `json:"signin,omitempty"`
 	PermissionMode     string                `json:"permission_mode"`
 	InputMode          string                `json:"input_mode"`
 	PlanReadySessionID string                `json:"plan_ready_session_id,omitempty"`
@@ -121,6 +122,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 	if prompts := g.pending.securePrompts(); len(prompts) > 0 {
 		s.SecurePrompts = prompts
 	}
+	s.SignIn = g.signInState()
 	for _, q := range g.pending.questions() {
 		s.Questions = append(s.Questions, innerPayload(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: q}))
 	}

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -119,4 +122,76 @@ func TestFakeCreateSessionIDsNeverRepeat(t *testing.T) {
 	require.NotEqual(t, first.ID, second.ID)
 	_, err = f.GetSession(t.Context(), "s1")
 	require.NoError(t, err, "the default session survives")
+}
+
+// TestFakeFlowWaitReturnsNextWithoutBlocking pins that a fallback
+// challenge reaches the caller at once, once, and that the following
+// Wait waits for the flow to finish.
+func TestFakeFlowWaitReturnsNextWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	f := NewFakeFlow(t)
+	f.Next = &signin.Challenge{UserCode: "NEXT"}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	tok, next, err := f.Wait(ctx, signin.Challenge{})
+	require.NoError(t, err)
+	require.Nil(t, tok)
+	require.NotNil(t, next)
+	require.Equal(t, "NEXT", next.UserCode)
+
+	type waitResult struct {
+		tok  *oauth.Token
+		next *signin.Challenge
+		err  error
+	}
+	res := make(chan waitResult, 1)
+	go func() {
+		tok, next, err := f.Wait(context.Background(), signin.Challenge{})
+		res <- waitResult{tok: tok, next: next, err: err}
+	}()
+	select {
+	case <-res:
+		t.Fatal("the second Wait returned before Finish")
+	case <-time.After(50 * time.Millisecond):
+	}
+	f.Finish()
+	select {
+	case got := <-res:
+		require.NoError(t, got.err)
+		require.Nil(t, got.next)
+		require.Nil(t, got.tok)
+	case <-time.After(time.Second):
+		t.Fatal("Wait kept blocking after Finish")
+	}
+}
+
+// TestFakeFlowFinishIsIdempotent pins that a second Finish, which is the
+// t.Cleanup call in most tests, does not panic. Close is idempotent too:
+// a finished sign-in and Shutdown both close the flow.
+func TestFakeFlowFinishIsIdempotent(t *testing.T) {
+	t.Parallel()
+	f := NewFakeFlow(t)
+	f.Finish()
+	f.Finish()
+	require.False(t, f.Closed())
+	f.Close()
+	f.Close()
+	require.True(t, f.Closed())
+}
+
+// TestFakeFlowForFinishesWhenDoneCloses pins the constructor webfake uses,
+// which has no *testing.T to register a cleanup with.
+func TestFakeFlowForFinishesWhenDoneCloses(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	f := NewFakeFlowFor(done)
+	f.Token = &oauth.Token{AccessToken: "tok-done"}
+	close(done)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	tok, next, err := f.Wait(ctx, signin.Challenge{})
+	require.NoError(t, err)
+	require.Nil(t, next)
+	require.Equal(t, "tok-done", tok.AccessToken)
 }
