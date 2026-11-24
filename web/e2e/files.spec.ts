@@ -37,3 +37,19 @@ test('opens a diff from the file drawer without a CSP violation', async ({ page,
 
   expect(await page.evaluate(() => (window as unknown as { __cspViolations: string[] }).__cspViolations)).toEqual([]);
 });
+
+test('keeps the second group heading visible with a diff open at 1440', async ({ page, gateway }) => {
+  // The rows below scroll and the editor keeps the smoke.spec.ts 240px floor.
+  await page.setViewportSize({ width: 1440, height: 860 });
+  await page.goto(gateway.launch);
+  await page.getByRole('button', { name: /^Files/ }).click();
+  const list = page.locator('.drawer__list');
+  await list.locator('.file-row').first().click();
+  await expect(page.locator('.diffpanel')).toBeVisible();
+  const headings = list.locator('.drawer__group > h3');
+  await expect(headings).toHaveCount(2);
+  const lbox = (await list.boundingBox())!;
+  const hbox = (await headings.nth(1).boundingBox())!;
+  expect(hbox.y + hbox.height).toBeLessThanOrEqual(lbox.y + lbox.height);
+  expect((await page.locator('.drawer__diff').boundingBox())!.height).toBeGreaterThanOrEqual(240);
+});
