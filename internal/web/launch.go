@@ -2,6 +2,7 @@ package web
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -92,11 +93,17 @@ func isDriveLetter(b byte) bool {
 // returns its path, creating it only when the gateway has none yet. The page
 // carries the token, so the opener gets a token-free file URL instead. The
 // file is removed by the first successful auth, by Shutdown, and after
-// launchTTL when no tab used it.
+// launchTTL when no tab used it. A gateway that shut down writes nothing.
 func (g *Gateway) LaunchFile() (string, error) {
 	g.launchMu.Lock()
 	defer g.launchMu.Unlock()
+	if g.launchClosed {
+		return "", errors.New("web: gateway is shut down")
+	}
 	if g.launch != nil {
+		// Every open hands the file out again, so the TTL counts from the
+		// last one.
+		g.resetLaunchTimerLocked(g.launch)
 		return g.launch.path, nil
 	}
 	lf, err := writeLaunchFile(launchParent(), g.LaunchURL())
@@ -104,16 +111,36 @@ func (g *Gateway) LaunchFile() (string, error) {
 		return "", err
 	}
 	g.launch = lf
-	time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf) })
+	g.resetLaunchTimerLocked(lf)
 	return lf.path, nil
 }
 
-// removeLaunchFile removes the current launch file, if any.
+// resetLaunchTimerLocked stops the TTL timer of the file it replaces and
+// starts one for lf. The caller holds launchMu.
+func (g *Gateway) resetLaunchTimerLocked(lf *launchFile) {
+	if g.launchTimer != nil {
+		g.launchTimer.Stop()
+	}
+	g.launchTimer = time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf) })
+}
+
+// removeLaunchFile removes the current launch file, if any. A later
+// LaunchFile writes a fresh one, as a second /web needs.
 func (g *Gateway) removeLaunchFile() {
 	g.launchMu.Lock()
 	defer g.launchMu.Unlock()
+	g.stopLaunchTimerLocked()
 	g.launch.remove()
 	g.launch = nil
+}
+
+// stopLaunchTimerLocked stops the TTL timer, if one runs. The caller holds
+// launchMu.
+func (g *Gateway) stopLaunchTimerLocked() {
+	if g.launchTimer != nil {
+		g.launchTimer.Stop()
+		g.launchTimer = nil
+	}
 }
 
 // expireLaunchFile removes lf unless a later LaunchFile replaced it.
@@ -125,4 +152,5 @@ func (g *Gateway) expireLaunchFile(lf *launchFile) {
 	}
 	g.launch.remove()
 	g.launch = nil
+	g.launchTimer = nil
 }

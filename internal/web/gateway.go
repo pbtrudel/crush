@@ -147,10 +147,13 @@ type Gateway struct {
 	// now is Options.Now; nil falls back to time.Now.
 	now func() time.Time
 	// launchMu guards launch, the private redirect file handed to the
-	// browser opener so the token stays out of its arguments.
-	launchMu  sync.Mutex
-	launch    *launchFile
-	launchTTL time.Duration
+	// browser opener so the token stays out of its arguments, its TTL
+	// timer and launchClosed, which refuses a file after Shutdown.
+	launchMu     sync.Mutex
+	launch       *launchFile
+	launchTimer  *time.Timer
+	launchClosed bool
+	launchTTL    time.Duration
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -423,6 +426,12 @@ func normalizeInputMode(mode string) string {
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	// A launch file handed to a browser opener after shutdown began would
+	// outlive the process with the token in it, so the gateway stops
+	// writing them before anything else stops.
+	g.launchMu.Lock()
+	g.launchClosed = true
+	g.launchMu.Unlock()
 	// Cancel every running shell and MCP OAuth flow, then wait for them
 	// before the hub closes, so no final frame is published into a closed
 	// hub. The wait honours the caller's deadline: work that ignores
