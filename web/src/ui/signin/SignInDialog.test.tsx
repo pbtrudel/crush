@@ -728,6 +728,25 @@ describe('SignInDialog OAuth', () => {
 });
 
 describe('SignInDialog focus', () => {
+  it('takes the focus back when the interrupt above it closes', async () => {
+    openSignIn('anthropic');
+    await mount();
+    const first = document.activeElement;
+    expect(dialog()!.contains(first)).toBe(true);
+
+    // A secure prompt makes the page behind it inert, and the browser drops
+    // the dialog's focus to the body. The dialog is the layer that stays
+    // open, so it must take the focus back when the prompt closes.
+    await act(() => { render(<SignInDialog inert />, root); });
+    await flush();
+    // jsdom has no inert, so the blur the browser performs is spelled out.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+    await act(() => { render(<SignInDialog inert={false} />, root); });
+    await flush();
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+  });
+
   it('gives the opener its focus back when it closes', async () => {
     const opener = document.createElement('button');
     opener.textContent = 'Open sign in';

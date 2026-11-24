@@ -77,6 +77,60 @@ confirmTest('confirms an SSH host key', async ({ page, gateway }) => {
   await expect(dialog).toBeHidden();
 });
 
+// The sign-in dialog is the layer a prompt can open over. webfake publishes
+// its prompt 300 ms after it starts, long before a tab can open a dialog, so
+// the test holds the frame and hands it over once the dialog owns the page.
+promptTest('returns the focus to the sign-in dialog when a prompt closes over it', async ({ page, gateway }) => {
+  const held: string[] = [];
+  let send: ((message: string) => void) | null = null;
+  await page.routeWebSocket(/\/api\/stream/, (ws) => {
+    const server = ws.connectToServer();
+    send = (message) => ws.send(message);
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      const text = message.toString();
+      // The snapshot is the one frame the page cannot do without, so only the
+      // prompt it carries is dropped.
+      try {
+        const frame = JSON.parse(text) as { type?: string; payload?: Record<string, unknown> };
+        if (frame.type === 'snapshot' && frame.payload) {
+          delete frame.payload.secure_prompts;
+          ws.send(JSON.stringify(frame));
+          return;
+        }
+      } catch {
+        // A frame that is not JSON is forwarded untouched.
+      }
+      if (text.includes('secure-pinentry')) {
+        held.push(text);
+        return;
+      }
+      ws.send(text);
+    });
+  });
+
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  await page.getByRole('button', { name: 'Model: Model One. Switch model' }).click();
+  await page.getByRole('dialog', { name: 'Models' }).getByRole('button', { name: 'Sign in to another provider' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Sign in', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Filter providers')).toBeFocused();
+
+  // The prompt arrives now, over the open dialog, and the tab answers it.
+  expect(held).toHaveLength(1);
+  for (const message of held.splice(0)) send!(message);
+  const prompt = page.getByRole('dialog', { name: 'GPG passphrase' });
+  await expect(prompt).toBeVisible();
+  await prompt.getByLabel('Passphrase', { exact: true }).fill('hunter2');
+  await page.keyboard.press('Enter');
+  await expect(prompt).toBeHidden();
+
+  // The dialog stays open, so it must take the focus back from the body.
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(':focus')).toHaveCount(1);
+});
+
 touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.locator('.toast').filter({ hasText: 'Tap your security key to continue.' })).toBeVisible();

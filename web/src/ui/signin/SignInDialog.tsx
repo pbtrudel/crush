@@ -84,19 +84,22 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   });
 
   // A button that unmounts while it holds focus (Start becoming the
-  // waiting panel, Try again starting again) hands focus to the panel.
+  // waiting panel, Try again starting again) hands focus to the panel. An
+  // interrupt above the page is inert, and the browser drops the dialog's
+  // focus to the body: the dialog is the layer that stays open, so it takes
+  // the focus back when the interrupt closes.
+  const wasInert = useRef(inert);
   useEffect(() => {
     const el = dialog.current;
     const active = document.activeElement;
-    if (inert) {
-      hadFocus.current = false;
-      return;
-    }
+    const recovered = wasInert.current;
+    wasInert.current = inert;
+    if (inert) return;
     if (el && active !== null && el.contains(active)) {
       hadFocus.current = true;
       return;
     }
-    if (!hadFocus.current) return;
+    if (!hadFocus.current && !recovered) return;
     hadFocus.current = false;
     const panel = el?.querySelector<HTMLElement>('.signin__panel');
     (panel?.querySelector<HTMLElement>('button, input') ?? el)?.focus();
