@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page, Request } from '@playwright/test';
 import {
   confirmTest, expect, promptElsewhereTest, promptTest, touchTest,
@@ -11,6 +12,18 @@ confirmTest.setTimeout(60_000);
 touchTest.setTimeout(60_000);
 
 const passphrase = (page: Page) => page.getByRole('dialog', { name: 'GPG passphrase' });
+
+// sampleToasts collects the toast text over a window, every 100 ms, so a
+// toast the reducer shows late cannot slip past a single check.
+async function sampleToasts(page: Page, ms: number): Promise<string[]> {
+  const seen = new Set<string>();
+  const deadline = Date.now() + ms;
+  for (;;) {
+    for (const text of await page.locator('.toast').allTextContents()) seen.add(text);
+    if (Date.now() >= deadline) return [...seen];
+    await sleep(100);
+  }
+}
 
 promptTest('answers a GPG passphrase and clears the field', async ({ page, gateway }) => {
   const requests: Request[] = [];
@@ -30,10 +43,15 @@ promptTest('answers a GPG passphrase and clears the field', async ({ page, gatew
   const target = new URL(answer!.url());
   expect(target.search).toBe('');
   expect(target.searchParams.size).toBe(0);
-  const leaked = Object.entries(answer!.headers()).filter(([name, value]) => `${name}: ${value}`.includes('hunter2'));
+  // allHeaders() also reads the headers Chromium adds, which headers() does
+  // not, so the scan covers everything the page sent.
+  const headers = await answer!.allHeaders();
+  const leaked = Object.entries(headers).filter(([name, value]) => `${name}: ${value}`.includes('hunter2'));
   expect(leaked).toEqual([]);
   expect(answer!.postDataJSON()).toEqual({ id: 'secure-pinentry', secret: 'hunter2' });
 
+  // A secret belongs in the body only: no request URL of this page carries it.
+  expect(requests.filter((r) => r.url().includes('hunter2')).map((r) => r.url())).toEqual([]);
   expect(await page.content()).not.toContain('hunter2');
   expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }))).not.toContain('hunter2');
 });
@@ -42,7 +60,8 @@ promptElsewhereTest('closes when the terminal answers first', async ({ page, gat
   await page.goto(gateway.launch);
   const dialog = passphrase(page);
   await expect(dialog).toBeVisible();
-  // webfake answers it from the terminal 1.8 s after it starts.
+  // webfake answers it from the terminal 5.3 s after it starts, which leaves
+  // the tab time to show the prompt first.
   await expect(dialog).toBeHidden({ timeout: 15_000 });
   await expect(page.locator('.toast').filter({ hasText: 'Answered in the terminal' })).toBeVisible();
 });
@@ -64,9 +83,11 @@ touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => 
 
   // A touch prompt is a notice the terminal answers itself: it never takes
   // the interrupt layer, so the deck stays usable.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.interrupt')).toHaveCount(0);
   await expect(page.locator('.holodeck__deck')).toHaveJSProperty('inert', false);
   // webfake does not answer the touch prompt, so the terminal's own answer
-  // must not be announced.
-  await expect(page.locator('.toast').filter({ hasText: 'Answered in the terminal' })).toHaveCount(0);
+  // must not be announced over the next two seconds either.
+  const seen = await sampleToasts(page, 2000);
+  expect(seen.filter((text) => text.includes('Answered in the terminal'))).toEqual([]);
 });

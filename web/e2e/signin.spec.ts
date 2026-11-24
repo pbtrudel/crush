@@ -59,7 +59,10 @@ m4Test('refuses a bad key without echoing it', async ({ page, gateway }) => {
 
   await expect(dialog.getByRole('alert')).toContainText('The provider did not accept this key.');
   await expect(dialog).toBeVisible();
+  // The field is cleared on submit and the key is nowhere else either.
+  await expect(dialog.getByLabel('API key', { exact: true })).toHaveValue('');
   expect(await page.content()).not.toContain('sk-wrong');
+  expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }))).not.toContain('sk-wrong');
 });
 
 m4FreshTest('shows the Copilot device code and cancels', async ({ page, gateway }) => {
@@ -79,7 +82,10 @@ m4FreshTest('shows the Copilot device code and cancels', async ({ page, gateway 
 
 signinDoneTest('completes a device sign-in', async ({ page, gateway }) => {
   const dialog = await openFromModels(page, gateway);
-  await startCopilot(dialog);
+  // The flow finishes on its own three seconds after it starts, so the code
+  // does not have to be on screen for the sign-in to complete.
+  await dialog.getByRole('option', { name: 'GitHub Copilot' }).click();
+  await dialog.getByRole('button', { name: 'Start sign-in' }).click();
 
   await expect(dialog.locator('.signin__done')).toHaveText('Signed in to GitHub Copilot.', { timeout: 15_000 });
   await expect(page.locator('.toast').filter({ hasText: 'Signed in to GitHub Copilot.' })).toBeVisible();

@@ -269,6 +269,11 @@ m4VisualTest('sign-in device code', async ({ page, gateway }) => {
 // paused clock, so this one steps frames until the card's URL frame lands.
 awsTest('the AWS SSO card', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
+  // The scan only means something once the tab holds a live stream.
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return page.getByRole('status').filter({ hasText: 'Linked' }).count();
+  }, { message: 'the tab links', timeout: 30_000 }).toBeGreaterThan(0);
   const card = page.locator('.aws-sso');
   const link = card.getByRole('link', { name: 'Open the AWS sign-in page' });
   await expect.poll(async () => {

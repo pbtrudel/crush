@@ -183,9 +183,10 @@ export const promptTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry' }, use),
 });
 
-// The terminal answers the prompt itself once the delay has passed.
+// The terminal answers the prompt itself five seconds after the gateway
+// starts, long after the prompt has reached the tab.
 export const promptElsewhereTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '1500' }, use),
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
 });
 
 export const confirmTest = base.extend<{ gateway: Gateway }>({
@@ -200,10 +201,10 @@ export const promptVisualTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
-// A device flow finishes on its own after 800 ms, the way a user approving
-// it in the provider's page would.
+// A device flow finishes on its own three seconds after it starts, the way a
+// user approving it in the provider's page would.
 export const signinDoneTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SIGNIN_MS: '800' }, use),
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SIGNIN_MS: '3000' }, use),
 });
 
 // One AWS SSO refresh: the command first, then its verification URL.
