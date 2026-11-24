@@ -92,6 +92,30 @@ func fixtureEvents() map[string]any {
 			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeAgentError,
 			ProviderID: "anthropic", Message: "The provider refused the request",
 		}},
+		// An AWS SSO refresh: the command while it runs, the verification
+		// URL once the command prints it, then the result. A tab that
+		// missed both reads the command from the snapshot's aws_sso.
+		"agent_event_aws_sso": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuth, ProviderID: "amazon-bedrock",
+			AWSSOCommand: "aws sso login --profile dev",
+		}},
+		"agent_event_aws_sso_url": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuth, ProviderID: "amazon-bedrock",
+			AWSSOCommand: "aws sso login --profile dev",
+			AWSSOURL:     "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD",
+		}},
+		// A refresh that failed: the browser closes the dialog and toasts
+		// the error from this frame's error field.
+		"agent_event_aws_sso_result": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuthResult, ProviderID: "amazon-bedrock",
+			Message: "the SSO session expired",
+		}},
+		// An expired login: the browser toasts the text with a sign-in
+		// action for the provider.
+		"agent_event_reauth": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeReAuthenticate,
+			ProviderID: "openai",
+		}},
 		// The config files changed on disk; the browser offers a reload.
 		"config_stale": app.ConfigStaleMsg{
 			Changed: []string{"/repo/crushrc"}, Missing: []string{},

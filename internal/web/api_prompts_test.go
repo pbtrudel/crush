@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/pinentry"
+	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/stretchr/testify/require"
 )
@@ -236,4 +238,35 @@ func TestSecurePromptCancelDismisses(t *testing.T) {
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusConflict, rsp.StatusCode)
 	require.Contains(t, string(body), "not_pending")
+}
+
+func TestSnapshotCarriesAWSSSO(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.Emit(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuth, AWSSOCommand: "aws sso login --profile dev",
+	}})
+	require.Eventually(t, func() bool { return g.pending.awsSSO() != nil }, time.Second, 10*time.Millisecond)
+	c := dialStream(t, g, "")
+	snap := readFrame(t, c)
+	require.Equal(t, frameSnapshot, snap.Type)
+	require.Contains(t, string(snap.Payload), `"aws_sso":{"command":"aws sso login --profile dev"}`)
+}
+
+func TestSnapshotDropsFailedAWSSSO(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.Emit(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuth, AWSSOCommand: "aws sso login --profile dev",
+	}})
+	require.Eventually(t, func() bool { return g.pending.awsSSO() != nil }, time.Second, 10*time.Millisecond)
+	f.Emit(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuthResult, Message: "the SSO session expired",
+	}})
+	require.Eventually(t, func() bool { return g.pending.awsSSO() == nil }, time.Second, 10*time.Millisecond)
+	c := dialStream(t, g, "")
+	snap := readFrame(t, c)
+	require.Equal(t, frameSnapshot, snap.Type)
+	require.NotContains(t, string(snap.Payload), "aws_sso", "a failed refresh leaves no command in the snapshot")
+	require.NotContains(t, string(snap.Payload), "aws sso login --profile dev")
 }

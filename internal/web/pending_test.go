@@ -111,3 +111,41 @@ func TestPendingTracksSecurePrompts(t *testing.T) {
 	require.Equal(t, "SSH Password", prompts[0].Title)
 	require.Equal(t, []string{"git@github.com"}, prompts[0].Details)
 }
+
+func TestPendingFollowsAWSSSO(t *testing.T) {
+	t.Parallel()
+	p := newPending()
+	p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuth, AWSSOCommand: "aws sso login --profile dev",
+	}})
+	require.Equal(t, &AWSSSO{Command: "aws sso login --profile dev"}, p.awsSSO())
+	p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuth, AWSSOURL: "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD",
+	}})
+	require.Equal(t, "aws sso login --profile dev", p.awsSSO().Command, "a URL update keeps the command")
+	require.Equal(t, "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD", p.awsSSO().URL)
+	p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{Type: notify.TypeAWSSSOAuthResult}})
+	require.Nil(t, p.awsSSO())
+}
+
+func TestPendingClearsAWSSSOOnFailure(t *testing.T) {
+	t.Parallel()
+	p := newPending()
+	p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuth, AWSSOCommand: "aws sso login --profile dev",
+	}})
+	require.NotNil(t, p.awsSSO())
+	p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeAWSSSOAuthResult, Message: "the SSO session expired",
+	}})
+	require.Nil(t, p.awsSSO(), "a failed refresh leaves no state behind")
+}
+
+func TestPendingIgnoresOtherNotifications(t *testing.T) {
+	t.Parallel()
+	p := newPending()
+	require.False(t, p.observe(pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+		Type: notify.TypeReAuthenticate, ProviderID: "openai",
+	}}))
+	require.Nil(t, p.awsSSO())
+}

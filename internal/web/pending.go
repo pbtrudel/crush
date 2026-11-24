@@ -25,6 +25,14 @@ type SecurePrompt struct {
 	Retry   string   `json:"retry,omitempty"`
 }
 
+// AWSSSO is a running AWS SSO refresh, as the browser shows it. A tab
+// opened mid-refresh renders the progress dialog from the snapshot
+// instead of waiting for a notification it missed.
+type AWSSSO struct {
+	Command string `json:"command"`
+	URL     string `json:"url,omitempty"`
+}
+
 const (
 	sourcePinentry = "pinentry"
 	sourceSSH      = "ssh"
@@ -62,6 +70,7 @@ type pending struct {
 	qs     map[string]question.Request
 	qorder []string
 	secure []SecurePrompt
+	sso    *AWSSSO
 }
 
 func newPending() *pending {
@@ -99,6 +108,11 @@ func (p *pending) observe(ev any) bool {
 	case pubsub.Event[question.Notification]:
 		delete(p.qs, e.Payload.BatchID)
 		p.compactQuestions()
+	case pubsub.Event[notify.Notification]:
+		// A refresh changes no secure prompt, so it publishes no frame of
+		// its own; the notification already reaches the tabs as an
+		// agent_event.
+		p.followAWSSSOLocked(e.Payload)
 	case pubsub.Event[notify.RunComplete]:
 		// The run that asked is over, so nothing it asked can be answered
 		// any more. Leaving these entries behind would keep dialogs open
@@ -114,6 +128,30 @@ func (p *pending) observe(ev any) bool {
 		return p.removeSecureLocked(sourceSSH, e.Payload.RequestID)
 	}
 	return false
+}
+
+// followAWSSSOLocked folds an AWS SSO notification into the refresh state.
+// A non-empty command replaces it, a non-empty URL fills it in, and a
+// result clears it whatever it says, so a failed refresh leaves no stale
+// dialog behind. The caller holds the lock.
+func (p *pending) followAWSSSOLocked(n notify.Notification) {
+	switch n.Type {
+	case notify.TypeAWSSSOAuth:
+		if n.AWSSOCommand == "" && n.AWSSOURL == "" && p.sso == nil {
+			return
+		}
+		if p.sso == nil {
+			p.sso = &AWSSSO{}
+		}
+		if n.AWSSOCommand != "" {
+			p.sso.Command = n.AWSSOCommand
+		}
+		if n.AWSSOURL != "" {
+			p.sso.URL = n.AWSSOURL
+		}
+	case notify.TypeAWSSSOAuthResult:
+		p.sso = nil
+	}
 }
 
 // upsertSecureLocked adds a prompt or replaces the entry with the same
@@ -252,6 +290,17 @@ func (p *pending) securePrompt(source, id string) (SecurePrompt, bool) {
 		}
 	}
 	return SecurePrompt{}, false
+}
+
+// awsSSO returns a copy of the running refresh, or nil when none runs.
+func (p *pending) awsSSO() *AWSSSO {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sso == nil {
+		return nil
+	}
+	out := *p.sso
+	return &out
 }
 
 // forgetSecure drops one prompt and reports whether it was open.
