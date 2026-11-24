@@ -71,16 +71,22 @@ refuses it.
 
 Under WSL the launch file is a Linux path, which a Windows browser cannot
 read. Crush maps it with `wslpath -w` and opens the result, so the tab loads
-through a `file://wsl.localhost/<distro>/...` address. `wslpath` ships with
-WSL.
+through a `file://wsl.localhost/<distro>/...` address. On older Windows
+builds `wslpath -w` answers with a `\\wsl$\<distro>\...` path instead, and
+Crush opens either form. `wslpath` ships with WSL.
 
 Crush detects WSL through the `WSL_DISTRO_NAME` environment variable only. A
 shell reached through `ssh` or `su` inside WSL may not have it. Crush then
-treats the machine as plain Linux and hands the opener a `file:///home/...`
-address that the Windows browser cannot read: either no tab opens, or the
-browser shows an error page. The link still appears in the terminal. Paste it
-into a browser on the Windows side, or start Crush from a normal WSL terminal
-where `WSL_DISTRO_NAME` is set.
+treats the machine as plain Linux and hands the opener a plain
+`file:///run/user/...` or `file:///tmp/...` address that the Windows browser
+cannot read: either no tab opens, or the browser shows an error page. The link
+still appears in the terminal. Paste it into a browser on the Windows side, or
+start Crush from a normal WSL terminal where `WSL_DISTRO_NAME` is set.
+
+When Crush does detect WSL but `wslpath` is missing or fails, the open fails
+outright: Crush does not fall back to the link. The terminal then shows "Web
+mode is running. Open <link>" with the link, for 30 seconds, so copy it into a
+browser on the Windows side.
 
 ## Signing in to providers
 
@@ -119,10 +125,11 @@ The gateway runs one sign-in at a time, and starting another one stops the
 running flow. **Cancel sign-in** stops a flow from the tab and reports
 "Sign-in cancelled."
 
-ChatGPT's browser flow uses the fixed loopback ports 1455 and 1457. Terminal
-dialogs can hold one or both, and when both are busy a ChatGPT sign-in from
-the tab answers "Another sign-in is using the callback port. Finish or cancel
-it first." Finish or cancel the other dialogs and start again.
+ChatGPT's browser flow uses the fixed loopback ports 1455 and 1457, which
+Codex also uses. Another program or another ChatGPT sign-in can hold one or
+both, and when both are busy a ChatGPT sign-in from the tab answers "Another
+sign-in is using the callback port. Finish or cancel it first." Free the ports
+and start again.
 
 On a first run there is no provider and no agent. A sign-in from the tab
 saves the credential, but choosing the first model and starting the agent
@@ -146,22 +153,22 @@ the refresh succeeds. A failed refresh stays on the card as the error with a
 
 ## GPG and SSH prompts
 
-When a GPG operation or an SSH connection needs an answer, Crush shows the
-prompt in the terminal and in the tab at the same time, with the same message
-and key details. The tab labels it **Secure prompt** and names the
-field **Passphrase**, **PIN** or **Password**; **Unlock** sends it and
-**Cancel** dismisses it. A confirmation prompt shows **Confirm** and
-**Decline**.
+When a GPG operation or an SSH connection needs typed input or a
+confirmation, Crush shows the prompt in the terminal and in the tab at the
+same time, with the same message and key details. The tab labels it **Secure
+prompt** and names the field **Passphrase**, **PIN** or **Password**;
+**Unlock** sends it and **Cancel** dismisses it. A confirmation prompt shows
+**Confirm** and **Decline**.
 
 The first answer wins. When the terminal answers first, the tab closes the
 dialog and toasts **Answered in the terminal**. When the tab answers first,
 the terminal dialog closes. A late answer from the tab is refused with "The
 prompt was already answered or has expired." and shows as a toast.
 
-Security key touches are the exception. The key answers them, so the tab shows
-the prompt with a notice that reads **Waiting for the terminal.**, plus a
-toast carrying its message, and offers no field and no buttons; an answer or
-cancel from the tab is refused.
+Security key touches work differently. The touch on the key is the approval,
+and the terminal answers the prompt by itself. The tab shows no dialog and no
+notice for one; it shows a warning toast carrying the prompt's message. An
+answer or cancel from the tab is refused.
 
 The tab sends the secret in the request body, clears the field when you
 submit, and keeps no copy.
@@ -204,8 +211,8 @@ same dialog, and the same session the terminal is showing.
 - The launch file keeps the token out of the browser opener's process
   arguments, where other local users could read it. It is `0600` in a `0700`
   directory, and it is removed as described above.
-- The link stays in the terminal, and the clipboard and its history keep it.
-  It stops working when Crush exits.
+- The link stays in the terminal notification, in the clipboard and in any
+  clipboard history until Crush exits.
 - Secrets typed in the tab, such as API keys, passphrases and SSH answers, are
   sent only in request bodies, never echoed in a response or an event, and
   never written to the log. The field is cleared when you submit.
@@ -220,10 +227,14 @@ same dialog, and the same session the terminal is showing.
 - **No tab opens on WSL, or the browser shows a file error.** The shell that
   started Crush has no `WSL_DISTRO_NAME`, which is common through `ssh` or
   `su`, so Crush used the plain Linux path. Paste the link from the terminal
-  into a Windows browser, or restart Crush from a normal WSL terminal.
+  into a Windows browser, or restart Crush from a normal WSL terminal. When
+  Crush did detect WSL but `wslpath` is missing or fails, the open fails and
+  the terminal shows "Web mode is running. Open <link>"; open that link in a
+  browser on the Windows side.
 - **"Another sign-in is using the callback port. Finish or cancel it first."**
-  Both fixed ports 1455 and 1457 are in use by other ChatGPT sign-ins, usually
-  dialogs in the terminal. Finish or cancel them, then start again.
+  Both fixed ports 1455 and 1457 are in use, by another ChatGPT sign-in or by
+  another program that holds them, for example Codex. Free the ports, then
+  start again.
 - **"The prompt was already answered or has expired."** The GPG or SSH prompt
   was answered elsewhere, or the command that asked has ended. The dialog
   closes; nothing else is needed.
