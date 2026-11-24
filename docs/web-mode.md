@@ -113,13 +113,16 @@ With an account:
 - When Copilot is not set up yet, Crush first tries to reuse a VS Code login,
   as the terminal does. When one is found, the sign-in finishes without a
   device code.
-- **ChatGPT** and **Grok** show a link, such as **Open the ChatGPT sign-in
-  page**, that leads to the provider's consent page. Grok also accepts the
-  code from that page in **Code from the sign-in page**. When Grok's loopback
-  listener cannot start, it falls back to a device code. ChatGPT has no code
-  fallback.
-- The status line reads **Waiting for <provider>** while the flow runs, then
-  **Signed in to <provider>.** **Choose a model** opens the model selector.
+- **ChatGPT** and **Grok** show a link to the provider's consent page, worded
+  **Open the ChatGPT sign-in page** or **Open the Grok sign-in page**. Grok
+  also accepts the code from that page in **Code from the sign-in page**. When
+  Grok's loopback listener cannot start, it falls back to a device code.
+  ChatGPT has no code fallback.
+- The link, the status line and the done sentence name the provider the way
+  its own sign-in does, so the provider the model selector calls OpenAI shows
+  as **ChatGPT** here. The status line reads **Waiting for <provider>** while
+  the flow runs, then **Signed in to <provider>.** **Choose a model** opens
+  the model selector.
 
 The gateway runs one sign-in at a time, and starting another one stops the
 running flow. **Cancel sign-in** stops a flow from the tab and reports

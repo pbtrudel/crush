@@ -371,6 +371,11 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
     </form>
   );
 
+  // The flow names its provider the way its own sign-in does (ChatGPT for
+  // openai, Grok for xai); the catalog name is the fallback, so the link, the
+  // waiting line and the done panel never give one provider two names.
+  const shownName = (t: SignInTarget, current: SignInState): string => current.provider_name || t.name || t.id;
+
   const waiting = (t: SignInTarget, current: SignInState) => (
     <>
       {current.kind === 'device' && current.user_code && (
@@ -381,7 +386,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
       )}
       {href !== null && (
         <p class="signin__link">
-          <a href={href} target="_blank" rel="noopener noreferrer">Open the {t.name || t.id} sign-in page</a>
+          <a href={href} target="_blank" rel="noopener noreferrer">Open the {shownName(t, current)} sign-in page</a>
         </p>
       )}
       {current.state === 'waiting' && current.code_entry && (
@@ -405,7 +410,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
         </form>
       )}
       <p class="signin__status" role="status">
-        {current.state === 'saving' ? 'Saving the sign-in' : `Waiting for ${t.name || t.id}`}
+        {current.state === 'saving' ? 'Saving the sign-in' : `Waiting for ${shownName(t, current)}`}
         {current.state === 'waiting' && expired && ' · Code expired'}
         {current.state === 'waiting' && !expired && minutes > 0
           && ` · Code expires in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`}
@@ -426,7 +431,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
         </div>
       );
     }
-    const name = current.provider_name || t.name || t.id;
+    const name = shownName(t, current);
     return (
       <>
         <p class="signin__done" role="status">Signed in to {name}.</p>

@@ -394,6 +394,26 @@ describe('SignInDialog OAuth', () => {
     expect(root.querySelectorAll('a').length).toBe(0);
   });
 
+  it('names the provider the way its own flow does everywhere', async () => {
+    const chatgpt: SignInState = {
+      flow_id: 'f3', provider: 'openai', provider_name: 'ChatGPT', state: 'waiting', kind: 'browser',
+      verification_url: 'https://chatgpt.com/auth/login',
+    };
+    dispatch((s) => ({ ...s, signin: { ...chatgpt } }));
+    openSignIn('openai');
+    await mount();
+
+    // The catalog calls this provider OpenAI, but its flow calls itself
+    // ChatGPT: one name for the link, the waiting line and the done panel.
+    const link = Array.from(root.querySelectorAll<HTMLAnchorElement>('a'))
+      .find((a) => a.textContent === 'Open the ChatGPT sign-in page');
+    expect(link).toBeDefined();
+    expect(root.querySelector('.signin__status')?.textContent).toContain('Waiting for ChatGPT');
+
+    await finish({ ...chatgpt, state: 'done' });
+    expect(root.querySelector('.signin__done')?.textContent).toBe('Signed in to ChatGPT.');
+  });
+
   it('reads the waiting state and the code expiry', async () => {
     const expires = Math.floor(Date.now() / 1000) + 600;
     dispatch((s) => ({
