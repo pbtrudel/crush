@@ -180,8 +180,6 @@ export function CommandDeck() {
       if (failure) { setFailure(failure); return; }
       setText('');
       setFiles([]);
-    } catch {
-      setFailure({ tone: 'error', text: 'The prompt did not reach crush.' });
     } finally {
       inFlight.current = false;
       setSending(false);

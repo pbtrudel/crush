@@ -387,17 +387,6 @@ describe('CommandDeck', () => {
     expect(error().textContent).toBe('');
   });
 
-  it('shows an inline error when sending throws', async () => {
-    seed();
-    vi.spyOn(actions, 'sendPrompt').mockRejectedValue(new Error('boom'));
-    await mount();
-    await type('hello');
-    await act(() => { key('Enter'); });
-    await flush();
-    expect(error().textContent).toBe('The prompt did not reach crush.');
-    expect(textarea().value).toBe('hello');
-  });
-
   it('ignores dropped and pasted files once the session ended', async () => {
     seed({ conn: 'ended' });
     await mount();

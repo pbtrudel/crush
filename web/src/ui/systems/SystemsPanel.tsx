@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { DiagnosticCounts, LspServer, McpServer } from '../../api/types';
 import { api } from '../../api/http';
 import { describeFailure } from '../../state/failure';
+import { without } from '../../state/record';
 import type { ServerState } from '../../state/reducer';
 import { state } from '../../state/store';
 import { systemsFocus, systemsOpen } from '../../state/palette';
@@ -58,13 +59,6 @@ function webAddress(raw: string): string | null {
   } catch {
     return null;
   }
-}
-
-function without<T>(record: Record<string, T>, key: string): Record<string, T> {
-  if (!(key in record)) return record;
-  const next = { ...record };
-  delete next[key];
-  return next;
 }
 
 // A row merges the fetched list with the live frame map: the list carries

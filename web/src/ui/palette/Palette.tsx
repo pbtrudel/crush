@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { CommandEntry, McpPrompt, ModelChoice, Session, SkillEntry } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { describeFailure } from '../../state/failure';
+import { without } from '../../state/record';
 import { adoptSession } from '../../state/reducer';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { motion, setMotion, type Motion } from '../../state/motion';
@@ -62,16 +63,6 @@ const FETCH: { [K in SourceKey]: () => Promise<Loaded[K]> } = {
 
 function merge<K extends SourceKey>(loaded: Loaded, key: K, value: Loaded[K]): Loaded {
   return { ...loaded, [key]: value };
-}
-
-function without(
-  errors: Partial<Record<SourceKey, unknown>>,
-  key: SourceKey,
-): Partial<Record<SourceKey, unknown>> {
-  if (!(key in errors)) return errors;
-  const next = { ...errors };
-  delete next[key];
-  return next;
 }
 
 // openDisplayMenu opens the HUD's Display menu, the surface the terminal's
