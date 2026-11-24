@@ -1933,10 +1933,15 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
+	// A thinking block signed under another request prefix is rejected with
+	// a 400 that would otherwise end the turn. The transport retries once
+	// without the signed blocks, so a session resumed on another model
+	// survives even when the history could not be classified.
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
+		httpClient = log.NewHTTPClient()
 	}
+	opts = append(opts, anthropic.WithHTTPClient(withThinkingSignatureRetry(httpClient)))
 	return anthropic.New(opts...)
 }
 

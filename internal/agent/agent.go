@@ -948,7 +948,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
@@ -1459,7 +1459,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// The prompt just stored is what marks the end of any idle gap: a
 	// session picked up after a long pause has no warm cache to lose.
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	// The gate compares the working tree at the prompt's start with the
 	// tree at its end, so a change made by a shell command or by a
@@ -2650,7 +2650,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
-	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
+	aiMsgs, _ := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
 
 	genCtx, cancel := context.WithCancel(ctx)
 	if !active {
@@ -3017,7 +3017,7 @@ func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message,
 	for _, msg := range msgs {
 		estimate += messageTokens(msg)
 	}
-	history, files := a.preparePrompt(msgs, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
+	history, files := a.preparePromptFor(msgs, model.ModelCfg.Provider, model.ModelCfg.Model, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
 	assembled := estimateMessageTokens(history) + approxTokenCount(systemPrompt) + approxTokenCount(userPrompt)
 	for _, file := range files {
 		assembled += estimateMessagePartTokens(file)
@@ -3757,7 +3757,18 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return msg, nil
 }
 
+// preparePrompt replays a session for a caller that does not name a target
+// model, leaving every signature alone. Estimates and tests use it; a real
+// request calls preparePromptFor so reasoning written by another model
+// cannot sink the turn.
 func (a *sessionAgent) preparePrompt(msgs []message.Message, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptFor(msgs, "", "", supportsImages, supportsAudio, attachments...)
+}
+
+// preparePromptFor replays a session for a request targeting requestProvider
+// and requestModel, dropping the provider-specific reasoning data of
+// messages another model wrote.
+func (a *sessionAgent) preparePromptFor(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	if !a.isSubAgent {
 		history = append(history, fantasy.NewUserMessage(
@@ -3840,6 +3851,20 @@ Again do not mention this message to the user.`,
 			continue
 		}
 		aiMsgs := m.ToAIMessage()
+		if m.Role == message.Assistant && foreignReasoning(m.Provider, m.Model, requestProvider, requestModel) {
+			if stripped := stripReasoningReplayData(aiMsgs); stripped > 0 {
+				slog.Debug(
+					"Dropped reasoning replay data written by another model",
+					"session_id", m.SessionID,
+					"message_id", m.ID,
+					"message_provider", m.Provider,
+					"message_model", m.Model,
+					"request_provider", requestProvider,
+					"request_model", requestModel,
+					"parts", stripped,
+				)
+			}
+		}
 		if !supportsImages {
 			for i := range aiMsgs {
 				if aiMsgs[i].Role == fantasy.MessageRoleUser {
