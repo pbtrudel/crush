@@ -454,7 +454,11 @@ export function reduce(s: State, f: Frame): State {
     }
     case 'update_available': {
       if (f.seq <= s.lastSeq || s.announced.update_available) return next;
-      const u = ev.payload as UpdateAvailable;
+      // A frame without a version carries nothing to announce, and one
+      // without a current version cannot name the upgrade.
+      const u = (ev?.payload ?? {}) as Partial<UpdateAvailable>;
+      if (!u.latest_version) return next;
+      if (!u.is_development && !u.current_version) return next;
       const text = u.is_development
         ? `This is a development version of Crush. The latest version is v${u.latest_version}.`
         : `Crush update available: v${u.current_version} → v${u.latest_version}.`;

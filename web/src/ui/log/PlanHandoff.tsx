@@ -7,6 +7,12 @@ import { focusDeck } from '../deck/modes';
 
 type Handoff = 'code' | 'code_yolo';
 
+// A 202 only means the terminal was told; it may still refuse the handoff
+// silently. Ten seconds is long enough for plan_ready to land and short
+// enough that the card does not sit busy forever.
+const CONFIRM_TIMEOUT_MS = 10_000;
+const NOT_CONFIRMED = 'The terminal did not confirm. Try again.';
+
 // PlanHandoff is the end of the log while a ready plan waits for the reader.
 // It is a card, not a dialog: it asks for the core look and the title, but
 // leaving the focus in the log keeps working.
@@ -21,6 +27,7 @@ export function PlanHandoff() {
   const alive = useRef(true);
   const generation = useRef(0);
   const inFlight = useRef(false);
+  const confirmTimer = useRef<number | null>(null);
   const wasPending = useRef(pending);
   const leaving = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -29,7 +36,15 @@ export function PlanHandoff() {
   const [failure, setFailure] = useState<Failure | null>(null);
   const [retry, setRetry] = useState<Handoff | 'revise' | null>(null);
 
-  useEffect(() => () => { alive.current = false; }, []);
+  const clearConfirm = () => {
+    if (confirmTimer.current === null) return;
+    window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = null;
+  };
+  useEffect(() => () => {
+    alive.current = false;
+    clearConfirm();
+  }, []);
   useEffect(() => {
     setRevising(false);
     setFeedback('');
@@ -39,6 +54,7 @@ export function PlanHandoff() {
   // The card leaves when the plan clears; the next plan starts unfettered.
   useEffect(() => {
     if (pending) return;
+    clearConfirm();
     setBusy(false);
     setRevising(false);
     setFeedback('');
@@ -54,6 +70,7 @@ export function PlanHandoff() {
   if (wasPending.current && !pending) {
     generation.current++;
     inFlight.current = false;
+    clearConfirm();
   }
   wasPending.current = pending;
 
@@ -77,8 +94,19 @@ export function PlanHandoff() {
     try {
       await api.planHandoff(s.sessionId, action);
       // The plan_ready frame clears the card, so a 202 stays busy until it
-      // lands: a second handoff must not race the first.
+      // lands: a second handoff must not race the first. If the terminal
+      // refuses the handoff it stays silent, so release the card when no
+      // confirmation arrives in time.
       if (!alive.current || gen !== generation.current) return;
+      clearConfirm();
+      confirmTimer.current = window.setTimeout(() => {
+        confirmTimer.current = null;
+        if (!alive.current || gen !== generation.current) return;
+        inFlight.current = false;
+        setBusy(false);
+        setFailure({ tone: 'error', text: NOT_CONFIRMED });
+        setRetry(null);
+      }, CONFIRM_TIMEOUT_MS);
     } catch (err) {
       if (!alive.current || gen !== generation.current) return;
       inFlight.current = false;
@@ -118,7 +146,13 @@ export function PlanHandoff() {
     }
   };
 
+  const toggleRevision = () => {
+    if (busy || inFlight.current) return;
+    setRevising((v) => !v);
+  };
+
   const cancelRevision = () => {
+    if (busy || inFlight.current) return;
     setRevising(false);
     setFeedback('');
     setFailure(null);
@@ -162,7 +196,7 @@ export function PlanHandoff() {
           ref={reviseButton}
           aria-expanded={revising}
           aria-disabled={disabled}
-          onClick={() => setRevising((v) => !v)}
+          onClick={toggleRevision}
         >Revise the plan</button>
       </div>
       <p id="plan-yolo-hint" class="hud-label plan-handoff__hint">YOLO mode skips permission prompts</p>
@@ -178,7 +212,13 @@ export function PlanHandoff() {
           />
           <div class="plan-handoff__actions">
             <button type="submit" class="btn btn--primary" data-action="send" aria-disabled={disabled}>Send</button>
-            <button type="button" class="btn btn--ghost" data-action="cancel" onClick={cancelRevision}>Cancel</button>
+            <button
+              type="button"
+              class="btn btn--ghost"
+              data-action="cancel"
+              aria-disabled={disabled}
+              onClick={cancelRevision}
+            >Cancel</button>
           </div>
         </form>
       )}

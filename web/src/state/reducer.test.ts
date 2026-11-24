@@ -610,6 +610,12 @@ describe('M3 notifications', () => {
     const s = reduce(fromSnapshot(), updateAvailable(37, { is_development: true }));
     expect(s.toasts.at(-1)?.text).toBe('This is a development version of Crush. The latest version is v0.2.0.');
   });
+
+  it('ignores an update frame with no payload', () => {
+    const s = reduce(fromSnapshot(), { seq: 38, type: 'update_available', payload: undefined });
+    expect(s.toasts).toHaveLength(0);
+    expect(s.announced.update_available).toBeUndefined();
+  });
 });
 
 describe('the pending plan needs you', () => {

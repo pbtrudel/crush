@@ -34,8 +34,15 @@ async function flush() {
 const card = () => root.querySelector<HTMLElement>('.plan-handoff');
 const action = (name: string) => root.querySelector<HTMLButtonElement>(`button[data-action="${name}"]`);
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 afterEach(async () => {
   await act(() => { render(null, root); });
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -197,5 +204,158 @@ describe('PlanHandoff', () => {
     seed();
     expect(needsAttention(state.value)).toBe(false);
     expect(needsYou(state.value)).toBe(true);
+  });
+
+  it('releases a handoff the terminal never confirms', async () => {
+    vi.useFakeTimers();
+    seed();
+    vi.spyOn(api, 'planHandoff').mockResolvedValue(undefined);
+    await mount();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+    expect(action('code')!.getAttribute('aria-disabled')).toBe('true');
+
+    await act(() => { vi.advanceTimersByTime(9_999); });
+    expect(root.querySelector('.plan-handoff__error')).toBeNull();
+    expect(action('code')!.getAttribute('aria-disabled')).toBe('true');
+
+    await act(() => { vi.advanceTimersByTime(1); });
+    const failure = root.querySelector<HTMLElement>('.plan-handoff__error')!;
+    expect(failure.getAttribute('role')).toBe('alert');
+    expect(failure.getAttribute('data-tone')).toBe('error');
+    expect(failure.textContent).toBe('The terminal did not confirm. Try again.');
+    expect(action('retry')).toBeNull();
+    expect(action('code')!.getAttribute('aria-disabled')).toBeNull();
+    expect(card()).not.toBeNull();
+  });
+
+  it('does not release a handoff when the plan clears first', async () => {
+    vi.useFakeTimers();
+    seed();
+    vi.spyOn(api, 'planHandoff').mockResolvedValue(undefined);
+    await mount();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+    await update({ ...state.value, planReady: '' });
+    expect(card()).toBeNull();
+
+    await act(() => { vi.advanceTimersByTime(10_000); });
+    expect(root.querySelector('.plan-handoff__error')).toBeNull();
+
+    await update({ ...state.value, planReady: 's1' });
+    expect(card()).not.toBeNull();
+    expect(root.querySelector('.plan-handoff__error')).toBeNull();
+    expect(action('code')!.getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('clears the confirmation timer when the card unmounts', async () => {
+    vi.useFakeTimers();
+    seed();
+    vi.spyOn(api, 'planHandoff').mockResolvedValue(undefined);
+    await mount();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    await act(() => { render(null, root); });
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(() => { vi.advanceTimersByTime(10_000); });
+    expect(card()).toBeNull();
+  });
+
+  it('keeps the draft when the card is busy', async () => {
+    seed();
+    const pending = deferred<null>();
+    const send = vi.spyOn(actions, 'sendPrompt').mockReturnValueOnce(pending.promise);
+    await mount();
+
+    await act(() => { action('revise')!.click(); });
+    const field = root.querySelector<HTMLTextAreaElement>('#plan-feedback')!;
+    await act(() => {
+      field.value = 'make it smaller';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => {
+      root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(action('send')!.getAttribute('aria-disabled')).toBe('true');
+    expect(action('cancel')!.getAttribute('aria-disabled')).toBe('true');
+    expect(action('revise')!.getAttribute('aria-disabled')).toBe('true');
+
+    // Neither Cancel nor the Revise toggle may drop the draft in flight.
+    await act(() => { action('cancel')!.click(); });
+    await act(() => { action('revise')!.click(); });
+    const box = root.querySelector<HTMLTextAreaElement>('#plan-feedback')!;
+    expect(box).not.toBeNull();
+    expect(box.value).toBe('make it smaller');
+    expect(root.querySelector('.plan-handoff__error')).toBeNull();
+
+    await act(async () => { pending.resolve(null); });
+    await flush();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('#plan-feedback')).toBeNull();
+    expect(document.activeElement).toBe(action('revise'));
+  });
+
+  it('resends the kept text from a starting retry', async () => {
+    seed();
+    const send = vi.spyOn(actions, 'sendPrompt')
+      .mockResolvedValueOnce({ tone: 'starting', text: STARTING_TEXT })
+      .mockResolvedValueOnce(null);
+    await mount();
+
+    await act(() => { action('revise')!.click(); });
+    const field = root.querySelector<HTMLTextAreaElement>('#plan-feedback')!;
+    await act(() => {
+      field.value = 'make it smaller';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => {
+      root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const failure = root.querySelector<HTMLElement>('.plan-handoff__error')!;
+    expect(failure.getAttribute('role')).toBe('status');
+    expect(root.querySelector<HTMLTextAreaElement>('#plan-feedback')!.value).toBe('make it smaller');
+
+    await act(async () => { action('retry')!.click(); });
+    await flush();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenLastCalledWith('make it smaller', []);
+    expect(root.querySelector('#plan-feedback')).toBeNull();
+  });
+
+  it('hands off only once while the first request is in flight', async () => {
+    seed();
+    const handoff = vi.spyOn(api, 'planHandoff').mockResolvedValue(undefined);
+    await mount();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+    await act(async () => { action('code_yolo')!.click(); });
+    await act(async () => { action('code')!.click(); });
+    await flush();
+
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(handoff).toHaveBeenCalledWith('s1', 'code');
+  });
+
+  it('returns focus to Revise when Cancel closes the form', async () => {
+    seed();
+    await mount();
+
+    await act(() => { action('revise')!.click(); });
+    expect(document.activeElement).toBe(root.querySelector('#plan-feedback'));
+    await act(() => { action('cancel')!.click(); });
+    expect(root.querySelector('#plan-feedback')).toBeNull();
+    expect(document.activeElement).toBe(action('revise'));
   });
 });
