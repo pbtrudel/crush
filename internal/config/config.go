@@ -571,6 +571,12 @@ type Options struct {
 	// LazyTools sends only a small core tool palette on every request and
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
+	// AnthropicToolSearch hands the deferred half of a lazy palette to
+	// Anthropic's server-side tool search instead of Crush's tool_search,
+	// so revealing a tool never rewrites the cached tools block. Only
+	// applies when LazyTools is on and the model is served by Anthropic
+	// directly.
+	AnthropicToolSearch *bool `json:"anthropic_tool_search,omitempty" jsonschema:"description=Send deferred tools to Anthropic's server-side tool search (defer_loading plus the tool_search_tool_bm25 server tool) instead of Crush's own tool_search, so a tool revealed mid-session never rewrites the cached tools block. Needs lazy_tools and an Anthropic-direct model; every other provider keeps the current behaviour. Off by default.,default=false"`
 	// PromptProfile selects the system prompt template set the coder agent
 	// renders. Left unset, the measured default applies: DeepSeek models get
 	// the lean profile, and every other model keeps the full one until its
@@ -627,6 +633,13 @@ const DefaultMaxBackgroundJobs = 50
 // option existed.
 func (o *Options) GetLazyTools() bool {
 	return o != nil && o.LazyTools != nil && *o.LazyTools
+}
+
+// GetAnthropicToolSearch reports whether deferred tools may be sent to
+// Anthropic's server-side tool search. The nil receiver, the unset field and
+// an explicit false all keep the option off.
+func (o *Options) GetAnthropicToolSearch() bool {
+	return o != nil && o.AnthropicToolSearch != nil && *o.AnthropicToolSearch
 }
 
 // GetApplyPatch reports whether GPT models are offered apply_patch instead of

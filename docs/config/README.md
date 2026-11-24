@@ -497,6 +497,11 @@ Boolean Keys:
                                  OpenAI Responses endpoint returned earlier
                                  in the turn back with the next request; on
                                  by default, pass false to turn it off
+  anthropic-tool-search          send deferred tools to Anthropic's
+                                 server-side tool search instead of Crush's
+                                 tool_search, so revealing a tool never
+                                 rewrites the cached tools block; needs
+                                 lazy-tools and an Anthropic-direct model
   metrics                        send anonymous usage metrics
   auto-summarize                 automatically compact long conversations
   provider-auto-update           update the provider catalog automatically

@@ -228,6 +228,7 @@ var optionSpecs = map[string]optionSpec{
 	"repeat-tool-reminders":        {jsonKey: "repeat_tool_reminders", kind: optBool},
 	"repetition-detection":         {jsonKey: "repetition_detection", kind: optBool},
 	"lazy-tools":                   {jsonKey: "lazy_tools", kind: optBool},
+	"anthropic-tool-search":        {jsonKey: "anthropic_tool_search", kind: optBool},
 	"apply-patch":                  {jsonKey: "apply_patch", kind: optBool},
 	"history-slim-reasoning":       {jsonKey: "history_slim_reasoning", kind: optBool},
 	"responses-reasoning-replay":   {jsonKey: "responses_reasoning_replay", kind: optBool},

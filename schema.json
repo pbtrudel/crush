@@ -833,6 +833,11 @@
           "description": "Send only a small core tool palette (read/view, edit, bash, grep, glob, ls, todos and the delegation tools) plus tool_search, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request, at the price of one extra tool call per deferred tool. Off by default.",
           "default": false
         },
+        "anthropic_tool_search": {
+          "type": "boolean",
+          "description": "Send deferred tools to Anthropic's server-side tool search (defer_loading plus the tool_search_tool_bm25 server tool) instead of Crush's own tool_search",
+          "default": false
+        },
         "prompt_profile": {
           "type": "string",
           "enum": [

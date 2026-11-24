@@ -34,6 +34,12 @@ const (
 func toolResultsForCalls(m message.Message, toolResultsByCall map[string]fantasy.ToolResultPart) fantasy.Message {
 	content := make([]fantasy.MessagePart, 0, len(m.ToolCalls()))
 	for _, tc := range m.ToolCalls() {
+		if tc.ProviderExecuted {
+			// The provider ran the call itself and answers it in the
+			// response, so a tool_result here would be a second reply to a
+			// call it already paired.
+			continue
+		}
 		result, ok := toolResultsByCall[tc.ID]
 		delete(toolResultsByCall, tc.ID)
 		if ok {
@@ -89,6 +95,11 @@ func turnEndReason(assistant *message.Message, runErr error) string {
 func (a *sessionAgent) settleTurn(ctx context.Context, assistant *message.Message, answered func(toolCallID string) bool, runErr error) error {
 	var open []message.ToolCall
 	for _, tc := range assistant.ToolCalls() {
+		if tc.ProviderExecuted {
+			// Nothing to settle: the provider executed the call inside the
+			// response and a synthetic reply would break the replay.
+			continue
+		}
 		if !answered(tc.ID) {
 			open = append(open, tc)
 		}
@@ -159,6 +170,9 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 		}
 		var orphans []message.ToolCall
 		for _, tc := range msg.ToolCalls() {
+			if tc.ProviderExecuted {
+				continue
+			}
 			if _, ok := resolved[tc.ID]; !ok {
 				orphans = append(orphans, tc)
 			}

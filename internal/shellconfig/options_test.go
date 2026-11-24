@@ -462,3 +462,20 @@ func TestOption_PromptMissingPath(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "usage: option prompt")
 }
+
+func TestOption_AnthropicToolSearch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option anthropic-tool-search true`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, true, opts["anthropic_tool_search"])
+}
