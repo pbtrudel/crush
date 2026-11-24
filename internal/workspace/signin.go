@@ -48,11 +48,11 @@ func SignInTargets(cfg *config.Config, known []catwalk.Provider) []SignInTarget 
 		id := string(provider.ID)
 		var providerCfg config.ProviderConfig
 		configured := false
-		if cfg != nil {
+		if cfg != nil && cfg.Providers != nil {
 			// A config without a provider map is a reload in flight, not a
 			// workspace that lists nothing: every known provider stays
 			// signable, as it does before the first config loads.
-			if cfg.Providers != nil && !cfg.ProviderListed(id, true) {
+			if !cfg.ProviderListed(id, true) {
 				continue
 			}
 			providerCfg, configured = cfg.Providers.Get(id)

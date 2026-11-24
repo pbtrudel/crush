@@ -92,7 +92,12 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := g.ws.Config()
-	known, _ := g.knownProviders(cfg)
+	known, err := g.knownProviders(cfg)
+	if err != nil && len(known) == 0 {
+		slog.Warn("Web sign-in providers unavailable", "error", err)
+		writeError(w, http.StatusBadGateway, "providers_unavailable", "The provider list is not available yet.")
+		return
+	}
 	targets := workspace.SignInTargets(cfg, known)
 	idx := slices.IndexFunc(targets, func(t workspace.SignInTarget) bool { return t.ID == body.Provider })
 	if idx < 0 {
@@ -108,6 +113,12 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(body.APIKey)
 	if key == "" || len(key) > maxSecretBytes {
 		writeError(w, http.StatusBadRequest, "bad_api_key", "send an API key of at most 4096 bytes")
+		return
+	}
+	// A tab's key is saved literally: a shell expression would be expanded
+	// by the resolver, and the TUI is the only place that behaviour stays.
+	if strings.ContainsAny(key, "$`") {
+		writeError(w, http.StatusBadRequest, "bad_api_key", "the key must not contain a shell expression")
 		return
 	}
 
@@ -130,7 +141,7 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), keySignInTimeout)
 	defer cancel()
-	if err := g.testAPIKeyFn(ctx, provider, key, g.ws.Resolver()); err != nil {
+	if err := g.testAPIKeyFn(ctx, provider, key, config.IdentityResolver()); err != nil {
 		// Providers echo part of a rejected key in their error text, so the
 		// detail stays out of the log as well as the answer.
 		slog.Info("Web sign-in key rejected", "provider", body.Provider)
@@ -174,7 +185,7 @@ func signInModelReason(err error) string {
 
 // testAPIKey is the default provider check: the catalog entry becomes the
 // provider config the TUI's key dialog tests, so both clients ask the same
-// question.
+// question. It ignores ctx: TestConnection applies its own 5 s limit.
 func testAPIKey(_ context.Context, p catwalk.Provider, key string, r config.VariableResolver) error {
 	pc := config.ProviderConfig{
 		ID:      string(p.ID),

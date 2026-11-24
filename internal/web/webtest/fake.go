@@ -150,6 +150,9 @@ type Fake struct {
 	// copilotImport is what ImportCopilot reports; set it with
 	// SetCopilotImport.
 	copilotImport *oauth.Token
+	// providerKeyErr makes SetProviderAPIKey fail; set it with
+	// SetProviderKeyErr.
+	providerKeyErr error
 	// agentBusy is what AgentIsBusy reports; set it with SetAgentBusy.
 	agentBusy bool
 	// agentModel is what AgentModel returns; set it with SetAgentModel.
@@ -317,8 +320,17 @@ func (f *Fake) SetCopilotImport(tok *oauth.Token) {
 	f.mu.Unlock()
 }
 
+// SetProviderKeyErr makes SetProviderAPIKey fail, the way a config write
+// can. nil restores success.
+func (f *Fake) SetProviderKeyErr(err error) {
+	f.mu.Lock()
+	f.providerKeyErr = err
+	f.mu.Unlock()
+}
+
 // SetProviderAPIKey records the mutation without the value and marks the
-// provider configured with the catalog's models.
+// provider configured with the catalog's models. The key itself is never
+// stored.
 func (f *Fake) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
 	kind := "key"
 	if _, ok := apiKey.(*oauth.Token); ok {
@@ -326,8 +338,11 @@ func (f *Fake) SetProviderAPIKey(scope config.Scope, providerID string, apiKey a
 	}
 	f.record("SetProviderAPIKey:" + scope.String() + ":" + providerID + ":" + kind)
 	f.mu.Lock()
-	f.Cfg = withProviderKey(f.Cfg, providerID, apiKey, f.catalog)
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	if f.providerKeyErr != nil {
+		return f.providerKeyErr
+	}
+	f.Cfg = withProviderKey(f.Cfg, providerID, f.catalog)
 	return nil
 }
 
@@ -427,9 +442,10 @@ func withModel(cfg *config.Config, typ config.SelectedModelType, m config.Select
 	return &clone
 }
 
-// withProviderKey copies cfg with provider id configured with apiKey,
-// taking the models from the matching catalog entry.
-func withProviderKey(cfg *config.Config, id string, apiKey any, catalog []catwalk.Provider) *config.Config {
+// withProviderKey copies cfg with provider id marked configured, taking
+// the models from the matching catalog entry. The credential value stays
+// out of the fake config.
+func withProviderKey(cfg *config.Config, id string, catalog []catwalk.Provider) *config.Config {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -458,12 +474,6 @@ func withProviderKey(cfg *config.Config, id string, apiKey any, catalog []catwal
 				break
 			}
 		}
-	}
-	switch key := apiKey.(type) {
-	case *oauth.Token:
-		pc.OAuthToken = key
-	case string:
-		pc.APIKey = key
 	}
 	providers.Set(id, pc)
 	clone.Providers = providers

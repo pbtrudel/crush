@@ -3808,9 +3808,15 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		providerCfg config.ProviderConfig
 		hasAPIKey   bool
 	)
-	if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
-		providerCfg, _ = cfg.Providers.Get(string(provider.ID))
-		hasAPIKey = providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+	// Only the OpenAI and xAI choice reads the credential: resolving a key
+	// template for any other provider would run a $(...) the dialog never
+	// needed.
+	switch provider.ID {
+	case catwalk.InferenceProviderOpenAI, catwalk.InferenceProviderXAI:
+		if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
+			providerCfg, _ = cfg.Providers.Get(string(provider.ID))
+			hasAPIKey = providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+		}
 	}
 
 	switch workspace.DefaultAuthChoice(string(provider.ID), providerCfg, hasAPIKey, model.Model == "") {

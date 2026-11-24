@@ -2,15 +2,18 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,6 +49,43 @@ func signInGateway(t *testing.T) (*Gateway, *webtest.Fake) {
 	return g, f
 }
 
+// countingWorkspace records resolver calls and can fail the model rebuild.
+type countingWorkspace struct {
+	*webtest.Fake
+	resolverCalls atomic.Int64
+	updateErr     error
+}
+
+func (w *countingWorkspace) Resolver() config.VariableResolver {
+	w.resolverCalls.Add(1)
+	return config.IdentityResolver()
+}
+
+func (w *countingWorkspace) UpdateAgentModel(ctx context.Context) error {
+	if w.updateErr != nil {
+		return w.updateErr
+	}
+	return w.Fake.UpdateAgentModel(ctx)
+}
+
+func signInGatewayWithWorkspace(t *testing.T, updateErr error, test func(context.Context, catwalk.Provider, string, config.VariableResolver) error) (*Gateway, *webtest.Fake, *countingWorkspace) {
+	t.Helper()
+	fake := webtest.NewFake()
+	ws := &countingWorkspace{Fake: fake, updateErr: updateErr}
+	g, err := Start(t.Context(), Options{Workspace: ws, KnownProviders: testKnownProviders, TestAPIKey: test})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	known, _ := testKnownProviders(nil)
+	fake.SetCatalog(known)
+	return g, fake, ws
+}
+
+// keyVerification is what the test API key check saw.
+type keyVerification struct {
+	key      string
+	resolved string
+}
+
 func TestAPIKeySignInSavesAndAppliesTheModel(t *testing.T) {
 	t.Parallel()
 	g, f := signInGateway(t)
@@ -56,6 +96,46 @@ func TestAPIKeySignInSavesAndAppliesTheModel(t *testing.T) {
 	require.JSONEq(t, `{"signed_in":true,"model_applied":true}`, string(body))
 	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:anthropic:key")
 	require.NotContains(t, string(body), testKey)
+	pc, ok := f.Config().Providers.Get("anthropic")
+	require.True(t, ok)
+	require.Empty(t, pc.APIKey, "the fake marks the provider configured without storing the key")
+}
+
+func TestAPIKeySaveFailure(t *testing.T) {
+	t.Parallel()
+	g, f := signInGateway(t)
+	f.SetProviderKeyErr(errors.New("the config could not be written"))
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+		`{"provider":"anthropic","api_key":"`+testKey+`"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode)
+	require.Contains(t, string(body), "save_api_key")
+	require.NotContains(t, string(body), testKey)
+}
+
+func TestAPIKeyModelApplicationReasons(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		model     string
+		updateErr error
+		want      string
+	}{
+		{"agent_starting", "claude", workspace.ErrAgentNotInitialized, "agent_starting"},
+		{"model_unavailable", "missing", nil, "model_unavailable"},
+		{"model_failed", "claude", errors.New("the agent model could not be rebuilt"), "model_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, f, _ := signInGatewayWithWorkspace(t, tc.updateErr, acceptOnlyValidKey)
+			rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+				`{"provider":"anthropic","api_key":"`+testKey+`","model":{"type":"main","model":"`+tc.model+`"}}`)
+			defer rsp.Body.Close()
+			require.Equal(t, http.StatusOK, rsp.StatusCode)
+			require.JSONEq(t, `{"signed_in":true,"model_applied":false,"reason":"`+tc.want+`"}`, string(body))
+			require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:anthropic:key")
+		})
+	}
 }
 
 func TestAPIKeyRejectedNeverEchoed(t *testing.T) {
@@ -195,21 +275,77 @@ func TestAPIKeyBadModelType(t *testing.T) {
 	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
 }
 
-func TestAPIKeyInHeaderIsNeverRead(t *testing.T) {
+func TestAPIKeyHeaderIsIgnored(t *testing.T) {
 	t.Parallel()
 	g, f := signInGateway(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth/provider/key",
-		strings.NewReader(`{"provider":"anthropic"}`))
+		strings.NewReader(`{"provider":"anthropic","api_key":"`+testKey+`"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", g.URL())
-	req.Header.Set("X-Api-Key", testKey)
+	req.Header.Set("X-Api-Key", "sk-from-the-header")
 	rsp := doReq(t, authedClient(t, g), req)
 	defer rsp.Body.Close()
-	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Equal(t, http.StatusOK, rsp.StatusCode, "the body key is the one verified")
 	body, err := io.ReadAll(rsp.Body)
 	require.NoError(t, err)
-	require.Contains(t, string(body), "bad_api_key")
 	require.NotContains(t, string(body), testKey)
+	require.NotContains(t, string(body), "sk-from-the-header")
+	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:anthropic:key")
+}
+
+func TestAPIKeyWithShellExpressionIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"$(touch /tmp/crush-api-key-pwned)", "sk-`id`"} {
+		var testCalls atomic.Int64
+		g, f, ws := signInGatewayWithWorkspace(t, nil, func(context.Context, catwalk.Provider, string, config.VariableResolver) error {
+			testCalls.Add(1)
+			return nil
+		})
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+			`{"provider":"anthropic","api_key":"`+key+`"}`)
+		require.Equal(t, http.StatusBadRequest, rsp.StatusCode, key)
+		require.Contains(t, string(body), "bad_api_key")
+		require.NotContains(t, string(body), key)
+		require.Zero(t, testCalls.Load(), "a shell expression reaches no provider check")
+		require.Zero(t, ws.resolverCalls.Load(), "a shell expression reaches no resolver")
+		require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+		rsp.Body.Close()
+	}
+}
+
+func TestAPIKeyIsVerifiedLiterally(t *testing.T) {
+	t.Parallel()
+	got := make(chan keyVerification, 1)
+	g, f, ws := signInGatewayWithWorkspace(t, nil, func(_ context.Context, _ catwalk.Provider, key string, r config.VariableResolver) error {
+		resolved, _ := r.ResolveValue("$(echo hi)")
+		got <- keyVerification{key: key, resolved: resolved}
+		return nil
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+		`{"provider":"anthropic","api_key":"  `+testKey+`  "}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.NotContains(t, string(body), testKey)
+	v := <-got
+	require.Equal(t, testKey, v.key)
+	require.Equal(t, "$(echo hi)", v.resolved, "the provider check resolves nothing")
+	require.Zero(t, ws.resolverCalls.Load(), "the route uses the identity resolver")
+	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:anthropic:key")
+}
+
+func TestAPIKeySignInWhenCatalogUnavailable(t *testing.T) {
+	t.Parallel()
+	g, f := startWith(t, Options{
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) {
+			return nil, errors.New("catalog down")
+		},
+		TestAPIKey: acceptOnlyValidKey,
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+		`{"provider":"anthropic","api_key":"`+testKey+`"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadGateway, rsp.StatusCode)
+	require.Contains(t, string(body), "providers_unavailable")
 	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
 }

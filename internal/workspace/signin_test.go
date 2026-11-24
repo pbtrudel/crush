@@ -60,3 +60,11 @@ func TestSignInTargetsWithoutConfigListsEveryKnownProvider(t *testing.T) {
 	require.Len(t, got, 2, "a workspace with no config yet can still sign in")
 	require.False(t, got[0].Configured)
 }
+
+func TestSignInTargetsWithoutProvidersListsEveryKnownProvider(t *testing.T) {
+	t.Parallel()
+	got := SignInTargets(&config.Config{}, []catwalk.Provider{{ID: "hyper", Name: "Hyper"}, {ID: "anthropic", Name: "Anthropic"}})
+	require.Len(t, got, 2, "a config whose provider map is not loaded yet lists them unconfigured")
+	require.False(t, got[0].Configured)
+	require.False(t, got[1].Configured)
+}
