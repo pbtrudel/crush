@@ -335,8 +335,9 @@ func (g *Gateway) SetPlanReady(sessionID string) {
 }
 
 // reportInputModeRefused tells every tab why the terminal kept its mode.
-// A refused switch is a busy agent, so the frame carries the same code the
-// routes answer on a conflict; the browser reads it to pick the tone.
+// A refused switch is a busy agent, so the frame carries the same agent_busy
+// code the routes answer on a conflict. It is a contract for clients; the
+// browser does not branch on it in M3.
 func (g *Gateway) reportInputModeRefused(reason string) {
 	g.hub.publishJSON(frameError, webErrorPayload("", "agent_busy", reason))
 }
