@@ -186,7 +186,9 @@ func TestControllerReportsInputModeRefusal(t *testing.T) {
 	c.ReportInputModeRefused("Can't switch while Crush is busy")
 	f := readFrame(t, conn)
 	require.Equal(t, frameError, f.Type)
-	require.JSONEq(t, `{"error":"Can't switch while Crush is busy"}`, string(f.Payload))
+	// The browser reads the code to pick the toast tone; a frame without
+	// one falls through to a generic error.
+	require.JSONEq(t, `{"session_id":"","code":"agent_busy","error":"Can't switch while Crush is busy"}`, string(f.Payload))
 }
 
 func TestControllerConcurrentStartsShareOneGateway(t *testing.T) {
