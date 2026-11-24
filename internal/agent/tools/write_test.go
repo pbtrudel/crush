@@ -138,3 +138,24 @@ func TestWriteRefusalOfAPartialWindowStaysRefused(t *testing.T) {
 	resp = write()
 	require.True(t, resp.IsError, "the write must stay refused until the rest is read too")
 }
+
+// Write refuses before it asks for any permission, so a refusal for a file
+// outside the working directory must not show the file or record a read.
+func TestWriteRefusalOutsideWorkingDirShowsNoContent(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("token=abc\n"), 0o644))
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	tracker := &refusalTracker{}
+	tool := NewWriteTool(nil, &testutil.MockPermissionService{}, &mockHistoryService{}, tracker, workingDir)
+	input, err := json.Marshal(WriteParams{FilePath: outside, Content: "x\n"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: WriteToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.NotContains(t, resp.Content, "token=abc")
+	require.Empty(t, tracker.reads)
+}

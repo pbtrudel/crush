@@ -748,3 +748,21 @@ func TestViewToolRefusesImageAboveHardLimit(t *testing.T) {
 	require.Contains(t, resp.Content, "26214400", "the message names the hard cap")
 	require.NotContains(t, resp.Content, "could not be shrunk", "the file must be refused before it is read")
 }
+
+// The nearest-folder hint lists names only inside the working directory: a
+// read granted for one outside file is not a grant to list its ancestors.
+func TestViewNotFoundListsNothingAboveWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	outsideRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outsideRoot, "private.txt"), nil, 0o644))
+
+	tool := newViewToolForTest(t.TempDir())
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: filepath.Join(outsideRoot, "deleted", "sub", "file.go"),
+	})
+
+	require.True(t, resp.IsError)
+	require.NotContains(t, resp.Content, "private.txt")
+}

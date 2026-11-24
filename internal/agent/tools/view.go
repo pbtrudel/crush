@@ -284,7 +284,7 @@ func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, c
 				}
 			}
 
-			if nearest, entries := nearestExistingFolder(dir); nearest != "" {
+			if nearest, entries := nearestExistingFolder(dir, v.workingDir); nearest != "" {
 				contents := "which is empty"
 				if len(entries) > 0 {
 					contents = "which contains: " + strings.Join(entries, ", ")
@@ -782,10 +782,15 @@ func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.T
 }
 
 // nearestExistingFolder walks up from path until it finds a folder that
-// exists, and returns it with up to ten of its entries. It returns an empty
-// path when nothing exists, which only happens at a broken root.
-func nearestExistingFolder(path string) (string, []string) {
+// exists, and returns it with up to ten of its entries. It only walks inside
+// workingDir: a read granted for one file outside it is not a grant to list
+// the folders above that file. It returns an empty path when no folder
+// inside workingDir exists.
+func nearestExistingFolder(path, workingDir string) (string, []string) {
 	for dir := path; ; dir = filepath.Dir(dir) {
+		if !insideDir(workingDir, dir) {
+			return "", nil
+		}
 		entries, err := os.ReadDir(dir)
 		if err == nil {
 			names := make([]string, 0, len(entries))

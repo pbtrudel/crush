@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -104,6 +105,24 @@ func (edit editContext) refuseOverwrite(guard readGuard, filePath string) fantas
 	return withErrorKind(fantasy.NewTextErrorResponse(text), guard.kind)
 }
 
+// insideDir reports whether path is dir itself or inside it, after both are
+// made absolute and cleaned. An empty dir contains nothing.
+func insideDir(dir, path string) bool {
+	if dir == "" {
+		return false
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // recordShownRead records the read a refusal just showed, so the retry passes
 // the guard. It reports nothing when the session is unknown.
 func (edit editContext) recordShownRead(filePath string) {
@@ -116,8 +135,13 @@ func (edit editContext) recordShownRead(filePath string) {
 
 // currentContent renders the numbered window of the file around the first
 // line of oldString, and reports false when view would refuse the file for
-// its size or content.
+// its size or content. It also reports false outside the working directory:
+// edit and write refuse before they ask for any permission, and view needs
+// one to read there, so showing the file would skip that prompt.
 func (edit editContext) currentContent(filePath, oldString string) (refusalContent, bool) {
+	if !insideDir(edit.workingDir, filePath) {
+		return refusalContent{}, false
+	}
 	info, err := os.Stat(filePath)
 	if err != nil || info.IsDir() || info.Size() > MaxViewSize {
 		return refusalContent{}, false

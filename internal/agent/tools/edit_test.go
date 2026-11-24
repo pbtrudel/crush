@@ -330,3 +330,20 @@ func TestEditWithAnAbsentOldStringStillFails(t *testing.T) {
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "old_string not found")
 }
+
+// Edit refuses before it asks for any permission, and view needs one to read
+// outside the working directory, so a refusal there must not show the file.
+func TestRefusalOutsideWorkingDirShowsNoContent(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("token=abc\n"), 0o644))
+
+	tracker := &refusalTracker{}
+	resp := runReplaceContent(t, workingDir, outside, "token=abc", "x", tracker)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "you must read the file before editing it")
+	require.NotContains(t, resp.Content, "token=abc")
+	require.Empty(t, tracker.reads)
+}

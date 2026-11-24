@@ -182,43 +182,29 @@ func TestSendMessageReachesDispatchedSubagent(t *testing.T) {
 func TestReopenedDispatchRunsCleanupAgain(t *testing.T) {
 	t.Parallel()
 
-	c, env, _ := newCrossFamilyCoordinator(t)
-	ctx := t.Context()
-	agents, err := c.taskAgents(ctx, false)
+	c, env := newOverrideTestCoordinator(t)
+	parent, err := env.sessions.Create(t.Context(), "parent")
 	require.NoError(t, err)
-	dispatch, err := c.agentDispatchTool(ctx, config.AgentCoder, agents[accessRead].Model)
-	require.NoError(t, err)
-
-	parent, err := env.sessions.Create(ctx, "parent")
-	require.NoError(t, err)
-	assistant, err := env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "dispatching"}},
+	// The test releases each run itself, so the result never depends on how
+	// fast a real model run finishes on a loaded machine.
+	release := make(chan struct{}, 2)
+	agent := newMockAgent("mock", 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		<-release
+		return agentResultWithText("done"), nil
 	})
-	require.NoError(t, err)
-	callCtx := context.WithValue(ctx, tools.SessionIDContextKey, parent.ID)
-	callCtx = context.WithValue(callCtx, tools.MessageIDContextKey, assistant.ID)
-
-	resp, err := dispatch.Run(callCtx, fantasy.ToolCall{ID: "d1", Name: AgentDispatchToolName, Input: `{"prompt":"do","label":"sub"}`})
-	require.NoError(t, err)
-	require.False(t, resp.IsError, resp.Content)
-	var meta AgentDispatchResponseMetadata
-	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
-	entry, ok := c.dispatched.Get(dispatchKey(parent.ID, meta.Label))
-	require.True(t, ok)
-	entry.stop("test done")
-	require.True(t, entry.awaitSettled(10*time.Second))
+	entry := newDispatchedAgent("betty-cleanup", accessRead, "child", parent.ID, agent)
 
 	var cleans atomic.Int64
 	entry.setCleanup(func() { cleans.Add(1) })
 
-	require.True(t, c.reopen(entry, "carry on", nil), "the finished entry reopens")
-	require.True(t, entry.awaitSettled(10*time.Second))
-	require.EqualValues(t, 1, cleans.Load(), "the reopened run cleans up after itself")
-
-	require.True(t, c.reopen(entry, "carry on again", nil), "the entry reopens a second time")
-	require.True(t, entry.awaitSettled(10*time.Second))
-	require.EqualValues(t, 2, cleans.Load(), "every reopened run cleans up again")
+	for want := int64(1); want <= 2; want++ {
+		require.True(t, c.reopen(entry, "carry on", nil), "the idle entry reopens")
+		// Stopped rather than finished, so no report turn starts on the parent.
+		entry.stop("test done")
+		release <- struct{}{}
+		require.True(t, entry.awaitSettled(5*time.Second))
+		require.Equal(t, want, cleans.Load(), "every run cleans up after itself")
+	}
 }
 
 // TestAgentStopLeavesTeamAloneWhenAgentsOff pins that stopping a teammate
