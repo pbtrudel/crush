@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../state/__fixtures__/events.json';
-import type { Frame } from '../api/types';
+import type { Frame, SecurePrompt } from '../api/types';
 import { drawerOpen, panelTab } from '../state/drawer';
 import { overlayWidth } from '../state/overlay';
 import { adoptSession, initialState, reduce } from '../state/reducer';
@@ -78,6 +78,36 @@ describe('App layout', () => {
       expect(tabs.hasAttribute('inert')).toBe(false);
     } finally {
       await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
+
+  it('inerts the shell under a secure prompt and keeps the focus in its dialog', async () => {
+    const prompt: SecurePrompt = {
+      source: 'pinentry', id: 'p1', kind: 'passphrase', title: 'GPG passphrase',
+      message: 'Unlock the signing key',
+    };
+    state.value = { ...reduce(initialState(), fx.snapshot), conn: 'live' };
+    const root = document.createElement('div');
+    // The focus check needs the tree in the document: jsdom ignores focus on
+    // a detached element.
+    document.body.append(root);
+    try {
+      await act(() => { render(<App />, root); });
+      const main = root.querySelector('main')!;
+      const deck = root.querySelector('.holodeck__deck')!;
+      expect(main.hasAttribute('inert')).toBe(false);
+      await act(() => { state.value = { ...state.value, securePrompts: [prompt] }; });
+      expect(main.hasAttribute('inert')).toBe(true);
+      expect(deck.hasAttribute('inert')).toBe(true);
+      const dialog = root.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await act(() => { state.value = { ...state.value, securePrompts: [] }; });
+      expect(main.hasAttribute('inert')).toBe(false);
+      expect(deck.hasAttribute('inert')).toBe(false);
+    } finally {
+      await act(() => { render(null, root); });
+      root.remove();
       state.value = initialState();
     }
   });

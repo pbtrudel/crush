@@ -2,7 +2,7 @@ import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, InputMode, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
+  Frame, InputMode, Message, PermissionMode, QuestionAnswer, SecurePrompt, Snapshot, WireEvent,
 } from '../api/types';
 import {
   adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
@@ -85,6 +85,12 @@ function dropQuestion(batchId: string) {
 function isNotPending(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'not_pending';
 }
+
+// promptExpired says a prompt left while its answer or cancel was on the
+// way. The server refuses those with not_pending, the same error a prompt
+// the terminal already answered gives.
+const EXPIRED_TEXT = 'The prompt was already answered or has expired.';
+const promptExpired = () => dispatch((s) => pushToast(s, 'info', EXPIRED_TEXT));
 
 // queueChanged reports the frames after which the queue may have changed.
 // The event stream carries no queue events, so the deck asks for the list
@@ -404,6 +410,40 @@ export const actions = {
   async inspect(sid: string | null) {
     dispatch((s) => inspect(s, sid));
     if (sid && sid !== state.value.sessionId) await loadInspected(sid);
+  },
+  // answerSecure delivers a secret to the open prompt and returns the
+  // failure the dialog shows inline, or null. The secret goes straight into
+  // the request body: it is never stored, and a prompt that leaves before
+  // the request lands is only toasted, because the terminal answered first.
+  async answerSecure(p: SecurePrompt, secret: string): Promise<Failure | null> {
+    dispatch((s) => markAnswered(s, p.id));
+    try {
+      await api.answerSecure(p.source, p.id, secret);
+      return null;
+    } catch (err) {
+      if (isNotPending(err)) {
+        promptExpired();
+        return null;
+      }
+      dispatch((s) => unmarkAnswered(s, p.id));
+      return describeFailure(err);
+    }
+  },
+  // cancelSecure dismisses an open prompt, with the same rules as an
+  // answer: a failure re-arms the dialog so the terminal can still answer.
+  async cancelSecure(p: SecurePrompt): Promise<Failure | null> {
+    dispatch((s) => markAnswered(s, p.id));
+    try {
+      await api.cancelSecure(p.source, p.id);
+      return null;
+    } catch (err) {
+      if (isNotPending(err)) {
+        promptExpired();
+        return null;
+      }
+      dispatch((s) => unmarkAnswered(s, p.id));
+      return describeFailure(err);
+    }
   },
   async messageTeammate(member: string, text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
