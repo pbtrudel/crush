@@ -1051,6 +1051,8 @@ type hookWorkspace struct {
 	*webtest.Fake
 	// onSave runs when a save starts, on the sign-in goroutine.
 	onSave func()
+	// onModel runs when the model step starts, on the sign-in goroutine.
+	onModel func(context.Context)
 	// saving closes when the first save starts.
 	saving chan struct{}
 	// release, when set, holds a save until the test releases it.
@@ -1096,6 +1098,9 @@ func (w *hookWorkspace) SetProviderAPIKey(scope config.Scope, providerID string,
 // UpdateAgentModel refuses a cancelled context, the way the real rebuild
 // does, so a test can see which context the model step used.
 func (w *hookWorkspace) UpdateAgentModel(ctx context.Context) error {
+	if w.onModel != nil {
+		w.onModel(ctx)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1387,4 +1392,52 @@ func TestSignInExpiresAtUsesTheGatewayClock(t *testing.T) {
 	var st SignInState
 	require.NoError(t, json.Unmarshal(body, &st))
 	require.Equal(t, fixed.Unix()+900, st.ExpiresAt)
+}
+
+// modelCall is what the model step saw of its context.
+type modelCall struct {
+	deadline time.Time
+	ok       bool
+}
+
+// TestSignInModelStepHasADeadline pins that the switch a completed sign-in
+// makes cannot hang the run: it is detached from the run's context, so it
+// carries a deadline of its own.
+func TestSignInModelStepHasADeadline(t *testing.T) {
+	t.Parallel()
+	known := []catwalk.Provider{{
+		ID: catwalk.InferenceProviderXAI, Name: "xAI",
+		Models: []catwalk.Model{{ID: "grok-4", Name: "Grok 4"}},
+	}}
+	ws := newHookWorkspace()
+	calls := make(chan modelCall, 1)
+	ws.onModel = func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		calls <- modelCall{deadline: deadline, ok: ok}
+	}
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.Token = &oauth.Token{AccessToken: "tok-deadline"}
+	g, err := Start(t.Context(), Options{
+		Workspace:      ws,
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) { return known, nil },
+		SignInFlow:     func(string) (signin.Flow, error) { return flow, nil },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	ws.SetCatalog(known)
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start",
+		`{"provider":"xai","model":{"type":"main","model":"grok-4"}}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"done"`)
+	select {
+	case call := <-calls:
+		require.True(t, call.ok, "the model step has a deadline")
+		require.WithinDuration(t, time.Now().Add(30*time.Second), call.deadline, 5*time.Second)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the model step never ran")
+	}
 }

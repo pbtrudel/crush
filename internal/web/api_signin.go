@@ -31,6 +31,11 @@ const keySignInTimeout = 30 * time.Second
 // that never answers cannot hold the sign-in open.
 const signInStartTimeout = 30 * time.Second
 
+// signInModelTimeout bounds the model switch a completed sign-in makes. The
+// step is detached from the run's context so a cancel cannot fail it, and
+// this deadline keeps a workspace that never answers from holding it open.
+const signInModelTimeout = 30 * time.Second
+
 // The phases a sign-in moves through. A cancelled state carries no
 // sentence: the browser shows its own.
 const (
@@ -610,8 +615,12 @@ func (g *Gateway) completeSignIn(run *signinRun, tok *oauth.Token) {
 			return
 		}
 		// The model step is not tied to the run: a cancel that raced the
-		// save cannot fail it now the credential is stored.
-		applied, _ := applySignInModel(context.WithoutCancel(run.ctx), g, run.model)
+		// save cannot fail it now the credential is stored, and the
+		// deadline keeps a workspace that never answers from holding the
+		// step open.
+		modelCtx, cancelModel := context.WithTimeout(context.WithoutCancel(run.ctx), signInModelTimeout)
+		applied, _ := applySignInModel(modelCtx, g, run.model)
+		cancelModel()
 		st := run.phase(signInDone, "")
 		st.ModelApplied = applied
 		g.signinMu.Lock()
