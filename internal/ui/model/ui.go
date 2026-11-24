@@ -3622,7 +3622,7 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
 		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
-			return util.ReportError(err)
+			return util.ReportError(err)()
 		}
 		slog.Info("Restored model from session",
 			"provider", lastAssistant.Provider,
@@ -3753,7 +3753,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
 		if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
-			return util.ReportError(err)
+			return util.ReportError(err)()
 		}
 
 		var (
