@@ -393,6 +393,8 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool, opts ...L
 		return nil, fmt.Errorf("invalid provider configuration: %w", err)
 	}
 
+	cfg.warnUnknownPromptCacheTTL()
+
 	if !isInsideWorktree(workingDir) {
 		const depth = 2
 		const items = 100

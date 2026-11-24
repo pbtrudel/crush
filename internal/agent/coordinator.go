@@ -1933,14 +1933,29 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
+	// Transports nest outermost first: the signature retry resends a whole
+	// request, tool search rewrites the tools block and moves its
+	// breakpoint, and the cache ttl is applied last so it also covers the
+	// breakpoint tool search moved.
+	httpClient := c.anthropicHTTPClient(providerID, baseURL)
+	if c.cfg.Config().Options.GetAnthropicToolSearch() {
+		// The transport passes every unmarked request through untouched,
+		// so turning the option off leaves the request bytes as they were.
+		base := http.DefaultTransport
+		if httpClient != nil && httpClient.Transport != nil {
+			base = httpClient.Transport
+		}
+		httpClient = &http.Client{Transport: newAnthropicToolSearchTransport(base)}
 	}
+	// A thinking block signed under another request prefix is rejected with
+	// a 400 that would otherwise end the turn. The transport retries once
+	// without the signed blocks, so a session resumed on another model
+	// survives even when the history could not be classified.
+	opts = append(opts, anthropic.WithHTTPClient(withThinkingSignatureRetry(httpClient)))
 	return anthropic.New(opts...)
 }
 
-func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token, wireType catwalk.Type) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token, wireType catwalk.Type, providerID string) (fantasy.Provider, error) {
 	opts := []openai.Option{
 		openai.WithAPIKey(apiKey),
 		openai.WithUseResponsesAPI(),
@@ -1967,6 +1982,7 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 		}
 	}
 	httpClient = c.withResponsesReasoningReplay(httpClient)
+	httpClient = c.withOpenAIPromptCacheRetention(httpClient, providerID)
 	if httpClient != nil {
 		opts = append(opts, openai.WithHTTPClient(httpClient))
 	}
@@ -2298,14 +2314,14 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 				headers["chatgpt-account-id"] = token.AccountID
 			}
 		}
-		return c.buildOpenaiProvider(baseURL, apiKey, headers, token, wireType)
+		return c.buildOpenaiProvider(baseURL, apiKey, headers, token, wireType, providerCfg.ID)
 	}
 
 	switch wireType {
 	case catwalk.TypeMessages:
 		return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID)
 	case catwalk.TypeResponses:
-		return c.buildOpenaiProvider(baseURL, apiKey, headers, providerCfg.OAuthToken, wireType)
+		return c.buildOpenaiProvider(baseURL, apiKey, headers, providerCfg.OAuthToken, wireType, providerCfg.ID)
 	case catwalk.TypeCompletions, catwalk.Type(hyper.Name):
 		// Hyper's provider advertises its own type rather than a wire
 		// type; it speaks chat completions.

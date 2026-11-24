@@ -948,7 +948,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
@@ -1297,7 +1297,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// server cannot drop them from the palette either. Tools the session
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
-	agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
+	serverToolSearch := a.anthropicToolSearchForModel(largeModel)
+	if serverToolSearch {
+		// The server searches the deferred half, so this request carries
+		// the whole palette and never changes when one is revealed.
+		agentTools = anthropicToolSearchPalette(agentTools)
+	} else {
+		agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
+	}
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
@@ -1459,7 +1466,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// The prompt just stored is what marks the end of any idle gap: a
 	// session picked up after a long pause has no warm cache to lose.
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	// The gate compares the working tree at the prompt's start with the
 	// tree at its end, so a change made by a shell command or by a
@@ -1571,7 +1578,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// server that finished connecting). Rebuilding the list from
 			// scratch per step, or letting a flaky server shrink it, would
 			// move the tools block and its cache breakpoint.
-			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools)
+			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools, serverToolSearch)
 			if adopted {
 				a.applyToolCacheBreakpoint(stepTools, policy)
 			}
@@ -1634,6 +1641,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 
 			a.applyCacheBreakpoints(prepared.Messages, policy)
+			if serverToolSearch {
+				callContext = withAnthropicToolSearch(callContext)
+			}
 
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
@@ -1788,7 +1798,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				ID:               tc.ToolCallID,
 				Name:             tc.ToolName,
 				Input:            input,
-				ProviderExecuted: false,
+				ProviderExecuted: tc.ProviderExecuted,
 				Finished:         true,
 			}
 			currentAssistant.AddToolCall(toolCall)
@@ -2558,6 +2568,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 	// rewrite the cached prefix for the whole conversation. Re-send the list
 	// that step sent. Only a compaction with no live step behind it, such as
 	// a manual /compact in a fresh process, has to build one.
+	serverToolSearch := a.anthropicToolSearchForModel(largeModel)
 	compactionTools, ok := a.stepTools.Get(sessionID)
 	if ok {
 		// The list may name a tool the registry has dropped since. That is
@@ -2566,11 +2577,15 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		compactionTools = slices.Clone(compactionTools)
 	} else {
 		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
-		// Lazy mode filters here too: a compaction that has to rebuild the
-		// tools block must send the list the next step would send, or this
-		// one request carries every deferred schema and rewrites the cached
-		// prefix for nothing.
-		compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
+		if serverToolSearch {
+			compactionTools = anthropicToolSearchPalette(compactionTools)
+		} else {
+			// Lazy mode filters here too: a compaction that has to rebuild
+			// the tools block must send the list the next step would send,
+			// or this one request carries every deferred schema and
+			// rewrites the cached prefix for nothing.
+			compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
+		}
 		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
@@ -2650,7 +2665,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
-	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
+	aiMsgs, _ := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
 
 	genCtx, cancel := context.WithCancel(ctx)
 	if !active {
@@ -2730,6 +2745,9 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
 			a.applyCacheBreakpoints(prepared.Messages, policy)
+			if serverToolSearch {
+				callContext = withAnthropicToolSearch(callContext)
+			}
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
@@ -3017,7 +3035,7 @@ func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message,
 	for _, msg := range msgs {
 		estimate += messageTokens(msg)
 	}
-	history, files := a.preparePrompt(msgs, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
+	history, files := a.preparePromptFor(msgs, model.ModelCfg.Provider, model.ModelCfg.Model, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
 	assembled := estimateMessageTokens(history) + approxTokenCount(systemPrompt) + approxTokenCount(userPrompt)
 	for _, file := range files {
 		assembled += estimateMessagePartTokens(file)
@@ -3261,7 +3279,7 @@ func selectCompactionTail(msgs []message.Message, budget int64) int {
 		pending[i] = count
 		switch msgs[i].Role {
 		case message.Assistant:
-			count += len(msgs[i].ToolCalls())
+			count += clientToolCallCount(msgs[i])
 		case message.Tool:
 			count -= len(msgs[i].ToolResults())
 			if count < 0 {
@@ -3538,12 +3556,20 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool, polic
 // re-serializing the block from the first adopted tool. The second return
 // value reports whether anything was adopted, so the caller knows the tool
 // cache breakpoint has to move.
-func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
+func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool, serverToolSearch bool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
-	// A tool this session revealed with tool_search during the last step
-	// passes the lazy filter now, so the adoption below is what adds it to
-	// the palette; a still-unrevealed one stays out of the request.
-	current = a.lazyToolsForSession(sessionID, current)
+	if serverToolSearch {
+		// Nothing is hidden in this mode: the deferred tools ride along and
+		// the transport marks them, so a server that connects mid-turn only
+		// extends the deferred tail.
+		current = anthropicToolSearchPalette(current)
+	} else {
+		// A tool this session revealed with tool_search during the last
+		// step passes the lazy filter now, so the adoption below is what
+		// adds it to the palette; a still-unrevealed one stays out of the
+		// request.
+		current = a.lazyToolsForSession(sessionID, current)
+	}
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
 		known[tool.Info().Name] = struct{}{}
@@ -3757,7 +3783,18 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return msg, nil
 }
 
+// preparePrompt replays a session for a caller that does not name a target
+// model, leaving every signature alone. Estimates and tests use it; a real
+// request calls preparePromptFor so reasoning written by another model
+// cannot sink the turn.
 func (a *sessionAgent) preparePrompt(msgs []message.Message, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptFor(msgs, "", "", supportsImages, supportsAudio, attachments...)
+}
+
+// preparePromptFor replays a session for a request targeting requestProvider
+// and requestModel, dropping the provider-specific reasoning data of
+// messages another model wrote.
+func (a *sessionAgent) preparePromptFor(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	if !a.isSubAgent {
 		history = append(history, fantasy.NewUserMessage(
@@ -3840,6 +3877,20 @@ Again do not mention this message to the user.`,
 			continue
 		}
 		aiMsgs := m.ToAIMessage()
+		if m.Role == message.Assistant && foreignReasoning(m.Provider, m.Model, requestProvider, requestModel) {
+			if stripped := stripReasoningReplayData(aiMsgs); stripped > 0 {
+				slog.Debug(
+					"Dropped reasoning replay data written by another model",
+					"session_id", m.SessionID,
+					"message_id", m.ID,
+					"message_provider", m.Provider,
+					"message_model", m.Model,
+					"request_provider", requestProvider,
+					"request_model", requestModel,
+					"parts", stripped,
+				)
+			}
+		}
 		if !supportsImages {
 			for i := range aiMsgs {
 				if aiMsgs[i].Role == fantasy.MessageRoleUser {
@@ -3850,7 +3901,11 @@ Again do not mention this message to the user.`,
 		history = append(history, aiMsgs...)
 
 		if m.Role == message.Assistant && len(m.ToolCalls()) > 0 {
-			history = append(history, toolResultsForCalls(m, toolResultsByCall))
+			// A message whose calls were all provider-executed has no
+			// replies to replay, and an empty tool message is invalid.
+			if results := toolResultsForCalls(m, toolResultsByCall); len(results.Content) > 0 {
+				history = append(history, results)
+			}
 		}
 	}
 
