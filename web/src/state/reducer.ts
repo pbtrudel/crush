@@ -1,8 +1,9 @@
 import type {
-  AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, Part, PermissionMode,
+  AgentEvent, AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, Part, PermissionMode,
   PermissionNotification, PermissionRequest, QuestionRequest, ServerInfo, Session, ShellOutput, Snapshot,
-  TeamState, ToolResultData, WebError, WireEvent,
+  TeamState, ToolResultData, UpdateAvailable, WebError, WireEvent,
 } from '../api/types';
+import { toastForAgentEvent } from './notifications';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
 export type Tone = 'info' | 'success' | 'warn' | 'error';
@@ -57,6 +58,13 @@ export interface State {
   // that starts a run can land after the run's own frames, so its answer
   // must not bring a card back.
   droppedShells: Record<string, true>;
+  // hidden mirrors document.hidden, so a finished turn stays quiet only
+  // while the reader is actually looking at this tab.
+  hidden: boolean;
+  // announced remembers the one-shot notices this tab has shown. It
+  // survives snapshots and session switches, so a reconnect cannot repeat
+  // a stale-config or update toast.
+  announced: Record<string, true>;
 }
 
 export function initialState(): State {
@@ -68,7 +76,7 @@ export function initialState(): State {
     permissions: [], question: null, questionQueue: [], busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
     files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null, shells: {},
-    droppedShells: {},
+    droppedShells: {}, hidden: false, announced: {},
   };
 }
 
@@ -188,6 +196,19 @@ export function contextFill(s: State): number {
 
 export function needsAttention(s: State): boolean {
   return s.permissions.length > 0 || s.question !== null;
+}
+
+// planPending reports a ready plan waiting for the reader in the session the
+// tab shows. The card is not a dialog: it asks for the core look and the tab
+// title, but the log stays interactive.
+export function planPending(s: State): boolean {
+  return s.planReady !== '' && s.planReady === s.sessionId && s.inputMode === 'plan';
+}
+
+// needsYou is what the core look and the tab title call attention for: a
+// pending dialog or a ready plan.
+export function needsYou(s: State): boolean {
+  return needsAttention(s) || planPending(s);
 }
 
 function serverMap(m: Record<string, ServerInfo> | undefined): Record<string, ServerState> {
@@ -415,6 +436,30 @@ export function reduce(s: State, f: Frame): State {
       return applyShellOutput(next, f.payload as ShellOutput);
     case 'plan_ready':
       return { ...next, planReady: (f.payload as { session_id: string }).session_id };
+    case 'agent_event': {
+      // A replay after a reconnect repeats a seq the state already has;
+      // only a new frame is news.
+      if (f.seq <= s.lastSeq) return next;
+      const e = (ev.payload ?? {}) as AgentEvent;
+      const toast = toastForAgentEvent(e, { currentSession: s.sessionId, hidden: s.hidden });
+      return toast ? pushToast(next, toast.tone, toast.text) : next;
+    }
+    case 'config_stale': {
+      if (f.seq <= s.lastSeq || s.announced.config_stale) return next;
+      return pushToast(
+        { ...next, announced: { ...s.announced, config_stale: true } },
+        'info',
+        'Configuration changed on disk. Reload it from the palette.',
+      );
+    }
+    case 'update_available': {
+      if (f.seq <= s.lastSeq || s.announced.update_available) return next;
+      const u = ev.payload as UpdateAvailable;
+      const text = u.is_development
+        ? `This is a development version of Crush. The latest version is v${u.latest_version}.`
+        : `Crush update available: v${u.current_version} → v${u.latest_version}.`;
+      return pushToast({ ...next, announced: { ...s.announced, update_available: true } }, 'info', text);
+    }
     case 'message': {
       const m = ev.payload as Message;
       let base: State = next;

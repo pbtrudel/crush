@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { actions, state } from '../../state/store';
 import { api } from '../../api/http';
 import { cinematic } from '../../state/cinematic';
-import type { FailureTone } from '../../state/failure';
+import type { Failure } from '../../state/failure';
 import { deckMode, openPalette } from '../../state/palette';
 import { activeMention, applyMention } from './mention';
 import { leaveNoteMode, modeFor, payloadFor } from './modes';
@@ -39,8 +39,6 @@ let enterShell: (() => void) | null = null;
 export function shellFromPalette(): void {
   enterShell?.();
 }
-
-interface Failure { tone: FailureTone; text: string }
 
 export function CommandDeck() {
   const s = state.value;
@@ -178,8 +176,8 @@ export function CommandDeck() {
         setText('');
         return;
       }
-      const err = await actions.sendPrompt(text, files);
-      if (err) { setFailure({ tone: 'error', text: err }); return; }
+      const failure = await actions.sendPrompt(text, files);
+      if (failure) { setFailure(failure); return; }
       setText('');
       setFiles([]);
     } catch {
@@ -262,6 +260,7 @@ export function CommandDeck() {
         </div>
       )}
       <label class="hud-label" for="deck-input">Transmit to crush</label>
+      {!s.agentReady && <p class="deck__starting" role="status">Crush is starting the agent</p>}
       <div class="deck__row">
         <textarea
           id="deck-input"
@@ -325,7 +324,12 @@ export function CommandDeck() {
         class="deck__error"
         data-tone={failure?.tone ?? 'error'}
         role={failure?.tone === 'starting' ? 'status' : 'alert'}
-      >{failure?.text ?? ''}</p>
+      >
+        {failure?.text ?? ''}
+        {failure?.tone === 'starting' && (
+          <button type="button" class="link-button deck__retry" onClick={() => void submit()}>Retry</button>
+        )}
+      </p>
     </form>
   );
 }

@@ -23,7 +23,10 @@
    its place in the accessibility tree while taking no room in the stack:
    display: none would stop it announcing anything at all. */
 .inspector__notice:empty { block-size: 0; margin: 0; padding: 0; overflow: hidden; }
+.inspector__failure { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
 .inspector__error { color: var(--magenta); margin: 0; }
+/* A starting agent is a state to wait out, never an error. */
+.inspector__error[data-tone='starting'] { color: var(--amber); }
 .inspector__gone { margin: 0; padding: 0 var(--space-4) var(--space-4); }
 /* The panel is a stack with a fixed height: the transcript takes what the
    chrome above it leaves, so its own padding gives some of that back. */

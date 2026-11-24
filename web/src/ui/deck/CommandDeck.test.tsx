@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { ApiError, api } from '../../api/http';
 import { initialState } from '../../state/reducer';
-import { STARTING_TEXT } from '../../state/failure';
+import { STARTING_TEXT, type Failure } from '../../state/failure';
 import { deckMode } from '../../state/palette';
 import { actions, state } from '../../state/store';
 import { CommandDeck, MAX_ATTACHMENT_BYTES, shellFromPalette } from './CommandDeck';
@@ -240,7 +240,7 @@ describe('CommandDeck', () => {
 
   it('sends only once when Enter or a click repeats before the prompt is accepted', async () => {
     seed();
-    const pending = deferred<string | null>();
+    const pending = deferred<Failure | null>();
     const send = vi.spyOn(actions, 'sendPrompt').mockReturnValueOnce(pending.promise);
     await mount();
     await type('run the tests');
@@ -313,7 +313,7 @@ describe('CommandDeck', () => {
 
   it('keeps the prompt and attachments when the send fails', async () => {
     seed();
-    const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue('Prompt not sent: The request did not reach crush');
+    const send = vi.spyOn(actions, 'sendPrompt').mockResolvedValue({ tone: 'error', text: 'The request did not reach crush' });
     await mount();
     await type('summarize');
     await attach(new File(['x'], 'notes.txt'));
@@ -329,7 +329,44 @@ describe('CommandDeck', () => {
     expect(send.mock.calls[0][1]).toHaveLength(1);
     expect(textarea().value).toBe('summarize');
     expect(root.querySelector('.deck__files')!.textContent).toContain('notes.txt');
-    expect(error().textContent).toBe('Prompt not sent: The request did not reach crush');
+    expect(error().textContent).toBe('The request did not reach crush');
+    expect(error().getAttribute('role')).toBe('alert');
+  });
+
+  it('shows a starting state with a retry that resends the kept prompt', async () => {
+    seed();
+    const send = vi.spyOn(actions, 'sendPrompt')
+      .mockResolvedValueOnce({ tone: 'starting', text: STARTING_TEXT })
+      .mockResolvedValueOnce(null);
+    await mount();
+    await type('run the tests');
+    await attach(new File(['x'], 'notes.txt'));
+
+    await act(() => { key('Enter'); });
+    await flush();
+
+    expect(error().getAttribute('role')).toBe('status');
+    expect(error().getAttribute('data-tone')).toBe('starting');
+    expect(error().textContent).toContain(STARTING_TEXT);
+    expect(textarea().value).toBe('run the tests');
+
+    await act(async () => { root.querySelector<HTMLButtonElement>('.deck__retry')!.click(); });
+    await flush();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toBe('run the tests');
+    expect(send.mock.calls[1][1]).toHaveLength(1);
+    expect(textarea().value).toBe('');
+  });
+
+  it('shows a quiet starting line above the input while the agent boots', async () => {
+    seed({ agentReady: false });
+    await mount();
+    const line = root.querySelector<HTMLElement>('.deck__starting')!;
+    expect(line.textContent).toBe('Crush is starting the agent');
+    expect(line.getAttribute('role')).toBe('status');
+    // The server answers for itself, so the deck stays usable.
+    expect(transmit().disabled).toBe(false);
   });
 
   it('clears the prompt and attachments after a successful send', async () => {
@@ -515,7 +552,7 @@ describe('deck modes', () => {
     await flush();
 
     expect(textarea().value).toBe('prefer tests');
-    expect(error().textContent).toBe(STARTING_TEXT);
+    expect(error().textContent).toContain(STARTING_TEXT);
     expect(error().getAttribute('role')).toBe('status');
     expect(error().getAttribute('data-tone')).toBe('starting');
   });

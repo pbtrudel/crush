@@ -211,3 +211,31 @@ describe('the covered log', () => {
     }
   });
 });
+
+describe('the pending plan and the tab title', () => {
+  it('marks the title and the core as needing you without a modal', async () => {
+    state.value = {
+      ...reduce(initialState(), fx.snapshot),
+      conn: 'live',
+      sessionId: 's1',
+      planReady: 's1',
+      inputMode: 'plan',
+    };
+    const root = document.createElement('div');
+    const before = document.title;
+    try {
+      await act(() => { render(<App />, root); });
+      expect(document.title.startsWith('(!) ')).toBe(true);
+      // The log stays interactive: the plan card is not the permission modal.
+      expect(root.querySelector('main')!.hasAttribute('inert')).toBe(false);
+      expect(root.querySelector('.panel--log')!.hasAttribute('inert')).toBe(false);
+
+      await act(() => { state.value = { ...state.value, planReady: '' }; });
+      expect(document.title.startsWith('(!) ')).toBe(false);
+    } finally {
+      await act(() => { render(null, root); });
+      state.value = initialState();
+      document.title = before;
+    }
+  });
+});

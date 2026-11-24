@@ -143,4 +143,26 @@ describe('TransmissionLog', () => {
     await mount();
     expect(root.querySelector('.log__empty')?.textContent).toContain('No transmissions yet');
   });
+
+  it('announces a ready plan and ends the log with its card', async () => {
+    state.value = {
+      ...initialState(), conn: 'live', sessionId: 's1', messages: [message('m1', 's1')],
+      planReady: 's1', inputMode: 'plan',
+    };
+    await mount();
+    const status = [...root.querySelectorAll<HTMLElement>('[role="status"]')]
+      .find((el) => el.textContent === 'The plan is ready');
+    expect(status).toBeDefined();
+    expect(status!.classList.contains('visually-hidden')).toBe(true);
+    const log = root.querySelector<HTMLElement>('.log')!;
+    expect(log.lastElementChild!.classList.contains('plan-handoff')).toBe(true);
+  });
+
+  it('leaves the plan announcement empty without a pending plan', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1', messages: [] };
+    await mount();
+    expect(root.querySelector('.plan-handoff')).toBeNull();
+    const statuses = [...root.querySelectorAll('[role="status"]')].map((el) => el.textContent);
+    expect(statuses).not.toContain('The plan is ready');
+  });
 });

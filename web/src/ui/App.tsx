@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
-import { needsAttention } from '../state/reducer';
+import { needsAttention, needsYou } from '../state/reducer';
 import { drawerOpen, effectivePanelTab, panelTab } from '../state/drawer';
 import { handOffLogFocus, logInert, watchFocusHandoff, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
@@ -34,6 +34,7 @@ import { SystemsPanel } from './systems/SystemsPanel';
 export function App() {
   const s = state.value;
   const attention = needsAttention(s);
+  const you = needsYou(s);
   const view = useRef<HTMLDivElement>(null);
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
@@ -54,8 +55,8 @@ export function App() {
   useEffect(() => watchFocusHandoff(), []);
 
   useEffect(() => {
-    document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);
-  }, [s.project, s.session?.title, attention]);
+    document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', you);
+  }, [s.project, s.session?.title, you]);
 
   useEffect(() => {
     if (!s.workingDir) return;

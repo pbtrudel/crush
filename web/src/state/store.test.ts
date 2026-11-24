@@ -5,7 +5,7 @@ import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snaps
 import { effectsLevel } from './effects';
 import { STARTING_TEXT } from './failure';
 import { adoptSession, initialState } from './reducer';
-import { actions, boot, dismissSideAnswer, dispatch, handleFrames, sideAnswer, state } from './store';
+import { actions, boot, dismissSideAnswer, dispatch, handleFrames, sideAnswer, state, watchVisibility } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
 
 vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
@@ -157,7 +157,7 @@ describe('actions.sendPrompt', () => {
     vi.spyOn(api, 'createSession').mockRejectedValue(new ApiError(500, 'create_session', 'gateway on fire'));
     const send = vi.spyOn(api, 'sendPrompt');
 
-    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+    await expect(actions.sendPrompt('first task', [])).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
 
     expect(send).not.toHaveBeenCalled();
   });
@@ -170,7 +170,7 @@ describe('actions.sendPrompt', () => {
       .mockRejectedValueOnce(new ApiError(500, 'http_error', 'gateway on fire'))
       .mockResolvedValueOnce({ accepted: true });
 
-    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+    await expect(actions.sendPrompt('first task', [])).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
     expect(state.value.sessionId).toBe('s2');
 
     await expect(actions.sendPrompt('first task', [])).resolves.toBeNull();
@@ -178,6 +178,12 @@ describe('actions.sendPrompt', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenNthCalledWith(1, 's2', 'first task', []);
     expect(send).toHaveBeenNthCalledWith(2, 's2', 'first task', []);
+  });
+
+  it('names a starting agent as a failure a control can style', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1' };
+    vi.spyOn(api, 'sendPrompt').mockRejectedValue(new ApiError(503, 'agent_starting', 'not ready'));
+    await expect(actions.sendPrompt('task', [])).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
   });
 });
 
@@ -356,7 +362,7 @@ describe('M2 actions', () => {
   it('returns the gateway message when an interrupt is refused', async () => {
     seed();
     vi.spyOn(api, 'teamInterrupt').mockRejectedValue(new ApiError(409, 'teams_disabled', 'Agent Teams is not enabled'));
-    await expect(actions.interruptTeammate('alice')).resolves.toBe('Agent Teams is not enabled');
+    await expect(actions.interruptTeammate('alice')).resolves.toEqual({ tone: 'error', text: 'Agent Teams is not enabled' });
   });
 });
 
@@ -537,5 +543,25 @@ describe('the side answer', () => {
     slow.resolve({ answer: 'late answer' });
     await expect(pending).resolves.toBeUndefined();
     expect(sideAnswer.value).toBeNull();
+  });
+});
+
+describe('the document visibility', () => {
+  it('tracks the hidden flag on the state', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1' };
+    const stop = watchVisibility();
+    const setHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    try {
+      setHidden(true);
+      expect(state.value.hidden).toBe(true);
+      setHidden(false);
+      expect(state.value.hidden).toBe(false);
+    } finally {
+      stop();
+      setHidden(false);
+    }
   });
 });

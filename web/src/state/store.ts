@@ -10,7 +10,7 @@ import {
   type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
-import { describeFailure, type FailureTone } from './failure';
+import { describeFailure, type Failure } from './failure';
 import { observe, telemetry } from './telemetry';
 
 export const state = signal<State>(initialState());
@@ -18,7 +18,7 @@ export const state = signal<State>(initialState());
 export interface SideAnswerState {
   question: string;
   answer: string | null;
-  error: { tone: FailureTone; text: string } | null;
+  error: Failure | null;
 }
 
 // sideAnswer is the card above the deck: a question asked beside the
@@ -148,6 +148,16 @@ async function reloadSession(id: string) {
   }
 }
 
+// watchVisibility keeps state.hidden in step with the tab, so a finished
+// turn stays quiet only while the reader is actually looking at it. Returns
+// the function that stops watching; boot() watches for the page's lifetime.
+export function watchVisibility(): () => void {
+  const update = () => dispatch((s) => (s.hidden === document.hidden ? s : { ...s, hidden: document.hidden }));
+  document.addEventListener('visibilitychange', update);
+  update();
+  return () => document.removeEventListener('visibilitychange', update);
+}
+
 export async function boot() {
   // The token travels in the fragment so it never reaches server logs. It
   // is exchanged for an HttpOnly cookie and scrubbed from the address bar;
@@ -157,6 +167,7 @@ export async function boot() {
     await api.auth(token).catch(() => undefined);
     history.replaceState(null, '', location.pathname + location.search);
   }
+  watchVisibility();
   connectStream({
     onFrames: handleFrames,
     onConn: (c) => dispatch((s) => setConn(s, c)),
@@ -197,22 +208,22 @@ async function ensureSession(): Promise<string> {
 }
 
 export const actions = {
-  // sendPrompt returns the error text for the deck to show inline, or null.
+  // sendPrompt returns the failure for the deck to show inline, or null.
   // With no current session the browser starts one the way the terminal
   // does on a first prompt; the gateway then asks the terminal to open it.
-  async sendPrompt(prompt: string, files: File[]): Promise<string | null> {
+  async sendPrompt(prompt: string, files: File[]): Promise<Failure | null> {
     try {
       const sid = await ensureSession();
       await api.sendPrompt(sid, prompt, files);
       if (state.value.busy) await refreshQueue(sid);
       return null;
     } catch (err) {
-      return `Prompt not sent: ${errorText(err)}`;
+      return describeFailure(err);
     }
   },
   // runShell returns the failure for the deck to show inline, or null. A
   // shell command never queues: it runs beside the conversation.
-  async runShell(command: string): Promise<{ tone: FailureTone; text: string } | null> {
+  async runShell(command: string): Promise<Failure | null> {
     try {
       const sid = await ensureSession();
       const { run_id } = await api.shell(sid, command);
@@ -224,7 +235,7 @@ export const actions = {
   },
   // addNote keeps text for the session's next prompt. It starts no run, so
   // it is safe while the agent is busy.
-  async addNote(text: string): Promise<{ tone: FailureTone; text: string } | null> {
+  async addNote(text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
     if (!sid) return { tone: 'error', text: 'There is no session to keep a note in' };
     try {
@@ -336,34 +347,34 @@ export const actions = {
     dispatch((s) => inspect(s, sid));
     if (sid && sid !== state.value.sessionId) await loadInspected(sid);
   },
-  async messageTeammate(member: string, text: string): Promise<string | null> {
+  async messageTeammate(member: string, text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
-    if (!sid) return 'There is no session to message from';
+    if (!sid) return { tone: 'error', text: 'There is no session to message from' };
     try {
       await api.teamMessage(member, sid, text);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
-  async interruptTeammate(member: string): Promise<string | null> {
+  async interruptTeammate(member: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
-    if (!sid) return 'There is no session to interrupt from';
+    if (!sid) return { tone: 'error', text: 'There is no session to interrupt from' };
     try {
       await api.teamInterrupt(member, sid);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
   // cancelAgent stops a subagent through its own session, which is how the
   // coordinator reaches a dispatched subagent's run.
-  async cancelAgent(sessionId: string): Promise<string | null> {
+  async cancelAgent(sessionId: string): Promise<Failure | null> {
     try {
       await api.cancel(sessionId);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
   dismissToast: (id: number) => dispatch((s) => dismissToast(s, id)),

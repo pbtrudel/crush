@@ -120,4 +120,19 @@ export interface ShellOutput {
   run_id: string; session_id: string; chunk?: string; done?: boolean; exit_code?: number; error?: string;
 }
 export interface WebError { session_id?: string; code?: string; error: string }
+// AgentEvent is the notification the agent publishes about a run: a finished
+// turn, an error, or a sign-in the terminal has to perform.
+export interface AgentEvent {
+  type: string;
+  session_id?: string;
+  session_title?: string;
+  error?: string;
+  run_id?: string;
+  provider_id?: string;
+  aws_sso_command?: string;
+  aws_sso_url?: string;
+}
+export interface UpdateAvailable {
+  current_version: string; latest_version: string; is_development: boolean;
+}
 export interface Attachment { name: string; mime_type: string; content: string }

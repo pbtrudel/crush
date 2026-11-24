@@ -4,6 +4,7 @@ import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
 import type { Frame, Message, TeamMember, WireEvent } from '../../api/types';
 import { initialState, inspect, reduce, type State } from '../../state/reducer';
+import { STARTING_TEXT, type Failure } from '../../state/failure';
 import { actions, state } from '../../state/store';
 import { panelTab } from '../../state/drawer';
 import { Inspector } from './Inspector';
@@ -92,10 +93,41 @@ describe('Inspector', () => {
 
   it('shows a refused action inline', async () => {
     open('team-m-1');
-    vi.spyOn(actions, 'interruptTeammate').mockResolvedValue('Agent Teams is not enabled');
+    vi.spyOn(actions, 'interruptTeammate').mockResolvedValue({ tone: 'error', text: 'Agent Teams is not enabled' });
     await act(() => { render(<Inspector />, root); });
     await act(async () => { root.querySelector<HTMLButtonElement>('button[data-action="interrupt"]')!.click(); });
     expect(region().querySelector('[role="alert"]')!.textContent).toContain('Agent Teams is not enabled');
+  });
+
+  it('a starting agent shows a retry instead of an error', async () => {
+    open('team-m-1');
+    const send = vi.spyOn(actions, 'messageTeammate')
+      .mockResolvedValueOnce({ tone: 'starting', text: STARTING_TEXT })
+      .mockResolvedValueOnce(null);
+    await act(() => { render(<Inspector />, root); });
+    const box = root.querySelector<HTMLTextAreaElement>('#inspector-message')!;
+    await act(() => {
+      box.value = 'rebase first';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      root.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await act(async () => {});
+
+    const failure = region().querySelector<HTMLElement>('.inspector__error')!;
+    expect(failure.getAttribute('role')).toBe('status');
+    expect(failure.getAttribute('data-tone')).toBe('starting');
+    expect(failure.textContent).toContain(STARTING_TEXT);
+    expect(region().querySelector('[role="alert"]')).toBeNull();
+    // The draft survives, so the retry has the same text to send.
+    expect(box.value).toBe('rebase first');
+
+    await act(async () => { root.querySelector<HTMLButtonElement>('button[data-action="retry"]')!.click(); });
+    await act(async () => {});
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenLastCalledWith('alice', 'rebase first');
+    expect(box.value).toBe('');
   });
 
   it('keeps the inspector open when the agent leaves the roster', async () => {
@@ -220,13 +252,15 @@ describe('Inspector', () => {
     await act(() => { render(<Inspector />, root); });
     await act(async () => { root.querySelector<HTMLButtonElement>('button[data-action="cancel"]')!.click(); });
     await act(async () => {});
-    expect(region().querySelector('[role="alert"]')!.textContent).toContain('boom');
+    // A thrown non-API error takes the same unreachable wording every
+    // control uses through describeFailure.
+    expect(region().querySelector('[role="alert"]')!.textContent).toBe('The request did not reach crush');
   });
 
   it('drops a result that arrives after the selection moved on', async () => {
     const s = withBob(reduce(initialState(), fx.snapshot));
     state.value = { ...s, inspected: { sessionId: 'team-m-1', session: null, messages: [], loading: false } };
-    let settle!: (value: string | null) => void;
+    let settle!: (value: Failure | null) => void;
     const send = vi.spyOn(actions, 'messageTeammate').mockImplementation(
       () => new Promise((resolve) => { settle = resolve; }),
     );

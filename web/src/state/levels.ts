@@ -1,4 +1,4 @@
-import { needsAttention, type State } from './reducer';
+import { needsYou, type State } from './reducer';
 
 export type ContextLevel = 'ok' | 'warn' | 'critical';
 export type CoreMode = 'idle' | 'working' | 'attention' | 'error';
@@ -9,7 +9,7 @@ export function contextLevel(fill: number): ContextLevel {
 }
 
 export function coreMode(s: State): CoreMode {
-  if (needsAttention(s)) return 'attention';
+  if (needsYou(s)) return 'attention';
   if (s.busy) return 'working';
   const last = s.messages.at(-1);
   const failed = last?.role === 'assistant' && last.parts.some((p) => p.type === 'finish' && p.data.reason === 'error');

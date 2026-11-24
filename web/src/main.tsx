@@ -14,6 +14,7 @@ import './styles/log.css';
 import './styles/inspector.css';
 import './styles/drawer.css';
 import './styles/deck.css';
+import './styles/handoff.css';
 import './styles/interrupt.css';
 import './styles/panels.css';
 import './styles/palette.css';

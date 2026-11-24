@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import type { Frame, ModelInfo, Snapshot } from '../api/types';
 import {
-  adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, reduce,
-  setConn, startShell, toolResults,
+  adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, needsYou,
+  planPending, reduce, setConn, startShell, toolResults, type State,
 } from './reducer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -548,5 +548,89 @@ describe('M3 state', () => {
     expect(s.shells.r1.command).toBe('ls');
     s = reduce(s, snapshot({ current_session_id: 's2' }));
     expect(s.shells).toEqual({});
+  });
+});
+
+describe('M3 notifications', () => {
+  const fromSnapshot = () => reduce(initialState(), snapshot());
+  const agentEvent = (seq: number, payload: Record<string, unknown>): Frame => ({
+    seq, type: 'agent_event', payload: { type: 'created', payload },
+  });
+  const configStale = (seq: number): Frame => ({
+    seq, type: 'config_stale', payload: { type: 'updated', payload: { changed: ['/repo/crushrc'], missing: [] } },
+  });
+  const updateAvailable = (seq: number, over: Record<string, unknown> = {}): Frame => ({
+    seq,
+    type: 'update_available',
+    payload: {
+      type: 'updated',
+      payload: { current_version: '0.1.0', latest_version: '0.2.0', is_development: false, ...over },
+    },
+  });
+
+  it('toasts what an agent event says', () => {
+    const s = reduce(fromSnapshot(), agentEvent(30, {
+      type: 'agent_finished', session_id: 's2', session_title: 'Lexer',
+    }));
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'info', text: 'Turn complete in “Lexer”' });
+  });
+
+  it('does not repeat an agent event toast for a replayed frame', () => {
+    const f = agentEvent(31, { type: 'error', error: 'rate limited' });
+    const s = reduce(reduce(fromSnapshot(), f), f);
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('reads hidden from the state so a visible session still toasts in a hidden tab', () => {
+    const base = { ...fromSnapshot(), hidden: true };
+    const s = reduce(base, agentEvent(32, { type: 'agent_finished', session_id: 's1', session_title: 'Main' }));
+    expect(s.toasts.at(-1)?.text).toBe('Turn complete in “Main”');
+  });
+
+  it('toasts a stale configuration once per tab, through a snapshot and a session switch', () => {
+    let s = reduce(fromSnapshot(), configStale(33));
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Configuration changed on disk. Reload it from the palette.',
+    });
+    s = reduce(s, snapshot({ current_session_id: 's3' }));
+    s = reduce(s, configStale(34));
+    expect(s.toasts.filter((t) => t.text === 'Configuration changed on disk. Reload it from the palette.')).toHaveLength(1);
+  });
+
+  it('toasts a new version once per tab with the terminal wording', () => {
+    let s = reduce(fromSnapshot(), updateAvailable(35));
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Crush update available: v0.1.0 → v0.2.0.',
+    });
+    s = reduce(s, updateAvailable(36));
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('names a development build in the update toast', () => {
+    const s = reduce(fromSnapshot(), updateAvailable(37, { is_development: true }));
+    expect(s.toasts.at(-1)?.text).toBe('This is a development version of Crush. The latest version is v0.2.0.');
+  });
+});
+
+describe('the pending plan needs you', () => {
+  const plan = (): State => reduce(initialState(), snapshot({
+    input_mode: 'plan',
+    plan_ready_session_id: 's1',
+  }));
+
+  it('is pending only for the current session in plan mode', () => {
+    let s = plan();
+    expect(planPending(s)).toBe(true);
+    expect(planPending({ ...s, sessionId: 's2' })).toBe(false);
+    expect(planPending({ ...s, inputMode: 'code' })).toBe(false);
+    expect(planPending({ ...s, planReady: '' })).toBe(false);
+    s = reduce(s, { seq: 40, type: 'plan_ready', payload: { session_id: '' } });
+    expect(planPending(s)).toBe(false);
+  });
+
+  it('leaves the attention gate untouched while asking for the core look', () => {
+    const s = plan();
+    expect(needsAttention(s)).toBe(false);
+    expect(needsYou(s)).toBe(true);
   });
 });

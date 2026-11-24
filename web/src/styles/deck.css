@@ -32,5 +32,7 @@
 .deck__mode-badge[data-mode='note'] { border: 1px solid var(--violet); color: var(--violet); }
 .deck__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
 /* A starting agent is a state to wait out, never an error. */
+.deck__starting { margin: 0; color: var(--amber); font-size: var(--step--1); }
 .deck__error[data-tone='starting'] { color: var(--amber); }
+.deck__retry { margin-inline-start: 8px; }
 @media (max-width: 640px) { .deck__row { grid-template-columns: 1fr; } .deck__actions { justify-content: end; } }
