@@ -94,6 +94,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   const [failed, setFailed] = useState<{ item: PaletteItem; values?: Record<string, string> } | null>(null);
   const [active, setActive] = useState(0);
   const dialog = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
   // A double Enter or a double click must not run the item twice; the state
   // alone lags a render, so a ref holds the in-flight guard.
@@ -139,6 +140,9 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     // that action; a failed source only needs its own fetch again.
     if (failed !== null) {
       const { item, values } = failed;
+      // The Retry button leaves with the failure it replaces, so the list (or
+      // the argument form, when the item had one) takes the focus first.
+      (input.current ?? dialog.current?.querySelector<HTMLInputElement>('input'))?.focus();
       setFailed(null);
       await run(item, values);
       return;
@@ -324,6 +328,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
             <input
               id="palette-input"
               class="palette__input"
+              ref={input}
               role="combobox"
               aria-label="Command palette"
               aria-autocomplete="list"

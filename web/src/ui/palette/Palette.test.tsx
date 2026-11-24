@@ -716,6 +716,31 @@ describe('the command palette', () => {
     expect(vi.mocked(api.commands)).toHaveBeenCalledTimes(1);
   });
 
+  it('moves the focus to the list before the retry leaves', async () => {
+    seed();
+    stubSources();
+    const answer = deferred<void>();
+    vi.spyOn(api, 'summarize')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockReturnValueOnce(answer.promise);
+    await mount();
+    await openWithKey();
+
+    await type('compact');
+    await enter();
+
+    const retry = retryButton()!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(document.activeElement).toBe(combobox());
+
+    await act(async () => { answer.resolve(undefined); await Promise.resolve(); });
+    await flush();
+  });
+
   it('hides Retry while an error-tone action failure is the one on the line', async () => {
     seed();
     stubSources();

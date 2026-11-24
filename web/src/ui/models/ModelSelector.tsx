@@ -169,6 +169,9 @@ function ModelsDialog({ inert }: { inert: boolean }) {
 
   const choose = async (c: ModelChoice) => {
     if (selecting.current) return;
+    // A Retry click removes the line that holds the button, so the row it
+    // names takes the focus before that render.
+    document.getElementById(optionId(c))?.focus();
     setActionError(null);
     setRetryChoice(null);
     if (isCurrent(c)) {

@@ -120,6 +120,25 @@ describe('SideAnswer', () => {
     expect(sideAnswer.value?.error).toBeNull();
   });
 
+  it('keeps the focus on the card when the retry starts a new ask', async () => {
+    const answer = new Promise<{ answer: string }>(() => {});
+    const ask = vi.spyOn(api, 'ask').mockReturnValue(answer);
+    dispatch((s) => adoptSession(s, 's1'));
+    sideAnswer.value = {
+      question: 'Why?', answer: null, error: { tone: 'starting', text: STARTING_TEXT },
+    };
+    await mount();
+
+    const retry = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    await act(() => { retry.click(); });
+
+    expect(ask).toHaveBeenCalledWith('s1', 'Why?');
+    expect(document.activeElement).toBe(card());
+    expect(card()!.tabIndex).toBe(-1);
+  });
+
   it('renders nothing without an answer', async () => {
     dismissSideAnswer();
     await mount();

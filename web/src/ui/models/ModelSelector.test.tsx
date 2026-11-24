@@ -531,6 +531,31 @@ describe('the model selector', () => {
     expect(modelsOpen.value).toBe(true);
   });
 
+  it('moves the focus to the refused row before the retry leaves', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    vi.spyOn(api, 'selectModel')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockReturnValueOnce(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(document.activeElement).toBe(option('Model Two'));
+
+    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    await flush();
+  });
+
   it('marks the list busy while a select is in flight', async () => {
     seed();
     stubProviders();
