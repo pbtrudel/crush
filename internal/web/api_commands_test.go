@@ -127,6 +127,19 @@ func TestRunCommandRequiresSession(t *testing.T) {
 	require.False(t, ranPrompt(f))
 }
 
+// TestRunCommandUnknownSession pins that a command names a session the
+// workspace has: an unknown one answers 404 and runs nothing.
+func TestRunCommandUnknownSession(t *testing.T) {
+	t.Parallel()
+	g, f := startCommands(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/commands/run",
+		`{"session_id":"nope","id":"user:fix","args":{"FILE":"a.go"}}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "unknown_session")
+	require.False(t, ranPrompt(f))
+}
+
 func TestRunCommandRejectsTooManyArgs(t *testing.T) {
 	t.Parallel()
 	g, f := startCommands(t)
@@ -294,6 +307,21 @@ func TestMCPPromptRunSendsText(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return slices.Contains(f.CallLog(), "AgentRun:s1:Do X")
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestMCPPromptRunUnknownSession pins that an MCP prompt names a session
+// the workspace has: an unknown one answers 404 and reads no prompt.
+func TestMCPPromptRunUnknownSession(t *testing.T) {
+	t.Parallel()
+	g, f := startCommands(t)
+	f.AddMCPPrompt(commands.MCPPrompt{ID: "fs:do-x", ClientID: "fs", PromptID: "do-x", Title: "Do X"}, "Do X")
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/mcp/prompts/run",
+		`{"session_id":"nope","client_id":"fs","prompt_id":"do-x"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "unknown_session")
+	require.NotContains(t, f.CallLog(), "GetMCPPrompt:fs:do-x")
+	require.False(t, ranPrompt(f))
 }
 
 func TestMCPPromptRunUnknownPrompt(t *testing.T) {

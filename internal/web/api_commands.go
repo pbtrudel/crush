@@ -134,6 +134,9 @@ func (g *Gateway) handleRunCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_session", "session_id is required")
 		return
 	}
+	if !g.sessionExists(w, r, body.SessionID) {
+		return
+	}
 	cmds, err := g.customCommands(r.Context())
 	if err != nil {
 		writeWorkspaceError(w, "run_command", err)
@@ -193,6 +196,9 @@ func (g *Gateway) handleRunMCPPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SessionID == "" {
 		writeError(w, http.StatusBadRequest, "missing_session", "session_id is required")
+		return
+	}
+	if !g.sessionExists(w, r, body.SessionID) {
 		return
 	}
 	prompts, err := g.ws.ListMCPPrompts(r.Context())
