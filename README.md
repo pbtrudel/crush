@@ -902,16 +902,10 @@ background, and shows the link in a notification so a slow or missing browser
 never hides it. To turn it on by default, use `option web true` in your
 `crushrc`, or `"options": {"web": true}` in `crush.json`.
 
-Each Crush process serves its own tab on `127.0.0.1` at a random port, so two
-terminals give two independent tabs, one per session. The gateway is loopback
-only: every request needs a per-run token exchanged for a cookie, plus
-same-origin `Host` and `Origin` checks.
-
-Web mode assumes a single-user host. The token rides in the browser opener's
-process arguments, where other local users can read it, and browser cookies
-are not isolated by port, so the tab's cookie is sent to other `127.0.0.1`
-ports (their `Origin` and `Host` checks still reject state-changing calls). A
-strict `0600` redirect file and header-based auth are planned.
+The gateway is loopback only, with a per-run token sent as a header, and a
+private launch file for the browser opener. See
+[docs/web-mode.md](docs/web-mode.md) for sign-in, prompts, client/server mode
+and troubleshooting.
 
 ### Global context files
 
