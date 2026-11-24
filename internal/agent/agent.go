@@ -1504,6 +1504,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// Written from OnToolCall and read from OnToolResult, which fantasy
 	// invokes concurrently for parallel tool calls.
 	sanitizedToolCalls := csync.NewMap[string, bool]()
+	// reads decides whether the step streaming now may run its read-only
+	// calls at once. See parallel_reads.go.
+	reads := &readGate{}
 	// Full names of tool calls that completed without error this turn.
 	// Written from OnToolResult, which runs concurrently for parallel
 	// tool calls, and read after Stream returns, where sendChannelReply
@@ -1553,6 +1556,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
+			// Each step decides its own parallelism from the calls it
+			// streams, so the gate starts empty.
+			reads.reset()
 			call.limits.takeStep()
 			base := options.Messages
 			for i := range base {
@@ -1569,9 +1575,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if adopted {
 				a.applyToolCacheBreakpoint(stepTools, policy)
 			}
-			prepared.Tools = stepTools
 			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
 			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
+			// The request carries the gate wrapper, not the stored list: the
+			// compaction turn replays the stored one, and it must not inherit
+			// the verdict of the step this turn ended on.
+			prepared.Tools = parallelReadTools(stepTools, reads)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1736,6 +1745,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnToolInputStart: func(id string, toolName string) error {
+			reads.announce(id, toolName)
 			toolCall := message.ToolCall{
 				ID:               id,
 				Name:             toolName,
@@ -1749,6 +1759,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnRetry: func(err *fantasy.ProviderError, delay time.Duration) {
 			slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
+			// A retry streams the step again, so the calls the failed
+			// attempt announced are gone.
+			reads.reset()
 			// Reset streamed content so the retried response doesn't
 			// concatenate with partial content from the failed attempt.
 			// On the final attempt (no more retries), any partial content
@@ -1766,6 +1779,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.currentBuildOf(largeModel)
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			reads.observe(tc.ToolCallID)
 			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
 			if wasSanitized {
 				sanitizedToolCalls.Set(tc.ToolCallID, true)
