@@ -648,6 +648,29 @@ describe('M3 notifications', () => {
     expect(s.toasts).toHaveLength(0);
     expect(s.announced.update_available).toBeUndefined();
   });
+
+  // These read the real-wire fixtures the gateway writes, so a wire change
+  // to one of the three frames reaches a web test instead of passing unseen.
+  // Each fixture carries seq 1, which the snapshot's seq 10 already replayed,
+  // so the tests hand each frame a new seq.
+  it('toasts the real agent error frame', () => {
+    const s = reduce(fromSnapshot(), { ...fx.agent_event, seq: 39 });
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'The provider refused the request' });
+  });
+
+  it('toasts the real stale config frame', () => {
+    const s = reduce(fromSnapshot(), { ...fx.config_stale, seq: 40 });
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Configuration changed on disk. Reload it from the palette.',
+    });
+  });
+
+  it('toasts the real update frame with both versions', () => {
+    const s = reduce(fromSnapshot(), { ...fx.update_available, seq: 41 });
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Crush update available: v0.30.0 → v0.31.0.',
+    });
+  });
 });
 
 describe('the pending plan needs you', () => {
