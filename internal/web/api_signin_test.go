@@ -1457,3 +1457,28 @@ func TestSignInModelStepHasADeadline(t *testing.T) {
 		t.Fatal("the model step never ran")
 	}
 }
+
+// TestSignInCatalogFailureLogsTheErrorClass is not parallel: captureLogs
+// replaces the logger. A catalog failure logs its class, never the error,
+// whose text can carry a provider URL.
+func TestSignInCatalogFailureLogsTheErrorClass(t *testing.T) {
+	logs := captureLogs(t)
+	g, _ := startWith(t, Options{
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) {
+			return nil, errors.New("catalog down: GET https://catalog.example/v1 failed")
+		},
+		TestAPIKey: acceptOnlyValidKey,
+	})
+	c := authedClient(t, g)
+	for _, req := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/auth/providers", ""},
+		{http.MethodPost, "/api/auth/provider/key", `{"provider":"anthropic","api_key":"` + testKey + `"}`},
+		{http.MethodPost, "/api/auth/provider/oauth/start", `{"provider":"copilot"}`},
+	} {
+		rsp, _ := doJSON(t, c, req.method, g.URL()+req.path, req.body)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusBadGateway, rsp.StatusCode, req.path)
+	}
+	require.Contains(t, logs.String(), "reason=provider")
+	require.NotContains(t, logs.String(), "catalog.example")
+}

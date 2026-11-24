@@ -94,7 +94,7 @@ func (g *Gateway) handleSignInProviders(w http.ResponseWriter, _ *http.Request) 
 	known, err := g.knownProviders(cfg)
 	if len(known) == 0 {
 		if err != nil {
-			slog.Warn("Web sign-in providers unavailable", "error", err)
+			slog.Warn("Web sign-in providers unavailable", "reason", signInErrorClass(err))
 		}
 		writeError(w, http.StatusBadGateway, "providers_unavailable", "The provider list is not available yet.")
 		return
@@ -133,7 +133,7 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 	cfg := g.ws.Config()
 	known, err := g.knownProviders(cfg)
 	if err != nil && len(known) == 0 {
-		slog.Warn("Web sign-in providers unavailable", "error", err)
+		slog.Warn("Web sign-in providers unavailable", "reason", signInErrorClass(err))
 		writeError(w, http.StatusBadGateway, "providers_unavailable", "The provider list is not available yet.")
 		return
 	}
@@ -324,7 +324,7 @@ func (g *Gateway) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	cfg := g.ws.Config()
 	known, err := g.knownProviders(cfg)
 	if err != nil && len(known) == 0 {
-		slog.Warn("Web sign-in providers unavailable", "error", err)
+		slog.Warn("Web sign-in providers unavailable", "reason", signInErrorClass(err))
 		writeError(w, http.StatusBadGateway, "providers_unavailable", "The provider list is not available yet.")
 		return
 	}
