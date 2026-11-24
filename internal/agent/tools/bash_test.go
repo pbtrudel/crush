@@ -12,6 +12,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/shell"
@@ -190,7 +191,7 @@ func (m *recordingPermissionService) SubscribeModeChanges(ctx context.Context) <
 func newBashToolForTest(workingDir string) fantasy.AgentTool {
 	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(permissions, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	return NewBashTool(permissions, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 }
 
 func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.AgentTool, *recordingPermissionService) {
@@ -199,7 +200,7 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 		allow:  allow,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil), perms
+	return NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil), perms
 }
 
 func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {
@@ -464,7 +465,7 @@ func TestBashTool_ApprovedDangerousCommandRuns(t *testing.T) {
 		mode:   permission.PermissionModeNormal,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	// `ifconfig` is on the default dangerous list, so it is prompted for.
@@ -495,7 +496,7 @@ func TestBashTool_UnflaggedCommandKeepsBlockList(t *testing.T) {
 		mode:   permission.PermissionModeYolo,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
@@ -517,7 +518,7 @@ func TestBashTool_SysadminModeSkipsBlockList(t *testing.T) {
 		mode:   permission.PermissionModeSysadmin,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "ifconfig"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
@@ -540,7 +541,7 @@ func TestBashTool_DeniedDangerousCommandDoesNotRun(t *testing.T) {
 		mode:   permission.PermissionModeNormal,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
@@ -563,7 +564,7 @@ func TestBashTool_SafeReadOnlyPathStillEnforcesBlockList(t *testing.T) {
 		mode:   permission.PermissionModeNormal,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
@@ -582,7 +583,7 @@ func newModeBashTool(t *testing.T, mode permission.PermissionMode) (fantasy.Agen
 	perms := permission.NewPermissionService(workingDir, nil, nil)
 	perms.SetPermissionMode(mode)
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "test-session")
 	return tool, perms, ctx, workingDir
 }
@@ -652,7 +653,7 @@ func TestBashTool_NormalModeStillPromptsForDangerousCommands(t *testing.T) {
 		mode:   permission.PermissionModeNormal,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "test-session")
 
 	runBashTool(t, tool, ctx, BashParams{
@@ -678,7 +679,7 @@ func TestBlockedCommandErrorNamesTheCommand(t *testing.T) {
 		mode:   permission.PermissionModeYolo,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil)
+	tool := NewBashTool(perms, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, nil)
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "test-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
@@ -786,4 +787,96 @@ func TestBashTool_UnsafeReadOnlyLookalikesRequirePermission(t *testing.T) {
 			require.Equal(t, 1, perms.requestCount, "command %q must trigger a permission request", tt.command)
 		})
 	}
+}
+
+func TestBashDescriptionIsOptional(t *testing.T) {
+	t.Parallel()
+
+	tool := newBashToolForTest(t.TempDir())
+	require.NotContains(t, tool.Info().Required, "description")
+	require.Contains(t, tool.Info().Required, "command")
+}
+
+func TestBashDescribesACommandThatSendsNoDescription(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runBashTool(t, newBashToolForTest(workingDir), ctx, BashParams{Command: "echo hi"})
+	require.False(t, resp.IsError, resp.Content)
+
+	var meta BashResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, "echo hi", meta.Description)
+}
+
+func TestDescribeCommand(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "go test ./...", describeCommand("go test ./..."))
+	require.Equal(t, "echo one", describeCommand("echo one\necho two"))
+	long := strings.Repeat("a", 100)
+	require.Equal(t, strings.Repeat("a", 57)+"...", describeCommand(long))
+	require.Equal(t, "", describeCommand("   "))
+}
+
+func newBashToolWithTracker(workingDir string, tracker filetracker.Service) fantasy.AgentTool {
+	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
+	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
+	return NewBashTool(permissions, workingDir, workingDir, attribution, "test-model", config.DefaultMaxBackgroundJobs, nil, nil, tracker)
+}
+
+func TestBashRecordsReadsOfFilesItOnlyReads(t *testing.T) {
+	workingDir := t.TempDir()
+	file := filepath.Join(workingDir, "f.go")
+	require.NoError(t, os.WriteFile(file, []byte("package x\n"), 0o644))
+
+	tracker := &mockEditFileTracker{}
+	tool := newBashToolWithTracker(workingDir, tracker)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runBashTool(t, tool, ctx, BashParams{Command: "cat f.go"})
+	require.False(t, resp.IsError, resp.Content)
+	require.Equal(t, []string{file}, tracker.reads)
+
+	tracker.reads = nil
+	resp = runBashTool(t, tool, ctx, BashParams{Command: "sed -i 's/x/y/' f.go"})
+	require.False(t, resp.IsError, resp.Content)
+	require.Empty(t, tracker.reads, "a command that rewrites the file is not a read")
+}
+
+func TestBashNamesReadFilesItChanged(t *testing.T) {
+	workingDir := t.TempDir()
+	file := filepath.Join(workingDir, "f.go")
+	require.NoError(t, os.WriteFile(file, []byte("package x\n"), 0o644))
+
+	tracker := &mockEditFileTracker{reads: []string{"f.go"}}
+	tool := newBashToolWithTracker(workingDir, tracker)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runBashTool(t, tool, ctx, BashParams{Command: "touch f.go"})
+	require.False(t, resp.IsError, resp.Content)
+	require.Contains(t, resp.Content, "Files you read earlier changed during this command: f.go. View them before editing.")
+
+	resp = runBashTool(t, tool, ctx, BashParams{Command: "cat f.go"})
+	require.False(t, resp.IsError, resp.Content)
+	require.NotContains(t, resp.Content, "Files you read earlier changed during this command")
+}
+
+func TestBashChangedNoteResolvesReadFilesTheSameWayItSnapshottedThem(t *testing.T) {
+	workingDir := t.TempDir()
+	sub := filepath.Join(workingDir, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "f.go"), []byte("package x\n"), 0o644))
+
+	// The tracker reports paths relative to the workspace, and the command
+	// runs in a subdirectory of it.
+	tracker := &mockEditFileTracker{reads: []string{filepath.Join("sub", "f.go")}}
+	tool := newBashToolWithTracker(workingDir, tracker)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	resp := runBashTool(t, tool, ctx, BashParams{Command: "cat f.go", WorkingDir: sub})
+	require.False(t, resp.IsError, resp.Content)
+	require.NotContains(t, resp.Content, "Files you read earlier changed during this command",
+		"a file the command only read must not be reported as changed")
 }

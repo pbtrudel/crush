@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/message"
 )
 
@@ -246,9 +247,16 @@ func (c *coordinator) agentStatusTool() fantasy.AgentTool {
 			if label := strings.TrimSpace(params.Label); label != "" {
 				record, ok := records.byLabel[label]
 				if !ok {
+					// The name may belong to a Team teammate instead,
+					// which answers from the roster.
+					if member, found := c.teamMemberView(ctx, label); found {
+						if data, marshalErr := json.Marshal(member); marshalErr == nil {
+							return fantasy.NewTextResponse(string(data)), nil
+						}
+					}
 					return fantasy.NewTextErrorResponse(fmt.Sprintf(
-						"no subagent %q; known: %s",
-						label, knownLabels(records),
+						"no subagent or teammate %q; subagents: %s; teammates: %s",
+						label, knownLabels(records), c.teammateNames(ctx),
 					)), nil
 				}
 				text, sum := c.describeDispatch(ctx, parentSessionID, record, true)
@@ -508,4 +516,40 @@ func LatestDispatches(msgs []*message.Message) map[string]DispatchState {
 		states[label] = DispatchState{CallID: record.CallID, Open: record.Open}
 	}
 	return states
+}
+
+// teamMemberView looks a name up in the caller's Team roster, so the dispatch
+// tools can answer for a teammate the same way list_agents does.
+func (c *coordinator) teamMemberView(ctx context.Context, name string) (agentteam.MemberView, bool) {
+	team := c.teamService()
+	if team == nil {
+		return agentteam.MemberView{}, false
+	}
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	if err != nil {
+		return agentteam.MemberView{}, false
+	}
+	for _, member := range members {
+		if member.Target == name {
+			return member, true
+		}
+	}
+	return agentteam.MemberView{}, false
+}
+
+// teammateNames lists the roster names for an error that also lists subagents.
+func (c *coordinator) teammateNames(ctx context.Context) string {
+	team := c.teamService()
+	if team == nil {
+		return "none"
+	}
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	if err != nil || len(members) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(members))
+	for _, member := range members {
+		names = append(names, member.Target)
+	}
+	return strings.Join(names, ", ")
 }

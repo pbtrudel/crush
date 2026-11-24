@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/skills"
 )
 
 type ReadMCPResourceParams struct {
@@ -37,6 +39,11 @@ func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Serv
 		func(ctx context.Context, params ReadMCPResourceParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			params.MCPName = strings.TrimSpace(params.MCPName)
 			params.URI = strings.TrimSpace(params.URI)
+			// Builtin skills are advertised with a crush:// URI and live in
+			// the binary, not on an MCP server. View reads them the same way.
+			if strings.HasPrefix(params.URI, crushBuiltinScheme) {
+				return readBuiltinSkillResource(params.URI), nil
+			}
 			if params.MCPName == "" {
 				return fantasy.NewTextErrorResponse("mcp_name parameter is required"), nil
 			}
@@ -100,4 +107,33 @@ func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Serv
 			return fantasy.NewTextResponse(strings.Join(textParts, "\n")), nil
 		},
 	)
+}
+
+// crushBuiltinScheme marks a URI Crush serves from the binary instead of an
+// MCP server.
+const crushBuiltinScheme = "crush://"
+
+// readBuiltinSkillResource reads one embedded skill file. A path that leaves
+// the skills tree, or a crush:// URI outside it, is refused: those are not
+// files this tool serves.
+func readBuiltinSkillResource(uri string) fantasy.ToolResponse {
+	if !strings.HasPrefix(uri, skills.BuiltinPrefix) {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf(
+			"only %s resources are built in; %s belongs to no MCP server", skills.BuiltinPrefix, uri))
+	}
+	relative := strings.TrimPrefix(uri, skills.BuiltinPrefix)
+	segments := strings.Split(relative, "/")
+	if relative == "" || strings.HasPrefix(relative, "/") {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("builtin resource not found: %s", uri))
+	}
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("builtin resource path cannot leave %s: %s", skills.BuiltinPrefix, uri))
+		}
+	}
+	data, err := fs.ReadFile(skills.BuiltinFS(), "builtin/"+relative)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("builtin resource not found: %s", uri))
+	}
+	return fantasy.NewTextResponse(string(data))
 }

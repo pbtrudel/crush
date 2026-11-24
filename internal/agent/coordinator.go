@@ -1549,7 +1549,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	allTools = append(
 		allTools,
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions, c.shellOwner),
+		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.DataDirectory, c.cfg.Config().Options.Attribution, modelID, c.cfg.Config().Options.GetMaxBackgroundJobs(), c.cfg.Config().Permissions, c.shellOwner, c.filetracker),
 		tools.NewCrushInfoTool(c.cfg, c.lspManager, allSkills, activeSkills, skillTracker, func() string {
 			return modelCatalog(c.cfg.Config())
 		}),
@@ -1596,11 +1596,11 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 			tools.NewDiagnosticsTool(c.lspManager),
 			tools.NewReferencesTool(c.lspManager),
 			tools.NewLSPRestartTool(c.lspManager),
-			tools.NewSymbolsTool(c.lspManager),
+			tools.NewSymbolsTool(c.cfg, c.lspManager),
 			tools.NewDefinitionTool(c.lspManager),
 			tools.NewCallHierarchyTool(c.lspManager),
 			tools.NewRenameTool(c.lspManager, c.permissions, c.history, c.filetracker),
-			tools.NewReplaceSymbolTool(c.lspManager, c.permissions, c.history, c.filetracker),
+			tools.NewReplaceSymbolTool(c.cfg, c.lspManager, c.permissions, c.history, c.filetracker),
 		)
 	}
 
@@ -2820,6 +2820,10 @@ type subAgentParams struct {
 	// subagents roll their cost up themselves after every run, including
 	// runs that fail or are stopped part-way.
 	SkipCostRollup bool
+	// Cleanup runs once when the subagent run returns, in the foreground or
+	// after a handoff to the background. A fetch subagent uses it to remove
+	// the folder it owns only once nothing can still write to it.
+	Cleanup func()
 }
 
 // callTopK returns topK for use on fantasy.Call.TopK, suppressing it for
@@ -2881,6 +2885,9 @@ var errSubAgentPanicked = errors.New("subagent run panicked")
 // Discord metrics live during the run instead of jumping once the sub-agent
 // finishes.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
+	if params.Cleanup != nil {
+		defer params.Cleanup()
+	}
 	sessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
 	// Cancellable before it is listed: the browser can click cancel the
 	// moment agents.json shows the run.

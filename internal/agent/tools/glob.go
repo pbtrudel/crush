@@ -6,9 +6,12 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -61,6 +64,12 @@ func NewGlobTool(workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
 			}
 
 			searchPath := home.Long(cmp.Or(params.Path, workingDir))
+
+			// A root that does not exist is not a failure: nothing can match
+			// under it, so the answer is that no files were found.
+			if _, err := os.Stat(searchPath); errors.Is(err, fs.ErrNotExist) {
+				return fantasy.NewTextResponse(fmt.Sprintf("No files found: %s does not exist", searchPath)), nil
+			}
 
 			// Bound the search so a huge or symlink-heavy root (e.g. $HOME
 			// or a module cache) fails cleanly instead of pinning the CPU

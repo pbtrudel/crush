@@ -80,3 +80,109 @@ func TestWebFetchPreservesJSONNumbers(t *testing.T) {
 	require.Contains(t, response.Content, `"id": 9007199254740993`)
 	require.Contains(t, response.Content, `"value": 0.1234567890123456789`)
 }
+
+// A failed status is the one place the model has no way to know what went
+// wrong. Each class of answer has to name the next step.
+func TestFetchStatusErrorsNameTheNextStep(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		status int
+		header string
+		want   string
+	}{
+		{"not found", http.StatusNotFound, "", "does not exist; the address was probably guessed. Open the site's index or search instead of guessing another path"},
+		{"gone", http.StatusGone, "", "does not exist; the address was probably guessed. Open the site's index or search instead of guessing another path"},
+		{"rate limited", http.StatusTooManyRequests, "120", "rate-limited (retry after 120s); do not retry right away"},
+		{"unavailable", http.StatusServiceUnavailable, "", "temporarily unavailable; do not retry right away"},
+		{"forbidden", http.StatusForbidden, "", "refused access"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			_, err := FetchURLAndConvert(t.Context(), server.Client(), server.URL)
+			require.Error(t, err)
+			var statusErr *FetchStatusError
+			require.ErrorAs(t, err, &statusErr)
+			require.Equal(t, tc.status, statusErr.Status)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// DuckDuckGo answers its own result pages with a challenge, so fetching one
+// is the same block the search backend reports, and it arms the same wait.
+func TestFetchDuckDuckGoChallengeMarksTheSearchBlocked(t *testing.T) {
+	t.Cleanup(resetSearchBlock)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	// The server stands in for a DuckDuckGo host, so the check must see it as
+	// one without the test touching the network.
+	savedHost := ddgHost
+	ddgHost = func(string) bool { return true }
+	t.Cleanup(func() { ddgHost = savedHost })
+
+	_, err := FetchURLAndConvert(t.Context(), server.Client(), server.URL)
+	require.ErrorIs(t, err, errSearchRateLimited)
+	require.True(t, SearchBlocked())
+}
+
+// Only DuckDuckGo's block answers fold into the search block. A 404 is a URL
+// that is not there, and a 5xx is the server's problem; neither means search
+// is throttled.
+func TestFetchDuckDuckGoBlockOnlyOnBlockAnswers(t *testing.T) {
+	savedHost := ddgHost
+	ddgHost = func(string) bool { return true }
+	t.Cleanup(func() {
+		ddgHost = savedHost
+		resetSearchBlock()
+	})
+
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantBlock bool
+	}{
+		{"accepted", http.StatusAccepted, true},
+		{"forbidden", http.StatusForbidden, true},
+		{"too many requests", http.StatusTooManyRequests, true},
+		{"not found", http.StatusNotFound, false},
+		{"unavailable", http.StatusServiceUnavailable, false},
+		{"internal error", http.StatusInternalServerError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSearchBlock()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			_, err := FetchURLAndConvert(t.Context(), server.Client(), server.URL)
+			require.Error(t, err)
+			if tc.wantBlock {
+				require.ErrorIs(t, err, errSearchRateLimited)
+				require.True(t, SearchBlocked())
+				return
+			}
+			require.NotErrorIs(t, err, errSearchRateLimited)
+			require.False(t, SearchBlocked(), "a %d must not start a search block", tc.status)
+			var statusErr *FetchStatusError
+			require.ErrorAs(t, err, &statusErr)
+			require.Equal(t, tc.status, statusErr.Status)
+		})
+	}
+}

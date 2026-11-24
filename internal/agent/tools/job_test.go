@@ -29,6 +29,27 @@ func TestJobOutputUnknownShellIsNotAnError(t *testing.T) {
 	require.Contains(t, resp.Content, "no longer tracked")
 }
 
+func TestJobOutputWaitIsOptional(t *testing.T) {
+	t.Parallel()
+
+	tool := NewJobOutputTool(t.TempDir())
+	require.Equal(t, []string{"shell_id"}, tool.Info().Required)
+}
+
+func TestJobOutputPollWithoutWaitIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	tool := NewJobOutputTool(t.TempDir())
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  JobOutputToolName,
+		Input: `{"shell_id":"reaped"}`,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	require.Contains(t, resp.Content, "no longer tracked")
+}
+
 func TestJobKillUnknownShellIsNoop(t *testing.T) {
 	t.Parallel()
 

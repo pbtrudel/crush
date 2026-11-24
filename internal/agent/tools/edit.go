@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/diff"
@@ -294,6 +295,29 @@ func notFoundError(content, old string) error {
 	return &editMatchError{kind: ErrorKindTextNotFound, msg: msg}
 }
 
+// alreadyApplied reports a resend of an edit the file already carries:
+// old_string is gone and new_string is there exactly once, so the wanted
+// text is present and the call needs no change. It answers false for every
+// other failure, which keeps a genuinely missing old_string an error.
+func alreadyApplied(content, newString string, err error) (fantasy.ToolResponse, bool) {
+	if errorKindOf(err) != ErrorKindTextNotFound || !editedTextProvesItself(newString) {
+		return fantasy.ToolResponse{}, false
+	}
+	if strings.Count(content, newString) != 1 {
+		return fantasy.ToolResponse{}, false
+	}
+	return fantasy.NewTextResponse("No change needed: this call changed nothing because the file already contains new_string once and no longer contains old_string."), true
+}
+
+// editedTextProvesItself reports whether new_string is specific enough that
+// finding it once means the edit is already applied. A short single-line
+// string such as "return nil" turns up in most files, so the old_string is
+// more likely stale than the edit done; a long string or one spanning several
+// lines is the edit itself.
+func editedTextProvesItself(newString string) bool {
+	return utf8.RuneCountInString(newString) >= 20 || strings.Contains(newString, "\n")
+}
+
 // editMatchError is a find-and-replace that could not be applied. The
 // message is what the model reads; the kind is what the session log
 // records, so a report never has to match the wording.
@@ -371,7 +395,7 @@ type existingFile struct {
 // it was before the option existed. With the option on, the content comes
 // back with the guard, and the caller decides whether an exact, unique match
 // lets the edit apply.
-func loadExistingFile(edit editContext, filePath, sessionError string) (existingFile, fantasy.ToolResponse, error) {
+func loadExistingFile(edit editContext, filePath, sessionError string, oldStrings ...string) (existingFile, fantasy.ToolResponse, error) {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -403,7 +427,11 @@ func loadExistingFile(edit editContext, filePath, sessionError string) (existing
 	}
 
 	if guard.refused() && !editWithoutReadEnabled(edit.withoutRead) {
-		return existingFile{}, guard.refusal(false), nil
+		var oldString string
+		if len(oldStrings) > 0 {
+			oldString = oldStrings[0]
+		}
+		return existingFile{}, edit.refuseWithContent(guard, filePath, oldString, false), nil
 	}
 
 	content, err := os.ReadFile(filePath)
@@ -417,7 +445,7 @@ func loadExistingFile(edit editContext, filePath, sessionError string) (existing
 }
 
 func deleteContent(edit editContext, filePath, oldString string, replaceAll bool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	file, resp, err := loadExistingFile(edit, filePath, "session ID is required for deleting content")
+	file, resp, err := loadExistingFile(edit, filePath, "session ID is required for deleting content", oldString)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -432,7 +460,7 @@ func deleteContent(edit editContext, filePath, oldString string, replaceAll bool
 	}
 	degraded, refused := edit.mayEditUnread(file.guard, replaceAll, whitespaceCorrected)
 	if refused {
-		return file.guard.refusal(true), nil
+		return edit.refuseWithContent(file.guard, filePath, oldString, true), nil
 	}
 
 	_, additions, removals := diff.GenerateDiff(
@@ -495,7 +523,7 @@ func deleteContent(edit editContext, filePath, oldString string, replaceAll bool
 }
 
 func replaceContent(edit editContext, filePath, oldString, newString string, replaceAll bool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	file, resp, err := loadExistingFile(edit, filePath, "session ID is required for editing a file")
+	file, resp, err := loadExistingFile(edit, filePath, "session ID is required for editing a file", oldString)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -506,11 +534,14 @@ func replaceContent(edit editContext, filePath, oldString, newString string, rep
 
 	result, whitespaceCorrected, err := findAndReplace(oldContent, oldString, newString, replaceAll)
 	if err != nil {
+		if resp, done := alreadyApplied(oldContent, newString, err); done {
+			return resp, nil
+		}
 		return editErrorResponse(err), nil
 	}
 	degraded, refused := edit.mayEditUnread(file.guard, replaceAll, whitespaceCorrected)
 	if refused {
-		return file.guard.refusal(true), nil
+		return edit.refuseWithContent(file.guard, filePath, oldString, true), nil
 	}
 	if result == oldContent {
 		return fantasy.NewTextErrorResponse("new content is the same as old content. No changes made."), nil

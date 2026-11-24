@@ -155,3 +155,28 @@ func (m *mockSessionService) SetTitleIfUnchanged(context.Context, string, string
 func (m *mockSessionService) UpdateTodos(context.Context, string, []session.Todo) error {
 	return nil
 }
+
+// Some models send the todos array as a JSON string. Decoding that form saves
+// a failed call and a retry.
+func TestTodosParamsAcceptsStringEncodedArray(t *testing.T) {
+	t.Parallel()
+
+	input := `{"todos":"[{\"content\":\"a\",\"status\":\"pending\",\"active_form\":\"A\"}]"}`
+	var params TodosParams
+	require.NoError(t, json.Unmarshal([]byte(input), &params))
+	require.Len(t, params.Todos, 1)
+	require.Equal(t, "a", params.Todos[0].Content)
+	require.Equal(t, "A", params.Todos[0].ActiveForm)
+}
+
+// TestTodosParamsAcceptsStringEncodedArrayWithTrailingComma pins that the
+// loose JSON a model sends inside the string form is trimmed before decoding.
+func TestTodosParamsAcceptsStringEncodedArrayWithTrailingComma(t *testing.T) {
+	t.Parallel()
+
+	input := `{"todos":"[{\"content\":\"a\",\"status\":\"pending\",\"active_form\":\"A\"},]"}`
+	var params TodosParams
+	require.NoError(t, json.Unmarshal([]byte(input), &params))
+	require.Len(t, params.Todos, 1)
+	require.Equal(t, "a", params.Todos[0].Content)
+}

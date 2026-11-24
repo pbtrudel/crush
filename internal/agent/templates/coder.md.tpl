@@ -341,7 +341,7 @@ After significant changes:
 - Only use the tools you know exist.
 
 <bash_commands>
-**CRITICAL**: The `description` parameter is REQUIRED for all bash tool calls. Always provide it.
+Always provide the `description` parameter on bash calls: it labels the command in the UI and the job list. The field is optional, so a call that leaves it out still runs with a label derived from the command.
 
 When running non-trivial bash commands (especially those that modify the system):
 - Briefly explain what the command does and why you're running it

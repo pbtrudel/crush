@@ -477,7 +477,7 @@ func TestProcessMultiEditExistingFileWithoutRead(t *testing.T) {
 		require.Contains(t, resp.Content, "every edit in the batch must match exactly once")
 		require.NotContains(t, resp.Content, "Failed edits:", "no edit of the batch failed to match")
 		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
-		require.Zero(t, tracker.recorded)
+		require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 
 		content, err := os.ReadFile(filePath)
 		require.NoError(t, err)
@@ -534,11 +534,39 @@ func TestProcessMultiEditExistingFileWithoutReadReportsFailedEdits(t *testing.T)
 			require.Contains(t, resp.Content, "Failed edits:")
 			require.Contains(t, resp.Content, tt.wantEdit)
 			require.Equal(t, string(tt.wantKind), gjson.Get(resp.Metadata, "error_kind").String())
-			require.Zero(t, tracker.recorded)
+			require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 
 			content, err := os.ReadFile(filePath)
 			require.NoError(t, err)
 			require.Equal(t, "one\ntwo\nthree\n", string(content))
 		})
 	}
+}
+
+func TestMultiEditListAcceptsStringEncodedArray(t *testing.T) {
+	t.Parallel()
+
+	var params MultiEditParams
+	input := `{"file_path":"a.go","edits":"[{\"old_string\":\"x\",\"new_string\":\"y\"}]"}`
+	require.NoError(t, json.Unmarshal([]byte(input), &params))
+	require.Len(t, params.Edits, 1)
+	require.Equal(t, "x", params.Edits[0].OldString)
+}
+
+func TestMultiEditEditsSchemaStaysAnArray(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	tool := NewMultiEditTool(nil, &mockPermissionService{}, &mockHistoryService{}, &mockEditFileTracker{}, dir, false)
+	schema, ok := tool.Info().Parameters["edits"].(map[string]any)
+	require.True(t, ok, "edits must stay in the schema: %#v", tool.Info().Parameters)
+	require.Equal(t, "array", schema["type"])
+	require.Contains(t, tool.Info().Required, "edits")
+}
+
+func TestValidateEditsNamesEmptyOldString(t *testing.T) {
+	t.Parallel()
+
+	err := validateEdits(multiEditList{{OldString: "a", NewString: "b"}, {OldString: "", NewString: "c"}})
+	require.EqualError(t, err, "edit 2: old_string is empty; every edit after the first must quote the exact text it replaces (only edit 1 may be empty, to create the file)")
 }
