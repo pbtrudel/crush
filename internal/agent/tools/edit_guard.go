@@ -1,11 +1,16 @@
 package tools
 
 import (
+	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/fsext"
 )
 
 // unreadEditNote tells the caller that the edit was applied to a file the
@@ -37,6 +42,117 @@ func (g readGuard) refusal(withOption bool) fantasy.ToolResponse {
 		text += "\n\n" + unreadEditHint
 	}
 	return withErrorKind(fantasy.NewTextErrorResponse(text), g.kind)
+}
+
+// refusalWindow is how many lines a refusal shows: the window view reads by
+// default, so a refusal never floods the context more than a view would.
+const refusalWindow = DefaultReadLimit
+
+// refusalContent is the window of the current file a refusal shows.
+type refusalContent struct {
+	// window is the numbered text of the window.
+	window string
+	// start and end are the 1-based first and last line shown, and total is
+	// the file's line count.
+	start, end, total int
+	// wholeFile reports whether the window is the entire file.
+	wholeFile bool
+}
+
+// refuseWithContent refuses the edit and hands back the current file, so
+// the retry does not need a view first: the model sees the text the guard
+// wants it to see, and that read is recorded. withOption adds the sentence
+// that explains why the edit did not apply anyway. Files view itself
+// refuses (binary, image, over its size limit) keep the plain refusal.
+func (edit editContext) refuseWithContent(guard readGuard, filePath, oldString string, withOption bool) fantasy.ToolResponse {
+	content, ok := edit.currentContent(filePath, oldString)
+	if !ok {
+		return guard.refusal(withOption)
+	}
+	edit.recordShownRead(filePath)
+	text := guard.text + "\n\n" + fmt.Sprintf(
+		"Showing lines %d-%d of %d, now marked as read; retry the edit against it:\n",
+		content.start, content.end, content.total,
+	) + content.window
+	if withOption {
+		text += "\n\n" + unreadEditHint
+	}
+	return withErrorKind(fantasy.NewTextErrorResponse(text), guard.kind)
+}
+
+// refuseOverwrite refuses a write. A write replaces every line, so the file
+// is shown and the read recorded only when the window is the whole file: a
+// partial window would let the overwrite through on lines the model never
+// saw, so it only names what is left to read.
+func (edit editContext) refuseOverwrite(guard readGuard, filePath string) fantasy.ToolResponse {
+	content, ok := edit.currentContent(filePath, "")
+	if !ok {
+		return guard.refusal(false)
+	}
+	if !content.wholeFile {
+		text := guard.text + "\n\n" + fmt.Sprintf(
+			"this shows lines %d-%d of %d; view the rest, or use edit for a targeted change:\n",
+			content.start, content.end, content.total,
+		) + content.window
+		return withErrorKind(fantasy.NewTextErrorResponse(text), guard.kind)
+	}
+	edit.recordShownRead(filePath)
+	text := guard.text + "\n\n" + fmt.Sprintf(
+		"Showing lines %d-%d of %d, now marked as read; retry the write against it:\n",
+		content.start, content.end, content.total,
+	) + content.window
+	return withErrorKind(fantasy.NewTextErrorResponse(text), guard.kind)
+}
+
+// recordShownRead records the read a refusal just showed, so the retry passes
+// the guard. It reports nothing when the session is unknown.
+func (edit editContext) recordShownRead(filePath string) {
+	sessionID := GetSessionFromContext(edit.ctx)
+	if sessionID == "" || edit.filetracker == nil {
+		return
+	}
+	edit.filetracker.RecordRead(edit.ctx, sessionID, filePath)
+}
+
+// currentContent renders the numbered window of the file around the first
+// line of oldString, and reports false when view would refuse the file for
+// its size or content.
+func (edit editContext) currentContent(filePath, oldString string) (refusalContent, bool) {
+	info, err := os.Stat(filePath)
+	if err != nil || info.IsDir() || info.Size() > MaxViewSize {
+		return refusalContent{}, false
+	}
+	raw, err := os.ReadFile(filePath)
+	if err != nil || !utf8.Valid(raw) {
+		return refusalContent{}, false
+	}
+
+	content, _ := fsext.ToUnixLineEndings(string(raw))
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	total := len(lines)
+	match := 0
+	if oldString != "" {
+		if index := strings.Index(content, oldString); index >= 0 {
+			match = strings.Count(content[:index], "\n")
+		}
+	}
+	start := min(max(0, match-refusalWindow/2), max(0, total-refusalWindow))
+	end := min(total, start+refusalWindow)
+	window := slices.Clone(lines[start:end])
+	for i, line := range window {
+		if len(line) > MaxLineLength {
+			// Truncate at a rune boundary, the way view does.
+			window[i] = strings.ToValidUTF8(line[:MaxLineLength], "") + "..."
+		}
+	}
+
+	return refusalContent{
+		window:    addLineNumbers(strings.Join(window, "\n"), start+1),
+		start:     start + 1,
+		end:       end,
+		total:     total,
+		wholeFile: start == 0 && end == total,
+	}, true
 }
 
 // editWithoutReadEnv reads the environment override once: it cannot change

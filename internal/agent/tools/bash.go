@@ -5,26 +5,30 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
 type BashParams struct {
-	Description         string `json:"description" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
+	Description         string `json:"description,omitempty" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
 	Command             string `json:"command" description:"The command to execute"`
 	WorkingDir          string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
 	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use job_output to read the output later."`
@@ -216,6 +220,18 @@ func resolveBlockedCommands(perms *config.Permissions) []string {
 	return deduped
 }
 
+// describeCommand derives a short label from the command for calls that
+// leave description out. The label is only shown in the UI and the job
+// list; permission prompts already show the command itself.
+func describeCommand(command string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(command), "\n")
+	line = strings.TrimSpace(line)
+	if utf8.RuneCountInString(line) <= 60 {
+		return line
+	}
+	return string([]rune(line)[:57]) + "..."
+}
+
 func bashDescription(attribution *config.Attribution, blocked []string) string {
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
@@ -270,7 +286,7 @@ func blockFuncs(blocked []string) []shell.BlockFunc {
 // NewBashTool returns the bash tool. Every shell it starts is tagged with
 // shellOwner, so the owner can stop them with
 // [shell.BackgroundShellManager.KillOwned].
-func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions, shellOwner any) fantasy.AgentTool {
+func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions, shellOwner any, tracker filetracker.Service) fantasy.AgentTool {
 	blocked := resolveBlockedCommands(perms)
 	userSafe := userSafeCommands(perms)
 	return fantasy.NewAgentTool(
@@ -279,6 +295,12 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
+			}
+
+			// The field is optional: a model that leaves it out still gets
+			// a label for the UI and the job list.
+			if strings.TrimSpace(params.Description) == "" {
+				params.Description = describeCommand(params.Command)
 			}
 
 			// Expand the attribution token with the model that is running
@@ -350,9 +372,120 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 			case !check.Matched && mode != permission.PermissionModeSysadmin:
 				blocksToUse = blockFuncs(blocked)
 			}
-			return executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs, shellOwner)
+			before := snapshotReadFiles(ctx, tracker, sessionID, params, workingDir)
+			resp, err := executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs, shellOwner)
+			recordShellReads(ctx, tracker, sessionID, params, execWorkingDir, resp, err)
+			noteChangedReads(&resp, err, before)
+			return resp, err
 		},
 	)
+}
+
+// readFileState is one file the session read earlier: the path the note
+// names, the absolute path the snapshot resolved once, and the modification
+// time at the moment the command started.
+type readFileState struct {
+	path    string
+	full    string
+	modTime time.Time
+}
+
+// maxSnapshottedReads bounds how many read files one command watches: a
+// session that read thousands of files would otherwise stat all of them
+// around every command it runs, twice. The cap keeps a command's cost
+// proportional to the size of the session, not to the command.
+const maxSnapshottedReads = 200
+
+// snapshotReadFiles records the modification times of the files the session
+// read earlier, so the command's effect on them can be named afterwards. A
+// command that runs in the background, or a session with no tracker, has
+// nothing to compare.
+func snapshotReadFiles(ctx context.Context, tracker filetracker.Service, sessionID string, params BashParams, workingDir string) []readFileState {
+	if tracker == nil || sessionID == "" || params.RunInBackground {
+		return nil
+	}
+	paths, err := tracker.ListReadFiles(ctx, sessionID)
+	if err != nil || len(paths) == 0 {
+		return nil
+	}
+	if len(paths) > maxSnapshottedReads {
+		paths = paths[:maxSnapshottedReads]
+	}
+	states := make([]readFileState, 0, len(paths))
+	for _, path := range paths {
+		full := path
+		if !filepath.IsAbs(full) {
+			full = filepath.Join(workingDir, full)
+		}
+		info, err := os.Stat(full)
+		if err != nil {
+			continue
+		}
+		states = append(states, readFileState{path: path, full: full, modTime: info.ModTime()})
+	}
+	return states
+}
+
+// maxNamedChangedReads bounds how many paths the note names, so a formatter
+// run over a large tree does not bury the command's own output.
+const maxNamedChangedReads = 10
+
+// noteChangedReads tells the model which of the files it read earlier changed
+// while the command ran, so it views them before editing them instead of
+// learning the same thing from a refusal. It records no read: the command may
+// have rewritten the file to something the model has not seen.
+func noteChangedReads(resp *fantasy.ToolResponse, err error, before []readFileState) {
+	if len(before) == 0 || err != nil || resp.IsError {
+		return
+	}
+	var changed []string
+	for _, state := range before {
+		if len(changed) == maxNamedChangedReads {
+			break
+		}
+		// Re-stat the path the snapshot resolved, not the same relative
+		// name under the command's directory: with a working_dir of a
+		// subdirectory the two differ, and a miss there would name a file
+		// that did not change.
+		info, statErr := os.Stat(state.full)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil || !info.ModTime().Equal(state.modTime) {
+			changed = append(changed, state.path)
+		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	note := fmt.Sprintf("Files you read earlier changed during this command: %s. View them before editing.", humanList(changed))
+	if resp.Content == "" {
+		resp.Content = note
+		return
+	}
+	resp.Content += "\n\n" + note
+}
+
+// recordShellReads counts the files a finished foreground command only read
+// as reads, the way view does, so an edit to a file the model inspected
+// through bash is not refused. A command that was moved to the background, or
+// that failed, says nothing about the file as it stands.
+func recordShellReads(ctx context.Context, tracker filetracker.Service, sessionID string, params BashParams, workingDir string, resp fantasy.ToolResponse, err error) {
+	if tracker == nil || sessionID == "" || err != nil || resp.IsError || params.RunInBackground {
+		return
+	}
+	var meta BashResponseMetadata
+	if len(resp.Metadata) > 0 {
+		if jsonErr := json.Unmarshal([]byte(resp.Metadata), &meta); jsonErr != nil {
+			return
+		}
+	}
+	if meta.Background || meta.Interrupted || meta.ExitCode == nil || *meta.ExitCode != 0 {
+		return
+	}
+	for _, path := range shellReadPaths(params.Command, workingDir) {
+		tracker.RecordRead(ctx, sessionID, path)
+	}
 }
 
 // adminCommands still run in yolo mode. They ask for the user's own

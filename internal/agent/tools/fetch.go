@@ -124,9 +124,10 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 
 			if resp.StatusCode != http.StatusOK {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf(
-					"Request failed with status code: %d %s",
+					"Request failed with status code: %d %s%s",
 					resp.StatusCode,
 					http.StatusText(resp.StatusCode),
+					fetchStatusHint(resp.StatusCode, resp.Header.Get("Retry-After")),
 				)), nil
 			}
 

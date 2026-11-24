@@ -132,7 +132,7 @@ func TestEditWithoutReadRefusesTheRest(t *testing.T) {
 			content, err := os.ReadFile(filePath)
 			require.NoError(t, err)
 			require.Equal(t, tt.content, string(content))
-			require.Zero(t, tracker.recorded)
+			require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 		})
 	}
 }
@@ -172,7 +172,7 @@ func TestDeleteContentWithoutRead(t *testing.T) {
 		require.True(t, resp.IsError)
 		require.Contains(t, resp.Content, todayNotRead)
 		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
-		require.Zero(t, tracker.recorded)
+		require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 	})
 
 	t.Run("replace_all stays refused", func(t *testing.T) {
@@ -187,12 +187,13 @@ func TestDeleteContentWithoutRead(t *testing.T) {
 		require.True(t, resp.IsError)
 		require.Contains(t, resp.Content, todayNotRead)
 		require.Equal(t, string(ErrorKindNotRead), gjson.Get(resp.Metadata, "error_kind").String())
-		require.Zero(t, tracker.recorded)
+		require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 	})
 }
 
-// With the option off, both refusals keep the exact text they have today.
-func TestReadGuardOptionOffKeepsTodaysRefusal(t *testing.T) {
+// With the option off, both refusals show the file, which is what makes the
+// retry succeed without a view in between.
+func TestReadGuardOptionOffRefusalShowsTheFile(t *testing.T) {
 	t.Parallel()
 
 	t.Run("never read", func(t *testing.T) {
@@ -205,9 +206,10 @@ func TestReadGuardOptionOffKeepsTodaysRefusal(t *testing.T) {
 		resp, err := replaceContent(edit, filePath, "beta", "BETA", false, fantasy.ToolCall{ID: "call"})
 		require.NoError(t, err)
 		require.True(t, resp.IsError)
-		require.Equal(t, todayNotRead, resp.Content)
+		require.Contains(t, resp.Content, todayNotRead)
+		require.Contains(t, resp.Content, "    2|beta")
 		require.Equal(t, `{"error_kind":"not_read"}`, resp.Metadata)
-		require.Zero(t, tracker.recorded)
+		require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 
 		content, err := os.ReadFile(filePath)
 		require.NoError(t, err)
@@ -229,9 +231,10 @@ func TestReadGuardOptionOffKeepsTodaysRefusal(t *testing.T) {
 		require.NoError(t, err)
 		want := fmt.Sprintf("file %s has been modified since it was last read (mod time: %s, last read: %s)",
 			filePath, info.ModTime().Truncate(time.Second).Format(time.RFC3339), lastRead.Format(time.RFC3339))
-		require.Equal(t, want, resp.Content)
+		require.Contains(t, resp.Content, want)
+		require.Contains(t, resp.Content, "    2|beta")
 		require.Equal(t, string(ErrorKindChangedSinceRead), gjson.Get(resp.Metadata, "error_kind").String())
-		require.Zero(t, tracker.recorded)
+		require.Equal(t, 1, tracker.recorded, "the refusal showed the file, so the read is recorded")
 	})
 }
 

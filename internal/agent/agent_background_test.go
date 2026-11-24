@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,4 +197,53 @@ func TestDispatchHistoryBackgroundedBlockingCall(t *testing.T) {
 	assert.False(t, rec.Open)
 	require.NotNil(t, rec.LastReport)
 	assert.Equal(t, "found", rec.LastReport.Output)
+}
+
+// A fetch subagent that outlives its tool call still owns its folder: the
+// cleanup must run when the run ends, not when the tool returns its notice.
+func TestBackgroundedSubagentCleansUpWhenItFinishes(t *testing.T) {
+	const providerID = "test-provider"
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+	coord.interactive = true
+	coord.dispatched = csync.NewMap[string, *dispatchedAgent]()
+	coord.backgroundAfter = 20 * time.Millisecond
+
+	parent, err := env.sessions.Create(t.Context(), "Parent")
+	require.NoError(t, err)
+
+	release := make(chan struct{})
+	agent := newMockAgent(providerID, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		<-release
+		return agentResultWithText("finished"), nil
+	})
+
+	// Cleanup is owned by whichever path ends the run, and the real one
+	// removes a folder, so it is safe to call twice. Close the signal once.
+	cleaned := make(chan struct{})
+	var cleanedOnce sync.Once
+	resp, err := coord.runSubAgentMaybeBackground(t.Context(), tools.AgenticFetchToolName, accessRead, subAgentParams{
+		Agent:          agent,
+		SessionID:      parent.ID,
+		AgentMessageID: "msg-1",
+		ToolCallID:     "call-cleanup",
+		Prompt:         "long fetch",
+		SessionTitle:   "Test",
+		Cleanup:        func() { cleanedOnce.Do(func() { close(cleaned) }) },
+	})
+	require.NoError(t, err)
+	require.Contains(t, resp.Content, "moved to the background")
+
+	select {
+	case <-cleaned:
+		t.Fatal("cleanup ran while the subagent was still running")
+	default:
+	}
+
+	close(release)
+	select {
+	case <-cleaned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup never ran")
+	}
 }

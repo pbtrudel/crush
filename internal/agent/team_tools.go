@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -130,6 +131,78 @@ func (c *coordinator) teamError(err error) fantasy.ToolResponse {
 	return fantasy.NewTextErrorResponse(err.Error())
 }
 
+// teamErrorWithState returns a refused task call with the state a retry
+// needs: the current task when it still exists, otherwise the live tasks the
+// model can pick from. A failure the state cannot help with falls back to the
+// bare message.
+func (c *coordinator) teamErrorWithState(ctx context.Context, caller string, err error, taskID string) fantasy.ToolResponse {
+	text := err.Error()
+	if agentteam.ErrorCode(err) == agentteam.CodeInvalidWriteScope {
+		text += "\n\nwrite scopes must be inside the workspace; leave scratch paths out"
+	}
+	if c.team == nil {
+		return fantasy.NewTextErrorResponse(text)
+	}
+	sessionID := tools.GetSessionFromContext(ctx)
+	if taskID != "" {
+		if view, getErr := c.team.GetTask(caller, sessionID, taskID); getErr == nil {
+			if data, marshalErr := json.Marshal(view); marshalErr == nil {
+				return fantasy.NewTextErrorResponse(text + "\n\nCurrent task:\n" + string(data))
+			}
+		}
+	}
+	list, listErr := c.team.ListTasks(caller, sessionID, agentteam.TaskFilter{Limit: 10})
+	if listErr != nil || len(list.Tasks) == 0 {
+		return fantasy.NewTextErrorResponse(text)
+	}
+	var sb strings.Builder
+	sb.WriteString(text)
+	sb.WriteString("\n\nLive tasks:")
+	for _, task := range list.Tasks {
+		fmt.Fprintf(&sb, "\n- %s: %s", task.ID, task.Subject)
+	}
+	return fantasy.NewTextErrorResponse(sb.String())
+}
+
+// relativizeWriteScopes rewrites absolute write scopes that sit inside the
+// workspace to their relative form, which is the only form the validator
+// accepts. It reports each rewrite so the response can name it.
+func (c *coordinator) relativizeWriteScopes(scopes []string) ([]string, []string) {
+	if len(scopes) == 0 || c.cfg == nil {
+		return scopes, nil
+	}
+	workspace := c.cfg.WorkingDir()
+	if workspace == "" {
+		return scopes, nil
+	}
+	rewritten := make([]string, len(scopes))
+	var changed []string
+	for i, scope := range scopes {
+		relative, ok := workspaceRelativeScope(workspace, scope)
+		rewritten[i] = scope
+		if !ok {
+			continue
+		}
+		rewritten[i] = relative
+		changed = append(changed, fmt.Sprintf("%s -> %s", scope, relative))
+	}
+	return rewritten, changed
+}
+
+// workspaceRelativeScope returns the relative form of an absolute scope that
+// lies inside the workspace.
+func workspaceRelativeScope(workspace, scope string) (string, bool) {
+	if !filepath.IsAbs(scope) {
+		return "", false
+	}
+	relative, err := filepath.Rel(workspace, scope)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(relative), true
+}
+
 func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		SpawnTeammateToolName,
@@ -188,6 +261,17 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 				Message: params.Message,
 			})
 			if err != nil {
+				// The name may belong to a dispatched subagent instead.
+				if agentteam.ErrorCode(err) == agentteam.CodeMemberNotFound {
+					if resp, handled := c.deliverToSubagent(ctx, params.Target, params.Message); handled {
+						return resp, nil
+					}
+					return fantasy.NewTextErrorResponse(fmt.Sprintf(
+						"no teammate or subagent %q; teammates: %s; subagents: %s",
+						params.Target, c.teammateNames(ctx),
+						c.runningDispatchLabels(tools.GetSessionFromContext(ctx)),
+					)), nil
+				}
 				return c.teamError(err), nil
 			}
 			return c.teamResponse(ctx, caller, map[string]bool{"sent": true}), nil
@@ -266,16 +350,21 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
+			scopes, rewritten := c.relativizeWriteScopes(params.WriteScopes)
 			view, err := c.team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,
 				BlockedBy:   params.BlockedBy,
-				WriteScopes: params.WriteScopes,
+				WriteScopes: scopes,
 			})
 			if err != nil {
-				return c.teamError(err), nil
+				return c.teamErrorWithState(ctx, caller, err, ""), nil
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			response := c.teamResponse(ctx, caller, view)
+			if len(rewritten) > 0 {
+				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
+			}
+			return response, nil
 		},
 	)
 }
@@ -319,7 +408,7 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 		func(ctx context.Context, params teamTaskGetParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			view, err := c.team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
 			if err != nil {
-				return c.teamError(err), nil
+				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
 			}
 			return c.teamResponse(ctx, caller, view), nil
 		},
@@ -331,12 +420,13 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 		TeamTaskUpdateToolName,
 		"Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list.",
 		func(ctx context.Context, params teamTaskUpdateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			scopes, rewritten := c.relativizeWriteScopes(params.WriteScopes)
 			request := agentteam.UpdateTaskRequest{
 				TaskID:           params.TaskID,
 				ExpectedRevision: params.ExpectedRevision,
 				Action:           params.Action,
 				BlockedBy:        params.BlockedBy,
-				WriteScopes:      params.WriteScopes,
+				WriteScopes:      scopes,
 				SessionID:        tools.GetSessionFromContext(ctx),
 			}
 			if params.Subject != nil {
@@ -350,9 +440,13 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			}
 			view, err := c.team.UpdateTask(caller, request)
 			if err != nil {
-				return c.teamError(err), nil
+				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			response := c.teamResponse(ctx, caller, view)
+			if len(rewritten) > 0 {
+				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
+			}
+			return response, nil
 		},
 	)
 }

@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/session"
@@ -16,6 +18,34 @@ const TodosToolName = "todos"
 
 type TodosParams struct {
 	Todos []TodoItem `json:"todos" description:"The updated todo list"`
+}
+
+// UnmarshalJSON handles models that double-serialize the todos field as a
+// JSON string instead of a native array.
+func (p *TodosParams) UnmarshalJSON(data []byte) error {
+	type Alias TodosParams
+	aux := &struct {
+		Todos json.RawMessage `json:"todos"`
+		*Alias
+	}{
+		Alias: (*Alias)(p),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Todos) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(aux.Todos, &p.Todos); err != nil {
+		var encoded string
+		if err2 := json.Unmarshal(aux.Todos, &encoded); err2 != nil {
+			return err
+		}
+		if err2 := json.Unmarshal([]byte(trimTrailingCommas(strings.TrimSpace(encoded))), &p.Todos); err2 != nil {
+			return fmt.Errorf("todos must be an array: %w", err2)
+		}
+	}
+	return nil
 }
 
 type TodoItem struct {

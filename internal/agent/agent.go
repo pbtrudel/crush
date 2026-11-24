@@ -858,6 +858,27 @@ func canceledFinishTitle(deadlinePassed bool) string {
 	return "User canceled request"
 }
 
+// providerDeadlineDetails is the finish text of a deadline the provider
+// raised itself. It never names a budget Crush set, because the provider's
+// own timeout is what ran out.
+const providerDeadlineDetails = "The provider reported a deadline for this request, not a Crush timeout. Retry, and check the provider's status if it repeats."
+
+// providerDeadlineError reports a deadline a provider raised as a bare
+// context error, which skips the request guard. It embeds the guard's error
+// type so the turn ends as the timeout it is, and its text never claims a
+// budget Crush imposed.
+type providerDeadlineError struct {
+	requestTimeoutError
+}
+
+func (e *providerDeadlineError) Error() string {
+	return fmt.Sprintf("LLM provider reported a request deadline: %v", e.cause)
+}
+
+// Unwrap exposes the embedded timeout error, so errors.As finds the type the
+// turn-end and finish rules key on.
+func (e *providerDeadlineError) Unwrap() error { return &e.requestTimeoutError }
+
 // persistCanceledTurn writes the user/assistant records for a turn that
 // was canceled before (or just as) streaming would have produced them.
 // It creates the user message only when it was not already created by an
@@ -1561,6 +1582,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		PresencePenalty:  call.PresencePenalty,
 		TopK:             call.TopK,
 		FrequencyPenalty: call.FrequencyPenalty,
+		RepairToolCall:   repairToolCall,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
 			// Each step decides its own parallelism from the calls it
@@ -2017,6 +2039,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if err != nil {
+		// A provider that surfaces its own request deadline as a raw context
+		// error skips the request guard, so label it as the timeout it is
+		// rather than as a provider fault. Only a deadline no context of this
+		// run caused qualifies: an ended genCtx or a passed tree deadline is a
+		// cancel, and naming it a timeout would hide what actually happened.
+		if errors.Is(err, context.DeadlineExceeded) && genCtx.Err() == nil && !call.limits.deadlinePassed() {
+			err = &providerDeadlineError{requestTimeoutError: requestTimeoutError{cause: err}}
+		}
 		isCancelErr := errors.Is(err, context.Canceled)
 		slog.Info("Agent stream returned error",
 			"error", err.Error(),
@@ -2077,7 +2107,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			} else if errors.As(err, &requestTimedOutErr) {
 				// Checked before the provider branches so a deadline our own
 				// request timeout imposed is never reported as a provider error.
-				currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", requestTimedOutErr.userMessage())
+				details := requestTimedOutErr.userMessage()
+				var deadlineErr *providerDeadlineError
+				if errors.As(err, &deadlineErr) {
+					details = providerDeadlineDetails
+				}
+				currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", details)
 			} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 				currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
 			} else if largeModel.OAuth && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {

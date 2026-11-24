@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,4 +95,31 @@ func TestFetchToolReturnsContent(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
 	require.Contains(t, resp.Content, "hello from fetch")
+}
+
+// A follow-up run after the fetch folder was cleaned up must still be able to
+// save a large page, because the folder is recreated on demand.
+func TestWebFetchRecreatesMissingFolder(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Repeat("readable words ", 5000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	dir := filepath.Join(t.TempDir(), "gone")
+	tool := NewWebFetchTool(dir, server.Client())
+	input, err := json.Marshal(WebFetchParams{URL: server.URL})
+	require.NoError(t, err)
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "web-fetch-gone",
+		Name:  WebFetchToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	require.Contains(t, resp.Content, "Content saved to")
+	require.DirExists(t, dir)
 }
