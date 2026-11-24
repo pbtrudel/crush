@@ -20,14 +20,25 @@ func isImageMediaType(mediaType string) bool {
 // oldest ones with text placeholders. The newest images are kept because
 // they are the ones the current turn is about. A limit of zero or less
 // disables the budget. The caller's messages are not mutated.
+//
+// The number of omitted images is quantized to a step of limit/5 (at least
+// one) rather than tracking the excess exactly. Dropping exactly the excess
+// would move the cut by one every time a new image arrives, rewriting bytes
+// early in the prompt and invalidating the provider prompt cache from that
+// point on at every step that adds an image. Rounding the cut up to a step
+// means the omitted set only changes once every step new images, so the
+// request prefix stays byte-identical between cuts.
 func applyImageBudget(messages []fantasy.Message, limit int) []fantasy.Message {
 	if limit <= 0 {
 		return messages
 	}
-	toOmit := countImages(messages) - limit
-	if toOmit <= 0 {
+	total := countImages(messages)
+	excess := total - limit
+	if excess <= 0 {
 		return messages
 	}
+	step := imageBudgetStep(limit)
+	toOmit := min(((excess+step-1)/step)*step, total)
 
 	out := make([]fantasy.Message, len(messages))
 	for i, msg := range messages {
@@ -54,6 +65,16 @@ func applyImageBudget(messages []fantasy.Message, limit int) []fantasy.Message {
 		out[i] = msg
 	}
 	return out
+}
+
+// imageBudgetStep is how many images the cut moves by for a limit. Keeping
+// the step small relative to the limit bounds how stale the kept window can
+// get while still leaving most steps cache-stable.
+func imageBudgetStep(limit int) int {
+	if step := limit / 5; step > 1 {
+		return step
+	}
+	return 1
 }
 
 // countImages counts the image parts in a prompt in chronological order.
