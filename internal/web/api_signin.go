@@ -2,9 +2,7 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -120,10 +118,6 @@ type keySignInResponse struct {
 // request. The key is read from the body only and is never echoed or
 // logged, including when the provider rejects it.
 func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
-	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "secret_in_url", "secrets are accepted in the request body only")
-		return
-	}
 	var body struct {
 		Provider string `json:"provider"`
 		APIKey   string `json:"api_key"`
@@ -132,8 +126,7 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 			Model string `json:"model"`
 		} `json:"model"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSecretBody)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json", "request body is not valid JSON")
+	if !decodeSecretJSON(w, r, &body) {
 		return
 	}
 
@@ -484,16 +477,11 @@ func (g *Gateway) handleOAuthCancel(w http.ResponseWriter, r *http.Request) {
 // flow. The code is read from the body only, is never echoed, and is never
 // logged, not even when the provider refuses it.
 func (g *Gateway) handleOAuthCode(w http.ResponseWriter, r *http.Request) {
-	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "secret_in_url", "secrets are accepted in the request body only")
-		return
-	}
 	var body struct {
 		FlowID string `json:"flow_id"`
 		Code   string `json:"code"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSecretBody)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "bad_json", "request body is not valid JSON")
+	if !decodeSecretJSON(w, r, &body) {
 		return
 	}
 	code := strings.TrimSpace(body.Code)

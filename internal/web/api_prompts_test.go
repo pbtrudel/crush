@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/sshaskpass"
+	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -286,4 +287,95 @@ func TestSnapshotDropsFailedAWSSSO(t *testing.T) {
 	require.Equal(t, frameSnapshot, snap.Type)
 	require.NotContains(t, string(snap.Payload), "aws_sso", "a failed refresh leaves no command in the snapshot")
 	require.NotContains(t, string(snap.Payload), "aws sso login --profile dev")
+}
+
+// refusedPrompts answers every resolver with false while the prompt it was
+// asked about is still open, the way a terminal that could not reach the
+// server does.
+type refusedPrompts struct{ *webtest.Fake }
+
+func (refusedPrompts) PinentryRespond(string, string) bool { return false }
+func (refusedPrompts) PinentryCancel(string) bool          { return false }
+func (refusedPrompts) SSHRespond(string, string) bool      { return false }
+func (refusedPrompts) SSHCancel(string) bool               { return false }
+
+// startRefusingPrompts runs a gateway whose prompt resolvers answer false.
+func startRefusingPrompts(t *testing.T) (*Gateway, *webtest.Fake) {
+	t.Helper()
+	f := webtest.NewFake()
+	g, err := Start(t.Context(), Options{Workspace: refusedPrompts{Fake: f}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	return g, f
+}
+
+// TestSecureAnswerRefusedForgetsThePrompt pins A3's ghost prompt: a false
+// resolver answer drops the entry and republishes, so no reload restores a
+// prompt nothing can answer.
+func TestSecureAnswerRefusedForgetsThePrompt(t *testing.T) {
+	t.Parallel()
+	g, f := startRefusingPrompts(t)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	f.AddPinentryPrompt(pinentryReq("p1"))
+	_ = nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/pinentry/answer", `{"id":"p1","secret":"x"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "not_pending")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
+	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
+	require.Empty(t, g.pending.securePrompts())
+	rsp, snap := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	rsp.Body.Close()
+	require.NotContains(t, string(snap), `"id":"p1"`, "a reload does not restore a ghost prompt")
+}
+
+// TestSecureCancelRefusedForgetsThePrompt is the cancel side of the same
+// ghost prompt.
+func TestSecureCancelRefusedForgetsThePrompt(t *testing.T) {
+	t.Parallel()
+	g, f := startRefusingPrompts(t)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	f.AddSSHPrompt(sshaskpass.PromptRequest{ID: "s6", Prompt: "git@github.com's password: "})
+	_ = nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/ssh/cancel", `{"id":"s6"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "not_pending")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
+	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
+	require.Empty(t, g.pending.securePrompts())
+	rsp, snap := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	rsp.Body.Close()
+	require.NotContains(t, string(snap), `"id":"s6"`, "a reload does not restore a ghost prompt")
+}
+
+// TestOversizeSecretBodyIsRefused pins the shared secret body decoder: a
+// body over the limit answers secret_too_long on every route that takes a
+// secret, rather than a JSON error.
+func TestOversizeSecretBodyIsRefused(t *testing.T) {
+	t.Parallel()
+	g, f := signInGateway(t)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	f.AddPinentryPrompt(pinentryReq("p1"))
+	_ = nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
+	huge := strings.Repeat("x", maxSecretBody)
+	for _, tc := range []struct{ path, body string }{
+		{"/api/pinentry/answer", `{"id":"p1","secret":"` + huge + `"}`},
+		{"/api/auth/provider/key", `{"provider":"anthropic","api_key":"` + huge + `"}`},
+		{"/api/auth/provider/oauth/code", `{"flow_id":"f","code":"` + huge + `"}`},
+	} {
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+tc.path, tc.body)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusBadRequest, rsp.StatusCode, tc.path)
+		require.Contains(t, string(body), "secret_too_long", tc.path)
+	}
+	require.Empty(t, f.LastSecret(), "no oversize body reaches a resolver")
 }

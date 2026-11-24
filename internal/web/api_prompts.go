@@ -2,6 +2,8 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -12,6 +14,30 @@ const (
 	maxSecretBody  = 8 << 10
 	maxSecretBytes = 4096
 )
+
+// decodeSecretJSON reads a bounded JSON body that carries a secret. A query
+// string is refused before the body is read, so a secret never travels in a
+// URL, and a body over the limit answers secret_too_long rather than a JSON
+// error. An empty body is accepted; a handler that needs a value refuses it
+// on its own.
+func decodeSecretJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "secret_in_url", "secrets are accepted in the request body only")
+		return false
+	}
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSecretBody)).Decode(v)
+	var tooLong *http.MaxBytesError
+	switch {
+	case err == nil, errors.Is(err, io.EOF):
+		return true
+	case errors.As(err, &tooLong):
+		writeError(w, http.StatusBadRequest, "secret_too_long", "the request body is too long")
+		return false
+	default:
+		writeError(w, http.StatusBadRequest, "bad_json", "request body is not valid JSON")
+		return false
+	}
+}
 
 func (g *Gateway) registerPromptRoutes(api *http.ServeMux) {
 	g.route(api, "POST /api/pinentry/answer", g.handleSecureAnswer(sourcePinentry))
@@ -24,16 +50,11 @@ func (g *Gateway) registerPromptRoutes(api *http.ServeMux) {
 // read from the body only, is never logged, and no answer echoes it.
 func (g *Gateway) handleSecureAnswer(source string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.RawQuery != "" {
-			writeError(w, http.StatusBadRequest, "secret_in_url", "secrets are accepted in the request body only")
-			return
-		}
 		var body struct {
 			ID     string  `json:"id"`
 			Secret *string `json:"secret"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSecretBody)).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_json", "request body is not valid JSON")
+		if !decodeSecretJSON(w, r, &body) {
 			return
 		}
 		if body.Secret != nil && len(*body.Secret) > maxSecretBytes {
@@ -66,6 +87,12 @@ func (g *Gateway) handleSecureAnswer(source string) http.HandlerFunc {
 			resolved = g.ws.SSHRespond(p.ID, secret)
 		}
 		if !resolved {
+			// The resolver refused, so nothing can answer this prompt any
+			// more. Forgetting it keeps a reload from restoring a dialog
+			// that only answers 409.
+			if g.pending.forgetSecure(source, p.ID) {
+				g.publishSecurePrompts()
+			}
 			writeError(w, http.StatusConflict, "not_pending", "The prompt was already answered or has expired.")
 			return
 		}
@@ -105,6 +132,11 @@ func (g *Gateway) handleSecureCancel(source string) http.HandlerFunc {
 			cancelled = g.ws.SSHCancel(p.ID)
 		}
 		if !cancelled {
+			// As for a refused answer, a refused cancel drops the entry so
+			// a reload does not restore a ghost prompt.
+			if g.pending.forgetSecure(source, p.ID) {
+				g.publishSecurePrompts()
+			}
 			writeError(w, http.StatusConflict, "not_pending", "The prompt was already answered or has expired.")
 			return
 		}

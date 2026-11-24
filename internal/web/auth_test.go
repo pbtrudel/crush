@@ -266,6 +266,14 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"POST /api/plan/handoff",
 		"GET /api/auth/providers",
 		"POST /api/auth/provider/key",
+		"POST /api/auth/provider/oauth/start",
+		"GET /api/auth/provider/oauth/status",
+		"POST /api/auth/provider/oauth/cancel",
+		"POST /api/auth/provider/oauth/code",
+		"POST /api/pinentry/answer",
+		"POST /api/pinentry/cancel",
+		"POST /api/ssh/answer",
+		"POST /api/ssh/cancel",
 	} {
 		require.Contains(t, g.apiRoutes, want)
 	}
