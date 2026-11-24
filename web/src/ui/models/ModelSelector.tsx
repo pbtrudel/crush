@@ -266,6 +266,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
         {!s.agentReady && (
           <div class="models__status" role="status" data-tone="starting">
             <span>{STARTING_TEXT}</span>
+            {/* The action line below is hidden while the agent starts, so the
+                refused pick's Retry lives on this line instead. */}
+            {retryChoice !== null && (
+              <button type="button" class="link-button" onClick={() => void choose(retryChoice)}>Retry</button>
+            )}
           </div>
         )}
         <fieldset class="models__fieldset">

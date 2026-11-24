@@ -550,6 +550,30 @@ describe('the model selector', () => {
     expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe('Crush is busy. Try again when the turn ends.');
   });
 
+  it('retries the refused pick from the top starting line', async () => {
+    seed({}, { agentReady: false });
+    stubProviders();
+    const select = vi.spyOn(api, 'selectModel')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockResolvedValueOnce(state.value.model);
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    const status = dialog()!.querySelector('[role="status"]')!;
+    expect(status.textContent).toContain('Crush is starting the agent. Try again in a moment.');
+    const retry = Array.from(status.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    expect(retry).not.toBeUndefined();
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenLastCalledWith('main', 'p1', 'm2');
+    expect(modelsOpen.value).toBe(false);
+  });
+
   it('retries the refused choice once the agent starts', async () => {
     seed();
     stubProviders();
