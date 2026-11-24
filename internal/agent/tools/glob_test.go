@@ -105,3 +105,24 @@ func TestGlobToolExpandsHomeDirectory(t *testing.T) {
 	require.False(t, resp.IsError)
 	require.Contains(t, resp.Content, "tilde-glob.txt")
 }
+
+// A root that does not exist is not a failure: the honest answer is that no
+// files matched.
+func TestGlobMissingRootIsNoFiles(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "nope")
+	tool := NewGlobTool(t.TempDir(), config.ToolGlob{})
+	input, err := json.Marshal(GlobParams{Pattern: "*.go", Path: missing})
+	require.NoError(t, err)
+
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  GlobToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "No files found")
+	require.Contains(t, resp.Content, "does not exist")
+}

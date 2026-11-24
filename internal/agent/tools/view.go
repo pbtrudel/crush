@@ -2,11 +2,13 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
 	"fmt"
 	"html/template"
+	"image"
 	"io"
 	"io/fs"
 	"net/http"
@@ -282,6 +284,16 @@ func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, c
 				}
 			}
 
+			if nearest, entries := nearestExistingFolder(dir, v.workingDir); nearest != "" {
+				contents := "which is empty"
+				if len(entries) > 0 {
+					contents = "which contains: " + strings.Join(entries, ", ")
+				}
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"File not found: %s. The nearest existing folder is %s, %s",
+					filePath, nearest, contents)), nil
+			}
+
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
 		}
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to access file: %s", err)), nil
@@ -303,17 +315,41 @@ func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, c
 
 	isSupportedImage, mimeType := getImageMimeType(filePath)
 	if isSupportedImage {
-		if fileInfo.Size() > MaxViewSize {
+		// Refuse by size before reading: a huge file costs a slow read and a
+		// decoder allocation to learn what stat already says.
+		if fileInfo.Size() > maxImageFileSize {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
-				fileInfo.Size(), MaxViewSize)), nil
-		}
-		if !GetSupportsImagesFromContext(ctx) {
-			return UnsupportedMediaResponse(GetModelNameFromContext(ctx)), nil
+				fileInfo.Size(), maxImageFileSize)), nil
 		}
 
 		imageData, readErr := os.ReadFile(filePath)
 		if readErr != nil {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to read image file: %s", readErr)), nil
+		}
+
+		var shrinkNote string
+		if len(imageData) > MaxViewSize {
+			fitted, fittedType, fitErr := fitImage(imageData, MaxViewSize)
+			if fitErr != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"Image file is too large (%d bytes). Maximum size is %d bytes (it could not be shrunk: %s)",
+					len(imageData), MaxViewSize, fitErr)), nil
+			}
+			original, _, decodeErr := image.DecodeConfig(bytes.NewReader(imageData))
+			if decodeErr == nil {
+				var shrunk image.Config
+				shrunk, _, decodeErr = image.DecodeConfig(bytes.NewReader(fitted))
+				if decodeErr == nil {
+					shrinkNote = fmt.Sprintf("Image shrunk from %dx%d to %dx%d to fit the size limit.\n\n",
+						original.Width, original.Height, shrunk.Width, shrunk.Height)
+				}
+			}
+			imageData = fitted
+			mimeType = fittedType
+		}
+
+		if !GetSupportsImagesFromContext(ctx) {
+			return UnsupportedMediaResponse(GetModelNameFromContext(ctx)), nil
 		}
 
 		// Some tools save files with a mismatched extension
@@ -324,7 +360,9 @@ func (v viewReader) readFileAuthorized(ctx context.Context, params ViewParams, c
 		// it identifies a supported image format.
 		mimeType = sniffImageMimeType(imageData, mimeType)
 
-		return fantasy.NewImageResponse(imageData, mimeType), nil
+		resp := fantasy.NewImageResponse(imageData, mimeType)
+		resp.Content = shrinkNote
+		return resp, nil
 	}
 
 	// Read the file content
@@ -741,4 +779,36 @@ func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.T
 		fantasy.NewTextResponse(output),
 		meta,
 	), nil
+}
+
+// nearestExistingFolder walks up from path until it finds a folder that
+// exists, and returns it with up to ten of its entries. It only walks inside
+// workingDir: a read granted for one file outside it is not a grant to list
+// the folders above that file. It returns an empty path when no folder
+// inside workingDir exists.
+func nearestExistingFolder(path, workingDir string) (string, []string) {
+	for dir := path; ; dir = filepath.Dir(dir) {
+		if !insideDir(workingDir, dir) {
+			return "", nil
+		}
+		entries, err := os.ReadDir(dir)
+		if err == nil {
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				name := entry.Name()
+				if entry.IsDir() {
+					name += "/"
+				}
+				names = append(names, name)
+				if len(names) == 10 {
+					break
+				}
+			}
+			return dir, names
+		}
+		if parent := filepath.Dir(dir); parent != dir {
+			continue
+		}
+		return "", nil
+	}
 }

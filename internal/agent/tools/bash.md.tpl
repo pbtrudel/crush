@@ -16,7 +16,7 @@ Common shell builtins and core utils available on Windows.
 </execution_steps>
 
 <usage_notes>
-- Command required, working_dir optional (defaults to current directory)
+- command is required; description (a label under 30 characters) is recommended; working_dir is optional
 - IMPORTANT: Use Grep/Glob/Agent tools instead of 'find'/'grep'. Use View/LS tools instead of 'cat'/'head'/'tail'/'ls'
 - Chain with ';' or '&&', avoid newlines except in quoted strings
 - Each command runs in independent shell (no state persistence between calls)

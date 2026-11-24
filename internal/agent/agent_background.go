@@ -65,6 +65,8 @@ func (c *coordinator) runSubAgentMaybeBackground(
 	label := c.names.name(backgroundLabel(toolName, params.ToolCallID))
 	childSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
 	entry := newDispatchedAgent(label, access, childSessionID, params.SessionID, params.Agent)
+	// The entry outlives this call, so it owns the cleanup a reopen needs.
+	entry.setCleanup(params.Cleanup)
 
 	// The background goroutine rolls the child's cost up itself, as a
 	// dispatched subagent does, so the synchronous rollup is turned off.

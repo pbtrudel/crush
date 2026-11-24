@@ -39,8 +39,9 @@ var readOnlyTools = map[string]struct{}{
 // like any other, and OnToolInputStart carries no ProviderExecuted flag, so
 // such a call counts as a name outside the read set and keeps the whole step
 // sequential. And the gate trusts the announced name to be the dispatched
-// one, which holds because Crush wires no RepairToolCall: fantasy then falls
-// back to its own jsonrepair pass, which keeps the name.
+// one. Crush now wires a RepairToolCall, but a repair only ever maps an alias
+// onto a tool outside the read set, and the announced alias is itself outside
+// the read set, so a step holding a repaired call already stays sequential.
 type readGate struct {
 	mu     sync.Mutex
 	names  []string

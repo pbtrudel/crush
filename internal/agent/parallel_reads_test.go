@@ -329,3 +329,14 @@ func (t *barrierTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolRespon
 func (t *barrierTool) ProviderOptions() fantasy.ProviderOptions { return nil }
 
 func (t *barrierTool) SetProviderOptions(fantasy.ProviderOptions) {}
+
+// TestToolNameAliasesStayOutsideTheReadSet pins that no alias target is a
+// read tool: the gate never sees an aliased call, so a repaired name would
+// otherwise reach a read tool the gate judged sequential.
+func TestToolNameAliasesStayOutsideTheReadSet(t *testing.T) {
+	t.Parallel()
+
+	for alias, target := range toolNameAliases {
+		require.NotContains(t, readOnlyTools, target, "alias %q points at a read tool", alias)
+	}
+}

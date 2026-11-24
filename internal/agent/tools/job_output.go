@@ -19,7 +19,7 @@ var jobOutputDescription string
 
 type JobOutputParams struct {
 	ShellID string `json:"shell_id" description:"The ID of the background shell to retrieve output from"`
-	Wait    bool   `json:"wait" description:"If true, block until the background shell completes before returning output"`
+	Wait    bool   `json:"wait,omitempty" description:"If true, block until the background shell completes before returning output"`
 }
 
 type JobOutputResponseMetadata struct {

@@ -158,3 +158,17 @@ func TestFormatAnswers_AttachesMetadata(t *testing.T) {
 	require.Equal(t, questions, meta.Questions)
 	require.Equal(t, answers, meta.Answers)
 }
+
+// A string-encoded questions array sometimes carries a trailing comma, which
+// plain JSON rejects. Trimming it saves a failed call and a retry.
+func TestQuestionParamsUnmarshalJSON_TrailingComma(t *testing.T) {
+	t.Parallel()
+
+	inner := `[{"type":"yes_no","question":"OK?","description":"test"},]`
+	encoded, _ := json.Marshal(inner)
+	input := `{"questions": ` + string(encoded) + `}`
+	var p QuestionParams
+	require.NoError(t, json.Unmarshal([]byte(input), &p))
+	require.Len(t, p.Questions, 1)
+	require.Equal(t, "OK?", p.Questions[0].Question)
+}

@@ -67,9 +67,52 @@ var ddgAnomalyMarkers = []string{
 // local httptest server.
 var ddgLiteEndpoint = "https://lite.duckduckgo.com/lite/?q="
 
+// searchBlockedFor is how long one detected block suppresses further
+// searches. DuckDuckGo throttles per machine, so retrying sooner only spends
+// a tool call to learn the same thing.
+var searchBlockedFor = 15 * time.Minute
+
+// searchNow is the clock the block is measured against, as a test hook.
+var searchNow = time.Now
+
+// The block is process-wide because DuckDuckGo throttles the machine, not
+// one session: a fresh fetch subagent would otherwise walk into it again.
+var (
+	searchBlockMu    sync.Mutex
+	searchBlockedTil time.Time
+)
+
+// SearchBlocked reports whether a detected DuckDuckGo block is still in
+// force. Callers use it to leave the search tool out of a palette that
+// cannot use it.
+func SearchBlocked() bool {
+	searchBlockMu.Lock()
+	defer searchBlockMu.Unlock()
+	return searchNow().Before(searchBlockedTil)
+}
+
+// markSearchBlocked starts the blocked period.
+func markSearchBlocked() {
+	searchBlockMu.Lock()
+	defer searchBlockMu.Unlock()
+	searchBlockedTil = searchNow().Add(searchBlockedFor)
+}
+
+// resetSearchBlock clears the block, for tests that share package state.
+func resetSearchBlock() {
+	searchBlockMu.Lock()
+	defer searchBlockMu.Unlock()
+	searchBlockedTil = time.Time{}
+}
+
 func searchDuckDuckGo(ctx context.Context, client *http.Client, query string, maxResults int) ([]SearchResult, error) {
 	if maxResults <= 0 {
 		maxResults = 10
+	}
+
+	// One block covers every caller until it expires.
+	if SearchBlocked() {
+		return nil, errSearchRateLimited
 	}
 
 	searchURL := ddgLiteEndpoint + url.QueryEscape(query)
@@ -91,6 +134,7 @@ func searchDuckDuckGo(ctx context.Context, client *http.Client, query string, ma
 	// result page; report throttling rather than parsing it into an
 	// empty result set.
 	if resp.StatusCode == http.StatusAccepted {
+		markSearchBlocked()
 		return nil, errSearchRateLimited
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -105,6 +149,7 @@ func searchDuckDuckGo(ctx context.Context, client *http.Client, query string, ma
 	content := string(body)
 	for _, marker := range ddgAnomalyMarkers {
 		if strings.Contains(content, marker) {
+			markSearchBlocked()
 			return nil, errSearchRateLimited
 		}
 	}
