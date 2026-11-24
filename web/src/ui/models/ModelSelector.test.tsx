@@ -346,8 +346,8 @@ describe('the model selector', () => {
     const fieldset = dialog()!.querySelector<HTMLFieldSetElement>('fieldset.models__reasoning')!;
     expect(reasoning).toHaveBeenCalledWith({ effort: 'low' });
     // A disabled fieldset takes the focus with it, so it stays enabled.
-    expect(fieldset.disabled).toBe(false);
-    expect(low.disabled).toBe(false);
+    expect(fieldset.matches(':disabled')).toBe(false);
+    expect(low.matches(':disabled')).toBe(false);
     expect(fieldset.getAttribute('aria-busy')).toBe('true');
     expect(fieldset.classList.contains('models__reasoning--busy')).toBe(true);
     expect(document.activeElement).toBe(low);
@@ -374,7 +374,7 @@ describe('the model selector', () => {
     await flush();
 
     expect(reasoning).toHaveBeenCalledWith({ think: true });
-    expect(control.disabled).toBe(false);
+    expect(control.matches(':disabled')).toBe(false);
     expect(document.activeElement).toBe(control);
 
     await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
@@ -397,7 +397,7 @@ describe('the model selector', () => {
     await flush();
 
     const fieldset = dialog()!.querySelector<HTMLFieldSetElement>('fieldset.models__reasoning')!;
-    expect(fieldset.disabled).toBe(false);
+    expect(fieldset.matches(':disabled')).toBe(false);
     const medium = radio('model-effort', 'medium');
     await act(() => { medium.click(); });
     await flush();
@@ -529,6 +529,25 @@ describe('the model selector', () => {
     expect(status.textContent).toContain('Crush is starting the agent. Try again in a moment.');
     expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
     expect(modelsOpen.value).toBe(true);
+  });
+
+  it('marks the list busy while a select is in flight', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    vi.spyOn(api, 'selectModel').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+    const list = dialog()!.querySelector<HTMLElement>('[role="listbox"]')!;
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+    expect(list.getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => { answer.reject(new ApiError(409, 'agent_busy', 'Crush is busy right now')); await Promise.resolve(); });
+    await flush();
+    expect(list.getAttribute('aria-busy')).toBeNull();
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe('Crush is busy. Try again when the turn ends.');
   });
 
   it('retries the refused choice once the agent starts', async () => {

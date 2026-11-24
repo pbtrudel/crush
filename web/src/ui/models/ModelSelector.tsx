@@ -48,6 +48,9 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   const [reasoningBusy, setReasoningBusy] = useState(false);
   // The choice a starting agent refused, so its Retry can pick it again.
   const [retryChoice, setRetryChoice] = useState<ModelChoice | null>(null);
+  // The list is busy while the pick is in flight, so a screen reader hears
+  // that the answer has not landed yet.
+  const [selectingBusy, setSelectingBusy] = useState(false);
   const dialog = useRef<HTMLDivElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
@@ -173,6 +176,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
       return;
     }
     selecting.current = true;
+    setSelectingBusy(true);
     try {
       await api.selectModel(type, c.provider, c.id);
     } catch (err) {
@@ -182,6 +186,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
       return;
     } finally {
       selecting.current = false;
+      setSelectingBusy(false);
     }
     if (!alive.current) return;
     closeModels();
@@ -301,7 +306,12 @@ function ModelsDialog({ inert }: { inert: boolean }) {
             focusOption(currentIndex);
           }}
         />
-        <div class="models__list" role="listbox" aria-label="Model choices">
+        <div
+          class="models__list"
+          role="listbox"
+          aria-label="Model choices"
+          aria-busy={selectingBusy ? 'true' : undefined}
+        >
           {groups.map((group) => {
             // A listbox may own only options and groups: the group carries
             // the provider name and the visible heading is decorative.
