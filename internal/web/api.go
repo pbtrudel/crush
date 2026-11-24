@@ -63,10 +63,10 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 }
 
 // route registers an API handler and records its pattern for the auth
-// test. Every cookie-guarded /api route registers through here, the login
+// test. Every token-guarded /api route registers through here, the login
 // route excepted: a direct api.HandleFunc would skip the registry, and
 // with it the test that proves the route refuses a request without the
-// cookie.
+// token.
 func (g *Gateway) route(api *http.ServeMux, pattern string, h http.HandlerFunc) {
 	api.HandleFunc(pattern, h)
 	g.apiRoutes = append(g.apiRoutes, pattern)

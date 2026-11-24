@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectStream, type StreamEnv } from './stream';
+import { forgetToken, setToken } from '../state/token';
 
 class FakeSocket {
   static last: FakeSocket;
   onopen?: () => void; onmessage?: (e: { data: string }) => void; onclose?: (e: { code: number }) => void;
   sent: string[] = [];
   closed = false;
-  constructor(public url: string) { FakeSocket.last = this; }
+  constructor(public url: string, public protocols: string[]) { FakeSocket.last = this; }
   send(d: string) { this.sent.push(d); }
   close() { this.closed = true; }
 }
@@ -42,7 +43,24 @@ function queued(over: Partial<StreamEnv> = {}) {
 }
 
 describe('connectStream', () => {
-  beforeEach(() => { FakeSocket.last = undefined as unknown as FakeSocket; });
+  beforeEach(() => {
+    FakeSocket.last = undefined as unknown as FakeSocket;
+    forgetToken();
+  });
+  afterEach(() => forgetToken());
+
+  it('offers the stream protocol with the token for this tab', async () => {
+    setToken('t1');
+    connectStream({ onFrames: () => {}, onConn: () => {}, lastSeq: () => 0 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    expect(FakeSocket.last.protocols).toEqual(['crush.v1', 'crush.auth.t1']);
+  });
+
+  it('offers only the stream protocol without a token', async () => {
+    connectStream({ onFrames: () => {}, onConn: () => {}, lastSeq: () => 0 }, env());
+    await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+    expect(FakeSocket.last.protocols).toEqual(['crush.v1']);
+  });
 
   it('batches frames, reconnects with since, and ends after closing', async () => {
     const frames: number[] = [];

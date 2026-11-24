@@ -7,8 +7,7 @@ import { STARTING_TEXT } from './failure';
 import { adoptSession, initialState } from './reducer';
 import { actions, boot, dismissSideAnswer, dispatch, handleFrames, sideAnswer, state, watchVisibility } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
-
-vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
+import { forgetToken, setToken, token } from './token';
 
 const fx = fixtures as unknown as Record<string, Frame>;
 
@@ -34,6 +33,8 @@ function seed() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  forgetToken();
 });
 
 describe('actions.cancelQuestion', () => {
@@ -441,7 +442,29 @@ describe('M2 actions', () => {
   });
 });
 
+// FakeSocket stands in for the browser socket while boot opens the real
+// stream over a stubbed fetch.
+class FakeSocket {
+  static last: FakeSocket | undefined;
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onclose: ((e: { code: number }) => void) | null = null;
+  constructor(public url: string, public protocols: string[]) { FakeSocket.last = this; }
+  send() {}
+  close() {}
+}
+
+// stubHealth answers api.health through the real fetch path.
+function stubHealth(status: number) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })));
+}
+
 describe('stream and boot hardening', () => {
+  beforeEach(() => {
+    state.value = initialState();
+    FakeSocket.last = undefined;
+  });
+
   it('reloads a followed session as a baseline, not as new activity', async () => {
     seed();
     telemetry.value = emptyTelemetry();
@@ -454,6 +477,8 @@ describe('stream and boot hardening', () => {
   });
 
   it('keeps the query string when it scrubs the token', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    stubHealth(200);
     history.replaceState(null, '', '/?debug=1#t=abc');
     vi.spyOn(api, 'auth').mockResolvedValue(undefined);
     const replace = vi.spyOn(history, 'replaceState');
@@ -463,6 +488,45 @@ describe('stream and boot hardening', () => {
     } finally {
       history.replaceState(null, '', '/');
     }
+  });
+
+  it('stores the fragment token after the gateway accepts it', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    stubHealth(200);
+    history.replaceState(null, '', '/#t=good');
+    vi.spyOn(api, 'auth').mockResolvedValue(undefined);
+    try {
+      await boot();
+      expect(token()).toBe('good');
+      expect(location.hash).toBe('');
+      await vi.waitFor(() => expect(FakeSocket.last).toBeDefined());
+      expect(FakeSocket.last!.protocols).toEqual(['crush.v1', 'crush.auth.good']);
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  it('drops a fragment token the gateway refuses', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    stubHealth(200);
+    history.replaceState(null, '', '/#t=bad');
+    vi.spyOn(api, 'auth').mockRejectedValue(new ApiError(401, 'unauthorized', 'invalid token'));
+    try {
+      await boot();
+      expect(token()).toBeNull();
+      expect(location.hash).toBe('');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  it('forgets a stored token from an earlier run', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    stubHealth(401);
+    setToken('old');
+    await boot();
+    await vi.waitFor(() => expect(state.value.conn).toBe('unauthorized'));
+    expect(token()).toBeNull();
   });
 });
 

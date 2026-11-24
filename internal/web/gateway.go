@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -61,18 +60,17 @@ type Options struct {
 
 // Gateway is a running web mode server bound to the loopback interface.
 type Gateway struct {
-	ws         workspace.Workspace
-	secret     string
-	port       int
-	cookieName string
-	ln         net.Listener
-	srv        *http.Server
-	ctx        context.Context
-	cancel     context.CancelFunc
-	done       chan struct{}
-	hub        *hub
-	pending    *pending
-	idle       time.Duration
+	ws      workspace.Workspace
+	secret  string
+	port    int
+	ln      net.Listener
+	srv     *http.Server
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	hub     *hub
+	pending *pending
+	idle    time.Duration
 	// team rereads the Agent Team files; teamDone closes when its
 	// watcher settles on shutdown.
 	team     *teamWatcher
@@ -86,10 +84,10 @@ type Gateway struct {
 	// diffs bounds the diff work every tab shares, so three tabs
 	// refreshing at once queue instead of stacking up.
 	diffs *diffSlots
-	// apiRoutes lists every cookie-guarded /api pattern, method included,
+	// apiRoutes lists every token-guarded /api pattern, method included,
 	// in registration order. The auth test walks it so a route cannot
-	// ship without being covered by the cookie check. The login route is
-	// not here: it has to answer without a cookie.
+	// ship without being covered by the token check. The login route is
+	// not here: it has to answer without a token.
 	apiRoutes []string
 	// loadCommandsFn is Options.LoadCommands; nil falls back to reading
 	// the workspace config.
@@ -150,25 +148,24 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	slots := newDiffSlots(maxConcurrentDiffs)
 	g := &Gateway{
-		ws:         opts.Workspace,
-		secret:     secret,
-		port:       port,
-		cookieName: cookieNamePrefix + strconv.Itoa(port),
-		ln:         ln,
-		ctx:        gctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		hub:        newHub(),
-		pending:    newPending(),
-		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
-		team:       newTeamWatcher(teamDir(opts)),
-		teamDone:   make(chan struct{}),
-		modelDone:  make(chan struct{}),
-		fileStats:  newFileStatCache(slots),
-		diffs:      slots,
-		shells:     make(map[string]context.CancelFunc),
-		auths:      make(map[string]context.CancelFunc),
-		authPoll:   opts.mcpAuthPoll,
+		ws:        opts.Workspace,
+		secret:    secret,
+		port:      port,
+		ln:        ln,
+		ctx:       gctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		hub:       newHub(),
+		pending:   newPending(),
+		idle:      cmp.Or(opts.idleTimeout, idleTimeout),
+		team:      newTeamWatcher(teamDir(opts)),
+		teamDone:  make(chan struct{}),
+		modelDone: make(chan struct{}),
+		fileStats: newFileStatCache(slots),
+		diffs:     slots,
+		shells:    make(map[string]context.CancelFunc),
+		auths:     make(map[string]context.CancelFunc),
+		authPoll:  opts.mcpAuthPoll,
 
 		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
@@ -209,7 +206,7 @@ func (g *Gateway) routes(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	g.registerAPI(api)
-	// The login route must work without the cookie, so it bypasses
+	// The login route must work without a token, so it bypasses
 	// requireAuth and the registry g.route fills.
 	mux.HandleFunc("POST /api/auth", g.handleAuth)
 	mux.Handle("/api/", g.requireAuth(api))

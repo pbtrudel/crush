@@ -140,6 +140,7 @@ test('a tab without the token is not linked', async ({ browser, gateway }) => {
   const page = await ctx.newPage();
   await page.goto(gateway.origin + '/');
   await expect(page.getByRole('heading', { name: /not linked/ })).toBeVisible();
+  await expect(page.getByText(/Each new tab needs its own link/)).toBeVisible();
   await ctx.close();
 });
 

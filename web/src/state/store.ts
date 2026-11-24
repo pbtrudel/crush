@@ -11,6 +11,7 @@ import {
   type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
+import { forgetToken, setToken } from './token';
 import { describeFailure, type Failure } from './failure';
 import { observe, telemetry } from './telemetry';
 
@@ -160,12 +161,17 @@ export function watchVisibility(): () => void {
 }
 
 export async function boot() {
-  // The token travels in the fragment so it never reaches server logs. It
-  // is exchanged for an HttpOnly cookie and scrubbed from the address bar;
-  // it is never logged.
-  const token = new URLSearchParams(location.hash.slice(1)).get('t');
-  if (token) {
-    await api.auth(token).catch(() => undefined);
+  // The token travels in the fragment so it never reaches server logs.
+  // It is checked, kept for this tab only and scrubbed from the address
+  // bar; it is never logged.
+  const fragment = new URLSearchParams(location.hash.slice(1)).get('t');
+  if (fragment) {
+    try {
+      await api.auth(fragment);
+      setToken(fragment);
+    } catch {
+      forgetToken();
+    }
     history.replaceState(null, '', location.pathname + location.search);
   }
   watchVisibility();

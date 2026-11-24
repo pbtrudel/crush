@@ -1,6 +1,7 @@
 import type { Frame } from './types';
 import type { Conn } from '../state/reducer';
 import { api } from './http';
+import { token } from '../state/token';
 
 export interface StreamHandlers {
   onFrames(frames: Frame[]): void;
@@ -18,12 +19,20 @@ type SocketLike = {
 
 export interface StreamEnv {
   url(since: number): string;
-  WebSocket: new (url: string) => SocketLike;
+  WebSocket: new (url: string, protocols: string[]) => SocketLike;
   health(): Promise<'ok' | 'unauthorized' | 'down'>;
   schedule(fn: () => void): void;
   setTimeout(fn: () => void, ms: number): unknown;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(id: unknown): void;
+}
+
+// streamProtocols offers the stream protocol, plus the token in a
+// subprotocol entry: a browser cannot set an Authorization header on a
+// WebSocket upgrade.
+export function streamProtocols(): string[] {
+  const t = token();
+  return t ? ['crush.v1', 'crush.auth.' + t] : ['crush.v1'];
 }
 
 const PING_MS = 15_000;
@@ -103,7 +112,7 @@ export function connectStream(h: StreamHandlers, env: StreamEnv = browserEnv()):
     down = 0;
     const since = resync ? 0 : h.lastSeq();
     resync = false;
-    const sock = new env.WebSocket(env.url(since));
+    const sock = new env.WebSocket(env.url(since), streamProtocols());
     ws = sock;
     // A socket that receives data earns a fast retry if it then drops. A
     // socket that opens and closes without a frame keeps backing off, so the

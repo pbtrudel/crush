@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from './http';
+import { forgetToken, setToken, token } from '../state/token';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  forgetToken();
+});
 
 // stub answers every fetch with one JSON body, or an empty response for a
 // status that carries none.
@@ -12,7 +16,44 @@ function stub(status = 200, body: unknown = {}) {
   return fetch;
 }
 
+describe('the bearer token', () => {
+  it('is sent on every call', async () => {
+    setToken('t1');
+    const fetch = stub(200, []);
+    await api.sessions();
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(init.credentials).toBe('omit');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer t1' });
+  });
+
+  it('is forgotten when the gateway refuses it', async () => {
+    setToken('t1');
+    stub(401, { error: 'missing or invalid token', code: 'unauthorized' });
+    await expect(api.sessions()).rejects.toMatchObject({ status: 401 });
+    expect(token()).toBeNull();
+  });
+
+  it('is not sent when none is set', async () => {
+    const fetch = stub(200, []);
+    await api.sessions();
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).not.toHaveProperty('Authorization');
+  });
+});
+
 describe('api.health', () => {
+  it('sends the token and forgets one the gateway refuses', async () => {
+    setToken('t1');
+    const fetch = stub(200, {});
+    await expect(api.health()).resolves.toBe('ok');
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer t1' });
+
+    stub(401, {});
+    await expect(api.health()).resolves.toBe('unauthorized');
+    expect(token()).toBeNull();
+  });
+
   it('maps 401 to unauthorized, other failures to down', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
     await expect(api.health()).resolves.toBe('unauthorized');
