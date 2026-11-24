@@ -255,7 +255,7 @@ describe('the command palette', () => {
     await type('compact');
     await enter();
 
-    const status = dialog()!.querySelector('[role="status"]')!;
+    const status = dialog()!.querySelector('.palette__status')!;
     expect(status.textContent).toContain('Crush is starting the agent. Try again in a moment.');
     expect(status.getAttribute('data-tone')).toBe('starting');
     expect(paletteOpen.value).toBe('all');
@@ -378,14 +378,14 @@ describe('the command palette', () => {
     await openWithKey();
 
     expect(dialog()!.textContent).toContain('New session');
-    const status = dialog()!.querySelector('[role="status"]')!;
+    const status = dialog()!.querySelector('.palette__status')!;
     expect(status.textContent).toContain('Crush is starting the agent. Try again in a moment.');
     const retry = [...dialog()!.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!;
     await act(() => { retry.click(); });
     await flush();
 
     expect(dialog()!.textContent).toContain('Fix the lexer');
-    expect(dialog()!.querySelector('[role="status"]')).toBeNull();
+    expect(dialog()!.querySelector('.palette__status')).toBeNull();
   });
 
   it('picks a model through the provider choices', async () => {
@@ -773,7 +773,8 @@ describe('the command palette', () => {
     await enter();
 
     expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
-    expect(dialog()!.querySelector('[role="status"]')).toBeNull();
+    expect(dialog()!.querySelector('.palette__status')).toBeNull();
+    expect(dialog()!.querySelector('.palette__empty')!.textContent).toBe('');
   });
 
   it('ignores a held Ctrl+K', async () => {
@@ -802,6 +803,19 @@ describe('the command palette', () => {
 
     expect(dialog()!.textContent).toContain('No matches');
     expect(combobox()!.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('keeps an empty status mounted before any query', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    const status = dialog()!.querySelector('.palette__empty')!;
+    expect(status).not.toBeNull();
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toBe('');
+    expect(dialog()!.querySelector('[role="listbox"]')!.contains(status)).toBe(false);
   });
 
   it('keeps an empty answer out of the listbox and lets the dialog take focus', async () => {

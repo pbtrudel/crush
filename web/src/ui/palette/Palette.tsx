@@ -364,10 +364,12 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
               ))}
             </ul>
             {/* The empty answer is not an option, so it lives outside the
-                listbox and is announced politely. */}
-            {visible.length === 0 && (
-              <p class="palette__empty" role="status">No matches</p>
-            )}
+                listbox and is announced politely. It stays mounted so the
+                text lands in a region that was already there. */}
+            <p
+              class={visible.length === 0 ? 'palette__empty' : 'palette__empty visually-hidden'}
+              role="status"
+            >{visible.length === 0 ? 'No matches' : null}</p>
           </Fragment>
         )}
         {shown && (
