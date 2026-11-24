@@ -212,15 +212,18 @@ func (g *Gateway) startShell(id, sessionID, command string, isFirst bool) bool {
 	ctx, cancel := context.WithCancel(g.ctx)
 	g.shells[id] = cancel
 	g.shellWG.Add(1)
-	go g.runShell(ctx, id, sessionID, command, isFirst)
+	go g.runShell(ctx, cancel, id, sessionID, command, isFirst)
 	return true
 }
 
 // runShell streams one shell command's output as coalesced frames and
 // publishes the final frame after the last flush. The workspace persists
 // the output itself, so the gateway persists nothing.
-func (g *Gateway) runShell(ctx context.Context, id, sessionID, command string, isFirst bool) {
+func (g *Gateway) runShell(ctx context.Context, cancel context.CancelFunc, id, sessionID, command string, isFirst bool) {
 	defer g.shellWG.Done()
+	// The run owns its cancel func, so a command that finishes on its own
+	// releases the context instead of leaving it for the gateway's exit.
+	defer cancel()
 	defer func() {
 		g.shellMu.Lock()
 		delete(g.shells, id)

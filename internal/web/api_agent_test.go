@@ -207,6 +207,37 @@ func TestShellStreamsAndFinishes(t *testing.T) {
 	require.Empty(t, done.Error)
 }
 
+// TestShellCancelReleasedOnFinish pins that a shell run which finishes on
+// its own releases its cancel func: the context is done and the run is no
+// longer tracked, so a long session of commands does not leak one context
+// each.
+func TestShellCancelReleasedOnFinish(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	runCtx := make(chan context.Context, 1)
+	fake.OnShell = func(ctx context.Context, _, _ string, _ func(string), _ bool) (proto.ShellCommandResponse, error) {
+		runCtx <- ctx
+		return proto.ShellCommandResponse{ExitCode: 0}, nil
+	}
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+	runID := startShell(t, authedClient(t, g), g, "true")
+	_, done := readShellOutput(t, c, runID)
+	require.True(t, done.Done)
+
+	ctx := <-runCtx
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("a finished shell run kept its context alive")
+	}
+
+	g.shellMu.Lock()
+	_, tracked := g.shells[runID]
+	g.shellMu.Unlock()
+	require.False(t, tracked, "a finished run must not stay tracked")
+}
+
 // TestShellFirstMessageFlag pins the TUI's meaning: a command is the
 // first message only while the session has none, which lets the workspace
 // generate the session title from it.
