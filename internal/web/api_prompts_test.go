@@ -104,6 +104,23 @@ func TestSSHTouchIsNotAnswerable(t *testing.T) {
 	require.Contains(t, string(body), "touch_not_answerable")
 }
 
+// TestSSHTouchCancelIsNotAnswerable pins Ruling A3-a: a touch prompt is
+// answered by the key itself, so the tab cannot dismiss it either.
+func TestSSHTouchCancelIsNotAnswerable(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	c := dialStream(t, g, "")
+	_ = readFrame(t, c)
+	f.AddSSHPrompt(sshaskpass.PromptRequest{ID: "s3", Kind: sshaskpass.KindTouch, Prompt: "Confirm user presence for key ED25519-SK"})
+	_ = nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/ssh/cancel", `{"id":"s3"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "touch_not_answerable")
+	require.NotContains(t, f.CallLog(), "SSHCancel:s3")
+	require.Len(t, g.pending.securePrompts(), 1, "the prompt stays open until the key is touched")
+}
+
 func TestSecretInQueryIsRefused(t *testing.T) {
 	t.Parallel()
 	g, f := startTest(t)

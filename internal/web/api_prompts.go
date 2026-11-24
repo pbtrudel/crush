@@ -92,6 +92,12 @@ func (g *Gateway) handleSecureCancel(source string) http.HandlerFunc {
 			writeError(w, http.StatusConflict, "not_pending", "The prompt was already answered or has expired.")
 			return
 		}
+		// A touch prompt is answered by the key itself, as the answer
+		// route says, so the tab cannot dismiss it either.
+		if p.Kind == string(sshaskpass.KindTouch) {
+			writeError(w, http.StatusConflict, "touch_not_answerable", "Touch the security key to continue.")
+			return
+		}
 		var cancelled bool
 		if source == sourcePinentry {
 			cancelled = g.ws.PinentryCancel(p.ID)
