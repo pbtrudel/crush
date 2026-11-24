@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  closeModels, closePalette, closeSessions, closeSystems, modelsOpen, openModels, openPalette,
+  openSessions, openSystems, paletteOpen, sessionsOpen, systemsOpen,
+} from './palette';
 import { closeSignIn, escapeSignIn, openSignIn, signInModel, signInOpen } from './signin';
 
 afterEach(() => {
   closeSignIn();
+  closePalette();
+  closeSessions();
+  closeModels();
+  closeSystems();
 });
 
 describe('the sign-in dialog open state', () => {
@@ -37,5 +45,20 @@ describe('the sign-in dialog open state', () => {
 
   it('reports Escape when the dialog is closed', () => {
     expect(escapeSignIn()).toBe(false);
+  });
+
+  it('closes every panel it could stack on', () => {
+    openPalette('all');
+    openSessions();
+    openModels();
+    openSystems('mcp');
+
+    openSignIn('copilot');
+
+    expect(paletteOpen.value).toBeNull();
+    expect(sessionsOpen.value).toBe(false);
+    expect(modelsOpen.value).toBe(false);
+    expect(systemsOpen.value).toBeNull();
+    expect(signInOpen.value).toEqual({ provider: 'copilot' });
   });
 });

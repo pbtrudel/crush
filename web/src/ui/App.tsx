@@ -23,8 +23,8 @@ import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
 import {
-  closeModels, closeSessions, closeSystems, deckMode, escapeModels, escapePalette, escapeSessions,
-  escapeSystems, modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
+  closePanels, deckMode, escapeModels, escapePalette, escapeSessions, escapeSystems, modelsOpen,
+  openPalette, paletteOpen, sessionsOpen, systemsOpen,
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
@@ -74,16 +74,15 @@ export function App() {
       const focused = document.activeElement;
       const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
-      // closed while a dialog owns the page. The sessions switcher and the
-      // model selector make way for it, so two dialogs never stack.
+      // closed while a dialog owns the page. It closes every other layer
+      // first, so two dialogs never stack.
       if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
         if (needsAttention(state.value)) return;
         e.preventDefault();
-        if (sessionsOpen.value) closeSessions();
-        if (modelsOpen.value) closeModels();
-        if (systemsOpen.value !== null) closeSystems();
+        const paletteWasOpen = paletteOpen.value !== null;
+        closePanels();
         if (signInOpen.value) closeSignIn();
-        togglePalette();
+        if (!paletteWasOpen) openPalette();
         return;
       }
       // A permission or a question owns Escape while it is open: the dialogs

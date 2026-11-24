@@ -133,3 +133,13 @@ export function escapeSystems(): boolean {
   closeSystems();
   return true;
 }
+
+// closePanels closes the palette and the three HUD panels it can stack
+// with. The Ctrl+K branch and openSignIn share it, so a dialog that opens
+// never leaves another layer and its backdrop on screen.
+export function closePanels(): void {
+  closePalette();
+  closeSessions();
+  closeModels();
+  closeSystems();
+}

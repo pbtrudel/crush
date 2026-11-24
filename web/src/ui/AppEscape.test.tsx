@@ -9,9 +9,9 @@ import { resetWebglProbe } from '../state/effects';
 import {
   closePalette, closeSessions, deckMode, openPalette, openSessions, paletteOpen, sessionsOpen,
 } from '../state/palette';
-import { initialState, reduce } from '../state/reducer';
+import { initialState, pushToast, reduce } from '../state/reducer';
 import { closeSignIn, openSignIn, signInOpen } from '../state/signin';
-import { actions, state } from '../state/store';
+import { actions, dispatch, state } from '../state/store';
 import { App } from './App';
 
 // The Escape routing is the App's: the scene layer would otherwise fail the
@@ -204,6 +204,33 @@ describe('Escape and the sign-in dialog', () => {
 
     expect(paletteOpen.value).toBeNull();
     expect(signInOpen.value).not.toBeNull();
+  });
+
+  it('opens from a toast over the sessions switcher without stacking layers', async () => {
+    stubSignIn();
+    await mountApp();
+    await act(() => { openSessions(); });
+    await act(() => {
+      dispatch((s) => pushToast(s, 'warn', 'Your copilot login expired. Sign in again.', {
+        kind: 'sign-in', provider: 'copilot',
+      }));
+    });
+    const open = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent === 'Sign in');
+    expect(open).toBeDefined();
+
+    await act(() => { open!.click(); });
+
+    expect(sessionsOpen.value).toBe(false);
+    expect(paletteOpen.value).toBeNull();
+    expect(signInOpen.value).toEqual({ provider: 'copilot' });
+    expect(root.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(root.querySelector('[role="dialog"]')!.getAttribute('aria-label')).toBe('Sign in');
+
+    await escape();
+
+    expect(signInOpen.value).toBeNull();
+    expect(root.querySelectorAll('[role="dialog"]')).toHaveLength(0);
   });
 
   it('is ignored while a secure prompt owns the key', async () => {
