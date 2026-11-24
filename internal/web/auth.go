@@ -128,6 +128,10 @@ func (g *Gateway) handleAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid token")
 		return
 	}
+	// The link has served its purpose once a tab signed in. Removing it
+	// before the answer means the page cannot follow it after this
+	// point, and the token outlives it only in the tab.
+	g.removeLaunchFile()
 	w.WriteHeader(http.StatusNoContent)
 }
 

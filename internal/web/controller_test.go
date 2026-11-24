@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,10 +23,11 @@ var _ interface {
 } = (*Controller)(nil)
 
 func TestControllerOpenStartsOnceAndOpensBrowser(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	c := NewController(webtest.NewFake())
 	var opened []string
 	c.open = func(u string) error { opened = append(opened, u); return nil }
+	c.isWSL = func() bool { return false }
 	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
 
 	require.False(t, c.Running())
@@ -34,14 +37,18 @@ func TestControllerOpenStartsOnceAndOpensBrowser(t *testing.T) {
 	u2, err := c.Open(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, u1, u2)
-	require.Equal(t, []string{u1, u1}, opened)
+	require.Len(t, opened, 2)
+	require.Equal(t, opened[0], opened[1], "both opens use the same launch file")
+	require.True(t, strings.HasPrefix(opened[0], "file://"), opened[0])
+	require.NotContains(t, opened[0], strings.TrimPrefix(u1, c.gw.URL()+"/#t="))
 	require.True(t, strings.HasPrefix(u1, "http://127.0.0.1:"))
 }
 
 func TestControllerOpenBrowserFailureKeepsURL(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	c := NewController(webtest.NewFake())
 	c.open = func(string) error { return errors.New("no display") }
+	c.isWSL = func() bool { return false }
 	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
 	u, err := c.Open(t.Context())
 	require.Error(t, err)
@@ -61,10 +68,11 @@ func TestControllerShutdownIdempotent(t *testing.T) {
 }
 
 func TestControllerStartDoesNotOpenBrowser(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	c := NewController(webtest.NewFake())
 	var opened []string
 	c.open = func(u string) error { opened = append(opened, u); return nil }
+	c.isWSL = func() bool { return false }
 	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
 
 	u, err := c.Start(t.Context())
@@ -72,7 +80,9 @@ func TestControllerStartDoesNotOpenBrowser(t *testing.T) {
 	require.Empty(t, opened, "Start must not open the browser")
 	require.Equal(t, u, c.LaunchURL())
 	require.NoError(t, c.OpenBrowser())
-	require.Equal(t, []string{u}, opened)
+	require.Len(t, opened, 1)
+	require.True(t, strings.HasPrefix(opened[0], "file://"), opened[0])
+	require.NotContains(t, opened[0], strings.TrimPrefix(u, c.gw.URL()+"/#t="))
 }
 
 func TestControllerOpenBrowserRequiresGateway(t *testing.T) {
@@ -288,4 +298,76 @@ func TestControllerIgnoresStalePlanReadyReports(t *testing.T) {
 	c.SetPlanReady("s1", 1)
 
 	require.Equal(t, "s2", c.gw.PlanReadySessionID())
+}
+
+func TestOpenBrowserPassesNoToken(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var got string
+	c := NewController(webtest.NewFake())
+	c.open = func(u string) error { got = u; return nil }
+	c.isWSL = func() bool { return false }
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	require.NoError(t, c.OpenBrowser())
+	require.True(t, strings.HasPrefix(got, "file://"), got)
+	require.NotContains(t, got, strings.TrimPrefix(c.LaunchURL(), c.gw.URL()+"/#t="))
+}
+
+func TestOpenBrowserOnWSLUsesTheUNCPath(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var got string
+	c := NewController(webtest.NewFake())
+	c.open = func(u string) error { got = u; return nil }
+	c.isWSL = func() bool { return true }
+	c.wslPath = func(_ context.Context, p string) (string, error) {
+		return `\\wsl.localhost\Ubuntu` + strings.ReplaceAll(p, "/", `\`), nil
+	}
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	require.NoError(t, c.OpenBrowser())
+	require.True(t, strings.HasPrefix(got, "file://wsl.localhost/Ubuntu/"), got)
+	require.True(t, strings.HasSuffix(got, "/launch.html"), got)
+}
+
+func TestOpenBrowserOnWSLWithoutWslpathNeverOpensTheToken(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	called := false
+	c := NewController(webtest.NewFake())
+	c.open = func(string) error { called = true; return nil }
+	c.isWSL = func() bool { return true }
+	c.wslPath = func(context.Context, string) (string, error) { return "", errors.New("wslpath: not found") }
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	require.Error(t, c.OpenBrowser())
+	require.False(t, called, "the opener never receives the token URL")
+}
+
+func TestWindowsFileURL(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		`\\wsl.localhost\Ubuntu\run\user\1000\crush-web-1\launch.html`: "file://wsl.localhost/Ubuntu/run/user/1000/crush-web-1/launch.html",
+		`C:\Users\u\AppData\Local\Temp\crush-web-1\launch.html`:        "file:///C:/Users/u/AppData/Local/Temp/crush-web-1/launch.html",
+	} {
+		got, err := windowsFileURL(in)
+		require.NoError(t, err, in)
+		require.Equal(t, want, got)
+	}
+	for _, bad := range []string{"", "/tmp/x", `relative\x`} {
+		_, err := windowsFileURL(bad)
+		require.Error(t, err, bad)
+	}
+}
+
+func TestLaunchFileExpiresUnused(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	g, _ := startWith(t, Options{launchFileTTL: 50 * time.Millisecond})
+	path, err := g.LaunchFile()
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return errors.Is(err, fs.ErrNotExist)
+	}, 2*time.Second, 10*time.Millisecond, "a launch file no tab used does not linger")
 }

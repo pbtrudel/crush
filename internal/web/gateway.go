@@ -56,6 +56,9 @@ type Options struct {
 	// mcpAuthPoll overrides how long an MCP auth request waits for the
 	// OAuth URL in tests.
 	mcpAuthPoll time.Duration
+	// launchFileTTL overrides how long an unused launch file lives in
+	// tests.
+	launchFileTTL time.Duration
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -108,6 +111,11 @@ type Gateway struct {
 	authsClosed bool
 	// authPoll overrides how long an auth request waits for the URL.
 	authPoll time.Duration
+	// launchMu guards launch, the private redirect file handed to the
+	// browser opener so the token stays out of its arguments.
+	launchMu  sync.Mutex
+	launch    *launchFile
+	launchTTL time.Duration
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -166,6 +174,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		shells:    make(map[string]context.CancelFunc),
 		auths:     make(map[string]context.CancelFunc),
 		authPoll:  opts.mcpAuthPoll,
+		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
 
 		loadCommandsFn:       opts.LoadCommands,
 		onSessionCreated:     opts.OnSessionCreated,
@@ -382,6 +391,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
+	g.removeLaunchFile()
 	g.cancel()
 	// The watchers settle on their own, but a caller's deadline outranks
 	// them: an expired context must not leave Shutdown waiting on a file

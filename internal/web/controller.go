@@ -5,7 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/browser"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -16,6 +22,10 @@ import (
 type Controller struct {
 	ws   workspace.Workspace
 	open func(string) error
+	// isWSL and wslPath translate a Linux launch path into one the Windows
+	// browser can read. Tests replace both.
+	isWSL   func() bool
+	wslPath func(ctx context.Context, p string) (string, error)
 
 	mu sync.Mutex
 	gw *Gateway
@@ -32,7 +42,18 @@ type Controller struct {
 // NewController returns a controller for ws that opens tabs with the
 // system browser.
 func NewController(ws workspace.Workspace) *Controller {
-	return &Controller{ws: ws, open: browser.OpenURL}
+	return &Controller{
+		ws:    ws,
+		open:  browser.OpenURL,
+		isWSL: func() bool { return os.Getenv("WSL_DISTRO_NAME") != "" },
+		wslPath: func(ctx context.Context, p string) (string, error) {
+			out, err := exec.CommandContext(ctx, "wslpath", "-w", p).Output()
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(out)), nil
+		},
+	}
 }
 
 // Start runs the gateway if needed and returns the launch URL.
@@ -168,18 +189,51 @@ func (c *Controller) LaunchURL() string {
 	return c.gw.LaunchURL()
 }
 
-// OpenBrowser opens a tab on the launch URL of an already-started gateway.
-// It never starts the gateway, which lets callers open the browser once the
-// TUI is up instead of waiting for a slow opener during startup.
+// OpenBrowser opens a tab on the gateway's launch file. The opener gets a
+// file URL, never the launch URL: the token stays in the private file and
+// out of the opener's process arguments. It never starts the gateway, which
+// lets callers open the browser once the TUI is up instead of waiting for a
+// slow opener during startup.
 func (c *Controller) OpenBrowser() error {
-	u := c.LaunchURL()
-	if u == "" {
+	c.mu.Lock()
+	gw := c.gw
+	c.mu.Unlock()
+	if gw == nil {
 		return errors.New("web mode is not running")
 	}
-	if err := c.open(u); err != nil {
+	path, err := gw.LaunchFile()
+	if err != nil {
+		return fmt.Errorf("open browser: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	target, err := c.launchTarget(ctx, path)
+	if err != nil {
+		return fmt.Errorf("open browser: %w", err)
+	}
+	if err := c.open(target); err != nil {
 		return fmt.Errorf("open browser: %w", err)
 	}
 	return nil
+}
+
+// launchTarget turns the launch file path into a URL the browser can read.
+// Off WSL a plain file URL works. On Windows the path already is one, and on
+// WSL only the Windows view of the Linux path is reachable, so wslpath maps
+// it to a UNC or drive path first. A failure there fails the open rather
+// than falling back to the token URL.
+func (c *Controller) launchTarget(ctx context.Context, path string) (string, error) {
+	if c.isWSL() {
+		win, err := c.wslPath(ctx, path)
+		if err != nil {
+			return "", fmt.Errorf("wslpath: %w", err)
+		}
+		return windowsFileURL(win)
+	}
+	if runtime.GOOS == "windows" {
+		return windowsFileURL(path)
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String(), nil
 }
 
 // Running reports whether the gateway is serving.
