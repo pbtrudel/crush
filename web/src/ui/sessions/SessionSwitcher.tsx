@@ -223,7 +223,9 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     }
     if (!alive.current) return;
     if (failure !== null) {
-      setActionError(failure);
+      // A failure belongs to the editor that asked; one reopened since then
+      // must not inherit it.
+      if (editorGen.current === gen) setActionError(failure);
       return;
     }
     // An editor the user reopened after this request started owns the row
@@ -270,6 +272,9 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       reloadFailed.current = false;
       sessionDeleteId.value = null;
     }
+    // The row is gone on the server either way, so a confirm still naming it
+    // has nothing left to act on.
+    if (sessionDeleteId.value === sess.id) sessionDeleteId.value = null;
     const loaded = await load();
     if (!alive.current) return;
     if (ownsConfirm && !loaded) reloadFailed.current = true;

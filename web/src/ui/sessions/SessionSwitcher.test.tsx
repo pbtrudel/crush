@@ -6,7 +6,9 @@ import type { CommandEntry, Frame, McpPrompt, ModelChoice, Session, SkillEntry }
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
-import { closePalette, closeSessions, paletteOpen, sessionsOpen } from '../../state/palette';
+import {
+  closePalette, closeSessions, paletteOpen, sessionDeleteId, sessionsOpen,
+} from '../../state/palette';
 import { resetWebglProbe } from '../../state/effects';
 import { setCinematic } from '../../state/cinematic';
 import { App } from '../App';
@@ -892,30 +894,6 @@ describe('session switcher', () => {
     expect(root.querySelector('input[aria-label="Rename Port the parser"]')).not.toBeNull();
   });
 
-  it('leaves a confirm reopened on the same row open when the first answer lands', async () => {
-    seed();
-    stubSessions();
-    const answer = deferred<void>();
-    vi.spyOn(api, 'deleteSession').mockReturnValue(answer.promise);
-    await mount();
-    await openFromHud();
-
-    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
-    await flush();
-    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
-    await flush();
-    await pressKey(window, { key: 'Escape', code: 'Escape' });
-    expect(confirmDialog('Fix the lexer')).toBeNull();
-
-    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
-    await flush();
-
-    await act(async () => { answer.resolve(undefined); await Promise.resolve(); });
-    await flush();
-
-    expect(confirmDialog('Fix the lexer')).not.toBeNull();
-  });
-
   it('leaves a rename reopened on the same row open when the first answer lands', async () => {
     seed();
     stubSessions();
@@ -937,6 +915,61 @@ describe('session switcher', () => {
     await flush();
 
     expect(root.querySelector('.sessions__rename')).not.toBeNull();
+  });
+
+  it('drops a rename failure that lands under a reopened editor', async () => {
+    seed();
+    stubSessions();
+    const answer = deferred<Session>();
+    vi.spyOn(api, 'renameSession').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Rename').click(); });
+    await flush();
+    await pressKey(root.querySelector('.sessions__rename')!, { key: 'Enter', code: 'Enter' });
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+
+    await act(() => { rowButton('Port the parser', 'Rename').click(); });
+    await flush();
+
+    await act(async () => {
+      answer.reject(new ApiError(400, 'bad_title', 'title must be 1 to 200 characters'));
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(root.querySelector('input[aria-label="Rename Port the parser"]')).not.toBeNull();
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('clears a confirm that still names the deleted session', async () => {
+    seed();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+    const answer = deferred<void>();
+    vi.spyOn(api, 'deleteSession').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+    expect(sessionDeleteId.value).toBeNull();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    expect(sessionDeleteId.value).toBe('s-2');
+
+    await act(async () => { answer.resolve(undefined); await Promise.resolve(); });
+    await flush();
+
+    expect(sessionDeleteId.value).toBeNull();
+    expect(dialog()!.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it('clears the failure line when a new action starts', async () => {
