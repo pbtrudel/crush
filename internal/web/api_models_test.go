@@ -341,16 +341,17 @@ func TestReasoningErrors(t *testing.T) {
 
 	t.Run("no config", func(t *testing.T) {
 		t.Parallel()
-		g, _ := startModelAgent(t, nil)
+		g, fake := startModelAgent(t, nil)
 		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/reasoning", `{"effort":"high"}`)
 		rsp.Body.Close()
 		require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
 		require.Contains(t, string(body), `"code":"agent_starting"`)
+		require.Empty(t, fake.CallLog(), "the reload state is read before any helper runs")
 	})
 
 	t.Run("config without providers", func(t *testing.T) {
 		t.Parallel()
-		g, _ := startModelAgent(t, &config.Config{
+		g, fake := startModelAgent(t, &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
 				config.SelectedModelTypeMain: {Provider: "p1", Model: "m1"},
 			},
@@ -362,6 +363,7 @@ func TestReasoningErrors(t *testing.T) {
 		rsp.Body.Close()
 		require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
 		require.Contains(t, string(body), `"code":"agent_starting"`)
+		require.Empty(t, fake.CallLog(), "the reload state is read before any helper runs")
 	})
 }
 
