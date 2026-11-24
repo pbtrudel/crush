@@ -655,6 +655,7 @@ func TestSignInLogsOnlyTheErrorClass(t *testing.T) {
 	require.NotContains(t, string(status), "provider-body-7731")
 	require.NotContains(t, logs.String(), "provider-body-7731")
 	require.Contains(t, logs.String(), "reason=provider")
+	require.True(t, flow.Closed(), "a failed wait frees the flow's listener")
 }
 
 // TestSignInCodeNeverLogged is not parallel: captureLogs replaces the logger.
@@ -927,6 +928,32 @@ func TestSignInSaveFailureShowsTheSentence(t *testing.T) {
 	rsp.Body.Close()
 	require.Contains(t, string(status), "Crush could not save the sign-in.")
 	require.NotContains(t, string(status), "the config could not be written")
+	require.True(t, flow.Closed(), "a failed save frees the flow's listener")
+	require.ErrorIs(t, runContext(t, g).Err(), context.Canceled, "a failed save cancels the run")
+}
+
+// runContext returns the current run's context.
+func runContext(t *testing.T, g *Gateway) context.Context {
+	t.Helper()
+	g.signinMu.Lock()
+	defer g.signinMu.Unlock()
+	require.NotNil(t, g.signin)
+	return g.signin.ctx
+}
+
+// TestSignInDoneCancelsTheRun pins that a finished sign-in cancels its
+// run's context, so a flow still polling after the token is freed.
+func TestSignInDoneCancelsTheRun(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.Token = &oauth.Token{AccessToken: "tok-done"}
+	g, _ := signInGatewayWithFlow(t, flow)
+	c := authedClient(t, g)
+	startSignIn(t, c, g, "copilot")
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"done"`)
+	require.ErrorIs(t, runContext(t, g).Err(), context.Canceled, "a done run cancels its context")
 }
 
 func TestSignInErrorClass(t *testing.T) {

@@ -567,7 +567,11 @@ func (g *Gateway) waitSignIn(run *signinRun, c signin.Challenge) {
 				return
 			}
 			slog.Warn("Web sign-in did not finish", "provider", run.providerID(), "reason", signInErrorClass(err))
-			g.publishSignIn(run, run.phase(signInError, signInWaitFailed))
+			// A failed wait ends the run: the context is cancelled and the
+			// listener freed, so a retry finds the callback port free.
+			g.signinMu.Lock()
+			g.endRunLocked(run, signInWaitFailed)
+			g.signinMu.Unlock()
 			return
 		}
 		if next != nil {
@@ -600,8 +604,9 @@ func (g *Gateway) completeSignIn(run *signinRun, tok *oauth.Token) {
 		provider := run.providerID()
 		if err := g.ws.SetProviderAPIKey(config.ScopeGlobal, provider, tok); err != nil {
 			slog.Warn("Web sign-in could not be saved", "provider", provider, "reason", signInErrorClass(err))
-			g.publishSignIn(run, run.phase(signInError, signInSaveFailed))
-			run.flow.Close()
+			g.signinMu.Lock()
+			g.finishRunLocked(run, run.phase(signInError, signInSaveFailed))
+			g.signinMu.Unlock()
 			return
 		}
 		// The model step is not tied to the run: a cancel that raced the
@@ -609,8 +614,9 @@ func (g *Gateway) completeSignIn(run *signinRun, tok *oauth.Token) {
 		applied, _ := applySignInModel(context.WithoutCancel(run.ctx), g, run.model)
 		st := run.phase(signInDone, "")
 		st.ModelApplied = applied
-		g.publishSignIn(run, st)
-		run.flow.Close()
+		g.signinMu.Lock()
+		g.finishRunLocked(run, st)
+		g.signinMu.Unlock()
 	})
 }
 
@@ -630,8 +636,9 @@ func (g *Gateway) stopRunLocked(run *signinRun) {
 	}
 }
 
-// endRunLocked ends a run with the sentence of a failed phase. The caller
-// holds signinMu.
+// endRunLocked ends a waiting run with the sentence of a failed phase: its
+// context is cancelled and its listener freed before the error reaches a
+// tab. The caller holds signinMu.
 func (g *Gateway) endRunLocked(run *signinRun, sentence string) {
 	run.cancel()
 	run.flow.Close()
@@ -639,6 +646,15 @@ func (g *Gateway) endRunLocked(run *signinRun, sentence string) {
 	if ended && g.signin == run {
 		g.hub.publishJSON(frameSignIn, st)
 	}
+}
+
+// finishRunLocked ends a run with the phase it reached: its context is
+// cancelled and its listener freed before the phase reaches a tab, so no
+// goroutine outlives the outcome. The caller holds signinMu.
+func (g *Gateway) finishRunLocked(run *signinRun, st SignInState) {
+	run.cancel()
+	run.flow.Close()
+	g.setStateLocked(run, st)
 }
 
 // setStateLocked records a run's state and tells every tab, unless a newer
