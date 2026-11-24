@@ -348,11 +348,18 @@ func (f *Fake) SetProviderAPIKey(scope config.Scope, providerID string, apiKey a
 	return nil
 }
 
-// ImportCopilot reports the token SetCopilotImport set.
+// ImportCopilot reports the token SetCopilotImport set. A token marks
+// Copilot configured with the catalog's models, as the real import saves
+// the login to the config.
 func (f *Fake) ImportCopilot() (*oauth.Token, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.copilotImport, f.copilotImport != nil
+	if f.copilotImport == nil {
+		return nil, false
+	}
+	f.Calls = append(f.Calls, "ImportCopilot")
+	f.Cfg = withProviderKey(f.Cfg, string(catwalk.InferenceProviderCopilot), f.catalog)
+	return f.copilotImport, true
 }
 
 // Config returns the test's config, or nil: the fake has no data

@@ -580,6 +580,7 @@ func TestSignInCancelledOnShutdown(t *testing.T) {
 		SignInFlow: func(string) (signin.Flow, error) { return flow, nil },
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	rsp, _ := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
 	rsp.Body.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -980,4 +981,355 @@ func TestSignInOAuthAppliesTheChosenModel(t *testing.T) {
 	rsp.Body.Close()
 	require.Contains(t, string(status), `"model_applied":true`)
 	require.Contains(t, fake.CallLog(), "UpdatePreferredModel:global:main:xai/grok-4")
+}
+
+// stuckFlow is a sign-in flow whose Wait ignores the context, the way a
+// provider poll already in flight does: only Close releases the token. A
+// cancel or a replacement therefore still delivers it, which is the race
+// Ruling A6-b item 3 guards against.
+type stuckFlow struct {
+	*webtest.FakeFlow
+	token    *oauth.Token
+	closed   chan struct{}
+	returned chan struct{}
+	once     sync.Once
+}
+
+func newStuckFlow(t *testing.T, tok *oauth.Token) *stuckFlow {
+	t.Helper()
+	return &stuckFlow{
+		FakeFlow: webtest.NewFakeFlow(t),
+		token:    tok,
+		closed:   make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+}
+
+// Close frees the wait, so no test leaves a goroutine blocked.
+func (f *stuckFlow) Close() {
+	f.FakeFlow.Close()
+	f.once.Do(func() { close(f.closed) })
+}
+
+// Wait ignores ctx and delivers its token once the flow is closed. It
+// closes returned first, so a test knows the token is on its way.
+func (f *stuckFlow) Wait(context.Context, signin.Challenge) (*oauth.Token, *signin.Challenge, error) {
+	<-f.closed
+	close(f.returned)
+	return f.token, nil, nil
+}
+
+// hookWorkspace lets a test intervene while a token is saved.
+type hookWorkspace struct {
+	*webtest.Fake
+	// onSave runs when a save starts, on the sign-in goroutine.
+	onSave func()
+	// saving closes when the first save starts.
+	saving chan struct{}
+	// release, when set, holds a save until the test releases it.
+	release     chan struct{}
+	releaseOnce sync.Once
+	save        sync.Once
+}
+
+func newHookWorkspace() *hookWorkspace {
+	return &hookWorkspace{Fake: webtest.NewFake(), saving: make(chan struct{})}
+}
+
+// hold makes the next save wait until release, and releases it at cleanup
+// so a failed test cannot leave Shutdown waiting on the save.
+func (w *hookWorkspace) hold(t *testing.T) {
+	t.Helper()
+	w.release = make(chan struct{})
+	t.Cleanup(func() {
+		w.releaseOnce.Do(func() { close(w.release) })
+	})
+}
+
+// releaseSave lets a held save finish.
+func (w *hookWorkspace) releaseSave() {
+	w.releaseOnce.Do(func() {
+		if w.release != nil {
+			close(w.release)
+		}
+	})
+}
+
+func (w *hookWorkspace) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
+	w.save.Do(func() { close(w.saving) })
+	if w.onSave != nil {
+		w.onSave()
+	}
+	if w.release != nil {
+		<-w.release
+	}
+	return w.Fake.SetProviderAPIKey(scope, providerID, apiKey)
+}
+
+// UpdateAgentModel refuses a cancelled context, the way the real rebuild
+// does, so a test can see which context the model step used.
+func (w *hookWorkspace) UpdateAgentModel(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return w.Fake.UpdateAgentModel(ctx)
+}
+
+// startSignInOn starts a gateway over ws that runs flow for every
+// sign-in.
+func startSignInOn(t *testing.T, ws workspace.Workspace, flow signin.Flow) *Gateway {
+	t.Helper()
+	g, err := Start(t.Context(), Options{
+		Workspace: ws, KnownProviders: testKnownProviders, TestAPIKey: acceptOnlyValidKey,
+		SignInFlow: func(string) (signin.Flow, error) { return flow, nil },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	return g
+}
+
+// statusState returns the phase the status route reports.
+func statusState(t *testing.T, c *http.Client, g *Gateway) string {
+	t.Helper()
+	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	return st.State
+}
+
+// TestSignInRefusedCodeEndsTheRun pins Ruling A6-b item 1: a refused code
+// stops the run and frees its listener, and a token the flow was still
+// going to deliver neither saves nor changes the error state.
+func TestSignInRefusedCodeEndsTheRun(t *testing.T) {
+	t.Parallel()
+	flow := newStuckFlow(t, &oauth.Token{AccessToken: "late-token"})
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.CodeOK = "right-code"
+	g, f := signInGatewayWithFlows(t, func() signin.Flow { return flow })
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	rsp, body := submitCode(t, c, g, st.FlowID, "wrong-code")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	require.NotContains(t, string(body), "wrong-code")
+	statusUntil(t, c, g, `"state":"error"`)
+	require.True(t, flow.Closed(), "a refused code ends the run and frees its listener")
+	g.signinWG.Wait()
+	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"state":"error"`)
+	require.Contains(t, string(status), "That code did not work")
+	require.NotContains(t, string(status), `"state":"done"`)
+}
+
+// TestSignInCancelledRunNeverSaves pins Ruling A6-b item 3: a token that
+// arrives after a cancel is not saved and does not overwrite the cancelled
+// state, even though the flow's Wait ignored the cancelled context.
+func TestSignInCancelledRunNeverSaves(t *testing.T) {
+	t.Parallel()
+	flow := newStuckFlow(t, &oauth.Token{AccessToken: "late-token"})
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	g, f := signInGatewayWithFlows(t, func() signin.Flow { return flow })
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "openai")
+	rsp, _ := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/cancel", `{"flow_id":"`+st.FlowID+`"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
+	require.True(t, flow.Closed())
+	g.signinWG.Wait()
+	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"state":"cancelled"`)
+}
+
+// TestSignInReplacedRunNeverSaves pins Ruling A6-b item 3 for a replaced
+// run: its late token is not saved and its phases never overwrite the new
+// run's state.
+func TestSignInReplacedRunNeverSaves(t *testing.T) {
+	t.Parallel()
+	first := newStuckFlow(t, &oauth.Token{AccessToken: "late-token"})
+	first.Challenge = signin.Challenge{UserCode: "ONE"}
+	second := webtest.NewFakeFlow(t)
+	second.Challenge = signin.Challenge{UserCode: "TWO"}
+	var mu sync.Mutex
+	flows := []signin.Flow{first, second}
+	g, f := signInGatewayWithFlows(t, func() signin.Flow {
+		mu.Lock()
+		defer mu.Unlock()
+		fl := flows[0]
+		flows = flows[1:]
+		return fl
+	})
+	c := authedClient(t, g)
+	startSignIn(t, c, g, "copilot")
+	newState := startSignIn(t, c, g, "copilot")
+	require.True(t, first.Closed(), "the replaced flow frees its listener")
+	<-first.returned
+	// The new run is still waiting, so only a window can show that the
+	// replaced run saved nothing. CallLog is safe to read off the test
+	// goroutine.
+	require.Never(t, func() bool {
+		return strings.Contains(strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+	}, 250*time.Millisecond, 10*time.Millisecond)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"flow_id":"`+newState.FlowID+`"`)
+	require.Contains(t, string(status), `"user_code":"TWO"`)
+}
+
+// TestSignInImportStopsTheRunningFlow pins Ruling A6-b item 2: an imported
+// Copilot login replaces the running flow, as any start does.
+func TestSignInImportStopsTheRunningFlow(t *testing.T) {
+	t.Parallel()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	g, f := signInGatewayWithFlow(t, flow)
+	f.SetCopilotImport(&oauth.Token{AccessToken: "imported"})
+	c := authedClient(t, g)
+	startSignIn(t, c, g, "xai")
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), `"imported":true`)
+	require.True(t, flow.Closed(), "an imported login stops the running flow")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"imported":true`)
+	require.Contains(t, string(status), `"state":"done"`)
+}
+
+// TestSignInImportIsRecorded pins Ruling A6-b item 2's record: status, the
+// snapshot and a frame all answer the imported login, and the chosen model
+// is applied.
+func TestSignInImportIsRecorded(t *testing.T) {
+	t.Parallel()
+	known := []catwalk.Provider{{
+		ID: catwalk.InferenceProviderCopilot, Name: "GitHub Copilot",
+		Models: []catwalk.Model{{ID: "gpt-4o", Name: "GPT-4o"}},
+	}}
+	fake := webtest.NewFake()
+	g, err := Start(t.Context(), Options{
+		Workspace:      fake,
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) { return known, nil },
+		TestAPIKey:     acceptOnlyValidKey,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	fake.SetCatalog(known)
+	fake.SetCopilotImport(&oauth.Token{AccessToken: "imported"})
+	c := authedClient(t, g)
+	stream := dialStream(t, g, "")
+	_ = readFrame(t, stream)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start",
+		`{"provider":"copilot","model":{"type":"main","model":"gpt-4o"}}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	require.Equal(t, "done", st.State)
+	require.True(t, st.Imported)
+	require.True(t, st.ModelApplied)
+	require.Contains(t, fake.CallLog(), "UpdatePreferredModel:global:main:copilot/gpt-4o")
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"flow_id":"`+st.FlowID+`"`)
+	require.Contains(t, string(status), `"imported":true`)
+	rsp, snap := doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
+	rsp.Body.Close()
+	require.Contains(t, string(snap), `"signin":{"flow_id":"`+st.FlowID+`"`)
+	frame := frameUntil(t, stream, `"imported":true`)
+	var framed SignInState
+	require.NoError(t, json.Unmarshal(frame.Payload, &framed))
+	require.Equal(t, st.FlowID, framed.FlowID)
+}
+
+// TestSignInStartWhenCatalogUnavailable pins Ruling A6-b item 4's minor:
+// start answers the same 502 as A5's key route when the catalog fails and
+// nothing is known.
+func TestSignInStartWhenCatalogUnavailable(t *testing.T) {
+	t.Parallel()
+	g, f := startWith(t, Options{
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) {
+			return nil, errors.New("catalog down")
+		},
+		TestAPIKey: acceptOnlyValidKey,
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadGateway, rsp.StatusCode)
+	require.Contains(t, string(body), "providers_unavailable")
+	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
+}
+
+// TestSignInCodeDuringSaving pins Ruling A6-b item 4's minor: the code
+// gate requires a waiting run, so a save in flight takes no code.
+func TestSignInCodeDuringSaving(t *testing.T) {
+	t.Parallel()
+	ws := newHookWorkspace()
+	flow := webtest.NewFakeFlow(t)
+	flow.HasCodeEntry = true
+	flow.Challenge = signin.Challenge{VerificationURL: "http://localhost:1/start"}
+	flow.CodeOK = "good-code"
+	flow.Token = &oauth.Token{AccessToken: "tok-saving"}
+	g := startSignInOn(t, ws, flow)
+	ws.hold(t)
+	c := authedClient(t, g)
+	st := startSignIn(t, c, g, "xai")
+	rsp, _ := submitCode(t, c, g, st.FlowID, "good-code")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	<-ws.saving
+	require.Equal(t, "saving", statusState(t, c, g))
+	rsp, body := submitCode(t, c, g, st.FlowID, "good-code")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode)
+	require.Contains(t, string(body), "code_entry_unavailable")
+	ws.releaseSave()
+	statusUntil(t, c, g, `"state":"done"`)
+}
+
+// TestSignInModelStepSurvivesACancelDuringSaving pins Ruling A6-b item 3's
+// model context: a cancel that lands while the token is saved does not fail
+// the model step.
+func TestSignInModelStepSurvivesACancelDuringSaving(t *testing.T) {
+	t.Parallel()
+	known := []catwalk.Provider{{
+		ID: catwalk.InferenceProviderXAI, Name: "xAI",
+		Models: []catwalk.Model{{ID: "grok-4", Name: "Grok 4"}},
+	}}
+	ws := newHookWorkspace()
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U"}
+	flow.Token = &oauth.Token{AccessToken: "tok-cancel-save"}
+	g, err := Start(t.Context(), Options{
+		Workspace:      ws,
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) { return known, nil },
+		SignInFlow:     func(string) (signin.Flow, error) { return flow, nil },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	ws.SetCatalog(known)
+	ws.onSave = func() {
+		g.signinMu.Lock()
+		run := g.signin
+		g.signinMu.Unlock()
+		if run != nil {
+			run.cancel()
+		}
+	}
+	c := authedClient(t, g)
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/auth/provider/oauth/start",
+		`{"provider":"xai","model":{"type":"main","model":"grok-4"}}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	flow.Finish()
+	statusUntil(t, c, g, `"state":"done"`)
+	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
+	rsp.Body.Close()
+	require.Contains(t, string(status), `"model_applied":true`)
+	require.Contains(t, ws.CallLog(), "UpdatePreferredModel:global:main:xai/grok-4")
 }

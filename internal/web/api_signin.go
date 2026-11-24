@@ -324,7 +324,12 @@ func (g *Gateway) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := g.ws.Config()
-	known, _ := g.knownProviders(cfg)
+	known, err := g.knownProviders(cfg)
+	if err != nil && len(known) == 0 {
+		slog.Warn("Web sign-in providers unavailable", "error", err)
+		writeError(w, http.StatusBadGateway, "providers_unavailable", "The provider list is not available yet.")
+		return
+	}
 	targets := workspace.SignInTargets(cfg, known)
 	idx := slices.IndexFunc(targets, func(t workspace.SignInTarget) bool { return t.ID == body.Provider })
 	if idx < 0 {
@@ -343,20 +348,19 @@ func (g *Gateway) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// Copilot first reuses a login made in VS Code, as the terminal's model
 	// picker does, so a user who already signed in there skips the device
-	// code. ImportCopilot takes no context and may make a network call.
+	// code. A start replaces the running flow either way (decision 11).
 	if body.Provider == string(catwalk.InferenceProviderCopilot) && !target.Configured {
+		g.signinMu.Lock()
+		if g.signinClosed {
+			g.signinMu.Unlock()
+			writeError(w, http.StatusServiceUnavailable, "shutting_down", "Crush is shutting down")
+			return
+		}
+		g.stopRunLocked(g.signin)
+		g.signinMu.Unlock()
+		// ImportCopilot takes no context and may make a network call.
 		if _, imported := g.ws.ImportCopilot(); imported {
-			st := SignInState{
-				FlowID:       uuid.NewString(),
-				Provider:     body.Provider,
-				ProviderName: target.Name,
-				State:        signInDone,
-				Imported:     true,
-			}
-			st.ModelApplied, _ = applySignInModel(r.Context(), g, model)
-			// No flow runs, so nothing is registered: the answer carries
-			// the outcome and every open tab sees it.
-			g.hub.publishJSON(frameSignIn, st)
+			st := g.recordImportedSignIn(r.Context(), body.Provider, target.Name, model)
 			writeJSON(w, http.StatusOK, st)
 			return
 		}
@@ -500,9 +504,10 @@ func (g *Gateway) handleOAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Code entry is a capability of the flow, not live state: it is on
-	// only while a browser challenge is in force, so a device challenge
-	// or a device fallback answers 409 instead of a rejected code.
-	if !run.view().CodeEntry {
+	// only while a browser challenge is in force, so a device challenge,
+	// a device fallback or a run already saving its token answers 409
+	// instead of a rejected code.
+	if !run.codeEntry() {
 		g.signinMu.Unlock()
 		writeError(w, http.StatusConflict, "code_entry_unavailable", "This sign-in does not take a code.")
 		return
@@ -536,8 +541,13 @@ func (g *Gateway) submitSignInCode(run *signinRun, code string) {
 			slog.Debug("Web sign-in code arrived with no browser flow", "provider", run.providerID())
 			return
 		}
+		// A refused code ends the run: the listener is freed and the
+		// wait goroutine stops, so a retry starts clean and a token the
+		// flow still delivered cannot land on top of the error.
+		g.signinMu.Lock()
+		g.endRunLocked(run, signInBadCode)
+		g.signinMu.Unlock()
 		slog.Info("Web sign-in code refused", "provider", run.providerID())
-		g.publishSignIn(run, run.phase(signInError, signInBadCode))
 		return
 	}
 	if tok == nil {
@@ -576,7 +586,17 @@ func (g *Gateway) waitSignIn(run *signinRun, c signin.Challenge) {
 // The token never reaches a frame, an answer or a log line.
 func (g *Gateway) completeSignIn(run *signinRun, tok *oauth.Token) {
 	run.once.Do(func() {
-		g.publishSignIn(run, run.phase(signInSaving, ""))
+		// A run cancelled or replaced before the save keeps nothing: a
+		// stale token must not be written, and the saving phase must not
+		// land after the cancel.
+		g.signinMu.Lock()
+		if run.ctx.Err() != nil || g.signin != run {
+			g.signinMu.Unlock()
+			slog.Debug("Web sign-in token arrived after the run ended", "provider", run.providerID())
+			return
+		}
+		g.setStateLocked(run, run.phase(signInSaving, ""))
+		g.signinMu.Unlock()
 		provider := run.providerID()
 		if err := g.ws.SetProviderAPIKey(config.ScopeGlobal, provider, tok); err != nil {
 			slog.Warn("Web sign-in could not be saved", "provider", provider, "reason", signInErrorClass(err))
@@ -584,7 +604,9 @@ func (g *Gateway) completeSignIn(run *signinRun, tok *oauth.Token) {
 			run.flow.Close()
 			return
 		}
-		applied, _ := applySignInModel(run.ctx, g, run.model)
+		// The model step is not tied to the run: a cancel that raced the
+		// save cannot fail it now the credential is stored.
+		applied, _ := applySignInModel(context.WithoutCancel(run.ctx), g, run.model)
 		st := run.phase(signInDone, "")
 		st.ModelApplied = applied
 		g.publishSignIn(run, st)
@@ -604,6 +626,17 @@ func (g *Gateway) stopRunLocked(run *signinRun) {
 	run.flow.Close()
 	st, stopped := run.stopped()
 	if stopped && g.signin == run {
+		g.hub.publishJSON(frameSignIn, st)
+	}
+}
+
+// endRunLocked ends a run with the sentence of a failed phase. The caller
+// holds signinMu.
+func (g *Gateway) endRunLocked(run *signinRun, sentence string) {
+	run.cancel()
+	run.flow.Close()
+	st, ended := run.failed(sentence)
+	if ended && g.signin == run {
 		g.hub.publishJSON(frameSignIn, st)
 	}
 }
@@ -639,6 +672,14 @@ func (r *signinRun) providerID() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.Provider
+}
+
+// codeEntry reports whether the run takes a pasted code now: only a
+// waiting browser challenge does.
+func (r *signinRun) codeEntry() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.State == signInWaiting && r.state.CodeEntry
 }
 
 // running reports whether the run still waits for the user.
@@ -687,6 +728,21 @@ func (r *signinRun) phase(state, sentence string) SignInState {
 	return st
 }
 
+// failed moves a waiting run to error with sentence and reports whether it
+// was still waiting, with the state to publish. A run that already finished
+// keeps its phase.
+func (r *signinRun) failed(sentence string) (SignInState, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state.State != signInWaiting {
+		return r.state, false
+	}
+	r.state.State = signInError
+	r.state.Error = sentence
+	r.state.CodeEntry = false
+	return r.state, true
+}
+
 // stopped marks a waiting run cancelled and reports whether it was still
 // waiting, with the state to publish. A run already saving a token is not
 // stopped: the sign-in did finish.
@@ -701,6 +757,63 @@ func (r *signinRun) stopped() (SignInState, bool) {
 	r.state.CodeEntry = false
 	return r.state, true
 }
+
+// recordImportedSignIn records a sign-in that finished by importing an
+// existing Copilot login. No flow runs, so the last state sits on a flow
+// with nothing to wait for and nothing to close, and status and the
+// snapshot keep answering it. ImportCopilot saved the token already.
+func (g *Gateway) recordImportedSignIn(ctx context.Context, providerID, providerName string, model *signinModel) SignInState {
+	applied, _ := applySignInModel(ctx, g, model)
+	runCtx, cancel := context.WithCancel(g.ctx)
+	id := uuid.NewString()
+	st := SignInState{
+		FlowID:       id,
+		Provider:     providerID,
+		ProviderName: providerName,
+		State:        signInDone,
+		ModelApplied: applied,
+		Imported:     true,
+	}
+	run := &signinRun{
+		id:     id,
+		flow:   importedFlow{name: providerName},
+		ctx:    runCtx,
+		cancel: cancel,
+		model:  model,
+		state:  st,
+	}
+	g.signinMu.Lock()
+	defer g.signinMu.Unlock()
+	// A start that raced this one is replaced too, as any start replaces
+	// the running flow.
+	g.stopRunLocked(g.signin)
+	g.signin = run
+	g.setStateLocked(run, st)
+	return st
+}
+
+// importedFlow is the flow of a sign-in that finished by importing an
+// existing login: nothing runs, so it never waits, takes a code or holds a
+// listener.
+type importedFlow struct{ name string }
+
+func (f importedFlow) Name() string { return f.name }
+
+func (importedFlow) Start(context.Context) (signin.Challenge, error) {
+	return signin.Challenge{}, nil
+}
+
+func (importedFlow) Wait(context.Context, signin.Challenge) (*oauth.Token, *signin.Challenge, error) {
+	return nil, nil, nil
+}
+
+func (importedFlow) CodeEntry() bool { return false }
+
+func (importedFlow) SubmitCode(context.Context, string) (*oauth.Token, error) {
+	return nil, signin.ErrNoBrowserFlow
+}
+
+func (importedFlow) Close() {}
 
 // newSignInModel parses the model a start request asks to apply. A nil
 // target means no switch; a bad type is a client bug.
