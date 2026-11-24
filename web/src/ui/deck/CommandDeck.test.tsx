@@ -4,7 +4,7 @@ import { act } from 'preact/test-utils';
 import { ApiError, api } from '../../api/http';
 import { initialState } from '../../state/reducer';
 import { STARTING_TEXT, type Failure } from '../../state/failure';
-import { deckMode } from '../../state/palette';
+import { closePalette, deckMode, paletteOpen } from '../../state/palette';
 import { actions, state } from '../../state/store';
 import { CommandDeck, MAX_ATTACHMENT_BYTES, shellFromPalette } from './CommandDeck';
 
@@ -432,6 +432,7 @@ describe('deck modes', () => {
 
   afterEach(() => {
     deckMode.value = null;
+    closePalette();
     root.remove();
   });
 
@@ -496,6 +497,18 @@ describe('deck modes', () => {
     expect(error().textContent).toBe('gateway on fire');
     expect(error().getAttribute('role')).toBe('alert');
     expect(error().getAttribute('data-tone')).toBe('error');
+  });
+
+  it('types a slash into a note instead of opening the palette', async () => {
+    seed();
+    deckMode.value = 'note';
+    await mount();
+
+    const slash = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+    textarea().dispatchEvent(slash);
+
+    expect(slash.defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBeNull();
   });
 
   it('adds a note in note mode and leaves the mode on Escape', async () => {

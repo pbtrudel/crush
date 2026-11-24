@@ -193,8 +193,10 @@ export function CommandDeck() {
     // with keyCode 229, so isComposing alone is not enough.
     const composing = e.isComposing || e.keyCode === 229;
     // A slash on an empty deck opens the palette, the terminal's slash
-    // command entry; the character itself never lands in the prompt.
-    if (!composing && e.key === '/' && text === '' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // command entry; the character itself never lands in the prompt. A note
+    // is plain text, so the slash is just a slash there.
+    if (!composing && e.key === '/' && text === '' && deckMode.value !== 'note'
+      && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       openPalette('all');
       return;
