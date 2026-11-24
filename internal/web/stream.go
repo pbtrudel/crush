@@ -28,6 +28,7 @@ const (
 	frameShellOutput  = "shell_output"
 	frameModelChanged = "model_changed"
 	framePlanReady    = "plan_ready"
+	frameSecurePrompt = "secure_prompt"
 )
 
 type frame struct {

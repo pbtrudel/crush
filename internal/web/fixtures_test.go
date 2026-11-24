@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/stretchr/testify/require"
 )
 
@@ -154,6 +155,12 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
 			AgentReady: true,
 		}),
+		// The open GPG and SSH prompts, oldest first: the tab renders one
+		// dialog per entry and answers by source and id.
+		"secure_prompt": mk(frameSecurePrompt, map[string][]SecurePrompt{"prompts": {
+			fromPinentry(pinentryReq("p1")),
+			fromSSH(sshaskpass.PromptRequest{ID: "s2", Kind: sshaskpass.KindConfirm, Prompt: "Are you sure you want to continue connecting (yes/no)?"}),
+		}}),
 	}
 }
 

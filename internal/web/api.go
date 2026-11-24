@@ -52,6 +52,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.route(api, "POST /api/input-mode", g.handleInputMode)
 	g.route(api, "POST /api/questions/answer", g.handleAnswer)
 	g.route(api, "POST /api/questions/cancel", g.handleQuestionCancel)
+	g.registerPromptRoutes(api)
 	g.route(api, "GET /api/complete/files", g.handleCompleteFiles)
 	g.route(api, "POST /api/team/members/{member}/message", g.handleTeamMessage)
 	g.route(api, "POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)

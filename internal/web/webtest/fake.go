@@ -20,11 +20,13 @@ import (
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -114,8 +116,14 @@ type Fake struct {
 	Answers [][]question.Answer
 	// AnswerBatches records the batch each answer named.
 	AnswerBatches []string
-	Resolve       bool
-	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+	// pinentryOpen and sshOpen hold the prompt ids a tab can answer;
+	// lastSecret is the answer the last respond method delivered, which
+	// LastSecret returns.
+	pinentryOpen map[string]bool
+	sshOpen      map[string]bool
+	lastSecret   string
+	Resolve      bool
+	OnRun        func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
 	// OnSummarize, OnAsk and OnShell play a scripted agent for the browser
 	// action routes. A nil OnSummarize succeeds, a nil OnAsk falls back to
 	// AskAnswer, and a nil OnShell returns an empty shell response.
@@ -151,6 +159,8 @@ func NewFake() *Fake {
 		busy:          make(map[string]bool),
 		history:       make(map[string][]history.File),
 		diagnostics:   make(map[string]lsp.DiagnosticCounts),
+		pinentryOpen:  make(map[string]bool),
+		sshOpen:       make(map[string]bool),
 		skillContent:  make(map[string]string),
 		skillDisabled: make(map[string]bool),
 		mcpPromptText: make(map[string]string),
@@ -946,6 +956,108 @@ func (f *Fake) QuestionAnswer(batchID string, a []question.Answer) bool {
 func (f *Fake) QuestionCancel(batchID string) bool {
 	f.record("QuestionCancel:" + batchID)
 	return f.Resolve
+}
+
+// AddPinentryPrompt opens a GPG prompt and publishes the request event.
+func (f *Fake) AddPinentryPrompt(req pinentry.PromptRequest) {
+	f.mu.Lock()
+	f.pinentryOpen[req.ID] = true
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req})
+}
+
+// PinentryRespond answers an open GPG prompt. The call log names the id
+// only; the secret stays out of it.
+func (f *Fake) PinentryRespond(id, secret string) bool {
+	f.record("PinentryRespond:" + id)
+	f.mu.Lock()
+	if !f.pinentryOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.pinentryOpen, id)
+	f.lastSecret = secret
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	return true
+}
+
+// PinentryCancel dismisses an open GPG prompt.
+func (f *Fake) PinentryCancel(id string) bool {
+	f.record("PinentryCancel:" + id)
+	f.mu.Lock()
+	if !f.pinentryOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.pinentryOpen, id)
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	return true
+}
+
+// AddSSHPrompt opens an SSH prompt and publishes the request event.
+func (f *Fake) AddSSHPrompt(req sshaskpass.PromptRequest) {
+	f.mu.Lock()
+	f.sshOpen[req.ID] = true
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req})
+}
+
+// SSHRespond answers an open SSH prompt. The call log names the id only;
+// the secret stays out of it.
+func (f *Fake) SSHRespond(id, secret string) bool {
+	f.record("SSHRespond:" + id)
+	f.mu.Lock()
+	if !f.sshOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.sshOpen, id)
+	f.lastSecret = secret
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	return true
+}
+
+// SSHCancel dismisses an open SSH prompt.
+func (f *Fake) SSHCancel(id string) bool {
+	f.record("SSHCancel:" + id)
+	f.mu.Lock()
+	if !f.sshOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.sshOpen, id)
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	return true
+}
+
+// ResolveFromTerminal closes a prompt the way the TUI would, without
+// delivering a secret.
+func (f *Fake) ResolveFromTerminal(source, id string) {
+	f.mu.Lock()
+	switch source {
+	case "pinentry":
+		delete(f.pinentryOpen, id)
+	case "ssh":
+		delete(f.sshOpen, id)
+	}
+	f.mu.Unlock()
+	switch source {
+	case "pinentry":
+		f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	case "ssh":
+		f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	}
+}
+
+// LastSecret returns the answer the last respond method delivered.
+func (f *Fake) LastSecret() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSecret
 }
 
 // nextID returns a deterministic, per-fake unique ID. The scripted agent

@@ -341,6 +341,32 @@
       }
     }
   },
+  "secure_prompt": {
+    "seq": 1,
+    "type": "secure_prompt",
+    "payload": {
+      "prompts": [
+        {
+          "source": "pinentry",
+          "id": "p1",
+          "kind": "passphrase",
+          "title": "GPG passphrase",
+          "message": "Unlock the signing key",
+          "details": [
+            "Key: ABCDEF0123456789",
+            "Holder: Dev \u003cdev@example.com\u003e"
+          ]
+        },
+        {
+          "source": "ssh",
+          "id": "s2",
+          "kind": "confirm",
+          "title": "New Host",
+          "message": "OpenSSH has not seen this host before. Trust its key?"
+        }
+      ]
+    }
+  },
   "session": {
     "seq": 1,
     "type": "session",

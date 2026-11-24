@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/logtest"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -1946,4 +1947,17 @@ func TestClientWorkspaceSessionRename(t *testing.T) {
 	require.Equal(t, "Parser work", gotCalls[0].title)
 	require.Equal(t, "/v1/workspaces/ws-1/sessions/nope/rename", gotCalls[1].path)
 	require.Equal(t, http.MethodPost, gotCalls[1].method)
+}
+
+func TestClientWorkspacePinentryRespondNeverLogsSecret(t *testing.T) {
+	logs := logtest.Capture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+	require.False(t, ws.PinentryRespond("p1", "correct horse battery staple"))
+	require.False(t, ws.SSHRespond("s1", "correct horse battery staple"))
+	require.NotContains(t, logs.String(), "correct horse battery staple")
+	require.Contains(t, logs.String(), "Failed to answer pinentry prompt", "the failure is still logged, without the secret")
 }

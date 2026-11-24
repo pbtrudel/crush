@@ -481,7 +481,7 @@ func nextFrameOfType(ctx context.Context, t *testing.T, c *websocket.Conn, want 
 		require.NoError(t, err, "waiting for a %s frame", want)
 		var f testFrame
 		require.NoError(t, json.Unmarshal(data, &f))
-		if f.Type == want {
+		if want == "" || f.Type == want {
 			return f
 		}
 	}

@@ -5,8 +5,10 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,4 +78,36 @@ func TestPendingForgetsFinishedSession(t *testing.T) {
 	require.False(t, ok, "the finished session's batch is forgotten")
 	_, ok = p.question("q2")
 	require.True(t, ok, "another session's batch stays pending")
+}
+
+func TestPendingTracksSecurePrompts(t *testing.T) {
+	t.Parallel()
+	p := newPending()
+	req := pinentry.PromptRequest{
+		ID: "p1", Prompt: "Unlock the signing key", Kind: pinentry.KindPassphrase,
+		Key: pinentry.Key{KeyID: "ABCDEF0123456789"},
+	}
+	require.True(t, p.observe(pubsub.Event[pinentry.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req}))
+	prompts := p.securePrompts()
+	require.Len(t, prompts, 1)
+	require.Equal(t, "pinentry", prompts[0].Source)
+	require.Equal(t, "GPG passphrase", prompts[0].Title)
+	require.Equal(t, []string{"Key: ABCDEF0123456789"}, prompts[0].Details)
+
+	require.False(t, p.observe(pubsub.Event[pinentry.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req}),
+		"an unchanged prompt publishes nothing")
+
+	require.False(t, p.observe(pubsub.Event[pinentry.Notification]{Payload: pinentry.Notification{RequestID: "other"}}),
+		"a notification for an unknown prompt changes nothing")
+	require.True(t, p.observe(pubsub.Event[pinentry.Notification]{Payload: pinentry.Notification{RequestID: "p1"}}))
+	require.Empty(t, p.securePrompts())
+
+	ssh := sshaskpass.PromptRequest{ID: "s1", Prompt: "git@github.com's password: "}
+	require.True(t, p.observe(pubsub.Event[sshaskpass.PromptRequest]{Type: pubsub.CreatedEvent, Payload: ssh}))
+	prompts = p.securePrompts()
+	require.Len(t, prompts, 1)
+	require.Equal(t, "ssh", prompts[0].Source)
+	require.Equal(t, "password", prompts[0].Kind)
+	require.Equal(t, "SSH Password", prompts[0].Title)
+	require.Equal(t, []string{"git@github.com"}, prompts[0].Details)
 }

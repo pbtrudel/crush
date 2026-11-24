@@ -73,7 +73,10 @@ type Gateway struct {
 	done    chan struct{}
 	hub     *hub
 	pending *pending
-	idle    time.Duration
+	// securePubMu serialises publishing the open secure prompts, so a
+	// publish that read an older set can never land after a newer one.
+	securePubMu sync.Mutex
+	idle        time.Duration
 	// team rereads the Agent Team files; teamDone closes when its
 	// watcher settles on shutdown.
 	team     *teamWatcher
@@ -436,7 +439,9 @@ func (g *Gateway) pump(events <-chan any, last string) {
 				events = nil
 				continue
 			}
-			g.pending.observe(ev)
+			if g.pending.observe(ev) {
+				g.publishSecurePrompts()
+			}
 			if typ, raw, ok := encode(ev); ok {
 				g.hub.publish(typ, raw)
 			}
@@ -447,4 +452,13 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			}
 		}
 	}
+}
+
+// publishSecurePrompts tells every tab the open prompts. The set is read
+// and published under one lock, so a publish that read an older set can
+// never land after one that read a newer set.
+func (g *Gateway) publishSecurePrompts() {
+	g.securePubMu.Lock()
+	defer g.securePubMu.Unlock()
+	g.hub.publishJSON(frameSecurePrompt, map[string][]SecurePrompt{"prompts": g.pending.securePrompts()})
 }
