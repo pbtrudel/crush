@@ -118,10 +118,10 @@ func (g *Gateway) LaunchFile() (string, error) {
 // resetLaunchTimerLocked stops the TTL timer of the file it replaces and
 // starts one for lf. The caller holds launchMu.
 func (g *Gateway) resetLaunchTimerLocked(lf *launchFile) {
-	if g.launchTimer != nil {
-		g.launchTimer.Stop()
-	}
-	g.launchTimer = time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf) })
+	g.stopLaunchTimerLocked()
+	var timer *time.Timer
+	timer = time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf, timer) })
+	g.launchTimer = timer
 }
 
 // removeLaunchFile removes the current launch file, if any. A later
@@ -143,11 +143,13 @@ func (g *Gateway) stopLaunchTimerLocked() {
 	}
 }
 
-// expireLaunchFile removes lf unless a later LaunchFile replaced it.
-func (g *Gateway) expireLaunchFile(lf *launchFile) {
+// expireLaunchFile removes lf unless a later open replaced the file or
+// reset its timer. A timer that fired just before a reset can wait here
+// for the lock, so the timer identity matters as much as the file.
+func (g *Gateway) expireLaunchFile(lf *launchFile, timer *time.Timer) {
 	g.launchMu.Lock()
 	defer g.launchMu.Unlock()
-	if g.launch != lf {
+	if g.launch != lf || g.launchTimer != timer {
 		return
 	}
 	g.launch.remove()
