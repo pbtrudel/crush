@@ -71,16 +71,16 @@ func (g *Gateway) handleListMCP(w http.ResponseWriter, r *http.Request) {
 	// A server disabled for this repository is not asked to authenticate:
 	// disabling a server that needs OAuth must stop the prompt, the way
 	// the TUI's filterAuthPending does.
-	needsAuth := make(map[string]struct{})
+	pendingAuth := make(map[string]struct{})
 	for _, p := range g.ws.MCPPendingAuth() {
 		if _, disabled := repoDisabled[p.Name]; !disabled {
-			needsAuth[p.Name] = struct{}{}
+			pendingAuth[p.Name] = struct{}{}
 		}
 	}
 	servers := make([]mcpServerInfo, 0, len(states))
 	for name, info := range states {
 		_, disabled := repoDisabled[name]
-		_, needsAuth := needsAuth[name]
+		_, needsAuth := pendingAuth[name]
 		servers = append(servers, mcpServerInfo{
 			Name:      name,
 			State:     info.State.String(),
