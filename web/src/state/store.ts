@@ -86,10 +86,12 @@ function isNotPending(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'not_pending';
 }
 
-// promptExpired says a prompt left while its answer or cancel was on the
-// way. The server refuses those with not_pending, the same error a prompt
-// the terminal already answered gives.
+// EXPIRED_TEXT is what a prompt that left before its answer landed says.
 const EXPIRED_TEXT = 'The prompt was already answered or has expired.';
+
+// promptExpired toasts a prompt that left while its answer or cancel was on
+// the way. The server refuses those with not_pending, the same error a
+// prompt the terminal already answered gives.
 const promptExpired = () => dispatch((s) => pushToast(s, 'info', EXPIRED_TEXT));
 
 // queueChanged reports the frames after which the queue may have changed.

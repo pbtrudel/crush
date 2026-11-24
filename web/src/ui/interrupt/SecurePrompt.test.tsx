@@ -124,14 +124,20 @@ describe('SecurePromptDialog', () => {
     expect(fieldLabel()!.textContent).toBe('Password');
   });
 
-  it('clears the passphrase before the answer settles', async () => {
+  it('clears the passphrase before the answer call', async () => {
     const pending = deferred<null>();
-    const spy = vi.spyOn(actions, 'answerSecure').mockReturnValue(pending.promise);
+    // The field is already empty when the action is asked to answer, so no
+    // later render or request can read the secret back out of it.
+    let seenAtCall = 'unset';
+    vi.spyOn(actions, 'answerSecure').mockImplementation((_p, secret) => {
+      seenAtCall = `${input()!.value}/${secret}`;
+      return pending.promise;
+    });
     await mount(<SecurePromptDialog prompt={pass} disabled={false} />);
     await type('hunter2');
     await act(() => { submit(); });
+    expect(seenAtCall).toBe('/hunter2');
     expect(input()!.value).toBe('');
-    expect(spy).toHaveBeenCalledWith(pass, 'hunter2');
     expect(JSON.stringify(state.value)).not.toContain('hunter2');
     expect(root.innerHTML).not.toContain('hunter2');
     await flush();
@@ -193,6 +199,22 @@ describe('SecurePromptDialog', () => {
     expect(spy).toHaveBeenCalledWith(pass);
   });
 
+  it('returns focus to the opener when the prompt goes away', async () => {
+    seed({ securePrompts: [pass] });
+    const opener = document.createElement('button');
+    opener.textContent = 'deck';
+    document.body.append(opener);
+    opener.focus();
+    await mount(<Interrupt />);
+    expect(document.activeElement).toBe(input());
+    await act(() => {
+      state.value = { ...state.value, securePrompts: [] };
+    });
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it('announces why the last attempt failed', async () => {
     await mount(<SecurePromptDialog prompt={{ ...pass, retry: 'Bad passphrase (try 2 of 3)' }} disabled={false} />);
     expect(alertBox()!.textContent).toContain('Bad passphrase (try 2 of 3)');
@@ -214,6 +236,33 @@ describe('SecurePromptDialog', () => {
     pending.resolve(null);
   });
 
+  it('closes the field while the answer is in flight', async () => {
+    const pending = deferred<null>();
+    vi.spyOn(actions, 'answerSecure').mockReturnValue(pending.promise);
+    await mount(<SecurePromptDialog prompt={pass} disabled={false} />);
+    expect(input()!.readOnly).toBe(false);
+    await type('hunter2');
+    await act(() => { submit(); });
+    expect(input()!.readOnly).toBe(true);
+    await act(async () => {
+      pending.resolve(null);
+      await Promise.resolve();
+    });
+    // The prompt is settled until its frame arrives, so the field stays
+    // closed for another attempt.
+    expect(input()!.readOnly).toBe(true);
+  });
+
+  it('re-opens the field after a failed answer', async () => {
+    vi.spyOn(actions, 'answerSecure').mockResolvedValue({ tone: 'error', text: 'The request did not reach crush' });
+    await mount(<SecurePromptDialog prompt={pass} disabled={false} />);
+    await type('hunter2');
+    await act(() => { submit(); });
+    await flush();
+    expect(alertBox()).not.toBeNull();
+    expect(input()!.readOnly).toBe(false);
+  });
+
   it('keeps the field but refuses to send while the link is down', async () => {
     const answer = vi.spyOn(actions, 'answerSecure');
     const cancel = vi.spyOn(actions, 'cancelSecure');
@@ -225,6 +274,7 @@ describe('SecurePromptDialog', () => {
     expect(answer).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
     expect(input()!.value).toBe('x');
+    expect(input()!.readOnly).toBe(false);
     expect(button('Unlock').getAttribute('aria-disabled')).toBe('true');
     expect(button('Cancel').getAttribute('aria-disabled')).toBe('true');
     expect(root.querySelector('[role="status"]')!.textContent).toBe('Reconnecting to crush');

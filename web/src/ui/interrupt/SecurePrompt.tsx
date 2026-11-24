@@ -63,9 +63,16 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
     if (input.current) input.current.value = '';
   }, [prompt.id]);
 
-  // Focus follows the dialog: a prompt replaced by another, or a reconnect,
-  // must not leave it on the inert page behind.
+  // useDialogFocus captures the opener before it moves focus, so the first
+  // focus belongs to it and a close can give the opener its focus back. From
+  // then on this effect refocuses when a reconnect or a replaced prompt
+  // leaves focus outside the dialog.
+  const firstFocus = useRef(true);
   useLayoutEffect(() => {
+    if (firstFocus.current) {
+      firstFocus.current = false;
+      return;
+    }
     const el = root.current;
     if (!el) return;
     const active = document.activeElement;
@@ -82,9 +89,9 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
     setFocusTick((n) => n + 1);
   }, [disabled]);
 
-  // answer sends the one answer this dialog allows at a time. The secret is
-  // a local of this call: it is never stored in a state or a ref.
-  const answer = async (secret: string) => {
+  // run guards one request at a time, and drops a result whose prompt was
+  // replaced while the request was on its way.
+  const run = async (call: () => Promise<Failure | null>) => {
     if (busy.current || settled || disabled) return;
     busy.current = true;
     setSending(true);
@@ -92,7 +99,7 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
     const gen = generation.current;
     const id = prompt.id;
     try {
-      const err = await actions.answerSecure(prompt, secret);
+      const err = await call();
       if (!alive.current || gen !== generation.current || currentId.current !== id) return;
       if (err) setFailure(err);
       else setSettled(true);
@@ -108,29 +115,13 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
     }
   };
 
-  // cancel dismisses the prompt once, whether the key or the button asked.
-  // A failure re-arms the dialog so the terminal can still answer.
-  const cancel = async () => {
-    if (busy.current || settled || disabled || touch) return;
-    busy.current = true;
-    setSending(true);
-    setFailure(null);
-    const gen = generation.current;
-    const id = prompt.id;
-    try {
-      const err = await actions.cancelSecure(prompt);
-      if (!alive.current || gen !== generation.current || currentId.current !== id) return;
-      if (err) setFailure(err);
-      else setSettled(true);
-    } catch (err) {
-      if (alive.current && gen === generation.current && currentId.current === id) setFailure(describeFailure(err));
-    } finally {
-      if (gen === generation.current && currentId.current === id) {
-        busy.current = false;
-        setSending(false);
-      }
-    }
-  };
+  // answer sends the secret the field held; it is a local of the call, so
+  // no state or ref keeps it.
+  const answer = (secret: string) => run(() => actions.answerSecure(prompt, secret));
+
+  // cancel dismisses the prompt once. A touch prompt is answered by the key
+  // itself, so the browser never cancels one.
+  const cancel = () => (touch ? undefined : run(() => actions.cancelSecure(prompt)));
 
   const submit = (e: Event) => {
     e.preventDefault();
@@ -197,6 +188,7 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
                 type="password"
                 autocomplete="off"
                 spellcheck={false}
+                readOnly={sending || settled}
                 aria-disabled={locked ? 'true' : undefined}
               />
             </label>
