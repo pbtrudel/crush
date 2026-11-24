@@ -60,6 +60,9 @@ type Options struct {
 	// SignInFlow creates the OAuth flow a browser sign-in runs. Nil uses
 	// the shared flows in internal/oauth/signin.
 	SignInFlow func(providerID string) (signin.Flow, error)
+	// Now returns the current time the sign-in timestamps are measured
+	// from. Nil uses time.Now; webfake pins it from WEBFAKE_CLOCK.
+	Now func() time.Time
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -141,6 +144,8 @@ type Gateway struct {
 	signinClosed bool
 	// signInFlowFn is Options.SignInFlow; nil falls back to signin.New.
 	signInFlowFn func(string) (signin.Flow, error)
+	// now is Options.Now; nil falls back to time.Now.
+	now func() time.Time
 	// launchMu guards launch, the private redirect file handed to the
 	// browser opener so the token stays out of its arguments.
 	launchMu  sync.Mutex
@@ -200,6 +205,10 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		signInFlowFn = signin.New
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	slots := newDiffSlots(maxConcurrentDiffs)
 	g := &Gateway{
@@ -227,6 +236,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		knownProvidersFn:     knownProvidersFn,
 		testAPIKeyFn:         testAPIKeyFn,
 		signInFlowFn:         signInFlowFn,
+		now:                  now,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,

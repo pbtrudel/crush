@@ -1333,3 +1333,31 @@ func TestSignInModelStepSurvivesACancelDuringSaving(t *testing.T) {
 	require.Contains(t, string(status), `"model_applied":true`)
 	require.Contains(t, ws.CallLog(), "UpdatePreferredModel:global:main:xai/grok-4")
 }
+
+// TestSignInExpiresAtUsesTheGatewayClock pins the clock seam: a device
+// code's expiry is measured from Options.Now, so webfake can date a flow
+// from WEBFAKE_CLOCK.
+func TestSignInExpiresAtUsesTheGatewayClock(t *testing.T) {
+	t.Parallel()
+	fixed := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	flow := webtest.NewFakeFlow(t)
+	flow.Challenge = signin.Challenge{UserCode: "U", ExpiresIn: 900}
+	fake := webtest.NewFake()
+	g, err := Start(t.Context(), Options{
+		Workspace:      fake,
+		KnownProviders: testKnownProviders,
+		TestAPIKey:     acceptOnlyValidKey,
+		SignInFlow:     func(string) (signin.Flow, error) { return flow, nil },
+		Now:            func() time.Time { return fixed },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	known, _ := testKnownProviders(nil)
+	fake.SetCatalog(known)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	var st SignInState
+	require.NoError(t, json.Unmarshal(body, &st))
+	require.Equal(t, fixed.Unix()+900, st.ExpiresAt)
+}

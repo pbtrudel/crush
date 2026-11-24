@@ -419,7 +419,7 @@ func (g *Gateway) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st := run.waiting(challenge)
+	st := run.waiting(challenge, g.now().Unix())
 	g.signinMu.Lock()
 	if g.signinClosed {
 		g.signinMu.Unlock()
@@ -572,7 +572,7 @@ func (g *Gateway) waitSignIn(run *signinRun, c signin.Challenge) {
 		}
 		if next != nil {
 			c = *next
-			g.publishSignIn(run, run.waiting(c))
+			g.publishSignIn(run, run.waiting(c, g.now().Unix()))
 			continue
 		}
 		if tok != nil {
@@ -690,8 +690,10 @@ func (r *signinRun) running() bool {
 }
 
 // waiting applies a challenge to the run's state. Code entry is on only for
-// a browser challenge whose flow can exchange a pasted code.
-func (r *signinRun) waiting(c signin.Challenge) SignInState {
+// a browser challenge whose flow can exchange a pasted code, and a device
+// code's expiry is measured from the gateway clock, not the wall one, so
+// webfake can date a flow from WEBFAKE_CLOCK.
+func (r *signinRun) waiting(c signin.Challenge, now int64) SignInState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.state
@@ -709,7 +711,7 @@ func (r *signinRun) waiting(c signin.Challenge) SignInState {
 		st.CodeEntry = r.flow.CodeEntry()
 	}
 	if c.ExpiresIn > 0 {
-		st.ExpiresAt = time.Now().Unix() + int64(c.ExpiresIn)
+		st.ExpiresAt = now + int64(c.ExpiresIn)
 	}
 	return st
 }

@@ -48,6 +48,16 @@ func TestSeedM4(t *testing.T) {
 	require.Equal(t, "https://github.com/login/device", copilot.Challenge.VerificationURL)
 	require.Equal(t, 900, copilot.Challenge.ExpiresIn)
 
+	// The flow names match internal/oauth/signin, which the dialog shows.
+	for _, tc := range []struct{ provider, name string }{
+		{"openai", "ChatGPT"},
+		{"xai", "Grok"},
+	} {
+		flow, err := seams.SignInFlow(tc.provider)
+		require.NoError(t, err, tc.provider)
+		require.Equal(t, tc.name, flow.Name(), tc.provider)
+	}
+
 	require.Error(t, seams.TestAPIKey(t.Context(), catwalk.Provider{}, "sk-wrong", config.IdentityResolver()))
 	require.NoError(t, seams.TestAPIKey(t.Context(), catwalk.Provider{}, "sk-valid", config.IdentityResolver()))
 

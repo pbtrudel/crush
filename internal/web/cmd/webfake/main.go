@@ -34,6 +34,9 @@ func main() {
 		fake.WorkDir = wd
 	}
 	clock := time.Now()
+	// now pins the gateway's sign-in timestamps to the seeded clock, so a
+	// Playwright run sees a stable expires_at.
+	var now func() time.Time
 	if v := os.Getenv("WEBFAKE_CLOCK"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
@@ -41,6 +44,7 @@ func main() {
 			os.Exit(1)
 		}
 		clock = t
+		now = func() time.Time { return clock }
 	}
 	teamDir, err := os.MkdirTemp("", "webfake-team-")
 	if err != nil {
@@ -60,6 +64,7 @@ func main() {
 		Workspace:            fake,
 		AgentTeamsDir:        teamDir,
 		OnInputModeRequested: func(plan bool) { modeRequests <- plan },
+		Now:                  now,
 	}
 	// The m3 scenario carries the M3 seeds and the plan handoff the terminal
 	// would confirm; the m4 scenario adds the sign-in and secure prompt

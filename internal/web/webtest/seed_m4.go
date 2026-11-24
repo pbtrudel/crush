@@ -74,11 +74,11 @@ func m4Flow(providerID string, done <-chan struct{}) *FakeFlow {
 		}
 		flow.Token = &oauth.Token{AccessToken: "webfake-copilot-token"}
 	case string(catwalk.InferenceProviderOpenAI):
-		flow.FlowName = "OpenAI"
+		flow.FlowName = "ChatGPT"
 		flow.Challenge = signin.Challenge{VerificationURL: "http://127.0.0.1:9/start"}
 		flow.Token = &oauth.Token{AccessToken: "webfake-openai-token"}
 	case string(catwalk.InferenceProviderXAI):
-		flow.FlowName = "xAI"
+		flow.FlowName = "Grok"
 		flow.HasCodeEntry = true
 		flow.CodeOK = "good-code"
 		flow.Challenge = signin.Challenge{VerificationURL: "http://127.0.0.1:9/start"}
