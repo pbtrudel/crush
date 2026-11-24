@@ -2,12 +2,12 @@ import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, InputMode, Message, PermissionMode, QuestionAnswer, SecurePrompt, Snapshot, WireEvent,
+  Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, Snapshot, WireEvent,
 } from '../api/types';
 import {
-  adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
-  dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn, startShell,
-  unmarkAnswered,
+  adoptSession, applySignIn, clearAwsSso, dismissToast, dropQuestion as dropQuestionFrom, initialState,
+  inspect, markAnswered, dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn,
+  startShell, unmarkAnswered,
   type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
@@ -447,6 +447,31 @@ export const actions = {
       return describeFailure(err);
     }
   },
+  // signInKey saves a provider key and returns what the gateway answered.
+  // The key is a local of the call: no state or signal keeps it.
+  signInKey: (provider: string, apiKey: string, model?: ModelTarget) =>
+    api.signInKey(provider, apiKey, model),
+  // signInStart begins one OAuth sign-in and records the challenge it
+  // answered with, so the dialog shows it before the frame lands.
+  async signInStart(provider: string, model?: ModelTarget): Promise<void> {
+    const st = await api.signInStart(provider, model);
+    dispatch((s) => applySignIn(s, st));
+  },
+  // signInCancel stops a running flow. A flow that already finished answers
+  // no_flow, which is not a failure to show.
+  async signInCancel(flowId: string): Promise<void> {
+    try {
+      await api.signInCancel(flowId);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'no_flow') return;
+      throw err;
+    }
+  },
+  // signInCode hands back a code pasted from the provider's page. A refused
+  // code reaches the dialog as a signin frame, not as this answer.
+  signInCode: (flowId: string, code: string) => api.signInCode(flowId, code),
+  // dismissAwsSso clears the AWS SSO card; the next refresh opens a new one.
+  dismissAwsSso: () => dispatch((s) => clearAwsSso(s)),
   async messageTeammate(member: string, text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
     if (!sid) return { tone: 'error', text: 'There is no session to message from' };

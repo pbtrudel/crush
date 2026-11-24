@@ -27,6 +27,7 @@ const EXPECTED_SHEETS = [
   'panels.css',
   'sessions.css',
   'shell.css',
+  'signin.css',
   'stage.css',
   'systems.css',
   'team.css',

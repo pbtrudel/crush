@@ -28,8 +28,11 @@ import {
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
+import { closeSignIn, escapeSignIn, signInOpen } from '../state/signin';
 import { ModelSelector } from './models/ModelSelector';
 import { SystemsPanel } from './systems/SystemsPanel';
+import { SignInDialog } from './signin/SignInDialog';
+import { AwsSsoCard } from './signin/AwsSsoCard';
 
 export function App() {
   const s = state.value;
@@ -79,6 +82,7 @@ export function App() {
         if (sessionsOpen.value) closeSessions();
         if (modelsOpen.value) closeModels();
         if (systemsOpen.value !== null) closeSystems();
+        if (signInOpen.value) closeSignIn();
         togglePalette();
         return;
       }
@@ -113,6 +117,13 @@ export function App() {
       if (e.key === 'Escape' && systemsOpen.value !== null) {
         e.preventDefault();
         escapeSystems();
+        return;
+      }
+      // The sign-in dialog has no inner layer either; its trap returns focus
+      // to the control that opened it.
+      if (e.key === 'Escape' && signInOpen.value) {
+        e.preventDefault();
+        escapeSignIn();
         return;
       }
       // An open Display menu owns Escape: it closes itself, so the inspector
@@ -185,6 +196,8 @@ export function App() {
       <SessionSwitcher inert={modal} />
       <ModelSelector inert={modal} />
       <SystemsPanel inert={modal} />
+      <SignInDialog inert={modal} />
+      <AwsSsoCard inert={modal} />
       <Toasts />
       <CineHint />
     </div>

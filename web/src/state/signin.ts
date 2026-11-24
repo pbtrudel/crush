@@ -14,6 +14,12 @@ export function closeSignIn(): void {
   signInOpen.value = null;
 }
 
+// signInModel is the model the dialog applies once the credential is
+// saved, when the re-auth toast named one.
+export function signInModel(): ModelTarget | undefined {
+  return signInOpen.value?.model;
+}
+
 // escapeSignIn handles Escape while the dialog is open and reports whether
 // it consumed the key, so the layer below never sees it.
 export function escapeSignIn(): boolean {

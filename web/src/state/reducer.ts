@@ -472,6 +472,34 @@ function applyAgentEvent(s: State, e: AgentEvent): State {
   return s;
 }
 
+// clearAwsSso dismisses the AWS SSO card. A later command starts a fresh
+// card, as the next refresh does.
+export function clearAwsSso(s: State): State {
+  return s.awsSso === null ? s : { ...s, awsSso: null };
+}
+
+// signInFinished reports whether a phase ends the flow.
+function signInFinished(state: string): boolean {
+  return state === 'done' || state === 'error' || state === 'cancelled';
+}
+
+// applySignIn records the sign-in the gateway named and announces a
+// finished one this tab has not shown yet. A start applies its answer here
+// so the panel shows the challenge without waiting for the frame.
+export function applySignIn(s: State, st: SignInState): State {
+  const current = s.signin;
+  // The token frame can beat the start's own answer. A waiting state for a
+  // flow that already finished is that late answer and must not reopen it.
+  if (current && current.flow_id === st.flow_id && signInFinished(current.state) && !signInFinished(st.state)) {
+    return s;
+  }
+  const announced = current?.flow_id === st.flow_id && current.state === 'done';
+  const out = { ...s, signin: st };
+  return st.state === 'done' && !announced
+    ? pushToast(out, 'info', `Signed in to ${st.provider_name}.`)
+    : out;
+}
+
 export function reduce(s: State, f: Frame): State {
   const next = { ...s, lastSeq: Math.max(s.lastSeq, f.seq) };
   const ev = f.payload as WireEvent<any>;
@@ -603,12 +631,7 @@ export function reduce(s: State, f: Frame): State {
       // only a new frame is news. The server drops frames from a replaced
       // run, so no flow_id check is needed here.
       if (f.seq <= s.lastSeq) return next;
-      const st = f.payload as SignInState;
-      const announced = s.signin?.flow_id === st.flow_id && s.signin.state === 'done';
-      const out = { ...next, signin: st };
-      return st.state === 'done' && !announced
-        ? pushToast(out, 'info', `Signed in to ${st.provider_name}.`)
-        : out;
+      return applySignIn(next, f.payload as SignInState);
     }
     case 'permission_request':
       return { ...next, permissions: upsertPermission(s.permissions, ev.payload as PermissionRequest) };

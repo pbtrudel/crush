@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../state/__fixtures__/events.json';
-import type { Frame, QuestionRequest } from '../api/types';
+import type { Frame, QuestionRequest, SecurePrompt } from '../api/types';
+import { ApiError, api } from '../api/http';
 import { cinematic, setCinematic } from '../state/cinematic';
 import { resetWebglProbe } from '../state/effects';
-import { closeSessions, deckMode, openSessions, sessionsOpen } from '../state/palette';
+import {
+  closePalette, closeSessions, deckMode, openPalette, openSessions, paletteOpen, sessionsOpen,
+} from '../state/palette';
 import { initialState, reduce } from '../state/reducer';
+import { closeSignIn, openSignIn, signInOpen } from '../state/signin';
 import { actions, state } from '../state/store';
 import { App } from './App';
 
@@ -32,6 +36,8 @@ afterEach(async () => {
   root.remove();
   setCinematic(false);
   closeSessions();
+  closeSignIn();
+  closePalette();
   deckMode.value = null;
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
@@ -142,5 +148,56 @@ describe('Escape under the interrupt layer', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(sessionsOpen.value).toBe(true);
     expect(state.value.inspected?.sessionId).toBe('sub-1');
+  });
+});
+
+describe('Escape and the sign-in dialog', () => {
+  const prompt: SecurePrompt = {
+    source: 'pinentry', id: 'p1', kind: 'passphrase', title: 'GPG passphrase', message: 'Unlock the signing key',
+  };
+
+  function stubSignIn() {
+    vi.spyOn(api, 'signInTargets').mockResolvedValue({ providers: [] });
+    vi.spyOn(api, 'signInStatus').mockRejectedValue(new ApiError(404, 'no_flow', 'no sign-in has started'));
+  }
+
+  async function mountApp() {
+    await act(() => { render(<App />, root); });
+  }
+
+  it('closes the sign-in dialog', async () => {
+    stubSignIn();
+    await mountApp();
+    await act(() => { openSignIn('anthropic'); });
+    expect(root.querySelector('[role="dialog"][aria-label="Sign in"]')).not.toBeNull();
+
+    await escape();
+
+    expect(signInOpen.value).toBeNull();
+  });
+
+  it('closes the palette before the sign-in dialog below it', async () => {
+    stubSignIn();
+    await mountApp();
+    await act(() => { openSignIn('anthropic'); });
+    await act(() => { openPalette('all'); });
+
+    await escape();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(signInOpen.value).not.toBeNull();
+  });
+
+  it('is ignored while a secure prompt owns the key', async () => {
+    stubSignIn();
+    const cancel = vi.spyOn(actions, 'cancelSecure').mockResolvedValue(null);
+    state.value = { ...state.value, securePrompts: [prompt] };
+    await mountApp();
+    await act(() => { openSignIn('anthropic'); });
+
+    await escape();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(signInOpen.value).not.toBeNull();
   });
 });
