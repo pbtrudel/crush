@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strconv"
+	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agentrun"
@@ -213,6 +214,25 @@ func (g *Gateway) seedModel() {
 	g.modelMu.Lock()
 	g.lastModel = info
 	g.modelMu.Unlock()
+}
+
+// watchModelLoop is the model watch goroutine. It reads the workspace on
+// its own ticker instead of the pump's, because in client mode the reads
+// are HTTP calls with no timeout: a stalled one must not stop the events
+// every tab receives. A tick that fires while the previous read still runs
+// is dropped by the ticker. It returns when the gateway shuts down.
+func (g *Gateway) watchModelLoop(interval time.Duration) {
+	defer close(g.modelDone)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-g.ctx.Done():
+			return
+		case <-t.C:
+			g.watchModel()
+		}
+	}
 }
 
 // watchModel is one model watch tick: it reads readiness before the model,

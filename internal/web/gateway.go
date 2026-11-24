@@ -77,6 +77,9 @@ type Gateway struct {
 	// watcher settles on shutdown.
 	team     *teamWatcher
 	teamDone chan struct{}
+	// modelDone closes when the model watch goroutine settles on
+	// shutdown.
+	modelDone chan struct{}
 	// fileStats memoizes the edited-file line counts every snapshot and
 	// file list asks for.
 	fileStats *fileStatCache
@@ -160,6 +163,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
 		team:       newTeamWatcher(teamDir(opts)),
 		teamDone:   make(chan struct{}),
+		modelDone:  make(chan struct{}),
 		fileStats:  newFileStatCache(slots),
 		diffs:      slots,
 		shells:     make(map[string]context.CancelFunc),
@@ -184,6 +188,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	// The model the hub starts from is the one at load, seeded before the
 	// pump starts so an unchanged model never publishes a frame.
 	g.seedModel()
+	go g.watchModelLoop(modelWatchInterval)
 	// Subscribe before Start returns so no event emitted right after it
 	// is lost. The session the terminal views is read here, not in the
 	// pump goroutine: a goroutine that starts late would adopt a session
@@ -378,10 +383,15 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
 	g.cancel()
-	// The watcher settles on its own, but a caller's deadline outranks it:
-	// an expired context must not leave Shutdown waiting on a file read.
+	// The watchers settle on their own, but a caller's deadline outranks
+	// them: an expired context must not leave Shutdown waiting on a file
+	// read or a workspace call that never returns.
 	select {
 	case <-g.teamDone:
+	case <-ctx.Done():
+	}
+	select {
+	case <-g.modelDone:
 	case <-ctx.Done():
 	}
 	err := g.srv.Shutdown(ctx)
@@ -393,10 +403,10 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 // terminal is viewing. Polling keeps the TUI free of web-specific hooks.
 const followInterval = 250 * time.Millisecond
 
-// modelWatchTicks is how many follow ticks pass between model checks. A
+// modelWatchInterval is how often the gateway checks the agent's model. A
 // change made in the terminal reaches a tab within two seconds, which is
 // often enough for the HUD and cheap enough to poll.
-const modelWatchTicks = 8
+const modelWatchInterval = 2 * time.Second
 
 // pump turns workspace events into frames and reports session and model
 // changes the terminal makes. last is the session the terminal was viewing
@@ -404,7 +414,6 @@ const modelWatchTicks = 8
 func (g *Gateway) pump(events <-chan any, last string) {
 	ticker := time.NewTicker(followInterval)
 	defer ticker.Stop()
-	ticks := 0
 	for {
 		select {
 		case <-g.ctx.Done():
@@ -425,10 +434,6 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			if cur := g.ws.CurrentSessionID(); cur != last {
 				last = cur
 				g.hub.publishJSON(frameFollow, map[string]string{"session_id": cur})
-			}
-			ticks++
-			if ticks%modelWatchTicks == 0 {
-				g.watchModel()
 			}
 		}
 	}
