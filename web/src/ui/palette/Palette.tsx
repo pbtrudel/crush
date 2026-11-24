@@ -225,7 +225,6 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
       case ACTIONS.reloadSkills: await api.reloadSkills(); closePalette(); return;
       case ACTIONS.toggleSkills: openPalette('skills'); return;
       case ACTIONS.drawer: toggleDrawer(); closePalette(); return;
-      case ACTIONS.cinematic: setCinematic(!cinematic.value); closePalette(); return;
       case ACTIONS.display: closePalette(); openDisplayMenu(); return;
       case ACTIONS.reloadConfig: await api.reloadConfig(); closePalette(); return;
       case ACTIONS.thinking: await api.setReasoning({ think: !s.model.think }); closePalette(); return;
