@@ -32,12 +32,18 @@ function RunCard({ id, run }: { id: string; run: ShellRun }) {
   const [cancelling, setCancelling] = useState(false);
   const [cancelFailure, setCancelFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
-  // Cancel can unmount the moment the run finishes. Its focus is tracked
-  // here, so the card can take it instead of letting it fall to the body.
-  const cancelFocused = useRef(false);
+  // Cancel can unmount the moment the run finishes, and a browser moves the
+  // focus of a removed control to the body before a layout effect can look.
+  // Read the holder while the button is still in the document, then hand the
+  // focus to the card once the done render has committed.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const focusCard = useRef(false);
   const card = useRef<HTMLElement>(null);
   const well = useRef<HTMLPreElement>(null);
   const pinned = useRef(true);
+  if (run.done && cancelRef.current !== null && document.activeElement === cancelRef.current) {
+    focusCard.current = true;
+  }
 
   // The well shows the tail as output streams, until the reader scrolls up.
   useLayoutEffect(() => {
@@ -46,10 +52,10 @@ function RunCard({ id, run }: { id: string; run: ShellRun }) {
   }, [run.output]);
 
   // Only a Cancel that held the focus hands it to the card.
-  useEffect(() => {
-    if (!run.done) return;
-    if (cancelFocused.current) card.current?.focus();
-    cancelFocused.current = false;
+  useLayoutEffect(() => {
+    if (!run.done || !focusCard.current) return;
+    focusCard.current = false;
+    card.current?.focus();
   }, [run.done]);
 
   // A done card waits for its persisted message, then drops itself.
@@ -67,9 +73,13 @@ function RunCard({ id, run }: { id: string; run: ShellRun }) {
       await api.cancelShell(id);
       setCancelFailure(null);
     } catch (err) {
-      // The run already finished, and the done frame is on its way: the
-      // card settles on its own, so a late cancel is not an error.
-      if (!(err instanceof ApiError && err.code === 'unknown_run')) {
+      // The gateway no longer holds the run: no done frame is coming, so a
+      // late cancel takes the card with it.
+      if (err instanceof ApiError && err.code === 'unknown_run') {
+        // The gateway no longer holds the run, so no done frame will come
+        // and the card has nothing left to show.
+        actions.removeShell(id);
+      } else {
         setCancelFailure(describeFailure(err).text);
       }
     } finally {
@@ -86,10 +96,9 @@ function RunCard({ id, run }: { id: string; run: ShellRun }) {
           <button
             type="button"
             class="btn btn--ghost shell-card__cancel"
+            ref={cancelRef}
             aria-disabled={cancelling ? 'true' : undefined}
             aria-busy={cancelling}
-            onFocus={() => { cancelFocused.current = true; }}
-            onBlur={() => { cancelFocused.current = false; }}
             onClick={() => void cancel()}
           >Cancel</button>
         )}

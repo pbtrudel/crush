@@ -5,7 +5,7 @@ import { cinematic } from '../../state/cinematic';
 import type { FailureTone } from '../../state/failure';
 import { deckMode, openPalette } from '../../state/palette';
 import { activeMention, applyMention } from './mention';
-import { modeFor, payloadFor } from './modes';
+import { leaveNoteMode, modeFor, payloadFor } from './modes';
 
 // The gateway reads the whole prompt request through MaxBytesReader with a
 // 32 MiB limit (maxPromptBytes, internal/web/api.go), so the multipart
@@ -80,7 +80,7 @@ export function CommandDeck() {
       if (ended) return;
       const next = text.startsWith('!') ? text : `!${text}`;
       // The action leaves note mode: the bang is what makes the mode here.
-      deckMode.value = null;
+      leaveNoteMode();
       setText(next);
       setCaret(next.length);
       requestAnimationFrame(() => {
@@ -220,7 +220,7 @@ export function CommandDeck() {
     // inspector and cinematic handlers.
     if (e.key === 'Escape' && deckMode.value === 'note') {
       e.preventDefault();
-      deckMode.value = null;
+      leaveNoteMode();
       return;
     }
     if (!composing && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); }

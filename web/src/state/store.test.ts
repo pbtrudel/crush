@@ -522,4 +522,20 @@ describe('the side answer', () => {
     await expect(pending).resolves.toBeUndefined();
     expect(sideAnswer.value).toBeNull();
   });
+
+  it('dismisses the card and makes a late answer a no-op when the tab adopts another session', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask').mockReturnValue(slow.promise);
+
+    const pending = actions.ask('Why?');
+    expect(sideAnswer.value?.question).toBe('Why?');
+
+    dispatch((s) => adoptSession(s, 's2'));
+    expect(sideAnswer.value).toBeNull();
+
+    slow.resolve({ answer: 'late answer' });
+    await expect(pending).resolves.toBeUndefined();
+    expect(sideAnswer.value).toBeNull();
+  });
 });

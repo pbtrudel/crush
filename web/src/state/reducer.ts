@@ -53,6 +53,10 @@ export interface State {
   activity: Record<string, AgentCall>;
   inspected: Inspected | null;
   shells: Record<string, ShellRun>;
+  // droppedShells names the runs whose cards already left for good: the 202
+  // that starts a run can land after the run's own frames, so its answer
+  // must not bring a card back.
+  droppedShells: Record<string, true>;
 }
 
 export function initialState(): State {
@@ -64,6 +68,7 @@ export function initialState(): State {
     permissions: [], question: null, questionQueue: [], busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
     files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null, shells: {},
+    droppedShells: {},
   };
 }
 
@@ -133,6 +138,7 @@ export function adoptSession(s: State, id: string): State {
     activity: {},
     inspected: null,
     shells: {},
+    droppedShells: {},
   };
 }
 
@@ -262,6 +268,7 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     agentReady: snap.agent_ready ?? true,
     planReady: snap.plan_ready_session_id ?? '',
     shells: snap.current_session_id === s.sessionId ? s.shells : {},
+    droppedShells: snap.current_session_id === s.sessionId ? s.droppedShells : {},
     permissionMode: snap.permission_mode,
     inputMode: snap.input_mode,
     sessionId: snap.current_session_id,
@@ -291,7 +298,11 @@ const SHELL_CAP = 256 * 1024;
 // first; the start then only adds the command and the session and keeps the
 // output and the outcome those frames already carried.
 export function startShell(s: State, runId: string, sessionId: string, command: string): State {
+  // A fast command can finish before its 202 names the run. The frames
+  // already left, and the card must not come back without output.
+  if (s.droppedShells[runId]) return s;
   const prev = s.shells[runId];
+  if (prev?.done && prev.persisted) return s;
   const run: ShellRun = prev
     ? { ...prev, sessionId, command }
     : { sessionId, command, output: '', done: false, exitCode: null, error: null };
@@ -305,6 +316,14 @@ export function removeShell(s: State, runId: string): State {
   const shells = { ...s.shells };
   delete shells[runId];
   return { ...s, shells };
+}
+
+// dropRun removes one run and remembers it, so the 202 that names it cannot
+// bring a card back after the frames have already left.
+function dropRun(s: State, runId: string): State {
+  const shells = { ...s.shells };
+  delete shells[runId];
+  return { ...s, shells, droppedShells: { ...s.droppedShells, [runId]: true } };
 }
 
 // capShell keeps the last SHELL_CAP characters and starts the kept text on
@@ -324,11 +343,7 @@ function capShell(output: string): string {
 function applyShellOutput(s: State, e: ShellOutput): State {
   // The message that persists the result can arrive before the done frame.
   // Once both are in, the log's own rendering has the card's place.
-  if (e.done && s.shells[e.run_id]?.persisted) {
-    const shells = { ...s.shells };
-    delete shells[e.run_id];
-    return { ...s, shells };
-  }
+  if (e.done && s.shells[e.run_id]?.persisted) return dropRun(s, e.run_id);
   const prev = s.shells[e.run_id] ?? {
     sessionId: e.session_id, command: '', output: '', done: false, exitCode: null, error: null,
   };
@@ -345,20 +360,30 @@ function applyShellOutput(s: State, e: ShellOutput): State {
 // dropPersistedShells removes the live cards a persisted shell message now
 // renders: one done run per shell_command part, oldest first, so a card
 // never lingers twice beside the log's own rendering.
-function dropPersistedShells(shells: Record<string, ShellRun>, m: Message): Record<string, ShellRun> {
+function dropPersistedShells(s: State, m: Message): State {
   const commands = m.parts
     .filter((p): p is Extract<Part, { type: 'shell_command' }> => p.type === 'shell_command')
     .map((p) => p.data.command);
-  if (commands.length === 0) return shells;
-  const out = { ...shells };
+  if (commands.length === 0) return s;
+  const shells = { ...s.shells };
+  const dropped: Record<string, true> = {};
+  const claimable = (id: string) => shells[id].sessionId === m.session_id
+    && (shells[id].done || !shells[id].persisted);
   for (const command of commands) {
-    const oldest = Object.keys(out).find((id) => out[id].command === command
-      && (out[id].done || !out[id].persisted));
-    if (oldest === undefined) continue;
-    if (out[oldest].done) delete out[oldest];
-    else out[oldest] = { ...out[oldest], persisted: true };
+    // Another tab's run carries no command, and the message's command is
+    // then the only thing that names it.
+    const id = Object.keys(shells).find((x) => claimable(x) && shells[x].command === command)
+      ?? Object.keys(shells).find((x) => claimable(x) && shells[x].command === '');
+    if (id === undefined) continue;
+    if (shells[id].done) {
+      delete shells[id];
+      dropped[id] = true;
+    } else {
+      shells[id] = { ...shells[id], persisted: true };
+    }
   }
-  return out;
+  if (Object.keys(dropped).length === 0) return { ...s, shells };
+  return { ...s, shells, droppedShells: { ...s.droppedShells, ...dropped } };
 }
 
 export function reduce(s: State, f: Frame): State {
@@ -406,7 +431,7 @@ export function reduce(s: State, f: Frame): State {
       }
       if (m.session_id !== s.sessionId) return base;
       if (ev.type === 'deleted') return { ...base, messages: s.messages.filter((x) => x.id !== m.id) };
-      base = { ...base, shells: dropPersistedShells(base.shells, m) };
+      base = dropPersistedShells(base, m);
       const messages = upsertMessage(s.messages, m);
       // A bang command's result is a user message, but it starts no agent
       // turn, so it leaves the session as busy as it found it.

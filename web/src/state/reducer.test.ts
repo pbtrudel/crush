@@ -461,6 +461,38 @@ describe('M3 state', () => {
     expect(s.shells.r1).not.toBeUndefined();
   });
 
+  it('leaves no run when the start answer lands after its message and done', () => {
+    // A fast command can deliver chunk, message and done before the 202
+    // names the run.
+    let s = reduce(fromSnapshot(), { seq: 81, type: 'shell_output', payload: { run_id: 'r10', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, { seq: 82, type: 'shell_output', payload: { run_id: 'r10', session_id: 's1', done: true, exit_code: 0 } });
+    s = startShell(s, 'r10', 's1', 'ls');
+    expect(s.shells.r10).toBeUndefined();
+  });
+
+  it('leaves no run when the start answer lands before its done', () => {
+    let s = reduce(fromSnapshot(), { seq: 83, type: 'shell_output', payload: { run_id: 'r11', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = startShell(s, 'r11', 's1', 'ls');
+    s = reduce(s, { seq: 84, type: 'shell_output', payload: { run_id: 'r11', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r11).toBeUndefined();
+  });
+
+  it('drops another tab run with no command through its persisted message', () => {
+    let s = reduce(fromSnapshot(), { seq: 85, type: 'shell_output', payload: { run_id: 'r12', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r12.command).toBe('');
+    s = reduce(s, shellMessage('s1', 'make'));
+    expect(s.shells.r12).toBeUndefined();
+  });
+
+  it('never drops a run of another session through a message', () => {
+    let s = reduce(fromSnapshot(), { seq: 86, type: 'shell_output', payload: { run_id: 'r13', session_id: 's2', done: true, exit_code: 0 } });
+    expect(s.shells.r13.sessionId).toBe('s2');
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r13).not.toBeUndefined();
+  });
+
   it('records and clears the pending plan', () => {
     let s = reduce(fromSnapshot(), { seq: 57, type: 'plan_ready', payload: { session_id: 's1' } });
     expect(s.planReady).toBe('s1');

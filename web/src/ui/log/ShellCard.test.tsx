@@ -115,7 +115,9 @@ describe('ShellCard', () => {
     expect(button.getAttribute('aria-disabled')).toBeNull();
   });
 
-  it('ignores a cancel for a run the gateway already finished', async () => {
+  it('removes a card whose cancel answers unknown_run', async () => {
+    // The gateway no longer holds the run, so no done frame will come and
+    // the card has nothing left to show.
     seed({ r1: run() });
     vi.spyOn(api, 'cancelShell').mockRejectedValue(new ApiError(404, 'unknown_run', 'no such run'));
     await mount();
@@ -126,6 +128,22 @@ describe('ShellCard', () => {
 
     expect(root.querySelector('[role="alert"]')).toBeNull();
     expect(root.querySelector('.shell-card__failure')).toBeNull();
+    expect(root.querySelector('.shell-card')).toBeNull();
+    expect(state.value.shells.r1).toBeUndefined();
+  });
+
+  it('leaves the focus alone when Cancel did not hold it', async () => {
+    seed({ r1: run({ output: 'a\n' }) });
+    await mount();
+    const well = root.querySelector('.shell-card__output') as HTMLElement;
+    well.focus();
+
+    await act(() => {
+      dispatch((s) => reduce(s, outputFrame('r1', { done: true, exit_code: 0 })));
+    });
+
+    expect(document.activeElement).toBe(well);
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it('shows a cancel failure inline', async () => {

@@ -30,6 +30,11 @@ export const sideAnswer = signal<SideAnswerState | null>(null);
 let sideAnswerGeneration = 0;
 
 export function dismissSideAnswer(): void {
+  resetSideAnswer();
+}
+
+// resetSideAnswer drops the card and invalidates the answer in flight.
+function resetSideAnswer(): void {
   sideAnswerGeneration++;
   sideAnswer.value = null;
 }
@@ -39,6 +44,9 @@ export function dismissSideAnswer(): void {
 function apply(fn: (s: State) => State, baseline: boolean) {
   const prev = state.value;
   const next = fn(prev);
+  // A side answer belongs to the session it was asked in, so adopting
+  // another session drops the card and the answer still in flight.
+  if (next.sessionId !== prev.sessionId) resetSideAnswer();
   state.value = next;
   telemetry.value = observe(telemetry.value, prev, next, baseline, Date.now());
 }
