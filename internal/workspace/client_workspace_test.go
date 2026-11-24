@@ -1767,21 +1767,30 @@ func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
 func TestClientWorkspaceHistoryMeta(t *testing.T) {
 	t.Parallel()
 
+	// The handler records the paths it answered and asserts nothing: a
+	// require that fails here would abort the handler goroutine mid-response
+	// and turn one real failure into a confusing client-side error.
+	var (
+		mu    sync.Mutex
+		paths []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
 		switch r.URL.Path {
 		case "/v1/workspaces/ws-1/sessions/s1/history/meta":
-			require.NoError(t, json.NewEncoder(w).Encode([]proto.FileMeta{
+			_ = json.NewEncoder(w).Encode([]proto.FileMeta{
 				{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
 				{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5},
-			}))
+			})
 		case "/v1/workspaces/ws-1/history/h2":
-			require.NoError(t, json.NewEncoder(w).Encode(proto.File{
+			_ = json.NewEncoder(w).Encode(proto.File{
 				ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13,
-			}))
+			})
 		default:
-			require.Equal(t, "/v1/workspaces/ws-1/history/nope", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Error{Message: "file version not found"}))
+			_ = json.NewEncoder(w).Encode(proto.Error{Message: "file version not found"})
 		}
 	}))
 	defer srv.Close()
@@ -1807,6 +1816,14 @@ func TestClientWorkspaceHistoryMeta(t *testing.T) {
 
 	_, err = ws.GetHistoryVersion(t.Context(), "nope")
 	require.ErrorIs(t, err, client.ErrNotFound)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"/v1/workspaces/ws-1/sessions/s1/history/meta",
+		"/v1/workspaces/ws-1/history/h2",
+		"/v1/workspaces/ws-1/history/nope",
+	}, paths, "every request reaches its own route")
 }
 
 // TestClientWorkspaceMapsAgentNotInitialized pins that an agent which is
