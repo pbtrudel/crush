@@ -5,6 +5,7 @@ import { initialState, pushToast, reduce } from '../state/reducer';
 import { state } from '../state/store';
 import { effectsLevel } from '../state/effects';
 import { Toasts } from './Toasts';
+import { signInOpen } from '../state/signin';
 
 const root = document.createElement('div');
 
@@ -18,6 +19,7 @@ afterEach(async () => {
   });
   vi.useRealTimers();
   vi.restoreAllMocks();
+  signInOpen.value = null;
 });
 
 describe('Toasts', () => {
@@ -78,6 +80,22 @@ describe('Toasts', () => {
     expect(effectsLevel.value).toBe(0);
     expect(state.value.toasts).toEqual([]);
     expect(root.querySelector('.toast')).toBeNull();
+  });
+
+  it('offers a sign-in button that opens the dialog and dismisses the toast', async () => {
+    state.value = pushToast(initialState(), 'warn', 'Your hyper login expired. Sign in again.', {
+      kind: 'sign-in', provider: 'hyper',
+    });
+    await act(() => {
+      render(<Toasts />, root);
+    });
+    const signIn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Sign in');
+    expect(signIn).toBeDefined();
+    await act(() => {
+      signIn!.click();
+    });
+    expect(signInOpen.value).toEqual({ provider: 'hyper' });
+    expect(state.value.toasts).toEqual([]);
   });
 
   it('shows no restore button on an ordinary toast', async () => {

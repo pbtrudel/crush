@@ -65,10 +65,34 @@ export interface ModelChoice {
   can_reason: boolean; effort_levels?: string[]; default_effort?: string;
 }
 export interface ServerInfo { state: string; diagnostic_count?: number; tool_count?: number; error?: string }
+export type SecureKind = 'passphrase' | 'pin' | 'password' | 'confirm' | 'touch';
+export interface SecurePrompt {
+  source: 'pinentry' | 'ssh'; id: string; kind: SecureKind; title: string; message: string;
+  details?: string[]; retry?: string;
+}
+export interface SignInTarget {
+  id: string; name: string; configured: boolean; methods: ('oauth' | 'api_key')[];
+  oauth_kind?: 'device' | 'browser';
+}
+export type SignInPhase = 'waiting' | 'saving' | 'done' | 'error' | 'cancelled';
+export interface SignInState {
+  flow_id: string; provider: string; provider_name: string; state: SignInPhase;
+  kind?: 'device' | 'browser'; user_code?: string; verification_url?: string; expires_at?: number;
+  code_entry?: boolean; error?: string; model_applied?: boolean; imported?: boolean;
+}
+export interface ModelTarget { type: 'main' | 'small'; model: string }
+export interface SignInResult {
+  signed_in: true; model_applied: boolean;
+  reason?: 'agent_busy' | 'agent_starting' | 'model_unavailable' | 'model_failed';
+}
+// AwsSso is the AWS SSO refresh card. A snapshot carries only the command
+// and the URL; an error reaches the card from the result frame.
+export interface AwsSso { command: string; url?: string; error?: string }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
   questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
+  secure_prompts?: SecurePrompt[]; signin?: SignInState; aws_sso?: { command: string; url?: string };
   agent_ready: boolean; plan_ready_session_id?: string;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;

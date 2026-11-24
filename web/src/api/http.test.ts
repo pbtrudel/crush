@@ -151,6 +151,56 @@ const rows: Row[] = [
     name: 'planHandoff', run: () => api.planHandoff('s1', 'code_yolo'), method: 'POST', path: '/api/plan/handoff',
     body: { session_id: 's1', action: 'code_yolo' },
   },
+  {
+    name: 'answerSecure', run: () => api.answerSecure('pinentry', 'p1', 'hunter2'), method: 'POST',
+    path: '/api/pinentry/answer', body: { id: 'p1', secret: 'hunter2' }, status: 204,
+  },
+  {
+    name: 'cancelSecure', run: () => api.cancelSecure('ssh', 's1'), method: 'POST',
+    path: '/api/ssh/cancel', body: { id: 's1' }, status: 204,
+  },
+  {
+    name: 'signInTargets', run: () => api.signInTargets(), method: 'GET', path: '/api/auth/providers',
+    response: { providers: [{ id: 'copilot', name: 'GitHub Copilot', configured: false, methods: ['oauth'], oauth_kind: 'device' }] },
+    result: { providers: [{ id: 'copilot', name: 'GitHub Copilot', configured: false, methods: ['oauth'], oauth_kind: 'device' }] },
+  },
+  {
+    name: 'signInKey', run: () => api.signInKey('openai', 'sk-valid'), method: 'POST', path: '/api/auth/provider/key',
+    body: { provider: 'openai', api_key: 'sk-valid' }, response: { signed_in: true, model_applied: false },
+    result: { signed_in: true, model_applied: false },
+  },
+  {
+    name: 'signInKey with a model', run: () => api.signInKey('openai', 'sk-valid', { type: 'main', model: 'gpt-5' }),
+    method: 'POST', path: '/api/auth/provider/key',
+    body: { provider: 'openai', api_key: 'sk-valid', model: { type: 'main', model: 'gpt-5' } },
+    response: { signed_in: true, model_applied: true }, result: { signed_in: true, model_applied: true },
+  },
+  {
+    name: 'signInStart', run: () => api.signInStart('copilot'), method: 'POST', path: '/api/auth/provider/oauth/start',
+    body: { provider: 'copilot' },
+    response: { flow_id: 'f1', provider: 'copilot', provider_name: 'GitHub Copilot', state: 'waiting', kind: 'device', user_code: 'WDJB-MJHT' },
+    result: { flow_id: 'f1', provider: 'copilot', provider_name: 'GitHub Copilot', state: 'waiting', kind: 'device', user_code: 'WDJB-MJHT' },
+  },
+  {
+    name: 'signInStart with a model', run: () => api.signInStart('xai', { type: 'small', model: 'grok-mini' }),
+    method: 'POST', path: '/api/auth/provider/oauth/start',
+    body: { provider: 'xai', model: { type: 'small', model: 'grok-mini' } },
+    response: { flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'waiting', kind: 'browser', code_entry: true },
+    result: { flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'waiting', kind: 'browser', code_entry: true },
+  },
+  {
+    name: 'signInStatus', run: () => api.signInStatus(), method: 'GET', path: '/api/auth/provider/oauth/status',
+    response: { flow_id: 'f1', provider: 'copilot', provider_name: 'GitHub Copilot', state: 'saving' },
+    result: { flow_id: 'f1', provider: 'copilot', provider_name: 'GitHub Copilot', state: 'saving' },
+  },
+  {
+    name: 'signInCancel', run: () => api.signInCancel('f1'), method: 'POST', path: '/api/auth/provider/oauth/cancel',
+    body: { flow_id: 'f1' }, status: 204,
+  },
+  {
+    name: 'signInCode', run: () => api.signInCode('f2', 'good-code'), method: 'POST', path: '/api/auth/provider/oauth/code',
+    body: { flow_id: 'f2', code: 'good-code' }, status: 202,
+  },
 ];
 
 describe('api calls', () => {
@@ -163,6 +213,30 @@ describe('api calls', () => {
     expect(init.method).toBe(row.method);
     expect(init.body).toBe(row.body === undefined ? undefined : JSON.stringify(row.body));
     if ('result' in row) expect(out).toEqual(row.result);
+  });
+
+  it('sends a secure answer in the body only', async () => {
+    const fetch = stub(204);
+    await api.answerSecure('pinentry', 'p1', 'hunter2');
+    const [url, init] = fetch.mock.calls.at(-1)!;
+    expect(url).toBe('/api/pinentry/answer');
+    expect(String(url)).not.toContain('hunter2');
+    expect(JSON.stringify(init.headers)).not.toContain('hunter2');
+    expect(JSON.parse(init.body as string)).toEqual({ id: 'p1', secret: 'hunter2' });
+  });
+
+  it('sends a pasted sign-in code in the body only', async () => {
+    const fetch = stub(202);
+    await api.signInCode('f2', 'good-code');
+    const [url, init] = fetch.mock.calls.at(-1)!;
+    expect(url).toBe('/api/auth/provider/oauth/code');
+    expect(JSON.stringify(init.headers)).not.toContain('good-code');
+    expect(JSON.parse(init.body as string)).toEqual({ flow_id: 'f2', code: 'good-code' });
+  });
+
+  it('reports a sign-in status with no flow as a 404 no_flow', async () => {
+    stub(404, { error: 'no sign-in has started', code: 'no_flow' });
+    await expect(api.signInStatus()).rejects.toMatchObject({ status: 404, code: 'no_flow' });
   });
 
   it('turns a failed call into an ApiError with its code', async () => {

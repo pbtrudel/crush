@@ -1,6 +1,7 @@
 import { useEffect } from 'preact/hooks';
 import { actions, state } from '../state/store';
 import { restoreEffects } from '../state/effects';
+import { openSignIn } from '../state/signin';
 
 // Spec 3.5: toasts dismiss themselves after 6 s; an error stays until the
 // reader dismisses it.
@@ -16,23 +17,36 @@ export function Toasts() {
   }, [toasts]);
   return (
     <ol class="toasts" aria-live="polite">
-      {toasts.map((t) => (
-        <li key={t.id} class="toast holo flicker-once" data-tone={t.tone}>
-          <span class="toast__glyph" aria-hidden="true">{t.tone === 'error' ? '✕' : t.tone === 'warn' ? '!' : '◈'}</span>
-          <span>{t.text}</span>
-          {t.action === 'restore-effects' && (
-            <button
-              type="button"
-              class="btn btn--ghost"
-              onClick={() => {
-                restoreEffects();
-                actions.dismissToast(t.id);
-              }}
-            >Restore effects</button>
-          )}
-          <button type="button" class="toast__close" aria-label="Dismiss notification" onClick={() => actions.dismissToast(t.id)}>×</button>
-        </li>
-      ))}
+      {toasts.map((t) => {
+        const action = t.action;
+        return (
+          <li key={t.id} class="toast holo flicker-once" data-tone={t.tone}>
+            <span class="toast__glyph" aria-hidden="true">{t.tone === 'error' ? '✕' : t.tone === 'warn' ? '!' : '◈'}</span>
+            <span>{t.text}</span>
+            {action === 'restore-effects' && (
+              <button
+                type="button"
+                class="btn btn--ghost"
+                onClick={() => {
+                  restoreEffects();
+                  actions.dismissToast(t.id);
+                }}
+              >Restore effects</button>
+            )}
+            {action !== undefined && action !== 'restore-effects' && (
+              <button
+                type="button"
+                class="btn btn--ghost"
+                onClick={() => {
+                  openSignIn(action.provider, action.model);
+                  actions.dismissToast(t.id);
+                }}
+              >Sign in</button>
+            )}
+            <button type="button" class="toast__close" aria-label="Dismiss notification" onClick={() => actions.dismissToast(t.id)}>×</button>
+          </li>
+        );
+      })}
     </ol>
   );
 }

@@ -16,9 +16,9 @@ describe('agent event toasts', () => {
     expect(toastForAgentEvent({ type: 'error', error: 'rate limited' }, { currentSession: 's1', hidden: false }))
       .toEqual({ tone: 'error', text: 'rate limited' });
   });
-  it('sends sign-in requests to the terminal', () => {
+  it('offers a browser sign-in when a login expired', () => {
     expect(toastForAgentEvent({ type: 're_authenticate', provider_id: 'hyper' }, { currentSession: 's1', hidden: false }))
-      .toEqual({ tone: 'warn', text: 'Sign in again from the terminal (hyper)' });
+      .toEqual({ tone: 'warn', text: 'Your hyper login expired. Sign in again.', action: { kind: 'sign-in', provider: 'hyper' } });
   });
   it('ignores progress events', () => {
     expect(toastForAgentEvent({ type: 'summarize' }, { currentSession: 's1', hidden: false })).toBeNull();
@@ -43,20 +43,24 @@ describe('agent event toasts beyond the brief', () => {
       .toEqual({ tone: 'error', text: 'The agent stopped with an error' });
   });
 
-  it('leaves out the provider parentheses when there is no provider', () => {
+  it('names no provider when the event carries none', () => {
     expect(toastForAgentEvent({ type: 're_authenticate' }, ctx))
-      .toEqual({ tone: 'warn', text: 'Sign in again from the terminal' });
+      .toEqual({ tone: 'warn', text: 'Your login expired. Sign in again from the model selector.' });
   });
 
-  it('toasts the opening AWS SSO event and stays quiet on the follow-up URL', () => {
-    expect(toastForAgentEvent({ type: 'aws_sso_auth', aws_sso_command: 'aws sso login' }, ctx))
-      .toEqual({ tone: 'warn', text: 'Sign in to AWS SSO from the terminal' });
+  it('stays quiet on both AWS SSO events, the card shows them', () => {
+    expect(toastForAgentEvent({ type: 'aws_sso_auth', aws_sso_command: 'aws sso login' }, ctx)).toBeNull();
     expect(toastForAgentEvent({ type: 'aws_sso_auth', aws_sso_url: 'https://example.com/sso' }, ctx)).toBeNull();
   });
 
-  it('reports a failed AWS SSO sign-in and stays quiet on success', () => {
+  it('reports a failed AWS SSO sign-in and announces success', () => {
     expect(toastForAgentEvent({ type: 'aws_sso_auth_result', error: 'expired' }, ctx))
       .toEqual({ tone: 'error', text: 'AWS SSO sign-in failed: expired' });
-    expect(toastForAgentEvent({ type: 'aws_sso_auth_result' }, ctx)).toBeNull();
+    expect(toastForAgentEvent({ type: 'aws_sso_auth_result' }, ctx)).toEqual({ tone: 'info', text: 'AWS credentials refreshed.' });
+  });
+
+  it('carries the main model in the sign-in action for its provider', () => {
+    expect(toastForAgentEvent({ type: 're_authenticate', provider_id: 'openai' }, { ...ctx, model: { provider: 'openai', id: 'gpt-5' } }))
+      .toEqual({ tone: 'warn', text: 'Your openai login expired. Sign in again.', action: { kind: 'sign-in', provider: 'openai', model: { type: 'main', model: 'gpt-5' } } });
   });
 });

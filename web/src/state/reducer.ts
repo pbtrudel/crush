@@ -1,13 +1,14 @@
 import type {
-  AgentEvent, AgentRun, FileSummary, Frame, InputMode, Message, ModelInfo, Part, PermissionMode,
-  PermissionNotification, PermissionRequest, QuestionRequest, ServerInfo, Session, ShellOutput, Snapshot,
-  TeamState, ToolResultData, UpdateAvailable, WebError, WireEvent,
+  AgentEvent, AgentRun, AwsSso, FileSummary, Frame, InputMode, Message, ModelInfo, ModelTarget, Part,
+  PermissionMode, PermissionNotification, PermissionRequest, QuestionRequest, SecurePrompt, ServerInfo,
+  Session, ShellOutput, SignInState, Snapshot, TeamState, ToolResultData, UpdateAvailable, WebError,
+  WireEvent,
 } from '../api/types';
 import { toastForAgentEvent } from './notifications';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
 export type Tone = 'info' | 'success' | 'warn' | 'error';
-export type ToastAction = 'restore-effects';
+export type ToastAction = 'restore-effects' | { kind: 'sign-in'; provider: string; model?: ModelTarget };
 export interface Toast { id: number; tone: Tone; text: string; action?: ToastAction }
 export interface ServerState { state: string; diagnostics: number; tools: number }
 export interface AgentCall { callId: string; tool: string }
@@ -45,6 +46,14 @@ export interface State {
   permissions: PermissionRequest[];
   question: QuestionRequest | null;
   questionQueue: QuestionRequest[];
+  // securePrompts are the GPG and SSH prompts waiting for an answer. A
+  // touch prompt is shown as a notice: the terminal answers it itself.
+  securePrompts: SecurePrompt[];
+  // answeredHere names the prompt ids this tab answered or cancelled, so
+  // the frame that closes them does not toast them back.
+  answeredHere: Record<string, true>;
+  signin: SignInState | null;
+  awsSso: AwsSso | null;
   busy: boolean;
   queued: string[];
   toasts: Toast[];
@@ -79,7 +88,8 @@ export function initialState(): State {
     model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
     agentReady: true, planReady: '',
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
-    permissions: [], question: null, questionQueue: [], busy: false, queued: [], toasts: [],
+    permissions: [], question: null, questionQueue: [], securePrompts: [], answeredHere: {},
+    signin: null, awsSso: null, busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
     files: [], filesStale: false, team: emptyTeam(), runs: [], activity: {}, inspected: null, shells: {},
     droppedShells: {}, hidden: false, announced: {},
@@ -102,13 +112,20 @@ export function setConn(s: State, conn: Conn): State {
 }
 
 export function markAnswered(s: State, id: string): State {
-  return { ...s, answered: [...s.answered, id] };
+  return {
+    ...s,
+    answered: [...s.answered, id],
+    answeredHere: { ...s.answeredHere, [id]: true },
+  };
 }
 
 // unmarkAnswered undoes markAnswered after a request that never reached
 // the workspace, so the terminal's answer still gets its toast.
 export function unmarkAnswered(s: State, id: string): State {
-  return s.answered.includes(id) ? { ...s, answered: s.answered.filter((x) => x !== id) } : s;
+  if (!s.answered.includes(id) && !s.answeredHere[id]) return s;
+  const answeredHere = { ...s.answeredHere };
+  delete answeredHere[id];
+  return { ...s, answered: s.answered.filter((x) => x !== id), answeredHere };
 }
 
 // enqueueQuestion shows a batch unless one is already on screen, in which
@@ -201,7 +218,8 @@ export function contextFill(s: State): number {
 }
 
 export function needsAttention(s: State): boolean {
-  return s.permissions.length > 0 || s.question !== null;
+  return s.permissions.length > 0 || s.question !== null
+    || s.securePrompts.some((p) => p.kind !== 'touch');
 }
 
 // planPending reports a ready plan waiting for the reader in the session the
@@ -305,6 +323,10 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     permissions: snap.permissions ?? [],
     question: (snap.questions ?? [])[0] ?? null,
     questionQueue: (snap.questions ?? []).slice(1),
+    securePrompts: snap.secure_prompts ?? [],
+    answeredHere: {},
+    signin: snap.signin ?? null,
+    awsSso: snap.aws_sso ? { ...snap.aws_sso } : null,
     busy: snap.busy || (last ? isOpenAssistant(last) : false),
     queued: snap.queued ?? [],
     lsp: serverMap(snap.lsp),
@@ -417,6 +439,28 @@ function dropPersistedShells(s: State, m: Message): State {
   return { ...s, shells, droppedShells: { ...s.droppedShells, ...dropped } };
 }
 
+// applyAgentEvent folds the AWS SSO refresh frames into the card. The
+// command replaces, the URL fills in, and a result clears the card unless
+// it carries the error the card stays up to show.
+function applyAgentEvent(s: State, e: AgentEvent): State {
+  if (e.type === 'aws_sso_auth') {
+    if (!e.aws_sso_command && !e.aws_sso_url) return s;
+    const card = s.awsSso;
+    return {
+      ...s,
+      awsSso: {
+        command: e.aws_sso_command || card?.command || '',
+        ...(e.aws_sso_url || card?.url ? { url: e.aws_sso_url || card?.url } : {}),
+      },
+    };
+  }
+  if (e.type === 'aws_sso_auth_result') {
+    if (!e.error) return { ...s, awsSso: null };
+    return { ...s, awsSso: { ...s.awsSso, command: s.awsSso?.command ?? '', error: e.error } };
+  }
+  return s;
+}
+
 export function reduce(s: State, f: Frame): State {
   const next = { ...s, lastSeq: Math.max(s.lastSeq, f.seq) };
   const ev = f.payload as WireEvent<any>;
@@ -451,8 +495,13 @@ export function reduce(s: State, f: Frame): State {
       // only a new frame is news.
       if (f.seq <= s.lastSeq) return next;
       const e = (ev.payload ?? {}) as AgentEvent;
-      const toast = toastForAgentEvent(e, { currentSession: s.sessionId, hidden: s.hidden });
-      return toast ? pushToast(next, toast.tone, toast.text) : next;
+      const out = applyAgentEvent(next, e);
+      const toast = toastForAgentEvent(e, {
+        currentSession: s.sessionId,
+        hidden: s.hidden,
+        model: { provider: s.model.provider, id: s.model.id },
+      });
+      return toast ? pushToast(out, toast.tone, toast.text, toast.action) : out;
     }
     case 'config_stale': {
       if (f.seq <= s.lastSeq || s.announced.config_stale) return next;
@@ -512,6 +561,39 @@ export function reduce(s: State, f: Frame): State {
     case 'run_complete': {
       const rc = ev.payload as { session_id: string };
       return rc.session_id === s.sessionId ? { ...next, busy: false } : next;
+    }
+    case 'secure_prompt': {
+      const prompts = (f.payload as { prompts?: SecurePrompt[] }).prompts ?? [];
+      const listed = { ...next, securePrompts: prompts };
+      // A replay after a reconnect still replaces the list, because the
+      // frame is the whole set, but it is not news.
+      if (f.seq <= s.lastSeq) return listed;
+      const open = new Set(prompts.map((p) => p.id));
+      const answeredHere = { ...s.answeredHere };
+      let out = listed;
+      for (const gone of s.securePrompts) {
+        if (open.has(gone.id)) continue;
+        const answered = answeredHere[gone.id];
+        delete answeredHere[gone.id];
+        // The terminal answers every touch prompt itself, so a touch
+        // leaving the list is no news either.
+        if (!answered && gone.kind !== 'touch') {
+          out = pushToast(out, 'info', 'Answered in the terminal');
+        }
+      }
+      const before = new Set(s.securePrompts.map((p) => p.id));
+      for (const p of prompts) {
+        if (p.kind === 'touch' && !before.has(p.id)) out = pushToast(out, 'warn', p.message);
+      }
+      return { ...out, answeredHere };
+    }
+    case 'signin': {
+      const st = f.payload as SignInState;
+      const announced = s.signin?.flow_id === st.flow_id && s.signin.state === 'done';
+      const out = { ...next, signin: st };
+      return st.state === 'done' && !announced
+        ? pushToast(out, 'info', `Signed in to ${st.provider_name}.`)
+        : out;
     }
     case 'permission_request':
       return { ...next, permissions: upsertPermission(s.permissions, ev.payload as PermissionRequest) };

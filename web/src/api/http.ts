@@ -1,6 +1,7 @@
 import type {
   Attachment, CommandEntry, DiagnosticCounts, FileDiff, FileSummary, InputMode, LspServer, McpPrompt,
-  McpServer, Message, ModelChoice, ModelInfo, PermissionMode, QuestionAnswer, Session, SkillEntry, Snapshot,
+  McpServer, Message, ModelChoice, ModelInfo, ModelTarget, PermissionMode, QuestionAnswer, Session,
+  SignInResult, SignInState, SignInTarget, SkillEntry, Snapshot, SecurePrompt,
 } from './types';
 import { forgetToken, token } from '../state/token';
 
@@ -120,4 +121,20 @@ export const api = {
   lspStop: () => call<void>('POST', '/api/lsp/stop'),
   planHandoff: (sid: string, action: 'code' | 'code_yolo') =>
     call<void>('POST', '/api/plan/handoff', { session_id: sid, action }),
+  // The answer travels in the body only: a secret in a URL would reach
+  // the server log and this tab's history.
+  answerSecure: (source: SecurePrompt['source'], id: string, secret: string) =>
+    call<void>('POST', `/api/${source}/answer`, { id, secret }),
+  cancelSecure: (source: SecurePrompt['source'], id: string) =>
+    call<void>('POST', `/api/${source}/cancel`, { id }),
+  signInTargets: () => call<{ providers: SignInTarget[] }>('GET', '/api/auth/providers'),
+  signInKey: (provider: string, apiKey: string, model?: ModelTarget) =>
+    call<SignInResult>('POST', '/api/auth/provider/key', model ? { provider, api_key: apiKey, model } : { provider, api_key: apiKey }),
+  signInStart: (provider: string, model?: ModelTarget) =>
+    call<SignInState>('POST', '/api/auth/provider/oauth/start', model ? { provider, model } : { provider }),
+  signInStatus: () => call<SignInState>('GET', '/api/auth/provider/oauth/status'),
+  signInCancel: (flowId: string) =>
+    call<void>('POST', '/api/auth/provider/oauth/cancel', { flow_id: flowId }),
+  signInCode: (flowId: string, code: string) =>
+    call<void>('POST', '/api/auth/provider/oauth/code', { flow_id: flowId, code }),
 };

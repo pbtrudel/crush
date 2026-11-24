@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
-import type { Frame, ModelInfo, Snapshot } from '../api/types';
+import type { Frame, ModelInfo, SignInState, Snapshot } from '../api/types';
 import {
   adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, needsYou,
   planPending, reduce, setConn, startShell, toolResults, type State,
@@ -670,6 +670,77 @@ describe('M3 notifications', () => {
     expect(s.toasts.at(-1)).toMatchObject({
       tone: 'info', text: 'Crush update available: v0.30.0 → v0.31.0.',
     });
+  });
+});
+
+describe('the M4a wire state', () => {
+  const fromSnapshot = () => reduce(initialState(), fx.snapshot);
+
+  it('takes secure prompts, sign-in and AWS SSO from the snapshot', () => {
+    const snap = { ...(fx.snapshot.payload as Snapshot),
+      secure_prompts: [{ source: 'ssh', id: 's1', kind: 'password', title: 'SSH', message: 'Password for git' }],
+      signin: { flow_id: 'f1', provider: 'copilot', provider_name: 'GitHub Copilot', state: 'waiting', kind: 'device', user_code: 'WDJB-MJHT' },
+      aws_sso: { command: 'aws sso login' } };
+    const s = reduce(initialState(), { seq: 70, type: 'snapshot', payload: snap });
+    expect(s.securePrompts.map((p) => p.id)).toEqual(['s1']);
+    expect(s.signin?.user_code).toBe('WDJB-MJHT');
+    expect(s.awsSso).toEqual({ command: 'aws sso login' });
+    expect(needsAttention(s)).toBe(true);
+  });
+
+  it('toasts when a prompt closes that this tab did not answer', () => {
+    let s = reduce(fromSnapshot(), fx.secure_prompt as Frame);
+    s = reduce(s, { seq: s.lastSeq + 1, type: 'secure_prompt', payload: { prompts: [] } });
+    expect(s.securePrompts).toEqual([]);
+    expect(s.toasts.at(-1)?.text).toBe('Answered in the terminal');
+  });
+
+  it('stays quiet when this tab answered', () => {
+    let s = reduce(fromSnapshot(), fx.secure_prompt as Frame);
+    for (const p of s.securePrompts) s = markAnswered(s, p.id);
+    const before = s.toasts.length;
+    s = reduce(s, { seq: s.lastSeq + 1, type: 'secure_prompt', payload: { prompts: [] } });
+    expect(s.toasts.length).toBe(before);
+  });
+
+  it('shows a touch prompt as a notice and stays quiet when the terminal confirms it', () => {
+    const touch = { source: 'ssh', id: 't1', kind: 'touch', title: 'Security key', message: 'Tap your security key to continue.' };
+    let s = reduce(fromSnapshot(), { seq: 80, type: 'secure_prompt', payload: { prompts: [touch] } });
+    expect(needsAttention(s)).toBe(false);
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'warn', text: 'Tap your security key to continue.' });
+    // The TUI answers every touch prompt at once (internal/ui/model/ssh.go).
+    const before = s.toasts.length;
+    s = reduce(s, { seq: 81, type: 'secure_prompt', payload: { prompts: [] } });
+    expect(s.toasts.length).toBe(before);
+  });
+
+  it('follows the sign-in frame and announces a finished sign-in once', () => {
+    let s = reduce(fromSnapshot(), fx.signin as Frame);
+    expect(s.signin?.state).toBe('waiting');
+    const done = { ...(fx.signin.payload as SignInState), state: 'done' as const };
+    s = reduce(s, { seq: s.lastSeq + 1, type: 'signin', payload: done });
+    s = reduce(s, { seq: s.lastSeq + 1, type: 'signin', payload: done });
+    expect(s.toasts.filter((t) => t.text === 'Signed in to GitHub Copilot.').length).toBe(1);
+  });
+
+  it('opens, updates and closes the AWS SSO card', () => {
+    let s = reduce(fromSnapshot(), fx.agent_event_aws_sso as Frame);
+    expect(s.awsSso?.command).toBe('aws sso login --profile dev');
+    s = reduce(s, { ...(fx.agent_event_aws_sso_url as Frame), seq: s.lastSeq + 1 });
+    expect(s.awsSso?.url).toContain('amazonaws.com');
+    s = reduce(s, { ...(fx.agent_event_aws_sso_result as Frame), seq: s.lastSeq + 1 });
+    expect(s.awsSso?.error).toBe('the SSO session expired');
+  });
+
+  it('offers a sign-in action when a login expired', () => {
+    const s = reduce(fromSnapshot(), fx.agent_event_reauth as Frame);
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'warn', action: { kind: 'sign-in', provider: 'openai' } });
+  });
+
+  it('carries the main model in the re-auth action for its provider', () => {
+    const base = { ...fromSnapshot(), model: { ...fromSnapshot().model, provider: 'openai', id: 'gpt-5' } };
+    const s = reduce(base, { ...(fx.agent_event_reauth as Frame), seq: base.lastSeq + 1 });
+    expect(s.toasts.at(-1)?.action).toEqual({ kind: 'sign-in', provider: 'openai', model: { type: 'main', model: 'gpt-5' } });
   });
 });
 
