@@ -531,6 +531,28 @@ describe('the model selector', () => {
     expect(modelsOpen.value).toBe(true);
   });
 
+  it('retries the refused choice once the agent starts', async () => {
+    seed();
+    stubProviders();
+    const select = vi.spyOn(api, 'selectModel')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockResolvedValueOnce(state.value.model);
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    expect(retry).not.toBeUndefined();
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenLastCalledWith('main', 'p1', 'm2');
+    expect(modelsOpen.value).toBe(false);
+  });
+
   it('names the listbox apart from the dialog', async () => {
     seed();
     stubProviders();

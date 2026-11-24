@@ -1,4 +1,4 @@
-import { dismissSideAnswer, sideAnswer } from '../../state/store';
+import { actions, dismissSideAnswer, sideAnswer } from '../../state/store';
 import { focusDeck } from '../deck/modes';
 import { Markdown } from './Markdown';
 
@@ -18,7 +18,12 @@ export function SideAnswer() {
           class="side-answer__error"
           data-tone={error.tone}
           role={error.tone === 'starting' ? 'status' : 'alert'}
-        >{error.text}</p>
+        >
+          <span>{error.text}</span>
+          {error.tone === 'starting' && (
+            <button type="button" class="link-button" onClick={() => void actions.ask(sa.question)}>Retry</button>
+          )}
+        </p>
       ) : sa.answer === null ? (
         <p class="side-answer__pending">Asking...</p>
       ) : (

@@ -46,6 +46,8 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   // failure drops it: a native radio would otherwise stay on a lost choice.
   const [effortDraft, setEffortDraft] = useState<string | null>(null);
   const [reasoningBusy, setReasoningBusy] = useState(false);
+  // The choice a starting agent refused, so its Retry can pick it again.
+  const [retryChoice, setRetryChoice] = useState<ModelChoice | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
@@ -164,6 +166,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   const choose = async (c: ModelChoice) => {
     if (selecting.current) return;
     setActionError(null);
+    setRetryChoice(null);
     if (isCurrent(c)) {
       closeModels();
       return;
@@ -173,6 +176,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
       await api.selectModel(type, c.provider, c.id);
     } catch (err) {
       if (!alive.current) return;
+      if (describeModelFailure(err).tone === 'starting') setRetryChoice(c);
       setActionError(err);
       return;
     } finally {
@@ -196,6 +200,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     }
     reasoningRef.current = true;
     setActionError(null);
+    setRetryChoice(null);
     setEffortDraft(effort);
     setReasoningBusy(true);
     try {
@@ -217,6 +222,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     if (reasoningRef.current) return;
     reasoningRef.current = true;
     setActionError(null);
+    setRetryChoice(null);
     setReasoningBusy(true);
     try {
       await api.setReasoning({ think });
@@ -379,6 +385,9 @@ function ModelsDialog({ inert }: { inert: boolean }) {
         {shownAction && !(shownAction.tone === 'starting' && !s.agentReady) && (
           <div class="models__status" role={shownAction.tone === 'starting' ? 'status' : 'alert'} data-tone={shownAction.tone}>
             <span>{shownAction.text}</span>
+            {shownAction.tone === 'starting' && retryChoice !== null && (
+              <button type="button" class="link-button" onClick={() => void choose(retryChoice)}>Retry</button>
+            )}
           </div>
         )}
         {shownLoad && (

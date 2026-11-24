@@ -98,9 +98,14 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   const [loaded, setLoaded] = useState<Loaded>(EMPTY);
   const [errors, setErrors] = useState<Partial<Record<SourceKey, unknown>>>({});
   const [failure, setFailure] = useState<unknown | null>(null);
+  // The item a starting agent refused, so its Retry can run it again.
+  const [failed, setFailed] = useState<{ item: PaletteItem; values?: Record<string, string> } | null>(null);
   const [active, setActive] = useState(0);
   const dialog = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
+  // A double Enter or a double click must not run the item twice; the state
+  // alone lags a render, so a ref holds the in-flight guard.
+  const running = useRef(false);
   const generations = useRef<Partial<Record<SourceKey, number>>>({});
   const argumentId = argumentItem.value;
   const query = paletteQuery.value;
@@ -138,7 +143,14 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   };
 
   const retry = async () => {
-    setFailure(null);
+    // An action the starting agent refused keeps its item, so Retry repeats
+    // that action; a failed source only needs its own fetch again.
+    if (failed !== null) {
+      const { item, values } = failed;
+      setFailed(null);
+      await run(item, values);
+      return;
+    }
     await reload(SOURCE_KEYS.filter((key) => key in errors));
   };
 
@@ -182,7 +194,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   const sourceError = SOURCE_KEYS.find((key) => key in errors);
   const shownError = failure ?? (sourceError === undefined ? null : errors[sourceError]);
   const shown = shownError === null || shownError === undefined ? null : describeFailure(shownError);
-  const canRetry = failure === null && sourceError !== undefined;
+  const canRetry = failed !== null || (failure === null && sourceError !== undefined);
 
   const runAction = async (action: string, values?: Record<string, string>) => {
     const sid = s.sessionId;
@@ -224,7 +236,10 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
   };
 
   const run = async (item: PaletteItem, values?: Record<string, string>) => {
+    if (running.current) return;
+    running.current = true;
     setFailure(null);
+    setFailed(null);
     const sid = s.sessionId;
     try {
       switch (item.run.kind) {
@@ -263,7 +278,10 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
         }
       }
     } catch (err) {
+      if (describeFailure(err).tone === 'starting') setFailed({ item, values });
       setFailure(err);
+    } finally {
+      running.current = false;
     }
   };
 

@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
+import { api } from '../../api/http';
 import { STARTING_TEXT } from '../../state/failure';
-import { dismissSideAnswer, sideAnswer } from '../../state/store';
+import { dispatch, dismissSideAnswer, sideAnswer } from '../../state/store';
+import { adoptSession } from '../../state/reducer';
 import { SideAnswer } from './SideAnswer';
 
 const root = document.createElement('div');
@@ -20,6 +22,7 @@ afterEach(async () => {
   root.remove();
   deck.remove();
   sideAnswer.value = null;
+  vi.restoreAllMocks();
 });
 
 async function mount() {
@@ -82,8 +85,9 @@ describe('SideAnswer', () => {
     await mount();
 
     const line = root.querySelector('[role="status"]')!;
-    expect(line.textContent).toBe(STARTING_TEXT);
+    expect(line.textContent).toContain(STARTING_TEXT);
     expect(line.getAttribute('data-tone')).toBe('starting');
+    expect([...line.querySelectorAll('button')].some((b) => b.textContent === 'Retry')).toBe(true);
     expect(root.querySelector('[role="alert"]')).toBeNull();
   });
 
@@ -96,6 +100,24 @@ describe('SideAnswer', () => {
     const line = root.querySelector('[role="alert"]')!;
     expect(line.textContent).toBe('the model did not answer');
     expect(line.getAttribute('data-tone')).toBe('error');
+    expect([...root.querySelectorAll('button')].some((b) => b.textContent === 'Retry')).toBe(false);
+  });
+
+  it('asks the same question again from the starting line', async () => {
+    const ask = vi.spyOn(api, 'ask').mockResolvedValue({ answer: 'Because.' });
+    dispatch((s) => adoptSession(s, 's1'));
+    sideAnswer.value = {
+      question: 'Why?', answer: null, error: { tone: 'starting', text: STARTING_TEXT },
+    };
+    await mount();
+
+    const retry = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!;
+    expect(retry).not.toBeUndefined();
+    await act(async () => { retry.click(); await Promise.resolve(); });
+
+    expect(ask).toHaveBeenCalledWith('s1', 'Why?');
+    expect(sideAnswer.value?.answer).toBe('Because.');
+    expect(sideAnswer.value?.error).toBeNull();
   });
 
   it('renders nothing without an answer', async () => {

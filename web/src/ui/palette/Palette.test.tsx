@@ -82,6 +82,12 @@ function retryButton() {
   return [...root.querySelectorAll('button')].find((b) => b.textContent === 'Retry') ?? null;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 async function pressKey(target: EventTarget, init: KeyboardEventInit) {
   const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
   await act(() => { target.dispatchEvent(e); });
@@ -258,6 +264,28 @@ describe('the command palette', () => {
     const alert = dialog()!.querySelector('[role="alert"]')!;
     expect(alert.textContent).toBe('Crush is busy right now');
     expect(alert.getAttribute('data-tone')).toBe('error');
+  });
+
+  it('retries an action the starting agent refused', async () => {
+    seed();
+    stubSources();
+    const summarize = vi.spyOn(api, 'summarize')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockResolvedValueOnce(undefined);
+    await mount();
+    await openWithKey();
+
+    await type('compact');
+    await enter();
+
+    const retry = retryButton();
+    expect(retry).not.toBeNull();
+    await act(async () => { retry!.click(); });
+    await flush();
+
+    expect(summarize).toHaveBeenCalledTimes(2);
+    expect(summarize).toHaveBeenLastCalledWith('s1');
+    expect(paletteOpen.value).toBeNull();
   });
 
   it('closes on Escape before the inspector or the cinematic view', async () => {
@@ -519,6 +547,54 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBeNull();
   });
 
+  it('creates one session when Enter fires twice while the first is in flight', async () => {
+    seed({ sessionId: '' });
+    stubSources();
+    const answer = deferred<Session>();
+    const create = vi.spyOn(api, 'createSession').mockReturnValue(answer.promise);
+    await mount();
+    await openWithKey();
+
+    await type('new session');
+    await enter();
+    await enter();
+
+    expect(create).toHaveBeenCalledTimes(1);
+
+    await act(async () => { answer.resolve(session('s-9', 'New session')); await Promise.resolve(); });
+    await flush();
+    expect(state.value.sessionId).toBe('s-9');
+    expect(paletteOpen.value).toBeNull();
+  });
+
+  it('runs one command when the argument form submits twice in flight', async () => {
+    seed();
+    stubSources();
+    const answer = deferred<void>();
+    const run = vi.spyOn(api, 'runCommand').mockReturnValue(answer.promise);
+    await mount();
+    await openWithKey();
+
+    await type('user:fix');
+    await enter();
+    const file = root.querySelector<HTMLInputElement>('#argument-FILE')!;
+    await act(() => {
+      file.value = 'a.go';
+      file.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => {
+      const form = root.querySelector('form.palette__form')!;
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+
+    await act(async () => { answer.resolve(undefined); await Promise.resolve(); });
+    await flush();
+    expect(paletteOpen.value).toBeNull();
+  });
+
   it('opens the skills section from Toggle skills', async () => {
     seed();
     stubSources();
@@ -621,7 +697,7 @@ describe('the command palette', () => {
     expect(vi.mocked(api.commands)).toHaveBeenCalledTimes(1);
   });
 
-  it('hides Retry while an action failure is the one on the line', async () => {
+  it('hides Retry while an error-tone action failure is the one on the line', async () => {
     seed();
     stubSources();
     vi.mocked(api.sessions).mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
