@@ -185,14 +185,30 @@ func signInModelReason(err error) string {
 
 // testAPIKey is the default provider check: the catalog entry becomes the
 // provider config the TUI's key dialog tests, so both clients ask the same
-// question. It ignores ctx: TestConnection applies its own 5 s limit.
-func testAPIKey(_ context.Context, p catwalk.Provider, key string, r config.VariableResolver) error {
-	pc := config.ProviderConfig{
+// question. endpoint resolves the catalog's api_endpoint, which is a shell
+// template rather than user input. It ignores ctx: TestConnection applies
+// its own 5 s limit.
+func testAPIKey(_ context.Context, p catwalk.Provider, key string, r, endpoint config.VariableResolver) error {
+	pc := providerTestConfig(p, key, endpoint)
+	return pc.TestConnection(r)
+}
+
+// providerTestConfig builds the provider config a catalog entry's key is
+// tested with. The endpoint is catalog data and resolves through the
+// workspace resolver; an unset variable leaves BaseURL empty so
+// TestConnection uses the provider's default URL. The key stays as typed.
+func providerTestConfig(p catwalk.Provider, key string, endpoint config.VariableResolver) config.ProviderConfig {
+	baseURL := p.APIEndpoint
+	if baseURL != "" && endpoint != nil {
+		if resolved, err := endpoint.ResolveValue(baseURL); err == nil {
+			baseURL = resolved
+		}
+	}
+	return config.ProviderConfig{
 		ID:      string(p.ID),
 		Name:    p.Name,
 		APIKey:  key,
 		Type:    p.Type,
-		BaseURL: p.APIEndpoint,
+		BaseURL: baseURL,
 	}
-	return pc.TestConnection(r)
 }

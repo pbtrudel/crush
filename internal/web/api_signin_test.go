@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/env"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
@@ -54,10 +56,16 @@ type countingWorkspace struct {
 	*webtest.Fake
 	resolverCalls atomic.Int64
 	updateErr     error
+	// resolver, when set, is what Resolver returns; nil means the
+	// identity resolver.
+	resolver config.VariableResolver
 }
 
 func (w *countingWorkspace) Resolver() config.VariableResolver {
 	w.resolverCalls.Add(1)
+	if w.resolver != nil {
+		return w.resolver
+	}
 	return config.IdentityResolver()
 }
 
@@ -332,6 +340,69 @@ func TestAPIKeyIsVerifiedLiterally(t *testing.T) {
 	require.Equal(t, "$(echo hi)", v.resolved, "the provider check resolves nothing")
 	require.Zero(t, ws.resolverCalls.Load(), "the route uses the identity resolver")
 	require.Contains(t, f.CallLog(), "SetProviderAPIKey:global:anthropic:key")
+}
+
+// endpointRequest is what the test provider server saw.
+type endpointRequest struct {
+	path string
+	key  string
+}
+
+// TestDefaultAPIKeyCheckResolvesTheEndpoint exercises the real default
+// TestAPIKey against a local provider. The catalog's api_endpoint is a
+// shell template, as catwalk's entries are, so the check must resolve it
+// with the workspace resolver before TestConnection builds its URL.
+//
+// t.Setenv forbids t.Parallel.
+func TestDefaultAPIKeyCheckResolvesTheEndpoint(t *testing.T) {
+	requests := make(chan endpointRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- endpointRequest{path: r.URL.Path, key: r.Header.Get("x-api-key")}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("X_ENDPOINT", srv.URL)
+
+	fake := webtest.NewFake()
+	ws := &countingWorkspace{Fake: fake, resolver: config.NewShellVariableResolver(env.New())}
+	g, err := Start(t.Context(), Options{
+		Workspace: ws,
+		KnownProviders: func(*config.Config) ([]catwalk.Provider, error) {
+			return []catwalk.Provider{{
+				ID:          catwalk.InferenceProviderAnthropic,
+				Name:        "Anthropic",
+				Type:        catwalk.TypeMessages,
+				APIEndpoint: "$X_ENDPOINT",
+			}}, nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+		`{"provider":"anthropic","api_key":"`+testKey+`"}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	req := <-requests
+	require.Equal(t, "/v1/models", req.path)
+	require.Equal(t, testKey, req.key, "the provider receives the key as typed")
+	require.Contains(t, fake.CallLog(), "SetProviderAPIKey:global:anthropic:key")
+}
+
+// TestProviderTestConfigFallsBackForAnUnsetEndpoint pins that a catalog
+// endpoint whose variable is unset leaves BaseURL empty, which is how
+// TestConnection reaches the provider's own default URL. No network runs.
+func TestProviderTestConfigFallsBackForAnUnsetEndpoint(t *testing.T) {
+	t.Parallel()
+	resolver := config.NewShellVariableResolver(env.NewFromMap(nil))
+	pc := providerTestConfig(catwalk.Provider{
+		ID:          catwalk.InferenceProviderAnthropic,
+		Name:        "Anthropic",
+		Type:        catwalk.TypeMessages,
+		APIEndpoint: "$CRUSH_UNSET_ENDPOINT",
+	}, "sk-literal", resolver)
+	require.Empty(t, pc.BaseURL)
+	require.Equal(t, "sk-literal", pc.APIKey)
 }
 
 func TestAPIKeySignInWhenCatalogUnavailable(t *testing.T) {

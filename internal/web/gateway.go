@@ -173,7 +173,12 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	}
 	testAPIKeyFn := opts.TestAPIKey
 	if testAPIKeyFn == nil {
-		testAPIKeyFn = testAPIKey
+		// The catalog endpoint resolves with the workspace resolver, while
+		// the key is checked as typed.
+		ws := opts.Workspace
+		testAPIKeyFn = func(ctx context.Context, p catwalk.Provider, key string, r config.VariableResolver) error {
+			return testAPIKey(ctx, p, key, r, ws.Resolver())
+		}
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	port := ln.Addr().(*net.TCPAddr).Port
