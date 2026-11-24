@@ -47,5 +47,4 @@
 .sp__details { margin: 0; padding-inline-start: 18px; color: var(--text-muted); font-size: var(--step--1); overflow-wrap: anywhere; }
 .sp__glyph { color: var(--magenta); }
 .sp__actions { display: flex; gap: 8px; }
-.sp__notice { margin: 0; color: var(--text-muted); font-size: var(--step--1); }
 .sp__status { margin: 0; color: var(--amber); font-size: var(--step--1); }

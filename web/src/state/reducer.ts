@@ -47,7 +47,7 @@ export interface State {
   question: QuestionRequest | null;
   questionQueue: QuestionRequest[];
   // securePrompts are the GPG and SSH prompts waiting for an answer. A
-  // touch prompt is shown as a notice: the terminal answers it itself.
+  // touch prompt is only a warning toast: the terminal answers it itself.
   securePrompts: SecurePrompt[];
   // answeredHere names the prompt ids this tab answered or cancelled, so
   // the frame that closes them does not toast them back.

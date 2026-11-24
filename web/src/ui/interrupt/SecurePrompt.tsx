@@ -5,8 +5,8 @@ import { actions } from '../../state/store';
 import { useDialogFocus } from './focus';
 
 // SECRET_LABELS names the field for each prompt that takes typed text. A
-// confirm prompt takes none and a touch prompt is answered by the key
-// itself.
+// confirm prompt takes none. A touch prompt never reaches this dialog: the
+// terminal answers it and the tab only toasts it.
 const SECRET_LABELS: Partial<Record<SecureKind, string>> = {
   passphrase: 'Passphrase',
   pin: 'PIN',
@@ -42,7 +42,6 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
   const wasDisabled = useRef(disabled);
   useDialogFocus(root, `${prompt.id}:${focusTick}`);
 
-  const touch = prompt.kind === 'touch';
   const secretLabel = SECRET_LABELS[prompt.kind];
   const locked = disabled || sending || settled;
   const alertText = failure?.text ?? prompt.retry;
@@ -119,9 +118,8 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
   // no state or ref keeps it.
   const answer = (secret: string) => run(() => actions.answerSecure(prompt, secret));
 
-  // cancel dismisses the prompt once. A touch prompt is answered by the key
-  // itself, so the browser never cancels one.
-  const cancel = () => (touch ? undefined : run(() => actions.cancelSecure(prompt)));
+  // cancel dismisses the prompt once.
+  const cancel = () => run(() => actions.cancelSecure(prompt));
 
   const submit = (e: Event) => {
     e.preventDefault();
@@ -135,7 +133,6 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
   };
 
   useEffect(() => {
-    if (touch) return;
     const onKey = (e: KeyboardEvent) => {
       // A repeated or composing Escape must not send a second cancel.
       if (e.key !== 'Escape' || e.repeat || e.isComposing || e.keyCode === 229) return;
@@ -144,7 +141,7 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [prompt.id, disabled, settled, touch]);
+  }, [prompt.id, disabled, settled]);
 
   return (
     <div
@@ -173,11 +170,7 @@ export function SecurePromptDialog({ prompt, disabled }: { prompt: SecurePrompt;
             <span class="sp__glyph" aria-hidden="true">✕</span> {alertText}
           </p>
         )}
-        {touch ? (
-          // The terminal answers a touch prompt itself; the browser only
-          // shows it, and the server refuses an answer or a cancel.
-          <p class="sp__notice" role="status">Waiting for the terminal.</p>
-        ) : secretLabel ? (
+        {secretLabel ? (
           <form class="sp__form" onSubmit={submit}>
             <label class="sp__field" for="sp-secret">
               <span class="hud-label">{secretLabel}</span>

@@ -291,21 +291,6 @@ describe('SecurePromptDialog', () => {
     expect(dialog()!.contains(document.activeElement)).toBe(true);
   });
 
-  it('never offers to answer a touch prompt', async () => {
-    const answer = vi.spyOn(actions, 'answerSecure');
-    const cancel = vi.spyOn(actions, 'cancelSecure');
-    await mount(<SecurePromptDialog
-      prompt={{ source: 'ssh', id: 't1', kind: 'touch', title: 'Security key', message: 'Tap your security key to continue.' }}
-      disabled={false}
-    />);
-    expect(input()).toBeNull();
-    expect(root.querySelector('button')).toBeNull();
-    expect(root.textContent).toContain('Tap your security key to continue.');
-    await press('Escape');
-    expect(answer).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
-  });
-
   it('closes and toasts when the terminal answers first', async () => {
     dispatch((s) => reduce(s, { seq: s.lastSeq + 1, type: 'secure_prompt', payload: { prompts: [pass] } }));
     await mount(<Interrupt />);
