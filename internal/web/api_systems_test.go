@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -289,6 +290,11 @@ func TestMCPAuthReusesTheRunningFlow(t *testing.T) {
 	fake := newAuthFake()
 	fake.AuthURL = "https://auth.example/x"
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Release even when an assertion fails first: a flow that ignores its
+	// context would otherwise hold the cleanup Shutdown forever.
+	t.Cleanup(unblock)
 	fake.SetMCPAuthRelease(release)
 	g := startAuthTest(t, fake)
 	c := authedClient(t, g)
@@ -303,9 +309,13 @@ func TestMCPAuthReusesTheRunningFlow(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	rsp.Body.Close()
 	require.JSONEq(t, `{"url":"https://auth.example/x"}`, string(body))
-	require.Equal(t, 1, countCalls(fake, "MCPAuthenticate:srv"), "the second request reuses the running flow")
+	// The flow records its call on its own goroutine, which the request
+	// does not wait for, so the count is read until it settles.
+	require.Eventually(t, func() bool {
+		return countCalls(fake, "MCPAuthenticate:srv") == 1
+	}, time.Second, 10*time.Millisecond, "the second request reuses the running flow")
 
-	close(release)
+	unblock()
 	require.Eventually(t, func() bool {
 		return slices.Contains(fake.CallLog(), "MCPAuthenticateReleased:srv:true")
 	}, time.Second, 10*time.Millisecond, "the flow must still be live once the request returned")
@@ -325,6 +335,11 @@ func TestMCPAuthFailurePublishesWebError(t *testing.T) {
 	fake := newAuthFake()
 	fake.AuthURL = "https://auth.example/x"
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Release even when an assertion fails first: a flow that ignores its
+	// context would otherwise hold the cleanup Shutdown forever.
+	t.Cleanup(unblock)
 	fake.SetMCPAuthRelease(release)
 	fake.SetMCPAuthErr(errors.New("token endpoint returned 500"))
 	g := startAuthTest(t, fake)
@@ -335,7 +350,7 @@ func TestMCPAuthFailurePublishesWebError(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	rsp.Body.Close()
 
-	close(release)
+	unblock()
 	f := readErrorFrame(t, s)
 	var p map[string]string
 	require.NoError(t, json.Unmarshal(f.Payload, &p))
@@ -352,6 +367,11 @@ func TestMCPAuthCancelledOnShutdown(t *testing.T) {
 	t.Parallel()
 	fake := newAuthFake()
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Release even when an assertion fails first: a flow that ignores its
+	// context would otherwise hold the cleanup Shutdown forever.
+	t.Cleanup(unblock)
 	fake.SetMCPAuthRelease(release)
 	g := startAuthTest(t, fake)
 
@@ -361,7 +381,7 @@ func TestMCPAuthCancelledOnShutdown(t *testing.T) {
 
 	require.NoError(t, g.Shutdown(context.Background()))
 	require.Contains(t, fake.CallLog(), "MCPAuthenticateCanceled:srv")
-	close(release)
+	unblock()
 }
 
 // TestShutdownBoundsTheMCPAuthWait covers a flow that ignores its context:
@@ -370,6 +390,12 @@ func TestShutdownBoundsTheMCPAuthWait(t *testing.T) {
 	t.Parallel()
 	fake := newAuthFake()
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Release even when an assertion fails first: this flow ignores its
+	// context, so an unclosed channel would hold the cleanup Shutdown
+	// forever.
+	t.Cleanup(unblock)
 	fake.SetMCPAuthRelease(release)
 	fake.SetMCPAuthIgnoreCtx(true)
 	g := startAuthTest(t, fake)
@@ -387,7 +413,7 @@ func TestShutdownBoundsTheMCPAuthWait(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Shutdown waited on an auth flow that ignores cancellation")
 	}
-	close(release)
+	unblock()
 }
 
 func TestLSPListAndDiagnostics(t *testing.T) {
