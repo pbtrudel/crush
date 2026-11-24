@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -501,6 +502,7 @@ type Options struct {
 	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
 	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
 	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	PromptCacheTTL       string         `json:"prompt_cache_ttl,omitempty" jsonschema:"description=Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x\\, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.,enum=5m,enum=1h,default=5m"`
 	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
@@ -569,6 +571,12 @@ type Options struct {
 	// LazyTools sends only a small core tool palette on every request and
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
+	// AnthropicToolSearch hands the deferred half of a lazy palette to
+	// Anthropic's server-side tool search instead of Crush's tool_search,
+	// so revealing a tool never rewrites the cached tools block. Only
+	// applies when LazyTools is on and the model is served by Anthropic
+	// directly.
+	AnthropicToolSearch *bool `json:"anthropic_tool_search,omitempty" jsonschema:"description=Send deferred tools to Anthropic's server-side tool search (defer_loading plus the tool_search_tool_bm25 server tool) instead of Crush's own tool_search, so a tool revealed mid-session never rewrites the cached tools block. Needs lazy_tools and an Anthropic-direct model; every other provider keeps the current behaviour. Off by default.,default=false"`
 	// PromptProfile selects the system prompt template set the coder agent
 	// renders. Left unset, the measured default applies: DeepSeek models get
 	// the lean profile, and every other model keeps the full one until its
@@ -625,6 +633,13 @@ const DefaultMaxBackgroundJobs = 50
 // option existed.
 func (o *Options) GetLazyTools() bool {
 	return o != nil && o.LazyTools != nil && *o.LazyTools
+}
+
+// GetAnthropicToolSearch reports whether deferred tools may be sent to
+// Anthropic's server-side tool search. The nil receiver, the unset field and
+// an explicit false all keep the option off.
+func (o *Options) GetAnthropicToolSearch() bool {
+	return o != nil && o.AnthropicToolSearch != nil && *o.AnthropicToolSearch
 }
 
 // GetApplyPatch reports whether GPT models are offered apply_patch instead of
@@ -704,6 +719,14 @@ const DefaultContextMaxBytes = 64 * 1024
 // DefaultMaxImages bounds the images sent in one request when the user has
 // not configured a budget. The oldest images are replaced first.
 const DefaultMaxImages = 100
+
+// Prompt cache lifetimes accepted in prompt_cache_ttl. The extended lifetime
+// costs more per cache write, so it only pays off when pauses between turns
+// outlast the default five-minute window.
+const (
+	PromptCacheTTLDefault  = "5m"
+	PromptCacheTTLExtended = "1h"
+)
 
 // DefaultCompactionPruneChars is the per-tool-result character budget used
 // before a compaction request when the user has not configured one.
@@ -796,6 +819,38 @@ func (o *Options) GetMaxImages() int {
 		return DefaultMaxImages
 	}
 	return max(0, *o.MaxImages)
+}
+
+// GetPromptCacheTTL returns the prompt-cache lifetime as configured: the
+// extended one-hour lifetime, or the default five-minute lifetime for an
+// unset, empty, or unknown value. Only the extended lifetime rewrites
+// requests, so the default leaves every byte on the wire as it was.
+func (o *Options) GetPromptCacheTTL() string {
+	if o == nil {
+		return PromptCacheTTLDefault
+	}
+	if strings.EqualFold(strings.TrimSpace(o.PromptCacheTTL), PromptCacheTTLExtended) {
+		return PromptCacheTTLExtended
+	}
+	return PromptCacheTTLDefault
+}
+
+// warnUnknownPromptCacheTTL logs a warning when prompt_cache_ttl names a
+// lifetime Crush does not know. The getter already falls back to the default
+// lifetime, so the warning only explains why the setting has no effect.
+func (c *Config) warnUnknownPromptCacheTTL() {
+	if c == nil || c.Options == nil {
+		return
+	}
+	value := strings.TrimSpace(c.Options.PromptCacheTTL)
+	if value == "" || strings.EqualFold(value, PromptCacheTTLDefault) || strings.EqualFold(value, PromptCacheTTLExtended) {
+		return
+	}
+	slog.Warn(
+		"Ignoring unknown prompt_cache_ttl, using the default lifetime",
+		"value", c.Options.PromptCacheTTL,
+		"expected", PromptCacheTTLDefault+" or "+PromptCacheTTLExtended,
+	)
 }
 
 // GetCompactionPruneChars returns the per-tool-result character budget used

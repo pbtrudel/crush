@@ -571,12 +571,15 @@ func toolResultText(resp *controlResponseBody) string {
 	if err := json.Unmarshal(resp.Response, &wrapper); err != nil {
 		return ""
 	}
+	// Every text block is logged, in order: a tool result can carry more than
+	// one, and a trailing block is how a harness reminder reaches the model.
+	var texts []string
 	for _, block := range wrapper.MCPResponse.Result.Content {
 		if block.Type == "text" {
-			return block.Text
+			texts = append(texts, block.Text)
 		}
 	}
-	return ""
+	return strings.Join(texts, "\n")
 }
 
 // toolToCall picks the tool the CALL_TOOL script invokes.

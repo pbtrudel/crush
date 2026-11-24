@@ -67,6 +67,23 @@ option notifications osc`
 	require.Equal(t, "osc", opts["notifications"])
 }
 
+func TestOption_PromptCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option prompt-cache-ttl 1h`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, "1h", opts["prompt_cache_ttl"])
+}
+
 func TestOption_List(t *testing.T) {
 	t.Parallel()
 
@@ -444,4 +461,21 @@ func TestOption_PromptMissingPath(t *testing.T) {
 	_, err := LoadShellConfig(t.Context(), path, []byte(script))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "usage: option prompt")
+}
+
+func TestOption_AnthropicToolSearch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option anthropic-tool-search true`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, true, opts["anthropic_tool_search"])
 }
