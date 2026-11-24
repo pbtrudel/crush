@@ -141,7 +141,7 @@ describe('actions.answer', () => {
 
 describe('actions.sendPrompt', () => {
   it('starts a session when the terminal has none', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
@@ -152,8 +152,41 @@ describe('actions.sendPrompt', () => {
     expect(send).toHaveBeenCalledWith('s2', 'first task', []);
   });
 
+  it('waits for the first snapshot instead of starting a session', async () => {
+    // A tab can take a prompt before the stream names the session the
+    // terminal shows; starting one there would switch the terminal away.
+    state.value = { ...initialState(), conn: 'live' };
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+
+    handleFrames([fx.snapshot]);
+    await expect(pending).resolves.toBeNull();
+
+    expect(create).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith('s1', 'first task', []);
+  });
+
+  it('stops waiting for a snapshot when the connection ends', async () => {
+    state.value = { ...initialState(), conn: 'live' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    handleFrames([{ seq: 1, type: 'gateway_closing', payload: {} }]);
+    await expect(pending).resolves.toBeNull();
+
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('sends nothing and reports the failure when the session cannot start', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     vi.spyOn(api, 'createSession').mockRejectedValue(new ApiError(500, 'create_session', 'gateway on fire'));
     const send = vi.spyOn(api, 'sendPrompt');
 
@@ -163,7 +196,7 @@ describe('actions.sendPrompt', () => {
   });
 
   it('keeps the created session when the prompt fails, so a retry does not start another', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const send = vi.spyOn(api, 'sendPrompt')
@@ -403,7 +436,7 @@ function deferred<T>() {
 
 describe('actions.runShell', () => {
   it('starts a session, runs the command and records the run', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const shell = vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r1' });
@@ -418,7 +451,7 @@ describe('actions.runShell', () => {
   });
 
   it('keeps the created session when the command fails, so a retry does not start another', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const shell = vi.spyOn(api, 'shell')

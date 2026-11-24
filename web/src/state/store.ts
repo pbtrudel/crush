@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
@@ -195,12 +195,39 @@ export function handleFrames(frames: Frame[]) {
   if (ins && ins.sessionId !== state.value.sessionId && frames.some((f) => f.type === 'snapshot')) void loadInspected(ins.sessionId);
 }
 
+// sessionSettled reports whether the tab can tell whether the terminal has
+// a session. Only a snapshot settles it while the stream is healthy; a dead
+// connection settles it too, so a send fails instead of waiting forever.
+function sessionSettled(s: State): boolean {
+  return s.hydrated || s.conn === 'ended' || s.conn === 'unauthorized';
+}
+
+function whenSessionSettled(): Promise<void> {
+  if (sessionSettled(state.value)) return Promise.resolve();
+  return new Promise((resolve) => {
+    let stop: (() => void) | undefined;
+    stop = effect(() => {
+      if (!sessionSettled(state.value)) return;
+      stop?.();
+      resolve();
+    });
+  });
+}
+
 // ensureSession returns the session prompts and notes go to, starting one
 // the way the terminal does on a first prompt when the browser has none. The
 // new session is adopted before anything is sent, so a failed request or a
 // second submit reuses it instead of starting another.
 async function ensureSession(): Promise<string> {
-  const current = state.value.sessionId;
+  let current = state.value.sessionId;
+  // A send can land before the first snapshot. The empty sessionId then
+  // means the tab does not know the terminal's session yet, not that there
+  // is none: creating one here would start a second session and switch the
+  // terminal to it. Wait for the snapshot to name the session it shows.
+  if (!current && !sessionSettled(state.value)) {
+    await whenSessionSettled();
+    current = state.value.sessionId;
+  }
   if (current) return current;
   const sid = (await api.createSession()).id;
   dispatch((s) => adoptSession(s, sid));

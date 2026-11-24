@@ -24,6 +24,10 @@ export interface ShellRun {
 export interface State {
   conn: Conn;
   lastSeq: number;
+  // hydrated is true once a snapshot has named the session the terminal
+  // shows. Before it, an empty sessionId means "not known yet", not "the
+  // terminal has no session".
+  hydrated: boolean;
   version: string;
   workingDir: string;
   project: string;
@@ -69,7 +73,7 @@ export interface State {
 
 export function initialState(): State {
   return {
-    conn: 'booting', lastSeq: 0, version: '', workingDir: '', project: '', branch: '',
+    conn: 'booting', lastSeq: 0, hydrated: false, version: '', workingDir: '', project: '', branch: '',
     model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
     agentReady: true, planReady: '',
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
@@ -279,6 +283,7 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     ...s,
     conn: 'live',
     lastSeq: seq,
+    hydrated: true,
     version: snap.version,
     workingDir: snap.working_dir,
     project: projectName(snap.working_dir),
