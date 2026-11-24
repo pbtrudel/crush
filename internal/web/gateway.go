@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -49,6 +50,12 @@ type Options struct {
 	// Nil uses commands.LoadCustomCommands with the workspace config,
 	// which lists none when there is no config.
 	LoadCommands func(*config.Config) ([]commands.CustomCommand, error)
+	// KnownProviders lists the provider catalog the sign-in picker offers.
+	// Nil loads it with config.Providers.
+	KnownProviders func(*config.Config) ([]catwalk.Provider, error)
+	// TestAPIKey checks a provider API key before it is saved. Nil builds a
+	// config.ProviderConfig from the catalog entry and runs TestConnection.
+	TestAPIKey func(ctx context.Context, p catwalk.Provider, key string, r config.VariableResolver) error
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -98,6 +105,11 @@ type Gateway struct {
 	// loadCommandsFn is Options.LoadCommands; nil falls back to reading
 	// the workspace config.
 	loadCommandsFn func(*config.Config) ([]commands.CustomCommand, error)
+	// knownProvidersFn is Options.KnownProviders; nil falls back to
+	// defaultKnownProviders.
+	knownProvidersFn func(*config.Config) ([]catwalk.Provider, error)
+	// testAPIKeyFn is Options.TestAPIKey; nil falls back to TestConnection.
+	testAPIKeyFn func(context.Context, catwalk.Provider, string, config.VariableResolver) error
 	// shells holds the cancel func of every running shell command, keyed
 	// by run id. shellWG lets Shutdown wait for them before the hub
 	// closes, and shellsClosed refuses a run started during shutdown.
@@ -155,6 +167,14 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	if assets == nil {
 		assets = embeddedAssets()
 	}
+	knownProvidersFn := opts.KnownProviders
+	if knownProvidersFn == nil {
+		knownProvidersFn = defaultKnownProviders
+	}
+	testAPIKeyFn := opts.TestAPIKey
+	if testAPIKeyFn == nil {
+		testAPIKeyFn = testAPIKey
+	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	port := ln.Addr().(*net.TCPAddr).Port
 	slots := newDiffSlots(maxConcurrentDiffs)
@@ -180,6 +200,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
 
 		loadCommandsFn:       opts.LoadCommands,
+		knownProvidersFn:     knownProvidersFn,
+		testAPIKeyFn:         testAPIKeyFn,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,

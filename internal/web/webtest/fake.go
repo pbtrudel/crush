@@ -16,9 +16,11 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -143,6 +145,11 @@ type Fake struct {
 	// provider and model set it reads. A model switch swaps in a copy, so
 	// a reader of a published config never sees its models change.
 	Cfg *config.Config
+	// catalog is the provider catalog SetProviderAPIKey takes models from.
+	catalog []catwalk.Provider
+	// copilotImport is what ImportCopilot reports; set it with
+	// SetCopilotImport.
+	copilotImport *oauth.Token
 	// agentBusy is what AgentIsBusy reports; set it with SetAgentBusy.
 	agentBusy bool
 	// agentModel is what AgentModel returns; set it with SetAgentModel.
@@ -291,6 +298,46 @@ func (f *Fake) CurrentSessionID() string {
 
 func (f *Fake) WorkingDir() string { return f.WorkDir }
 
+// Resolver returns the identity resolver: a fake never expands a $(...)
+// in a test key as a shell command.
+func (f *Fake) Resolver() config.VariableResolver { return config.IdentityResolver() }
+
+// SetCatalog gives SetProviderAPIKey the provider catalog it takes models
+// from.
+func (f *Fake) SetCatalog(providers []catwalk.Provider) {
+	f.mu.Lock()
+	f.catalog = append([]catwalk.Provider(nil), providers...)
+	f.mu.Unlock()
+}
+
+// SetCopilotImport drives ImportCopilot.
+func (f *Fake) SetCopilotImport(tok *oauth.Token) {
+	f.mu.Lock()
+	f.copilotImport = tok
+	f.mu.Unlock()
+}
+
+// SetProviderAPIKey records the mutation without the value and marks the
+// provider configured with the catalog's models.
+func (f *Fake) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
+	kind := "key"
+	if _, ok := apiKey.(*oauth.Token); ok {
+		kind = "oauth"
+	}
+	f.record("SetProviderAPIKey:" + scope.String() + ":" + providerID + ":" + kind)
+	f.mu.Lock()
+	f.Cfg = withProviderKey(f.Cfg, providerID, apiKey, f.catalog)
+	f.mu.Unlock()
+	return nil
+}
+
+// ImportCopilot reports the token SetCopilotImport set.
+func (f *Fake) ImportCopilot() (*oauth.Token, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.copilotImport, f.copilotImport != nil
+}
+
 // Config returns the test's config, or nil: the fake has no data
 // directory, so the gateway's team watcher stays off unless a test sets
 // Options.AgentTeamsDir.
@@ -377,6 +424,50 @@ func withModel(cfg *config.Config, typ config.SelectedModelType, m config.Select
 		clone.Models = make(map[config.SelectedModelType]config.SelectedModel)
 	}
 	clone.Models[typ] = m
+	return &clone
+}
+
+// withProviderKey copies cfg with provider id configured with apiKey,
+// taking the models from the matching catalog entry.
+func withProviderKey(cfg *config.Config, id string, apiKey any, catalog []catwalk.Provider) *config.Config {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clone := *cfg
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	if cfg.Providers != nil {
+		for name, pc := range cfg.Providers.Seq2() {
+			providers.Set(name, pc)
+		}
+	}
+	pc, _ := providers.Get(id)
+	pc.ID = id
+	if pc.Name == "" {
+		pc.Name = id
+		for _, p := range catalog {
+			if string(p.ID) == id {
+				pc.Name = cmp.Or(p.Name, id)
+				break
+			}
+		}
+	}
+	if len(pc.Models) == 0 {
+		for _, p := range catalog {
+			if string(p.ID) == id {
+				pc.Models = append([]catwalk.Model(nil), p.Models...)
+				break
+			}
+		}
+	}
+	switch key := apiKey.(type) {
+	case *oauth.Token:
+		pc.OAuthToken = key
+	case string:
+		pc.APIKey = key
+	}
+	providers.Set(id, pc)
+	clone.Providers = providers
+	clone.Models = maps.Clone(cfg.Models)
 	return &clone
 }
 
