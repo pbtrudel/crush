@@ -22,6 +22,7 @@ const sources: PaletteSources = {
   yolo: 'normal',
   plan: 'code',
   cinematic: false,
+  cinematicAllowed: false,
   motion: 'full',
 };
 
@@ -123,5 +124,15 @@ describe('palette items', () => {
     expect(toggles.map((i) => i.title)).toEqual(['go-tests', 'retired']);
     expect(toggles.map((i) => i.hint)).toEqual(['Enabled', 'Disabled']);
     expect(toggles[1].run).toEqual({ kind: 'skill-toggle', name: 'retired' });
+  });
+
+  it('offers the cinematic toggle only when the scene allows it', () => {
+    const ids = buildItems({ ...sources, cinematicAllowed: true }).map((i) => i.id);
+    expect(ids).toContain('toggle:cinematic');
+    expect(ids).not.toContain('action:cinematic');
+
+    const off = buildItems({ ...sources, cinematicAllowed: false }).map((i) => i.id);
+    expect(off).not.toContain('toggle:cinematic');
+    expect(off).not.toContain('action:cinematic');
   });
 });

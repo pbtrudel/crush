@@ -4,7 +4,7 @@ import type { CommandEntry, McpPrompt, ModelChoice, Session, SkillEntry } from '
 import { ApiError, api } from '../../api/http';
 import { describeFailure } from '../../state/failure';
 import { adoptSession } from '../../state/reducer';
-import { cinematic, setCinematic } from '../../state/cinematic';
+import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { motion, setMotion, type Motion } from '../../state/motion';
 import { toggleDrawer } from '../../state/drawer';
 import { actions, dispatch, state } from '../../state/store';
@@ -174,6 +174,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     yolo: s.permissionMode,
     plan: s.inputMode,
     cinematic: cinematic.value,
+    cinematicAllowed: cinematicAllowed(),
     motion: motion.value,
   };
   const scoped = section === 'skills' ? buildSkillToggles(loaded.skills) : buildItems(sources);
@@ -309,7 +310,14 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
 
   return (
     <div class="palette-layer" inert={inert}>
-      <div class="palette glass enter" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialog}>
+      <div
+        class="palette glass enter"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        ref={dialog}
+        tabIndex={-1}
+      >
         {argument ? (
           <ArgumentForm
             key={argument.id}
@@ -356,8 +364,12 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
                   ))}
                 </Fragment>
               ))}
-              {visible.length === 0 && <li role="presentation" class="palette__empty">No matches</li>}
             </ul>
+            {/* The empty answer is not an option, so it lives outside the
+                listbox and is announced politely. */}
+            {visible.length === 0 && (
+              <p class="palette__empty" role="status">No matches</p>
+            )}
           </Fragment>
         )}
         {shown && (

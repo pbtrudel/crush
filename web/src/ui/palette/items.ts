@@ -39,6 +39,7 @@ export interface PaletteSources {
   yolo: PermissionMode;
   plan: InputMode;
   cinematic: boolean;
+  cinematicAllowed: boolean;
   motion: Motion;
 }
 
@@ -56,7 +57,6 @@ export const ACTIONS = {
   reloadSkills: 'reload-skills',
   toggleSkills: 'toggle-skills',
   drawer: 'drawer',
-  cinematic: 'cinematic',
   display: 'display',
   reloadConfig: 'reload-config',
   thinking: 'toggle-thinking',
@@ -102,7 +102,6 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
   if (s.skills.length > 0) actions.push(action(ACTIONS.toggleSkills, 'Toggle skills', ['skills']));
   actions.push(
     action(ACTIONS.drawer, 'Open file drawer', ['drawer', 'files']),
-    action(ACTIONS.cinematic, 'Toggle cinematic mode', ['cinematic', 'fly']),
     action(ACTIONS.display, 'Display settings', ['display', 'motion', 'settings']),
     action(ACTIONS.reloadConfig, 'Reload configuration', ['reload', 'reload-config', 'config']),
   );
@@ -170,9 +169,13 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
   toggles.push(
     toggle('yolo', 'Yolo permissions', onOff(s.yolo === 'yolo'), ['yolo', 'permissions'], ACTIONS.yolo),
     toggle('plan', 'Plan mode', onOff(s.plan === 'plan'), ['plan', 'mode'], ACTIONS.plan),
-    toggle('cinematic', 'Cinematic mode', onOff(s.cinematic), ['cinematic'], ACTIONS.cinematicToggle),
-    toggle('motion', 'Motion', s.motion, ['motion', 'reduce', 'effects'], ACTIONS.motionToggle),
   );
+  // Without a scene there is nothing to fly, so the palette does not offer a
+  // toggle that the App would refuse.
+  if (s.cinematicAllowed) {
+    toggles.push(toggle('cinematic', 'Cinematic mode', onOff(s.cinematic), ['cinematic'], ACTIONS.cinematicToggle));
+  }
+  toggles.push(toggle('motion', 'Motion', s.motion, ['motion', 'reduce', 'effects'], ACTIONS.motionToggle));
 
   return [...actions, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
 }

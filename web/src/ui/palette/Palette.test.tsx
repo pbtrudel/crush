@@ -760,6 +760,23 @@ describe('the command palette', () => {
     expect(combobox()!.getAttribute('aria-expanded')).toBe('false');
   });
 
+  it('keeps an empty answer out of the listbox and lets the dialog take focus', async () => {
+    seed();
+    stubSources();
+    await mount();
+    await openWithKey();
+
+    expect(dialog()!.getAttribute('tabindex')).toBe('-1');
+
+    await type('zzz no such command');
+
+    const listbox = dialog()!.querySelector('[role="listbox"]')!;
+    expect(listbox.textContent).toBe('');
+    const status = dialog()!.querySelector('[role="status"]')!;
+    expect(status.textContent).toBe('No matches');
+    expect(listbox.contains(status)).toBe(false);
+  });
+
   it('scrolls the active option into view as the arrows move it', async () => {
     seed();
     stubSources();
