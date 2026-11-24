@@ -33,6 +33,7 @@ import { ModelSelector } from './models/ModelSelector';
 import { SystemsPanel } from './systems/SystemsPanel';
 import { SignInDialog } from './signin/SignInDialog';
 import { AwsSsoCard } from './signin/AwsSsoCard';
+import { usePublishedHeight } from './usePublishedHeight';
 
 export function App() {
   const s = state.value;
@@ -42,7 +43,12 @@ export function App() {
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
   const inspector = useRef<HTMLElement>(null);
+  const deck = useRef<HTMLDivElement>(null);
   const logCovered = useRef(false);
+
+  // signin.css places the AWS SSO card above the whole deck column, the side
+  // answer included, so the column publishes its own height.
+  usePublishedHeight(deck, '--deck-h');
 
   // The log goes inert while the overlay drawer covers it: that is a width
   // plus drawer state, not something a stylesheet can express.
@@ -186,7 +192,7 @@ export function App() {
         </section>
         <FileDrawer />
       </main>
-      <div class="holodeck__deck" inert={modal}>
+      <div class="holodeck__deck" inert={modal} ref={deck}>
         <SideAnswer />
         <CommandDeck />
       </div>

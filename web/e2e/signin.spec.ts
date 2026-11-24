@@ -117,3 +117,43 @@ awsTest('shows the AWS SSO card', async ({ page, gateway }) => {
     'href', 'https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD',
   );
 });
+
+// The side answer joins the deck column, so --deck-h must measure both: the
+// card sits above the column at a desktop width and a phone one, never over
+// the answer or the prompt box.
+awsTest('keeps the AWS SSO card above an open side answer', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  await page.getByLabel('Transmit to crush').focus();
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('combobox', { name: 'Command palette' }).fill('side question');
+  await page.keyboard.press('Enter');
+  const form = palette.getByRole('form', { name: 'Arguments for Ask side question' });
+  await form.getByLabel('Question (required)').fill('How does the parser work?');
+  await form.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByLabel('Side answer')).toContainText('The parser uses a recursive descent.');
+
+  const card = page.locator('.aws-sso');
+  await expect(card.getByRole('link', { name: 'Open the AWS sign-in page' })).toBeVisible();
+  const bottom = async () => {
+    const box = await card.boundingBox();
+    return box === null ? Number.POSITIVE_INFINITY : box.y + box.height;
+  };
+  const top = async (selector: string) => {
+    const box = await page.locator(selector).boundingBox();
+    return box === null ? Number.NEGATIVE_INFINITY : box.y;
+  };
+
+  for (const viewport of [{ width: 1440, height: 860 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    // --deck-h lands on the next resize callback, so poll rather than race it.
+    await expect.poll(async () => (await bottom()) - (await top('.side-answer')), {
+      message: `the card clears the side answer at ${viewport.width}px`,
+    }).toBeLessThanOrEqual(0.5);
+    await expect.poll(async () => (await bottom()) - (await top('form.deck')), {
+      message: `the card clears the deck at ${viewport.width}px`,
+    }).toBeLessThanOrEqual(0.5);
+  }
+});

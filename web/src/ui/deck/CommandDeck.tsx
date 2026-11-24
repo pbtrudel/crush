@@ -63,25 +63,6 @@ export function CommandDeck() {
   const ended = s.conn === 'ended';
   const mode = modeFor(text, deckMode.value);
 
-  // signin.css places the AWS SSO card above the deck from --deck-h, so the
-  // deck publishes its own height instead of a hard-coded offset.
-  useEffect(() => {
-    const el = root.current;
-    if (!el) return;
-    const doc = document.documentElement;
-    const publish = () => {
-      const height = Math.round(el.getBoundingClientRect().height);
-      if (height > 0) doc.style.setProperty('--deck-h', `${height}px`);
-    };
-    publish();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
-    observer?.observe(el);
-    return () => {
-      observer?.disconnect();
-      doc.style.removeProperty('--deck-h');
-    };
-  }, []);
-
   // The palette attaches through this module function; re-register when the
   // deck's file state moves so it reads the current list and budget.
   useEffect(() => {

@@ -93,12 +93,17 @@
 .signin__done { margin: 0; color: var(--teal); }
 
 /* The AWS SSO card follows a refresh the terminal runs. A run waits on the
-   user, so the card takes the amber edge. It is placed above the deck by CSS
-   because its DOM home is after the systems panel. */
+   user, so the card takes the amber edge. It is placed above the deck column
+   by CSS because its DOM home is after the systems panel. --deck-h measures
+   the side answer plus the deck, and --hud-h keeps the HUD strip clear, so a
+   long command or a wrapped error scrolls inside the card instead of
+   covering either. */
 .aws-sso {
   position: fixed; z-index: 15;
   inset-inline-end: var(--space-4);
   inset-block-end: calc(var(--space-4) * 2 + var(--deck-h, 7.5rem));
+  max-block-size: calc(100dvh - var(--hud-h, 96px) - var(--deck-h, 7.5rem) - var(--space-4) * 4);
+  overflow-y: auto;
   inline-size: min(26rem, calc(100vw - var(--space-4) * 2));
   display: grid; gap: 8px; padding: var(--space-4);
   background-image: linear-gradient(var(--glass), var(--glass)),

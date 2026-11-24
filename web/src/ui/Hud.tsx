@@ -11,6 +11,7 @@ import { ContextGauge } from './hud/ContextGauge';
 import { Numeral } from './hud/Numeral';
 import { ServerHexes } from './hud/ServerHexes';
 import { Sparkline } from './hud/Sparkline';
+import { usePublishedHeight } from './usePublishedHeight';
 
 const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
@@ -35,22 +36,7 @@ export function Hud() {
 
   // shell.css places the toasts from --hud-h, so the strip publishes its own
   // height instead of a hard-coded offset.
-  useEffect(() => {
-    const el = root.current;
-    if (!el) return;
-    const doc = document.documentElement;
-    const publish = () => {
-      const height = Math.round(el.getBoundingClientRect().height);
-      if (height > 0) doc.style.setProperty('--hud-h', `${height}px`);
-    };
-    publish();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
-    observer?.observe(el);
-    return () => {
-      observer?.disconnect();
-      doc.style.removeProperty('--hud-h');
-    };
-  }, []);
+  usePublishedHeight(root, '--hud-h');
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);

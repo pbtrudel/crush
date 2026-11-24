@@ -111,6 +111,26 @@ describe('App layout', () => {
       state.value = initialState();
     }
   });
+
+  it('publishes the whole deck column for the AWS card offset', async () => {
+    state.value = { ...initialState(), conn: 'live' };
+    const root = document.createElement('div');
+    // The column holds the side answer and the deck, so it is taller than the
+    // form the AWS card used to be placed above.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains('holodeck__deck') ? 240 : 146;
+      return { height } as DOMRect;
+    });
+    try {
+      await act(() => { render(<App />, root); });
+      expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('240px');
+    } finally {
+      await act(() => { render(null, root); });
+      expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('');
+      vi.restoreAllMocks();
+      state.value = initialState();
+    }
+  });
 });
 
 // Below 1024px the agent tab is the inspector's slot. A session switch
