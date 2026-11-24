@@ -92,9 +92,9 @@ func (f *grokFlow) Wait(ctx context.Context, c Challenge) (*oauth.Token, *Challe
 }
 
 // CodeEntry is a capability, not a state: the TUI dialog builds its paste
-// field from it once, before Start runs, and SubmitCode reports
-// ErrNoBrowserFlow while the device flow is in force. The device branch
-// shows a user code, which turns code entry off in the dialog anyway.
+// field from it once, before Start runs. A device fallback keeps the
+// browser flow, so SubmitCode still tries it; the device branch shows a
+// user code, which turns code entry off in the dialog anyway.
 func (f *grokFlow) CodeEntry() bool { return true }
 
 func (f *grokFlow) SubmitCode(ctx context.Context, code string) (*oauth.Token, error) {

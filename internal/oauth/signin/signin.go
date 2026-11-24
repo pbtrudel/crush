@@ -32,8 +32,9 @@ type Flow interface {
 	Wait(ctx context.Context, c Challenge) (tok *oauth.Token, next *Challenge, err error)
 	// CodeEntry reports whether the sign-in can finish with a code pasted
 	// back from the authorization page. It is a capability, not live
-	// state: a flow that falls back to a device challenge still reports
-	// true while SubmitCode refuses with ErrNoBrowserFlow.
+	// state: a flow that fell back to a device challenge still reports
+	// true, and SubmitCode still tries the browser flow, so the caller
+	// decides from the challenge in force rather than from this.
 	CodeEntry() bool
 	// SubmitCode exchanges a pasted code or callback URL for a token.
 	SubmitCode(ctx context.Context, code string) (*oauth.Token, error)
