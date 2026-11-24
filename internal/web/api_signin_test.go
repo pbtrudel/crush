@@ -413,6 +413,22 @@ func TestProviderTestConfigFallsBackForAnUnsetEndpoint(t *testing.T) {
 	require.Equal(t, "sk-literal", pc.APIKey)
 }
 
+// TestProviderTestConfigIgnoresATemplatedEndpoint pins the client/server
+// case: the identity resolver leaves $VAR untouched, so a templated
+// endpoint must not become the BaseURL the key is tested against. No
+// network runs.
+func TestProviderTestConfigIgnoresATemplatedEndpoint(t *testing.T) {
+	t.Parallel()
+	pc := providerTestConfig(catwalk.Provider{
+		ID:          catwalk.InferenceProviderOpenAI,
+		Name:        "OpenAI",
+		Type:        catwalk.TypeMessages,
+		APIEndpoint: "$OPENAI_API_ENDPOINT",
+	}, "sk-literal", config.IdentityResolver())
+	require.Empty(t, pc.BaseURL, "a templated endpoint falls back to the provider default")
+	require.Equal(t, "sk-literal", pc.APIKey)
+}
+
 func TestAPIKeySignInWhenCatalogUnavailable(t *testing.T) {
 	t.Parallel()
 	g, f := startWith(t, Options{

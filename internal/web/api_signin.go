@@ -880,12 +880,14 @@ func testAPIKey(_ context.Context, p catwalk.Provider, key string, r, endpoint c
 
 // providerTestConfig builds the provider config a catalog entry's key is
 // tested with. The endpoint is catalog data and resolves through the
-// workspace resolver; an unset variable leaves BaseURL empty so
-// TestConnection uses the provider's default URL. The key stays as typed.
+// workspace resolver. An endpoint that does not resolve, or that still
+// names a variable after resolving (client/server mode resolves nothing),
+// leaves BaseURL empty so TestConnection uses the provider's default URL.
+// The key stays as typed.
 func providerTestConfig(p catwalk.Provider, key string, endpoint config.VariableResolver) config.ProviderConfig {
-	baseURL := p.APIEndpoint
-	if baseURL != "" && endpoint != nil {
-		if resolved, err := endpoint.ResolveValue(baseURL); err == nil {
+	var baseURL string
+	if p.APIEndpoint != "" && endpoint != nil {
+		if resolved, err := endpoint.ResolveValue(p.APIEndpoint); err == nil && !strings.HasPrefix(resolved, "$") {
 			baseURL = resolved
 		}
 	}
