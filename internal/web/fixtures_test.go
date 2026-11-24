@@ -85,6 +85,20 @@ func fixtureEvents() map[string]any {
 		"file": pubsub.Event[history.File]{Type: pubsub.CreatedEvent, Payload: history.File{
 			ID: "f-1", SessionID: "sub-1", Path: "/repo/parser.go", Content: "package parser", Version: 1, CreatedAt: 104, UpdatedAt: 104,
 		}},
+		// A terminal notification: the browser toasts the text and keeps
+		// the retry affordance a re-authentication needs.
+		"agent_event": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeAgentError,
+			ProviderID: "anthropic", Message: "The provider refused the request",
+		}},
+		// The config files changed on disk; the browser offers a reload.
+		"config_stale": app.ConfigStaleMsg{
+			Changed: []string{"/repo/crushrc"}, Missing: []string{},
+		},
+		// A newer release exists; the browser shows it once per tab.
+		"update_available": app.UpdateAvailableMsg{
+			CurrentVersion: "0.30.0", LatestVersion: "0.31.0",
+		},
 	}
 }
 

@@ -1,4 +1,28 @@
 {
+  "agent_event": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "error": "The provider refused the request",
+        "type": "error",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "anthropic",
+        "session_id": "s1",
+        "session_title": "Parser refactor"
+      }
+    }
+  },
   "agent_runs": {
     "seq": 1,
     "type": "agent_runs",
@@ -22,6 +46,18 @@
         "started_at": "2026-11-22T12:00:00Z"
       }
     ]
+  },
+  "config_stale": {
+    "seq": 1,
+    "type": "config_stale",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "changed": [
+          "/repo/crushrc"
+        ]
+      }
+    }
   },
   "file": {
     "seq": 1,
@@ -543,6 +579,18 @@
           "session_id": "s1"
         }
       ]
+    }
+  },
+  "update_available": {
+    "seq": 1,
+    "type": "update_available",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "current_version": "0.30.0",
+        "latest_version": "0.31.0",
+        "is_development": false
+      }
     }
   },
   "web_error": {
