@@ -221,7 +221,9 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       setActionError(failure);
       return;
     }
-    sessionRenameId.value = null;
+    // An editor the user reopened after this request started owns the row
+    // now, so only the one that is still open closes.
+    if (sessionRenameId.value === sess.id) sessionRenameId.value = null;
     await load();
   };
 
@@ -253,12 +255,17 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       setActionError(failure);
       return;
     }
-    deletedIndex.current = Math.max(index, 0);
-    reloadFailed.current = false;
-    sessionDeleteId.value = null;
+    // A confirm the user reopened after this request started owns the row
+    // now, so only the one that is still open closes and takes the focus.
+    const ownsConfirm = sessionDeleteId.value === sess.id;
+    if (ownsConfirm) {
+      deletedIndex.current = Math.max(index, 0);
+      reloadFailed.current = false;
+      sessionDeleteId.value = null;
+    }
     const loaded = await load();
     if (!alive.current) return;
-    if (!loaded) reloadFailed.current = true;
+    if (ownsConfirm && !loaded) reloadFailed.current = true;
   };
 
   const shownAction = actionError === null ? null : describeFailure(actionError);
