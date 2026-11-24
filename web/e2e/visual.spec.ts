@@ -1,22 +1,26 @@
-import AxeBuilder from '@axe-core/playwright';
-import { visualTest as test, expect } from './fixture';
+import { axeScan, expect, m3VisualTest, visualTest as test } from './fixture';
+import type { Page } from '@playwright/test';
 
 // The software renderer needs more than the default 30 seconds to draw the
 // clock-driven frames behind each screenshot.
 test.setTimeout(120_000);
+m3VisualTest.setTimeout(120_000);
 
 // A fixed instant for Date and for the scene clock. The clock is installed
 // before the page loads and paused at this instant: one that kept flowing
 // would leave the scene at a different frame on every run.
 const TEST_TIME = new Date('2026-11-22T12:00:00Z');
 
-test.beforeEach(async ({ page }) => {
+async function prepare(page: Page) {
   await page.addInitScript(() => localStorage.setItem('crush-web-seed', '1234'));
   await page.clock.install({ time: new Date(TEST_TIME.getTime() - 10_000) });
   await page.clock.pauseAt(TEST_TIME);
-});
+}
 
-async function settle(page: import('@playwright/test').Page) {
+test.beforeEach(async ({ page }) => { await prepare(page); });
+m3VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+
+async function settle(page: Page) {
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
   // The lazy scene mounts after the link. Waking frames before it exists
   // would start the power-up at a different frame on each run.
@@ -27,11 +31,10 @@ async function settle(page: import('@playwright/test').Page) {
   await page.clock.runFor(3000);
 }
 
-async function axe(page: import('@playwright/test').Page) {
+async function axe(page: Page) {
   // Axe waits on animation frames, and a paused clock never delivers one.
   await page.clock.resume();
-  const { violations } = await new AxeBuilder({ page }).analyze();
-  expect(violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+  await axeScan(page);
 }
 
 test('normal layout', async ({ page, gateway }) => {
@@ -151,4 +154,56 @@ test('the HUD keeps one row at 1280px', async ({ page, gateway }) => {
   await page.clock.runFor(500);
   const laptop = (await page.locator('.hud').boundingBox())!.height;
   expect(laptop).toBeLessThanOrEqual(wide + 8);
+});
+
+// The three M3 overlays, on the M3 scenario with the same fixed clock. They
+// are test-scoped webfakes: each overlay is opened from a fresh page. A
+// paused clock delivers no effect frame, so each wait steps the clock until
+// the fetched sources have rendered.
+m3VisualTest('command palette', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByLabel('Transmit to crush').focus();
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  // One name per fetched group proves the whole list has rendered.
+  for (const name of ['user:fix', 'go-tests', 'Triage an issue', 'Holodeck test', 'Model One']) {
+    await expect.poll(async () => {
+      await page.clock.runFor(50);
+      return palette.getByRole('option', { name: new RegExp(name) }).count();
+    }, { message: `the ${name} option renders`, timeout: 10_000 }).toBeGreaterThan(0);
+  }
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('palette.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+m3VisualTest('systems panel', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByRole('button', { name: /^MCP servers:/ }).click();
+  const panel = page.getByRole('dialog', { name: 'Systems' });
+  // The counts only exist in the fetched list, so this is the whole panel.
+  const gopls = panel.locator('.systems__card[data-server="gopls"]');
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return gopls.textContent();
+  }, { message: 'the LSP list renders', timeout: 10_000 }).toContain('2 errors, 1 warning');
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('systems.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+m3VisualTest('model selector', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByRole('button', { name: 'Model: Model One. Switch model' }).click();
+  const choices = page.getByRole('dialog', { name: 'Models' }).getByRole('listbox', { name: 'Model choices' });
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return choices.getByRole('option').count();
+  }, { message: 'the provider list renders', timeout: 10_000 }).toBe(2);
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('models.png', { timeout: 30_000 });
+  await axe(page);
 });

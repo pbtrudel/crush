@@ -216,6 +216,17 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleDeleteWorkspaceSession),
 
+		apigen.Post("/v1/workspaces/{id}/sessions/{sid}/rename").
+			Summary("Rename session").
+			Description("Changes only the title, leaving the usage, cost and todos a concurrent run wrote intact.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Accepts(proto.SessionRename{}).
+			Responds(proto.Session{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceSessionRename),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history").
 			Summary("Get session history").
 			Tags("sessions").
@@ -223,6 +234,25 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			PathParam("sid", "Session ID").
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSessionHistory),
+
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history/meta").
+			Summary("List session history metadata").
+			Description("Lists every file version of a session without its content, with its size in bytes.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.FileMeta{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionHistoryMeta),
+
+		apigen.Get("/v1/workspaces/{id}/history/{fid}").
+			Summary("Get one file version").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("fid", "File version ID").
+			Responds(proto.File{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceHistoryFile),
 
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/children").
 			Summary("List child sessions").
@@ -293,6 +323,14 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Responds(map[string]proto.LSPClientInfo{}).
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceLSPs),
+
+		apigen.Get("/v1/workspaces/{id}/lsps/diagnostics/by-file").
+			Summary("Get LSP diagnostic counts by file").
+			Tags("lsp").
+			PathParam("id", "Workspace ID").
+			Responds(proto.LSPFileDiagnostics{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceLSPDiagnosticsByFile),
 
 		apigen.Get("/v1/workspaces/{id}/lsps/{lsp}/diagnostics").
 			Summary("Get LSP diagnostics").

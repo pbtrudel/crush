@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -656,26 +657,56 @@ func TestInternalErrorsDoNotLeakDetails(t *testing.T) {
 	require.JSONEq(t, `{"error":"the workspace could not complete the request","code":"list_sessions"}`, rec.Body.String())
 }
 
-// TestIsNotFoundMatchesBothWorkspaceKinds covers the two shapes a missing
-// session arrives in: sql.ErrNoRows from the in-process workspace and
-// client.ErrNotFound from the server-backed one.
+// TestIsNotFoundMatchesBothWorkspaceKinds covers the shapes a miss
+// arrives in: sql.ErrNoRows from the in-process workspace, and in
+// client/server mode client.ErrNotFound for a workspace the server no
+// longer knows or client.ErrSessionNotFound for a session it does not
+// have. Only the session shapes count as an unknown session.
 func TestIsNotFoundMatchesBothWorkspaceKinds(t *testing.T) {
 	t.Parallel()
 	require.True(t, isNotFound(sql.ErrNoRows))
 	require.True(t, isNotFound(fmt.Errorf("get session s1: %w", sql.ErrNoRows)))
 	require.True(t, isNotFound(client.ErrNotFound))
 	require.True(t, isNotFound(fmt.Errorf("status code 404: %w", client.ErrNotFound)))
+	require.True(t, isNotFound(client.ErrSessionNotFound))
 	require.False(t, isNotFound(errors.New("open crush.db: disk I/O error")))
 	require.False(t, isNotFound(nil))
+
+	require.True(t, isSessionNotFound(sql.ErrNoRows))
+	require.True(t, isSessionNotFound(fmt.Errorf("failed to get session: %w", client.ErrSessionNotFound)))
+	require.False(t, isSessionNotFound(client.ErrNotFound), "a workspace-gone 404 says nothing about the session")
 }
 
-// clientNotFoundWorkspace reports a miss the way ClientWorkspace does in
-// client/server mode, where the server's 404 arrives as a wrapped
-// client.ErrNotFound rather than sql.ErrNoRows.
-type clientNotFoundWorkspace struct{ *webtest.Fake }
+// clientSessionNotFoundWorkspace reports a session miss the way
+// ClientWorkspace does in client/server mode, where the server's
+// session_not_found 404 arrives as a wrapped client.ErrSessionNotFound.
+type clientSessionNotFoundWorkspace struct{ *webtest.Fake }
 
-func (clientNotFoundWorkspace) GetSession(context.Context, string) (session.Session, error) {
-	return session.Session{}, fmt.Errorf("get session: %w", client.ErrNotFound)
+func (clientSessionNotFoundWorkspace) GetSession(context.Context, string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("failed to get session: %w", client.ErrSessionNotFound)
+}
+
+// workspaceGoneWorkspace reports the 404 a client/server workspace gets
+// when the server no longer knows the workspace. That says nothing about
+// the session, so a session route must not answer it as a session miss.
+type workspaceGoneWorkspace struct{ *webtest.Fake }
+
+func (workspaceGoneWorkspace) GetSession(context.Context, string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("failed to get session: %w", client.ErrNotFound)
+}
+
+func TestSessionRouteReportsWorkspaceGoneAsFailure(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: workspaceGoneWorkspace{webtest.NewFake()}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/s1", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode, string(body))
+	var got apiError
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, "get_session", got.Code, "a workspace-gone 404 must surface as a workspace failure")
+	require.NotEqual(t, "unknown_session", got.Code)
 }
 
 func TestMessagesForUnknownSessionIs404(t *testing.T) {
@@ -688,7 +719,7 @@ func TestMessagesForUnknownSessionIs404(t *testing.T) {
 
 func TestMessagesOverClientWorkspaceNotFoundIs404(t *testing.T) {
 	t.Parallel()
-	g, err := Start(t.Context(), Options{Workspace: clientNotFoundWorkspace{webtest.NewFake()}})
+	g, err := Start(t.Context(), Options{Workspace: clientSessionNotFoundWorkspace{webtest.NewFake()}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/nope/messages", "")
@@ -716,4 +747,105 @@ func TestPromptMustBeMultipart(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
 	require.Contains(t, string(body), "bad_form")
 	require.Empty(t, fake.CallLog())
+}
+
+// TestAgentStartingAnswers503 pins the gateway half of the contract: an
+// agent that is not configured yet is a retryable state on every route that
+// reaches it, not a workspace failure.
+func TestAgentStartingAnswers503(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.SetTeamErr(workspace.ErrAgentNotInitialized)
+	rsp, data := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/team/members/alice/message", `{"session_id":"s1","text":"hi"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode)
+	require.JSONEq(t, `{"error":"Crush is starting the agent","code":"agent_starting"}`, string(data))
+}
+
+// TestPromptFailurePublishesSafeError pins that a detached prompt failure
+// never carries the workspace error text, which can name files or sockets,
+// and that a starting agent keeps its own code.
+func TestPromptFailurePublishesSafeError(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		err     error
+		code    string
+		message string
+	}{
+		{
+			"prompt failure",
+			fmt.Errorf("open /home/u/.secret: %w", os.ErrPermission),
+			"prompt_failed",
+			"The prompt could not run. The terminal log has the details.",
+		},
+		{
+			"starting agent",
+			fmt.Errorf("run: %w", workspace.ErrAgentNotInitialized),
+			"agent_starting",
+			"Crush is starting the agent; send the prompt again in a moment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.OnRun = func(context.Context, string, string, []message.Attachment) error {
+				return tc.err
+			}
+			c := dialStream(t, g, "")
+			readFrame(t, c) // Snapshot.
+
+			var buf bytes.Buffer
+			mw := multipart.NewWriter(&buf)
+			require.NoError(t, mw.WriteField("prompt", "fix the bug"))
+			require.NoError(t, mw.Close())
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &buf)
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			req.Header.Set("Origin", g.URL())
+			rsp := doReq(t, authedClient(t, g), req)
+			rsp.Body.Close()
+			require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+
+			f := readFrame(t, c)
+			require.Equal(t, frameError, f.Type)
+			var payload struct {
+				SessionID string `json:"session_id"`
+				Code      string `json:"code"`
+				Error     string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(f.Payload, &payload))
+			require.Equal(t, "s1", payload.SessionID)
+			require.Equal(t, tc.code, payload.Code)
+			require.Equal(t, tc.message, payload.Error)
+			require.NotContains(t, payload.Error, "/home/u")
+			require.NotContains(t, payload.Error, "agent coordinator")
+		})
+	}
+}
+
+// TestSnapshotReportsAgentReady pins that a tab can tell on load whether
+// the agent is starting.
+func TestSnapshotReportsAgentReady(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		ready error
+		want  bool
+	}{
+		{"ready", nil, true},
+		{"starting", workspace.ErrAgentNotInitialized, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.SetReadyErr(tc.ready)
+			rsp, data := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+			rsp.Body.Close()
+			require.Equal(t, http.StatusOK, rsp.StatusCode)
+			var snap Snapshot
+			require.NoError(t, json.Unmarshal(data, &snap))
+			require.Equal(t, tc.want, snap.AgentReady)
+		})
+	}
 }

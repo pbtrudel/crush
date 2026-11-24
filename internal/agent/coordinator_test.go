@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -23,9 +24,12 @@ import (
 
 // mockSessionAgent is a minimal mock for the SessionAgent interface.
 type mockSessionAgent struct {
-	model     Model
-	runFunc   func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
-	cancelled []string
+	model   Model
+	runFunc func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
+	// cancelledMu guards cancelled: Cancel can run on another goroutine
+	// while a test reads the recorded ids.
+	cancelledMu sync.Mutex
+	cancelled   []string
 	// onCancel, when set, runs after Cancel records the session, letting a
 	// test model an agent that stops its own run.
 	onCancel func(sessionID string)
@@ -65,10 +69,19 @@ func (m *mockSessionAgent) AdoptedToolOrder(string) []string {
 }
 func (m *mockSessionAgent) SetAdoptedToolOrder(string, []string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
+	m.cancelledMu.Lock()
 	m.cancelled = append(m.cancelled, sessionID)
+	m.cancelledMu.Unlock()
 	if m.onCancel != nil {
 		m.onCancel(sessionID)
 	}
+}
+
+// cancelledIDs returns the session ids Cancel has recorded so far.
+func (m *mockSessionAgent) cancelledIDs() []string {
+	m.cancelledMu.Lock()
+	defer m.cancelledMu.Unlock()
+	return append([]string(nil), m.cancelled...)
 }
 func (m *mockSessionAgent) CancelAll()                                  {}
 func (m *mockSessionAgent) CancelBackgroundCompaction(string)           {}

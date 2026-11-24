@@ -26,7 +26,7 @@ func newCrossFamilyCoordinator(t *testing.T) (*coordinator, fakeEnv, *teamFakeRu
 	runner := newTeamFakeRunner()
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, runner)
 	require.NoError(t, err)
-	c.team = service
+	c.setTeam(service)
 	return c, env, runner
 }
 
@@ -104,7 +104,7 @@ func TestAgentSendDeliversToTeammate(t *testing.T) {
 	require.False(t, resp.IsError, resp.Content)
 	require.Contains(t, resp.Content, "Delivered to teammate")
 
-	inbox := c.team.DrainInbox("w-impl", parentID)
+	inbox := c.teamService().DrainInbox("w-impl", parentID)
 	require.Len(t, inbox, 1)
 	require.Equal(t, "status?", inbox[0].Text)
 }

@@ -131,6 +131,10 @@ type Workspace interface {
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
+	// SessionRename changes only the title, leaving the usage, cost and
+	// todos a concurrent run wrote intact, and returns the renamed
+	// session. It must not be a full-row Save.
+	SessionRename(ctx context.Context, sessionID, title string) (session.Session, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
@@ -182,6 +186,9 @@ type Workspace interface {
 	// AgentAsk answers a side question about the session without
 	// persisting the exchange or touching the workspace.
 	AgentAsk(ctx context.Context, sessionID, question string) (string, error)
+	// AgentAddNote keeps text for the session's next prompt. It starts
+	// no run and is not shown in the chat.
+	AgentAddNote(ctx context.Context, sessionID, text string) error
 	UpdateAgentModel(ctx context.Context) error
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error
@@ -239,6 +246,15 @@ type Workspace interface {
 
 	// History
 	ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error)
+
+	// ListSessionHistoryMeta lists every file version of a session
+	// without its content, with its size in bytes.
+	ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error)
+
+	// GetHistoryVersion returns one file version with its content. A
+	// missing version wraps sql.ErrNoRows in process and
+	// client.ErrNotFound in client mode.
+	GetHistoryVersion(ctx context.Context, id string) (history.File, error)
 
 	// LSP
 	LSPStart(ctx context.Context, path string)

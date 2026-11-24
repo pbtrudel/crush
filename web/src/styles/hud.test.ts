@@ -37,6 +37,36 @@ describe('HUD server groups', () => {
     // The label text keeps a readable gap from the divider.
     expect(hud).toMatch(/\.hud__servers \.hexes \+ \.hud-label \{[^}]*padding-inline-start: 8px/);
   });
+
+  it('keeps the group button unchanged at rest', () => {
+    const button = rule(hud, '.hud__servers-btn');
+    expect(button).toContain('margin: 0');
+    expect(button).toContain('padding: 0');
+    expect(button).toContain('border: 0');
+    expect(button).toContain('background: none');
+    expect(button).toContain('font: inherit');
+    expect(hud).toMatch(
+      /\.hud__servers-btn:hover,\s*\.hud__servers-btn:focus-visible \{[^}]*color: var\(--cyan\)/,
+    );
+  });
+
+  it('lights only the ready tiles when the group is hovered', () => {
+    // The hover fill belongs to the lit tiles alone, so a stopped or failed
+    // server never reads as ready while the pointer crosses the group.
+    const lit = rule(
+      hud,
+      ".hud__servers-btn:hover .hex[data-tone='lit'] polygon, "
+        + ".hud__servers-btn:focus-visible .hex[data-tone='lit'] polygon",
+    );
+    expect(lit).toContain('fill: var(--cyan)');
+    expect(hud).not.toContain('.hud__servers-btn:hover .hex polygon');
+    expect(hud).not.toContain('.hud__servers-btn:focus-visible .hex polygon');
+
+    // The outline and the text glow still cover the whole button.
+    const glow = rule(hud, '.hud__servers-btn:hover, .hud__servers-btn:focus-visible');
+    expect(glow).toContain('outline: 1px solid var(--cyan)');
+    expect(glow).toContain('text-shadow: var(--glow-text)');
+  });
 });
 
 describe('HUD instrument row', () => {

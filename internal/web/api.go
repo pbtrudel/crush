@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/client"
@@ -29,29 +31,45 @@ const (
 // registerAPI installs the M1 REST API on api. Every handler assumes the
 // caller is already authenticated.
 func (g *Gateway) registerAPI(api *http.ServeMux) {
-	api.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
+	g.route(api, "GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
-	api.HandleFunc("GET /api/stream", g.handleStream)
-	api.HandleFunc("GET /api/snapshot", g.handleSnapshot)
-	api.HandleFunc("GET /api/sessions", g.handleListSessions)
-	api.HandleFunc("POST /api/sessions", g.handleCreateSession)
-	api.HandleFunc("GET /api/sessions/{sid}", g.handleGetSession)
-	api.HandleFunc("GET /api/sessions/{sid}/messages", g.handleMessages)
-	api.HandleFunc("GET /api/sessions/{sid}/files", g.handleFiles)
-	api.HandleFunc("GET /api/sessions/{sid}/files/diff", g.handleFileDiff)
-	api.HandleFunc("POST /api/sessions/{sid}/prompt", g.handlePrompt)
-	api.HandleFunc("POST /api/sessions/{sid}/cancel", g.handleCancel)
-	api.HandleFunc("GET /api/sessions/{sid}/queue", g.handleQueue)
-	api.HandleFunc("DELETE /api/sessions/{sid}/queue", g.handleClearQueue)
-	api.HandleFunc("POST /api/permissions/grant", g.handleGrant)
-	api.HandleFunc("POST /api/permissions/mode", g.handleMode)
-	api.HandleFunc("POST /api/input-mode", g.handleInputMode)
-	api.HandleFunc("POST /api/questions/answer", g.handleAnswer)
-	api.HandleFunc("POST /api/questions/cancel", g.handleQuestionCancel)
-	api.HandleFunc("GET /api/complete/files", g.handleCompleteFiles)
-	api.HandleFunc("POST /api/team/members/{member}/message", g.handleTeamMessage)
-	api.HandleFunc("POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
+	g.route(api, "GET /api/stream", g.handleStream)
+	g.route(api, "GET /api/snapshot", g.handleSnapshot)
+	g.route(api, "GET /api/sessions", g.handleListSessions)
+	g.route(api, "POST /api/sessions", g.handleCreateSession)
+	g.route(api, "GET /api/sessions/{sid}", g.handleGetSession)
+	g.registerSessionRoutes(api)
+	g.route(api, "GET /api/sessions/{sid}/messages", g.handleMessages)
+	g.route(api, "GET /api/sessions/{sid}/files", g.handleFiles)
+	g.route(api, "GET /api/sessions/{sid}/files/diff", g.handleFileDiff)
+	g.route(api, "POST /api/sessions/{sid}/prompt", g.handlePrompt)
+	g.route(api, "POST /api/sessions/{sid}/cancel", g.handleCancel)
+	g.route(api, "GET /api/sessions/{sid}/queue", g.handleQueue)
+	g.route(api, "DELETE /api/sessions/{sid}/queue", g.handleClearQueue)
+	g.route(api, "POST /api/permissions/grant", g.handleGrant)
+	g.route(api, "POST /api/permissions/mode", g.handleMode)
+	g.route(api, "POST /api/input-mode", g.handleInputMode)
+	g.route(api, "POST /api/questions/answer", g.handleAnswer)
+	g.route(api, "POST /api/questions/cancel", g.handleQuestionCancel)
+	g.route(api, "GET /api/complete/files", g.handleCompleteFiles)
+	g.route(api, "POST /api/team/members/{member}/message", g.handleTeamMessage)
+	g.route(api, "POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
+	g.registerCommandRoutes(api)
+	g.registerAgentRoutes(api)
+	g.registerModelRoutes(api)
+	g.registerSystemRoutes(api)
+	g.registerPlanRoutes(api)
+}
+
+// route registers an API handler and records its pattern for the auth
+// test. Every cookie-guarded /api route registers through here, the login
+// route excepted: a direct api.HandleFunc would skip the registry, and
+// with it the test that proves the route refuses a request without the
+// cookie.
+func (g *Gateway) route(api *http.ServeMux, pattern string, h http.HandlerFunc) {
+	api.HandleFunc(pattern, h)
+	g.apiRoutes = append(g.apiRoutes, pattern)
 }
 
 // writeInternal answers a failed workspace call without its error text,
@@ -63,9 +81,21 @@ func writeInternal(w http.ResponseWriter, code string, err error) {
 
 // isNotFound reports a lookup of something the workspace does not have. The
 // in-process workspace answers sql.ErrNoRows; the server-backed one, which
-// the gateway talks to in client/server mode, answers client.ErrNotFound.
+// the gateway talks to in client/server mode, answers client.ErrNotFound
+// for a workspace it no longer knows and client.ErrSessionNotFound for a
+// session it does not have.
 func isNotFound(err error) bool {
-	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, client.ErrNotFound)
+	return errors.Is(err, sql.ErrNoRows) ||
+		errors.Is(err, client.ErrNotFound) ||
+		errors.Is(err, client.ErrSessionNotFound)
+}
+
+// isSessionNotFound reports a session the workspace does not have. A
+// workspace-gone 404 is not one: it says nothing about the session, and
+// the subscription loop is already recovering the workspace, so session
+// routes answer it as a workspace failure rather than "unknown session".
+func isSessionNotFound(err error) bool {
+	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, client.ErrSessionNotFound)
 }
 
 // decodeJSON reads a bounded JSON body into v. An empty body is accepted
@@ -92,6 +122,12 @@ func (g *Gateway) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, "list_sessions", err)
 		return
 	}
+	// The switcher shows newest first. UpdatedAt alone can tie (two
+	// sessions start within the same second), so the ID breaks ties and
+	// keeps the order stable across requests.
+	slices.SortFunc(list, func(a, b session.Session) int {
+		return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
+	})
 	writeJSON(w, http.StatusOK, entities(list))
 }
 
@@ -121,7 +157,7 @@ func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// The terminal opens the session so both clients show the same
 	// conversation. The callback is nil when no terminal is attached.
-	g.notifySessionCreated(s.ID)
+	g.notifyOpenSession(s.ID)
 	writeJSON(w, http.StatusCreated, innerPayload(pubsub.Event[session.Session]{Type: pubsub.CreatedEvent, Payload: s}))
 }
 
@@ -146,7 +182,7 @@ func (g *Gateway) handleInputMode(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	sid := r.PathValue("sid")
 	if _, err := g.ws.GetSession(r.Context(), sid); err != nil {
-		if isNotFound(err) {
+		if isSessionNotFound(err) {
 			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
 			return
 		}
@@ -195,14 +231,23 @@ func (g *Gateway) handlePrompt(w http.ResponseWriter, r *http.Request) {
 			Content:  data,
 		})
 	}
+	g.runDetached(sid, prompt, atts...)
+	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+// runDetached starts text in sessionID without waiting for it, the way the
+// TUI runs a prompt as a background command. The run outlives the request
+// that started it, since a tab can navigate away while the agent works, and
+// a failure reaches the tab as a web_error frame. The prompt, command and
+// MCP prompt routes share it.
+func (g *Gateway) runDetached(sessionID, text string, atts ...message.Attachment) {
 	ctx := context.WithoutCancel(g.ctx)
 	go func() {
-		if err := g.ws.AgentRun(ctx, sid, prompt, atts...); err != nil {
-			slog.Warn("Web prompt failed", "session_id", sid, "error", err)
-			g.hub.publishJSON(frameError, map[string]string{"session_id": sid, "error": err.Error()})
+		if err := g.ws.AgentRun(ctx, sessionID, text, atts...); err != nil {
+			slog.Warn("Web prompt failed", "session_id", sessionID, "error", err)
+			g.hub.publishJSON(frameError, promptFailure(sessionID, err))
 		}
 	}()
-	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
 
 // attachmentMime classifies attachment content the way the TUI does: the

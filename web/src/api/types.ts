@@ -54,12 +54,22 @@ export interface QuestionAnswer {
 }
 export type PermissionMode = 'normal' | 'yolo' | 'sysadmin';
 export type InputMode = 'plan' | 'code';
-export interface ModelInfo { id: string; name: string; provider: string; context_window: number }
+export interface ModelRef { id: string; provider: string }
+export interface ModelInfo {
+  id: string; name: string; provider: string; context_window: number;
+  can_reason?: boolean; effort_levels?: string[]; reasoning_effort?: string; think?: boolean;
+  small?: ModelRef; agent_ready: boolean;
+}
+export interface ModelChoice {
+  provider: string; provider_name: string; id: string; name: string; context_window: number;
+  can_reason: boolean; effort_levels?: string[]; default_effort?: string;
+}
 export interface ServerInfo { state: string; diagnostic_count?: number; tool_count?: number; error?: string }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
   questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
+  agent_ready: boolean; plan_ready_session_id?: string;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;
   files?: FileSummary[]; team?: TeamState; agent_runs?: AgentRun[];
@@ -91,3 +101,38 @@ export interface AgentRun {
   id: string; kind: 'subagent' | 'teammate'; name: string; session_id?: string;
   parent_session_id?: string; status: RunStatus; started_at: string; finished_at?: string;
 }
+
+export interface CommandArg { id: string; title: string; description?: string; required: boolean }
+export interface CommandEntry {
+  id: string; title: string; description?: string; kind: 'custom' | 'skill'; args: CommandArg[];
+}
+export interface McpPrompt {
+  id: string; client_id: string; prompt_id: string; title: string; description?: string; args: CommandArg[];
+}
+export interface SkillEntry { name: string; description?: string; disabled: boolean }
+export interface McpServer {
+  name: string; state: string; tools: number; prompts: number; error?: string;
+  disabled: boolean; needs_auth: boolean;
+}
+export interface DiagnosticCounts { error: number; warning: number; information: number; hint: number }
+export interface LspServer { name: string; state: string; error?: string; diagnostics: DiagnosticCounts }
+export interface ShellOutput {
+  run_id: string; session_id: string; chunk?: string; done?: boolean; exit_code?: number; error?: string;
+}
+export interface WebError { session_id?: string; code?: string; error: string }
+// AgentEvent is the notification the agent publishes about a run: a finished
+// turn, an error, or a sign-in the terminal has to perform.
+export interface AgentEvent {
+  type: string;
+  session_id?: string;
+  session_title?: string;
+  error?: string;
+  run_id?: string;
+  provider_id?: string;
+  aws_sso_command?: string;
+  aws_sso_url?: string;
+}
+export interface UpdateAvailable {
+  current_version: string; latest_version: string; is_development: boolean;
+}
+export interface Attachment { name: string; mime_type: string; content: string }

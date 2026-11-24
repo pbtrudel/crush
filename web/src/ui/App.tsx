@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { state } from '../state/store';
-import { needsAttention } from '../state/reducer';
+import { needsAttention, needsYou } from '../state/reducer';
 import { drawerOpen, effectivePanelTab, panelTab } from '../state/drawer';
 import { handOffLogFocus, logInert, watchFocusHandoff, watchOverlayWidth } from '../state/overlay';
 import { motion, lowPower } from '../state/motion';
@@ -10,6 +10,7 @@ import { CineHint } from './CineHint';
 import { ConnectionBanner } from './ConnectionBanner';
 import { CommandDeck } from './deck/CommandDeck';
 import { Hud } from './Hud';
+import { SideAnswer } from './log/SideAnswer';
 import { TransmissionLog } from './log/TransmissionLog';
 import { Stage } from './stage/Stage';
 import { SceneLayer } from './stage/SceneLayer';
@@ -21,10 +22,19 @@ import { Inspector } from './inspector/Inspector';
 import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
+import {
+  closeModels, closeSessions, closeSystems, deckMode, escapeModels, escapePalette, escapeSessions,
+  escapeSystems, modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
+} from '../state/palette';
+import { Palette } from './palette/Palette';
+import { SessionSwitcher } from './sessions/SessionSwitcher';
+import { ModelSelector } from './models/ModelSelector';
+import { SystemsPanel } from './systems/SystemsPanel';
 
 export function App() {
   const s = state.value;
   const attention = needsAttention(s);
+  const you = needsYou(s);
   const view = useRef<HTMLDivElement>(null);
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
@@ -45,8 +55,8 @@ export function App() {
   useEffect(() => watchFocusHandoff(), []);
 
   useEffect(() => {
-    document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', attention);
-  }, [s.project, s.session?.title, attention]);
+    document.title = tabTitle(s.project || 'crush', s.session?.title ?? '', you);
+  }, [s.project, s.session?.title, you]);
 
   useEffect(() => {
     if (!s.workingDir) return;
@@ -60,9 +70,58 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       const focused = document.activeElement;
       const target = e.target;
+      // The palette opens from anywhere, the prompt included, and stays
+      // closed while a dialog owns the page. The sessions switcher and the
+      // model selector make way for it, so two dialogs never stack.
+      if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
+        if (needsAttention(state.value)) return;
+        e.preventDefault();
+        if (sessionsOpen.value) closeSessions();
+        if (modelsOpen.value) closeModels();
+        if (systemsOpen.value !== null) closeSystems();
+        togglePalette();
+        return;
+      }
+      // A permission or a question owns Escape while it is open: the dialogs
+      // under the interrupt layer are inert, and the question form skips its
+      // batch on the same press.
+      if (e.key === 'Escape' && needsAttention(state.value)) return;
+      // The palette is the innermost layer: it takes Escape before the
+      // sessions switcher, the Display menu, the inspector and the cinematic
+      // view. Its argument form hands the list back on the first press.
+      if (e.key === 'Escape' && paletteOpen.value !== null) {
+        e.preventDefault();
+        escapePalette();
+        return;
+      }
+      // The switcher is next: its open rename or delete confirm is cancelled
+      // before the dialog closes.
+      if (e.key === 'Escape' && sessionsOpen.value) {
+        e.preventDefault();
+        escapeSessions();
+        return;
+      }
+      // The model selector has no inner layer, so its first Escape closes it
+      // and its focus trap hands focus back to the HUD model name.
+      if (e.key === 'Escape' && modelsOpen.value) {
+        e.preventDefault();
+        escapeModels();
+        return;
+      }
+      // The systems panel has no inner layer either; its trap returns focus
+      // to the HUD group that opened it.
+      if (e.key === 'Escape' && systemsOpen.value !== null) {
+        e.preventDefault();
+        escapeSystems();
+        return;
+      }
       // An open Display menu owns Escape: it closes itself, so the inspector
       // and the cinematic view must not read the same press.
       if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
+      // Escape in the deck's note mode leaves that mode and does nothing
+      // else, so this capture listener must not read the same press for the
+      // inspector or the cinematic view.
+      if (e.key === 'Escape' && focused instanceof HTMLElement && focused.id === 'deck-input' && deckMode.value === 'note') return;
       const action = cinematicKey({
         code: e.code,
         altKey: e.altKey,
@@ -118,9 +177,14 @@ export function App() {
         <FileDrawer />
       </main>
       <div class="holodeck__deck" inert={modal}>
+        <SideAnswer />
         <CommandDeck />
       </div>
       <Interrupt />
+      <Palette inert={modal} />
+      <SessionSwitcher inert={modal} />
+      <ModelSelector inert={modal} />
+      <SystemsPanel inert={modal} />
       <Toasts />
       <CineHint />
     </div>

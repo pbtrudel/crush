@@ -1,6 +1,7 @@
 import type { Ref } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { agentTask, currentTool, findAgent, statusLabel, type Agent } from '../../state/agents';
+import { describeFailure, type Failure } from '../../state/failure';
 import { actions, state } from '../../state/store';
 import { Transcript } from '../log/Transcript';
 import { closeInspector, escapeLeavesDraft } from './escape';
@@ -46,11 +47,13 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
   }, [tool?.name, tool?.since]);
 
   const [text, setText] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Failure | null>(null);
+  const [retry, setRetry] = useState<(() => void) | null>(null);
   const [notice, setNotice] = useState('');
   useEffect(() => {
     setText('');
-    setError('');
+    setError(null);
+    setRetry(null);
     setNotice('');
   }, [ins?.sessionId]);
 
@@ -65,23 +68,47 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
   // notice or a cleared draft belongs to that selection, so a result that
   // arrives after the picker moved on is dropped instead of landing on the
   // new agent's panel.
-  const run = async (fn: () => Promise<string | null>, done: string, after?: () => void) => {
-    setError('');
+  const run = async (fn: () => Promise<Failure | null>, done: string, after?: () => void): Promise<Failure | null> => {
+    setError(null);
+    setRetry(null);
     setNotice('');
     const sid = ins?.sessionId;
     const current = () => state.value.inspected?.sessionId === sid;
     try {
-      const err = await fn();
-      if (!current()) return;
-      if (err) {
-        setError(err);
-        return;
+      const failure = await fn();
+      if (!current()) return null;
+      if (failure) {
+        setError(failure);
+        return failure;
       }
       setNotice(done);
       after?.();
+      return null;
     } catch (err) {
-      if (current()) setError(err instanceof Error && err.message ? err.message : 'The action failed');
+      const failure = describeFailure(err);
+      if (!current()) return null;
+      setError(failure);
+      return failure;
     }
+  };
+
+  // A starting agent is safe to ask again, so the message form keeps its
+  // draft and offers the same send once more.
+  const member = agent?.kind === 'teammate' ? agent.member ?? agent.name : '';
+  const sendMessage = async (body = text.trim()) => {
+    if (!body || !member) return;
+    const failure = await run(() => actions.messageTeammate(member, body), `Sent to ${agent?.name}`, () => setText(''));
+    if (failure?.tone === 'starting') setRetry(() => () => void sendMessage(body));
+  };
+  const interruptTeammate = async () => {
+    if (!member) return;
+    const failure = await run(() => actions.interruptTeammate(member), `Interrupted ${agent?.name}`);
+    if (failure?.tone === 'starting') setRetry(() => () => void interruptTeammate());
+  };
+  const cancelSubagent = async () => {
+    if (!agent || agent.kind !== 'subagent') return;
+    const failure = await run(() => actions.cancelAgent(agent.sessionId), `Cancelled ${agent.name}`);
+    if (failure?.tone === 'starting') setRetry(() => () => void cancelSubagent());
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -113,26 +140,33 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
               {agent.kind !== 'main' && (
                 <div class="inspector__actions">
                   {agent.kind === 'teammate' && running && (
-                    <button type="button" class="btn btn--danger" data-action="interrupt" onClick={() => void run(() => actions.interruptTeammate(agent.member ?? agent.name), `Interrupted ${agent.name}`)}>Interrupt</button>
+                    <button type="button" class="btn btn--danger" data-action="interrupt" onClick={() => void interruptTeammate()}>Interrupt</button>
                   )}
                   {agent.kind === 'subagent' && running && (
-                    <button type="button" class="btn btn--danger" data-action="cancel" onClick={() => void run(() => actions.cancelAgent(agent.sessionId), `Cancelled ${agent.name}`)}>Cancel</button>
+                    <button type="button" class="btn btn--danger" data-action="cancel" onClick={() => void cancelSubagent()}>Cancel</button>
                   )}
                   {agent.kind === 'teammate' && agent.status !== 'done' && (
                     <form class="inspector__message" onSubmit={(e) => {
                       e.preventDefault();
-                      const body = text.trim();
-                      if (!body) return;
-                      void run(async () => {
-                        return actions.messageTeammate(agent.member ?? agent.name, body);
-                      }, `Sent to ${agent.name}`, () => setText(''));
+                      void sendMessage();
                     }}>
                       <label class="hud-label" for="inspector-message">Message {agent.name}</label>
                       <textarea id="inspector-message" rows={1} value={text} onInput={(e) => setText((e.currentTarget as HTMLTextAreaElement).value)} />
                       <button type="submit" class="btn btn--primary" data-action="message">Send</button>
                     </form>
                   )}
-                  {error && <p class="inspector__error" role="alert">{error}</p>}
+                  {error && (
+                    <div class="inspector__failure">
+                      <p
+                        class="inspector__error"
+                        data-tone={error.tone}
+                        role={error.tone === 'starting' ? 'status' : 'alert'}
+                      >{error.text}</p>
+                      {error.tone === 'starting' && retry && (
+                        <button type="button" class="btn btn--ghost" data-action="retry" onClick={retry}>Retry</button>
+                      )}
+                    </div>
+                  )}
                   <p class="hud-label inspector__notice" role="status">{notice}</p>
                 </div>
               )}

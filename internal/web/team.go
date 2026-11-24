@@ -185,7 +185,7 @@ func teamDir(opts Options) string {
 func (g *Gateway) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	s, err := g.ws.GetSession(r.Context(), r.PathValue("sid"))
 	if err != nil {
-		if isNotFound(err) {
+		if isSessionNotFound(err) {
 			writeError(w, http.StatusNotFound, "unknown_session", "no such session")
 			return
 		}
@@ -214,6 +214,9 @@ func (g *Gateway) handleTeamMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "message_too_large", "message is over 64 KiB")
 		return
 	}
+	if !g.sessionExists(w, r, body.SessionID) {
+		return
+	}
 	if err := g.ws.TeamSendMessage(r.Context(), body.SessionID, r.PathValue("member"), body.Text); err != nil {
 		writeTeamError(w, err)
 		return
@@ -230,6 +233,9 @@ func (g *Gateway) handleTeamInterrupt(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SessionID == "" {
 		writeError(w, http.StatusBadRequest, "missing_session", "session_id is required")
+		return
+	}
+	if !g.sessionExists(w, r, body.SessionID) {
 		return
 	}
 	if err := g.ws.TeamInterrupt(r.Context(), body.SessionID, r.PathValue("member")); err != nil {
@@ -252,6 +258,6 @@ func writeTeamError(w http.ResponseWriter, err error) {
 		// and the rule it broke, so they are safe to show.
 		writeError(w, http.StatusConflict, "team_refused", err.Error())
 	default:
-		writeInternal(w, "team_failed", err)
+		writeWorkspaceError(w, "team_failed", err)
 	}
 }

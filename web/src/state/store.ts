@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
@@ -6,18 +6,48 @@ import type {
 } from '../api/types';
 import {
   adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
-  mergeInspected, pushToast, reduce, setConn, unmarkAnswered, type State,
+  dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn, startShell,
+  unmarkAnswered,
+  type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
+import { describeFailure, type Failure } from './failure';
 import { observe, telemetry } from './telemetry';
 
 export const state = signal<State>(initialState());
+
+export interface SideAnswerState {
+  question: string;
+  answer: string | null;
+  error: Failure | null;
+}
+
+// sideAnswer is the card above the deck: a question asked beside the
+// conversation and the answer to it, which never joins the messages.
+export const sideAnswer = signal<SideAnswerState | null>(null);
+
+// A newer question or a Dismiss invalidates the answer still in flight, so
+// only the newest ask may reach the card.
+let sideAnswerGeneration = 0;
+
+export function dismissSideAnswer(): void {
+  resetSideAnswer();
+}
+
+// resetSideAnswer drops the card and invalidates the answer in flight.
+function resetSideAnswer(): void {
+  sideAnswerGeneration++;
+  sideAnswer.value = null;
+}
 
 // apply is the only path that moves the state forward, so every change
 // feeds the HUD telemetry alongside it.
 function apply(fn: (s: State) => State, baseline: boolean) {
   const prev = state.value;
   const next = fn(prev);
+  // A side answer belongs to the session it was asked in, so adopting
+  // another session drops the card and the answer still in flight.
+  if (next.sessionId !== prev.sessionId) resetSideAnswer();
   state.value = next;
   telemetry.value = observe(telemetry.value, prev, next, baseline, Date.now());
 }
@@ -27,7 +57,7 @@ export function dispatch(fn: (s: State) => State) {
 }
 
 function errorText(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'The request did not reach crush';
+  return describeFailure(err).text;
 }
 
 // report toasts an error for actions with no control to show it on.
@@ -119,6 +149,16 @@ async function reloadSession(id: string) {
   }
 }
 
+// watchVisibility keeps state.hidden in step with the tab, so a finished
+// turn stays quiet only while the reader is actually looking at it. Returns
+// the function that stops watching; boot() watches for the page's lifetime.
+export function watchVisibility(): () => void {
+  const update = () => dispatch((s) => (s.hidden === document.hidden ? s : { ...s, hidden: document.hidden }));
+  document.addEventListener('visibilitychange', update);
+  update();
+  return () => document.removeEventListener('visibilitychange', update);
+}
+
 export async function boot() {
   // The token travels in the fragment so it never reaches server logs. It
   // is exchanged for an HttpOnly cookie and scrubbed from the address bar;
@@ -128,6 +168,7 @@ export async function boot() {
     await api.auth(token).catch(() => undefined);
     history.replaceState(null, '', location.pathname + location.search);
   }
+  watchVisibility();
   connectStream({
     onFrames: handleFrames,
     onConn: (c) => dispatch((s) => setConn(s, c)),
@@ -155,26 +196,131 @@ export function handleFrames(frames: Frame[]) {
   if (ins && ins.sessionId !== state.value.sessionId && frames.some((f) => f.type === 'snapshot')) void loadInspected(ins.sessionId);
 }
 
+// sessionSettled reports whether the tab can tell whether the terminal has
+// a session. Only a snapshot settles it while the stream is healthy; a dead
+// connection settles it too, so a send fails instead of waiting forever.
+function sessionSettled(s: State): boolean {
+  return s.hydrated || s.conn === 'ended' || s.conn === 'unauthorized';
+}
+
+// SESSION_SNAPSHOT_TIMEOUT_MS bounds how long a send waits for the stream
+// to name the tab's session. A socket that accepts and never speaks, or a
+// retry loop that never reconnects, must not leave the deck sending
+// forever.
+const SESSION_SNAPSHOT_TIMEOUT_MS = 10_000;
+
+function whenSessionSettled(): Promise<void> {
+  if (sessionSettled(state.value)) return Promise.resolve();
+  let done = false;
+  let settle: () => void = () => {};
+  const settled = new Promise<void>((resolve) => {
+    settle = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+  });
+  const dispose = effect(() => {
+    if (sessionSettled(state.value)) settle();
+  });
+  const timer = setTimeout(settle, SESSION_SNAPSHOT_TIMEOUT_MS);
+  return settled.finally(() => {
+    clearTimeout(timer);
+    dispose();
+  });
+}
+
+// ensureSession returns the session prompts and notes go to, starting one
+// the way the terminal does on a first prompt when the browser has none. The
+// new session is adopted before anything is sent, so a failed request or a
+// second submit reuses it instead of starting another.
+async function ensureSession(): Promise<string> {
+  let current = state.value.sessionId;
+  // A send can land before the first snapshot. The empty sessionId then
+  // means the tab does not know the terminal's session yet, not that there
+  // is none: creating one here would start a second session and switch the
+  // terminal to it. Wait for the snapshot to name the session it shows.
+  if (!current && !sessionSettled(state.value)) {
+    await whenSessionSettled();
+    current = state.value.sessionId;
+  }
+  if (current) return current;
+  // The wait can end without a snapshot (a dead or silent stream). The
+  // terminal's session is still unknown then, and creating one would move
+  // the terminal as soon as the gateway came back, so fail the send
+  // instead.
+  if (!state.value.hydrated) throw new Error('the session is unknown');
+  const sid = (await api.createSession()).id;
+  dispatch((s) => adoptSession(s, sid));
+  return sid;
+}
+
 export const actions = {
-  // sendPrompt returns the error text for the deck to show inline, or null.
+  // sendPrompt returns the failure for the deck to show inline, or null.
   // With no current session the browser starts one the way the terminal
   // does on a first prompt; the gateway then asks the terminal to open it.
-  async sendPrompt(prompt: string, files: File[]): Promise<string | null> {
-    let sid = state.value.sessionId;
+  async sendPrompt(prompt: string, files: File[]): Promise<Failure | null> {
     try {
-      if (!sid) {
-        sid = (await api.createSession()).id;
-        // Own the new session before sending: a failed prompt or a second
-        // submit must reuse it instead of starting another. A session_follow
-        // for the same id later is a no-op.
-        dispatch((s) => adoptSession(s, sid));
-      }
+      const sid = await ensureSession();
       await api.sendPrompt(sid, prompt, files);
       if (state.value.busy) await refreshQueue(sid);
       return null;
     } catch (err) {
-      return `Prompt not sent: ${errorText(err)}`;
+      return describeFailure(err);
     }
+  },
+  // runShell returns the failure for the deck to show inline, or null. A
+  // shell command never queues: it runs beside the conversation.
+  async runShell(command: string): Promise<Failure | null> {
+    try {
+      const sid = await ensureSession();
+      const { run_id } = await api.shell(sid, command);
+      dispatch((s) => (s.sessionId === sid ? startShell(s, run_id, sid, command) : s));
+      return null;
+    } catch (err) {
+      return describeFailure(err);
+    }
+  },
+  // addNote keeps text for the session's next prompt. It starts no run, so
+  // it is safe while the agent is busy.
+  async addNote(text: string): Promise<Failure | null> {
+    const sid = state.value.sessionId;
+    if (!sid) return { tone: 'error', text: 'There is no session to keep a note in' };
+    try {
+      await api.addNote(sid, text);
+      dispatch((s) => pushToast(s, 'info', 'Note kept for the next prompt'));
+      return null;
+    } catch (err) {
+      return describeFailure(err);
+    }
+  },
+  // ask answers a question beside the conversation. The card shows the
+  // pending question at once and the answer or the failure when it lands.
+  async ask(question: string): Promise<void> {
+    const generation = ++sideAnswerGeneration;
+    sideAnswer.value = { question, answer: null, error: null };
+    const sid = state.value.sessionId;
+    if (!sid) {
+      sideAnswer.value = { question, answer: null, error: { tone: 'error', text: 'There is no session to ask in' } };
+      return;
+    }
+    try {
+      const { answer } = await api.ask(sid, question);
+      if (generation !== sideAnswerGeneration) return;
+      sideAnswer.value = { question, answer, error: null };
+    } catch (err) {
+      if (generation !== sideAnswerGeneration) return;
+      sideAnswer.value = { question, answer: null, error: describeFailure(err) };
+    }
+  },
+  // removeShell drops one run once its card is done and has had its time on
+  // screen.
+  removeShell(runId: string) {
+    dispatch((s) => removeShellRun(s, runId));
+  },
+  // dropShell removes one run for good, so its 202 cannot revive the card.
+  dropShell(runId: string) {
+    dispatch((s) => dropRun(s, runId));
   },
   async cancel() {
     const sid = state.value.sessionId;
@@ -253,34 +399,34 @@ export const actions = {
     dispatch((s) => inspect(s, sid));
     if (sid && sid !== state.value.sessionId) await loadInspected(sid);
   },
-  async messageTeammate(member: string, text: string): Promise<string | null> {
+  async messageTeammate(member: string, text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
-    if (!sid) return 'There is no session to message from';
+    if (!sid) return { tone: 'error', text: 'There is no session to message from' };
     try {
       await api.teamMessage(member, sid, text);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
-  async interruptTeammate(member: string): Promise<string | null> {
+  async interruptTeammate(member: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
-    if (!sid) return 'There is no session to interrupt from';
+    if (!sid) return { tone: 'error', text: 'There is no session to interrupt from' };
     try {
       await api.teamInterrupt(member, sid);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
   // cancelAgent stops a subagent through its own session, which is how the
   // coordinator reaches a dispatched subagent's run.
-  async cancelAgent(sessionId: string): Promise<string | null> {
+  async cancelAgent(sessionId: string): Promise<Failure | null> {
     try {
       await api.cancel(sessionId);
       return null;
     } catch (err) {
-      return errorText(err);
+      return describeFailure(err);
     }
   },
   dismissToast: (id: number) => dispatch((s) => dismissToast(s, id)),

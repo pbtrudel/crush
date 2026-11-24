@@ -836,10 +836,11 @@ func (c *coordinator) deliverToTeammate(ctx context.Context, label, text string)
 	if _, off := c.refuseAgentsOff(); off {
 		return fantasy.ToolResponse{}, false
 	}
-	if c.team == nil {
+	team := c.teamService()
+	if team == nil {
 		return fantasy.ToolResponse{}, false
 	}
-	err := c.team.SendMessage(ctx, agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), agentteam.SendRequest{
+	err := team.SendMessage(ctx, agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), agentteam.SendRequest{
 		Target:  label,
 		Message: text,
 	})
@@ -878,10 +879,11 @@ func (c *coordinator) interruptTeammate(ctx context.Context, name string) (fanta
 	if _, off := c.refuseAgentsOff(); off {
 		return fantasy.ToolResponse{}, false
 	}
-	if c.team == nil {
+	team := c.teamService()
+	if team == nil {
 		return fantasy.ToolResponse{}, false
 	}
-	previous, err := c.team.Interrupt(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), name)
+	previous, err := team.Interrupt(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), name)
 	if err != nil {
 		if agentteam.ErrorCode(err) == agentteam.CodeMemberNotFound {
 			return fantasy.ToolResponse{}, false
@@ -1138,6 +1140,29 @@ func (c *coordinator) trackSubSession(sessionID string, agent SessionAgent) func
 		if run.count <= 0 {
 			delete(c.subSessions, sessionID)
 		}
+	}
+}
+
+// errSubAgentCancelled is the cause a user cancel leaves on a subagent's
+// context.
+var errSubAgentCancelled = errors.New("cancelled by the user")
+
+// beginSubSession makes sessionID cancellable before its run is listed
+// running. The returned release drops the entry; call it when the run
+// ends however it ends.
+func (c *coordinator) beginSubSession(ctx context.Context, sessionID string) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	c.subSessionsMu.Lock()
+	if c.subCancels == nil {
+		c.subCancels = map[string]context.CancelCauseFunc{}
+	}
+	c.subCancels[sessionID] = cancel
+	c.subSessionsMu.Unlock()
+	return ctx, func() {
+		c.subSessionsMu.Lock()
+		delete(c.subCancels, sessionID)
+		c.subSessionsMu.Unlock()
+		cancel(nil)
 	}
 }
 

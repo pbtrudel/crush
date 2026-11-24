@@ -208,6 +208,10 @@ type coordinator struct {
 	subSessionsMu sync.Mutex
 	subSessions   map[string]*subSessionRun
 	subSessionSeq uint64
+	// subCancels holds each synchronous subagent run's cancel from before
+	// the run is listed, so a cancel that arrives before its agent is
+	// tracked is kept in the run's context instead of being lost.
+	subCancels map[string]context.CancelCauseFunc
 	// settleMu serializes transcript repairs so two readers cannot both
 	// settle one orphaned call.
 	settleMu sync.Mutex
@@ -231,8 +235,13 @@ type coordinator struct {
 	// filters it to the current session.
 	agentRuns *agentrun.Registry
 
-	// team is the experimental Agent Teams domain. Nil unless enabled.
-	team *agentteam.Service
+	// team is the experimental Agent Teams domain, nil unless enabled. It
+	// is swapped by syncAgentTeams on a config reload while HTTP handlers
+	// and tool calls read it, so it is read through teamService only.
+	team atomic.Pointer[agentteam.Service]
+	// teamSyncMu serializes syncAgentTeams so two reloads cannot both
+	// create a service.
+	teamSyncMu sync.Mutex
 
 	// todoMu serializes the read-modify-write that reconciles a session
 	// todo with a settled team task, so concurrent completions cannot
@@ -713,8 +722,8 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	// ran the teammate's session on the Lead's model, alongside its own
 	// run when it was busy, so the Team delivers the notice to the
 	// teammate's own run instead.
-	if c.team != nil {
-		owned, err := c.team.NotifySession(ctx, sessionID, notice)
+	if team := c.teamService(); team != nil {
+		owned, err := team.NotifySession(ctx, sessionID, notice)
 		if err != nil {
 			slog.Warn("Failed to wake teammate for background completion", "session_id", sessionID, "error", err)
 		}
@@ -1522,7 +1531,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		allTools = append(allTools, agenticFetchTool)
 	}
 
-	if c.team != nil {
+	if c.teamService() != nil {
 		allTools = append(allTools, c.teamTools(agentteam.MemberFromContext(ctx), parentModel)...)
 	}
 
@@ -2396,7 +2405,8 @@ func (c *coordinator) Cancel(sessionID string) {
 
 // cancelSubSessions stops the synchronous runs of sessionID on the agent
 // instances that run them. Such a subagent runs on an agent of its own, so
-// the current agent cannot reach it.
+// the current agent cannot reach it. A run that is listed but not yet
+// tracked is stopped through its own cancel instead.
 func (c *coordinator) cancelSubSessions(sessionID string) {
 	c.subSessionsMu.Lock()
 	var agents []SessionAgent
@@ -2405,7 +2415,11 @@ func (c *coordinator) cancelSubSessions(sessionID string) {
 			agents = append(agents, agent)
 		}
 	}
+	cancel := c.subCancels[sessionID]
 	c.subSessionsMu.Unlock()
+	if cancel != nil {
+		cancel(errSubAgentCancelled)
+	}
 	for _, agent := range agents {
 		agent.Cancel(sessionID)
 	}
@@ -2860,6 +2874,11 @@ func (c *coordinator) subAgentCall(agent SessionAgent, sessionID, prompt string,
 	}, model, nil
 }
 
+// errSubAgentPanicked is the run error a panicking subagent settles with: a
+// panic never returns an error of its own, and the run must not stay listed
+// as running.
+var errSubAgentPanicked = errors.New("subagent run panicked")
+
 // runSubAgent runs a subagent and handles session management. The parent's
 // totals already carry the child's usage: the session service rolls every
 // usage write up as it lands, which is what keeps the sidebar and the
@@ -2869,22 +2888,31 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if params.Cleanup != nil {
 		defer params.Cleanup()
 	}
-	sess, err := c.createSubAgentSession(ctx, params)
+	sessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
+	// Cancellable before it is listed: the browser can click cancel the
+	// moment agents.json shows the run.
+	ctx, release := c.beginSubSession(ctx, sessionID)
+	defer release()
+	sess, err := c.createSubAgentSession(ctx, sessionID, params)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	c.startSubAgentRun(sess, params)
+	// Deferred with a pessimistic default: a panic below settles the run
+	// as failed instead of leaving it listed as running.
+	runErr := errSubAgentPanicked
+	defer func() { c.finishAgentRun(sess.ID, runErr) }()
 
 	call, model, err := c.subAgentCall(params.Agent, sess.ID, params.Prompt, params)
 	if err != nil {
-		c.finishAgentRun(sess.ID, err)
+		runErr = err
 		return fantasy.ToolResponse{}, err
 	}
 	done := c.trackSubSession(sess.ID, params.Agent)
 	// Deferred: a panic in the run must not leave the child session busy.
 	defer done()
 	result, err := params.Agent.Run(ctx, call)
-	c.finishAgentRun(sess.ID, err)
+	runErr = err
 	c.askToSignInAgain(err, model)
 	if err != nil {
 		return subAgentRunError("Failed to generate response", err), nil
@@ -2954,8 +2982,7 @@ func subAgentRunName(prompt string) string {
 	return line
 }
 
-func (c *coordinator) createSubAgentSession(ctx context.Context, params subAgentParams) (session.Session, error) {
-	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
+func (c *coordinator) createSubAgentSession(ctx context.Context, agentToolSessionID string, params subAgentParams) (session.Session, error) {
 	sess, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
 	if err != nil {
 		return session.Session{}, fmt.Errorf("create session: %w", err)

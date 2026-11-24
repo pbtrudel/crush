@@ -83,3 +83,63 @@ freshTest('delegated work streams into the inspector and the drawer', async ({ p
   await page.getByRole('complementary', { name: /Edited files/ }).getByRole('button', { name: /parser\.go/ }).click();
   await expect(page.locator('.cm-mergeView')).toContainText('func tokenize');
 });
+
+// The M2 fix hides a tag whose anchor lies under the open inspector, but with
+// motion off nothing republishes the projection, so opening or closing the
+// panel has to re-run the placement on its own.
+test('re-evaluates tags when the inspector opens and closes with motion off', async ({ page, gateway }) => {
+  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  // The seeded scene is deterministic. Find a viewport where a visible tag
+  // lies under the inspector once it opens; fail if none does, so the test
+  // can never pass vacuously.
+  const sizes = [{ width: 1440, height: 860 }, { width: 1280, height: 800 }, { width: 1100, height: 800 }];
+  let found: string | null = null;
+  for (const size of sizes) {
+    await page.setViewportSize(size);
+    await page.goto(gateway.launch);
+    await linked(page);
+    await expect(page.locator('.boot')).toBeHidden();
+    // Read the tags before the inspector opens: only a tag that was visible
+    // then can prove the close restored it.
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-agent-node][data-visible="true"]').length > 0,
+      undefined,
+      { timeout: 15_000 },
+    );
+    const tags = await page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-agent-node]'))
+        .filter((tag) => tag.dataset.visible === 'true')
+        .map((tag) => {
+          const r = tag.getBoundingClientRect();
+          return { id: tag.dataset.agentNode ?? '', left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+        }),
+    );
+    await page.getByRole('listbox', { name: 'Agents' }).getByRole('option', { name: /Map the parser/ }).click();
+    const panel = page.locator('.panel--inspector:not([hidden])');
+    await expect(panel).toBeVisible();
+    const pbox = (await panel.boundingBox())!;
+    found = await page.evaluate(({ p, tags }) => {
+      const hits = (
+        a: { left: number; top: number; right: number; bottom: number },
+        b: { left: number; top: number; right: number; bottom: number },
+      ) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      const list = document.querySelector('.agent-list')?.getBoundingClientRect();
+      for (const tag of tags) {
+        // A tag the agent list covers stays hidden either way, so it could
+        // not prove the inspector restored it.
+        if (!hits(tag, p) || (list && hits(tag, list))) continue;
+        return tag.id;
+      }
+      return null;
+    }, { p: { left: pbox.x, top: pbox.y, right: pbox.x + pbox.width, bottom: pbox.y + pbox.height }, tags });
+    if (found) break;
+    await page.keyboard.press('Escape');
+  }
+  expect(found, 'no seeded tag lies under the inspector at any tested size').not.toBeNull();
+  const tag = page.locator(`[data-agent-node="${found}"]`);
+  await expect(tag).toHaveAttribute('data-visible', 'false');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.panel--inspector')).toBeHidden();
+  // Nothing moved, so only the close itself can have re-run the placement.
+  await expect(tag).toHaveAttribute('data-visible', 'true');
+});

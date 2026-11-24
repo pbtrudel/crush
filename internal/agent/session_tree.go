@@ -72,7 +72,7 @@ func (c *coordinator) stopSessionTree(sessionID string) {
 	c.Cancel(sessionID)
 	// Read the service once, so the nil check and the calls come from the
 	// same one.
-	team := c.team
+	team := c.teamService()
 	if team == nil {
 		return
 	}
@@ -190,7 +190,7 @@ func (c *coordinator) sessionTree(team *agentteam.Service, sessionID string) Ses
 func (c *coordinator) WaitForSessionTree(ctx context.Context, sessionID string) (SessionTree, error) {
 	// Read the service once, so the change channel and the tree always come
 	// from the same one.
-	team := c.team
+	team := c.teamService()
 	for {
 		// Take the channels before reading the tree, so a change that lands
 		// between the read and the select still wakes the loop.

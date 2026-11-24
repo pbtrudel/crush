@@ -40,3 +40,9 @@ type Todo struct {
 	Status     string `json:"status"`
 	ActiveForm string `json:"active_form"`
 }
+
+// SessionRename is the body of a session rename: a targeted title update
+// that leaves usage, tokens and todos a concurrent run wrote intact.
+type SessionRename struct {
+	Title string `json:"title"`
+}

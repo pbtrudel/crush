@@ -1,4 +1,28 @@
 {
+  "agent_event": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "error": "The provider refused the request",
+        "type": "error",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "anthropic",
+        "session_id": "s1",
+        "session_title": "Parser refactor"
+      }
+    }
+  },
   "agent_runs": {
     "seq": 1,
     "type": "agent_runs",
@@ -22,6 +46,18 @@
         "started_at": "2026-11-22T12:00:00Z"
       }
     ]
+  },
+  "config_stale": {
+    "seq": 1,
+    "type": "config_stale",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "changed": [
+          "/repo/crushrc"
+        ]
+      }
+    }
   },
   "file": {
     "seq": 1,
@@ -182,6 +218,29 @@
       }
     }
   },
+  "model_changed": {
+    "seq": 1,
+    "type": "model_changed",
+    "payload": {
+      "id": "claude-sonnet",
+      "name": "Claude Sonnet",
+      "provider": "anthropic",
+      "context_window": 200000,
+      "can_reason": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "reasoning_effort": "high",
+      "think": true,
+      "small": {
+        "id": "claude-haiku",
+        "provider": "anthropic"
+      },
+      "agent_ready": true
+    }
+  },
   "permission_mode_changed": {
     "seq": 1,
     "type": "permission_mode_changed",
@@ -224,6 +283,13 @@
         "path": "/repo",
         "danger": "matches block list: rm -rf"
       }
+    }
+  },
+  "plan_ready": {
+    "seq": 1,
+    "type": "plan_ready",
+    "payload": {
+      "session_id": "s1"
     }
   },
   "question_batch_notification": {
@@ -313,6 +379,15 @@
       }
     }
   },
+  "shell_output": {
+    "seq": 1,
+    "type": "shell_output",
+    "payload": {
+      "run_id": "run-1",
+      "session_id": "s1",
+      "chunk": "line 1\n"
+    }
+  },
   "snapshot": {
     "seq": 0,
     "type": "snapshot",
@@ -373,12 +448,27 @@
       "permissions": [],
       "permission_mode": "normal",
       "input_mode": "code",
+      "plan_ready_session_id": "s1",
       "model": {
         "id": "claude",
         "name": "Claude",
         "provider": "anthropic",
-        "context_window": 200000
+        "context_window": 200000,
+        "can_reason": true,
+        "effort_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning_effort": "high",
+        "think": true,
+        "small": {
+          "id": "claude-haiku",
+          "provider": "anthropic"
+        },
+        "agent_ready": true
       },
+      "agent_ready": true,
       "busy": false,
       "queued": [],
       "lsp": {},
@@ -489,6 +579,27 @@
           "session_id": "s1"
         }
       ]
+    }
+  },
+  "update_available": {
+    "seq": 1,
+    "type": "update_available",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "current_version": "0.30.0",
+        "latest_version": "0.31.0",
+        "is_development": false
+      }
+    }
+  },
+  "web_error": {
+    "seq": 1,
+    "type": "web_error",
+    "payload": {
+      "code": "prompt_failed",
+      "error": "The prompt could not run. The terminal log has the details.",
+      "session_id": "s1"
     }
   }
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pinentry"
@@ -337,6 +338,50 @@ func FileToProto(f history.File) proto.File {
 		CreatedAt: f.CreatedAt,
 		UpdatedAt: f.UpdatedAt,
 	}
+}
+
+// FileMetaToProto converts a file version without its content into its
+// wire form.
+func FileMetaToProto(f history.FileMeta) proto.FileMeta {
+	return proto.FileMeta{
+		ID:        f.ID,
+		SessionID: f.SessionID,
+		Path:      f.Path,
+		Version:   f.Version,
+		CreatedAt: f.CreatedAt,
+		UpdatedAt: f.UpdatedAt,
+		Size:      f.Size,
+	}
+}
+
+// FileMetasToProto converts file version metadata into its wire form.
+func FileMetasToProto(files []history.FileMeta) []proto.FileMeta {
+	out := make([]proto.FileMeta, len(files))
+	for i, f := range files {
+		out[i] = FileMetaToProto(f)
+	}
+	return out
+}
+
+// DiagnosticCountsToProto converts one file's diagnostic counts into
+// their wire form.
+func DiagnosticCountsToProto(c lsp.DiagnosticCounts) proto.DiagnosticCounts {
+	return proto.DiagnosticCounts{
+		Error:       c.Error,
+		Warning:     c.Warning,
+		Information: c.Information,
+		Hint:        c.Hint,
+	}
+}
+
+// LSPFileDiagnosticsToProto converts per-file diagnostic counts into
+// their wire form.
+func LSPFileDiagnosticsToProto(counts map[string]lsp.DiagnosticCounts) proto.LSPFileDiagnostics {
+	out := make(proto.LSPFileDiagnostics, len(counts))
+	for path, c := range counts {
+		out[path] = DiagnosticCountsToProto(c)
+	}
+	return out
 }
 
 // MessageToProto converts a message into its wire form.

@@ -86,8 +86,8 @@ func TestCancelStopsEveryAgentOnASubagentSession(t *testing.T) {
 	doneSecond := c.trackSubSession("child", second)
 
 	c.Cancel("child")
-	require.Equal(t, []string{"child"}, first.cancelled)
-	require.Equal(t, []string{"child"}, second.cancelled)
+	require.Equal(t, []string{"child"}, first.cancelledIDs())
+	require.Equal(t, []string{"child"}, second.cancelledIDs())
 
 	doneFirst()
 	require.True(t, c.subSessionBusy("child"), "a concurrent run keeps the session live")

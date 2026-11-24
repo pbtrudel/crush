@@ -48,6 +48,16 @@ type Workspace struct {
 	Skills []SkillState `json:"skills,omitempty"`
 }
 
+// ErrorCodeAgentNotInitialized is the wire code an error body carries when
+// the workspace has no agent coordinator yet. Clients map it back to
+// workspace.ErrAgentNotInitialized.
+const ErrorCodeAgentNotInitialized = "agent_not_initialized"
+
+// ErrorCodeSessionNotFound is the wire code an error body carries when the
+// workspace exists but does not have the requested session. It is distinct
+// from a bare 404, which means the server no longer knows the workspace.
+const ErrorCodeSessionNotFound = "session_not_found"
+
 // Error represents an error response.
 type Error struct {
 	Message string `json:"message"`
@@ -551,3 +561,15 @@ func (i *LSPClientInfo) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
+
+// DiagnosticCounts holds one file's diagnostic counts by severity.
+type DiagnosticCounts struct {
+	Error       int `json:"error"`
+	Warning     int `json:"warning"`
+	Information int `json:"information"`
+	Hint        int `json:"hint"`
+}
+
+// LSPFileDiagnostics maps file paths to the diagnostic counts every LSP
+// server reported for them.
+type LSPFileDiagnostics map[string]DiagnosticCounts

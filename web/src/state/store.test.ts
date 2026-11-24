@@ -3,8 +3,9 @@ import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
 import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent } from '../api/types';
 import { effectsLevel } from './effects';
+import { STARTING_TEXT } from './failure';
 import { adoptSession, initialState } from './reducer';
-import { actions, boot, dispatch, handleFrames, state } from './store';
+import { actions, boot, dismissSideAnswer, dispatch, handleFrames, sideAnswer, state, watchVisibility } from './store';
 import { emptyTelemetry, telemetry } from './telemetry';
 
 vi.mock('../api/stream', () => ({ connectStream: vi.fn(() => () => {}) }));
@@ -140,7 +141,7 @@ describe('actions.answer', () => {
 
 describe('actions.sendPrompt', () => {
   it('starts a session when the terminal has none', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
@@ -151,25 +152,100 @@ describe('actions.sendPrompt', () => {
     expect(send).toHaveBeenCalledWith('s2', 'first task', []);
   });
 
+  it('waits for the first snapshot instead of starting a session', async () => {
+    // A tab can take a prompt before the stream names the session the
+    // terminal shows; starting one there would switch the terminal away.
+    state.value = { ...initialState(), conn: 'live' };
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+
+    handleFrames([fx.snapshot]);
+    await expect(pending).resolves.toBeNull();
+
+    expect(create).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith('s1', 'first task', []);
+  });
+
+  it('fails without starting a session when the connection ends', async () => {
+    // A gateway that comes back later must not find a session the tab
+    // started while it was gone.
+    state.value = { ...initialState(), conn: 'live' };
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt');
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    handleFrames([{ seq: 1, type: 'gateway_closing', payload: {} }]);
+    await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('fails without starting a session when the token is refused', async () => {
+    state.value = { ...initialState(), conn: 'live' };
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt');
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    dispatch((s) => ({ ...s, conn: 'unauthorized' }));
+    await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('gives up waiting for a snapshot after the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      state.value = { ...initialState(), conn: 'live' };
+      const create = vi.spyOn(api, 'createSession');
+      const send = vi.spyOn(api, 'sendPrompt');
+
+      const pending = actions.sendPrompt('first task', []);
+      await Promise.resolve();
+      expect(create).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
+      expect(create).not.toHaveBeenCalled();
+
+      // A snapshot after the prompt failed sends nothing: the deck already
+      // showed the failure and a retry is the user's choice.
+      handleFrames([fx.snapshot]);
+      await Promise.resolve();
+      expect(send).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sends nothing and reports the failure when the session cannot start', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     vi.spyOn(api, 'createSession').mockRejectedValue(new ApiError(500, 'create_session', 'gateway on fire'));
     const send = vi.spyOn(api, 'sendPrompt');
 
-    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+    await expect(actions.sendPrompt('first task', [])).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
 
     expect(send).not.toHaveBeenCalled();
   });
 
   it('keeps the created session when the prompt fails, so a retry does not start another', async () => {
-    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
     const created = { id: 's2', title: 'New Session' } as unknown as Session;
     const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
     const send = vi.spyOn(api, 'sendPrompt')
       .mockRejectedValueOnce(new ApiError(500, 'http_error', 'gateway on fire'))
       .mockResolvedValueOnce({ accepted: true });
 
-    await expect(actions.sendPrompt('first task', [])).resolves.toBe('Prompt not sent: gateway on fire');
+    await expect(actions.sendPrompt('first task', [])).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
     expect(state.value.sessionId).toBe('s2');
 
     await expect(actions.sendPrompt('first task', [])).resolves.toBeNull();
@@ -177,6 +253,12 @@ describe('actions.sendPrompt', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenNthCalledWith(1, 's2', 'first task', []);
     expect(send).toHaveBeenNthCalledWith(2, 's2', 'first task', []);
+  });
+
+  it('names a starting agent as a failure a control can style', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1' };
+    vi.spyOn(api, 'sendPrompt').mockRejectedValue(new ApiError(503, 'agent_starting', 'not ready'));
+    await expect(actions.sendPrompt('task', [])).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
   });
 });
 
@@ -355,7 +437,7 @@ describe('M2 actions', () => {
   it('returns the gateway message when an interrupt is refused', async () => {
     seed();
     vi.spyOn(api, 'teamInterrupt').mockRejectedValue(new ApiError(409, 'teams_disabled', 'Agent Teams is not enabled'));
-    await expect(actions.interruptTeammate('alice')).resolves.toBe('Agent Teams is not enabled');
+    await expect(actions.interruptTeammate('alice')).resolves.toEqual({ tone: 'error', text: 'Agent Teams is not enabled' });
   });
 });
 
@@ -380,6 +462,181 @@ describe('stream and boot hardening', () => {
       expect(replace).toHaveBeenCalledWith(null, '', '/?debug=1');
     } finally {
       history.replaceState(null, '', '/');
+    }
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('actions.runShell', () => {
+  it('starts a session, runs the command and records the run', async () => {
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const shell = vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r1' });
+
+    await expect(actions.runShell('ls -la')).resolves.toBeNull();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shell).toHaveBeenCalledWith('s2', 'ls -la');
+    expect(state.value.shells.r1).toMatchObject({
+      sessionId: 's2', command: 'ls -la', output: '', done: false, exitCode: null, error: null,
+    });
+  });
+
+  it('keeps the created session when the command fails, so a retry does not start another', async () => {
+    state.value = { ...initialState(), conn: 'live', hydrated: true, sessionId: '' };
+    const created = { id: 's2', title: 'New Session' } as unknown as Session;
+    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
+    const shell = vi.spyOn(api, 'shell')
+      .mockRejectedValueOnce(new ApiError(500, 'http_error', 'gateway on fire'))
+      .mockResolvedValueOnce({ run_id: 'r2' });
+
+    await expect(actions.runShell('ls')).resolves.toEqual({ tone: 'error', text: 'gateway on fire' });
+    expect(state.value.sessionId).toBe('s2');
+
+    await expect(actions.runShell('ls')).resolves.toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shell).toHaveBeenNthCalledWith(1, 's2', 'ls');
+    expect(shell).toHaveBeenNthCalledWith(2, 's2', 'ls');
+  });
+
+  it('reports a starting agent as a wait, not an error', async () => {
+    seed();
+    vi.spyOn(api, 'shell').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await expect(actions.runShell('ls')).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
+    expect(state.value.shells).toEqual({});
+  });
+});
+
+describe('actions.addNote', () => {
+  it('keeps the note and toasts it, clearing nothing else', async () => {
+    seed();
+    const note = vi.spyOn(api, 'addNote').mockResolvedValue(undefined);
+    await expect(actions.addNote('prefer table tests')).resolves.toBeNull();
+    expect(note).toHaveBeenCalledWith('s1', 'prefer table tests');
+    expect(state.value.toasts.map((t) => t.text)).toContain('Note kept for the next prompt');
+  });
+
+  it('reports a starting agent as a wait, not an error', async () => {
+    seed();
+    vi.spyOn(api, 'addNote').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await expect(actions.addNote('a note')).resolves.toEqual({ tone: 'starting', text: STARTING_TEXT });
+  });
+
+  it('reports a note kept with no session', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const note = vi.spyOn(api, 'addNote');
+    const failure = await actions.addNote('a note');
+    expect(failure?.tone).toBe('error');
+    expect(failure?.text).toContain('no session');
+    expect(note).not.toHaveBeenCalled();
+  });
+});
+
+describe('the side answer', () => {
+  it('shows the pending question then the answer', async () => {
+    seed();
+    const ask = vi.spyOn(api, 'ask').mockResolvedValue({ answer: 'Because the tests say so.' });
+    await actions.ask('Why?');
+    expect(ask).toHaveBeenCalledWith('s1', 'Why?');
+    expect(sideAnswer.value).toEqual({ question: 'Why?', answer: 'Because the tests say so.', error: null });
+  });
+
+  it('asks nobody without a session', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: '' };
+    const ask = vi.spyOn(api, 'ask');
+    await actions.ask('Why?');
+    expect(ask).not.toHaveBeenCalled();
+    expect(sideAnswer.value?.error?.tone).toBe('error');
+  });
+
+  it('shows a starting agent as the starting line', async () => {
+    seed();
+    vi.spyOn(api, 'ask').mockRejectedValue(new ApiError(503, 'agent_starting', 'the agent is starting'));
+    await actions.ask('Why?');
+    expect(sideAnswer.value?.error).toEqual({ tone: 'starting', text: STARTING_TEXT });
+  });
+
+  it('shows another failure through its message', async () => {
+    seed();
+    vi.spyOn(api, 'ask').mockRejectedValue(new ApiError(502, 'ask_failed', 'the model did not answer'));
+    await actions.ask('Why?');
+    expect(sideAnswer.value?.error).toEqual({ tone: 'error', text: 'the model did not answer' });
+  });
+
+  it('lets a newer question win over an answer that arrives late', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask')
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce({ answer: 'newer answer' });
+
+    const first = actions.ask('first');
+    const second = actions.ask('second');
+    await expect(second).resolves.toBeUndefined();
+    slow.resolve({ answer: 'older answer' });
+    await expect(first).resolves.toBeUndefined();
+
+    expect(sideAnswer.value).toEqual({ question: 'second', answer: 'newer answer', error: null });
+  });
+
+  it('makes a late answer after Dismiss a no-op', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask').mockReturnValue(slow.promise);
+
+    const pending = actions.ask('Why?');
+    expect(sideAnswer.value).toEqual({ question: 'Why?', answer: null, error: null });
+    dismissSideAnswer();
+    expect(sideAnswer.value).toBeNull();
+
+    slow.resolve({ answer: 'late answer' });
+    await expect(pending).resolves.toBeUndefined();
+    expect(sideAnswer.value).toBeNull();
+  });
+
+  it('dismisses the card and makes a late answer a no-op when the tab adopts another session', async () => {
+    seed();
+    const slow = deferred<{ answer: string }>();
+    vi.spyOn(api, 'ask').mockReturnValue(slow.promise);
+
+    const pending = actions.ask('Why?');
+    expect(sideAnswer.value?.question).toBe('Why?');
+
+    dispatch((s) => adoptSession(s, 's2'));
+    expect(sideAnswer.value).toBeNull();
+
+    slow.resolve({ answer: 'late answer' });
+    await expect(pending).resolves.toBeUndefined();
+    expect(sideAnswer.value).toBeNull();
+  });
+});
+
+describe('the document visibility', () => {
+  it('tracks the hidden flag on the state', async () => {
+    state.value = { ...initialState(), conn: 'live', sessionId: 's1' };
+    const stop = watchVisibility();
+    const setHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    try {
+      setHidden(true);
+      expect(state.value.hidden).toBe(true);
+      setHidden(false);
+      expect(state.value.hidden).toBe(false);
+    } finally {
+      stop();
+      setHidden(false);
     }
   });
 });

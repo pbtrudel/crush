@@ -214,6 +214,14 @@ func (w *ClientWorkspace) SaveSession(ctx context.Context, sess session.Session)
 	return protoToSession(*saved), nil
 }
 
+func (w *ClientWorkspace) SessionRename(ctx context.Context, sessionID, title string) (session.Session, error) {
+	renamed, err := w.client.RenameSession(ctx, w.workspaceID(), sessionID, title)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*renamed), nil
+}
+
 func (w *ClientWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.client.DeleteSession(ctx, w.workspaceID(), sessionID)
 }
@@ -296,7 +304,7 @@ func (w *ClientWorkspace) AgentRun(ctx context.Context, sessionID, prompt string
 	// The interactive TUI matches notify.RunComplete by session, not
 	// RunID, so passing an empty RunID is correct here: it skips the
 	// correlator stamping path without functional consequences.
-	return w.client.SendMessage(ctx, w.workspaceID(), sessionID, "", prompt, attachments...)
+	return agentErr(w.client.SendMessage(ctx, w.workspaceID(), sessionID, "", prompt, attachments...))
 }
 
 // AgentRunChannel is unreachable in client/server mode: the TUI skips
@@ -399,15 +407,29 @@ func (w *ClientWorkspace) AgentSetMain(agentID string) error {
 }
 
 func (w *ClientWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
-	return w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID)
+	return agentErr(w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID))
 }
 
 func (w *ClientWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
-	return w.client.AgentAskSession(ctx, w.workspaceID(), sessionID, question)
+	answer, err := w.client.AgentAskSession(ctx, w.workspaceID(), sessionID, question)
+	return answer, agentErr(err)
+}
+
+func (w *ClientWorkspace) AgentAddNote(ctx context.Context, sessionID, text string) error {
+	return agentErr(w.client.AgentAddNote(ctx, w.workspaceID(), sessionID, text))
 }
 
 func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context) error {
-	return w.client.UpdateAgent(ctx, w.workspaceID())
+	return agentErr(w.client.UpdateAgent(ctx, w.workspaceID()))
+}
+
+// agentErr restores workspace.ErrAgentNotInitialized from the server's
+// code, so both workspaces fail the same way.
+func agentErr(err error) error {
+	if errors.Is(err, client.ErrAgentNotInitialized) {
+		return fmt.Errorf("%w: %w", ErrAgentNotInitialized, err)
+	}
+	return err
 }
 
 func (w *ClientWorkspace) InitCoderAgent(ctx context.Context) error {
@@ -616,6 +638,22 @@ func (w *ClientWorkspace) ListSessionHistory(ctx context.Context, sessionID stri
 	return protoToFiles(files), nil
 }
 
+func (w *ClientWorkspace) ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	metas, err := w.client.ListSessionHistoryMeta(ctx, w.workspaceID(), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return protoToFileMetas(metas), nil
+}
+
+func (w *ClientWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	file, err := w.client.GetHistoryFile(ctx, w.workspaceID(), id)
+	if err != nil {
+		return history.File{}, err
+	}
+	return protoToFile(file), nil
+}
+
 // -- LSP --
 
 func (w *ClientWorkspace) LSPStart(ctx context.Context, path string) {
@@ -658,20 +696,39 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 	return counts
 }
 
-// LSPDiagnosticsByFile asks every server for its diagnostics. A server
-// that fails to answer is left out rather than failing the whole list.
+// LSPDiagnosticsByFile asks the server for every client's per-file
+// counts in one call. When that call fails for any reason (an older
+// server without the route, a transient error), fall back to asking
+// each server, leaving out the ones that fail. Every failure is
+// logged.
 func (w *ClientWorkspace) LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts {
 	out := map[string]lsp.DiagnosticCounts{}
+	byFile, err := w.client.GetLSPDiagnosticsByFile(ctx, w.workspaceID())
+	if err == nil {
+		for path, counts := range byFile {
+			out[path] = lsp.DiagnosticCounts{
+				Error:       counts.Error,
+				Warning:     counts.Warning,
+				Information: counts.Information,
+				Hint:        counts.Hint,
+			}
+		}
+		return out
+	}
+
+	slog.Debug("Batch diagnostics failed, asking each server", "error", err)
 	states, err := w.client.GetLSPs(ctx, w.workspaceID())
 	if err != nil {
+		slog.Debug("LSP list failed", "error", err)
 		return out
 	}
 	for name := range states {
 		diags, err := w.client.GetLSPDiagnostics(ctx, w.workspaceID(), name)
 		if err != nil {
+			slog.Debug("LSP diagnostics failed", "lsp", name, "error", err)
 			continue
 		}
-		addDiagnostics(out, diags)
+		lsp.CountByFile(out, diags)
 	}
 	return out
 }
@@ -1767,6 +1824,26 @@ func protoToTodos(todos []proto.Todo) []session.Todo {
 			Status:     session.TodoStatus(t.Status),
 			ActiveForm: t.ActiveForm,
 		}
+	}
+	return out
+}
+
+func protoToFileMeta(f proto.FileMeta) history.FileMeta {
+	return history.FileMeta{
+		ID:        f.ID,
+		SessionID: f.SessionID,
+		Path:      f.Path,
+		Version:   f.Version,
+		CreatedAt: f.CreatedAt,
+		UpdatedAt: f.UpdatedAt,
+		Size:      f.Size,
+	}
+}
+
+func protoToFileMetas(files []proto.FileMeta) []history.FileMeta {
+	out := make([]history.FileMeta, len(files))
+	for i, f := range files {
+		out[i] = protoToFileMeta(f)
 	}
 	return out
 }

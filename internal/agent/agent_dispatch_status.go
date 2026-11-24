@@ -521,10 +521,11 @@ func LatestDispatches(msgs []*message.Message) map[string]DispatchState {
 // teamMemberView looks a name up in the caller's Team roster, so the dispatch
 // tools can answer for a teammate the same way list_agents does.
 func (c *coordinator) teamMemberView(ctx context.Context, name string) (agentteam.MemberView, bool) {
-	if c.team == nil {
+	team := c.teamService()
+	if team == nil {
 		return agentteam.MemberView{}, false
 	}
-	members, err := c.team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
 	if err != nil {
 		return agentteam.MemberView{}, false
 	}
@@ -538,10 +539,11 @@ func (c *coordinator) teamMemberView(ctx context.Context, name string) (agenttea
 
 // teammateNames lists the roster names for an error that also lists subagents.
 func (c *coordinator) teammateNames(ctx context.Context) string {
-	if c.team == nil {
+	team := c.teamService()
+	if team == nil {
 		return "none"
 	}
-	members, err := c.team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
 	if err != nil || len(members) == 0 {
 		return "none"
 	}

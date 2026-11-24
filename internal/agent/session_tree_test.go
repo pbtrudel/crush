@@ -178,7 +178,7 @@ func TestWaitForSessionTreeOutlastsTheLeadsTurn(t *testing.T) {
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, nil)
 	require.NoError(t, err)
 	service.SetRunner(&teamRunner{c: coord})
-	coord.team = service
+	coord.setTeam(service)
 
 	release := make(chan struct{})
 	releaseTeammate := sync.OnceFunc(func() { close(release) })

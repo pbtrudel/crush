@@ -60,3 +60,10 @@ SELECT *
 FROM files
 WHERE is_new = 1
 ORDER BY version DESC, created_at DESC;
+
+-- name: ListFileVersionsBySession :many
+SELECT id, session_id, path, version, created_at, updated_at,
+       CAST(octet_length(content) AS INTEGER) AS size
+FROM files
+WHERE session_id = ?
+ORDER BY version ASC, created_at ASC;

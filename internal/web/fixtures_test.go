@@ -85,6 +85,20 @@ func fixtureEvents() map[string]any {
 		"file": pubsub.Event[history.File]{Type: pubsub.CreatedEvent, Payload: history.File{
 			ID: "f-1", SessionID: "sub-1", Path: "/repo/parser.go", Content: "package parser", Version: 1, CreatedAt: 104, UpdatedAt: 104,
 		}},
+		// A terminal notification: the browser toasts the text and keeps
+		// the retry affordance a re-authentication needs.
+		"agent_event": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeAgentError,
+			ProviderID: "anthropic", Message: "The provider refused the request",
+		}},
+		// The config files changed on disk; the browser offers a reload.
+		"config_stale": app.ConfigStaleMsg{
+			Changed: []string{"/repo/crushrc"}, Missing: []string{},
+		},
+		// A newer release exists; the browser shows it once per tab.
+		"update_available": app.UpdateAvailableMsg{
+			CurrentVersion: "0.30.0", LatestVersion: "0.31.0",
+		},
 	}
 }
 
@@ -124,6 +138,22 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 	return map[string]frame{
 		"team_state": mk(frameTeamState, fixtureTeam()),
 		"agent_runs": mk(frameAgentRuns, fixtureRuns()),
+		// A detached prompt that failed shows the fixed message, never the
+		// workspace error.
+		"web_error":  mk(frameError, promptFailure("s1", errors.New("dial unix /tmp/crush.sock: refused"))),
+		"plan_ready": mk(framePlanReady, map[string]string{"session_id": "s1"}),
+		"shell_output": mk(frameShellOutput, shellOutputPayload{
+			RunID: "run-1", SessionID: "s1", Chunk: "line 1\n",
+		}),
+		// A model switch made in the browser or the terminal: the HUD and
+		// the selector render the new model from this payload.
+		"model_changed": mk(frameModelChanged, ModelInfo{
+			ID: "claude-sonnet", Name: "Claude Sonnet", Provider: "anthropic", ContextWindow: 200000,
+			CanReason: true, EffortLevels: []string{"low", "medium", "high"},
+			ReasoningEffort: "high", Think: true,
+			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
+			AgentReady: true,
+		}),
 	}
 }
 
@@ -147,9 +177,16 @@ func snapshotFrame(t *testing.T) frame {
 			Path: "/repo/parser.go", Versions: 2, VersionIDs: []int64{0, 1}, Additions: 3, Removals: 1,
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
-		PermissionMode: "normal", InputMode: "code",
-		Model:  ModelInfo{ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000},
-		Queued: []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
+		PermissionMode: "normal", InputMode: "code", PlanReadySessionID: "s1",
+		Model: ModelInfo{
+			ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000,
+			CanReason: true, EffortLevels: []string{"low", "medium", "high"},
+			ReasoningEffort: "high", Think: true,
+			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
+			AgentReady: true,
+		},
+		AgentReady: true,
+		Queued:     []string{}, LSP: map[string]ServerInfo{}, MCP: map[string]ServerInfo{},
 		Team:      fixtureTeam(),
 		AgentRuns: fixtureRuns(),
 	})

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -212,41 +213,58 @@ func TestAPIResponsesAreNotStored(t *testing.T) {
 	require.Equal(t, "no-store", rsp.Header.Get("Cache-Control"))
 }
 
-// protectedRoutes lists every API route; each must refuse a request with no
-// cookie. Later tasks append their routes here.
-var protectedRoutes = []struct{ method, path string }{
-	{http.MethodGet, "/api/health"},
-	{http.MethodGet, "/api/snapshot"},
-	{http.MethodGet, "/api/sessions"},
-	{http.MethodPost, "/api/sessions"},
-	{http.MethodGet, "/api/sessions/s1/messages"},
-	{http.MethodPost, "/api/sessions/s1/prompt"},
-	{http.MethodPost, "/api/sessions/s1/cancel"},
-	{http.MethodGet, "/api/sessions/s1/queue"},
-	{http.MethodDelete, "/api/sessions/s1/queue"},
-	{http.MethodPost, "/api/permissions/grant"},
-	{http.MethodPost, "/api/permissions/mode"},
-	{http.MethodPost, "/api/input-mode"},
-	{http.MethodPost, "/api/questions/answer"},
-	{http.MethodPost, "/api/questions/cancel"},
-	{http.MethodGet, "/api/complete/files"},
-	{http.MethodGet, "/api/sessions/s1/files"},
-	{http.MethodGet, "/api/sessions/s1/files/diff?path=x"},
-	{http.MethodGet, "/api/sessions/s1"},
-	{http.MethodPost, "/api/team/members/alice/message"},
-	{http.MethodPost, "/api/team/members/alice/interrupt"},
-}
+// routeParam matches a mux path placeholder such as {sid}.
+var routeParam = regexp.MustCompile(`\{[^}]+\}`)
 
+// TestEveryRouteRequiresTheCookie walks the gateway's own route registry,
+// so a route cannot ship without proving it refuses a request that has no
+// cookie. The registry is filled by g.route, which every cookie-guarded
+// /api route uses.
 func TestEveryRouteRequiresTheCookie(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
-	for _, rt := range protectedRoutes {
-		req, err := http.NewRequestWithContext(t.Context(), rt.method, g.URL()+rt.path, strings.NewReader("{}"))
+	require.NotEmpty(t, g.apiRoutes)
+	for _, pattern := range g.apiRoutes {
+		method, path, ok := strings.Cut(pattern, " ")
+		require.True(t, ok, "route %q has no method", pattern)
+		path = routeParam.ReplaceAllString(path, "x")
+		req, err := http.NewRequestWithContext(t.Context(), method, g.URL()+path, strings.NewReader("{}"))
 		require.NoError(t, err)
 		req.Header.Set("Origin", g.URL())
 		rsp := doReq(t, nil, req)
 		rsp.Body.Close()
-		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, "%s %s", rt.method, rt.path)
+		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, "%s %s", method, path)
+	}
+	// The login route must answer without a cookie, so it is not in the
+	// walk and must never be added to it.
+	require.NotContains(t, g.apiRoutes, "POST /api/auth")
+	// The session routes added with the registry are part of the walk.
+	for _, want := range []string{
+		"PUT /api/sessions/{sid}",
+		"DELETE /api/sessions/{sid}",
+		"POST /api/follow",
+		"GET /api/commands",
+		"POST /api/commands/run",
+		"POST /api/mcp/prompts/run",
+		"POST /api/skills/{name}/attach",
+		"POST /api/sessions/{sid}/summarize",
+		"POST /api/sessions/{sid}/ask",
+		"POST /api/sessions/{sid}/shell",
+		"DELETE /api/shell/{run}",
+		"POST /api/sessions/{sid}/notes",
+		"GET /api/providers",
+		"POST /api/models/select",
+		"POST /api/models/reasoning",
+		"GET /api/mcp",
+		"POST /api/mcp/{name}/{action}",
+		"GET /api/lsp",
+		"GET /api/lsp/{name}/diagnostics",
+		"POST /api/lsp/start",
+		"POST /api/lsp/stop",
+		"POST /api/config/reload",
+		"POST /api/plan/handoff",
+	} {
+		require.Contains(t, g.apiRoutes, want)
 	}
 }
 

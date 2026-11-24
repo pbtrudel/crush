@@ -36,6 +36,12 @@ describe('coreMode', () => {
     expect(coreMode({ ...base, busy: true, permissions: [perm] })).toBe('attention');
   });
 
+  it('needs you for a pending plan in plan mode', () => {
+    expect(coreMode({ ...base, planReady: 's', inputMode: 'plan' })).toBe('attention');
+    expect(coreMode({ ...base, planReady: 's', inputMode: 'code' })).toBe('idle');
+    expect(coreMode({ ...base, planReady: 'other', inputMode: 'plan' })).toBe('idle');
+  });
+
   it('shows an error when the last turn finished with an error', () => {
     const failed = msg({ parts: [{ type: 'finish', data: { reason: 'error', time: 1 } }] });
     expect(coreMode({ ...base, messages: [failed] })).toBe('error');

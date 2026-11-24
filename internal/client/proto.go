@@ -336,6 +336,24 @@ func (c *Client) GetLSPDiagnostics(ctx context.Context, id string, lspName strin
 	return diagnostics, nil
 }
 
+// GetLSPDiagnosticsByFile retrieves the diagnostic counts every LSP
+// client reported, keyed by file path, in one call.
+func (c *Client) GetLSPDiagnosticsByFile(ctx context.Context, id string) (proto.LSPFileDiagnostics, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/lsps/diagnostics/by-file", id), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LSP diagnostics by file: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get LSP diagnostics by file: %w", err)
+	}
+	var counts proto.LSPFileDiagnostics
+	if err := json.NewDecoder(rsp.Body).Decode(&counts); err != nil {
+		return nil, fmt.Errorf("failed to decode LSP diagnostics by file: %w", err)
+	}
+	return counts, nil
+}
+
 // GetLSPs retrieves the LSP client states for a workspace.
 func (c *Client) GetLSPs(ctx context.Context, id string) (map[string]proto.LSPClientInfo, error) {
 	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/lsps", id), nil, nil)
@@ -519,8 +537,8 @@ func (c *Client) UpdateAgent(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to update agent: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update agent: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to update agent: %w", err)
 	}
 	return nil
 }
@@ -562,26 +580,10 @@ func (c *Client) SendMessage(ctx context.Context, id string, sessionID, runID, p
 		return fmt.Errorf("failed to send message to agent: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK && rsp.StatusCode != http.StatusAccepted {
-		if msg := decodeErrorMessage(rsp.Body); msg != "" {
-			return fmt.Errorf("failed to send message to agent: status code %d: %s", rsp.StatusCode, msg)
-		}
-		return fmt.Errorf("failed to send message to agent: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp, http.StatusOK, http.StatusAccepted); err != nil {
+		return fmt.Errorf("failed to send message to agent: %w", err)
 	}
 	return nil
-}
-
-// decodeErrorMessage attempts to decode the response body as a
-// proto.Error and returns its message. It returns an empty string
-// when the body is empty or cannot be decoded into a proto.Error
-// with a non-empty message, letting callers fall back to a
-// status-only error.
-func decodeErrorMessage(body io.Reader) string {
-	var e proto.Error
-	if err := json.NewDecoder(body).Decode(&e); err != nil {
-		return ""
-	}
-	return e.Message
 }
 
 // RunShellCommand runs a shell command in the workspace without triggering the agent.
@@ -628,8 +630,8 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to summarize session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	return nil
 }
@@ -643,14 +645,29 @@ func (c *Client) AgentAskSession(ctx context.Context, id string, sessionID strin
 		return "", fmt.Errorf("failed to ask side question: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to ask side question: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return "", fmt.Errorf("failed to ask side question: %w", err)
 	}
 	var resp proto.AgentAskResponse
 	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {
 		return "", fmt.Errorf("failed to decode side question response: %w", err)
 	}
 	return resp.Answer, nil
+}
+
+// AgentAddNote keeps text for the session's next prompt. It starts no
+// run and is not shown in the chat.
+func (c *Client) AgentAddNote(ctx context.Context, id string, sessionID string, text string) error {
+	body := jsonBody(proto.SessionNote{Text: text})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/sessions/%s/notes", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to add note: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to add note: %w", err)
+	}
+	return nil
 }
 
 // InitiateAgentProcessing triggers agent initialization on the server.
@@ -691,14 +708,33 @@ func (c *Client) GetSession(ctx context.Context, id string, sessionID string) (*
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	var sess proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sess); err != nil {
 		return nil, fmt.Errorf("failed to decode session: %w", err)
 	}
 	return &sess, nil
+}
+
+// RenameSession changes only a session's title, leaving the usage, cost and
+// todos a concurrent run wrote intact. It returns the renamed session.
+func (c *Client) RenameSession(ctx context.Context, id, sessionID, title string) (*proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/rename", id, sessionID), nil,
+		jsonBody(proto.SessionRename{Title: title}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	var renamed proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&renamed); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &renamed, nil
 }
 
 // ListSessionHistoryFiles retrieves history files for a session as proto types.
@@ -716,6 +752,41 @@ func (c *Client) ListSessionHistoryFiles(ctx context.Context, id string, session
 		return nil, fmt.Errorf("failed to decode session history files: %w", err)
 	}
 	return files, nil
+}
+
+// ListSessionHistoryMeta retrieves history metadata for a session: one
+// entry per file version, without content.
+func (c *Client) ListSessionHistoryMeta(ctx context.Context, id string, sessionID string) ([]proto.FileMeta, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/history/meta", id, sessionID), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session history metadata: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get session history metadata: %w", err)
+	}
+	var metas []proto.FileMeta
+	if err := json.NewDecoder(rsp.Body).Decode(&metas); err != nil {
+		return nil, fmt.Errorf("failed to decode session history metadata: %w", err)
+	}
+	return metas, nil
+}
+
+// GetHistoryFile retrieves one file version with its content.
+func (c *Client) GetHistoryFile(ctx context.Context, id string, fileID string) (proto.File, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/history/%s", id, fileID), nil, nil)
+	if err != nil {
+		return proto.File{}, fmt.Errorf("failed to get file version: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.File{}, fmt.Errorf("failed to get file version: %w", err)
+	}
+	var file proto.File
+	if err := json.NewDecoder(rsp.Body).Decode(&file); err != nil {
+		return proto.File{}, fmt.Errorf("failed to decode file version: %w", err)
+	}
+	return file, nil
 }
 
 // ListChildSessions returns the sessions a session spawned.

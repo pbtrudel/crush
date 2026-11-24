@@ -74,7 +74,7 @@ func TestBackgroundNoticeWakesTeammateOnItsOwnRun(t *testing.T) {
 	// the TempDir, so it runs before the directory holding the state file is
 	// removed.
 	t.Cleanup(service.Shutdown)
-	coord.team = service
+	coord.setTeam(service)
 
 	_, err = service.SpawnTeammate(t.Context(), "lead", agentteam.SpawnRequest{
 		Name: "reviewer", Description: "d", Prompt: "p", ParentID: lead.ID,

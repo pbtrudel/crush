@@ -195,6 +195,9 @@ crush --continue
 		webCtl.SetOnInputModeRequested(func(plan bool) {
 			go func() { program.Send(ui.WebInputModeMsg{Plan: plan}) }()
 		})
+		webCtl.SetOnPlanHandoff(func(id string, yolo bool) {
+			go func() { program.Send(ui.WebPlanHandoffMsg{SessionID: id, Yolo: yolo}) }()
+		})
 		if webURL != "" {
 			// Hand the link to the TUI once it is starting, so the UI
 			// copies it and opens the browser off the render path. Send

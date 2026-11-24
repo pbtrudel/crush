@@ -75,7 +75,8 @@ func newTeamTestCoordinator(t *testing.T) (*coordinator, *teamFakeRunner) {
 	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "crush.json"), []byte(overrideTestConfig), 0o644))
 	cfg, err := config.Init(t.Context(), workingDir, "", false)
 	require.NoError(t, err)
-	c := &coordinator{cfg: cfg, team: service}
+	c := &coordinator{cfg: cfg}
+	c.setTeam(service)
 	require.NoError(t, c.rebuildModels(context.Background()))
 	return c, runner
 }
@@ -154,7 +155,7 @@ func TestTeamToolsSpawnListAndMessage(t *testing.T) {
 
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		members, err := c.team.ListMembers("lead", teamTestSessionID)
+		members, err := c.teamService().ListMembers("lead", teamTestSessionID)
 		return err == nil && members[1].Status == agentteam.StatusInactive
 	}, time.Second, 10*time.Millisecond)
 

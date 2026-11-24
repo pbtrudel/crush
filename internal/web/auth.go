@@ -33,10 +33,10 @@ func (g *Gateway) hostAllowed(host string) bool {
 }
 
 // originAllowed checks Origin. Browsers send it on every request that can
-// change state (any fetch that is not a GET or HEAD, and the WebSocket
-// upgrade), so a state-changing request without one did not come from the
-// tab and is refused. Reads without an Origin stay allowed: SameSite=Strict
-// and the Host guard already cover them.
+// change state, so a state-changing request without one did not come from
+// the tab and is refused. A missing Origin is allowed on GET, including
+// the WebSocket upgrade: the Host check and SameSite=Strict already cover
+// a cross-site reader that cannot set the header.
 func (g *Gateway) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {

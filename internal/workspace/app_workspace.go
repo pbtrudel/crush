@@ -63,6 +63,15 @@ func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (s
 	return w.app.Sessions.Save(ctx, sess)
 }
 
+// SessionRename updates the title in place: a Save of the whole row could
+// overwrite the usage, cost and todos a busy run just wrote.
+func (w *AppWorkspace) SessionRename(ctx context.Context, sessionID, title string) (session.Session, error) {
+	if err := w.app.Sessions.Rename(ctx, sessionID, title); err != nil {
+		return session.Session{}, err
+	}
+	return w.app.Sessions.Get(ctx, sessionID)
+}
+
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.app.Sessions.Delete(ctx, sessionID)
 }
@@ -116,7 +125,7 @@ func (w *AppWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Messa
 
 func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	_, err := w.app.Agent().Run(ctx, sessionID, prompt, attachments...)
 	return err
@@ -124,7 +133,7 @@ func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, a
 
 func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, prompt string, attachments ...message.Attachment) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	_, err := w.app.Agent().Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
 	return err
@@ -135,13 +144,24 @@ func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, 
 func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
 	coord := w.app.Agent()
 	if coord == nil {
-		return "", errors.New("agent coordinator not initialized")
+		return "", ErrAgentNotInitialized
 	}
 	asker, ok := coord.(agent.SideQuestioner)
 	if !ok {
 		return "", errors.New("side questions are not supported by this coordinator")
 	}
 	return asker.Ask(ctx, sessionID, question)
+}
+
+// AgentAddNote keeps text for the session's next prompt. It starts no
+// run and is not shown in the chat.
+func (w *AppWorkspace) AgentAddNote(_ context.Context, sessionID, text string) error {
+	coord := w.app.Agent()
+	if coord == nil {
+		return ErrAgentNotInitialized
+	}
+	coord.AddNote(sessionID, text)
+	return nil
 }
 
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
@@ -254,14 +274,14 @@ func (w *AppWorkspace) AgentClearQueue(sessionID string) {
 
 func (w *AppWorkspace) AgentSetMain(agentID string) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	return w.app.Agent().SetMainAgent(agentID)
 }
 
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
 	if w.app.Agent() == nil {
-		return errors.New("agent coordinator not initialized")
+		return ErrAgentNotInitialized
 	}
 	return w.app.Agent().Summarize(ctx, sessionID)
 }
@@ -381,6 +401,14 @@ func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string)
 	return w.app.History.ListBySession(ctx, sessionID)
 }
 
+func (w *AppWorkspace) ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	return w.app.History.ListMetaBySession(ctx, sessionID)
+}
+
+func (w *AppWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	return w.app.History.Get(ctx, id)
+}
+
 // -- LSP --
 
 func (w *AppWorkspace) LSPStart(ctx context.Context, path string) {
@@ -418,7 +446,7 @@ func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.Diag
 	out := map[string]lsp.DiagnosticCounts{}
 	for _, state := range app.GetLSPStates() {
 		if state.Client != nil {
-			addDiagnostics(out, state.Client.GetDiagnostics())
+			lsp.CountByFile(out, state.Client.GetDiagnostics())
 		}
 	}
 	return out

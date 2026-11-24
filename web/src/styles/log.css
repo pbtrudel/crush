@@ -34,3 +34,33 @@
 .shell code { color: var(--teal); }
 .report { border: 1px solid var(--violet-dim); border-radius: var(--radius); padding: 10px; }
 .report[data-failed='true'] { border-color: var(--magenta); }
+
+/* Shell cards keep the log's own rendering's shape: the command on its
+   header line and the output in an inset well. The well is the scroller, so
+   a long run shows its tail without growing the log. */
+.shell-card { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--void-deep); padding: 10px; display: grid; gap: 8px; }
+.shell-card:focus { outline: 1px solid var(--cyan); outline-offset: 2px; }
+.shell-card[data-done='true'] { border-color: var(--edge-strong); }
+.shell-card__head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.shell-card__command { font: 400 var(--step--1) var(--font-code); color: var(--teal); overflow-wrap: anywhere; }
+.shell-card__cancel { margin-inline-start: auto; }
+.shell-card__cancel[aria-disabled='true'] { opacity: 0.6; }
+.shell-card__exit { margin-inline-start: auto; color: var(--text-muted); }
+.shell-card__cancel + .shell-card__exit { margin-inline-start: 0; }
+.shell-card__output {
+  margin: 0; max-block-size: 16rem; overflow: auto;
+  background: oklch(0.09 0.04 275 / 0.85); border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 8px; font-size: var(--step--1); white-space: pre-wrap; overflow-wrap: anywhere;
+  box-shadow: inset 0 1px 8px oklch(0 0 0 / 0.5);
+}
+.shell-card__output code { color: var(--text); }
+.shell-card__failure { margin: 0; color: var(--magenta); font-size: var(--step--1); }
+/* The side answer sits above the deck, out of the conversation. */
+.side-answer { margin-block-end: var(--space-4); padding: 12px var(--space-4); display: grid; gap: 8px; border-radius: var(--radius); }
+.side-answer__title { margin: 0; color: var(--cyan); }
+.side-answer__question { margin: 0; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.side-answer__pending { margin: 0; color: var(--text-muted); }
+.side-answer__answer { max-block-size: 40vh; overflow-y: auto; }
+.side-answer__error { margin: 0; color: var(--magenta); }
+.side-answer__error[data-tone='starting'] { color: var(--amber); }
+.side-answer__actions { display: flex; justify-content: end; gap: 8px; }

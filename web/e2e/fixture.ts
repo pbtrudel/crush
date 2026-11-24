@@ -1,4 +1,5 @@
-import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { test as base, expect, type Page } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -104,7 +105,10 @@ async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => 
   const bin = path.join(dir, 'webfake');
   let proc: ChildProcess | undefined;
   try {
-    execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, stdio: 'inherit' });
+    // Every go command in this repo shares one cache, and a fresh shell has
+    // no GOCACHE: set the shared one unless the caller already did.
+    const goEnv = { ...process.env, GOCACHE: process.env.GOCACHE ?? '/tmp/crush-go-build' };
+    execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, env: goEnv, stdio: 'inherit' });
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
     proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -136,4 +140,38 @@ export const freshTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({}, use),
 });
 
-export { expect } from '@playwright/test';
+// The M3 surfaces live in their own scenario, so the default seed and every
+// baseline taken against it stay exactly as they were.
+const M3 = { WEBFAKE_SCENARIO: 'm3' };
+
+export const m3Test = base.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({}, use) => launchGateway(M3, use), { scope: 'worker', timeout: 180_000 }],
+});
+
+export const m3FreshTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway(M3, use),
+});
+
+export const m3VisualTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+});
+
+// A starting agent answers 503 agent_starting on every route that needs it.
+export const startingTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_AGENT_STARTING: '1' }, use),
+});
+
+// A ready plan waits for the browser, the way the terminal leaves it in plan
+// mode.
+export const planTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_PLAN_READY: '1' }, use),
+});
+
+// axeScan is the M1 and M2 accessibility gate: serious and critical
+// violations fail.
+export async function axeScan(page: Page): Promise<void> {
+  const { violations } = await new AxeBuilder({ page }).analyze();
+  expect(violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+}
+
+export { expect };

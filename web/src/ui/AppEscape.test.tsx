@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../state/__fixtures__/events.json';
-import type { Frame } from '../api/types';
+import type { Frame, QuestionRequest } from '../api/types';
 import { cinematic, setCinematic } from '../state/cinematic';
 import { resetWebglProbe } from '../state/effects';
+import { closeSessions, deckMode, openSessions, sessionsOpen } from '../state/palette';
 import { initialState, reduce } from '../state/reducer';
-import { state } from '../state/store';
+import { actions, state } from '../state/store';
 import { App } from './App';
 
 // The Escape routing is the App's: the scene layer would otherwise fail the
@@ -30,6 +31,8 @@ afterEach(async () => {
   await act(() => { render(null, root); });
   root.remove();
   setCinematic(false);
+  closeSessions();
+  deckMode.value = null;
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
   vi.restoreAllMocks();
@@ -70,6 +73,30 @@ describe('Escape in cinematic mode', () => {
     expect(document.activeElement).toBe(details.querySelector('summary'));
   });
 
+  it('leaves note mode without closing the inspector or the cinematic view', async () => {
+    state.value = { ...state.value, busy: true };
+    const cancel = vi.spyOn(actions, 'cancel').mockResolvedValue(undefined);
+    await act(() => { render(<App />, root); });
+    await act(() => { setCinematic(true); });
+    await act(() => { deckMode.value = 'note'; });
+    const deck = document.querySelector<HTMLTextAreaElement>('#deck-input')!;
+    deck.focus();
+    await act(() => {
+      deck.value = 'kept draft';
+      deck.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(() => {
+      deck.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    });
+
+    expect(deckMode.value).toBeNull();
+    expect(deck.value).toBe('kept draft');
+    expect(state.value.inspected?.sessionId).toBe('sub-1');
+    expect(cinematic.value).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it('keeps a non-empty message draft, then closes once the box is empty', async () => {
     state.value = { ...state.value, inspected: { sessionId: 'team-m-1', session: null, messages: [], loading: false } };
     await act(() => { render(<App />, root); });
@@ -93,5 +120,27 @@ describe('Escape in cinematic mode', () => {
     await act(() => { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })); });
     expect(state.value.inspected).toBeNull();
     expect(cinematic.value).toBe(true);
+  });
+});
+
+describe('Escape under the interrupt layer', () => {
+  const question: QuestionRequest = {
+    id: 'b1',
+    session_id: 's1',
+    tool_call_id: 'tc1',
+    questions: [{ id: 'q1', type: 'free_text', question: 'Notes?' }],
+  };
+
+  it('cancels the question and leaves the inert dialog open', async () => {
+    const cancel = vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(null);
+    state.value = { ...state.value, question };
+    await act(() => { render(<App />, root); });
+    await act(() => { openSessions(); });
+
+    await escape();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(sessionsOpen.value).toBe(true);
+    expect(state.value.inspected?.sessionId).toBe('sub-1');
   });
 });

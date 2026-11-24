@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
-import type { Frame, Snapshot } from '../api/types';
+import type { Frame, ModelInfo, Snapshot } from '../api/types';
 import {
-  adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, reduce,
-  setConn, toolResults,
+  adoptSession, contextFill, initialState, inspect, markAnswered, mergeInspected, needsAttention, needsYou,
+  planPending, reduce, setConn, startShell, toolResults, type State,
 } from './reducer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -13,11 +13,27 @@ const snapshot = (over: Partial<Snapshot> = {}): Frame => ({
   payload: {
     version: 'v1', working_dir: '/repo/holodeck', current_session_id: 's1',
     messages: [], permissions: [], permission_mode: 'normal', input_mode: 'code',
-    model: { id: 'm', name: 'Model', provider: 'p', context_window: 200000 },
-    busy: false, queued: [], ...over,
+    model: { id: 'm', name: 'Model', provider: 'p', context_window: 200000, agent_ready: true },
+    agent_ready: true, busy: false, queued: [], ...over,
   },
 });
 const live = () => reduce(initialState(), snapshot());
+// shellMessage is the user message the workspace persists for a finished
+// shell command, one shell_command part per command.
+const shellMessage = (sessionId: string, ...commands: string[]): Frame => ({
+  seq: 78,
+  type: 'message',
+  payload: {
+    type: 'created',
+    payload: {
+      id: `m-${commands.join('-')}`, role: 'user', session_id: sessionId,
+      parts: commands.map((command) => ({
+        type: 'shell_command', data: { command, output: `${command} output`, exit_code: 0 },
+      })),
+      model: '', provider: '', created_at: 0, updated_at: 0,
+    },
+  },
+});
 
 describe('wire contract', () => {
   it('fixtures carry the fields the UI reads', () => {
@@ -291,5 +307,391 @@ describe('M2 state', () => {
     expect(s.inspected).toBeNull();
     expect(s.activity).toEqual({});
     expect(s.files).toEqual([]);
+  });
+});
+
+describe('M3 state', () => {
+  const fromSnapshot = () => reduce(initialState(), fx.snapshot);
+
+  it('applies the wire model fields the fixtures carry', () => {
+    const m = fx.model_changed.payload as ModelInfo;
+    expect(m).toMatchObject({
+      id: 'claude-sonnet', provider: 'anthropic', context_window: 200000,
+      can_reason: true, effort_levels: ['low', 'medium', 'high'], reasoning_effort: 'high',
+      think: true, small: { id: 'claude-haiku', provider: 'anthropic' }, agent_ready: true,
+    });
+  });
+
+  it('applies model_changed and agent readiness', () => {
+    let s = reduce(fromSnapshot(), fx.model_changed);
+    expect(s.model.id).toBe('claude-sonnet');
+    expect(s.agentReady).toBe(true);
+    const payload: ModelInfo = {
+      id: 'm2', name: 'Model Two', provider: 'p1', context_window: 1000, agent_ready: false,
+    };
+    s = reduce(s, { seq: 50, type: 'model_changed', payload });
+    expect(s.model.id).toBe('m2');
+    expect(s.agentReady).toBe(false);
+  });
+
+  it('streams shell output into its run and settles it', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 51, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, { seq: 52, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', chunk: 'b\n' } });
+    s = reduce(s, { seq: 53, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r1).toEqual({ sessionId: 's1', command: 'ls', output: 'a\nb\n', done: true, exitCode: 0, error: null });
+  });
+
+  it('keeps shell output from another tab as its own run', () => {
+    const s = reduce(fromSnapshot(), { seq: 54, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', chunk: 'x' } });
+    expect(s.shells.r9.output).toBe('x');
+    expect(s.shells.r9.command).toBe('');
+  });
+
+  it('drops the shells of the session the tab leaves behind', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 62, type: 'session_follow', payload: { session_id: 's2' } });
+    expect(s.sessionId).toBe('s2');
+    expect(s.shells).toEqual({});
+  });
+
+  it('caps a shell run at 256 KiB of output on a line boundary', () => {
+    let s = startShell(fromSnapshot(), 'r2', 's1', 'yes');
+    // The odd split lands the 256 KiB cut inside a line, so only the text
+    // after the first newline can survive.
+    s = reduce(s, { seq: 55, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk: 'abc\n'.repeat(35_000) + 'ab' } });
+    s = reduce(s, { seq: 56, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', chunk: 'abc\n'.repeat(35_000) } });
+    const out = s.shells.r2.output;
+    expect(out.startsWith('abc\n')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(256 * 1024);
+    expect(out.endsWith('abc\n')).toBe(true);
+  });
+
+  it('keeps output that is exactly the cap unchanged', () => {
+    const chunk = 'q'.repeat(256 * 1024);
+    const s = reduce(startShell(fromSnapshot(), 'r3', 's1', 'yes'), {
+      seq: 57, type: 'shell_output', payload: { run_id: 'r3', session_id: 's1', chunk },
+    });
+    expect(s.shells.r3.output).toBe(chunk);
+  });
+
+  it('keeps a tail with no newline in it', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r4', 's1', 'yes'), {
+      seq: 58, type: 'shell_output', payload: { run_id: 'r4', session_id: 's1', chunk: 'a'.repeat(256 * 1024 + 10) },
+    });
+    expect(s.shells.r4.output).toBe('a'.repeat(256 * 1024));
+  });
+
+  it('keeps a tail whose only newline is its last character', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r5', 's1', 'echo'), {
+      seq: 59, type: 'shell_output', payload: { run_id: 'r5', session_id: 's1', chunk: 'x'.repeat(256 * 1024 + 5) + '\n' },
+    });
+    expect(s.shells.r5.output).toBe('x'.repeat(256 * 1024 - 1) + '\n');
+  });
+
+  it('keeps the early frames of a run whose start lands afterwards', () => {
+    let s = reduce(fromSnapshot(), { seq: 70, type: 'shell_output', payload: { run_id: 'r6', session_id: 's1', chunk: 'early\n' } });
+    s = reduce(s, { seq: 71, type: 'shell_output', payload: { run_id: 'r6', session_id: 's1', done: true, exit_code: 2, error: 'The shell command failed' } });
+    s = startShell(s, 'r6', 's1', 'boom');
+    expect(s.shells.r6).toEqual({
+      sessionId: 's1', command: 'boom', output: 'early\n', done: true, exitCode: 2, error: 'The shell command failed',
+    });
+  });
+
+  it('stores the failure the done frame carries', () => {
+    const s = reduce(startShell(fromSnapshot(), 'r7', 's1', 'boom'), {
+      seq: 72, type: 'shell_output', payload: { run_id: 'r7', session_id: 's1', done: true, exit_code: 1, error: 'The shell command failed' },
+    });
+    expect(s.shells.r7.error).toBe('The shell command failed');
+  });
+
+  it('keeps the deck idle when a persisted shell message arrives', () => {
+    // A bang command's result is persisted as a user message, but it starts
+    // no agent turn, so it must not read as a busy session.
+    const s = reduce(live(), shellMessage('s1', 'ls'));
+    expect(s.busy).toBe(false);
+  });
+
+  it('drops a done run when its persisted shell message arrives', () => {
+    let s = startShell(fromSnapshot(), 'r8', 's1', 'ls');
+    s = reduce(s, { seq: 73, type: 'shell_output', payload: { run_id: 'r8', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r8).toBeUndefined();
+  });
+
+  it('drops one done run per persisted part, oldest first', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 74, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = startShell(s, 'r2', 's1', 'ls');
+    s = reduce(s, { seq: 75, type: 'shell_output', payload: { run_id: 'r2', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).toBeUndefined();
+    expect(s.shells.r2).not.toBeUndefined();
+  });
+
+  it('keeps a run the persisted message does not match', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'make');
+    s = reduce(s, { seq: 76, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
+  it('keeps a run that is still streaming when the persisted message arrives', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
+  it('drops the card when the done frame lands after the persisted message', () => {
+    // The workspace persists the result before the gateway publishes done,
+    // so the message can win the race to the tab.
+    let s = startShell(fromSnapshot(), 'r9', 's1', 'ls');
+    s = reduce(s, { seq: 79, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r9).not.toBeUndefined();
+
+    s = reduce(s, { seq: 80, type: 'shell_output', payload: { run_id: 'r9', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r9).toBeUndefined();
+  });
+
+  it('ignores a shell message for another session', () => {
+    let s = startShell(fromSnapshot(), 'r1', 's1', 'ls');
+    s = reduce(s, { seq: 77, type: 'shell_output', payload: { run_id: 'r1', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s2', 'ls'));
+    expect(s.shells.r1).not.toBeUndefined();
+  });
+
+  it('leaves no run when the start answer lands after its message and done', () => {
+    // A fast command can deliver chunk, message and done before the 202
+    // names the run.
+    let s = reduce(fromSnapshot(), { seq: 81, type: 'shell_output', payload: { run_id: 'r10', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, { seq: 82, type: 'shell_output', payload: { run_id: 'r10', session_id: 's1', done: true, exit_code: 0 } });
+    s = startShell(s, 'r10', 's1', 'ls');
+    expect(s.shells.r10).toBeUndefined();
+  });
+
+  it('leaves no run when the start answer lands before its done', () => {
+    let s = reduce(fromSnapshot(), { seq: 83, type: 'shell_output', payload: { run_id: 'r11', session_id: 's1', chunk: 'a\n' } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = startShell(s, 'r11', 's1', 'ls');
+    s = reduce(s, { seq: 84, type: 'shell_output', payload: { run_id: 'r11', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r11).toBeUndefined();
+  });
+
+  it('drops another tab run with no command through its persisted message', () => {
+    let s = reduce(fromSnapshot(), { seq: 85, type: 'shell_output', payload: { run_id: 'r12', session_id: 's1', done: true, exit_code: 0 } });
+    expect(s.shells.r12.command).toBe('');
+    s = reduce(s, shellMessage('s1', 'make'));
+    expect(s.shells.r12).toBeUndefined();
+  });
+
+  it('never drops a run of another session through a message', () => {
+    let s = reduce(fromSnapshot(), { seq: 86, type: 'shell_output', payload: { run_id: 'r13', session_id: 's2', done: true, exit_code: 0 } });
+    expect(s.shells.r13.sessionId).toBe('s2');
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.shells.r13).not.toBeUndefined();
+  });
+
+  it('ignores a frame for a run its persisted message already dropped', () => {
+    let s = startShell(fromSnapshot(), 'r14', 's1', 'ls');
+    s = reduce(s, { seq: 87, type: 'shell_output', payload: { run_id: 'r14', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.droppedShells.r14).toBe(true);
+
+    s = reduce(s, { seq: 88, type: 'shell_output', payload: { run_id: 'r14', session_id: 's1', chunk: 'late\n' } });
+    expect(s.shells.r14).toBeUndefined();
+  });
+
+  it('forgets dropped shells when the tab adopts another session', () => {
+    let s = reduce(fromSnapshot(), { seq: 89, type: 'shell_output', payload: { run_id: 'r15', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.droppedShells.r15).toBe(true);
+    expect(adoptSession(s, 's2').droppedShells).toEqual({});
+  });
+
+  it('keeps dropped shells when a snapshot repeats their session', () => {
+    let s = reduce(fromSnapshot(), { seq: 90, type: 'shell_output', payload: { run_id: 'r16', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, snapshot());
+    expect(s.droppedShells.r16).toBe(true);
+  });
+
+  it('forgets dropped shells when a snapshot names another session', () => {
+    let s = reduce(fromSnapshot(), { seq: 91, type: 'shell_output', payload: { run_id: 'r17', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, snapshot({ current_session_id: 's2' }));
+    expect(s.droppedShells).toEqual({});
+    expect(s.shells).toEqual({});
+  });
+
+  it('records and clears the pending plan', () => {
+    let s = reduce(fromSnapshot(), { seq: 57, type: 'plan_ready', payload: { session_id: 's1' } });
+    expect(s.planReady).toBe('s1');
+    s = reduce(s, { seq: 58, type: 'plan_ready', payload: { session_id: '' } });
+    expect(s.planReady).toBe('');
+  });
+
+  it('shows agent_starting web errors as a warning, not an error', () => {
+    const s = reduce(fromSnapshot(), { seq: 59, type: 'web_error', payload: { session_id: 's1', code: 'agent_starting', error: 'Crush is starting the agent; send the prompt again in a moment' } });
+    expect(s.toasts.at(-1)?.tone).toBe('warn');
+  });
+
+  it('keeps other web errors an error', () => {
+    const s = reduce(fromSnapshot(), { ...fx.web_error, seq: 61 });
+    expect(s.toasts.at(-1)?.tone).toBe('error');
+  });
+
+  it('does not repeat a replayed agent_starting warning', () => {
+    const f: Frame = { seq: 59, type: 'web_error', payload: { code: 'agent_starting', error: 'starting' } };
+    const s = reduce(reduce(fromSnapshot(), f), f);
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('takes agent_ready and the pending plan from the snapshot', () => {
+    const snap = { ...(fx.snapshot.payload as Snapshot), agent_ready: false, plan_ready_session_id: 's1' };
+    const s = reduce(initialState(), { seq: 60, type: 'snapshot', payload: snap });
+    expect(s.agentReady).toBe(false);
+    expect(s.planReady).toBe('s1');
+  });
+
+  it('applies the shell_output and plan_ready fixtures', () => {
+    let s = reduce(fromSnapshot(), fx.shell_output);
+    expect(s.shells['run-1']).toEqual({
+      sessionId: 's1', command: '', output: 'line 1\n', done: false, exitCode: null, error: null,
+    });
+    s = reduce(s, fx.plan_ready);
+    expect(s.planReady).toBe('s1');
+  });
+
+  it('starts ready with no plan and no shells', () => {
+    const s = initialState();
+    expect(s.agentReady).toBe(true);
+    expect(s.planReady).toBe('');
+    expect(s.shells).toEqual({});
+  });
+
+  it('follows the snapshot model readiness and keeps shells within a session', () => {
+    let s = reduce(initialState(), snapshot());
+    expect(s.agentReady).toBe(true);
+    expect(s.planReady).toBe('');
+    s = startShell(s, 'r1', 's1', 'ls');
+    s = reduce(s, snapshot({ current_session_id: 's1' }));
+    expect(s.shells.r1.command).toBe('ls');
+    s = reduce(s, snapshot({ current_session_id: 's2' }));
+    expect(s.shells).toEqual({});
+  });
+});
+
+describe('M3 notifications', () => {
+  const fromSnapshot = () => reduce(initialState(), snapshot());
+  const agentEvent = (seq: number, payload: Record<string, unknown>): Frame => ({
+    seq, type: 'agent_event', payload: { type: 'created', payload },
+  });
+  const configStale = (seq: number): Frame => ({
+    seq, type: 'config_stale', payload: { type: 'updated', payload: { changed: ['/repo/crushrc'], missing: [] } },
+  });
+  const updateAvailable = (seq: number, over: Record<string, unknown> = {}): Frame => ({
+    seq,
+    type: 'update_available',
+    payload: {
+      type: 'updated',
+      payload: { current_version: '0.1.0', latest_version: '0.2.0', is_development: false, ...over },
+    },
+  });
+
+  it('toasts what an agent event says', () => {
+    const s = reduce(fromSnapshot(), agentEvent(30, {
+      type: 'agent_finished', session_id: 's2', session_title: 'Lexer',
+    }));
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'info', text: 'Turn complete in “Lexer”' });
+  });
+
+  it('does not repeat an agent event toast for a replayed frame', () => {
+    const f = agentEvent(31, { type: 'error', error: 'rate limited' });
+    const s = reduce(reduce(fromSnapshot(), f), f);
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('reads hidden from the state so a visible session still toasts in a hidden tab', () => {
+    const base = { ...fromSnapshot(), hidden: true };
+    const s = reduce(base, agentEvent(32, { type: 'agent_finished', session_id: 's1', session_title: 'Main' }));
+    expect(s.toasts.at(-1)?.text).toBe('Turn complete in “Main”');
+  });
+
+  it('toasts a stale configuration once per tab, through a snapshot and a session switch', () => {
+    let s = reduce(fromSnapshot(), configStale(33));
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Configuration changed on disk. Reload it from the palette.',
+    });
+    s = reduce(s, snapshot({ current_session_id: 's3' }));
+    s = reduce(s, configStale(34));
+    expect(s.toasts.filter((t) => t.text === 'Configuration changed on disk. Reload it from the palette.')).toHaveLength(1);
+  });
+
+  it('toasts a new version once per tab with the terminal wording', () => {
+    let s = reduce(fromSnapshot(), updateAvailable(35));
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Crush update available: v0.1.0 → v0.2.0.',
+    });
+    s = reduce(s, updateAvailable(36));
+    expect(s.toasts).toHaveLength(1);
+  });
+
+  it('names a development build in the update toast', () => {
+    const s = reduce(fromSnapshot(), updateAvailable(37, { is_development: true }));
+    expect(s.toasts.at(-1)?.text).toBe('This is a development version of Crush. The latest version is v0.2.0.');
+  });
+
+  it('ignores an update frame with no payload', () => {
+    const s = reduce(fromSnapshot(), { seq: 38, type: 'update_available', payload: undefined });
+    expect(s.toasts).toHaveLength(0);
+    expect(s.announced.update_available).toBeUndefined();
+  });
+
+  // These read the real-wire fixtures the gateway writes, so a wire change
+  // to one of the three frames reaches a web test instead of passing unseen.
+  // Each fixture carries seq 1, which the snapshot's seq 10 already replayed,
+  // so the tests hand each frame a new seq.
+  it('toasts the real agent error frame', () => {
+    const s = reduce(fromSnapshot(), { ...fx.agent_event, seq: 39 });
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'The provider refused the request' });
+  });
+
+  it('toasts the real stale config frame', () => {
+    const s = reduce(fromSnapshot(), { ...fx.config_stale, seq: 40 });
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Configuration changed on disk. Reload it from the palette.',
+    });
+  });
+
+  it('toasts the real update frame with both versions', () => {
+    const s = reduce(fromSnapshot(), { ...fx.update_available, seq: 41 });
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Crush update available: v0.30.0 → v0.31.0.',
+    });
+  });
+});
+
+describe('the pending plan needs you', () => {
+  const plan = (): State => reduce(initialState(), snapshot({
+    input_mode: 'plan',
+    plan_ready_session_id: 's1',
+  }));
+
+  it('is pending only for the current session in plan mode', () => {
+    let s = plan();
+    expect(planPending(s)).toBe(true);
+    expect(planPending({ ...s, sessionId: 's2' })).toBe(false);
+    expect(planPending({ ...s, inputMode: 'code' })).toBe(false);
+    expect(planPending({ ...s, planReady: '' })).toBe(false);
+    s = reduce(s, { seq: 40, type: 'plan_ready', payload: { session_id: '' } });
+    expect(planPending(s)).toBe(false);
+  });
+
+  it('leaves the attention gate untouched while asking for the core look', () => {
+    const s = plan();
+    expect(needsAttention(s)).toBe(false);
+    expect(needsYou(s)).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -376,6 +377,18 @@ func (c *controllerV1) handleGetWorkspaceLSPDiagnostics(w http.ResponseWriter, r
 	jsonEncode(w, diagnostics)
 }
 
+// handleGetWorkspaceLSPDiagnosticsByFile returns the per-file
+// diagnostic counts of every LSP client in one answer.
+func (c *controllerV1) handleGetWorkspaceLSPDiagnosticsByFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	counts, err := c.backend.LSPDiagnosticsByFile(id)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.LSPFileDiagnosticsToProto(counts))
+}
+
 // handleGetWorkspaceSessions lists sessions for a workspace.
 func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -423,7 +436,7 @@ func (c *controllerV1) handleGetWorkspaceSession(w http.ResponseWriter, r *http.
 	sid := r.PathValue("sid")
 	sess, err := c.backend.GetSession(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
@@ -443,6 +456,35 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 		return
 	}
 	jsonEncode(w, history)
+}
+
+// handleGetWorkspaceSessionHistoryMeta returns the file version
+// metadata for a session, without content.
+func (c *controllerV1) handleGetWorkspaceSessionHistoryMeta(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	metas, err := c.backend.ListSessionHistoryMeta(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.FileMetasToProto(metas))
+}
+
+// handleGetWorkspaceHistoryFile returns one file version with content.
+func (c *controllerV1) handleGetWorkspaceHistoryFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	fid := r.PathValue("fid")
+	file, err := c.backend.GetHistoryFile(r.Context(), id, fid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusNotFound, "file version not found")
+			return
+		}
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.FileToProto(file))
 }
 
 // handleGetWorkspaceSessionChildren returns the sessions a session spawned.
@@ -486,7 +528,7 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 
 	saved, err := c.backend.SaveSession(r.Context(), id, sess)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
@@ -496,12 +538,37 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 	jsonEncode(w, out)
 }
 
+// handlePostWorkspaceSessionRename changes only a session's title, so the
+// usage, cost and todos a concurrent run just wrote survive the rename.
+func (c *controllerV1) handlePostWorkspaceSessionRename(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+
+	var rename proto.SessionRename
+	if err := json.NewDecoder(r.Body).Decode(&rename); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	sess, err := c.backend.RenameSession(r.Context(), id, sid, rename.Title)
+	if err != nil {
+		c.handleSessionError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := wire.SessionToProto(sess)
+	out.IsBusy = isSessionBusy(ws, sess.ID)
+	out.AttachedClients = attachedClients(ws, sess.ID)
+	jsonEncode(w, out)
+}
+
 // handleDeleteWorkspaceSession deletes a session.
 func (c *controllerV1) handleDeleteWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
 	if err := c.backend.DeleteSession(r.Context(), id, sid); err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -945,6 +1012,19 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleSessionError answers a failed session call. A session the
+// workspace does not have is a 404 with its own code, distinct from the
+// bare 404 that means the server no longer knows the workspace; everything
+// else falls back to the shared mapping.
+func (c *controllerV1) handleSessionError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusNotFound, "session not found", proto.ErrorCodeSessionNotFound)
+		return
+	}
+	c.handleError(w, r, err)
+}
+
 // handleError maps backend errors to HTTP status codes and writes the
 // JSON error response.
 //
@@ -963,7 +1043,12 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 	case errors.Is(err, backend.ErrLSPClientNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, backend.ErrAgentNotInitialized):
-		status = http.StatusBadRequest
+		// Keep the status: callers that only read it keep working, and
+		// the code lets newer clients tell "wait for the agent" apart
+		// from a bad request.
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.ErrorCodeAgentNotInitialized)
+		return
 	case errors.Is(err, backend.ErrAgentBusy):
 		// Switching the main agent mid-run could strand the run's
 		// queued prompts on the previous agent; mirror the TUI's
@@ -1005,11 +1090,6 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 // its machine code so a client can restore the original error identity;
 // everything else falls back to the generic mapper.
 func (c *controllerV1) writeTeamError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, backend.ErrAgentNotInitialized) {
-		c.server.logError(r, err.Error())
-		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.TeamCodeAgentNotInitialized)
-		return
-	}
 	if errors.Is(err, agent.ErrAgentTeamsDisabled) {
 		c.server.logError(r, err.Error())
 		jsonErrorCode(w, http.StatusConflict, err.Error(), proto.TeamCodeDisabled)

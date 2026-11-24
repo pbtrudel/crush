@@ -10,6 +10,7 @@ import (
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -203,6 +204,22 @@ func (b *Backend) GetLSPDiagnostics(workspaceID, lspName string) (any, error) {
 	}
 
 	return nil, ErrLSPClientNotFound
+}
+
+// LSPDiagnosticsByFile returns the diagnostic counts of every LSP
+// client of the workspace, keyed by file path. Several servers may
+// report on the same file; their counts add up.
+func (b *Backend) LSPDiagnosticsByFile(workspaceID string) (map[string]lsp.DiagnosticCounts, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]lsp.DiagnosticCounts{}
+	for _, client := range ws.LSPManager.Clients().Seq2() {
+		lsp.CountByFile(out, client.GetDiagnostics())
+	}
+	return out, nil
 }
 
 // GetWorkspaceConfig returns the workspace-level configuration.
