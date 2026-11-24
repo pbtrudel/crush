@@ -36,6 +36,7 @@
   text-transform: uppercase; letter-spacing: 0.1em;
 }
 .systems__action:hover { color: var(--cyan); border-color: var(--cyan); }
+.systems__action:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 .systems__action[aria-disabled='true'] { opacity: 0.45; cursor: progress; }
 .systems__action[aria-disabled='true']:hover { color: var(--text-muted); border-color: var(--edge); }
 .systems__list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }

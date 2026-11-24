@@ -6,7 +6,7 @@ import { state } from '../../state/store';
 import {
   closeSessions, sessionDeleteId, sessionRenameId, sessionsOpen,
 } from '../../state/palette';
-import { useDialogFocus } from '../interrupt/focus';
+import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 
 // The server answers newest first and the switcher keeps that order (I16).
 export function SessionSwitcher({ inert }: { inert: boolean }) {
@@ -54,6 +54,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const deleting = sessionDeleteId.value;
 
   useDialogFocus(dialog, 'sessions');
+  usePaletteDeckFocus();
 
   // An answer can arrive after the dialog closed; the flag keeps it from
   // reaching an unmounted tree, and the counter drops a slower older one.

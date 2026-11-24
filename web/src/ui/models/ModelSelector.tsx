@@ -5,7 +5,7 @@ import { STARTING_TEXT, describeFailure } from '../../state/failure';
 import { showThinkingToggle } from '../../state/model';
 import { state } from '../../state/store';
 import { closeModels, modelsFocus, modelsOpen } from '../../state/palette';
-import { useDialogFocus } from '../interrupt/focus';
+import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 
 const BUSY_TEXT = 'Crush is busy. Try again when the turn ends.';
 
@@ -59,6 +59,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   const focusRequest = useRef<'filter' | null>(null);
 
   useDialogFocus(dialog, 'models');
+  usePaletteDeckFocus();
 
   useEffect(() => {
     alive.current = true;

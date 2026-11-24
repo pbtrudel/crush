@@ -1,4 +1,6 @@
 import { useEffect } from 'preact/hooks';
+import { paletteReturnFocus } from '../../state/palette';
+import { focusDeck } from '../deck/modes';
 
 const FOCUSABLE = [
   'a[href]',
@@ -59,4 +61,17 @@ export function useDialogFocus(root: { current: HTMLElement | null }, focusKey: 
     if (!el) return;
     (controls(el)[0] ?? el).focus();
   }, [root, focusKey]);
+}
+
+// usePaletteDeckFocus hands the focus to the deck when a dialog the palette
+// opened closes. The dialog's own trap restores the body, which was all the
+// palette left behind as its opener.
+export function usePaletteDeckFocus() {
+  const fromPalette = paletteReturnFocus.value;
+  useEffect(() => () => {
+    if (!fromPalette) return;
+    paletteReturnFocus.value = false;
+    // After the trap's own restore, which runs as this commit unmounts.
+    queueMicrotask(focusDeck);
+  }, []);
 }

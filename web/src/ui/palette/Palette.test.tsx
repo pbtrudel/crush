@@ -335,6 +335,25 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBeNull();
   });
 
+  it('returns the focus to the deck when a palette-opened dialog closes', async () => {
+    seed();
+    stubSources();
+    await mount();
+    // Ctrl+K from a page with no focused control leaves the palette with the
+    // body as its opener, which is not a useful place to hand focus back to.
+    await pressKey(document.body, { key: 'k', code: 'KeyK', ctrlKey: true });
+    expect(paletteOpen.value).toBe('all');
+
+    await type('sessions');
+    await enter();
+    expect(sessionsOpen.value).toBe(true);
+
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(sessionsOpen.value).toBe(false);
+    expect(document.activeElement).toBe(deck());
+  });
+
   it('opens the session switcher from the Sessions action', async () => {
     seed();
     stubSources();

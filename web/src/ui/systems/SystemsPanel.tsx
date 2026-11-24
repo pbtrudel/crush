@@ -8,7 +8,7 @@ import { state } from '../../state/store';
 import { systemsFocus, systemsOpen } from '../../state/palette';
 import { serverTone, type ServerTone } from '../hud/series';
 import { HexTile } from '../hud/ServerHexes';
-import { useDialogFocus } from '../interrupt/focus';
+import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 
 type Kind = 'lsp' | 'mcp';
 type McpAction = 'start' | 'refresh' | 'enable' | 'disable';
@@ -106,6 +106,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const [busy, setBusy] = useState<string[]>([]);
   const [failures, setFailures] = useState<Record<string, unknown>>({});
   const [lspFailure, setLspFailure] = useState<unknown | null>(null);
+  const [countFailure, setCountFailure] = useState<unknown | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [warnings, setWarnings] = useState<Record<string, string>>({});
   const [links, setLinks] = useState<Record<string, string>>({});
@@ -128,6 +129,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const busyRef = useRef<Set<string>>(new Set());
 
   useDialogFocus(dialog, 'systems');
+  usePaletteDeckFocus();
 
   // An answer can arrive after the panel closed; the flag keeps it from
   // reaching an unmounted tree, and each section's counter drops a slower
@@ -280,9 +282,12 @@ function SystemsDialog({ inert }: { inert: boolean }) {
       const next = await api.lspDiagnostics(name);
       if (alive.current && countGen.current[name] === gen) {
         setLiveCounts((current) => ({ ...current, [name]: next }));
+        setCountFailure(null);
       }
-    } catch {
-      // The counts the list carried stay on screen.
+    } catch (err) {
+      // The counts the list carried stay on screen, and the section's failure
+      // line says the refresh did not land; the next change asks again.
+      if (alive.current) setCountFailure(err);
     } finally {
       countInFlight.current.delete(name);
       const latest = state.value.lsp[name]?.diagnostics;
@@ -331,7 +336,9 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const mcpRows = mergeRows(mcp, s.mcp);
   const shownLspLoad = lspError === null ? null : describeFailure(lspError);
   const shownMcpLoad = mcpError === null ? null : describeFailure(mcpError);
-  const shownLspFailure = lspFailure === null ? null : describeFailure(lspFailure);
+  const shownLspFailure = lspFailure === null && countFailure === null
+    ? null
+    : describeFailure(lspFailure ?? countFailure);
 
   const lspButton = (label: string, action: 'start' | 'stop') => (
     <button

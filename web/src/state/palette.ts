@@ -83,6 +83,10 @@ export function escapeSessions(): boolean {
   return true;
 }
 
+// paletteReturnFocus marks a dialog the palette opened: its opener was the
+// palette, which is gone by the time it closes, so focus goes to the deck.
+export const paletteReturnFocus = signal(false);
+
 // modelsOpen holds the HUD's model selector. It opens from the HUD model
 // name and from the palette, and it has no inner editor, so Escape closes
 // it whole.

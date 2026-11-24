@@ -281,6 +281,22 @@ describe('SystemsPanel servers', () => {
     expect(lspServers).toHaveBeenCalledTimes(1);
   });
 
+  it('names a diagnostic refresh that failed', async () => {
+    seed();
+    stubLists();
+    vi.mocked(api.lspDiagnostics).mockRejectedValue(new ApiError(500, 'internal', 'counts failed'));
+    await mount();
+    await openFromHud('lsp');
+
+    await act(() => { dispatch((s) => reduce(s, lspFrame('gopls', 2, 5))); });
+    await flush();
+
+    const status = Array.from(dialog()!.querySelectorAll('.systems__status'))
+      .find((el) => el.getAttribute('data-tone') === 'error')!;
+    expect(status.textContent).toContain('counts failed');
+    expect(status.getAttribute('role')).toBe('alert');
+  });
+
   it('keeps one diagnostic request in flight per server', async () => {
     seed();
     stubLists();

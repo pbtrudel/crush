@@ -11,6 +11,7 @@ import { toggleDrawer } from '../../state/drawer';
 import { actions, dispatch, state } from '../../state/store';
 import {
   argumentItem, closePalette, deckMode, openModels, openPalette, openSessions, openSystems, paletteOpen,
+  paletteReturnFocus,
   paletteQuery, setPaletteQuery, type PaletteSection,
 } from '../../state/palette';
 import { useDialogFocus } from '../interrupt/focus';
@@ -197,10 +198,12 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
         closePalette();
         return;
       }
-      case ACTIONS.sessions: closePalette(); openSessions(); return;
-      case ACTIONS.model: closePalette(); openModels(); return;
-      case ACTIONS.reasoningLevel: closePalette(); openModels('reasoning'); return;
-      case ACTIONS.systems: closePalette(); openSystems(); return;
+      // These dialogs open as the palette leaves, so they mark themselves
+      // for the deck rather than for a vanished opener.
+      case ACTIONS.sessions: paletteReturnFocus.value = true; closePalette(); openSessions(); return;
+      case ACTIONS.model: paletteReturnFocus.value = true; closePalette(); openModels(); return;
+      case ACTIONS.reasoningLevel: paletteReturnFocus.value = true; closePalette(); openModels('reasoning'); return;
+      case ACTIONS.systems: paletteReturnFocus.value = true; closePalette(); openSystems(); return;
       case ACTIONS.compact:
         if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to compact');
         await api.summarize(sid);
