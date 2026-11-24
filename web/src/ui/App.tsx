@@ -82,6 +82,10 @@ export function App() {
         togglePalette();
         return;
       }
+      // A permission or a question owns Escape while it is open: the dialogs
+      // under the interrupt layer are inert, and the question form skips its
+      // batch on the same press.
+      if (e.key === 'Escape' && needsAttention(state.value)) return;
       // The palette is the innermost layer: it takes Escape before the
       // sessions switcher, the Display menu, the inspector and the cinematic
       // view. Its argument form hands the list back on the first press.

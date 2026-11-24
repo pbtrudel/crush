@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../state/__fixtures__/events.json';
-import type { Frame } from '../api/types';
+import type { Frame, QuestionRequest } from '../api/types';
 import { cinematic, setCinematic } from '../state/cinematic';
 import { resetWebglProbe } from '../state/effects';
-import { deckMode } from '../state/palette';
+import { closeSessions, deckMode, openSessions, sessionsOpen } from '../state/palette';
 import { initialState, reduce } from '../state/reducer';
 import { actions, state } from '../state/store';
 import { App } from './App';
@@ -31,6 +31,7 @@ afterEach(async () => {
   await act(() => { render(null, root); });
   root.remove();
   setCinematic(false);
+  closeSessions();
   deckMode.value = null;
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
@@ -119,5 +120,27 @@ describe('Escape in cinematic mode', () => {
     await act(() => { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })); });
     expect(state.value.inspected).toBeNull();
     expect(cinematic.value).toBe(true);
+  });
+});
+
+describe('Escape under the interrupt layer', () => {
+  const question: QuestionRequest = {
+    id: 'b1',
+    session_id: 's1',
+    tool_call_id: 'tc1',
+    questions: [{ id: 'q1', type: 'free_text', question: 'Notes?' }],
+  };
+
+  it('cancels the question and leaves the inert dialog open', async () => {
+    const cancel = vi.spyOn(actions, 'cancelQuestion').mockResolvedValue(null);
+    state.value = { ...state.value, question };
+    await act(() => { render(<App />, root); });
+    await act(() => { openSessions(); });
+
+    await escape();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(sessionsOpen.value).toBe(true);
+    expect(state.value.inspected?.sessionId).toBe('sub-1');
   });
 });
