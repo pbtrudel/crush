@@ -1,10 +1,15 @@
-import { axeScan, expect, m3VisualTest, visualTest as test } from './fixture';
+import {
+  axeScan, awsTest, expect, m3VisualTest, m4VisualTest, promptVisualTest, visualTest as test,
+} from './fixture';
 import type { Page } from '@playwright/test';
 
 // The software renderer needs more than the default 30 seconds to draw the
 // clock-driven frames behind each screenshot.
 test.setTimeout(120_000);
 m3VisualTest.setTimeout(120_000);
+m4VisualTest.setTimeout(120_000);
+promptVisualTest.setTimeout(120_000);
+awsTest.setTimeout(120_000);
 
 // A fixed instant for Date and for the scene clock. The clock is installed
 // before the page loads and paused at this instant: one that kept flowing
@@ -19,6 +24,8 @@ async function prepare(page: Page) {
 
 test.beforeEach(async ({ page }) => { await prepare(page); });
 m3VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+m4VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+promptVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 
 async function settle(page: Page) {
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
@@ -205,5 +212,70 @@ m3VisualTest('model selector', async ({ page, gateway }) => {
   }, { message: 'the provider list renders', timeout: 10_000 }).toBe(2);
   await page.clock.runFor(1000);
   await expect(page).toHaveScreenshot('models.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+// The M4a surfaces, on the M4 scenario. Each gateway scripts the prompt or
+// starts the flow before the shot, and the paused clock is stepped until the
+// frame that renders it has run.
+promptVisualTest('secure prompt', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  const dialog = page.getByRole('dialog', { name: 'GPG passphrase' });
+  // The stream batches events into animation frames, so a paused clock needs
+  // a frame after the prompt arrives before the dialog can render.
+  for (let i = 0; i < 120 && !(await dialog.isVisible()); i++) {
+    await page.clock.runFor(16);
+  }
+  await expect(dialog).toBeVisible({ timeout: 30_000 });
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('secure-prompt.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+m4VisualTest('sign-in device code', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await page.getByRole('button', { name: 'Model: Model One. Switch model' }).click();
+  await page.getByRole('dialog', { name: 'Models' }).getByRole('button', { name: 'Sign in to another provider' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Sign in', exact: true });
+  const copilot = dialog.getByRole('option', { name: 'GitHub Copilot' });
+  // The providers come from a fetch, so the list renders on a later frame.
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return copilot.count();
+  }, { message: 'the provider list renders', timeout: 10_000 }).toBeGreaterThan(0);
+  await copilot.click();
+  await dialog.getByRole('button', { name: 'Start sign-in' }).click();
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return dialog.locator('.signin__code-value').textContent();
+  }, { message: 'the device code renders', timeout: 10_000 }).toBe('WDJB-MJHT');
+  await page.clock.runFor(1000);
+  // The gateway dates the code from the real clock, while the browser's clock
+  // is frozen two days earlier, so the countdown on the status line is the one
+  // part of this screen that moves between runs. Mask it rather than pin a
+  // number that goes stale tomorrow.
+  await expect(page).toHaveScreenshot('signin-device.png', {
+    timeout: 30_000,
+    mask: [dialog.locator('.signin__status')],
+    maskColor: '#0b0817',
+  });
+  await axe(page);
+});
+
+// The AWS SSO card is a reading surface with no baseline of its own: the axe
+// scan is the check that it stays accessible. Every test in this file gets the
+// paused clock, so this one steps frames until the card's URL frame lands.
+awsTest('the AWS SSO card', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  const card = page.locator('.aws-sso');
+  const link = card.getByRole('link', { name: 'Open the AWS sign-in page' });
+  await expect.poll(async () => {
+    await page.clock.runFor(50);
+    return link.count();
+  }, { message: 'the AWS SSO card renders', timeout: 10_000 }).toBe(1);
+  await expect(card).toContainText('aws sso login --profile dev');
+  await expect(link).toHaveAttribute('href', 'https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD');
   await axe(page);
 });
