@@ -322,11 +322,8 @@ func (t *anthropicToolSearchTransport) rewriteTools(list []json.RawMessage, unde
 		})
 	}
 
-	out := make([]json.RawMessage, 0, len(core)+1+len(deferred))
-	out = append(out, core...)
-	out = append(out, anthropicToolSearchServerTool)
-	out = append(out, deferred...)
-	encoded, err := json.Marshal(out)
+	core = append(core, anthropicToolSearchServerTool)
+	encoded, err := json.Marshal(append(core, deferred...))
 	if err != nil {
 		return nil
 	}
