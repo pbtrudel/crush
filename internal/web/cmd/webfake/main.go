@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/web"
 	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 func main() {
@@ -69,6 +70,11 @@ func main() {
 		}
 		opts.OnPlanHandoff = func(string, bool) { planRequests <- struct{}{} }
 	}
+	// The terminal has no agent until it has a model, which the browser
+	// shows as the starting state on every route that needs one.
+	if os.Getenv("WEBFAKE_AGENT_STARTING") == "1" {
+		fake.SetReadyErr(workspace.ErrAgentNotInitialized)
+	}
 	g, err := web.Start(ctx, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "webfake:", err)
@@ -88,6 +94,9 @@ func main() {
 		}()
 	}
 	if os.Getenv("WEBFAKE_PLAN_READY") == "1" {
+		// A ready plan only reaches the browser in plan mode, which the
+		// terminal's mode switch would have set.
+		g.SetInputMode(true)
 		g.SetPlanReady(fake.CurrentSessionID())
 	}
 	fmt.Println(g.LaunchURL())

@@ -184,6 +184,23 @@ describe('the model selector', () => {
     expect(dialog()!.textContent).toContain('More providers: sign in from the terminal');
   });
 
+  it('keeps provider headings out of the listbox children axe checks', async () => {
+    seed();
+    stubProviders();
+    await mount();
+    await openFromHud();
+
+    // A listbox may own only options and groups, so each group carries the
+    // provider name and the visible heading is decorative.
+    const list = root.querySelector('[role="listbox"][aria-label="Model choices"]')!;
+    const providers = Array.from(list.children).filter((el) => el.getAttribute('role') === 'group');
+    expect(providers.map((g) => g.getAttribute('aria-label')))
+      .toEqual(['Anthropic', 'Provider One', 'Provider Two']);
+    for (const heading of list.querySelectorAll('.models__provider')) {
+      expect(heading.getAttribute('aria-hidden')).toBe('true');
+    }
+  });
+
   it('filters the choices as you type', async () => {
     seed();
     stubProviders();

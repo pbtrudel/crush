@@ -296,10 +296,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
         />
         <div class="models__list" role="listbox" aria-label="Model choices">
           {groups.map((group) => {
-            const headingId = `models-provider-${group.provider}`;
+            // A listbox may own only options and groups: the group carries
+            // the provider name and the visible heading is decorative.
             return (
-              <div key={group.provider} class="models__group" role="group" aria-labelledby={headingId}>
-                <h3 id={headingId} class="models__provider">{group.name}</h3>
+              <div key={group.provider} class="models__group" role="group" aria-label={group.name}>
+                <h3 class="models__provider" aria-hidden="true">{group.name}</h3>
                 {group.choices.map((c) => {
                   const index = list.indexOf(c);
                   const current = isCurrent(c);
