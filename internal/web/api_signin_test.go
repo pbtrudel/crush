@@ -478,6 +478,30 @@ func frameUntil(t *testing.T, c *websocket.Conn, want string) testFrame {
 	}
 }
 
+// waitFor blocks until done closes, failing at the deadline. A bare
+// receive hangs the whole test binary when the code under test never gets
+// there.
+func waitFor(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// waitSignInWG waits for the gateway's sign-in goroutines, failing at the
+// deadline instead of hanging the test binary.
+func waitSignInWG(t *testing.T, g *Gateway) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		g.signinWG.Wait()
+		close(done)
+	}()
+	waitFor(t, done, "the sign-in goroutines")
+}
+
 // statusUntil polls the status route on the test goroutine.
 func statusUntil(t *testing.T, c *http.Client, g *Gateway, want string) {
 	t.Helper()
@@ -1164,7 +1188,7 @@ func TestSignInRefusedCodeEndsTheRun(t *testing.T) {
 	require.NotContains(t, string(body), "wrong-code")
 	statusUntil(t, c, g, `"state":"error"`)
 	require.True(t, flow.Closed(), "a refused code ends the run and frees its listener")
-	g.signinWG.Wait()
+	waitSignInWG(t, g)
 	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
 	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
 	rsp.Body.Close()
@@ -1187,7 +1211,7 @@ func TestSignInCancelledRunNeverSaves(t *testing.T) {
 	rsp.Body.Close()
 	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
 	require.True(t, flow.Closed())
-	g.signinWG.Wait()
+	waitSignInWG(t, g)
 	require.NotContains(t, strings.Join(f.CallLog(), "\n"), "SetProviderAPIKey")
 	rsp, status := doJSON(t, c, http.MethodGet, g.URL()+"/api/auth/provider/oauth/status", "")
 	rsp.Body.Close()
@@ -1216,7 +1240,7 @@ func TestSignInReplacedRunNeverSaves(t *testing.T) {
 	startSignIn(t, c, g, "copilot")
 	newState := startSignIn(t, c, g, "copilot")
 	require.True(t, first.Closed(), "the replaced flow frees its listener")
-	<-first.returned
+	waitFor(t, first.returned, "the replaced run's wait")
 	// The new run is still waiting, so only a window can show that the
 	// replaced run saved nothing. CallLog is safe to read off the test
 	// goroutine.
@@ -1330,7 +1354,7 @@ func TestSignInCodeDuringSaving(t *testing.T) {
 	rsp, _ := submitCode(t, c, g, st.FlowID, "good-code")
 	rsp.Body.Close()
 	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
-	<-ws.saving
+	waitFor(t, ws.saving, "the save to start")
 	require.Equal(t, "saving", statusState(t, c, g))
 	rsp, body := submitCode(t, c, g, st.FlowID, "good-code")
 	rsp.Body.Close()

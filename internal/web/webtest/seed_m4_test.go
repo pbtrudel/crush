@@ -25,11 +25,14 @@ func TestSeedM4(t *testing.T) {
 	require.Equal(t, config.SelectedModel{Provider: "p1", Model: "m1"}, cfg.Models[config.SelectedModelTypeMain])
 	sessions, err := f.ListSessions(t.Context())
 	require.NoError(t, err)
+	found := false
 	for _, s := range sessions {
 		if s.ID == "s-2" {
+			found = true
 			require.Equal(t, clock.Unix(), s.CreatedAt)
 		}
 	}
+	require.True(t, found, "the seeded session s-2 is there")
 
 	known, err := seams.KnownProviders(cfg)
 	require.NoError(t, err)
