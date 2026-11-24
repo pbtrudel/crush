@@ -65,6 +65,7 @@ test('opens the MCP auth URL in a new tab', async ({ page, gateway }) => {
   const [opened, request] = await Promise.all([popup, navigation]);
   expect(request.url()).toBe('https://auth.example/notes');
   await opened.close();
+  // The link names the target; it does not prove the popped-up tab landed.
   await expect(notes.getByRole('link', { name: 'Open the sign-in page' })).toHaveAttribute(
     'href', 'https://auth.example/notes',
   );

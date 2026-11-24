@@ -230,6 +230,25 @@ describe('PlanHandoff', () => {
     expect(card()).not.toBeNull();
   });
 
+  it('sends a second handoff when the reader clicks again after the release', async () => {
+    vi.useFakeTimers();
+    seed();
+    const handoff = vi.spyOn(api, 'planHandoff').mockResolvedValue(undefined);
+    await mount();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+    await act(() => { vi.advanceTimersByTime(10_000); });
+    expect(root.querySelector('.plan-handoff__error')).not.toBeNull();
+    expect(action('code')!.getAttribute('aria-disabled')).toBeNull();
+
+    await act(async () => { action('code')!.click(); });
+    await flush();
+
+    expect(handoff).toHaveBeenCalledTimes(2);
+    expect(handoff).toHaveBeenLastCalledWith('s1', 'code');
+  });
+
   it('does not release a handoff when the plan clears first', async () => {
     vi.useFakeTimers();
     seed();
