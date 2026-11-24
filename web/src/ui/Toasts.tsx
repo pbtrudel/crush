@@ -4,7 +4,7 @@ import { restoreEffects } from '../state/effects';
 import { openSignIn } from '../state/signin';
 
 // Spec 3.5: toasts dismiss themselves after 6 s; an error stays until the
-// reader dismisses it.
+// reader dismisses it, and so does a toast that carries an action.
 const TOAST_MS = 6000;
 
 // providerLabel names a provider id in the sign-in button's label. The
@@ -17,7 +17,7 @@ export function Toasts() {
   const toasts = state.value.toasts;
   useEffect(() => {
     const timers = toasts
-      .filter((t) => t.tone !== 'error')
+      .filter((t) => t.tone !== 'error' && t.action === undefined)
       .map((t) => window.setTimeout(() => actions.dismissToast(t.id), TOAST_MS));
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [toasts]);

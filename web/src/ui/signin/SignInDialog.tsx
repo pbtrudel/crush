@@ -9,7 +9,7 @@ import { actions, dispatch, state } from '../../state/store';
 import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 import { webAddress } from '../webAddress';
 
-const NO_WEB_ADDRESS = 'The provider did not return a web address';
+const NO_WEB_ADDRESS = 'The provider did not return a web address.';
 
 // The sentence a refused model switch adds after the sign-in.
 const MODEL_REASONS: Record<string, string> = {
@@ -310,15 +310,23 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   const waitingNow = shownFlow !== null && (shownFlow.state === 'waiting' || shownFlow.state === 'saving');
   const finishedNow = shownFlow !== null && (shownFlow.state === 'done' || shownFlow.state === 'error' || shownFlow.state === 'cancelled');
 
+  const methods = target?.methods ?? [];
+  // A provider with one method has no radio group, so the panel follows it
+  // from the first render rather than a frame later.
+  const shownMethod: Method = methods.length > 1 ? method : methods[0] === 'api_key' ? 'api_key' : 'oauth';
+
   // One live alert carries everything the panel has to say, so a failure
-  // and a state sentence never put two role=alert boxes on screen.
+  // and a state sentence never put two role=alert boxes on screen. An
+  // account-flow sentence belongs to the account panel alone, and every
+  // sentence in the alert ends as one.
+  const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`);
   const alerts: string[] = [];
-  if (failure !== null) alerts.push(failure.text);
-  if (waitingNow && href === null) alerts.push(NO_WEB_ADDRESS);
-  if (shownFlow !== null && finishedNow && shownFlow.state !== 'done') {
+  if (failure !== null) alerts.push(sentence(failure.text));
+  if (shownMethod === 'oauth' && waitingNow && href === null) alerts.push(NO_WEB_ADDRESS);
+  if (shownMethod === 'oauth' && shownFlow !== null && finishedNow && shownFlow.state !== 'done') {
     alerts.push(shownFlow.state === 'cancelled'
       ? 'Sign-in cancelled.'
-      : shownFlow.error || 'The sign-in did not finish. Try again.');
+      : sentence(shownFlow.error || 'The sign-in did not finish. Try again.'));
   }
 
   const option = (t: SignInTarget) => (
@@ -434,7 +442,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
     const name = shownName(t, current);
     return (
       <>
-        <p class="signin__done" role="status">Signed in to {name}.</p>
+        <p class="signin__done">Signed in to {name}.</p>
         <div class="signin__actions">
           <button type="button" class="btn btn--primary" onClick={() => { closeSignIn(); openModels(); }}>Choose a model</button>
           <button type="button" class="btn btn--ghost" onClick={() => closeSignIn()}>Close</button>
@@ -452,11 +460,6 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
           <button type="button" class="btn btn--primary" aria-disabled={locked ? 'true' : undefined} aria-busy={sending} onClick={start}>Start sign-in</button>
         </div>
       ));
-
-  const methods = target?.methods ?? [];
-  // A provider with one method has no radio group, so the panel follows it
-  // from the first render rather than a frame later.
-  const shownMethod: Method = methods.length > 1 ? method : methods[0] === 'api_key' ? 'api_key' : 'oauth';
 
   return (
     <div class="signin-layer" inert={inert}>

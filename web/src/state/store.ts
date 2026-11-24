@@ -175,13 +175,14 @@ export async function boot() {
   // bar; it is never logged.
   const fragment = new URLSearchParams(location.hash.slice(1)).get('t');
   if (fragment) {
+    // The token leaves the address bar before the request, not after it.
+    history.replaceState(null, '', location.pathname + location.search);
     try {
       await api.auth(fragment);
       setToken(fragment);
     } catch {
       forgetToken();
     }
-    history.replaceState(null, '', location.pathname + location.search);
   }
   watchVisibility();
   connectStream({

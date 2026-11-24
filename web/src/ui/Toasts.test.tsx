@@ -99,6 +99,27 @@ describe('Toasts', () => {
     expect(state.value.toasts).toEqual([]);
   });
 
+  it('keeps an actionable toast until it is acted on', async () => {
+    state.value = pushToast(initialState(), 'warn', 'Your copilot login expired. Sign in again.', {
+      kind: 'sign-in', provider: 'copilot',
+    });
+    await act(() => {
+      render(<Toasts />, root);
+    });
+
+    // A toast that carries a way forward must not vanish before it is used.
+    await act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(root.querySelectorAll('.toast')).toHaveLength(1);
+
+    const signIn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Sign in')!;
+    await act(() => {
+      signIn.click();
+    });
+    expect(root.querySelector('.toast')).toBeNull();
+  });
+
   it('shows no restore button on an ordinary toast', async () => {
     state.value = pushToast(initialState(), 'info', 'Saved');
     await act(() => {

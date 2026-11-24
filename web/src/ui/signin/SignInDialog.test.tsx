@@ -394,8 +394,61 @@ describe('SignInDialog OAuth', () => {
     expect(root.querySelectorAll('a').length).toBe(0);
   });
 
-  it('names the provider the way its own flow does everywhere', async () => {
-    const chatgpt: SignInState = {
+  it('ends its alert sentences with a period', async () => {
+    dispatch((s) => ({
+      ...s,
+      signin: { ...DEVICE, verification_url: 'javascript:alert(1)' },
+    }));
+    openSignIn('copilot');
+    await mount();
+    expect(alertBox()?.textContent).toContain('The provider did not return a web address.');
+  });
+
+  it('reads a refusal without a final period as a sentence', async () => {
+    vi.mocked(api.signInKey).mockRejectedValue(new Error('offline'));
+    openSignIn('anthropic');
+    await mount();
+    const input = labeled('API key')!;
+    await act(() => {
+      input.value = 'sk-x';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await submit(formOf(input));
+    expect(alertBox()?.textContent).toContain('The request did not reach crush.');
+  });
+
+  it('keeps a flow sentence off the API key form', async () => {
+    const flow: SignInState = {
+      flow_id: 'f4', provider: 'openai', provider_name: 'ChatGPT', state: 'waiting', kind: 'browser',
+      verification_url: 'https://chatgpt.com/auth/login',
+    };
+    dispatch((s) => ({ ...s, signin: { ...flow } }));
+    openSignIn('openai');
+    await mount();
+    await finish({ ...flow, state: 'error', error: 'The sign-in was interrupted.' });
+    expect(alertBox()?.textContent).toContain('The sign-in was interrupted.');
+
+    // The account flow's sentence says nothing about the key form.
+    await click(root.querySelector('input[name="signin-method"][value="api_key"]'));
+    expect(labeled('API key')).not.toBeNull();
+    expect(alertBox()).toBeNull();
+  });
+
+  it('announces a finished sign-in once', async () => {
+    dispatch((s) => ({ ...s, signin: { ...DEVICE } }));
+    openSignIn('copilot');
+    await mount();
+    await finish({ ...DEVICE, state: 'done' });
+
+    // The toast is the one announcement; the panel's sentence is plain text.
+    const done = root.querySelector('.signin__done')!;
+    expect(done.textContent).toBe('Signed in to GitHub Copilot.');
+    expect(done.getAttribute('role')).toBeNull();
+    expect(done.hasAttribute('aria-live')).toBe(false);
+    expect(state.value.toasts.filter((t) => t.text === 'Signed in to GitHub Copilot.')).toHaveLength(1);
+  });
+
+  it('names the provider the way its own flow does everywhere', async () => {    const chatgpt: SignInState = {
       flow_id: 'f3', provider: 'openai', provider_name: 'ChatGPT', state: 'waiting', kind: 'browser',
       verification_url: 'https://chatgpt.com/auth/login',
     };

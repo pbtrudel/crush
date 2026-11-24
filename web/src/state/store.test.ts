@@ -490,6 +490,30 @@ describe('stream and boot hardening', () => {
     }
   });
 
+  it('clears the token fragment before the gateway answers', async () => {
+    vi.stubGlobal('WebSocket', FakeSocket);
+    stubHealth(200);
+    history.replaceState(null, '', '/#t=slow');
+    let seen = 'unset';
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(api, 'auth').mockImplementation(async () => {
+      seen = location.hash;
+      await held;
+    });
+    try {
+      const booting = boot();
+      await vi.waitFor(() => expect(seen).not.toBe('unset'));
+      // The token leaves the address bar before the request, not after it.
+      expect(seen).toBe('');
+      release();
+      await booting;
+      expect(token()).toBe('slow');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
   it('stores the fragment token after the gateway accepts it', async () => {
     vi.stubGlobal('WebSocket', FakeSocket);
     stubHealth(200);
