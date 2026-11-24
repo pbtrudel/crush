@@ -7,6 +7,12 @@ import { openSignIn } from '../state/signin';
 // reader dismisses it.
 const TOAST_MS = 6000;
 
+// providerLabel names a provider id in the sign-in button's label. The
+// action carries only the id, so the label capitalizes it.
+function providerLabel(provider: string): string {
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
 export function Toasts() {
   const toasts = state.value.toasts;
   useEffect(() => {
@@ -37,6 +43,7 @@ export function Toasts() {
               <button
                 type="button"
                 class="btn btn--ghost"
+                aria-label={`Sign in to ${providerLabel(action.provider)}`}
                 onClick={() => {
                   openSignIn(action.provider, action.model);
                   actions.dismissToast(t.id);

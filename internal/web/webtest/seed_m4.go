@@ -39,10 +39,12 @@ func m4Providers() []catwalk.Provider {
 
 // SeedM4 adds what the M4 browser surfaces show: the M3 seeds, a sign-in
 // provider catalog, an API key check and the scripted OAuth flows. done
-// releases a flow still waiting when webfake shuts down.
-func SeedM4(f *Fake, done <-chan struct{}) M4Seams {
-	// SeedM3 only builds fake data, so it has no failure to report.
-	_ = SeedM3(f, time.Now())
+// releases a flow still waiting when webfake shuts down, and clock dates
+// the seeded sessions.
+func SeedM4(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
+	if err := SeedM3(f, clock); err != nil {
+		return M4Seams{}, err
+	}
 	known := m4Providers()
 	f.SetCatalog(known)
 	return M4Seams{
@@ -56,7 +58,7 @@ func SeedM4(f *Fake, done <-chan struct{}) M4Seams {
 		SignInFlow: func(providerID string) (signin.Flow, error) {
 			return m4Flow(providerID, done), nil
 		},
-	}
+	}, nil
 }
 
 // m4Flow scripts one provider's sign-in. A device flow blocks until it is

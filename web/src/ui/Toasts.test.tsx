@@ -82,19 +82,20 @@ describe('Toasts', () => {
     expect(root.querySelector('.toast')).toBeNull();
   });
 
-  it('offers a sign-in button that opens the dialog and dismisses the toast', async () => {
-    state.value = pushToast(initialState(), 'warn', 'Your hyper login expired. Sign in again.', {
-      kind: 'sign-in', provider: 'hyper',
+  it('offers a sign-in button that names the provider, opens the dialog and dismisses the toast', async () => {
+    state.value = pushToast(initialState(), 'warn', 'Your copilot login expired. Sign in again.', {
+      kind: 'sign-in', provider: 'copilot',
     });
     await act(() => {
       render(<Toasts />, root);
     });
     const signIn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Sign in');
     expect(signIn).toBeDefined();
+    expect(signIn!.getAttribute('aria-label')).toBe('Sign in to Copilot');
     await act(() => {
       signIn!.click();
     });
-    expect(signInOpen.value).toEqual({ provider: 'hyper' });
+    expect(signInOpen.value).toEqual({ provider: 'copilot' });
     expect(state.value.toasts).toEqual([]);
   });
 

@@ -446,11 +446,22 @@ function applyAgentEvent(s: State, e: AgentEvent): State {
   if (e.type === 'aws_sso_auth') {
     if (!e.aws_sso_command && !e.aws_sso_url) return s;
     const card = s.awsSso;
+    // A new command, or anything that follows a failed refresh, starts a
+    // fresh card: a stale verification URL must not come back.
+    if (!card || card.error !== undefined || (e.aws_sso_command && !e.aws_sso_url)) {
+      return {
+        ...s,
+        awsSso: {
+          command: e.aws_sso_command || '',
+          ...(e.aws_sso_url ? { url: e.aws_sso_url } : {}),
+        },
+      };
+    }
     return {
       ...s,
       awsSso: {
-        command: e.aws_sso_command || card?.command || '',
-        ...(e.aws_sso_url || card?.url ? { url: e.aws_sso_url || card?.url } : {}),
+        command: e.aws_sso_command || card.command,
+        ...(e.aws_sso_url || card.url ? { url: e.aws_sso_url || card.url } : {}),
       },
     };
   }
@@ -570,17 +581,17 @@ export function reduce(s: State, f: Frame): State {
       if (f.seq <= s.lastSeq) return listed;
       const open = new Set(prompts.map((p) => p.id));
       const answeredHere = { ...s.answeredHere };
-      let out = listed;
+      let goneElsewhere = false;
       for (const gone of s.securePrompts) {
         if (open.has(gone.id)) continue;
         const answered = answeredHere[gone.id];
         delete answeredHere[gone.id];
         // The terminal answers every touch prompt itself, so a touch
         // leaving the list is no news either.
-        if (!answered && gone.kind !== 'touch') {
-          out = pushToast(out, 'info', 'Answered in the terminal');
-        }
+        if (!answered && gone.kind !== 'touch') goneElsewhere = true;
       }
+      // One frame can close several dialogs; one notice covers them all.
+      let out = goneElsewhere ? pushToast(listed, 'info', 'Answered in the terminal') : listed;
       const before = new Set(s.securePrompts.map((p) => p.id));
       for (const p of prompts) {
         if (p.kind === 'touch' && !before.has(p.id)) out = pushToast(out, 'warn', p.message);
@@ -588,6 +599,10 @@ export function reduce(s: State, f: Frame): State {
       return { ...out, answeredHere };
     }
     case 'signin': {
+      // A replay after a reconnect repeats a seq the state already has;
+      // only a new frame is news. The server drops frames from a replaced
+      // run, so no flow_id check is needed here.
+      if (f.seq <= s.lastSeq) return next;
       const st = f.payload as SignInState;
       const announced = s.signin?.flow_id === st.flow_id && s.signin.state === 'done';
       const out = { ...next, signin: st };

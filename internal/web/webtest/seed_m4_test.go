@@ -2,6 +2,7 @@ package webtest
 
 import (
 	"testing"
+	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
@@ -14,12 +15,21 @@ func TestSeedM4(t *testing.T) {
 	f := NewFake()
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
-	seams := SeedM4(f, done)
+	clock := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	seams, err := SeedM4(f, done, clock)
+	require.NoError(t, err)
 
-	// The M3 seeds come along with the M4 data.
+	// The M3 seeds come along with the M4 data, dated from the clock.
 	cfg := f.Config()
 	require.NotNil(t, cfg)
 	require.Equal(t, config.SelectedModel{Provider: "p1", Model: "m1"}, cfg.Models[config.SelectedModelTypeMain])
+	sessions, err := f.ListSessions(t.Context())
+	require.NoError(t, err)
+	for _, s := range sessions {
+		if s.ID == "s-2" {
+			require.Equal(t, clock.Unix(), s.CreatedAt)
+		}
+	}
 
 	known, err := seams.KnownProviders(cfg)
 	require.NoError(t, err)

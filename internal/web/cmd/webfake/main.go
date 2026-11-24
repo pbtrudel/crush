@@ -74,7 +74,12 @@ func main() {
 	defer close(signinDone)
 	var seams webtest.M4Seams
 	if m4 {
-		seams = webtest.SeedM4(fake, signinDone)
+		seams, err = webtest.SeedM4(fake, signinDone, clock)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "webfake:", err)
+			os.RemoveAll(teamDir)
+			os.Exit(1)
+		}
 		opts.KnownProviders = seams.KnownProviders
 		opts.TestAPIKey = seams.TestAPIKey
 	}
@@ -92,7 +97,12 @@ func main() {
 		opts.OnPlanHandoff = func(string, bool) { planRequests <- struct{}{} }
 	}
 	if m4 {
-		opts.SignInFlow = signInFlow(seams.SignInFlow)
+		ms, ok := signinMS()
+		if !ok {
+			os.RemoveAll(teamDir)
+			os.Exit(1)
+		}
+		opts.SignInFlow = signInFlow(seams.SignInFlow, ms)
 	}
 	// The terminal has no agent until it has a model, which the browser
 	// shows as the starting state on every route that needs one.
@@ -144,19 +154,29 @@ func main() {
 	}
 }
 
-// signInFlow wraps the scripted flows with WEBFAKE_SIGNIN_MS: a device flow
-// completes on its own after that many milliseconds, the way a user
-// finishing the approval in a browser would. Unset, the flow waits for a
-// cancel.
-func signInFlow(seams func(string) (signin.Flow, error)) func(string) (signin.Flow, error) {
+// signinMS reads WEBFAKE_SIGNIN_MS and returns -1 when it is unset. An
+// invalid value reports false after printing, so the caller can remove the
+// team directory before exiting.
+func signinMS() (int, bool) {
 	v := os.Getenv("WEBFAKE_SIGNIN_MS")
 	if v == "" {
-		return seams
+		return -1, true
 	}
 	ms, err := strconv.Atoi(v)
 	if err != nil || ms < 0 {
 		fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_SIGNIN_MS:", v)
-		os.Exit(1)
+		return 0, false
+	}
+	return ms, true
+}
+
+// signInFlow wraps the scripted flows with WEBFAKE_SIGNIN_MS: a device flow
+// completes on its own after that many milliseconds, the way a user
+// finishing the approval in a browser would. A negative value leaves the
+// flow waiting for a cancel.
+func signInFlow(seams func(string) (signin.Flow, error), ms int) func(string) (signin.Flow, error) {
+	if ms < 0 {
+		return seams
 	}
 	return func(providerID string) (signin.Flow, error) {
 		flow, err := seams(providerID)

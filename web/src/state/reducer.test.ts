@@ -688,11 +688,11 @@ describe('the M4a wire state', () => {
     expect(needsAttention(s)).toBe(true);
   });
 
-  it('toasts when a prompt closes that this tab did not answer', () => {
+  it('toasts once when prompts close that this tab did not answer', () => {
     let s = reduce(fromSnapshot(), fx.secure_prompt as Frame);
     s = reduce(s, { seq: s.lastSeq + 1, type: 'secure_prompt', payload: { prompts: [] } });
     expect(s.securePrompts).toEqual([]);
-    expect(s.toasts.at(-1)?.text).toBe('Answered in the terminal');
+    expect(s.toasts.filter((t) => t.text === 'Answered in the terminal')).toHaveLength(1);
   });
 
   it('stays quiet when this tab answered', () => {
@@ -723,6 +723,15 @@ describe('the M4a wire state', () => {
     expect(s.toasts.filter((t) => t.text === 'Signed in to GitHub Copilot.').length).toBe(1);
   });
 
+  it('ignores a replayed sign-in frame', () => {
+    let s = reduce(fromSnapshot(), { ...(fx.signin as Frame), seq: 5 });
+    const done = { ...(fx.signin.payload as SignInState), flow_id: 'f-old', state: 'done' as const };
+    s = reduce(s, { seq: 5, type: 'signin', payload: done });
+    expect(s.signin?.flow_id).toBe('f1');
+    expect(s.signin?.state).toBe('waiting');
+    expect(s.toasts.filter((t) => t.text === 'Signed in to GitHub Copilot.')).toHaveLength(0);
+  });
+
   it('opens, updates and closes the AWS SSO card', () => {
     let s = reduce(fromSnapshot(), fx.agent_event_aws_sso as Frame);
     expect(s.awsSso?.command).toBe('aws sso login --profile dev');
@@ -730,6 +739,29 @@ describe('the M4a wire state', () => {
     expect(s.awsSso?.url).toContain('amazonaws.com');
     s = reduce(s, { ...(fx.agent_event_aws_sso_result as Frame), seq: s.lastSeq + 1 });
     expect(s.awsSso?.error).toBe('the SSO session expired');
+  });
+
+  it('starts a fresh AWS SSO card after a failed refresh', () => {
+    let s = reduce(fromSnapshot(), fx.agent_event_aws_sso as Frame);
+    s = reduce(s, { ...(fx.agent_event_aws_sso_url as Frame), seq: s.lastSeq + 1 });
+    s = reduce(s, { ...(fx.agent_event_aws_sso_result as Frame), seq: s.lastSeq + 1 });
+    s = reduce(s, { ...(fx.agent_event_aws_sso as Frame), seq: s.lastSeq + 1 });
+    expect(s.awsSso).toEqual({ command: 'aws sso login --profile dev' });
+  });
+
+  it('clears the AWS SSO card when the refresh succeeds', () => {
+    let s = reduce(fromSnapshot(), fx.agent_event_aws_sso as Frame);
+    const ok = structuredClone(fx.agent_event_aws_sso_result) as any;
+    delete ok.payload.payload.error;
+    s = reduce(s, { ...ok, seq: s.lastSeq + 1 });
+    expect(s.awsSso).toBeNull();
+  });
+
+  it('ignores a replayed AWS SSO frame', () => {
+    const s = reduce(fromSnapshot(), { ...(fx.agent_event_aws_sso as Frame), seq: 5 });
+    const replay = reduce(s, { ...(fx.agent_event_aws_sso_url as Frame), seq: 5 });
+    expect(replay.awsSso?.url).toBeUndefined();
+    expect(replay.lastSeq).toBe(5);
   });
 
   it('offers a sign-in action when a login expired', () => {
