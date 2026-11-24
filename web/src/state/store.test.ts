@@ -171,18 +171,60 @@ describe('actions.sendPrompt', () => {
     expect(send).toHaveBeenCalledWith('s1', 'first task', []);
   });
 
-  it('stops waiting for a snapshot when the connection ends', async () => {
+  it('fails without starting a session when the connection ends', async () => {
+    // A gateway that comes back later must not find a session the tab
+    // started while it was gone.
     state.value = { ...initialState(), conn: 'live' };
-    const created = { id: 's2', title: 'New Session' } as unknown as Session;
-    const create = vi.spyOn(api, 'createSession').mockResolvedValue(created);
-    vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt');
 
     const pending = actions.sendPrompt('first task', []);
     await Promise.resolve();
     handleFrames([{ seq: 1, type: 'gateway_closing', payload: {} }]);
-    await expect(pending).resolves.toBeNull();
+    await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
 
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('fails without starting a session when the token is refused', async () => {
+    state.value = { ...initialState(), conn: 'live' };
+    const create = vi.spyOn(api, 'createSession');
+    const send = vi.spyOn(api, 'sendPrompt');
+
+    const pending = actions.sendPrompt('first task', []);
+    await Promise.resolve();
+    dispatch((s) => ({ ...s, conn: 'unauthorized' }));
+    await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('gives up waiting for a snapshot after the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      state.value = { ...initialState(), conn: 'live' };
+      const create = vi.spyOn(api, 'createSession');
+      const send = vi.spyOn(api, 'sendPrompt');
+
+      const pending = actions.sendPrompt('first task', []);
+      await Promise.resolve();
+      expect(create).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(pending).resolves.toEqual({ tone: 'error', text: 'The request did not reach crush' });
+      expect(create).not.toHaveBeenCalled();
+
+      // A snapshot after the prompt failed sends nothing: the deck already
+      // showed the failure and a retry is the user's choice.
+      handleFrames([fx.snapshot]);
+      await Promise.resolve();
+      expect(send).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('sends nothing and reports the failure when the session cannot start', async () => {

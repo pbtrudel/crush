@@ -26,7 +26,9 @@ export interface State {
   lastSeq: number;
   // hydrated is true once a snapshot has named the session the terminal
   // shows. Before it, an empty sessionId means "not known yet", not "the
-  // terminal has no session".
+  // terminal has no session". It is deliberately never reset: a resume
+  // inside the replay ring sends no snapshot, so clearing it would make a
+  // later empty sessionId look unknown again.
   hydrated: boolean;
   version: string;
   workingDir: string;

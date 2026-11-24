@@ -202,15 +202,30 @@ function sessionSettled(s: State): boolean {
   return s.hydrated || s.conn === 'ended' || s.conn === 'unauthorized';
 }
 
+// SESSION_SNAPSHOT_TIMEOUT_MS bounds how long a send waits for the stream
+// to name the tab's session. A socket that accepts and never speaks, or a
+// retry loop that never reconnects, must not leave the deck sending
+// forever.
+const SESSION_SNAPSHOT_TIMEOUT_MS = 10_000;
+
 function whenSessionSettled(): Promise<void> {
   if (sessionSettled(state.value)) return Promise.resolve();
-  return new Promise((resolve) => {
-    let stop: (() => void) | undefined;
-    stop = effect(() => {
-      if (!sessionSettled(state.value)) return;
-      stop?.();
+  let done = false;
+  let settle: () => void = () => {};
+  const settled = new Promise<void>((resolve) => {
+    settle = () => {
+      if (done) return;
+      done = true;
       resolve();
-    });
+    };
+  });
+  const dispose = effect(() => {
+    if (sessionSettled(state.value)) settle();
+  });
+  const timer = setTimeout(settle, SESSION_SNAPSHOT_TIMEOUT_MS);
+  return settled.finally(() => {
+    clearTimeout(timer);
+    dispose();
   });
 }
 
@@ -229,6 +244,11 @@ async function ensureSession(): Promise<string> {
     current = state.value.sessionId;
   }
   if (current) return current;
+  // The wait can end without a snapshot (a dead or silent stream). The
+  // terminal's session is still unknown then, and creating one would move
+  // the terminal as soon as the gateway came back, so fail the send
+  // instead.
+  if (!state.value.hydrated) throw new Error('the session is unknown');
   const sid = (await api.createSession()).id;
   dispatch((s) => adoptSession(s, sid));
   return sid;
