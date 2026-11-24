@@ -37,6 +37,7 @@ import (
 //	option pinentry-integrated false
 //	option pinentry-cache-timeout 300
 //	option responses-reasoning-replay false
+//	option prompt-cache-ttl 1h
 //
 // Boolean shortcuts: for boolean fields, omitting the value sets it to true.
 // Options that are on by default (progress, auto-lsp, pinentry-integrated,
@@ -239,10 +240,11 @@ var optionSpecs = map[string]optionSpec{
 	"default-providers":    {jsonKey: "disable_default_providers", kind: optBool, inverted: true},
 
 	// String fields.
-	"notifications":  {jsonKey: "notifications", kind: optString},
-	"data-directory": {jsonKey: "data_directory", kind: optString},
-	"initialize-as":  {jsonKey: "initialize_as", kind: optString},
-	"prompt-profile": {jsonKey: "prompt_profile", kind: optString},
+	"notifications":    {jsonKey: "notifications", kind: optString},
+	"data-directory":   {jsonKey: "data_directory", kind: optString},
+	"initialize-as":    {jsonKey: "initialize_as", kind: optString},
+	"prompt-profile":   {jsonKey: "prompt_profile", kind: optString},
+	"prompt-cache-ttl": {jsonKey: "prompt_cache_ttl", kind: optString},
 
 	// Integer fields.
 	"request-timeout":        {jsonKey: "request_timeout", kind: optInt},

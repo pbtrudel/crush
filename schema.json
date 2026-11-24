@@ -581,6 +581,15 @@
             50
           ]
         },
+        "prompt_cache_ttl": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h"
+          ],
+          "description": "Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.",
+          "default": "5m"
+        },
         "skills_paths": {
           "items": {
             "type": "string",

@@ -513,6 +513,13 @@ String Keys:
                                    unset uses lean for DeepSeek models,
                                    measured on V4.1 Flash, and full for
                                    every other model
+  prompt-cache-ttl string          prompt cache lifetime: 5m (default) or 1h;
+                                   the 1h lifetime keeps Anthropic prompt
+                                   caches for an hour, where cache writes cost
+                                   about 2x base input instead of 1.25x, so
+                                   it pays off when you pause more than 5
+                                   minutes between turns; it also asks OpenAI
+                                   for 24-hour prompt_cache_retention
   attribution-trailer-style string attribution trailer: none, co-authored-by,
                                    or assisted-by
 
@@ -566,6 +573,7 @@ option auto-compact-threshold 0.5
 option auto-compact-max-tokens 250000
 option compact-tail-tokens 16384
 option history-slim-idle-minutes 30
+option prompt-cache-ttl 1h
 ```
 
 #### `option reset`

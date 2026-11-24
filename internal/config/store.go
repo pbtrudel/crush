@@ -1521,6 +1521,8 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		return fmt.Errorf("invalid provider configuration on reload: %w", err)
 	}
 
+	cfg.warnUnknownPromptCacheTTL()
+
 	// Preserve runtime overrides
 	overrides := s.overrides
 
