@@ -113,6 +113,17 @@ afterEach(async () => {
 });
 
 describe('CommandDeck', () => {
+  it('publishes its height for the AWS card offset', async () => {
+    seed();
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ height: 146 } as DOMRect);
+    await mount();
+    expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('146px');
+    await act(() => {
+      render(null, root);
+    });
+    expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('');
+  });
+
   it('names the deck as a landmark', async () => {
     seed();
     await mount();

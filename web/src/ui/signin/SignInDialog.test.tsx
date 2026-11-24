@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { ApiError, api } from '../../api/http';
 import type { SignInResult, SignInState, SignInTarget } from '../../api/types';
-import { initialState } from '../../state/reducer';
+import { applySignIn, initialState } from '../../state/reducer';
 import { closeModels, modelsOpen } from '../../state/palette';
 import { dispatch, state } from '../../state/store';
 import { closeSignIn, openSignIn, signInOpen } from '../../state/signin';
@@ -105,6 +105,11 @@ async function select(name: string) {
 async function click(el: Element | null | undefined) {
   if (!el) throw new Error('no element to click');
   await act(async () => { (el as HTMLElement).click(); await Promise.resolve(); });
+  await flush();
+}
+
+async function finish(next: SignInState) {
+  await act(() => { dispatch((s) => applySignIn(s, next)); });
   await flush();
 }
 
@@ -224,6 +229,7 @@ describe('SignInDialog API key', () => {
     expect(input.value).toBe('');
     expect(api.signInKey).toHaveBeenCalledWith('anthropic', 'sk-ant-123', undefined);
     expect(JSON.stringify(state.value)).not.toContain('sk-ant-123');
+    expect(input.readOnly).toBe(true);
     pending.resolve({ signed_in: true, model_applied: true });
     await flush();
     expect(signInOpen.value).toBeNull();
@@ -259,6 +265,26 @@ describe('SignInDialog API key', () => {
     });
     await submit(formOf(input));
     expect(api.signInKey).toHaveBeenCalledWith('openai', 'sk-x', { type: 'main', model: 'gpt-5' });
+  });
+
+  it('drops a late key result after the user changed provider', async () => {
+    const pending = deferred<SignInResult>();
+    vi.mocked(api.signInKey).mockReturnValue(pending.promise);
+    openSignIn('anthropic');
+    await mount();
+    const input = labeled('API key')!;
+    await act(() => {
+      input.value = 'sk-late';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await submit(formOf(input));
+    await select('GitHub Copilot');
+    const toasts = state.value.toasts.length;
+    pending.resolve({ signed_in: true, model_applied: true });
+    await flush();
+    expect(signInOpen.value).not.toBeNull();
+    expect(state.value.toasts.length).toBe(toasts);
+    expect(button('Start sign-in')).toBeDefined();
   });
 
   it('opens the model selector when the model could not be applied', async () => {
@@ -426,6 +452,7 @@ describe('SignInDialog OAuth', () => {
     const input = labeled('Code from the sign-in page')!;
     expect(input.type).toBe('password');
     expect(input.getAttribute('autocomplete')).toBe('off');
+    expect(input.getAttribute('spellcheck')).toBe('false');
     await act(() => {
       input.value = 'good-code';
       input.dispatchEvent(new InputEvent('input', { bubbles: true }));
@@ -435,32 +462,140 @@ describe('SignInDialog OAuth', () => {
     expect(input.value).toBe('');
     expect(api.signInCode).toHaveBeenCalledWith('f2', 'good-code');
     expect(JSON.stringify(state.value)).not.toContain('good-code');
+    expect(input.readOnly).toBe(true);
     pending.resolve();
     await flush();
   });
 
-  it('shows a refused code sentence from the gateway', async () => {
-    await unmount();
+  it('hides the code field while the flow saves', async () => {
     dispatch((s) => ({
       ...s,
       signin: {
-        flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'error',
-        error: 'That code did not work. Copy the whole code or the address the page showed.',
+        flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'saving', kind: 'browser',
+        verification_url: 'http://localhost:56121/start', code_entry: true,
       },
     }));
     openSignIn('xai');
     await mount();
+    expect(labeled('Code from the sign-in page')).toBeNull();
+    expect(root.querySelector('.signin__status')?.textContent).toBe('Saving the sign-in');
+  });
+
+  it('shows the sentence when the flow no longer takes a code', async () => {
+    vi.mocked(api.signInCode).mockRejectedValue(
+      new ApiError(409, 'code_entry_unavailable', 'This sign-in does not take a code.'),
+    );
+    dispatch((s) => ({
+      ...s,
+      signin: {
+        flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'waiting', kind: 'browser',
+        verification_url: 'http://localhost:56121/start', code_entry: true,
+      },
+    }));
+    openSignIn('xai');
+    await mount();
+    const input = labeled('Code from the sign-in page')!;
+    await act(() => {
+      input.value = 'abc';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await submit(formOf(input));
+    expect(alertBox()?.textContent).toContain('This sign-in does not take a code.');
+  });
+
+  it('renders one alert at a time', async () => {
+    vi.mocked(api.signInCode).mockRejectedValue(
+      new ApiError(409, 'code_entry_unavailable', 'This sign-in does not take a code.'),
+    );
+    dispatch((s) => ({
+      ...s,
+      signin: {
+        flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'waiting', kind: 'browser',
+        verification_url: 'javascript:alert(1)', code_entry: true,
+      },
+    }));
+    openSignIn('xai');
+    await mount();
+    const input = labeled('Code from the sign-in page')!;
+    await act(() => {
+      input.value = 'abc';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    });
+    await submit(formOf(input));
+    const alerts = Array.from(root.querySelectorAll<HTMLElement>('[role="alert"]'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain('The provider did not return a web address');
+    expect(alerts[0].textContent).toContain('This sign-in does not take a code.');
+  });
+
+  it('says the code has expired once it has', async () => {
+    dispatch((s) => ({
+      ...s,
+      signin: { ...DEVICE, expires_at: Math.floor(Date.now() / 1000) - 60 },
+    }));
+    openSignIn('copilot');
+    await mount();
+    const status = root.querySelector<HTMLElement>('.signin__status');
+    expect(status?.textContent).toContain('Code expired');
+    expect(status?.textContent).not.toContain('expires in');
+  });
+
+  it('shows a refused code sentence from the gateway', async () => {
+    await unmount();
+    const waiting: SignInState = {
+      flow_id: 'f2', provider: 'xai', provider_name: 'xAI', state: 'waiting', kind: 'browser',
+      verification_url: 'http://localhost:56121/start', code_entry: true,
+    };
+    dispatch((s) => ({ ...s, signin: waiting }));
+    openSignIn('xai');
+    await mount();
+    await finish({
+      ...waiting,
+      state: 'error',
+      error: 'That code did not work. Copy the whole code or the address the page showed.',
+    });
     expect(alertBox()?.textContent).toContain('That code did not work.');
     expect(button('Try again')).toBeDefined();
   });
 
-  it('shows the finished sign-in with the model action and Close', async () => {
-    dispatch((s) => ({
-      ...s,
-      signin: { ...DEVICE, state: 'done', model_applied: true },
-    }));
+  it('treats a flow that finished before the dialog opened as history', async () => {
+    dispatch((s) => ({ ...s, signin: { ...DEVICE, state: 'done' } }));
     openSignIn('copilot');
     await mount();
+    expect(button('Choose a model')).toBeUndefined();
+    expect(button('Start sign-in')).toBeDefined();
+  });
+
+  it('does not select a provider from a finished flow on open', async () => {
+    vi.mocked(api.signInStatus).mockResolvedValue({ ...DEVICE, state: 'done' });
+    openSignIn();
+    await mount();
+    expect(root.querySelector('.signin__panel')).toBeNull();
+  });
+
+  it('adopts a running flow from status over a finished one in state', async () => {
+    dispatch((s) => ({ ...s, signin: { ...DEVICE, flow_id: 'old', state: 'done' } }));
+    vi.mocked(api.signInStatus).mockResolvedValue({ ...DEVICE, flow_id: 'f-new' });
+    openSignIn('copilot');
+    await mount();
+    expect(root.textContent).toContain('WDJB-MJHT');
+    expect(button('Start sign-in')).toBeUndefined();
+  });
+
+  it('shows the done panel when the start answers done at once', async () => {
+    vi.mocked(api.signInStart).mockResolvedValue({ ...DEVICE, state: 'done', imported: true });
+    openSignIn('copilot');
+    await mount();
+    await click(button('Start sign-in'));
+    expect(root.textContent).toContain('Signed in to GitHub Copilot.');
+    expect(button('Choose a model')).toBeDefined();
+  });
+
+  it('shows the finished sign-in with the model action and Close', async () => {
+    dispatch((s) => ({ ...s, signin: { ...DEVICE } }));
+    openSignIn('copilot');
+    await mount();
+    await finish({ ...DEVICE, state: 'done', model_applied: true });
     expect(root.textContent).toContain('Signed in to GitHub Copilot.');
     await click(button('Choose a model'));
     expect(modelsOpen.value).toBe(true);
@@ -468,23 +603,44 @@ describe('SignInDialog OAuth', () => {
   });
 
   it('closes a finished sign-in with Close', async () => {
-    dispatch((s) => ({ ...s, signin: { ...DEVICE, state: 'done' } }));
+    dispatch((s) => ({ ...s, signin: { ...DEVICE } }));
     openSignIn('copilot');
     await mount();
+    await finish({ ...DEVICE, state: 'done' });
     await click(button('Close'));
     expect(signInOpen.value).toBeNull();
   });
 
   it('calls a cancelled flow cancelled and lets the user try again', async () => {
-    dispatch((s) => ({
-      ...s,
-      signin: { ...DEVICE, state: 'cancelled' },
-    }));
+    dispatch((s) => ({ ...s, signin: { ...DEVICE } }));
     openSignIn('copilot');
     await mount();
+    await finish({ ...DEVICE, state: 'cancelled' });
     expect(root.textContent).toContain('Sign-in cancelled.');
     await click(button('Try again'));
     expect(api.signInStart).toHaveBeenCalledWith('copilot', undefined);
+  });
+
+  it('keeps focus in the dialog when Start becomes the waiting panel', async () => {
+    openSignIn('copilot');
+    await mount();
+    const start = button('Start sign-in')!;
+    start.focus();
+    await click(start);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it('keeps focus in the dialog when Try again starts a new flow', async () => {
+    dispatch((s) => ({ ...s, signin: { ...DEVICE } }));
+    openSignIn('copilot');
+    await mount();
+    await finish({ ...DEVICE, state: 'error', error: 'The sign-in did not finish. Try again.' });
+    const again = button('Try again')!;
+    again.focus();
+    await click(again);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
   });
 
   it('shows the start failure inline', async () => {

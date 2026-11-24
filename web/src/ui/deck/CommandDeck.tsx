@@ -51,6 +51,7 @@ export function CommandDeck() {
   // the text state and the DOM selection move on separate renders.
   const [caret, setCaret] = useState(0);
   const [suggest, setSuggest] = useState<{ start: number; items: string[]; index: number } | null>(null);
+  const root = useRef<HTMLFormElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   // Completion requests can resolve out of order; only the newest one may
@@ -61,6 +62,25 @@ export function CommandDeck() {
   const inFlight = useRef(false);
   const ended = s.conn === 'ended';
   const mode = modeFor(text, deckMode.value);
+
+  // signin.css places the AWS SSO card above the deck from --deck-h, so the
+  // deck publishes its own height instead of a hard-coded offset.
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const doc = document.documentElement;
+    const publish = () => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      if (height > 0) doc.style.setProperty('--deck-h', `${height}px`);
+    };
+    publish();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
+    observer?.observe(el);
+    return () => {
+      observer?.disconnect();
+      doc.style.removeProperty('--deck-h');
+    };
+  }, []);
 
   // The palette attaches through this module function; re-register when the
   // deck's file state moves so it reads the current list and budget.
@@ -227,6 +247,7 @@ export function CommandDeck() {
 
   return (
     <form
+      ref={root}
       class={`deck glass${cinematic.value ? ' deck--slim' : ''}`}
       aria-label="Command deck"
       data-busy={s.busy}

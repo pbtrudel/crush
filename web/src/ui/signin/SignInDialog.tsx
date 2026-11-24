@@ -25,6 +25,10 @@ function methodWord(method: string): string {
   return method === 'api_key' ? 'API key' : 'Account login';
 }
 
+function running(st: SignInState | null): boolean {
+  return st !== null && (st.state === 'waiting' || st.state === 'saving');
+}
+
 // SignInDialog is the glass panel a tab signs in to a provider from: the
 // provider list, the key form and the one OAuth flow. It is plain glass with
 // cyan edges: the user opened it, it is not a request that needs you.
@@ -45,8 +49,11 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   const [failure, setFailure] = useState<Failure | null>(null);
   const [sending, setSending] = useState(false);
   const [tick, setTick] = useState(() => Date.now());
+  // seen names the flows that ran while this dialog was open. A flow that
+  // was already finished when the dialog opened is history: it neither
+  // selects a provider nor replaces the Start control.
+  const [seen, setSeen] = useState<string[]>([]);
   const dialog = useRef<HTMLDivElement>(null);
-  const filter = useRef<HTMLInputElement>(null);
   const keyInput = useRef<HTMLInputElement>(null);
   const codeInput = useRef<HTMLInputElement>(null);
   const codeValue = useRef<HTMLElement>(null);
@@ -55,14 +62,45 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   // A selection or a replaced flow invalidates the request in flight, so a
   // late answer never lands in the panel of another provider.
   const generation = useRef(0);
+  // hadFocus lets a control that leaves the tree hand its focus to the
+  // panel instead of dropping it to the page.
+  const hadFocus = useRef(false);
 
   useDialogFocus(dialog, 'signin');
   usePaletteDeckFocus();
+
+  const markSeen = (id: string) => {
+    setSeen((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
 
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
+
+  useEffect(() => {
+    const current = state.value.signin;
+    if (current !== null && running(current)) markSeen(current.flow_id);
+  });
+
+  // A button that unmounts while it holds focus (Start becoming the
+  // waiting panel, Try again starting again) hands focus to the panel.
+  useEffect(() => {
+    const el = dialog.current;
+    const active = document.activeElement;
+    if (inert) {
+      hadFocus.current = false;
+      return;
+    }
+    if (el && active !== null && el.contains(active)) {
+      hadFocus.current = true;
+      return;
+    }
+    if (!hadFocus.current) return;
+    hadFocus.current = false;
+    const panel = el?.querySelector<HTMLElement>('.signin__panel');
+    (panel?.querySelector<HTMLElement>('button, input') ?? el)?.focus();
+  });
 
   // One request for the targets and one for the flow a reload or the
   // terminal started, both dropped if the dialog closed or reloaded.
@@ -76,11 +114,19 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
       if (!alive.current || gen !== generation.current) return;
       setTargets(providers);
       setLoadError(null);
-      // A frame or the snapshot is newer than this answer, so status only
-      // fills in a flow the tab never saw.
+      // Only a running flow is worth recording: a finished one is history,
+      // and status must not toast for a sign-in this tab never saw.
+      const fromStatus = running(status) ? status : null;
       const current = state.value.signin;
-      if (status && current === null) dispatch((next) => applySignIn(next, status));
-      setSelected((selectedId) => selectedId ?? current?.provider ?? status?.provider ?? null);
+      // A finished flow in state is history, so a running one from status is
+      // the newer answer and takes its place.
+      if (fromStatus && !(current !== null && running(current))) {
+        dispatch((next) => applySignIn(next, fromStatus));
+      }
+      setSelected((selectedId) => selectedId
+        ?? (current !== null && running(current) ? current.provider : null)
+        ?? fromStatus?.provider
+        ?? null);
     } catch (err) {
       if (!alive.current || gen !== generation.current) return;
       setLoadError(err);
@@ -97,11 +143,12 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   });
 
   const flow = s.signin && s.signin.provider === selected ? s.signin : null;
+  const shownFlow = flow !== null && (running(flow) || seen.includes(flow.flow_id)) ? flow : null;
   // A running flow names a provider the list may not carry, such as one the
   // terminal started: the flow itself is enough to show its panel.
   const listed = targets?.find((t) => t.id === selected) ?? null;
-  const target: SignInTarget | null = listed ?? (selected !== null && flow !== null
-    ? { id: selected, name: flow.provider_name || selected, configured: true, methods: ['oauth'], oauth_kind: flow.kind }
+  const target: SignInTarget | null = listed ?? (selected !== null && shownFlow !== null
+    ? { id: selected, name: shownFlow.provider_name || selected, configured: true, methods: ['oauth'], oauth_kind: shownFlow.kind }
     : null);
 
   // The provider's first method is its default, so the panel opens on the
@@ -111,8 +158,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
     setMethod(target.methods[0] === 'api_key' ? 'api_key' : 'oauth');
   }, [selected, targets]);
 
-  const live = flow !== null && (flow.state === 'waiting' || flow.state === 'saving');
-  const expiresAt = live && flow.state === 'waiting' ? flow.expires_at : undefined;
+  const expiresAt = shownFlow !== null && shownFlow.state === 'waiting' ? shownFlow.expires_at : undefined;
 
   // The code's remaining minutes are shown from the same clock the status
   // line holds, so a long wait does not keep an old number on screen.
@@ -187,15 +233,20 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
 
   const start = () => {
     if (!target) return;
+    const gen = generation.current;
     void run(async () => {
-      await actions.signInStart(target.id, modelTarget);
+      const started = await actions.signInStart(target.id, modelTarget);
+      if (!alive.current || gen !== generation.current) return;
+      // A start that finishes at once (an imported Copilot login) belongs to
+      // this dialog even though it never showed as running.
+      markSeen(started.flow_id);
     });
   };
 
   const cancel = () => {
-    if (!flow) return;
+    if (!shownFlow) return;
     void run(async () => {
-      await actions.signInCancel(flow.flow_id);
+      await actions.signInCancel(shownFlow.flow_id);
       // The list is where the user chooses the next thing to try.
       document.getElementById(`signin-option-${selected}`)?.focus();
     });
@@ -203,13 +254,13 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
 
   const submitCode = (e: Event) => {
     e.preventDefault();
-    if (busy.current || inert || !flow) return;
+    if (busy.current || inert || !shownFlow) return;
     const input = codeInput.current;
     if (!input) return;
     const code = input.value;
     input.value = '';
     void run(async () => {
-      await actions.signInCode(flow.flow_id, code);
+      await actions.signInCode(shownFlow.flow_id, code);
     });
   };
 
@@ -226,7 +277,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   // A copy the browser refuses keeps the code usable: it is selected so the
   // user can copy it by hand.
   const copyCode = () => {
-    const code = flow?.user_code ?? '';
+    const code = shownFlow?.user_code ?? '';
     if (!navigator.clipboard?.writeText) {
       selectCode();
       return;
@@ -252,10 +303,23 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   };
 
   const locked = inert || sending;
-  const alertText = failure?.text ?? null;
-  const href = flow?.verification_url ? webAddress(flow.verification_url) : null;
-  const minutes = expiresAt ? Math.max(1, Math.ceil((expiresAt - tick / 1000) / 60)) : 0;
+  const href = shownFlow?.verification_url ? webAddress(shownFlow.verification_url) : null;
+  const expired = expiresAt !== undefined && expiresAt <= tick / 1000;
+  const minutes = expiresAt !== undefined && !expired ? Math.max(1, Math.ceil((expiresAt - tick / 1000) / 60)) : 0;
   const shownLoad = loadError === null ? null : describeFailure(loadError);
+  const waitingNow = shownFlow !== null && (shownFlow.state === 'waiting' || shownFlow.state === 'saving');
+  const finishedNow = shownFlow !== null && (shownFlow.state === 'done' || shownFlow.state === 'error' || shownFlow.state === 'cancelled');
+
+  // One live alert carries everything the panel has to say, so a failure
+  // and a state sentence never put two role=alert boxes on screen.
+  const alerts: string[] = [];
+  if (failure !== null) alerts.push(failure.text);
+  if (waitingNow && href === null) alerts.push(NO_WEB_ADDRESS);
+  if (shownFlow !== null && finishedNow && shownFlow.state !== 'done') {
+    alerts.push(shownFlow.state === 'cancelled'
+      ? 'Sign-in cancelled.'
+      : shownFlow.error || 'The sign-in did not finish. Try again.');
+  }
 
   const option = (t: SignInTarget) => (
     <div
@@ -296,6 +360,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
           type="password"
           autocomplete="off"
           spellcheck={false}
+          readOnly={sending}
           aria-disabled={locked ? 'true' : undefined}
         />
       </label>
@@ -306,16 +371,6 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
     </form>
   );
 
-  const signInLink = (name: string) => (href !== null ? (
-    <p class="signin__link">
-      <a href={href} target="_blank" rel="noopener noreferrer">Open the {name} sign-in page</a>
-    </p>
-  ) : (
-    <p class="signin__alert" role="alert">
-      <span aria-hidden="true">✕</span> {NO_WEB_ADDRESS}
-    </p>
-  ));
-
   const waiting = (t: SignInTarget, current: SignInState) => (
     <>
       {current.kind === 'device' && current.user_code && (
@@ -324,8 +379,12 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
           <button type="button" class="signin__action" onClick={copyCode}>Copy code</button>
         </div>
       )}
-      {signInLink(t.name || t.id)}
-      {current.code_entry && (
+      {href !== null && (
+        <p class="signin__link">
+          <a href={href} target="_blank" rel="noopener noreferrer">Open the {t.name || t.id} sign-in page</a>
+        </p>
+      )}
+      {current.state === 'waiting' && current.code_entry && (
         <form class="signin__form" onSubmit={submitCode}>
           <label class="signin__field" for="signin-code">
             <span class="hud-label">Code from the sign-in page</span>
@@ -336,6 +395,7 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
               type="password"
               autocomplete="off"
               spellcheck={false}
+              readOnly={sending}
               aria-disabled={locked ? 'true' : undefined}
             />
           </label>
@@ -346,60 +406,47 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
       )}
       <p class="signin__status" role="status">
         {current.state === 'saving' ? 'Saving the sign-in' : `Waiting for ${t.name || t.id}`}
-        {current.state === 'waiting' && minutes > 0 && ` · Code expires in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`}
+        {current.state === 'waiting' && expired && ' · Code expired'}
+        {current.state === 'waiting' && !expired && minutes > 0
+          && ` · Code expires in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`}
       </p>
       {current.state === 'waiting' && (
         <div class="signin__actions">
-          <button type="button" class="btn btn--ghost" aria-disabled={locked ? 'true' : undefined} onClick={() => void cancel()}>Cancel sign-in</button>
+          <button type="button" class="btn btn--ghost" aria-disabled={locked ? 'true' : undefined} onClick={cancel}>Cancel sign-in</button>
         </div>
       )}
     </>
   );
 
   const finished = (t: SignInTarget, current: SignInState) => {
-    const name = current.provider_name || t.name || t.id;
-    if (current.state === 'done') {
+    if (current.state !== 'done') {
       return (
-        <>
-          <p class="signin__done" role="status">Signed in to {name}.</p>
-          <div class="signin__actions">
-            <button type="button" class="btn btn--primary" onClick={() => { closeSignIn(); openModels(); }}>Choose a model</button>
-            <button type="button" class="btn btn--ghost" onClick={() => closeSignIn()}>Close</button>
-          </div>
-        </>
-      );
-    }
-    const sentence = current.state === 'cancelled' ? 'Sign-in cancelled.' : current.error || 'The sign-in did not finish. Try again.';
-    return (
-      <>
-        <p class="signin__alert" role="alert">
-          <span aria-hidden="true">✕</span> {sentence}
-        </p>
         <div class="signin__actions">
           <button type="button" class="btn btn--primary" aria-disabled={locked ? 'true' : undefined} onClick={start}>Try again</button>
+        </div>
+      );
+    }
+    const name = current.provider_name || t.name || t.id;
+    return (
+      <>
+        <p class="signin__done" role="status">Signed in to {name}.</p>
+        <div class="signin__actions">
+          <button type="button" class="btn btn--primary" onClick={() => { closeSignIn(); openModels(); }}>Choose a model</button>
+          <button type="button" class="btn btn--ghost" onClick={() => closeSignIn()}>Close</button>
         </div>
       </>
     );
   };
 
-  const oauthPanel = (t: SignInTarget) => (
-    <>
-      {alertText && (
-        <p class="signin__alert" role="alert">
-          <span aria-hidden="true">✕</span> {alertText}
-        </p>
-      )}
-      {flow !== null && (flow.state === 'waiting' || flow.state === 'saving')
-        ? waiting(t, flow)
-        : flow !== null && (flow.state === 'done' || flow.state === 'error' || flow.state === 'cancelled')
-          ? finished(t, flow)
-          : (
-            <div class="signin__actions">
-              <button type="button" class="btn btn--primary" aria-disabled={locked ? 'true' : undefined} aria-busy={sending} onClick={start}>Start sign-in</button>
-            </div>
-          )}
-    </>
-  );
+  const oauthPanel = (t: SignInTarget) => (shownFlow !== null && waitingNow
+    ? waiting(t, shownFlow)
+    : shownFlow !== null && finishedNow
+      ? finished(t, shownFlow)
+      : (
+        <div class="signin__actions">
+          <button type="button" class="btn btn--primary" aria-disabled={locked ? 'true' : undefined} aria-busy={sending} onClick={start}>Start sign-in</button>
+        </div>
+      ));
 
   const methods = target?.methods ?? [];
   // A provider with one method has no radio group, so the panel follows it
@@ -428,7 +475,6 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
         ) : (
           <>
             <input
-              ref={filter}
               class="signin__filter"
               aria-label="Filter providers"
               placeholder="Filter providers"
@@ -472,18 +518,12 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
                     ))}
                   </fieldset>
                 ) : null}
-                {shownMethod === 'api_key' && methods.includes('api_key') ? (
-                  <>
-                    {alertText && (
-                      <p class="signin__alert" role="alert">
-                        <span aria-hidden="true">✕</span> {alertText}
-                      </p>
-                    )}
-                    {keyForm(target)}
-                  </>
-                ) : (
-                  oauthPanel(target)
+                {alerts.length > 0 && (
+                  <p class="signin__alert" role="alert">
+                    <span aria-hidden="true">✕</span> {alerts.join(' ')}
+                  </p>
                 )}
+                {shownMethod === 'api_key' && methods.includes('api_key') ? keyForm(target) : oauthPanel(target)}
               </section>
             )}
           </>
@@ -492,4 +532,3 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
     </div>
   );
 }
-

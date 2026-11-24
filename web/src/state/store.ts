@@ -2,7 +2,8 @@ import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, Snapshot, WireEvent,
+  Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, SignInState, Snapshot,
+  WireEvent,
 } from '../api/types';
 import {
   adoptSession, applySignIn, clearAwsSso, dismissToast, dropQuestion as dropQuestionFrom, initialState,
@@ -452,10 +453,13 @@ export const actions = {
   signInKey: (provider: string, apiKey: string, model?: ModelTarget) =>
     api.signInKey(provider, apiKey, model),
   // signInStart begins one OAuth sign-in and records the challenge it
-  // answered with, so the dialog shows it before the frame lands.
-  async signInStart(provider: string, model?: ModelTarget): Promise<void> {
+  // answered with, so the dialog shows it before the frame lands. It answers
+  // the state too: a start that finishes at once still belongs to the tab
+  // that asked for it.
+  async signInStart(provider: string, model?: ModelTarget): Promise<SignInState> {
     const st = await api.signInStart(provider, model);
     dispatch((s) => applySignIn(s, st));
+    return st;
   },
   // signInCancel stops a running flow. A flow that already finished answers
   // no_flow, which is not a failure to show.

@@ -176,6 +176,24 @@ describe('Escape and the sign-in dialog', () => {
     expect(signInOpen.value).toBeNull();
   });
 
+  it('closes the sign-in dialog on Ctrl+K and on Cmd+K', async () => {
+    for (const meta of [false, true]) {
+      stubSignIn();
+      await mountApp();
+      await act(() => { openSignIn('anthropic'); });
+      expect(signInOpen.value).not.toBeNull();
+
+      await act(() => {
+        window.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'k', code: 'KeyK', ctrlKey: !meta, metaKey: meta, bubbles: true,
+        }));
+      });
+
+      expect(signInOpen.value).toBeNull();
+      await act(() => { closePalette(); });
+    }
+  });
+
   it('closes the palette before the sign-in dialog below it', async () => {
     stubSignIn();
     await mountApp();

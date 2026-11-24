@@ -98,7 +98,7 @@
 .aws-sso {
   position: fixed; z-index: 15;
   inset-inline-end: var(--space-4);
-  inset-block-end: calc(var(--space-4) * 2 + 7.5rem);
+  inset-block-end: calc(var(--space-4) * 2 + var(--deck-h, 7.5rem));
   inline-size: min(26rem, calc(100vw - var(--space-4) * 2));
   display: grid; gap: 8px; padding: var(--space-4);
   background-image: linear-gradient(var(--glass), var(--glass)),
@@ -121,5 +121,5 @@
   color: var(--magenta); font-size: var(--step--1);
 }
 @media (max-width: 640px) {
-  .aws-sso { inset-inline: var(--space-4); inset-block-end: calc(var(--space-4) * 2 + 13rem); }
+  .aws-sso { inset-inline: var(--space-4); inset-block-end: calc(var(--space-4) * 2 + var(--deck-h, 13rem)); }
 }
