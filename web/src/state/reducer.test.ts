@@ -493,6 +493,38 @@ describe('M3 state', () => {
     expect(s.shells.r13).not.toBeUndefined();
   });
 
+  it('ignores a frame for a run its persisted message already dropped', () => {
+    let s = startShell(fromSnapshot(), 'r14', 's1', 'ls');
+    s = reduce(s, { seq: 87, type: 'shell_output', payload: { run_id: 'r14', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.droppedShells.r14).toBe(true);
+
+    s = reduce(s, { seq: 88, type: 'shell_output', payload: { run_id: 'r14', session_id: 's1', chunk: 'late\n' } });
+    expect(s.shells.r14).toBeUndefined();
+  });
+
+  it('forgets dropped shells when the tab adopts another session', () => {
+    let s = reduce(fromSnapshot(), { seq: 89, type: 'shell_output', payload: { run_id: 'r15', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    expect(s.droppedShells.r15).toBe(true);
+    expect(adoptSession(s, 's2').droppedShells).toEqual({});
+  });
+
+  it('keeps dropped shells when a snapshot repeats their session', () => {
+    let s = reduce(fromSnapshot(), { seq: 90, type: 'shell_output', payload: { run_id: 'r16', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, snapshot());
+    expect(s.droppedShells.r16).toBe(true);
+  });
+
+  it('forgets dropped shells when a snapshot names another session', () => {
+    let s = reduce(fromSnapshot(), { seq: 91, type: 'shell_output', payload: { run_id: 'r17', session_id: 's1', done: true, exit_code: 0 } });
+    s = reduce(s, shellMessage('s1', 'ls'));
+    s = reduce(s, snapshot({ current_session_id: 's2' }));
+    expect(s.droppedShells).toEqual({});
+    expect(s.shells).toEqual({});
+  });
+
   it('records and clears the pending plan', () => {
     let s = reduce(fromSnapshot(), { seq: 57, type: 'plan_ready', payload: { session_id: 's1' } });
     expect(s.planReady).toBe('s1');

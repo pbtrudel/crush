@@ -73,12 +73,10 @@ function RunCard({ id, run }: { id: string; run: ShellRun }) {
       await api.cancelShell(id);
       setCancelFailure(null);
     } catch (err) {
-      // The gateway no longer holds the run: no done frame is coming, so a
-      // late cancel takes the card with it.
+      // The gateway no longer holds the run, so no done frame is coming and
+      // a late 202 must not revive the card.
       if (err instanceof ApiError && err.code === 'unknown_run') {
-        // The gateway no longer holds the run, so no done frame will come
-        // and the card has nothing left to show.
-        actions.removeShell(id);
+        actions.dropShell(id);
       } else {
         setCancelFailure(describeFailure(err).text);
       }

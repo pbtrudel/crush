@@ -6,7 +6,8 @@ import type {
 } from '../api/types';
 import {
   adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
-  mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn, startShell, unmarkAnswered,
+  dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn, startShell,
+  unmarkAnswered,
   type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
@@ -316,6 +317,10 @@ export const actions = {
   // screen.
   removeShell(runId: string) {
     dispatch((s) => removeShellRun(s, runId));
+  },
+  // dropShell removes one run for good, so its 202 cannot revive the card.
+  dropShell(runId: string) {
+    dispatch((s) => dropRun(s, runId));
   },
   async cancel() {
     const sid = state.value.sessionId;

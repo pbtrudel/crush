@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { ApiError, api } from '../../api/http';
-import { initialState, reduce, type ShellRun } from '../../state/reducer';
+import { initialState, reduce, startShell, type ShellRun } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
 import { SHELL_CARD_TTL_MS, ShellCard } from './ShellCard';
 
@@ -130,6 +130,11 @@ describe('ShellCard', () => {
     expect(root.querySelector('.shell-card__failure')).toBeNull();
     expect(root.querySelector('.shell-card')).toBeNull();
     expect(state.value.shells.r1).toBeUndefined();
+
+    // A 202 that lands after the drop must not bring the card back.
+    await act(() => { dispatch((s) => startShell(s, 'r1', 's1', 'make test')); });
+    expect(root.querySelector('.shell-card')).toBeNull();
+    expect(state.value.droppedShells.r1).toBe(true);
   });
 
   it('leaves the focus alone when Cancel did not hold it', async () => {

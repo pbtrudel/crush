@@ -348,7 +348,7 @@ export function removeShell(s: State, runId: string): State {
 
 // dropRun removes one run and remembers it, so the 202 that names it cannot
 // bring a card back after the frames have already left.
-function dropRun(s: State, runId: string): State {
+export function dropRun(s: State, runId: string): State {
   const shells = { ...s.shells };
   delete shells[runId];
   return { ...s, shells, droppedShells: { ...s.droppedShells, [runId]: true } };
@@ -369,6 +369,9 @@ function capShell(output: string): string {
 // from another tab (which carries no command), and settles it on the done
 // frame.
 function applyShellOutput(s: State, e: ShellOutput): State {
+  // A run that already left for good ignores every frame, so a late chunk or
+  // a replayed done cannot put an empty card back.
+  if (s.droppedShells[e.run_id]) return s;
   // The message that persists the result can arrive before the done frame.
   // Once both are in, the log's own rendering has the card's place.
   if (e.done && s.shells[e.run_id]?.persisted) return dropRun(s, e.run_id);
