@@ -1,0 +1,22 @@
+date: 2026-11-23
+name: w6-read-files
+variants:
+  - name: control
+    ref: cf29d9f911a2c5c03eaf3960699642dfb36f3b85
+    overlay: {prompt_profile: lean}
+  - name: no-read-rule
+    ref: ae3ab49bedf4bc75089ab8fdcac8cb64f83fa965
+    overlay: {prompt_profile: lean}
+routes: [deepseek-flash-nw]
+repetitions: 6
+# Roadmap W6, candidate 1: the lean prompt's rule "LIMIT FILE READS" tells
+# models to read in offset and limit pages, and 75% of reads pass a limit
+# (median 120 lines, below the tool's 200-line default). The variant removes
+# the rule and nothing else. Both arms pin the lean profile, DeepSeek's
+# default. Pass rate is the primary metric with a 10-point margin; steps,
+# input tokens and view calls come from the compare tables. The rule goes
+# only if pass rate holds and steps or tokens do not rise.
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.06424518204221902
