@@ -14,6 +14,9 @@ const BOARD_GAP = 8;
 // press. A closed or collapsed panel reports a degenerate rect and counts
 // as absent.
 const OCCLUDERS = ['.panel--inspector:not([hidden])', '.agent-list'];
+// The board and the panels above are watched for size changes too: a board
+// that grows while a tag sits on it must move the tag.
+const OCCLUDER_SELECTORS = ['.panel--inspector', '.agent-list', '.taskboard'];
 const NEIGHBOUR_GAP = 4;
 
 interface Rect {
@@ -152,11 +155,26 @@ export function AgentTags({ agents, selected }: { agents: Agent[]; selected: str
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => apply(currentAgentScreens()));
-    for (const sel of ['.panel--inspector', '.agent-list']) {
-      const el = document.querySelector(sel);
-      if (el) observer.observe(el);
-    }
-    return () => observer.disconnect();
+    const watched = new Set<Element>();
+    // A docked panel can mount after this effect ran, so every pass looks for
+    // the occluders again and observes the ones it has not seen yet.
+    const watch = () => {
+      for (const sel of OCCLUDER_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (!el || watched.has(el)) continue;
+        watched.add(el);
+        observer.observe(el);
+      }
+    };
+    watch();
+    const mutations = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(() => watch());
+    mutations?.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      mutations?.disconnect();
+      observer.disconnect();
+    };
   }, [selected]);
   return (
     <div class="agent-tags" ref={root} aria-hidden="true">

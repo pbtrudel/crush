@@ -21,6 +21,33 @@ function box(left: number, top: number, width: number, height: number): DOMRectR
 }
 
 describe('AgentTags', () => {
+  it('observes a board that mounts after the effect ran', async () => {
+    const observed: Element[] = [];
+    class FakeResizeObserver {
+      constructor(public cb: () => void) {}
+      observe(el: Element) { observed.push(el); }
+      disconnect() {}
+    }
+    const original = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
+    const board = document.createElement('section');
+    board.className = 'taskboard';
+    try {
+      await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+      expect(observed).toHaveLength(0);
+
+      // The board mounts later, the way the task board does once a task
+      // arrives, and the watcher has to pick it up.
+      document.body.append(board);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+      expect(observed).toContain(board);
+    } finally {
+      board.remove();
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = original;
+    }
+  });
+
   it('moves tags through the CSSOM without re-rendering', async () => {
     await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
     const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
