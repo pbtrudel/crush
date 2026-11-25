@@ -226,6 +226,39 @@ Run `/web` in the terminal to start a new gateway; the new link works in the
 same tab. If the terminal exits instead of stopping web mode, the tab says
 the session ended and points at the same `/web` command.
 
+## Palette commands
+
+`Ctrl+K` (`Cmd+K` on macOS) opens the command palette. Besides the sessions,
+models, custom commands and skills, it offers these web mode actions:
+
+- **Export session as Markdown** writes the current session to
+  `crush-session-<session>.md` in the working directory, the same file the
+  terminal writes, and shows the path in a toast.
+- **Set goal** asks for an objective and starts it; **Goal status** and
+  **Clear goal** read and clear it. **Start loop** asks for a task, and
+  **Loop status** and **Clear loops** read and clear the loops.
+- **Agent Teams: On** or **Agent Teams: Off** toggles Agent Teams and writes
+  the setting to the global config, the same switch the terminal has.
+- **Enable Docker MCP catalog** and **Disable Docker MCP catalog** add or
+  remove the Docker MCP server. The enable item is absent while Docker MCP is
+  unavailable on the machine.
+- **Channels** opens the systems panel on its MCP list filtered to the
+  servers that are, or could be, channels.
+- **Initialize project** starts a new session with the project onboarding
+  prompt, the same run the terminal starts on a fresh project.
+- **Stop web mode** opens the display settings dialog at its confirmation
+  step; **Stop web mode now** disconnects every tab of this gateway.
+- **Systems**, **Sign in to a provider** and **Display settings** open the
+  same dialogs the HUD controls open.
+
+Goals and loops belong to the terminal: the scheduler runs in the Crush
+process, so these commands go through it and need a terminal attached and
+showing the same session. With no terminal attached, the command fails and
+the palette shows the gateway's error.
+
+The palette does not carry every terminal command. Notification settings and
+Remote Control stay terminal-only.
+
 ## Client/server mode
 
 With `CRUSH_CLIENT_SERVER=1`, Crush runs as a client of a Crush server. Web
