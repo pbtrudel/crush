@@ -40,12 +40,15 @@ const (
 // when Agent Teams is off at call time.
 const agentsOffRefusal = "Agents are turned off; enable Agent Teams to delegate work to another agent"
 
-// refuseAgentsOff reports the error a tool that creates agent work answers
-// with, and false when it may run. A turn that started while Agent Teams was
-// on holds a tool list that cannot be rebuilt under it, so the check happens
-// per call. Only the tools that create work refuse: agent_status, agent_stop,
-// wait_agent, team_task_list and team_task_get keep running, so work already
-// in flight can still be watched, waited on and stopped after the toggle.
+// refuseAgentsOff reports the tool error a call that needs Agent Teams
+// answers with, and false when it may run. A turn that started while Agent
+// Teams was on holds a tool list that cannot be rebuilt under it, so the
+// check happens per call. The calls that start or steer work check it:
+// agent_dispatch, agent_send, spawn_teammate, interrupt_agent and
+// team_task_create. The calls that only observe or stop work, agent_status,
+// agent_stop, list_agents, wait_agent and the task board's get, list and
+// update calls, keep running, so work already in flight can still be
+// watched, waited on and stopped after the toggle.
 func (c *coordinator) refuseAgentsOff() (fantasy.ToolResponse, bool) {
 	if !c.agentsOff() {
 		return fantasy.ToolResponse{}, false
