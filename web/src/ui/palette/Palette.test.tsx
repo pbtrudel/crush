@@ -17,6 +17,7 @@ import { setCinematic } from '../../state/cinematic';
 import { closeSignIn, signInOpen } from '../../state/signin';
 import { motion, setMotion } from '../../state/motion';
 import { closeDisplay, displayOpen } from '../../state/display';
+import { pendingModel, pendingReasoning, resetPendingModel } from '../../state/pendingModel';
 import { App } from '../App';
 
 vi.mock('../stage/SceneLayer', () => ({ SceneLayer: () => null }));
@@ -149,6 +150,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   setCinematic(false);
   setMotion('full');
+  resetPendingModel();
   state.value = initialState();
   vi.restoreAllMocks();
 });
@@ -514,6 +516,41 @@ describe('the command palette', () => {
 
     expect(select).toHaveBeenCalledWith('main', 'p1', 'm2');
     expect(paletteOpen.value).toBeNull();
+  });
+
+  it('queues a model picked while busy instead of failing', async () => {
+    seed({ busy: true });
+    stubSources({
+      models: [{ provider: 'p1', provider_name: 'Provider One', id: 'm2', name: 'Model Two', context_window: 1000, can_reason: false }],
+    });
+    const select = vi.spyOn(api, 'selectModel');
+    await mount();
+
+    await act(() => { openPalette('models'); });
+    await flush();
+    await enter();
+
+    expect(select).not.toHaveBeenCalled();
+    expect(paletteOpen.value).toBeNull();
+    expect(pendingModel.value).toEqual({ type: 'main', provider: 'p1', model: 'm2', name: 'Model Two' });
+    expect(state.value.toasts.at(-1)?.text).toBe('Large model will switch to Model Two when the turn ends');
+    expect(state.value.toasts.at(-1)?.tone).toBe('info');
+  });
+
+  it('queues the thinking toggle while busy', async () => {
+    seed({ busy: true, model: { ...state.value.model, can_reason: true, effort_levels: [], think: false } });
+    stubSources();
+    const reasoning = vi.spyOn(api, 'setReasoning');
+    await mount();
+    await openWithKey();
+
+    await type('enable thinking');
+    await enter();
+
+    expect(reasoning).not.toHaveBeenCalled();
+    expect(paletteOpen.value).toBeNull();
+    expect(pendingReasoning.value).toEqual({ think: true });
+    expect(state.value.toasts.at(-1)?.text).toBe('Thinking will turn on when the turn ends');
   });
 
   it('opens the model selector from Switch model', async () => {
