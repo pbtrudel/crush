@@ -185,12 +185,18 @@ the terminal's offers **Browse here**. Browsing shows that session's
 transcript, edited files and agents in the tab without moving the terminal;
 the HUD says **Browsing** and names the session.
 
+On widths below 1280 the HUD has no room for the pin row, so it is hidden.
+Open the session switcher from the session title and use **Browse here**
+there; the deck's **Return to the terminal's session** is the way back.
+
 A browsed session is read-only. The message box explains why: prompts go to
 the terminal's session. **Return to the terminal's session** goes back to
 whatever the terminal shows now, including a session it switched to while
 you were browsing. **Open this session in the terminal** asks the terminal
 to show the browsed session; the tab follows it and the message box unlocks.
 
+While browsing, the command palette hides commands, MCP prompts, skills and
+the actions that start work, and the deck and the plan card refuse to send.
 Permission, question and secure prompt dialogs stay global: they open
 wherever they belong while you browse.
 
