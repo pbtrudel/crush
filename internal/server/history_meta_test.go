@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/app"
@@ -224,4 +225,65 @@ func TestHistoryRoutesHideStoreErrors(t *testing.T) {
 		require.NotContains(t, string(body), "/home/user", tc.name)
 	}
 	require.Contains(t, h.logs.String(), "disk I/O error", "the store error stays in the log")
+}
+
+// TestHistoryRoutesMapAnUnknownWorkspace pins the workspace mapping on the
+// history routes: a workspace the server does not have is a 404 with the
+// mapped message, not the fixed store failure.
+func TestHistoryRoutesMapAnUnknownWorkspace(t *testing.T) {
+	t.Parallel()
+	h := newHistoryHarness(t)
+	for _, path := range []string{"/sessions/s1/history/meta", "/history/any-id"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+			h.httpSrv.URL+"/v1/workspaces/nope"+path, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		require.NoError(t, err)
+		require.Equal(t, http.StatusNotFound, resp.StatusCode, path+": "+string(body))
+		require.Contains(t, string(body), "workspace not found", path)
+	}
+}
+
+// TestSessionRenameKeepsTheRestOfTheRow pins the rename route over SQLite:
+// the title changes and the usage, cost and todos a concurrent run wrote
+// survive, which a whole-row Save would overwrite.
+func TestSessionRenameKeepsTheRestOfTheRow(t *testing.T) {
+	t.Parallel()
+	h := newHistoryHarness(t)
+	sess, err := h.sessions.Create(t.Context(), "Old title")
+	require.NoError(t, err)
+	sess.Cost = 1.25
+	sess.PromptTokens = 40
+	sess.CompletionTokens = 7
+	sess.Todos = []session.Todo{{Content: "keep me", Status: session.TodoStatusInProgress}}
+	_, err = h.sessions.Save(t.Context(), sess)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		h.httpSrv.URL+"/v1/workspaces/"+h.workspaceID+"/sessions/"+sess.ID+"/rename",
+		strings.NewReader(`{"title":"Parser work"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+
+	var renamed proto.Session
+	require.NoError(t, json.Unmarshal(body, &renamed))
+	require.Equal(t, "Parser work", renamed.Title)
+
+	got, err := h.sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, "Parser work", got.Title)
+	require.Equal(t, 1.25, got.Cost)
+	require.Equal(t, int64(40), got.PromptTokens)
+	require.Equal(t, int64(7), got.CompletionTokens)
+	require.Len(t, got.Todos, 1)
+	require.Equal(t, "keep me", got.Todos[0].Content)
 }
