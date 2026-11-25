@@ -181,11 +181,14 @@ type Gateway struct {
 	inputMode string
 	planReady string
 
-	// modelMu guards lastModel, the model info the hub last announced. The
-	// handlers and the watch both announce through it, so a switch made in
-	// the browser reaches every tab once and the watch does not repeat it.
+	// modelMu guards lastModel, the model info the hub last announced, and
+	// modelGen, which counts handler announces. The handlers and the watch
+	// both announce through it, so a switch made in the browser reaches
+	// every tab once, the watch does not repeat it, and a watch read that
+	// started before an announce cannot publish over it.
 	modelMu   sync.Mutex
 	lastModel ModelInfo
+	modelGen  uint64
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
