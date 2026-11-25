@@ -790,6 +790,48 @@ describe('session switcher', () => {
     expect(document.activeElement).toBe(titleButton('Port the parser'));
   });
 
+  it('never moves the focus to a neighbour when a query hides the kept row', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await flush();
+
+    // The reload kept the row, so the pending focus gave up on the filter.
+    expect(titleButton('Fix the lexer')).not.toBeUndefined();
+    expect(document.activeElement).toBe(filter());
+
+    // A query that hides the row must not hand the focus to its neighbour.
+    await type('parser');
+    expect(document.activeElement).toBe(filter());
+    expect(document.activeElement).not.toBe(titleButton('Port the parser'));
+  });
+
+  it('gives the focus to the filter when a cancelled row has left the list', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    // The query hides the row, and the confirm with it, before it is cleared.
+    await type('parser');
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(row('Fix the lexer')).toBeUndefined();
+    expect(dialog()!.querySelector('[role="alertdialog"]')).toBeNull();
+    // The request named a row that is gone, so the hook's first-control
+    // fallback is what puts the focus on the filter.
+    expect(document.activeElement).toBe(filter());
+  });
+
   it('moves from the filter into the list and roves the tab stop', async () => {
     seed();
     stubSessions();

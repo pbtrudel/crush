@@ -29,6 +29,12 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const [active, setActive] = useState(0);
   const [loadError, setLoadError] = useState<unknown | null>(null);
   const [actionError, setActionError] = useState<unknown | null>(null);
+  // lastList is the newest list a load delivered, so a settled reload can be
+  // read without waiting for the render it schedules.
+  const lastList = useRef<Session[]>([]);
+  // resolvedDelete names the delete whose reload already placed the focus, so
+  // the editor effect that closes the confirm does not ask for it again.
+  const resolvedDelete = useRef<string | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
@@ -46,10 +52,6 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   // that is the newest one may set it: an answer a newer load replaced knows
   // nothing about the list on screen.
   const reloadFailed = useRef(false);
-  // A pending focus after a delete waits for the reload that drops the row.
-  // Only a reload that settled without dropping it ends the wait: a render
-  // from another source, like a stream frame, says nothing about the list.
-  const reloadSettled = useRef(false);
   // A close that carries a fresh server answer must keep its message line.
   const keepsError = useRef(false);
   // Every editor a user opens is a new generation, so an answer to an older
@@ -76,11 +78,10 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   // while it was on its way. Only failed may leave a Retry line behind.
   const load = async (): Promise<'ok' | 'failed' | 'stale'> => {
     const gen = ++generation.current;
-    // A newer load makes the failure line the older one asked for obsolete.
-    reloadFailed.current = false;
     try {
       const list = await api.sessions();
       if (!alive.current || gen !== generation.current) return 'stale';
+      lastList.current = list;
       setSessions(list);
       setLoadError(null);
       // A fresh list means the failure it showed is no longer true.
@@ -125,11 +126,10 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     if (prev === null || deleting !== null) return;
     const index = deletedIndex.current;
     deletedIndex.current = null;
-    if (renaming === null) {
+    if (renaming === null && resolvedDelete.current !== prev) {
       focusRequest.current = index === null
         ? { kind: 'delete', id: prev }
         : { kind: 'deleted', id: prev, index };
-      reloadSettled.current = false;
     }
     if (!keepsError.current) setActionError(null);
     keepsError.current = false;
@@ -156,17 +156,8 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         retry.focus();
         return;
       }
-      if (visible.some((s) => s.id === request.id)) {
-        if (!reloadSettled.current) return;
-        // The reload settled and kept the row, so the row that should take
-        // its place is never going to appear: the filter is the control that
-        // is there.
-        focusRequest.current = null;
-        reloadSettled.current = false;
-        filterInput.current?.focus();
-        return;
-      }
-      reloadSettled.current = false;
+      // The row is still there, so the reload has not dropped it yet.
+      if (visible.some((s) => s.id === request.id)) return;
       const to = visible.length === 0 ? -1 : Math.min(request.index, visible.length - 1);
       focusRequest.current = null;
       if (to < 0) {
@@ -265,6 +256,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const deleteSession = async (sess: Session) => {
     if (deletingBusy.current) return;
     deletingBusy.current = true;
+    resolvedDelete.current = null;
     const gen = editorGen.current;
     setActionError(null);
     const index = visible.findIndex((s) => s.id === sess.id);
@@ -298,9 +290,23 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     if (sessionDeleteId.value === sess.id) sessionDeleteId.value = null;
     const loaded = await load();
     if (!alive.current) return;
-    // A reload that settled ok tells the pending focus what became of the row.
-    if (loaded === 'ok') reloadSettled.current = true;
     if (ownsConfirm && loaded === 'failed') reloadFailed.current = true;
+    if (!ownsConfirm || loaded !== 'ok') return;
+    // The reload settled, so its own outcome decides the focus now: the list
+    // it delivered is the truth, and the render that follows may come after
+    // the user's next action. Another request in flight, a rename for one,
+    // keeps its own.
+    resolvedDelete.current = sess.id;
+    const pending = focusRequest.current;
+    if (pending !== null && !(pending.kind === 'deleted' && pending.id === sess.id)) return;
+    if (lastList.current.some((s) => s.id === sess.id)) {
+      // The row is still there, so no row is going to take its place: the
+      // filter is the control that is there.
+      focusRequest.current = null;
+      filterInput.current?.focus();
+      return;
+    }
+    focusRequest.current = { kind: 'deleted', id: sess.id, index };
   };
 
   // retry runs the load the failure line asks for and hands the focus to the
