@@ -891,7 +891,13 @@ func (w *ClientWorkspace) ReloadSkills(ctx context.Context) error {
 }
 
 func (w *ClientWorkspace) ReloadConfig(ctx context.Context) error {
-	return w.client.ReloadConfig(ctx, w.workspaceID())
+	err := w.client.ReloadConfig(ctx, w.workspaceID())
+	if errors.Is(err, client.ErrConfigReloadBusy) {
+		// The frontends match the in-process error, so a busy server reads
+		// the same as a busy local agent.
+		return fmt.Errorf("%w: %w", app.ErrConfigReloadBusy, err)
+	}
+	return err
 }
 
 func (w *ClientWorkspace) ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {

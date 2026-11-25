@@ -1961,3 +1961,24 @@ func TestClientWorkspacePinentryRespondNeverLogsSecret(t *testing.T) {
 	require.NotContains(t, logs.String(), "correct horse battery staple")
 	require.Contains(t, logs.String(), "Failed to answer pinentry prompt", "the failure is still logged, without the secret")
 }
+
+// TestClientWorkspaceReloadConfigBusy pins that a server-side busy refusal
+// reaches the frontend as the same app error the in-process workspace
+// returns, so the gateway's 409 and the TUI's busy message work in both
+// modes.
+func TestClientWorkspaceReloadConfigBusy(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, err := w.Write([]byte(`{"message":"cannot reload the configuration while an agent is running","code":"config_reload_busy"}`))
+		require.NoError(t, err)
+	}))
+	defer srv.Close()
+
+	w := newTestClientWorkspace(t, srv)
+	err := w.ReloadConfig(t.Context())
+	require.ErrorIs(t, err, app.ErrConfigReloadBusy)
+	require.ErrorIs(t, err, client.ErrConfigReloadBusy)
+}
