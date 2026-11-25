@@ -570,3 +570,29 @@ func TestValidateEditsNamesEmptyOldString(t *testing.T) {
 	err := validateEdits(multiEditList{{OldString: "a", NewString: "b"}, {OldString: "", NewString: "c"}})
 	require.EqualError(t, err, "edit 2: old_string is empty; every edit after the first must quote the exact text it replaces (only edit 1 may be empty, to create the file)")
 }
+
+// TestMultiEditToolRecordsTheToolCall pins the drawer's link for a batch
+// that creates a file: the empty baseline names no call and the version
+// holding the batch's output names the call that ran it.
+func TestMultiEditToolRecordsTheToolCall(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	files, sessionID := newHistoryForToolTest(t)
+	tool := NewMultiEditTool(nil, &mockPermissionService{}, files, mockFileTrackerService{}, workingDir, false)
+	input, err := json.Marshal(MultiEditParams{
+		FilePath: "new.go",
+		Edits:    multiEditList{{OldString: "", NewString: "package a\n"}},
+	})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, sessionID)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "tc-me", Name: MultiEditToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+
+	metas, err := files.ListMetaBySession(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, metas, 2)
+	require.Equal(t, "", metas[0].ToolCallID, "the new file's empty baseline names no call")
+	require.Equal(t, "tc-me", metas[1].ToolCallID)
+}

@@ -307,3 +307,64 @@ func TestApplyPatchParsesSections(t *testing.T) {
 	require.Equal(t, patchOpDelete, ops[2].kind)
 	require.Equal(t, "deleted.txt", ops[2].path)
 }
+
+// TestApplyPatchAddRecordsTheToolCall pins the drawer's link for a patch
+// that adds a file: the empty baseline names no call and the version
+// holding the added content names the patch's call.
+func TestApplyPatchAddRecordsTheToolCall(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	files, sessionID := newHistoryForToolTest(t)
+	tool := NewApplyPatchTool(nil, &mockPermissionService{}, files, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	input, err := json.Marshal(ApplyPatchParams{Patch: `*** Begin Patch
+*** Add File: added.txt
++alpha
+*** End Patch
+`})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, sessionID)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "tc-add", Name: ApplyPatchToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+
+	metas, err := files.ListMetaBySession(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, metas, 2)
+	require.Equal(t, "", metas[0].ToolCallID, "the new file's empty baseline names no call")
+	require.Equal(t, "tc-add", metas[1].ToolCallID)
+}
+
+// TestApplyPatchUpdateRecordsTheToolCall pins the same link for a patch
+// that updates a file: the new version names the patch's call, and the
+// baselines recorded before it name none.
+func TestApplyPatchUpdateRecordsTheToolCall(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(path, []byte("package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"), 0o644))
+	files, sessionID := newHistoryForToolTest(t)
+	tool := NewApplyPatchTool(nil, &mockPermissionService{}, files, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir)
+	input, err := json.Marshal(ApplyPatchParams{Patch: `*** Begin Patch
+*** Update File: main.go
+@@
+-	println("hello")
++	println("world")
+*** End Patch
+`})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, sessionID)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "tc-up", Name: ApplyPatchToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+
+	metas, err := files.ListMetaBySession(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.NotEmpty(t, metas)
+	last := metas[len(metas)-1]
+	require.Equal(t, "tc-up", last.ToolCallID)
+	for _, m := range metas[:len(metas)-1] {
+		require.Equal(t, "", m.ToolCallID, "a baseline names no call")
+	}
+}
