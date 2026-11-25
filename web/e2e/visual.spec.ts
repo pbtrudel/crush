@@ -1,5 +1,5 @@
 import {
-  axeScan, awsTest, expect, m3VisualTest, m4VisualTest, promptVisualTest, visualTest as test,
+  axeScan, awsTest, expect, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest, visualTest as test,
 } from './fixture';
 import type { Page } from '@playwright/test';
 
@@ -8,6 +8,7 @@ import type { Page } from '@playwright/test';
 test.setTimeout(120_000);
 m3VisualTest.setTimeout(120_000);
 m4VisualTest.setTimeout(120_000);
+m4bVisualTest.setTimeout(120_000);
 promptVisualTest.setTimeout(120_000);
 awsTest.setTimeout(120_000);
 
@@ -25,6 +26,7 @@ async function prepare(page: Page) {
 test.beforeEach(async ({ page }) => { await prepare(page); });
 m3VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 m4VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+m4bVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 promptVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 
 async function settle(page: Page) {
@@ -257,6 +259,33 @@ m4VisualTest('sign-in device code', async ({ page, gateway }) => {
   // run and needs no mask.
   await expect(page).toHaveScreenshot('signin-device.png', { timeout: 30_000 });
   await axe(page);
+});
+
+// The M4b surfaces, on the M4b scenario: the display settings dialog, and the
+// solid theme a gateway starts on when the run asks for it.
+m4bVisualTest('display settings', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  // The dialog opens from a click, so no clock from the gateway's start is
+  // involved.
+  await page.getByRole('button', { name: 'Display', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Display settings' })).toBeVisible();
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('display-settings.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+m4bVisualTest.describe('solid theme', () => {
+  m4bVisualTest.use({ theme: 'solid' });
+
+  m4bVisualTest('the solid theme', async ({ page, gateway }) => {
+    await page.goto(gateway.launch);
+    await settle(page);
+    await expect(page.locator('.holodeck')).toHaveAttribute('data-theme', 'solid');
+    await page.clock.runFor(1000);
+    await expect(page).toHaveScreenshot('solid-theme.png', { timeout: 30_000 });
+    await axe(page);
+  });
 });
 
 // The AWS SSO card is a reading surface with no baseline of its own: the axe
