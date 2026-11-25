@@ -46,10 +46,10 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   // that is the newest one may set it: an answer a newer load replaced knows
   // nothing about the list on screen.
   const reloadFailed = useRef(false);
-  // A deleted row that a reload keeps in the list would leave the pending
-  // focus waiting on a row that never leaves, so it gives up on the second
-  // render without it.
-  const deleteWaits = useRef(0);
+  // A pending focus after a delete waits for the reload that drops the row.
+  // Only a reload that settled without dropping it ends the wait: a render
+  // from another source, like a stream frame, says nothing about the list.
+  const reloadSettled = useRef(false);
   // A close that carries a fresh server answer must keep its message line.
   const keepsError = useRef(false);
   // Every editor a user opens is a new generation, so an answer to an older
@@ -129,7 +129,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       focusRequest.current = index === null
         ? { kind: 'delete', id: prev }
         : { kind: 'deleted', id: prev, index };
-      deleteWaits.current = 0;
+      reloadSettled.current = false;
     }
     if (!keepsError.current) setActionError(null);
     keepsError.current = false;
@@ -157,15 +157,16 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         return;
       }
       if (visible.some((s) => s.id === request.id)) {
-        if (++deleteWaits.current < 2) return;
-        // The reload kept the row, so the row that should take its place is
-        // never going to appear: the filter is the control that is there.
+        if (!reloadSettled.current) return;
+        // The reload settled and kept the row, so the row that should take
+        // its place is never going to appear: the filter is the control that
+        // is there.
         focusRequest.current = null;
-        deleteWaits.current = 0;
+        reloadSettled.current = false;
         filterInput.current?.focus();
         return;
       }
-      deleteWaits.current = 0;
+      reloadSettled.current = false;
       const to = visible.length === 0 ? -1 : Math.min(request.index, visible.length - 1);
       focusRequest.current = null;
       if (to < 0) {
@@ -184,13 +185,8 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         request.kind === 'rename' ? `session-rename-${request.id}` : `session-delete-${request.id}`,
       );
     }
-    if (target === null) {
-      // The row left the list while its editor was open.
-      filterInput.current?.focus();
-      return;
-    }
-    target.focus();
-    target.scrollIntoView?.({ block: 'nearest' });
+    target?.focus();
+    target?.scrollIntoView?.({ block: 'nearest' });
   });
 
   const focusRow = (index: number) => {
@@ -302,12 +298,13 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     if (sessionDeleteId.value === sess.id) sessionDeleteId.value = null;
     const loaded = await load();
     if (!alive.current) return;
+    // A reload that settled ok tells the pending focus what became of the row.
+    if (loaded === 'ok') reloadSettled.current = true;
     if (ownsConfirm && loaded === 'failed') reloadFailed.current = true;
   };
 
   // retry runs the load the failure line asks for and hands the focus to the
-  // control the user wants next: the filter, or the first row when the filter
-  // has no rows.
+  // filter, which is where a reloaded list is read from.
   const retry = async () => {
     if ((await load()) === 'ok') focusRequest.current = { kind: 'filter' };
   };
