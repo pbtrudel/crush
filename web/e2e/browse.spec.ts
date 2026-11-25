@@ -13,7 +13,11 @@ async function browseTokenizerPort(page: Page) {
   await expect(row).toBeVisible({ timeout: 10_000 });
   await row.getByRole('button', { name: 'Browse here: Tokenizer port' }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole('button', { name: 'Browsing Tokenizer port' })).toHaveAttribute('aria-pressed', 'false');
+  // The HUD keeps the pin only on the named desktop layouts; narrower
+  // widths reach the same state through the session title and the deck.
+  if ((page.viewportSize()?.width ?? 0) >= 1280) {
+    await expect(page.getByRole('button', { name: 'Browsing Tokenizer port' })).toHaveAttribute('aria-pressed', 'false');
+  }
 }
 
 m4bFreshTest('browses another session read-only and returns to the terminal', async ({ page, gateway }) => {

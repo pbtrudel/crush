@@ -44,6 +44,13 @@
 }
 .hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
 .hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }
+/* The wrapped strip has no room for another row: at these widths the AWS
+   card above the deck needs the height, and the session title still opens
+   the switcher, where Browse here sits. The named HUD layouts (1280 and up)
+   keep the toggle. */
+@media (max-width: 1279px) {
+  .hud__pin-slot { display: none; }
+}
 .hud__select {
   appearance: none; color: var(--text); background-color: var(--glass-solid);
   /* The chevron is two 45 degree strokes side by side, so no data URI. */
