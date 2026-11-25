@@ -7,9 +7,20 @@ import { initialState } from '../../state/reducer';
 import { state } from '../../state/store';
 
 const focused = vi.hoisted(() => ({ calls: [] as Array<[string, string]> }));
+const derived = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('../../state/focusTool', () => ({
   focusToolCall: (sessionId: string, callId: string) => { focused.calls.push([sessionId, callId]); },
 }));
+vi.mock('../../state/chronoline', async (orig) => {
+  const mod = await orig<typeof import('../../state/chronoline')>();
+  return {
+    ...mod,
+    chronoEvents: (...args: Parameters<typeof mod.chronoEvents>) => {
+      derived.calls++;
+      return mod.chronoEvents(...args);
+    },
+  };
+});
 import { Chronoline } from './Chronoline';
 
 const root = document.createElement('div');
@@ -20,6 +31,7 @@ beforeAll(() => {
 afterEach(async () => {
   await act(() => { render(null, root); });
   focused.calls = [];
+  derived.calls = 0;
   state.value = initialState();
 });
 
@@ -160,6 +172,23 @@ describe('Chronoline', () => {
     await act(() => { render(<Chronoline />, root); });
     await act(() => { events()[0].click(); });
     expect(focused.calls).toEqual([['s1', 'tc-1']]);
+  });
+
+  it('does not re-derive for streamed text, and does for a call added to the last message', async () => {
+    const one = message('a1', [call('tc-1', 'view', '{"file_path":"a.go"}'), { type: 'text', data: { text: 'one' } }]);
+    seed([one]);
+    await act(() => { render(<Chronoline />, root); });
+    expect(derived.calls).toBe(1);
+    // Streamed text re-renders the page but changes no call.
+    const streamed = { ...one, parts: [...one.parts, { type: 'text' as const, data: { text: 'one two' } }] };
+    await act(() => { state.value = { ...state.value, messages: [streamed] }; });
+    expect(derived.calls).toBe(1);
+    // A second call in the same message has the same message count, so a
+    // length-based key would miss it.
+    const more = { ...streamed, parts: [...streamed.parts, call('tc-2', 'edit', '{"file_path":"b.go"}')] };
+    await act(() => { state.value = { ...state.value, messages: [more] }; });
+    expect(derived.calls).toBe(2);
+    expect(events()).toHaveLength(2);
   });
 
   it('follows the newest call only while the strip is already at the end', async () => {
