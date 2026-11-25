@@ -6,10 +6,12 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/tidwall/sjson"
 )
 
 // ErrSessionNotFound is returned by GetSession for unknown IDs. It wraps
@@ -114,6 +117,11 @@ type Fake struct {
 	authErr         error
 	authRelease     chan struct{}
 	authIgnoreCtx   bool
+	// configErr makes both config writes fail. configGate, when set,
+	// holds every config write until it closes, so a test can prove two
+	// writes never overlap. Set them with the setters.
+	configErr  error
+	configGate <-chan struct{}
 	// Calls is guarded by mu; read it through CallLog.
 	Calls   []string
 	Granted []string
@@ -572,6 +580,88 @@ func (f *Fake) SetReloadErr(err error) {
 	f.mu.Lock()
 	f.reloadErr = err
 	f.mu.Unlock()
+}
+
+// SetConfigErr makes SetConfigField and RemoveConfigField fail, the way a
+// full disk or an unwritable file does.
+func (f *Fake) SetConfigErr(err error) {
+	f.mu.Lock()
+	f.configErr = err
+	f.mu.Unlock()
+}
+
+// SetConfigGate holds every config write until gate closes, so a test can
+// check that two writes never overlap.
+func (f *Fake) SetConfigGate(gate <-chan struct{}) {
+	f.mu.Lock()
+	f.configGate = gate
+	f.mu.Unlock()
+}
+
+// SetConfigField records the write and applies it to Cfg the way the real
+// store writes the file and reloads it. Only options.* keys reach the
+// config: the fake has no other section a test writes.
+func (f *Fake) SetConfigField(scope config.Scope, key string, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return f.writeConfig("SetConfigField", scope, key, string(raw), value)
+}
+
+// RemoveConfigField records the removal and deletes the key from Cfg,
+// which succeeds for an absent key exactly as the real store does.
+func (f *Fake) RemoveConfigField(scope config.Scope, key string) error {
+	return f.writeConfig("RemoveConfigField", scope, key, "", nil)
+}
+
+// writeConfig shares the record, the gate, the failure and the apply
+// between the two config writes; value is nil for a removal.
+func (f *Fake) writeConfig(method string, scope config.Scope, key, raw string, value any) error {
+	call := method + ":" + scope.String() + ":" + key
+	if value != nil {
+		call += ":" + raw
+	}
+	f.record(call)
+	f.mu.Lock()
+	gate, err := f.configGate, f.configErr
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	if err != nil {
+		return err
+	}
+	path, ok := strings.CutPrefix(key, "options.")
+	if !ok {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Cfg == nil {
+		f.Cfg = &config.Config{}
+	}
+	if f.Cfg.Options == nil {
+		f.Cfg.Options = &config.Options{}
+	}
+	options, err := json.Marshal(f.Cfg.Options)
+	if err != nil {
+		return err
+	}
+	if value == nil {
+		options, err = sjson.DeleteBytes(options, path)
+	} else {
+		options, err = sjson.SetBytes(options, path, value)
+	}
+	if err != nil {
+		return err
+	}
+	var opts config.Options
+	if err := json.Unmarshal(options, &opts); err != nil {
+		return err
+	}
+	f.Cfg.Options = &opts
+	return nil
 }
 
 // SetDiagnostics sets what LSPDiagnosticsByFile returns.

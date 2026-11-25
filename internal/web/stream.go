@@ -31,6 +31,9 @@ const (
 	framePlanReady    = "plan_ready"
 	frameSecurePrompt = "secure_prompt"
 	frameSignIn       = "signin"
+	// frameDisplayChanged carries the tab's display settings after every
+	// successful config write.
+	frameDisplayChanged = "display_changed"
 )
 
 type frame struct {
