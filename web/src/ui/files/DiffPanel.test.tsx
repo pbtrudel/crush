@@ -120,6 +120,23 @@ describe('DiffPanel', () => {
     expect(focused.calls).toEqual([['team-m-1', 'tc-edit-1']]);
   });
 
+  it('keeps the diff room when no shown version records a tool call', async () => {
+    const base = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...base,
+      files: [{
+        path: '/repo/parser.go', versions: 2, version_ids: [0, 1],
+        version_tools: [{ session_id: 's1' }, { session_id: 's1' }],
+        additions: 1, removals: 0, diagnostics: { error: 0, warning: 0 }, updated_at: 1,
+        session_ids: ['s1'],
+      }],
+    };
+    vi.spyOn(api, 'diff').mockResolvedValue(diff());
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    expect(root.querySelector('.diffpanel__made')).toBeNull();
+  });
+
   it('asks for the versions the stepper picks', async () => {
     const get = vi.spyOn(api, 'diff').mockResolvedValue(diff());
     await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });

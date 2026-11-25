@@ -105,6 +105,9 @@ export function DiffPanel({ path }: { path: string }) {
       return { version, sessionId: tool?.session_id, callId: tool?.tool_call_id };
     })
     : [];
+  // A range with nothing to link says nothing: the drawer has a fixed height
+  // and a row of placeholders would only shrink the diff.
+  const linked = made.some((m) => m.callId !== undefined);
 
   const versionOptions = versions.map((v) => <option key={v} value={String(v)}>Version {v}</option>);
 
@@ -137,7 +140,7 @@ export function DiffPanel({ path }: { path: string }) {
           </div>
         </div>
       </header>
-      {made.length > 0 && (
+      {linked && (
         <p class="diffpanel__made hud-label">
           {made.map(({ version, sessionId, callId }) => (
             <span key={version} class="diffpanel__made-line">
