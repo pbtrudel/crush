@@ -182,8 +182,9 @@ func (g *Gateway) handleAPIKeySignIn(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := g.testAPIKeyFn(ctx, provider, key, config.IdentityResolver()); err != nil {
 		// Providers echo part of a rejected key in their error text, so the
-		// detail stays out of the log as well as the answer.
-		slog.Info("Web sign-in key rejected", "provider", body.Provider)
+		// detail stays out of the log as well as the answer; the class says
+		// what kind of failure it was.
+		slog.Info("Web sign-in key rejected", "provider", body.Provider, "reason", signInErrorClass(err))
 		writeError(w, http.StatusUnprocessableEntity, "key_rejected", "The provider did not accept this key.")
 		return
 	}
@@ -358,7 +359,11 @@ func (g *Gateway) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		g.signinMu.Unlock()
 		// ImportCopilot takes no context and may make a network call.
 		if _, imported := g.ws.ImportCopilot(); imported {
-			st := g.recordImportedSignIn(r.Context(), body.Provider, target.Name, model)
+			st, recorded := g.recordImportedSignIn(r.Context(), body.Provider, target.Name, model)
+			if !recorded {
+				writeError(w, http.StatusServiceUnavailable, "shutting_down", "Crush is shutting down")
+				return
+			}
 			writeJSON(w, http.StatusOK, st)
 			return
 		}
@@ -776,9 +781,16 @@ func (r *signinRun) stopped() (SignInState, bool) {
 // recordImportedSignIn records a sign-in that finished by importing an
 // existing Copilot login. No flow runs, so the last state sits on a flow
 // with nothing to wait for and nothing to close, and status and the
-// snapshot keep answering it. ImportCopilot saved the token already.
-func (g *Gateway) recordImportedSignIn(ctx context.Context, providerID, providerName string, model *signinModel) SignInState {
+// snapshot keep answering it. ImportCopilot saved the token already. It
+// reports false, and records nothing, once the gateway is closing: nothing
+// would publish such a run.
+func (g *Gateway) recordImportedSignIn(ctx context.Context, providerID, providerName string, model *signinModel) (SignInState, bool) {
 	applied, _ := applySignInModel(ctx, g, model)
+	g.signinMu.Lock()
+	defer g.signinMu.Unlock()
+	if g.signinClosed {
+		return SignInState{}, false
+	}
 	runCtx, cancel := context.WithCancel(g.ctx)
 	id := uuid.NewString()
 	st := SignInState{
@@ -797,14 +809,12 @@ func (g *Gateway) recordImportedSignIn(ctx context.Context, providerID, provider
 		model:  model,
 		state:  st,
 	}
-	g.signinMu.Lock()
-	defer g.signinMu.Unlock()
 	// A start that raced this one is replaced too, as any start replaces
 	// the running flow.
 	g.stopRunLocked(g.signin)
 	g.signin = run
 	g.setStateLocked(run, st)
-	return st
+	return st, true
 }
 
 // importedFlow is the flow of a sign-in that finished by importing an
@@ -859,11 +869,19 @@ func signInModelReason(err error) string {
 // testAPIKey is the default provider check: the catalog entry becomes the
 // provider config the TUI's key dialog tests, so both clients ask the same
 // question. endpoint resolves the catalog's api_endpoint, which is a shell
-// template rather than user input. It ignores ctx: TestConnection applies
-// its own 5 s limit.
-func testAPIKey(_ context.Context, p catwalk.Provider, key string, r, endpoint config.VariableResolver) error {
+// template rather than user input. TestConnection has its own five-second
+// limit; the caller's deadline is usually shorter and must win, so a hung
+// provider cannot hold the request.
+func testAPIKey(ctx context.Context, p catwalk.Provider, key string, r, endpoint config.VariableResolver) error {
 	pc := providerTestConfig(p, key, endpoint)
-	return pc.TestConnection(r)
+	done := make(chan error, 1)
+	go func() { done <- pc.TestConnection(r) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // providerTestConfig builds the provider config a catalog entry's key is
