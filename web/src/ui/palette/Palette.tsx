@@ -280,6 +280,9 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     } catch (err) {
       if (describeFailure(err).tone === 'starting') setFailed({ item, values });
       setFailure(err);
+      // The list keeps the keyboard, so a click that fails hands the focus
+      // back to the combobox instead of the row it is about to rerender.
+      input.current?.focus();
     } finally {
       running.current = false;
     }
