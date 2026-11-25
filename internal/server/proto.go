@@ -1013,10 +1013,11 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleHistoryError answers a failed file-history read. An error with a
-// mapped status keeps its usual answer; anything else is a store failure
-// whose text can name a database path, so the body carries a fixed message
-// and the log keeps the detail.
+// handleHistoryError answers a failed file-history read. Only
+// backend.ErrWorkspaceNotFound keeps its usual mapping (a 404, so a client
+// recovers); every other failure is a store error whose text can name a
+// database path, so the body carries a fixed message and the log keeps the
+// detail.
 func (c *controllerV1) handleHistoryError(w http.ResponseWriter, r *http.Request, message string, err error) {
 	if errors.Is(err, backend.ErrWorkspaceNotFound) {
 		c.handleError(w, r, err)
