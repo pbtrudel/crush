@@ -58,6 +58,8 @@ freshTest('compacts the session from the palette', async ({ page, gateway }) => 
   await page.keyboard.press('Control+K');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await palette.getByRole('combobox', { name: 'Command palette' }).fill('compact');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Compact/ })).toBeVisible();
   await page.keyboard.press('Enter');
   await compacted;
 
