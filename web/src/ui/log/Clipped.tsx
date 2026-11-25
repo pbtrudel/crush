@@ -1,14 +1,23 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 export const PREVIEW = 4000;
 // Even "show full" stops here: a multi-megabyte output in one <pre> stalls
 // layout for every later frame.
 export const FULL_CAP = 256 * 1024;
 
+// cutPoint keeps a slice from cutting a surrogate pair in half: an astral
+// character is two code units, and half of one renders as a replacement box.
+function cutPoint(text: string, limit: number): number {
+  const last = text.charCodeAt(limit - 1);
+  return last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+}
+
 export function Clipped({ text, label }: { text: string; label: string }) {
   const [full, setFull] = useState(false);
+  // A new text is a new command's output, so it starts clipped again.
+  useEffect(() => { setFull(false); }, [text]);
   const limit = full ? FULL_CAP : PREVIEW;
-  const shown = text.length <= limit ? text : text.slice(0, limit);
+  const shown = text.length <= limit ? text : text.slice(0, cutPoint(text, limit));
   return (
     <>
       <pre>{shown}</pre>
