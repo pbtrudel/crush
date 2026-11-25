@@ -46,6 +46,9 @@ export interface PaletteSources {
   agentTeamsLoaded: boolean;
   docker: DockerMcp;
   hasChannels: boolean;
+  // browsing hides the actions that start agent work or move the terminal's
+  // session while the tab reads another one.
+  browsing: boolean;
 }
 
 // The action ids the palette dispatches. Each one maps to a TUI command.
@@ -84,6 +87,13 @@ export const ACTIONS = {
   initProject: 'init-project',
   stopWeb: 'stop-web',
 } as const;
+
+// BROWSING_HIDDEN names the actions a browsing tab cannot run: they start
+// agent work in a session, or make the terminal follow one.
+const BROWSING_HIDDEN: ReadonlySet<string> = new Set([
+  ACTIONS.newSession, ACTIONS.initProject, ACTIONS.compact, ACTIONS.askSide, ACTIONS.addNote,
+  ACTIONS.runShell, ACTIONS.setGoal, ACTIONS.startLoop,
+]);
 
 function action(id: string, title: string, keywords: string[], hint?: string, args?: CommandArg[]): PaletteItem {
   return { id: `action:${id}`, group: 'Actions', title, keywords, args, run: { kind: 'action', action: id }, hint };
@@ -225,7 +235,10 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     });
   }
 
-  return [...actions, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
+  const shown = s.browsing
+    ? actions.filter((i) => !(i.run.kind === 'action' && BROWSING_HIDDEN.has(i.run.action)))
+    : actions;
+  return [...shown, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
 }
 
 // buildSkillToggles lists every skill, disabled ones included, so the skills

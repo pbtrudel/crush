@@ -174,6 +174,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     agentTeamsLoaded: loaded.config !== null,
     docker: loaded.servers?.docker ?? { available: false, enabled: false },
     hasChannels: (loaded.servers?.servers ?? []).some((server) => server.channel),
+    browsing: s.browsing !== null,
   };
   const scoped = section === 'skills' ? buildSkillToggles(loaded.skills) : buildItems(sources);
   const keep = groupIn(section);

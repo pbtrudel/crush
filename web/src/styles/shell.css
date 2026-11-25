@@ -28,6 +28,28 @@
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
+/* The pinned toggle is a glyph in the model line, so the strip keeps one
+   row at 1440px; the words live in its accessible name and its title. While
+   browsing it gives the state a line of its own, which no baseline sees. */
+.hud__pin { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-inline-size: 0; }
+.hud__id[data-browsing='true'] .hud__meta { flex-wrap: wrap; }
+.hud__id[data-browsing='true'] .hud__pin { flex: 1 1 100%; }
+.hud__pin-toggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  /* The glyph must not grow the model line: its box stays inside the line
+     height, with the width giving the pointer a wider target. */
+  inline-size: 24px; block-size: 1em; margin: 0; padding: 0; border: 0;
+  border-radius: var(--radius); background: none; color: var(--teal); cursor: pointer;
+}
+.hud__pin-toggle svg { fill: currentColor; }
+.hud__pin-toggle:hover, .hud__pin-toggle:focus-visible { color: var(--cyan); outline: 1px solid var(--cyan); }
+.hud__pin-btn {
+  background: transparent; color: var(--text-muted); border: 1px solid var(--edge);
+  border-radius: var(--radius); padding: 4px 8px; min-block-size: 28px;
+  font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
+.hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }
 .hud__select {
   appearance: none; color: var(--text); background-color: var(--glass-solid);
   /* The chevron is two 45 degree strokes side by side, so no data URI. */

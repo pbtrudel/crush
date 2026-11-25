@@ -45,6 +45,9 @@ export function CommandDeck() {
   const [text, setText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [failure, setFailure] = useState<Failure | null>(null);
+  // browseFailure is what a browse action reported, shown inside the
+  // read-only deck where the control that asked sits.
+  const [browseFailure, setBrowseFailure] = useState<Failure | null>(null);
   const [sending, setSending] = useState(false);
   // The caret drives the suggestion list: a cursor that leaves the mention
   // closes it, and the effect below cannot read it from the element because
@@ -228,6 +231,60 @@ export function CommandDeck() {
     if (!composing && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); }
     if (e.key === 'Escape' && s.busy) { e.preventDefault(); void actions.cancel(); }
   };
+
+  // Browsing another session is read-only: prompts belong to the terminal's
+  // session, so the deck says why and offers both ways out.
+  if (s.browsing !== null) {
+    return (
+      <form
+        ref={root}
+        class={`deck deck--browse glass${cinematic.value ? ' deck--slim' : ''}`}
+        aria-label="Command deck"
+        data-browse="true"
+        onSubmit={(e) => e.preventDefault()}
+      >
+        <label class="hud-label" for="deck-input">Browsing {s.session?.title || 'another session'}</label>
+        <div class="deck__row">
+          <textarea
+            id="deck-input"
+            ref={area}
+            rows={2}
+            readOnly
+            value=""
+            placeholder="Read-only while browsing"
+            aria-describedby="deck-readonly"
+          />
+        </div>
+        <p id="deck-readonly" class="deck__help">
+          {`Prompts go to the terminal's session. Return to it, or open this session in the terminal.`}
+        </p>
+        <div class="deck__actions">
+          <button
+            type="button"
+            class="btn btn--ghost"
+            onClick={async () => { setBrowseFailure(await actions.repin()); }}
+          >
+            Return to the terminal's session
+          </button>
+          <button
+            type="button"
+            class="btn btn--primary"
+            onClick={async () => { setBrowseFailure(await actions.openBrowsedInTerminal()); }}
+          >
+            Open this session in the terminal
+          </button>
+        </div>
+        <p
+          id="deck-error"
+          class="deck__error"
+          data-tone={browseFailure?.tone ?? 'error'}
+          role={browseFailure?.tone === 'starting' ? 'status' : 'alert'}
+        >
+          {browseFailure?.text ?? ''}
+        </p>
+      </form>
+    );
+  }
 
   return (
     <form

@@ -5,7 +5,7 @@ import fixtures from '../../state/__fixtures__/events.json';
 import type { CommandEntry, Frame, McpPrompt, ModelChoice, PermissionRequest, Session, SkillEntry } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
-import { dispatch, state } from '../../state/store';
+import { actions, dispatch, state } from '../../state/store';
 import {
   closePalette, closeSessions, paletteOpen, sessionDeleteId, sessionsOpen,
 } from '../../state/palette';
@@ -34,6 +34,7 @@ function seed() {
     ...reduce(initialState(), fx.snapshot),
     conn: 'live',
     sessionId: 's-1',
+    terminalSession: 's-1',
     session: session('s-1', 'Fix the parser'),
   };
 }
@@ -633,6 +634,7 @@ describe('session switcher', () => {
     state.value = {
       ...state.value,
       sessionId: 's-0',
+      terminalSession: 's-0',
       session: session('s-0', 'Elsewhere'),
     };
     const sessions = vi.spyOn(api, 'sessions')
@@ -1234,5 +1236,64 @@ describe('session switcher', () => {
     expect(sessions).toHaveBeenCalledTimes(3);
     expect(dialog()!.querySelector('[role="status"]')).toBeNull();
     expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe('browsing from the session switcher', () => {
+  it('offers Browse here on every row except the terminal session', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    expect(rowButton('Fix the parser', 'Browse here')).toBeUndefined();
+    expect(rowButton('Fix the lexer', 'Browse here')).not.toBeUndefined();
+    expect(rowButton('Port the parser', 'Browse here')).not.toBeUndefined();
+  });
+
+  it('browses another session without moving the terminal', async () => {
+    seed();
+    stubSessions();
+    const browse = vi.spyOn(actions, 'browse').mockResolvedValue(null);
+    const follow = vi.spyOn(api, 'follow').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Browse here').click(); });
+    await flush();
+
+    expect(browse).toHaveBeenCalledWith('s-2');
+    expect(follow).not.toHaveBeenCalled();
+    expect(sessionsOpen.value).toBe(false);
+    expect(dialog()).toBeNull();
+  });
+
+  it('keeps the dialog and shows the failure when the browse fails', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(actions, 'browse').mockResolvedValue({ tone: 'error', text: 'The session could not be read' });
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Browse here').click(); });
+    await flush();
+
+    expect(sessionsOpen.value).toBe(true);
+    expect(dialog()!.textContent).toContain('The session could not be read');
+  });
+
+  it('keeps the browsed row with Browse here while the terminal is elsewhere', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+    // The terminal follows another row while the tab browses s-2.
+    await act(() => {
+      dispatch((s) => reduce(s, { seq: 30, type: 'session_follow', payload: { session_id: 's-3' } }));
+      dispatch((s) => ({ ...s, browsing: 's-2', sessionId: 's-2' }));
+    });
+
+    expect(rowButton('Fix the lexer', 'Browse here')).not.toBeUndefined();
+    expect(rowButton('Port the parser', 'Browse here')).toBeUndefined();
   });
 });

@@ -28,6 +28,7 @@ const sources: PaletteSources = {
   agentTeamsLoaded: true,
   docker: { available: true, enabled: false },
   hasChannels: true,
+  browsing: false,
 };
 
 describe('palette items', () => {
@@ -226,5 +227,30 @@ describe('palette items', () => {
     const off = buildItems({ ...sources, cinematicAllowed: false }).map((i) => i.id);
     expect(off).not.toContain('toggle:cinematic');
     expect(off).not.toContain('action:cinematic');
+  });
+});
+
+describe('browsing another session', () => {
+  const HIDDEN = [
+    'action:new-session', 'action:init-project', 'action:compact', 'action:ask-side', 'action:add-note',
+    'action:run-shell', 'action:set-goal', 'action:start-loop',
+  ];
+
+  it('hides the actions that start agent work or move the terminal', () => {
+    const ids = buildItems({ ...sources, browsing: true }).map((i) => i.id);
+    for (const id of HIDDEN) expect(ids).not.toContain(id);
+    expect(ids).toContain('action:export-session');
+    expect(ids).toContain('action:goal-status');
+    expect(ids).toContain('action:clear-goal');
+    expect(ids).toContain('action:loop-status');
+    expect(ids).toContain('action:clear-loops');
+    expect(ids).toContain('action:stop-web');
+    // The sessions stay listed so the tab can browse another one.
+    expect(ids).toContain('session:s-2');
+  });
+
+  it('keeps them while following the terminal', () => {
+    const ids = buildItems(sources).map((i) => i.id);
+    for (const id of HIDDEN) expect(ids).toContain(id);
   });
 });

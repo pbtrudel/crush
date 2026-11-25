@@ -7,6 +7,7 @@ import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
 import { openModels, openSessions } from '../state/palette';
 import { openDisplay } from '../state/display';
 import { ActivityChart } from './hud/ActivityChart';
+import { PinToggle } from './hud/PinToggle';
 import { ContextGauge } from './hud/ContextGauge';
 import { Numeral } from './hud/Numeral';
 import { ServerHexes } from './hud/ServerHexes';
@@ -52,7 +53,10 @@ export function Hud() {
 
   return (
     <header class="hud holo scanlines flicker-once" ref={root}>
-      <div class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}>
+      <div
+        class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}
+        data-browsing={s.browsing !== null ? 'true' : undefined}
+      >
         <span class="hud-label">{s.project || 'crush'}</span>
         <h1 class="hud__title">
           {/* The identity block is off screen in cinematic mode, so an
@@ -80,6 +84,7 @@ export function Hud() {
             <span class="hud__model-name">{s.model.name || s.model.id || 'Unknown'}</span>
           </button>
           {s.branch && <span class="hud__branch" title={s.branch}>{s.branch}</span>}
+          <PinToggle />
         </p>
       </div>
       <ContextGauge fill={fill} />

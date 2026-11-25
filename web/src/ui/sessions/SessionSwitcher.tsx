@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { Session } from '../../api/types';
 import { api } from '../../api/http';
-import { describeFailure } from '../../state/failure';
-import { state } from '../../state/store';
+import { describeFailure, type Failure } from '../../state/failure';
+import { actions, state } from '../../state/store';
 import {
   closeSessions, sessionDeleteId, sessionRenameId, sessionsOpen,
 } from '../../state/palette';
@@ -12,6 +12,10 @@ import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 export function SessionSwitcher({ inert }: { inert: boolean }) {
   if (!sessionsOpen.value) return null;
   return <SessionsDialog inert={inert} />;
+}
+
+function isFailure(err: unknown): err is Failure {
+  return typeof err === 'object' && err !== null && 'tone' in err && 'text' in err;
 }
 
 // A focus request outlives the render that removes the editor, because the
@@ -59,6 +63,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const editorGen = useRef(0);
   // One request at a time, even when a double click or a double Enter arrives.
   const following = useRef(false);
+  const browsing = useRef(false);
   const renamingBusy = useRef(false);
   const deletingBusy = useRef(false);
   const renaming = sessionRenameId.value;
@@ -194,7 +199,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const open = async (sess: Session) => {
     if (following.current) return;
     setActionError(null);
-    if (sess.id === state.value.sessionId) {
+    if (sess.id === state.value.terminalSession) {
       closeSessions();
       return;
     }
@@ -209,6 +214,26 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       following.current = false;
     }
     if (!alive.current) return;
+    closeSessions();
+  };
+
+  // browse reads the session in this tab without moving the terminal. A
+  // failure leaves the dialog open with its line, like a refused follow.
+  const browse = async (sess: Session) => {
+    if (browsing.current) return;
+    browsing.current = true;
+    setActionError(null);
+    let failure: Failure | null = null;
+    try {
+      failure = await actions.browse(sess.id);
+    } finally {
+      browsing.current = false;
+    }
+    if (!alive.current) return;
+    if (failure !== null) {
+      setActionError(failure);
+      return;
+    }
     closeSessions();
   };
 
@@ -315,7 +340,9 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     if ((await load()) === 'ok') focusRequest.current = { kind: 'filter' };
   };
 
-  const shownAction = actionError === null ? null : describeFailure(actionError);
+  const shownAction = actionError === null
+    ? null
+    : isFailure(actionError) ? actionError : describeFailure(actionError);
   const shownLoad = loadError === null ? null : describeFailure(loadError);
 
   return (
@@ -343,7 +370,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         />
         <ul class="sessions__list">
           {visible.map((sess, i) => {
-            const isCurrent = sess.id === state.value.sessionId;
+            const isCurrent = sess.id === state.value.terminalSession;
             const reasonId = `session-reason-${sess.id}`;
             return (
               <li key={sess.id} class="sessions__row" data-current={isCurrent ? 'true' : undefined}>
@@ -379,6 +406,15 @@ function SessionsDialog({ inert }: { inert: boolean }) {
                       }}
                     >{sess.title}</button>
                     {isCurrent && <span class="sessions__tag hud-label">current</span>}
+                    {!isCurrent && (
+                      <button
+                        type="button"
+                        id={`session-browse-${sess.id}`}
+                        class="sessions__action"
+                        aria-label={`Browse ${sess.title}`}
+                        onClick={() => void browse(sess)}
+                      >Browse here</button>
+                    )}
                     <button
                       type="button"
                       id={`session-rename-${sess.id}`}
