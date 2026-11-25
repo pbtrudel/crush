@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
-import type { Frame, Message, Snapshot } from '../api/types';
+import type { Frame, Message, Session, Snapshot } from '../api/types';
 import { ApiError, api } from '../api/http';
 import { applyBrowse } from './pin';
 import { initialState, needsAttention, reduce, type State } from './reducer';
@@ -15,6 +15,19 @@ function snap(over: Partial<Snapshot> = {}): Snapshot {
 // live is the tab after the fixture snapshot: the terminal on s1.
 function live(): State {
   return reduce(initialState(), fx.snapshot);
+}
+
+function session(id: string, title: string): Session {
+  return {
+    id, parent_session_id: '', title, message_count: 0, prompt_tokens: 0, completion_tokens: 0,
+    cost: 0, is_busy: false, created_at: 0, updated_at: 0,
+  };
+}
+
+// browsed is the tab reading s-2, which is the state every read-only guard
+// must see.
+function browsed(over: Partial<Snapshot> = {}): State {
+  return applyBrowse(live(), snap({ current_session_id: 's-2', ...over }));
 }
 
 function message(sessionId: string, id: string): Message {
@@ -64,6 +77,12 @@ describe('applyBrowse', () => {
     expect(s.files.map((f) => f.path)).toEqual(['/repo/tokenizer.go']);
   });
 
+  it('takes the browsed busy state and queue from its snapshot', () => {
+    const s = applyBrowse(live(), snap({ current_session_id: 's-2', busy: true, queued: ['next up'] }));
+    expect(s.busy).toBe(true);
+    expect(s.queued).toEqual(['next up']);
+  });
+
   it('keeps what the browse snapshot does not carry', () => {
     const before = {
       ...live(),
@@ -107,14 +126,37 @@ describe('browsing session frames', () => {
   });
 
   it('reloads the browsed session after a reconnect snapshot', () => {
+    const reading = browsed({
+      session: session('s-2', 'Tokenizer port'),
+      messages: [message('s-2', 'browse-1')],
+      files: [{
+        path: '/repo/tokenizer.go', versions: 1, version_ids: [0], additions: 1, removals: 0,
+        diagnostics: { error: 0, warning: 0 }, updated_at: 1, session_ids: ['s-2'], version_tools: [],
+      }],
+    });
     const s = reduce(
-      { ...live(), browsing: 's-2', sessionId: 's-2', terminalSession: 's1' },
+      { ...reading, terminalSession: 's1' },
       { seq: 900, type: 'snapshot', payload: fx.snapshot.payload },
     );
     expect(s.sessionId).toBe('s-2');
     expect(s.browsing).toBe('s-2');
     expect(s.terminalSession).toBe('s1');
     expect(s.needsReload).toBe('s-2');
+    // The browsed transcript, files and session stay; the live snapshot is
+    // the terminal's and must not replace them.
+    expect(s.session?.id).toBe('s-2');
+    expect(s.messages.map((m) => m.id)).toEqual(['browse-1']);
+    expect(s.files.map((f) => f.path)).toEqual(['/repo/tokenizer.go']);
+  });
+
+  it('re-pins when the browsed session is deleted', () => {
+    const s = reduce(
+      { ...browsed(), terminalSession: 's1' },
+      { seq: 902, type: 'session', payload: { type: 'deleted', payload: { id: 's-2', parent_session_id: '' } } },
+    );
+    expect(s.browsing).toBeNull();
+    expect(s.sessionId).toBe('s1');
+    expect(s.needsReload).toBe('s1');
   });
 
   it('keeps the terminal session frames out of the browsed transcript', () => {
@@ -144,6 +186,16 @@ describe('root session count', () => {
     s = reduce(s, { seq: s.lastSeq + 1, type: 'session', payload: { type: 'created', payload: { id: 'sub-9', parent_session_id: 's1' } } });
     expect(s.rootSessions).toBe(2);
     s = reduce(s, { seq: s.lastSeq + 1, type: 'session', payload: { type: 'deleted', payload: { id: 's-9', parent_session_id: '' } } });
+    expect(s.rootSessions).toBe(1);
+  });
+
+  it('ignores a replayed root session frame', () => {
+    const liveState = live();
+    const s = reduce(liveState, {
+      seq: liveState.lastSeq,
+      type: 'session',
+      payload: { type: 'created', payload: { id: 's-9', parent_session_id: '' } },
+    });
     expect(s.rootSessions).toBe(1);
   });
 
@@ -214,6 +266,22 @@ describe('actions', () => {
     expect(state.value.sessionId).toBe('s1');
   });
 
+  it('a browse after a re-pin wins over the re-pin\'s late answer', async () => {
+    const terminal = deferred<Snapshot>();
+    const browsing = deferred<Snapshot>();
+    vi.spyOn(api, 'snapshot').mockImplementation((sid?: string) =>
+      sid === 's-2' ? browsing.promise : terminal.promise);
+    state.value = browsed();
+    const repin = actions.repin();
+    const browse = actions.browse('s-2');
+    browsing.resolve(snap({ current_session_id: 's-2' }));
+    await browse;
+    terminal.resolve(snap({ current_session_id: 's1' }));
+    await repin;
+    expect(state.value.browsing).toBe('s-2');
+    expect(state.value.sessionId).toBe('s-2');
+  });
+
   it('re-pin failure keeps the browsed session', async () => {
     vi.spyOn(api, 'snapshot').mockRejectedValue(new ApiError(500, 'http_error', 'gateway on fire'));
     state.value = { ...applyBrowse(live(), snap({ current_session_id: 's-2' })), browsing: 's-2' };
@@ -240,6 +308,33 @@ describe('actions', () => {
     expect(snapshot).toHaveBeenCalledWith('s-2');
     expect(state.value.sessionId).toBe('s-2');
     expect(state.value.needsReload).toBeNull();
+  });
+
+  it('refuses prompts, shell commands, commands, MCP prompts and skills while browsing', async () => {
+    const send = vi.spyOn(api, 'sendPrompt').mockResolvedValue({ accepted: true });
+    const shell = vi.spyOn(api, 'shell').mockResolvedValue({ run_id: 'r-1' });
+    const runCommand = vi.spyOn(api, 'runCommand').mockResolvedValue(undefined);
+    const runMcp = vi.spyOn(api, 'runMcpPrompt').mockResolvedValue(undefined);
+    const attach = vi.spyOn(api, 'attachSkill').mockResolvedValue({
+      attachment: { name: 'go-tests', mime_type: 'text/plain', content: 'run the tests' },
+    });
+    state.value = browsed();
+    const results = [
+      await actions.sendPrompt('Ship it', []),
+      await actions.runShell('go test ./...'),
+      await actions.runCommand('s-2', 'user:fix', {}),
+      await actions.runMcpPrompt('s-2', 'github', 'triage', {}),
+      await actions.attachSkill('go-tests'),
+    ];
+    for (const result of results) {
+      expect(result).toMatchObject({ tone: 'error' });
+      expect((result as { text?: string }).text).toContain("terminal's session");
+    }
+    expect(send).not.toHaveBeenCalled();
+    expect(shell).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(runMcp).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
   });
 
   it('drops a browsed reload answer after the user returned', async () => {

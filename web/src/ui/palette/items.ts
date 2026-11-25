@@ -238,7 +238,15 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
   const shown = s.browsing
     ? actions.filter((i) => !(i.run.kind === 'action' && BROWSING_HIDDEN.has(i.run.action)))
     : actions;
-  return [...shown, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
+  // Commands, skills and MCP prompts start work in the session the palette
+  // would name; a browsing tab offers none of them.
+  return [
+    ...shown,
+    ...(s.browsing ? [] : commands),
+    ...(s.browsing ? [] : skills),
+    ...(s.browsing ? [] : prompts),
+    ...sessions, ...models, ...toggles,
+  ];
 }
 
 // buildSkillToggles lists every skill, disabled ones included, so the skills

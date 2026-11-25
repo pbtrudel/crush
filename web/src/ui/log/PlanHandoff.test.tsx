@@ -115,6 +115,26 @@ describe('PlanHandoff', () => {
     expect(document.activeElement).toBe(action('revise'));
   });
 
+  it('refuses a revise send while the tab is browsing', async () => {
+    seed({ browsing: 's1' });
+    const send = vi.spyOn(api, 'sendPrompt');
+    await mount();
+
+    await act(() => { action('revise')!.click(); });
+    const box = root.querySelector<HTMLTextAreaElement>('#plan-feedback')!;
+    await act(() => {
+      box.value = 'make the diff smaller';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(card()!.textContent).toContain("terminal's session");
+  });
+
   it('shows a starting state with a retry that repeats the action', async () => {
     seed();
     const handoff = vi.spyOn(api, 'planHandoff')

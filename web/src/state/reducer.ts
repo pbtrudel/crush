@@ -685,9 +685,16 @@ export function reduce(s: State, f: Frame): State {
       // The HUD's pin toggle needs a count that survives a reconnect: the
       // terminal can create or delete a root session while the tab reads
       // another one.
-      if (sess.parent_session_id === '') {
+      // A replay repeats a seq the tab already counted; only a new frame
+      // changes the count.
+      if (f.seq > s.lastSeq && sess.parent_session_id === '') {
         if (ev.type === 'created') base = { ...base, rootSessions: s.rootSessions + 1 };
         else if (ev.type === 'deleted') base = { ...base, rootSessions: Math.max(0, s.rootSessions - 1) };
+      }
+      // The session on screen is gone, so the tab cannot keep reading it;
+      // the terminal's session is the one it can show next.
+      if (ev.type === 'deleted' && s.browsing === sess.id) {
+        return { ...base, browsing: null, sessionId: s.terminalSession, needsReload: s.terminalSession || null };
       }
       if (s.inspected && s.inspected.sessionId === sess.id) {
         base = { ...base, inspected: { ...s.inspected, session: sess } };

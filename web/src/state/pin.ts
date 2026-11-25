@@ -15,6 +15,10 @@ export function applyBrowse(s: State, snap: Snapshot): State {
     messages: snap.messages ?? [],
     files: snap.files ?? [],
     filesStale: false,
+    // The deck is read-only, but the HUD and the title read the browsed
+    // session's own busy state and queue, not the terminal's.
+    busy: snap.busy,
+    queued: snap.queued ?? [],
     team: snap.team ?? emptyTeam(),
     needsReload: null,
     // Shell cards, the inspector and the activity line belong to the

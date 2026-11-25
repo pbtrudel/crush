@@ -4,7 +4,7 @@ import type {
   CommandEntry, ConfigView, DockerMcp, McpPrompt, McpServer, ModelChoice, Session, SkillEntry,
 } from '../../api/types';
 import { ApiError, api } from '../../api/http';
-import { describeFailure } from '../../state/failure';
+import { describeFailure, type Failure } from '../../state/failure';
 import { selectModelOrQueue, setReasoningOrQueue } from '../../state/pendingModel';
 import { without } from '../../state/record';
 import { adoptSession, pushToast } from '../../state/reducer';
@@ -292,6 +292,15 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     }
   };
 
+  // refuse shows the failure a store action answered with, the way the
+  // catch below shows a thrown one: a starting agent keeps its Retry and
+  // the combobox keeps the focus.
+  const refuse = (failure: Failure, item: PaletteItem, values?: Record<string, string>) => {
+    if (failure.tone === 'starting') setFailed({ item, values });
+    setFailure(failure);
+    input.current?.focus();
+  };
+
   const run = async (item: PaletteItem, values?: Record<string, string>) => {
     if (running.current) return;
     running.current = true;
@@ -306,23 +315,28 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
           if (!values && item.args?.length) { argumentItem.value = item.id; return; }
           await runAction(item.run.action, values);
           return;
-        case 'command':
+        case 'command': {
           if (!values && item.args?.length) { argumentItem.value = item.id; return; }
           if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to run a command in');
-          await api.runCommand(sid, item.run.id, values ?? {});
+          const failed = await actions.runCommand(sid, item.run.id, values ?? {});
+          if (failed) { refuse(failed, item, values); return; }
           closePalette();
           return;
-        case 'mcp':
+        }
+        case 'mcp': {
           if (!values && item.args?.length) { argumentItem.value = item.id; return; }
           if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to run a prompt in');
-          await api.runMcpPrompt(sid, item.run.clientId, item.run.promptId, values ?? {});
+          const failed = await actions.runMcpPrompt(sid, item.run.clientId, item.run.promptId, values ?? {});
+          if (failed) { refuse(failed, item, values); return; }
           closePalette();
           return;
+        }
         case 'session': await api.follow(item.run.id); closePalette(); return;
         case 'model': await selectModelOrQueue('main', item.run.provider, item.run.model, item.title); closePalette(); return;
         case 'skill': {
-          const { attachment } = await api.attachSkill(item.run.name);
-          attachFiles([new File([attachment.content], attachment.name, { type: attachment.mime_type })]);
+          const result = await actions.attachSkill(item.run.name);
+          if ('tone' in result) { refuse(result, item); return; }
+          attachFiles([new File([result.attachment.content], result.attachment.name, { type: result.attachment.mime_type })]);
           closePalette();
           return;
         }

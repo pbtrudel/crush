@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, m4bFreshTest } from './fixture';
+import { expect, m4bFreshTest, m4bTest } from './fixture';
 
 const linked = (page: Page) =>
   expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
@@ -20,7 +20,7 @@ async function browseTokenizerPort(page: Page) {
   }
 }
 
-m4bFreshTest('browses another session read-only and returns to the terminal', async ({ page, gateway }) => {
+m4bTest('browses another session read-only and returns to the terminal', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await linked(page);
   await browseTokenizerPort(page);
@@ -38,13 +38,18 @@ m4bFreshTest('browses another session read-only and returns to the terminal', as
   await expect(deck.getByRole('button', { name: 'Return to the terminal\'s session' })).toBeVisible();
   await expect(deck.getByRole('button', { name: 'Open this session in the terminal' })).toBeVisible();
 
-  // Enter reaches no prompt: the deck stays read-only and the log gains no
-  // transmission.
+  // Enter reaches no prompt, counted at the wire rather than by the log:
+  // the deck stays read-only and no prompt request leaves the page.
+  let prompts = 0;
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/sessions\/[^/]+\/prompt$/.test(new URL(r.url()).pathname)) prompts++;
+  });
   await area.click();
   await page.keyboard.type('Ship it');
   await page.keyboard.press('Enter');
   await expect(area).toHaveValue('');
-  await expect(page.locator('.panel--log')).not.toContainText('Ship it');
+  await page.waitForTimeout(300);
+  expect(prompts).toBe(0);
 
   await deck.getByRole('button', { name: 'Return to the terminal\'s session' }).click();
   await expect(page.getByRole('button', { name: 'Session: Holodeck test. Switch session' })).toBeVisible();
@@ -70,7 +75,7 @@ m4bFreshTest('opens the browsed session in the terminal', async ({ page, gateway
   await expect(page.locator('.panel--log')).toContainText('Porting the tokenizer.');
 });
 
-m4bFreshTest('returns from the browsed deck at 760 by 900', async ({ page, gateway }) => {
+m4bTest('returns from the browsed deck at 760 by 900', async ({ page, gateway }) => {
   await page.setViewportSize({ width: 760, height: 900 });
   await page.goto(gateway.launch);
   await linked(page);

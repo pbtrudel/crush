@@ -249,6 +249,16 @@ describe('browsing another session', () => {
     expect(ids).toContain('session:s-2');
   });
 
+  it('hides commands, MCP prompts and skills while browsing', () => {
+    const items = buildItems({ ...sources, browsing: true });
+    expect(items.filter((i) => i.group === 'Commands')).toEqual([]);
+    expect(items.filter((i) => i.group === 'Skills')).toEqual([]);
+    expect(items.filter((i) => i.group === 'MCP prompts')).toEqual([]);
+    // Sessions and models stay: they are how the tab browses and reads.
+    expect(items.some((i) => i.group === 'Sessions')).toBe(true);
+    expect(items.some((i) => i.group === 'Models')).toBe(true);
+  });
+
   it('keeps them while following the terminal', () => {
     const ids = buildItems(sources).map((i) => i.id);
     for (const id of HIDDEN) expect(ids).toContain(id);
