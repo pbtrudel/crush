@@ -1,5 +1,6 @@
 import {
-  axeScan, awsTest, expect, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest, visualTest as test,
+  axeScan, awsTest, expect, freshTest, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest,
+  visualTest as test,
 } from './fixture';
 import type { Page } from '@playwright/test';
 
@@ -27,6 +28,7 @@ test.beforeEach(async ({ page }) => { await prepare(page); });
 m3VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 m4VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 m4bVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+freshTest.beforeEach(async ({ page }) => { await prepare(page); });
 promptVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 
 async function settle(page: Page) {
@@ -135,10 +137,16 @@ test('file drawer with a diff', async ({ page, gateway }) => {
   await axe(page);
 });
 
-test('agents in the 2D view', async ({ page, gateway }) => {
-  await page.addInitScript(() => localStorage.setItem('crush-web-low-power', '1'));
+// Low power is the gateway's setting now, so the test turns it on through
+// the dialog. Its own webfake keeps the write off the worker's shared one.
+freshTest('agents in the 2D view', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Display', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Display settings' });
+  await settings.getByRole('checkbox', { name: 'Low power (2D constellation)' }).check();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
   // The roster arrives in stream frames, and a paused clock only delivers
   // them when it moves. The 2D constellation is drawn from state alone, so
   // how far the clock walked here does not change the picture.

@@ -57,9 +57,16 @@ test('selects an agent node with the pointer and messages it', async ({ page, ga
   await expect(inspector.getByRole('status')).toContainText('Sent to alice');
 });
 
-test('selects a 2D node in low power mode', async ({ page, gateway }) => {
-  await page.addInitScript(() => localStorage.setItem('crush-web-low-power', '1'));
+// Low power is a gateway setting now, so this test writes it and takes its
+// own webfake rather than changing the worker's shared one.
+freshTest('selects a 2D node in low power mode', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
+  await linked(page);
+  await page.getByRole('button', { name: 'Display', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Display settings' });
+  await settings.getByRole('checkbox', { name: 'Low power (2D constellation)' }).check();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
   await expect(page.locator('svg.constellation-svg')).toBeVisible();
   await page.locator('svg [data-agent-node="sub-1"]').click();
   await expect(page.getByRole('region', { name: /Map the parser/ })).toBeVisible();

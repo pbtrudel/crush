@@ -92,8 +92,12 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'reduced');
   await page.getByRole('button', { name: 'Display' }).click();
-  await page.getByRole('dialog', { name: 'Display settings' }).waitFor();
+  const settings = page.getByRole('dialog', { name: 'Display settings' });
+  await settings.waitFor();
   await page.getByLabel('Low power (2D constellation)').check();
+  // The dialog covers the stage, so it closes before the geometry below.
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
   // The toggle reaches the page on a frame and the roster arrives in frames
   // after boot, so both wait past a loaded host's frame budget.
   await expect(page.locator('svg.constellation-svg')).toBeVisible({ timeout: 15_000 });
@@ -116,7 +120,11 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   }
   // The setting lives in the gateway's config now, and this worker's gateway
   // is shared, so put it back before the next test reads it.
+  await page.getByRole('button', { name: 'Display' }).click();
+  await settings.waitFor();
   await page.getByLabel('Low power (2D constellation)').uncheck();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
 });
 
 test('cinematic mode works with motion off', async ({ page, gateway }) => {
