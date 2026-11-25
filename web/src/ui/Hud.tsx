@@ -52,11 +52,12 @@ export function Hud() {
   }, [tools]);
 
   return (
-    <header class="hud holo scanlines flicker-once" ref={root}>
-      <div
-        class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}
-        data-browsing={s.browsing !== null ? 'true' : undefined}
-      >
+    <header
+      class="hud holo scanlines flicker-once"
+      ref={root}
+      data-browsing={s.browsing !== null ? 'true' : undefined}
+    >
+      <div class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}>
         <span class="hud-label">{s.project || 'crush'}</span>
         <h1 class="hud__title">
           {/* The identity block is off screen in cinematic mode, so an
@@ -84,7 +85,6 @@ export function Hud() {
             <span class="hud__model-name">{s.model.name || s.model.id || 'Unknown'}</span>
           </button>
           {s.branch && <span class="hud__branch" title={s.branch}>{s.branch}</span>}
-          <PinToggle />
         </p>
       </div>
       <ContextGauge fill={fill} />
@@ -137,6 +137,7 @@ export function Hud() {
             onClick={() => void actions.setInputMode('code')}
           >Code</button>
         </div>
+        <PinToggle />
         <button type="button" class="hud-label hud__display" onClick={() => openDisplay()}>Display</button>
         {canFly && (
           <button

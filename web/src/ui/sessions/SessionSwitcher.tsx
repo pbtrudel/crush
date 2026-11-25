@@ -411,7 +411,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
                         type="button"
                         id={`session-browse-${sess.id}`}
                         class="sessions__action"
-                        aria-label={`Browse ${sess.title}`}
+                        aria-label={`Browse here: ${sess.title}`}
                         onClick={() => void browse(sess)}
                       >Browse here</button>
                     )}

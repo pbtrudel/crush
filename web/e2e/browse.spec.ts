@@ -11,7 +11,7 @@ async function browseTokenizerPort(page: Page) {
   // The list is fetched, so the row exists only after its answer.
   const row = dialog.locator('.sessions__row').filter({ hasText: 'Tokenizer port' });
   await expect(row).toBeVisible({ timeout: 10_000 });
-  await row.getByRole('button', { name: 'Browse Tokenizer port' }).click();
+  await row.getByRole('button', { name: 'Browse here: Tokenizer port' }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: 'Browsing Tokenizer port' })).toHaveAttribute('aria-pressed', 'false');
 }
