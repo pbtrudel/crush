@@ -200,6 +200,30 @@ the actions that start work, and the deck and the plan card refuse to send.
 Permission, question and secure prompt dialogs stay global: they open
 wherever they belong while you browse.
 
+## The chronoline and file history links
+
+The strip above the message box is the chronoline: one mark per tool call or
+edit in the session the tab shows, oldest on the left and newest on the
+right. A read is a cyan circle, a write a teal square, a run an amber
+triangle and a network call a violet diamond, so the shape tells the
+category as well as the color. A long session keeps its newest 200 calls.
+The strip hides below 768px, where the scene also shrinks to a strip.
+
+Hover a mark, or focus it with the keyboard, for the tool, its summary and
+its time. The arrow keys move along the strip and Home and End jump to its
+ends. Selecting a mark scrolls the transmission log to that tool card, opens
+it and puts the focus on it, so the call and its output are in front of you.
+
+The same action is behind each file version. Open the file drawer and select
+a file: under the version controls every version in the shown range names
+the tool and agent that made it, as **Made by edit in Coder**. Select it to
+reach the same card in the log. A version recorded before Crush kept tool
+calls says **Recorded before the change** and offers no link.
+
+Browsing another session shows its own chronoline and file versions, and
+both links open its tool calls. A call a child agent ran opens that agent's
+inspector at the card.
+
 ## Display settings
 
 The **Display** control in the HUD, and **Display settings** in the command
