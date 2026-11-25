@@ -111,8 +111,10 @@ m4bTest('focuses a seeded tool call from the chronoline and the drawer', async (
 
   // The drawer's link for tc-edit-1 reaches the other card. To picks a
   // single version, so the panel draws one line, not a recorded and a
-  // linked one.
+  // linked one. The drawer has its own column at this width, so it stays
+  // open and the reader can step through versions.
   await page.getByRole('button', { name: /^Files/ }).click();
+  const drawer = page.locator('#file-drawer');
   await page.locator('.drawer__list').getByRole('button', { name: /parser\.go/ }).click();
   const to = page.locator('select[name="to"]');
   await expect(to.locator('option[value="3"]')).toHaveCount(1);
@@ -122,6 +124,7 @@ m4bTest('focuses a seeded tool call from the chronoline and the drawer', async (
   await expect(link).toBeVisible();
   await link.click();
 
+  await expect(drawer).toHaveAttribute('data-open', 'true');
   const first = page.locator('details.tool[data-tool-call-id="tc-edit-1"]');
   await expect(first).toHaveAttribute('open', '');
   await expect(first.locator('summary')).toBeFocused();

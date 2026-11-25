@@ -225,10 +225,13 @@ linked, a version recorded before Crush kept tool calls says **Recorded
 before the change** and offers no link; a range with no linked version shows
 nothing.
 
-Below 1280px the drawer opens over the log column or takes the narrow panel
-slot. Following a version link closes the drawer and shows the log, or the
-agent tab for a call a child agent ran, so the card is never left on a
-covered or hidden panel.
+Between 1024 and 1279px the drawer opens over the log column; following a
+link for a call in the session the tab shows closes it so the card is
+visible. At 1280px and up the drawer keeps its own column and stays open, so
+you can step through versions. Below 1024px the panels share one slot;
+following a link closes the drawer and shows the log, or the agent tab for a
+call a child agent ran, so the card is never left on a covered or hidden
+panel.
 
 Browsing another session shows its own chronoline and file versions, and
 both links open its tool calls. A call a child agent ran opens that agent's

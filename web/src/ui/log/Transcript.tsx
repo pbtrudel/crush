@@ -60,7 +60,13 @@ export function Transcript({ messages, resetKey, label, empty, footer, focusCall
       const log = scroller.current;
       if (!log) return;
       if (!panelReady(log)) {
-        if (++tries < FOCUS_RETRY_LIMIT) timer = setTimeout(run, FOCUS_RETRY_MS);
+        if (++tries < FOCUS_RETRY_LIMIT) {
+          timer = setTimeout(run, FOCUS_RETRY_MS);
+        } else if (toolFocus.value?.callId === focusCallId) {
+          // A panel that never shows would swallow every later click on the
+          // same call, so the request drops instead.
+          toolFocus.value = null;
+        }
         return;
       }
       const card = log.querySelector<HTMLDetailsElement>(`[data-tool-call-id="${focusCallId}"]`);

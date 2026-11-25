@@ -138,6 +138,27 @@ describe('Transcript', () => {
     expect(toolFocus.value).toBeNull();
   });
 
+  it('clears the request when the panel never becomes ready', async () => {
+    document.body.append(root);
+    const one = msg('m1', 'assistant', [
+      { type: 'tool_call', data: { id: 'tc-1', name: 'view', input: '{"file_path":"a.go"}' } },
+      { type: 'finish', data: { reason: 'stop', time: 1 } },
+    ]);
+    root.setAttribute('inert', '');
+    toolFocus.value = { callId: 'tc-1', sessionId: 's1' };
+    vi.useFakeTimers();
+    try {
+      await act(() => {
+        render(<Transcript messages={[one]} resetKey="s1" label="Log" focusCallId="tc-1" />, root);
+      });
+      await act(async () => { vi.advanceTimersByTime(1_200); });
+      // The next click on the same call must be able to ask again.
+      expect(toolFocus.value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a pending request when it mounts for that request', async () => {
     const one = msg('m1', 'assistant', [{ type: 'text', data: { text: 'one' } }]);
     toolFocus.value = { callId: 'tc-1', sessionId: 's1' };

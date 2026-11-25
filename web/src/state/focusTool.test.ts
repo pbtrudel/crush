@@ -11,12 +11,19 @@ const fx = fixtures as unknown as Record<string, Frame>;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   toolFocus.value = null;
   state.value = initialState();
   drawerOpen.value = false;
   panelTab.value = 'log';
   overlayWidth.value = false;
 });
+
+// viewport makes the panel-slot media query answer the way the named width
+// band does. With no stub the query is absent, which is the wide layout.
+function viewport(narrow: boolean) {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: narrow })));
+}
 
 describe('focusToolCall', () => {
   it('sets the focus request for a call in the shown session', () => {
@@ -73,6 +80,7 @@ describe('focusToolCall', () => {
   // so a focus request has to pick the log tab back.
   it('returns from the files tab to the log below 1024', () => {
     state.value = reduce(initialState(), fx.snapshot);
+    viewport(true);
     drawerOpen.value = true;
     overlayWidth.value = false;
     panelTab.value = 'files';
@@ -86,6 +94,7 @@ describe('focusToolCall', () => {
 
   it('shows the agent tab for a child session call below 1024', () => {
     state.value = reduce(initialState(), fx.snapshot);
+    viewport(true);
     drawerOpen.value = true;
     overlayWidth.value = false;
     panelTab.value = 'files';
@@ -94,6 +103,36 @@ describe('focusToolCall', () => {
     focusToolCall('sub-1', 'sub-tc-1');
 
     expect(drawerOpen.value).toBe(false);
+    expect(panelTab.value).toBe('agent');
+    expect(inspect).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('keeps the drawer open at 1280 and up so versions can be stepped through', () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    viewport(false);
+    drawerOpen.value = true;
+    overlayWidth.value = false;
+    panelTab.value = 'files';
+    vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+
+    focusToolCall('s1', 'tc-1');
+
+    expect(drawerOpen.value).toBe(true);
+    expect(toolFocus.value).toEqual({ callId: 'tc-1', sessionId: 's1' });
+  });
+
+  it('keeps the overlay drawer open for a child inspector at 1024 to 1279', () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    viewport(false);
+    drawerOpen.value = true;
+    overlayWidth.value = true;
+    panelTab.value = 'files';
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+
+    focusToolCall('sub-1', 'sub-tc-1');
+
+    // The overlay covers the log column, not the inspector in the stage.
+    expect(drawerOpen.value).toBe(true);
     expect(panelTab.value).toBe('agent');
     expect(inspect).toHaveBeenCalledWith('sub-1');
   });
