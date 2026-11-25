@@ -249,7 +249,8 @@ func TestHistoryRoutesMapAnUnknownWorkspace(t *testing.T) {
 
 // TestSessionRenameKeepsTheRestOfTheRow pins the rename route over SQLite:
 // the title changes and the usage, cost and todos a concurrent run wrote
-// survive, which a whole-row Save would overwrite.
+// survive. It catches a Rename that saves a fresh Session{ID, Title} over
+// the row, zeroing the rest; a Get-then-Save rename would also pass it.
 func TestSessionRenameKeepsTheRestOfTheRow(t *testing.T) {
 	t.Parallel()
 	h := newHistoryHarness(t)
