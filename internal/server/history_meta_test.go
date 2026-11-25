@@ -211,19 +211,17 @@ func TestHistoryRoutesHideStoreErrors(t *testing.T) {
 		{"meta", "/sessions/" + sess.ID + "/history/meta", "the file history could not be read"},
 		{"by id", "/history/any-id", "the file version could not be read"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+tc.path, nil)
-			require.NoError(t, err)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode, string(body))
-			require.Contains(t, string(body), tc.want)
-			require.NotContains(t, string(body), "disk I/O error")
-			require.NotContains(t, string(body), "/home/user")
-		})
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+tc.path, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		require.NoError(t, err)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, tc.name+": "+string(body))
+		require.Contains(t, string(body), tc.want, tc.name)
+		require.NotContains(t, string(body), "disk I/O error", tc.name)
+		require.NotContains(t, string(body), "/home/user", tc.name)
 	}
 	require.Contains(t, h.logs.String(), "disk I/O error", "the store error stays in the log")
 }
