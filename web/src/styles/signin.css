@@ -125,6 +125,9 @@
   align-items: center; justify-content: space-between;
   color: var(--magenta); font-size: var(--step--1);
 }
+/* A narrow screen wraps the HUD over several rows and the deck column fills
+   the rest, so the card keeps only one gap above the deck: with two, the
+   card's own padding would push its head over the HUD strip. */
 @media (max-width: 640px) {
-  .aws-sso { inset-inline: var(--space-4); inset-block-end: calc(var(--space-4) * 2 + var(--deck-h, 13rem)); }
+  .aws-sso { inset-inline: var(--space-4); inset-block-end: calc(var(--space-4) + var(--deck-h, 13rem)); }
 }
