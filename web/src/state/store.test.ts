@@ -438,6 +438,38 @@ describe('M2 actions', () => {
     }
   });
 
+  it('keeps a deletion that lands between two overlapping transcript loads', async () => {
+    seed();
+    const first = deferred<Message[]>();
+    const second = deferred<Message[]>();
+    vi.spyOn(api, 'messages').mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    vi.spyOn(api, 'session').mockResolvedValue({ id: 'sub-1', title: 'Map the parser' } as Session);
+
+    const initial = actions.inspect('sub-1');
+    // A snapshot reloads the same transcript while the first load is still
+    // on its way, so two loads of sub-1 overlap.
+    handleFrames([{ seq: 92, type: 'snapshot', payload: { ...(fx.snapshot.payload as Snapshot) } }]);
+    // The frame that deletes m-1 lands between them.
+    handleFrames([{
+      seq: 93,
+      type: 'message',
+      payload: { type: 'deleted', payload: { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] } },
+    } as unknown as Frame]);
+
+    const record = (id: string): Message => ({
+      id, session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [],
+    });
+    await act(async () => { second.resolve([record('m-1'), record('m-2')]); await Promise.resolve(); });
+    await act(async () => { first.resolve([record('m-1'), record('m-3')]); await Promise.resolve(); });
+    await initial;
+    // Let the second load settle too.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const ids = state.value.inspected?.messages.map((m) => m.id) ?? [];
+    expect(ids).toContain('m-3');
+    expect(ids).not.toContain('m-1');
+  });
+
   it('does not resurrect a message a frame deleted while the transcript loaded', async () => {
     seed();
     const fetched = deferred<Message[]>();

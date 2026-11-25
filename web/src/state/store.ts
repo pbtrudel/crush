@@ -147,12 +147,19 @@ function scheduleFiles() {
 }
 
 // deletedWhileLoading records the messages a frame deletes while a transcript
-// is on its way, so the answer cannot bring one back.
-let deletedWhileLoading: { sid: string; ids: Set<string> } | null = null;
+// is on its way, per session, so the answer cannot bring one back. The set is
+// shared by every load of that session in flight: a snapshot that reloads the
+// same transcript beside the first one must see the same deletions.
+const deletedWhileLoading = new Map<string, Set<string>>();
+const inspectedLoads = new Map<string, number>();
 
 async function loadInspected(sid: string) {
-  const gone = new Set<string>();
-  deletedWhileLoading = { sid, ids: gone };
+  let gone = deletedWhileLoading.get(sid);
+  if (gone === undefined) {
+    gone = new Set<string>();
+    deletedWhileLoading.set(sid, gone);
+  }
+  inspectedLoads.set(sid, (inspectedLoads.get(sid) ?? 0) + 1);
   try {
     const [messages, session] = await Promise.all([api.messages(sid), api.session(sid).catch(() => null)]);
     dispatch((s) => mergeInspected(s, sid, messages.filter((m) => !gone.has(m.id)), session));
@@ -161,7 +168,14 @@ async function loadInspected(sid: string) {
       ? pushToast({ ...s, inspected: { ...s.inspected, loading: false } }, 'error', `Could not load the agent: ${errorText(err)}`)
       : s));
   } finally {
-    if (deletedWhileLoading?.ids === gone) deletedWhileLoading = null;
+    const left = (inspectedLoads.get(sid) ?? 1) - 1;
+    if (left > 0) {
+      inspectedLoads.set(sid, left);
+    } else {
+      // The last answer settled, so nothing can resurrect those ids any more.
+      inspectedLoads.delete(sid);
+      deletedWhileLoading.delete(sid);
+    }
   }
 }
 
@@ -223,13 +237,12 @@ export async function boot() {
 // A batch that holds a snapshot is baseline: the history it carries is not
 // new activity.
 export function handleFrames(frames: Frame[]) {
-  if (deletedWhileLoading !== null) {
+  if (deletedWhileLoading.size > 0) {
     for (const f of frames) {
       if (f.type !== 'message') continue;
       const ev = f.payload as WireEvent<Message>;
-      if (ev.type === 'deleted' && ev.payload.session_id === deletedWhileLoading.sid) {
-        deletedWhileLoading.ids.add(ev.payload.id);
-      }
+      if (ev.type !== 'deleted') continue;
+      deletedWhileLoading.get(ev.payload.session_id)?.add(ev.payload.id);
     }
   }
   apply((s) => frames.reduce(reduce, s), frames.some((f) => f.type === 'snapshot'));
