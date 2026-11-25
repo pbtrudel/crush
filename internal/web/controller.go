@@ -73,6 +73,9 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 		}
 		// The detach callback belongs to the gateway being started: a
 		// delayed detach from an old gateway must never stop a newer one.
+		// Start holds c.mu until gw is assigned, so the callback reads gw
+		// under the same lock: a detach that lands while Start is still
+		// running waits for it instead of racing the assignment.
 		var gw *Gateway
 		gw, err := Start(ctx, Options{
 			Workspace:            c.ws,
@@ -81,7 +84,12 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
 			OnPlanHandoff:        c.onPlanHandoff,
-			OnDetach:             func() { c.detach(gw) },
+			OnDetach: func() {
+				c.mu.Lock()
+				started := gw
+				c.mu.Unlock()
+				c.detach(started)
+			},
 		})
 		if err != nil {
 			return "", err
