@@ -438,6 +438,36 @@ describe('M2 actions', () => {
     }
   });
 
+  it('does not resurrect a message a frame deleted while the transcript loaded', async () => {
+    seed();
+    const fetched = deferred<Message[]>();
+    vi.spyOn(api, 'messages').mockReturnValue(fetched.promise);
+    vi.spyOn(api, 'session').mockResolvedValue({ id: 'sub-1', title: 'Map the parser' } as Session);
+    const loading = actions.inspect('sub-1');
+    // The frame names the message the fetch is about to bring back.
+    handleFrames([{
+      seq: 91,
+      type: 'message',
+      payload: {
+        type: 'deleted',
+        payload: { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] },
+      },
+    } as unknown as Frame]);
+
+    await act(async () => {
+      fetched.resolve([
+        { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] },
+        { id: 'm-2', session_id: 'sub-1', role: 'assistant', parts: [] },
+      ] as Message[]);
+      await Promise.resolve();
+    });
+    await loading;
+
+    const ids = state.value.inspected?.messages.map((m) => m.id) ?? [];
+    expect(ids).toContain('m-2');
+    expect(ids).not.toContain('m-1');
+  });
+
   it('asks for the file list once more when a frame lands during the fetch', async () => {
     vi.useFakeTimers();
     try {

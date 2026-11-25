@@ -146,14 +146,22 @@ function scheduleFiles() {
   }, FILES_DEBOUNCE_MS);
 }
 
+// deletedWhileLoading records the messages a frame deletes while a transcript
+// is on its way, so the answer cannot bring one back.
+let deletedWhileLoading: { sid: string; ids: Set<string> } | null = null;
+
 async function loadInspected(sid: string) {
+  const gone = new Set<string>();
+  deletedWhileLoading = { sid, ids: gone };
   try {
     const [messages, session] = await Promise.all([api.messages(sid), api.session(sid).catch(() => null)]);
-    dispatch((s) => mergeInspected(s, sid, messages, session));
+    dispatch((s) => mergeInspected(s, sid, messages.filter((m) => !gone.has(m.id)), session));
   } catch (err) {
     dispatch((s) => (s.inspected?.sessionId === sid
       ? pushToast({ ...s, inspected: { ...s.inspected, loading: false } }, 'error', `Could not load the agent: ${errorText(err)}`)
       : s));
+  } finally {
+    if (deletedWhileLoading?.ids === gone) deletedWhileLoading = null;
   }
 }
 
@@ -215,6 +223,15 @@ export async function boot() {
 // A batch that holds a snapshot is baseline: the history it carries is not
 // new activity.
 export function handleFrames(frames: Frame[]) {
+  if (deletedWhileLoading !== null) {
+    for (const f of frames) {
+      if (f.type !== 'message') continue;
+      const ev = f.payload as WireEvent<Message>;
+      if (ev.type === 'deleted' && ev.payload.session_id === deletedWhileLoading.sid) {
+        deletedWhileLoading.ids.add(ev.payload.id);
+      }
+    }
+  }
   apply((s) => frames.reduce(reduce, s), frames.some((f) => f.type === 'snapshot'));
   const id = state.value.needsReload;
   if (id) {

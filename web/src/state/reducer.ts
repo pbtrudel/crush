@@ -66,6 +66,8 @@ export interface State {
   filesStale: boolean;
   team: TeamState;
   runs: AgentRun[];
+  // activity names the tool call a run is on right now. It keeps the last
+  // call only, which is what the HUD's phase line shows.
   activity: Record<string, AgentCall>;
   inspected: Inspected | null;
   shells: Record<string, ShellRun>;
