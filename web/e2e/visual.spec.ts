@@ -252,15 +252,10 @@ m4VisualTest('sign-in device code', async ({ page, gateway }) => {
     return dialog.locator('.signin__code-value').textContent();
   }, { message: 'the device code renders', timeout: 10_000 }).toBe('WDJB-MJHT');
   await page.clock.runFor(1000);
-  // The gateway dates the code from the real clock, while the browser's clock
-  // is frozen two days earlier, so the countdown on the status line is the one
-  // part of this screen that moves between runs. Mask it rather than pin a
-  // number that goes stale tomorrow.
-  await expect(page).toHaveScreenshot('signin-device.png', {
-    timeout: 30_000,
-    mask: [dialog.locator('.signin__status')],
-    maskColor: '#0b0817',
-  });
+  // webfake dates the code from WEBFAKE_CLOCK, the instant this file freezes
+  // the clock at, so the countdown on the status line is the same on every
+  // run and needs no mask.
+  await expect(page).toHaveScreenshot('signin-device.png', { timeout: 30_000 });
   await axe(page);
 });
 
