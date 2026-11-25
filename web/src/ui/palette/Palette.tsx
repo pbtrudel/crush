@@ -6,7 +6,8 @@ import { describeFailure } from '../../state/failure';
 import { without } from '../../state/record';
 import { adoptSession } from '../../state/reducer';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
-import { motion, setMotion, type Motion } from '../../state/motion';
+import { motion, type Motion } from '../../state/motion';
+import { actions as display, openDisplay } from '../../state/display';
 import { openSignIn } from '../../state/signin';
 import { toggleDrawer } from '../../state/drawer';
 import { actions, dispatch, state } from '../../state/store';
@@ -65,19 +66,6 @@ const FETCH: { [K in SourceKey]: () => Promise<Loaded[K]> } = {
 
 function merge<K extends SourceKey>(loaded: Loaded, key: K, value: Loaded[K]): Loaded {
   return { ...loaded, [key]: value };
-}
-
-// openDisplayMenu opens the HUD's Display menu, the surface the terminal's
-// settings command reaches.
-function openDisplayMenu(): void {
-  const menu = document.querySelector<HTMLDetailsElement>('details.motion-menu');
-  if (!menu) return;
-  menu.open = true;
-  const summary = menu.querySelector<HTMLElement>('summary');
-  // The palette's focus trap hands the focus back to its opener as it
-  // unmounts, so the menu takes it on the next microtask, after that
-  // restore.
-  queueMicrotask(() => summary?.focus());
 }
 
 export function Palette({ inert }: { inert: boolean }) {
@@ -225,13 +213,17 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
       case ACTIONS.reloadSkills: await api.reloadSkills(); closePalette(); return;
       case ACTIONS.toggleSkills: openPalette('skills'); return;
       case ACTIONS.drawer: toggleDrawer(); closePalette(); return;
-      case ACTIONS.display: closePalette(); openDisplayMenu(); return;
+      case ACTIONS.display: paletteReturnFocus.value = true; openDisplay(); return;
       case ACTIONS.reloadConfig: await api.reloadConfig(); closePalette(); return;
       case ACTIONS.thinking: await api.setReasoning({ think: !s.model.think }); closePalette(); return;
       case ACTIONS.yolo: await api.setMode(s.permissionMode === 'yolo' ? 'normal' : 'yolo'); closePalette(); return;
       case ACTIONS.plan: await api.setInputMode(s.inputMode === 'plan' ? 'code' : 'plan'); closePalette(); return;
       case ACTIONS.cinematicToggle: setCinematic(!cinematic.value); closePalette(); return;
-      case ACTIONS.motionToggle: setMotion(nextMotion(motion.value)); closePalette(); return;
+      case ACTIONS.motionToggle:
+        // The cycle writes the config, so the next display_changed keeps it.
+        await display.setDisplay('motion', nextMotion(motion.value));
+        closePalette();
+        return;
     }
   };
 

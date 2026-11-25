@@ -91,7 +91,8 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(gateway.launch);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'reduced');
-  await page.getByText('Display').click();
+  await page.getByRole('button', { name: 'Display' }).click();
+  await page.getByRole('dialog', { name: 'Display settings' }).waitFor();
   await page.getByLabel('Low power (2D constellation)').check();
   // The toggle reaches the page on a frame and the roster arrives in frames
   // after boot, so both wait past a loaded host's frame budget.
@@ -113,11 +114,14 @@ test('reduced motion and low power', async ({ page, gateway }) => {
     const narrow = await stageGeometry(page);
     expect(inside(narrow.svg, narrow.stage), `svg inside the stage at ${width}px`).toBe(true);
   }
+  // The setting lives in the gateway's config now, and this worker's gateway
+  // is shared, so put it back before the next test reads it.
+  await page.getByLabel('Low power (2D constellation)').uncheck();
 });
 
 test('cinematic mode works with motion off', async ({ page, gateway }) => {
-  // The Display menu writes this key; seeding it is the same preference
-  // without a click through the menu.
+  // The display settings dialog writes this key; seeding it is the same
+  // preference without a click through the dialog.
   await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
   await page.goto(gateway.launch);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'off');

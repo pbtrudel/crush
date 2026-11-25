@@ -4,6 +4,13 @@ import { state } from '../state/store';
 // repeats it for sighted users, so it stays out of the accessibility tree.
 export function ConnectionBanner() {
   const c = state.value.conn;
+  if (c === 'ended' && state.value.endedReason === 'detached') {
+    return (
+      <div class="banner banner--ended" aria-hidden="true">
+        Web mode was stopped. Run <code>/web</code> in the terminal for a new link.
+      </div>
+    );
+  }
   if (c === 'reconnecting') {
     return <div class="banner banner--warn" aria-hidden="true">Signal lost. Reconnecting to crush.</div>;
   }

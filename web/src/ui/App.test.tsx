@@ -200,6 +200,24 @@ describe('connection status', () => {
       state.value = initialState();
     }
   });
+
+  it('names a browser detach instead of a session end', async () => {
+    state.value = { ...initialState(), conn: 'ended', endedReason: 'detached' };
+    const root = document.createElement('div');
+    const stopped = 'Web mode was stopped. Run /web in the terminal for a new link.';
+    try {
+      await act(() => { render(<App />, root); });
+      expect(root.querySelector('.hud__link')!.textContent).toContain(stopped);
+      expect(root.querySelector('.banner')!.textContent).toContain(stopped);
+      expect(root.querySelector('.deck__help')!.textContent).toContain(stopped);
+      const deck = root.querySelector<HTMLTextAreaElement>('#deck-input')!;
+      expect(deck.disabled).toBe(true);
+      expect(deck.placeholder).toBe('Web mode stopped');
+    } finally {
+      await act(() => { render(null, root); });
+      state.value = initialState();
+    }
+  });
 });
 
 // Between 1024px and 1279px the open drawer covers the log, so the log it

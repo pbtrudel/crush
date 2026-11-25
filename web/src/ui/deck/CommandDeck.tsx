@@ -61,6 +61,9 @@ export function CommandDeck() {
   // first request is in flight.
   const inFlight = useRef(false);
   const ended = s.conn === 'ended';
+  // A browser detach leaves a different sentence from a terminal that exited:
+  // the terminal is still there, and /web gives a new link.
+  const detached = ended && s.endedReason === 'detached';
   const mode = modeFor(text, deckMode.value);
 
   // The palette attaches through this module function; re-register when the
@@ -270,7 +273,7 @@ export function CommandDeck() {
           rows={2}
           value={text}
           disabled={ended}
-          placeholder={ended ? 'Session ended' : 'Describe a task. Use @ to reference a file.'}
+          placeholder={ended ? (detached ? 'Web mode stopped' : 'Session ended') : 'Describe a task. Use @ to reference a file.'}
           aria-describedby="deck-help deck-error"
           aria-autocomplete="list"
           aria-controls={suggest ? 'deck-suggest' : undefined}
@@ -318,7 +321,9 @@ export function CommandDeck() {
           ? 'Run a shell command in the workspace'
           : mode === 'note' ? 'Kept for the next prompt; starts no run'
             : ended
-              ? 'This crush process has exited. Start crush with --web to link a new tab.'
+              ? detached
+                ? 'Web mode was stopped. Run /web in the terminal for a new link.'
+                : 'This crush process has exited. Start crush with --web to link a new tab.'
               : 'Enter to send, Shift+Enter for a new line, Esc to cancel a run. Drop or paste files to attach.'}
       </p>
       <p
