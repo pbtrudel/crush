@@ -253,6 +253,7 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"POST /api/commands/run",
 		"POST /api/mcp/prompts/run",
 		"POST /api/skills/{name}/attach",
+		"POST /api/skills/{name}/global",
 		"POST /api/sessions/{sid}/summarize",
 		"POST /api/sessions/{sid}/ask",
 		"POST /api/sessions/{sid}/shell",

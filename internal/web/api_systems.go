@@ -249,7 +249,8 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	action := r.PathValue("action")
 	switch action {
-	case "start", "refresh", "enable", "disable", "auth":
+	case "start", "refresh", "enable", "disable", "auth",
+		"enable_global", "disable_global", "auth_cancel":
 	default:
 		writeError(w, http.StatusNotFound, "unknown_action", "no such MCP action")
 		return
@@ -281,11 +282,36 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 			writeWorkspaceError(w, "toggle_mcp", err)
 			return
 		}
+	case "enable_global", "disable_global":
+		if err := g.ws.MCPSetServerConfigDisabled(ctx, name, action == "disable_global"); err != nil {
+			writeWorkspaceError(w, "toggle_mcp", err)
+			return
+		}
 	case "auth":
 		g.authenticateMCP(w, r, name)
 		return
+	case "auth_cancel":
+		if !g.cancelMCPAuth(name) {
+			writeError(w, http.StatusNotFound, "no_auth_flow", "no MCP sign-in is running")
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// cancelMCPAuth cancels the running OAuth flow for name and reports
+// whether one was running. The cancel func runs under authMu, the lock the
+// flow's own completion takes to drop its entry, so a cancel cannot race a
+// flow that finishes at the same moment.
+func (g *Gateway) cancelMCPAuth(name string) bool {
+	g.authMu.Lock()
+	defer g.authMu.Unlock()
+	cancel, ok := g.auths[name]
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // authenticateMCP starts the server's OAuth flow and answers the URL the

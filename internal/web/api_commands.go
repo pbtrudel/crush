@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/skills"
 )
 
@@ -38,11 +39,15 @@ type commandInfo struct {
 	Args        []commandArgument `json:"args"`
 }
 
-// skillInfo is one skill as the browser lists it.
+// skillInfo is one skill as the browser lists it. Disabled is the
+// effective state; DisabledGlobally is the config's list on its own, so a
+// repository enable override reads as disabled_globally with disabled
+// false.
 type skillInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Disabled    bool   `json:"disabled"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	Disabled         bool   `json:"disabled"`
+	DisabledGlobally bool   `json:"disabled_globally"`
 }
 
 // mcpPromptInfo is one MCP prompt as the browser lists it.
@@ -74,6 +79,7 @@ func (g *Gateway) registerCommandRoutes(api *http.ServeMux) {
 	g.route(api, "POST /api/skills/reload", g.handleReloadSkills)
 	g.route(api, "POST /api/skills/{name}/enable", g.handleEnableSkill)
 	g.route(api, "POST /api/skills/{name}/disable", g.handleDisableSkill)
+	g.route(api, "POST /api/skills/{name}/global", g.handleSkillGlobal)
 	g.route(api, "POST /api/skills/{name}/attach", g.handleAttachSkill)
 }
 
@@ -227,8 +233,11 @@ func (g *Gateway) handleRunMCPPrompt(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// handleListSkills lists every discovered skill, flagged with the
+// effective disabled state and the config's own list, so the browser can
+// offer to re-enable a skill the config disabled.
 func (g *Gateway) handleListSkills(w http.ResponseWriter, r *http.Request) {
-	entries, err := g.ws.ListSkills(r.Context())
+	entries, err := g.listAllSkills(r.Context())
 	if err != nil {
 		writeWorkspaceError(w, "list_skills", err)
 		return
@@ -238,15 +247,67 @@ func (g *Gateway) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceError(w, "list_skills", err)
 		return
 	}
-	off := make(map[string]bool, len(disabled))
-	for _, name := range disabled {
-		off[name] = true
+	enabled, err := g.ws.SkillsEnabled(r.Context())
+	if err != nil {
+		writeWorkspaceError(w, "list_skills", err)
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string][]skillInfo{
+		"skills": skillInfos(
+			entries,
+			configDisabledSkills(g.ws.Config()),
+			nameSet(disabled),
+			nameSet(enabled),
+		),
+	})
+}
+
+// listAllSkills lists every discovered skill, falling back to the active
+// set when the full set cannot be read, so the list never empties.
+func (g *Gateway) listAllSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
+	entries, err := g.ws.ListAllSkills(ctx)
+	if err == nil {
+		return entries, nil
+	}
+	slog.Warn("Failed to list every skill; using the active set", "error", err)
+	return g.ws.ListSkills(ctx)
+}
+
+// skillInfos projects the catalog onto the wire: a skill is disabled when
+// the config's list or the repository's disabled overrides name it, and no
+// repository enabled override wins. The global flag stays the config's own
+// list, whatever the overrides say.
+func skillInfos(entries []skills.CatalogEntry, configDisabled, repoDisabled, repoEnabled map[string]struct{}) []skillInfo {
 	out := make([]skillInfo, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, skillInfo{Name: entry.Name, Description: entry.Description, Disabled: off[entry.Name]})
+		_, globally := configDisabled[entry.Name]
+		_, off := repoDisabled[entry.Name]
+		_, on := repoEnabled[entry.Name]
+		out = append(out, skillInfo{
+			Name:             entry.Name,
+			Description:      entry.Description,
+			Disabled:         (globally || off) && !on,
+			DisabledGlobally: globally,
+		})
 	}
-	writeJSON(w, http.StatusOK, map[string][]skillInfo{"skills": out})
+	return out
+}
+
+// configDisabledSkills returns the config's disabled skills as a set.
+func configDisabledSkills(cfg *config.Config) map[string]struct{} {
+	if cfg == nil || cfg.Options == nil {
+		return nil
+	}
+	return nameSet(cfg.Options.DisabledSkills)
+}
+
+// nameSet turns a list of skill names into a set.
+func nameSet(names []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
 }
 
 func (g *Gateway) handleReloadSkills(w http.ResponseWriter, r *http.Request) {
@@ -267,12 +328,12 @@ func (g *Gateway) handleDisableSkill(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) setSkillDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
 	name := r.PathValue("name")
-	entries, err := g.ws.ListSkills(r.Context())
+	known, err := g.skillExists(r.Context(), name)
 	if err != nil {
 		writeWorkspaceError(w, "toggle_skill", err)
 		return
 	}
-	if _, ok := findSkill(entries, name); !ok {
+	if !known {
 		writeError(w, http.StatusNotFound, "unknown_skill", "no such skill")
 		return
 	}
@@ -281,6 +342,44 @@ func (g *Gateway) setSkillDisabled(w http.ResponseWriter, r *http.Request, disab
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSkillGlobal toggles a skill in the global config's disabled list,
+// whatever repository override the skill also carries. A name no
+// discovered skill answers stays a 404.
+func (g *Gateway) handleSkillGlobal(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Disabled bool `json:"disabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	name := r.PathValue("name")
+	known, err := g.skillExists(r.Context(), name)
+	if err != nil {
+		writeWorkspaceError(w, "toggle_skill", err)
+		return
+	}
+	if !known {
+		writeError(w, http.StatusNotFound, "unknown_skill", "no such skill")
+		return
+	}
+	if err := g.ws.SkillSetConfigDisabled(r.Context(), name, body.Disabled); err != nil {
+		writeWorkspaceError(w, "toggle_skill", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// skillExists reports whether any discovered skill answers to name,
+// including one the config or the repository disabled.
+func (g *Gateway) skillExists(ctx context.Context, name string) (bool, error) {
+	entries, err := g.listAllSkills(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, ok := findSkill(entries, name)
+	return ok, nil
 }
 
 // handleAttachSkill reads a skill from the catalog by name and answers its

@@ -205,7 +205,7 @@ func TestMCPUnknownServer404(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	c := authedClient(t, g)
-	for _, action := range []string{"start", "refresh", "enable", "disable", "auth"} {
+	for _, action := range []string{"start", "refresh", "enable", "disable", "auth", "enable_global", "disable_global", "auth_cancel"} {
 		rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/ghost/"+action, "")
 		rsp.Body.Close()
 		require.Equal(t, http.StatusNotFound, rsp.StatusCode, action, string(body))
