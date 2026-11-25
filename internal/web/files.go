@@ -436,23 +436,28 @@ func (g *Gateway) handleFileDiff(w http.ResponseWriter, r *http.Request) {
 	defer releaseOnce()
 	first, err := g.ws.GetHistoryVersion(r.Context(), a.ID)
 	if err != nil {
-		// A client that left mid-load gets no answer and no warning log.
-		if r.Context().Err() == nil {
-			writeHistoryError(w, "file_diff", err)
-		}
+		writeHistoryLoadError(w, r, "file_diff", err)
 		return
 	}
 	last, err := g.ws.GetHistoryVersion(r.Context(), b.ID)
 	if err != nil {
-		if r.Context().Err() == nil {
-			writeHistoryError(w, "file_diff", err)
-		}
+		writeHistoryLoadError(w, r, "file_diff", err)
 		return
 	}
 	d := buildDiff(path, first, last, fromIdx, toIdx)
 	// Free the slot before writing: a stalled reader must not pin diff work.
 	releaseOnce()
 	writeJSON(w, http.StatusOK, d)
+}
+
+// writeHistoryLoadError answers a version load that failed while the
+// request was still live. A client that left mid-load gets no answer and
+// no warning log: the failure is its own cancellation, not the store's.
+func writeHistoryLoadError(w http.ResponseWriter, r *http.Request, code string, err error) {
+	if r.Context().Err() != nil {
+		return
+	}
+	writeHistoryError(w, code, err)
 }
 
 // writeHistoryError answers a version load that failed after the metadata

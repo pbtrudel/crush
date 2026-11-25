@@ -52,7 +52,7 @@ func TestTeammateSessionIDDoesNotCollideWithAnOlderTeam(t *testing.T) {
 	_, err = coord.sessions.CreateTaskSession(t.Context(), "team-member-1", lead.ID, "Old teammate")
 	require.NoError(t, err)
 
-	runner := &teamRunner{c: coord}
+	runner := &teamRunner{c: coord, team: service}
 	sess, err := runner.teammateSession(t.Context(), agentteam.Member{
 		ID: "member-1", Name: "reviewer", ParentID: lead.ID,
 	})

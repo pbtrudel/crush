@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -469,4 +470,56 @@ func TestSkillsToggleAndReload(t *testing.T) {
 	rsp.Body.Close()
 	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
 	require.Contains(t, f.CallLog(), "ReloadSkills")
+}
+
+// TestSkillToggleCatalogFailure pins both toggle routes when the catalog
+// cannot be read: the action answers the generic internal failure, never the
+// catalog's text, and never writes the toggle.
+func TestSkillToggleCatalogFailure(t *testing.T) {
+	t.Parallel()
+	g, f := startCommands(t)
+	f.SetSkillsErr(errors.New("catalog unavailable: /home/user/.crush/skills"))
+	for _, action := range []string{"enable", "disable"} {
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/skills/review/"+action, "")
+		rsp.Body.Close()
+		require.Equal(t, http.StatusInternalServerError, rsp.StatusCode, action)
+		require.Contains(t, string(body), "toggle_skill", action)
+		require.NotContains(t, string(body), "catalog unavailable", action)
+	}
+	for _, call := range f.CallLog() {
+		require.NotContains(t, call, "SkillSetDisabled:", "a failed catalog read writes nothing")
+	}
+}
+
+// unreadableSkillWorkspace lists its catalog but cannot read a skill, the
+// way a skill deleted between the two calls behaves.
+type unreadableSkillWorkspace struct {
+	*webtest.Fake
+}
+
+func (w *unreadableSkillWorkspace) ReadSkill(context.Context, string) ([]byte, skills.SkillReadResult, error) {
+	return nil, skills.SkillReadResult{}, fmt.Errorf("read skill: %w", skills.ErrSkillNotFound)
+}
+
+// TestAttachSkillVanishedFromTheCatalog pins the race branch: a name the list
+// still holds but the read cannot find answers the same 404 as an unknown
+// name, not a workspace failure.
+func TestAttachSkillVanishedFromTheCatalog(t *testing.T) {
+	t.Parallel()
+	f := webtest.NewFake()
+	f.AddSkill(skills.CatalogEntry{
+		ID:            "/skills/review/SKILL.md",
+		Name:          "review",
+		Description:   "Reviews the diff.",
+		UserInvocable: true,
+	}, "# Skill")
+	g, err := Start(t.Context(), Options{Workspace: &unreadableSkillWorkspace{Fake: f}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/skills/review/attach", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "unknown_skill")
+	require.NotContains(t, string(body), "skill not found")
 }

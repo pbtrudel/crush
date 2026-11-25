@@ -1506,3 +1506,109 @@ func TestSignInCatalogFailureLogsTheErrorClass(t *testing.T) {
 	require.Contains(t, logs.String(), "reason=provider")
 	require.NotContains(t, logs.String(), "catalog.example")
 }
+
+// endpointResolver resolves every catalog endpoint to one value, the way a
+// catalog entry's api_endpoint names the provider's address.
+type endpointResolver string
+
+func (r endpointResolver) ResolveValue(string) (string, error) { return string(r), nil }
+
+// TestTestAPIKeyHonoursItsContext pins that the route's deadline reaches
+// the provider check: a provider that never answers returns the deadline
+// error instead of holding the request for TestConnection's own 5 s limit.
+func TestTestAPIKeyHonoursItsContext(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	// Registered after the server's cleanup, so it runs first and the
+	// close below does not wait on the held handler.
+	t.Cleanup(unblock)
+
+	p := catwalk.Provider{
+		ID:          catwalk.InferenceProviderAnthropic,
+		Name:        "Anthropic",
+		Type:        catwalk.TypeMessages,
+		APIEndpoint: srv.URL,
+	}
+	resolver := endpointResolver(srv.URL)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err := testAPIKey(ctx, p, "sk-test", resolver, resolver)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(started), 2*time.Second, "the check honoured the 50 ms deadline")
+}
+
+// logLine returns the first captured log line containing msg.
+func logLine(t *testing.T, logs, msg string) string {
+	t.Helper()
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, msg) {
+			return line
+		}
+	}
+	t.Fatalf("no log line with %q in:\n%s", msg, logs)
+	return ""
+}
+
+// TestAPIKeyRejectionLogNamesTheClass is not parallel: captureLogs replaces
+// the logger. The rejected-key line names the provider and the failure
+// class, and carries neither the key nor the provider's error text.
+func TestAPIKeyRejectionLogNamesTheClass(t *testing.T) {
+	logs := captureLogs(t)
+	g, _ := signInGateway(t)
+	const key = "sk-wrong-7d1"
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/key",
+		`{"provider":"anthropic","api_key":"`+key+`"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusUnprocessableEntity, rsp.StatusCode, string(body))
+
+	line := logLine(t, logs.String(), "Web sign-in key rejected")
+	require.Contains(t, line, "provider=anthropic")
+	require.Contains(t, line, "reason=provider")
+	require.NotContains(t, line, key)
+	require.NotContains(t, line, "Incorrect API key")
+	require.NotContains(t, string(body), key)
+}
+
+// TestSignInStartFailureLogNamesTheClass is not parallel: captureLogs
+// replaces the logger. The failed-start line names the provider and the
+// failure class, and carries neither the provider's error text nor the
+// answer it produced.
+func TestSignInStartFailureLogNamesTheClass(t *testing.T) {
+	logs := captureLogs(t)
+	flow := webtest.NewFakeFlow(t)
+	flow.StartErr = errors.New("upstream said: client_secret=abc")
+	g, _ := signInGatewayWithFlow(t, flow)
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/auth/provider/oauth/start", `{"provider":"copilot"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusBadGateway, rsp.StatusCode, string(body))
+
+	line := logLine(t, logs.String(), "Web sign-in did not start")
+	require.Contains(t, line, "provider=copilot")
+	require.Contains(t, line, "reason=provider")
+	require.NotContains(t, line, "client_secret")
+	require.NotContains(t, string(body), "client_secret")
+}
+
+// TestRecordImportedSignInAfterShutdown records nothing once the gateway
+// is closing: nothing would publish the run it left behind.
+func TestRecordImportedSignInAfterShutdown(t *testing.T) {
+	t.Parallel()
+	g, _ := signInGateway(t)
+	require.NoError(t, g.Shutdown(context.Background()))
+	require.Nil(t, g.signin)
+
+	st, recorded := g.recordImportedSignIn(t.Context(), "copilot", "GitHub Copilot", nil)
+	require.False(t, recorded)
+	require.Equal(t, SignInState{}, st)
+	require.Nil(t, g.signin, "a closing gateway records no run")
+}

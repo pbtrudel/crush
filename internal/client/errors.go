@@ -50,7 +50,16 @@ var (
 	// been configured yet. The call can succeed once it is, so callers
 	// wait and retry rather than treating it as a failure.
 	ErrAgentNotInitialized = errors.New("agent not initialized")
+
+	// ErrConfigReloadBusy reports that the server refused a config reload
+	// because an agent run is in flight. Reloading swaps models and tools
+	// under the live request, so the reload succeeds once the run ends.
+	ErrConfigReloadBusy = errors.New("cannot reload the configuration while an agent is running")
 )
+
+// configReloadBusyCode is the error code the server's reload route answers
+// for a busy agent (internal/server).
+const configReloadBusyCode = "config_reload_busy"
 
 // checkStatus returns nil when rsp's status code is one of ok
 // (http.StatusOK when none are given). Otherwise it returns an error

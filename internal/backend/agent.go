@@ -397,8 +397,13 @@ func (b *Backend) RunShellCommand(ctx context.Context, workspaceID string, req p
 
 	var persist shell.PersistFunc
 	if req.SessionID != "" {
+		// The output is saved even when the run is cancelled: a run the user
+		// interrupted is stored with the TUI's SIGINT code (see
+		// CaptureResult.PersistedExitCode), so the transcript keeps the
+		// partial output and the same code instead of losing the run.
+		persistCtx := context.WithoutCancel(ctx)
 		persist = func(cmd, output string, exitCode int) error {
-			return shell.PersistOutput(ctx, ws.Messages, req.SessionID, cmd, output, exitCode, dataDir)
+			return shell.PersistOutput(persistCtx, ws.Messages, req.SessionID, cmd, output, exitCode, dataDir)
 		}
 	}
 

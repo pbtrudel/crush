@@ -106,13 +106,15 @@ func (c *coordinator) teamTools(caller string, parentModel func() Model) []fanta
 // teamResponse renders a compact JSON result and appends pending peer
 // messages, which is how Team inbox delivery reaches the model. The inbox
 // is the caller's own: its session says which team the mail belongs to.
-func (c *coordinator) teamResponse(ctx context.Context, caller string, value any) fantasy.ToolResponse {
+// The service is the one the call ran on, not a fresh read of the
+// coordinator's pointer: a reload that retires the Team mid-turn must not
+// lose or switch the mailbox the answer belongs to.
+func (c *coordinator) teamResponse(ctx context.Context, team *agentteam.Service, caller string, value any) fantasy.ToolResponse {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error())
 	}
 	text := string(data)
-	team := c.teamService()
 	if team == nil {
 		return fantasy.NewTextResponse(text)
 	}
@@ -249,7 +251,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]any{"member": view}), nil
+			return c.teamResponse(ctx, team, caller, map[string]any{"member": view}), nil
 		},
 	)
 }
@@ -284,7 +286,7 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 				}
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]bool{"sent": true}), nil
+			return c.teamResponse(ctx, team, caller, map[string]bool{"sent": true}), nil
 		},
 	)
 }
@@ -302,7 +304,7 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, members), nil
+			return c.teamResponse(ctx, team, caller, members), nil
 		},
 	)
 }
@@ -325,7 +327,7 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 				timeout = time.Duration(ms) * time.Millisecond
 			}
 			if !team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
-				return c.teamResponse(ctx, caller, map[string]any{
+				return c.teamResponse(ctx, team, caller, map[string]any{
 					"timedOut": false,
 					"noProgress": map[string]string{
 						"reason":  "no-active-peer",
@@ -338,7 +340,7 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, result), nil
+			return c.teamResponse(ctx, team, caller, result), nil
 		},
 	)
 }
@@ -359,7 +361,7 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]string{"previousStatus": string(previous)}), nil
+			return c.teamResponse(ctx, team, caller, map[string]string{"previousStatus": string(previous)}), nil
 		},
 	)
 }
@@ -386,7 +388,7 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamErrorWithState(ctx, caller, err, ""), nil
 			}
-			response := c.teamResponse(ctx, caller, view)
+			response := c.teamResponse(ctx, team, caller, view)
 			if len(rewritten) > 0 {
 				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
 			}
@@ -426,7 +428,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if list.NextCursor > 0 {
 				result["nextCursor"] = list.NextCursor
 			}
-			return c.teamResponse(ctx, caller, result), nil
+			return c.teamResponse(ctx, team, caller, result), nil
 		},
 	)
 }
@@ -444,7 +446,7 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			return c.teamResponse(ctx, team, caller, view), nil
 		},
 	)
 }
@@ -480,7 +482,7 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			if err != nil {
 				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
 			}
-			response := c.teamResponse(ctx, caller, view)
+			response := c.teamResponse(ctx, team, caller, view)
 			if len(rewritten) > 0 {
 				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
 			}

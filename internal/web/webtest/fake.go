@@ -159,6 +159,15 @@ type Fake struct {
 	agentBusy bool
 	// agentModel is what AgentModel returns; set it with SetAgentModel.
 	agentModel workspace.AgentModel
+	// agentModelGate holds one AgentModel read; set it with
+	// SetAgentModelGate.
+	agentModelGate *agentModelGate
+}
+
+// agentModelGate is one held AgentModel read.
+type agentModelGate struct {
+	entered chan<- struct{}
+	release <-chan struct{}
 }
 
 // NewFake returns a fake with one current session "s1".
@@ -375,8 +384,17 @@ func (f *Fake) GitBranch(context.Context) (string, error) { return "main", nil }
 
 func (f *Fake) AgentModel() workspace.AgentModel {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.agentModel
+	// The gate is claimed under the same lock as the read, so exactly one
+	// caller blocks and the others still see the model set before it.
+	gate := f.agentModelGate
+	f.agentModelGate = nil
+	model := f.agentModel
+	f.mu.Unlock()
+	if gate != nil {
+		close(gate.entered)
+		<-gate.release
+	}
+	return model
 }
 
 // SetAgentModel replaces what AgentModel returns, as a terminal model
@@ -384,6 +402,14 @@ func (f *Fake) AgentModel() workspace.AgentModel {
 func (f *Fake) SetAgentModel(m workspace.AgentModel) {
 	f.mu.Lock()
 	f.agentModel = m
+	f.mu.Unlock()
+}
+
+// SetAgentModelGate holds the next AgentModel read until release closes,
+// the way a stalled workspace holds one. entered signals the held read.
+func (f *Fake) SetAgentModelGate(entered chan<- struct{}, release <-chan struct{}) {
+	f.mu.Lock()
+	f.agentModelGate = &agentModelGate{entered: entered, release: release}
 	f.mu.Unlock()
 }
 

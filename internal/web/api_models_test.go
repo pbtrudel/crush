@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -470,6 +471,65 @@ func TestModelWatchSkipsUnreachableWorkspace(t *testing.T) {
 	defer stop()
 	_, _, err := c.Read(quiet)
 	require.Error(t, err, "an unreachable workspace must not publish an empty model")
+
+	// The watch must resume once the workspace answers again: the quiet
+	// read closed the first tab's stream, so a second tab watches the
+	// recovery.
+	b := dialStream(t, g, "")
+	readFrame(t, b) // Snapshot, taken while the workspace is still gone.
+	fake.SetReadyErr(nil)
+	fake.SetAgentModel(workspace.AgentModel{
+		ModelCfg:   config.SelectedModel{Provider: "p1", Model: "m2"},
+		CatwalkCfg: catwalk.Model{ID: "m2", Name: "Model Two", ContextWindow: 100_000},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	f := nextFrameOfType(ctx, t, b, "model_changed")
+	var recovered ModelInfo
+	require.NoError(t, json.Unmarshal(f.Payload, &recovered))
+	require.Equal(t, "m2", recovered.ID, "the watch still reports model changes after an outage")
+}
+
+// TestStaleModelWatchCannotOverwriteASelect pins the generation guard: a
+// watch tick that read the model before a browser switch must drop its
+// publish, or the tab would flash the model the select just replaced.
+func TestStaleModelWatchCannotOverwriteASelect(t *testing.T) {
+	t.Parallel()
+	g, fake := startModels(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fake.SetAgentModelGate(entered, release)
+	select {
+	case <-entered:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the model watch never read the model")
+	}
+	// The watch holds a read of the old model while the browser switches.
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
+		`{"type":"main","provider":"p1","model":"m2"}`)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	f := nextFrameOfType(ctx, t, c, "model_changed")
+	var changed ModelInfo
+	require.NoError(t, json.Unmarshal(f.Payload, &changed))
+	require.Equal(t, "m2", changed.ID)
+
+	// Releasing the stale read must publish nothing: the announced model
+	// is newer than what the watch read.
+	unblock()
+	quiet, stop := context.WithTimeout(t.Context(), 600*time.Millisecond)
+	defer stop()
+	_, data, err := c.Read(quiet)
+	require.Error(t, err, "a stale watch read must not publish a model: %s", data)
 }
 
 // nextFrameOfType reads frames until one of the wanted type arrives. It

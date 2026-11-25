@@ -73,6 +73,9 @@ type Options struct {
 	// launchFileTTL overrides how long an unused launch file lives in
 	// tests.
 	launchFileTTL time.Duration
+	// shellTick replaces the shell flush ticker in tests, so a test can
+	// decide exactly when coalesced output is published.
+	shellTick <-chan time.Time
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -117,6 +120,9 @@ type Gateway struct {
 	knownProvidersFn func(*config.Config) ([]catwalk.Provider, error)
 	// testAPIKeyFn is Options.TestAPIKey; nil falls back to TestConnection.
 	testAPIKeyFn func(context.Context, catwalk.Provider, string, config.VariableResolver) error
+	// shellTick replaces the shell flush ticker in tests, so a test can
+	// decide exactly when coalesced output is published.
+	shellTick <-chan time.Time
 	// shells holds the cancel func of every running shell command, keyed
 	// by run id. shellWG lets Shutdown wait for them before the hub
 	// closes, and shellsClosed refuses a run started during shutdown.
@@ -131,6 +137,22 @@ type Gateway struct {
 	auths       map[string]context.CancelFunc
 	authWG      sync.WaitGroup
 	authsClosed bool
+	// lspMu guards the one start drain the gateway runs: lspStarting,
+	// lspPath (the path it is on) and lspQueue with lspQueued (the paths
+	// waiting behind it), plus lspClosed, which refuses new work during
+	// shutdown. lspWG covers the whole drain, so Shutdown waits for the
+	// queued paths too. lspCtx is what every start runs on: cancelling it
+	// bounds a client-mode call whose server is gone, though the
+	// in-process manager runs its own servers and may ignore it.
+	lspMu       sync.Mutex
+	lspStarting bool
+	lspPath     string
+	lspQueue    []string
+	lspQueued   map[string]struct{}
+	lspClosed   bool
+	lspCtx      context.Context
+	lspCancel   context.CancelFunc
+	lspWG       sync.WaitGroup
 	// authPoll overrides how long an auth request waits for the URL.
 	authPoll time.Duration
 	// signinMu guards signin, the one sign-in flow the gateway runs, and
@@ -169,11 +191,14 @@ type Gateway struct {
 	inputMode string
 	planReady string
 
-	// modelMu guards lastModel, the model info the hub last announced. The
-	// handlers and the watch both announce through it, so a switch made in
-	// the browser reaches every tab once and the watch does not repeat it.
+	// modelMu guards lastModel, the model info the hub last announced, and
+	// modelGen, which counts handler announces. The handlers and the watch
+	// both announce through it, so a switch made in the browser reaches
+	// every tab once, the watch does not repeat it, and a watch read that
+	// started before an announce cannot publish over it.
 	modelMu   sync.Mutex
 	lastModel ModelInfo
+	modelGen  uint64
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -211,6 +236,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		signInFlowFn = signin.New
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	lspCtx, lspCancel := context.WithCancel(gctx)
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -224,6 +250,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		ln:        ln,
 		ctx:       gctx,
 		cancel:    cancel,
+		lspCtx:    lspCtx,
+		lspCancel: lspCancel,
 		done:      make(chan struct{}),
 		hub:       newHub(),
 		pending:   newPending(),
@@ -234,9 +262,11 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		fileStats: newFileStatCache(slots),
 		diffs:     slots,
 		shells:    make(map[string]context.CancelFunc),
+		lspQueued: make(map[string]struct{}),
 		auths:     make(map[string]context.CancelFunc),
 		authPoll:  opts.mcpAuthPoll,
 		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
+		shellTick: opts.shellTick,
 
 		loadCommandsFn:       opts.LoadCommands,
 		knownProvidersFn:     knownProvidersFn,
@@ -451,6 +481,14 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	g.authMu.Unlock()
+	// The start drain is cancelled here, before the wait below, so a
+	// client-mode call whose server is gone settles without using up the
+	// caller's deadline. The in-process manager runs its own servers, so a
+	// start that ignores the context is bounded by the same deadline.
+	g.lspMu.Lock()
+	g.lspClosed = true
+	g.lspCancel()
+	g.lspMu.Unlock()
 	// A running sign-in is cancelled and its listener freed here, before
 	// the wait below, so its goroutines settle while the hub is still
 	// open.
@@ -462,6 +500,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	go func() {
 		g.shellWG.Wait()
 		g.authWG.Wait()
+		g.lspWG.Wait()
 		g.signinWG.Wait()
 		close(workDone)
 	}()

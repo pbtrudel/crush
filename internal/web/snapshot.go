@@ -244,20 +244,31 @@ func (g *Gateway) watchModelLoop(interval time.Duration) {
 }
 
 // watchModel is one model watch tick: it reads readiness before the model,
-// publishes when the info changed, and keeps the last model otherwise.
+// publishes when the info changed, and keeps the last model otherwise. A
+// handler that announced a model while the tick's workspace reads were in
+// flight wins: the tick drops its publish rather than replacing the newer
+// answer with the model it read first.
 func (g *Gateway) watchModel() {
 	readyErr := g.ws.AgentReadyErr()
 	if !modelWatchReady(readyErr) {
 		return
 	}
-	g.publishModel(modelInfo(g, readyErr == nil))
+	g.modelMu.Lock()
+	gen := g.modelGen
+	g.modelMu.Unlock()
+	info := modelInfo(g, readyErr == nil)
+	g.publishModelIfCurrent(info, gen)
 }
 
 // announceModel publishes the current model and returns it. Handlers call it
 // after a successful switch, which needs a ready and reachable agent; the
 // watch uses watchModel instead, so an unreachable workspace does not look
-// like an empty model.
+// like an empty model. Bumping the generation there makes a watch tick that
+// read the model earlier drop its publish.
 func (g *Gateway) announceModel() ModelInfo {
+	g.modelMu.Lock()
+	g.modelGen++
+	g.modelMu.Unlock()
 	info := modelInfo(g, g.ws.AgentReadyErr() == nil)
 	g.publishModel(info)
 	return info
@@ -270,6 +281,23 @@ func (g *Gateway) announceModel() ModelInfo {
 func (g *Gateway) publishModel(info ModelInfo) {
 	g.modelMu.Lock()
 	defer g.modelMu.Unlock()
+	g.publishModelLocked(info)
+}
+
+// publishModelIfCurrent publishes info only when no handler announce bumped
+// the generation since gen was read.
+func (g *Gateway) publishModelIfCurrent(info ModelInfo, gen uint64) {
+	g.modelMu.Lock()
+	defer g.modelMu.Unlock()
+	if gen != g.modelGen {
+		return
+	}
+	g.publishModelLocked(info)
+}
+
+// publishModelLocked publishes info unless it repeats the last announced
+// model. The caller holds modelMu.
+func (g *Gateway) publishModelLocked(info ModelInfo) {
 	if reflect.DeepEqual(info, g.lastModel) {
 		return
 	}

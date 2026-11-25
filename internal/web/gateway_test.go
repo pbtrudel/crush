@@ -22,6 +22,8 @@ func TestShutdownHonoursACancelledContext(t *testing.T) {
 	g := &Gateway{
 		hub:       newHub(),
 		cancel:    func() {},
+		lspCtx:    context.Background(),
+		lspCancel: func() {},
 		teamDone:  make(chan struct{}),
 		modelDone: make(chan struct{}),
 		done:      drained,

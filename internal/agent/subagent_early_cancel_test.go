@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/stretchr/testify/require"
@@ -22,6 +24,7 @@ func TestCancelBeforeSubagentTrackingSticks(t *testing.T) {
 	env := testEnv(t)
 	c := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
 	c.dispatched = csync.NewMap[string, *dispatchedAgent]()
+	c.agentRuns = agentrun.New(filepath.Join(t.TempDir(), "agents.json"))
 	c.mainAgent = newMockAgent(providerID, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		return agentResultWithText("main answer"), nil
 	})
@@ -53,4 +56,11 @@ func TestCancelBeforeSubagentTrackingSticks(t *testing.T) {
 	_, left := c.subCancels[childID]
 	c.subSessionsMu.Unlock()
 	require.False(t, left, "the finished run must drop its cancel")
+
+	// The cancelled run must be listed as failed, not left running or
+	// settled as if it had finished.
+	runs := c.agentRuns.List()
+	require.Len(t, runs, 1)
+	require.Equal(t, agentrun.StatusFailed, runs[0].Status)
+	require.Equal(t, childID, runs[0].ID)
 }

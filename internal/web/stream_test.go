@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -202,6 +204,65 @@ func TestReplayAfterTheRingWraps(t *testing.T) {
 	require.Equal(t, uint64(ringSize+6), replay[0].Seq)
 }
 
+// TestSinceAtHeadReplaysNothing pins that a tab resuming from the frame it
+// already has gets no replay, wrapped ring or not: it asks for nothing new.
+func TestSinceAtHeadReplaysNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		publishes int
+	}{
+		{"short ring", 3},
+		{"wrapped ring", ringSize + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHub()
+			for range tc.publishes {
+				h.publish("message", json.RawMessage(`{}`))
+			}
+			head := h.head()
+			c, replay, snap, attachedHead := h.attach(int64(head))
+			h.detach(c)
+			require.False(t, snap, "nothing is missing, so no snapshot is needed")
+			require.Empty(t, replay)
+			require.Equal(t, head, attachedHead)
+		})
+	}
+}
+
+// TestRingBoundaryReplay pins the exact ringSize boundary: while the ring
+// is exactly full the first frame is still replayable, and one publish
+// later it is not, so the tab gets a snapshot instead.
+func TestRingBoundaryReplay(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	for range ringSize {
+		h.publish("message", json.RawMessage(`{}`))
+	}
+	require.Equal(t, uint64(ringSize), h.head())
+
+	c, replay, snap, _ := h.attach(0)
+	h.detach(c)
+	require.False(t, snap, "the ring is exactly full, so frame 1 is still there")
+	require.Len(t, replay, ringSize)
+	require.Equal(t, uint64(1), replay[0].Seq)
+	require.Equal(t, uint64(ringSize), replay[len(replay)-1].Seq)
+
+	h.publish("message", json.RawMessage(`{}`))
+	c, replay, snap, _ = h.attach(0)
+	h.detach(c)
+	require.True(t, snap, "frame 1 fell off the ring")
+	require.Empty(t, replay)
+
+	c, replay, snap, _ = h.attach(1)
+	h.detach(c)
+	require.False(t, snap)
+	require.Len(t, replay, ringSize)
+	require.Equal(t, uint64(2), replay[0].Seq)
+	require.Equal(t, uint64(ringSize+1), replay[len(replay)-1].Seq)
+}
+
 func TestSinceAheadOfHeadOrMalformedGetsSnapshot(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
@@ -346,6 +407,66 @@ func TestStreamRejectsForeignOrigin(t *testing.T) {
 	require.NotNil(t, rsp)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusForbidden, rsp.StatusCode, "a valid token from a foreign page is still refused")
+}
+
+// TestStreamRefusesAnUpgradeWithoutTheStreamProtocol pins that the
+// subprotocol is checked before the handshake completes: a client that
+// offers only the token entry is refused with a 400, so the upgrade never
+// happens and no workspace call runs. The page offers both entries, and
+// that pair still selects crush.v1.
+func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	target := strings.Replace(g.URL(), "http", "ws", 1) + "/api/stream"
+
+	c, rsp, err := websocket.Dial(ctx, target, &websocket.DialOptions{
+		Subprotocols: []string{authProtocolPrefix + g.token()},
+	})
+	if c != nil {
+		t.Cleanup(func() { c.CloseNow() })
+	}
+	require.Error(t, err, "an upgrade without crush.v1 must be refused")
+	require.NotNil(t, rsp)
+	defer rsp.Body.Close()
+	body, readErr := io.ReadAll(rsp.Body)
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "missing_protocol")
+	require.Empty(t, rsp.Header.Get("Sec-WebSocket-Protocol"),
+		"a refused upgrade selects no subprotocol")
+	require.Empty(t, fake.CallLog(), "a refused upgrade reaches no workspace call")
+
+	c = dialStream(t, g, "")
+	require.Equal(t, streamProtocol, c.Subprotocol())
+}
+
+// TestOffersStreamProtocolReadsJoinedHeaders pins the header parse: the page
+// offers crush.v1 in the same comma-separated value as the token entry, and
+// spacing or extra entries must not hide it.
+func TestOffersStreamProtocolReadsJoinedHeaders(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"page pair", "crush.v1, " + authProtocolPrefix + "token", true},
+		{"token only", authProtocolPrefix + "token", false},
+		{"crowded value", "one, two ,crush.v1 , three", true},
+		{"prefix only", "crush.v10", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/stream", nil)
+			if tc.header != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", tc.header)
+			}
+			require.Equal(t, tc.want, offersStreamProtocol(req))
+		})
+	}
 }
 
 func TestStreamSelectsThePlainProtocol(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/backend"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/session"
@@ -452,7 +453,7 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	sid := r.PathValue("sid")
 	history, err := c.backend.ListSessionHistory(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file history could not be read", err)
 		return
 	}
 	jsonEncode(w, history)
@@ -465,7 +466,7 @@ func (c *controllerV1) handleGetWorkspaceSessionHistoryMeta(w http.ResponseWrite
 	sid := r.PathValue("sid")
 	metas, err := c.backend.ListSessionHistoryMeta(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file history could not be read", err)
 		return
 	}
 	jsonEncode(w, wire.FileMetasToProto(metas))
@@ -481,7 +482,7 @@ func (c *controllerV1) handleGetWorkspaceHistoryFile(w http.ResponseWriter, r *h
 			jsonError(w, http.StatusNotFound, "file version not found")
 			return
 		}
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file version could not be read", err)
 		return
 	}
 	jsonEncode(w, wire.FileToProto(file))
@@ -1012,6 +1013,20 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleHistoryError answers a failed file-history read. Only
+// backend.ErrWorkspaceNotFound keeps its usual mapping (a 404, so a client
+// recovers); every other failure is a store error whose text can name a
+// database path, so the body carries a fixed message and the log keeps the
+// detail.
+func (c *controllerV1) handleHistoryError(w http.ResponseWriter, r *http.Request, message string, err error) {
+	if errors.Is(err, backend.ErrWorkspaceNotFound) {
+		c.handleError(w, r, err)
+		return
+	}
+	c.server.logError(r, err.Error())
+	jsonError(w, http.StatusInternalServerError, message)
+}
+
 // handleSessionError answers a failed session call. A session the
 // workspace does not have is a 404 with its own code, distinct from the
 // bare 404 that means the server no longer knows the workspace; everything
@@ -1024,6 +1039,11 @@ func (c *controllerV1) handleSessionError(w http.ResponseWriter, r *http.Request
 	}
 	c.handleError(w, r, err)
 }
+
+// configReloadBusyCode is the wire code the reload route answers when an
+// agent run is in flight. internal/client matches it to restore its own
+// busy error.
+const configReloadBusyCode = "config_reload_busy"
 
 // handleError maps backend errors to HTTP status codes and writes the
 // JSON error response.
@@ -1077,6 +1097,13 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		errors.Is(err, backend.ErrClientRetired),
 		errors.Is(err, backend.ErrPromptOverrideMismatch):
 		status = http.StatusConflict
+	case errors.Is(err, app.ErrConfigReloadBusy):
+		// A reload swaps models and tools under a live run, so it is a
+		// state the caller can wait out. The code lets a client restore
+		// its own busy error instead of guessing from the status.
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusConflict, err.Error(), configReloadBusyCode)
+		return
 	case errors.Is(err, backend.ErrServerShuttingDown):
 		// 503, not 409: the request is not wrong, this process is just
 		// leaving. Clients retry against its replacement.
