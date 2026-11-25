@@ -401,9 +401,11 @@ function SystemsDialog({ inert }: { inert: boolean }) {
             {needsAuth && mcpButton(row.name, 'Authenticate', 'auth')}
             {link !== undefined && mcpButton(row.name, 'Cancel sign-in', 'auth_cancel')}
             {disabled ? mcpButton(row.name, 'Enable', 'enable') : mcpButton(row.name, 'Disable', 'disable')}
-            {mcpButton(row.name, 'Disable for all repositories', 'disable_global')}
+            <span class="systems__global">
+              {mcpButton(row.name, 'Disable for all repositories', 'disable_global')}
+              <span class="systems__scope">Applies to every repository. Undo it in the terminal config.</span>
+            </span>
           </div>
-          <p class="systems__scope">Applies to every repository. Undo it in the terminal config.</p>
           {link !== undefined && (
             <p class="systems__note">
               <a href={link} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>

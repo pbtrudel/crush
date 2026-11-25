@@ -479,6 +479,19 @@ describe('SystemsPanel actions', () => {
     expect(api.mcpAction).toHaveBeenCalledWith('github', 'disable_global');
   });
 
+  it('ties the scope note to the global action', async () => {
+    seed();
+    stubLists();
+    await mount();
+    await openFromHud('mcp');
+
+    const note = card('github')!.querySelector('.systems__scope')!;
+    const group = note.closest('.systems__global');
+    expect(group).not.toBeNull();
+    expect(group!.contains(cardButton('github', 'Disable for all repositories'))).toBe(true);
+    expect(group!.querySelectorAll('button')).toHaveLength(1);
+  });
+
   it('says when the channels filter has nothing to show', async () => {
     seed();
     state.value = { ...state.value, mcp: {} };
