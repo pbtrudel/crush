@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/evaltest"
 	"github.com/charmbracelet/crush/internal/eval/toolchain"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func TestGo(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte("#!/bin/sh\n"), 0o700))
+	evaltest.WriteExecutable(t, filepath.Join(dir, "go"), []byte("#!/bin/sh\n"))
 	require.Equal(t, filepath.Join(dir, "go"), toolchain.Go([]string{"PATH=" + dir}))
 
 	require.Equal(t, "go", toolchain.Go([]string{"PATH=/nonexistent"}), "a PATH without go leaves the bare name")
@@ -77,7 +78,7 @@ func fakeGo(t *testing.T, root string) {
 	bin := filepath.Join(root, "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o755))
 	script := "#!/bin/sh\necho \"/fake/$2\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+	evaltest.WriteExecutable(t, filepath.Join(bin, "go"), []byte(script))
 }
 
 // TestGOROOTAndVersion run the real go command, which every other test of
