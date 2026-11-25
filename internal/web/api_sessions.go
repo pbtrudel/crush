@@ -15,11 +15,13 @@ import (
 const maxTitleRunes = 200
 
 // registerSessionRoutes installs the session routes the browser uses to
-// rename, delete and follow a session. Like every other API route they
-// register through g.route so the auth test walks them.
+// rename, delete, follow a session and run its automation commands. Like
+// every other API route they register through g.route so the auth test
+// walks them.
 func (g *Gateway) registerSessionRoutes(api *http.ServeMux) {
 	g.route(api, "PUT /api/sessions/{sid}", g.handleRenameSession)
 	g.route(api, "DELETE /api/sessions/{sid}", g.handleDeleteSession)
+	g.route(api, "POST /api/sessions/{sid}/automation", g.handleAutomation)
 	g.route(api, "POST /api/follow", g.handleFollow)
 }
 
