@@ -2912,11 +2912,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// Deferred: a panic in the run must not leave the child session busy.
 	defer done()
 	result, err := params.Agent.Run(ctx, call)
-	// Before the assignment: a panic while asking for a sign-in leaves the
-	// pessimistic default in place, so the deferred finish lists the run as
-	// failed rather than as the clean run it was.
-	c.askToSignInAgain(err, model)
 	runErr = err
+	c.askToSignInAgain(err, model)
 	if err != nil {
 		return subAgentRunError("Failed to generate response", err), nil
 	}
