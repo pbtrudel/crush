@@ -204,21 +204,31 @@ wherever they belong while you browse.
 
 The strip above the message box is the chronoline: one mark per tool call or
 edit in the session the tab shows, oldest on the left and newest on the
-right. A read is a cyan circle, a write a teal square, a run an amber
-triangle and a network call a violet diamond, so the shape tells the
-category as well as the color. A long session keeps its newest 200 calls.
-The strip hides below 768px, where the scene also shrinks to a strip.
+right. Each mark names the kind of tool and its target, as **edit
+parser.go**, shortened with an ellipsis when the target is long. A read is a
+cyan circle, a write a teal square, a run an amber triangle and a network
+call a violet diamond, so the shape tells the category as well as the color.
+A long session keeps its newest 200 calls. The strip hides below 768px,
+where the scene also shrinks to a strip.
 
-Hover a mark, or focus it with the keyboard, for the tool, its summary and
-its time. The arrow keys move along the strip and Home and End jump to its
-ends. Selecting a mark scrolls the transmission log to that tool card, opens
-it and puts the focus on it, so the call and its output are in front of you.
+Hover a mark, or focus it with the keyboard, for the full summary, the time
+and the agent an agent call started. The arrow keys move along the strip and
+Home and End jump to its ends. Selecting a mark scrolls the transmission log
+to that tool card, opens it and puts the focus on it, so the call and its
+output are in front of you.
 
 The same action is behind each file version. Open the file drawer and select
 a file: under the version controls every version in the shown range names
 the tool and agent that made it, as **Made by edit in Coder**. Select it to
-reach the same card in the log. A version recorded before Crush kept tool
-calls says **Recorded before the change** and offers no link.
+reach the same card in the log. When another version in the shown range is
+linked, a version recorded before Crush kept tool calls says **Recorded
+before the change** and offers no link; a range with no linked version shows
+nothing.
+
+Below 1280px the drawer opens over the log column or takes the narrow panel
+slot. Following a version link closes the drawer and shows the log, or the
+agent tab for a call a child agent ran, so the card is never left on a
+covered or hidden panel.
 
 Browsing another session shows its own chronoline and file versions, and
 both links open its tool calls. A call a child agent ran opens that agent's
