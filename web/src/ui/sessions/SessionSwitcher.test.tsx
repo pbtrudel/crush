@@ -665,6 +665,132 @@ describe('session switcher', () => {
     expect(document.activeElement).toBe(filter());
   });
 
+  it('never waits on a Retry after a reload a newer one superseded', async () => {
+    seed();
+    const four = [...LIST, session('s-4', 'Release notes')];
+    const slow = deferred<Session[]>();
+    const fresh = deferred<Session[]>();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(four)
+      .mockReturnValueOnce(slow.promise)
+      .mockReturnValueOnce(fresh.promise)
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser')]);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    // Delete the lexer: its reload is the slow one.
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    // Delete the port row while that reload is still in flight: its own
+    // reload is the newer one and answers first.
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Port the parser', 'Delete').click(); });
+    await flush();
+
+    await act(async () => {
+      fresh.resolve([session('s-1', 'Fix the parser'), session('s-4', 'Release notes')]);
+      await Promise.resolve();
+    });
+    await flush();
+    // The older answer lands afterwards and is dropped as stale.
+    await act(async () => { slow.resolve(four); await Promise.resolve(); });
+    await flush();
+
+    // The next delete still lands on the row that takes its place: a dropped
+    // reload leaves no retry state behind for it to wait on.
+    await act(() => { rowButton('Release notes', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Release notes', 'Delete').click(); });
+    await flush();
+
+    expect(root.querySelector('#session-retry')).toBeNull();
+    expect(document.activeElement).toBe(titleButton('Fix the parser'));
+  });
+
+  it('gives the filter its focus back after a successful Retry', async () => {
+    seed();
+    const sessions = stubSessions();
+    sessions.mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openFromHud();
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    retry.focus();
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(dialog()!.querySelector('[role="status"]')).toBeNull();
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('keeps the focus in the dialog while the reload after a delete runs', async () => {
+    seed();
+    const answer = deferred<Session[]>();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockReturnValueOnce(answer.promise);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      answer.resolve([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(document.activeElement).toBe(titleButton('Port the parser'));
+  });
+
+  it('falls back to the filter when a deleted row never leaves the list', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    // The reload still carries the row, so the pending focus never finds its
+    // target: the filter is the control that is always there.
+    expect(root.querySelector('.sessions__rename')).toBeNull();
+    expect(dialog()!.textContent).toContain('Fix the lexer');
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('gives the focus to the filter when a cancelled row has left the list', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    // The query hides the row, and the confirm with it, before it is cleared.
+    await type('parser');
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(row('Fix the lexer')).toBeUndefined();
+    expect(dialog()!.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.activeElement).toBe(filter());
+  });
+
   it('moves from the filter into the list and roves the tab stop', async () => {
     seed();
     stubSessions();

@@ -42,8 +42,14 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const lastDeleting = useRef<string | null>(null);
   const deletedIndex = useRef<number | null>(null);
   // A deleted row is gone on the server even when its reload failed, so the
-  // Retry line becomes the focus target instead of a stale row.
+  // Retry line becomes the focus target instead of a stale row. Only a load
+  // that is the newest one may set it: an answer a newer load replaced knows
+  // nothing about the list on screen.
   const reloadFailed = useRef(false);
+  // A deleted row that a reload keeps in the list would leave the pending
+  // focus waiting on a row that never leaves, so it gives up on the second
+  // render without it.
+  const deleteWaits = useRef(0);
   // A close that carries a fresh server answer must keep its message line.
   const keepsError = useRef(false);
   // Every editor a user opens is a new generation, so an answer to an older
@@ -66,20 +72,24 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     return () => { alive.current = false; };
   }, []);
 
-  const load = async (): Promise<boolean> => {
+  // load answers ok, failed, or stale when a newer load replaced this answer
+  // while it was on its way. Only failed may leave a Retry line behind.
+  const load = async (): Promise<'ok' | 'failed' | 'stale'> => {
     const gen = ++generation.current;
+    // A newer load makes the failure line the older one asked for obsolete.
+    reloadFailed.current = false;
     try {
       const list = await api.sessions();
-      if (!alive.current || gen !== generation.current) return false;
+      if (!alive.current || gen !== generation.current) return 'stale';
       setSessions(list);
       setLoadError(null);
       // A fresh list means the failure it showed is no longer true.
       setActionError(null);
-      return true;
+      return 'ok';
     } catch (err) {
-      if (!alive.current || gen !== generation.current) return false;
+      if (!alive.current || gen !== generation.current) return 'stale';
       setLoadError(err);
-      return false;
+      return 'failed';
     }
   };
 
@@ -119,6 +129,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
       focusRequest.current = index === null
         ? { kind: 'delete', id: prev }
         : { kind: 'deleted', id: prev, index };
+      deleteWaits.current = 0;
     }
     if (!keepsError.current) setActionError(null);
     keepsError.current = false;
@@ -145,7 +156,16 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         retry.focus();
         return;
       }
-      if (visible.some((s) => s.id === request.id)) return;
+      if (visible.some((s) => s.id === request.id)) {
+        if (++deleteWaits.current < 2) return;
+        // The reload kept the row, so the row that should take its place is
+        // never going to appear: the filter is the control that is there.
+        focusRequest.current = null;
+        deleteWaits.current = 0;
+        filterInput.current?.focus();
+        return;
+      }
+      deleteWaits.current = 0;
       const to = visible.length === 0 ? -1 : Math.min(request.index, visible.length - 1);
       focusRequest.current = null;
       if (to < 0) {
@@ -164,8 +184,13 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         request.kind === 'rename' ? `session-rename-${request.id}` : `session-delete-${request.id}`,
       );
     }
-    target?.focus();
-    target?.scrollIntoView?.({ block: 'nearest' });
+    if (target === null) {
+      // The row left the list while its editor was open.
+      filterInput.current?.focus();
+      return;
+    }
+    target.focus();
+    target.scrollIntoView?.({ block: 'nearest' });
   });
 
   const focusRow = (index: number) => {
@@ -277,7 +302,14 @@ function SessionsDialog({ inert }: { inert: boolean }) {
     if (sessionDeleteId.value === sess.id) sessionDeleteId.value = null;
     const loaded = await load();
     if (!alive.current) return;
-    if (ownsConfirm && !loaded) reloadFailed.current = true;
+    if (ownsConfirm && loaded === 'failed') reloadFailed.current = true;
+  };
+
+  // retry runs the load the failure line asks for and hands the focus to the
+  // control the user wants next: the filter, or the first row when the filter
+  // has no rows.
+  const retry = async () => {
+    if ((await load()) === 'ok') focusRequest.current = { kind: 'filter' };
   };
 
   const shownAction = actionError === null ? null : describeFailure(actionError);
@@ -396,7 +428,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
         {shownLoad && (
           <div class="sessions__status" role={shownLoad.tone === 'starting' ? 'status' : 'alert'} data-tone={shownLoad.tone}>
             <span>{shownLoad.text}</span>
-            <button type="button" id="session-retry" class="link-button" onClick={() => void load()}>Retry</button>
+            <button type="button" id="session-retry" class="link-button" onClick={() => void retry()}>Retry</button>
           </div>
         )}
       </div>
