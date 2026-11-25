@@ -705,6 +705,7 @@ func TestFileSummariesRetryAfterTransientLoadError(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.True(t, got[0].StatsUnknown, "the failed load leaves the counts unknown")
+	require.Zero(t, g.fileStats.diffCount(), "a failed load diffs nothing")
 
 	got, err = g.fileSummaries(t.Context(), "s1")
 	require.NoError(t, err)

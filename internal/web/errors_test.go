@@ -11,17 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestWriteWorkspaceErrorMapsAgentStarting is the positive half: a starting
+// agent is a state to wait out, answered 503 with the starting code.
 func TestWriteWorkspaceErrorMapsAgentStarting(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 	writeWorkspaceError(rec, "ask_failed", fmt.Errorf("ask: %w", workspace.ErrAgentNotInitialized))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.JSONEq(t, `{"error":"Crush is starting the agent","code":"agent_starting"}`, rec.Body.String())
+}
 
-	rec = httptest.NewRecorder()
+// TestWriteWorkspaceErrorHidesTheInternalText is the negative half: a
+// failure with no state to map is a 500 whose body never carries the error,
+// which can name a socket or a path.
+func TestWriteWorkspaceErrorHidesTheInternalText(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
 	writeWorkspaceError(rec, "ask_failed", errors.New("dial unix /tmp/crush.sock: refused"))
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	require.NotContains(t, rec.Body.String(), "crush.sock")
+	require.Contains(t, rec.Body.String(), `"code":"ask_failed"`)
 }
 
 // TestWriteWorkspaceErrorMapsReconnecting pins that a lost link is a state

@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"slices"
 	"strings"
@@ -195,6 +197,35 @@ func TestReconnectingOnAgentRoutes(t *testing.T) {
 			require.Empty(t, fake.CallLog(), "a lost link answers before the action runs")
 		})
 	}
+}
+
+// TestOverClientDetachedPromptAnswersAgentStarting pins the client/server
+// path: an agent the server has not configured reaches the tab as
+// agent_starting through the real SDK round trip, so a tab in client mode
+// sees the same state as one on an in-process workspace.
+func TestOverClientDetachedPromptAnswersAgentStarting(t *testing.T) {
+	t.Parallel()
+	g := startClientGateway(t, nil)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	require.NoError(t, mw.WriteField("prompt", "fix the bug"))
+	require.NoError(t, mw.Close())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Origin", g.URL())
+	rsp := doReq(t, authedClient(t, g), req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+
+	f := readErrorFrame(t, c)
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal(f.Payload, &payload))
+	require.Equal(t, "agent_starting", payload["code"])
+	require.Equal(t, "s1", payload["session_id"])
 }
 
 // TestAgentRoutesUnknownSession pins the shared existence check: an
