@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/evaltest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,7 +45,7 @@ exit 1
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(tt.script), 0o700))
+			evaltest.WriteExecutable(t, filepath.Join(dir, "go"), []byte(tt.script))
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			out, err := GoTest(context.Background(), dir, []string{"PATH=" + dir}, []string{"test", "-json", "./p"}, false)
