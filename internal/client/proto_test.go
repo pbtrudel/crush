@@ -303,3 +303,40 @@ func TestListChildSessionsMapsNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 	require.ErrorContains(t, err, "workspace not found")
 }
+
+// TestDeleteSessionMapsErrorBodies pins that a delete decodes the error
+// body like its siblings: a workspace the server no longer knows is the
+// SDK's workspace-gone error, which triggers recovery, while a session the
+// workspace does not have stays a distinct refusal.
+func TestDeleteSessionMapsErrorBodies(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   proto.Error
+		want   error
+		not    error
+	}{
+		{"workspace gone", http.StatusNotFound, proto.Error{Message: "workspace not found"}, ErrNotFound, ErrSessionNotFound},
+		{"session missing", http.StatusNotFound, proto.Error{
+			Message: "session not found", Code: proto.ErrorCodeSessionNotFound,
+		}, ErrSessionNotFound, ErrNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			defer srv.Close()
+			c := captureClient(t, srv)
+
+			err := c.DeleteSession(t.Context(), "ws1", "s1")
+			require.ErrorIs(t, err, tc.want)
+			require.NotErrorIs(t, err, tc.not)
+			require.Contains(t, err.Error(), tc.body.Message)
+		})
+	}
+}

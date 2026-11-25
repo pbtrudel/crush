@@ -122,18 +122,27 @@ func (g *Gateway) mcpRepoDisabled(ctx context.Context) map[string]struct{} {
 	return off
 }
 
+// errMCPStateUnavailable reports that the gateway could not tell whether a
+// server is known: the disabled list it reads failed, and the name has no
+// live state either.
+var errMCPStateUnavailable = errors.New("mcp state unavailable")
+
 // mcpKnown reports whether the workspace knows name, either as a live
-// state or as a server disabled for this repository.
-func (g *Gateway) mcpKnown(ctx context.Context, name string) bool {
+// state or as a server disabled for this repository. A live state needs no
+// list read, so it stays known whatever the store says. A name only an
+// unreadable disabled list could know reports errMCPStateUnavailable, so
+// the caller answers the unavailable state instead of claiming the server
+// does not exist.
+func (g *Gateway) mcpKnown(ctx context.Context, name string) (bool, error) {
 	if _, ok := g.ws.MCPGetStates()[name]; ok {
-		return true
+		return true, nil
 	}
 	disabled, err := g.ws.MCPServersDisabled(ctx)
 	if err != nil {
 		slog.Warn("Web MCP action could not read the disabled servers", "error", err)
-		return false
+		return false, errMCPStateUnavailable
 	}
-	return slices.Contains(disabled, name)
+	return slices.Contains(disabled, name), nil
 }
 
 // handleMCPAction dispatches one action on a server. The literal
@@ -148,7 +157,12 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_action", "no such MCP action")
 		return
 	}
-	if !g.mcpKnown(r.Context(), name) {
+	known, err := g.mcpKnown(r.Context(), name)
+	if errors.Is(err, errMCPStateUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "mcp_state_unavailable", "Crush could not read the MCP server state. Try again in a moment.")
+		return
+	}
+	if !known {
 		writeError(w, http.StatusNotFound, "unknown_server", "no such MCP server")
 		return
 	}
@@ -180,6 +194,13 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 // authenticateMCP starts the server's OAuth flow and answers the URL the
 // browser should open, or an empty URL when the flow needs no browser.
 func (g *Gateway) authenticateMCP(w http.ResponseWriter, r *http.Request, name string) {
+	// A server disabled for this repository is not asked to authenticate,
+	// the same filter the list applies to its pending flag: disabling a
+	// server that needs a sign-in must stop the prompt.
+	if _, disabled := g.mcpRepoDisabled(r.Context())[name]; disabled {
+		writeError(w, http.StatusConflict, "auth_not_needed", "the MCP server is disabled for this repository")
+		return
+	}
 	if !g.mcpAuthRunning(name) {
 		pending := slices.ContainsFunc(g.ws.MCPPendingAuth(), func(p mcp.PendingAuthServer) bool {
 			return p.Name == name
@@ -353,9 +374,98 @@ func (g *Gateway) handleLSPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// LSPManager.Start waits for every server to finish its handshake,
 	// which can take seconds (or the configured timeout), so the browser
-	// is not held for it. The servers persist on their own context.
-	go g.ws.LSPStart(context.WithoutCancel(r.Context()), path)
-	w.WriteHeader(http.StatusNoContent)
+	// is not held for it. Start filters its servers by the path, so a
+	// request for another path is queued rather than folded into the
+	// running one: it runs on the same drain, in order, before that
+	// goroutine exits.
+	switch g.lspStart(path) {
+	case lspStartStarted:
+		w.WriteHeader(http.StatusNoContent)
+	case lspStartQueued:
+		// This path is running or waiting on the drain, so the request
+		// only learns the work is under way.
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		writeError(w, http.StatusServiceUnavailable, "shutting_down", "Crush is shutting down")
+	}
+}
+
+// lspStartOutcome tells a start request what the gateway did with it.
+type lspStartOutcome int
+
+const (
+	// lspStartStarted means this request starts the drain.
+	lspStartStarted lspStartOutcome = iota
+	// lspStartQueued means the path is running or already queued.
+	lspStartQueued
+	// lspStartClosing means the gateway is shutting down.
+	lspStartClosing
+)
+
+// lspStart schedules the LSP servers for path. One drain goroutine runs at a
+// time: it starts the path it owns and then every queued path in order
+// before it exits, all under one lspWG token, so Shutdown waits for the
+// whole drain within its deadline. A path already running or queued adds
+// nothing; a different path is queued once.
+func (g *Gateway) lspStart(path string) lspStartOutcome {
+	g.lspMu.Lock()
+	if g.lspClosed {
+		g.lspMu.Unlock()
+		return lspStartClosing
+	}
+	if g.lspStarting {
+		if path != g.lspPath {
+			if _, queued := g.lspQueued[path]; !queued {
+				g.lspQueued[path] = struct{}{}
+				g.lspQueue = append(g.lspQueue, path)
+			}
+		}
+		g.lspMu.Unlock()
+		return lspStartQueued
+	}
+	g.lspStarting = true
+	g.lspPath = path
+	g.lspWG.Add(1)
+	g.lspMu.Unlock()
+	go g.drainLSPStarts()
+	return lspStartStarted
+}
+
+// drainLSPStarts starts the LSP servers for the running path and then for
+// every queued path, in order. It is the only goroutine that calls the
+// manager for a browser request, so one handshake runs at a time. Once the
+// gateway is closing it stops at the next path boundary and drops the rest
+// of the queue: the in-process manager runs its servers on its own context,
+// so a drain that outlived Shutdown would otherwise keep starting servers
+// after Shutdown returned.
+func (g *Gateway) drainLSPStarts() {
+	defer g.lspWG.Done()
+	for {
+		g.lspMu.Lock()
+		path := g.lspPath
+		g.lspMu.Unlock()
+		g.ws.LSPStart(g.lspCtx, path)
+		g.lspMu.Lock()
+		if g.lspClosed {
+			g.lspQueue = nil
+			g.lspQueued = map[string]struct{}{}
+			g.lspStarting = false
+			g.lspPath = ""
+			g.lspMu.Unlock()
+			return
+		}
+		if len(g.lspQueue) == 0 {
+			g.lspStarting = false
+			g.lspPath = ""
+			g.lspMu.Unlock()
+			return
+		}
+		path = g.lspQueue[0]
+		g.lspQueue = g.lspQueue[1:]
+		delete(g.lspQueued, path)
+		g.lspPath = path
+		g.lspMu.Unlock()
+	}
 }
 
 func (g *Gateway) handleLSPStop(w http.ResponseWriter, r *http.Request) {

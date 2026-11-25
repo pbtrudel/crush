@@ -1,9 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"slices"
 	"strings"
@@ -166,6 +170,62 @@ func TestAgentStartingOnAgentRoutes(t *testing.T) {
 		require.Contains(t, string(body), "agent_starting", tc.target)
 	}
 	require.Empty(t, fake.CallLog())
+}
+
+// TestReconnectingOnAgentRoutes drives the two lost-link states through a
+// route: both answer 503 with their own code and the fixed sentence, and
+// the action never reaches the workspace.
+func TestReconnectingOnAgentRoutes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"workspace gone", workspace.ErrWorkspaceGone, "workspace_gone"},
+		{"server unreachable", fmt.Errorf("get agent info: %w", workspace.ErrServerUnreachable), "server_unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.SetReadyErr(tc.err)
+			rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/sessions/s1/summarize", "")
+			rsp.Body.Close()
+			require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+			require.Contains(t, string(body), tc.code)
+			require.Contains(t, string(body), "Crush is reconnecting to its server. Try again in a moment.")
+			require.Empty(t, fake.CallLog(), "a lost link answers before the action runs")
+		})
+	}
+}
+
+// TestOverClientDetachedPromptAnswersAgentStarting pins the client/server
+// path: an agent the server has not configured reaches the tab as
+// agent_starting through the real SDK round trip, so a tab in client mode
+// sees the same state as one on an in-process workspace.
+func TestOverClientDetachedPromptAnswersAgentStarting(t *testing.T) {
+	t.Parallel()
+	g := startClientGateway(t, nil)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Snapshot.
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	require.NoError(t, mw.WriteField("prompt", "fix the bug"))
+	require.NoError(t, mw.Close())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/prompt", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Origin", g.URL())
+	rsp := doReq(t, authedClient(t, g), req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+
+	f := readErrorFrame(t, c)
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal(f.Payload, &payload))
+	require.Equal(t, "agent_starting", payload["code"])
+	require.Equal(t, "s1", payload["session_id"])
 }
 
 // TestAgentRoutesUnknownSession pins the shared existence check: an
@@ -354,26 +414,39 @@ func TestShellCancelAfterContextDone(t *testing.T) {
 	require.Empty(t, done.Error)
 }
 
-// TestShellCoalescesProgress holds the command open so several progress
-// writes land inside one flush interval; they must arrive as one frame,
-// not one frame per write.
+// TestShellCoalescesProgress holds the command open and publishes one
+// flush tick by hand, so the three progress writes must arrive as one
+// frame, not one frame per write, whatever the machine's timing.
 func TestShellCoalescesProgress(t *testing.T) {
 	t.Parallel()
-	g, fake := startTest(t)
+	ticks := make(chan time.Time)
+	g, fake := startWith(t, Options{shellTick: ticks})
 	release := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(unblock)
+	written := make(chan struct{})
 	fake.OnShell = func(_ context.Context, _, _ string, onProgress func(string), _ bool) (proto.ShellCommandResponse, error) {
 		onProgress("one\n")
 		onProgress("two\n")
 		onProgress("three\n")
+		close(written)
 		<-release
 		return proto.ShellCommandResponse{Output: "one\ntwo\nthree\n"}, nil
 	}
 	c := dialStream(t, g, "")
 	readFrame(t, c) // Snapshot.
 	startShell(t, authedClient(t, g), g, "printf three")
+	select {
+	case <-written:
+	case <-time.After(time.Second):
+		t.Fatal("the command never wrote its chunks")
+	}
+	select {
+	case ticks <- time.Now():
+	case <-time.After(time.Second):
+		t.Fatal("the shell flusher never read the injected tick")
+	}
 	f := readFrame(t, c)
 	require.Equal(t, frameShellOutput, f.Type)
 	var chunk shellFrame
@@ -464,32 +537,53 @@ func TestShellCancelledOnShutdown(t *testing.T) {
 }
 
 // TestShutdownBoundsTheShellWait covers a command that ignores its
-// context: Shutdown must give up after the caller's deadline instead of
-// hanging on it.
+// context and a request the server cannot drain: Shutdown must give up at
+// the caller's deadline instead of hanging on either. The held request is
+// what makes the wait real: with an idle connection http.Server.Shutdown
+// returns at once and the deadline would prove nothing.
 func TestShutdownBoundsTheShellWait(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	release := make(chan struct{})
-	returned := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
 	fake.OnShell = func(context.Context, string, string, func(string), bool) (proto.ShellCommandResponse, error) {
 		<-release
-		close(returned)
 		return proto.ShellCommandResponse{ExitCode: 1}, nil
 	}
-	t.Cleanup(func() {
-		unblock()
-		select {
-		case <-returned:
-		case <-time.After(2 * time.Second):
-			t.Error("the fake shell did not return after release")
-		}
-	})
-	startShell(t, authedClient(t, g), g, "stuck")
+	c := authedClient(t, g)
+	startShell(t, c, g, "stuck")
 	require.Eventually(t, func() bool {
 		return slices.Contains(fake.CallLog(), "AgentRunShellCommand:s1:stuck:true")
 	}, time.Second, 10*time.Millisecond)
+
+	// A request whose body never completes holds a handler open, so the
+	// server has an active connection it cannot drain before the deadline.
+	bodyR, bodyW := io.Pipe()
+	t.Cleanup(func() { _ = bodyW.CloseWithError(io.ErrUnexpectedEOF) })
+	seen := make(chan struct{})
+	held, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		g.URL()+"/api/sessions/s1/notes", &firstRead{r: bodyR, seen: seen})
+	require.NoError(t, err)
+	held.Header.Set("Content-Type", "application/json")
+	held.Header.Set("Origin", g.URL())
+	heldDone := make(chan struct{})
+	go func() {
+		defer close(heldDone)
+		rsp, err := c.Do(held)
+		if err == nil {
+			rsp.Body.Close()
+		}
+	}()
+	// The transport reads the body only after the headers are on the wire.
+	select {
+	case <-seen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the held request never reached the gateway")
+	}
+	_, err = bodyW.Write([]byte(`{"text":"`))
+	require.NoError(t, err)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -498,11 +592,34 @@ func TestShutdownBoundsTheShellWait(t *testing.T) {
 	go func() { done <- g.Shutdown(shutdownCtx) }()
 	select {
 	case err := <-done:
-		require.NoError(t, err)
-		require.Less(t, time.Since(start), time.Second, "Shutdown waited on a command that ignores cancellation")
+		// The held request outlasts the deadline, so the server's own
+		// drain reports it; the point is that Shutdown returned anyway.
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Less(t, time.Since(start), time.Second,
+			"Shutdown waited on work that ignores cancellation")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Shutdown waited on a command that ignores cancellation")
+		t.Fatal("Shutdown waited on work that ignores cancellation")
 	}
+	unblock()
+	_ = bodyW.CloseWithError(io.ErrUnexpectedEOF)
+	select {
+	case <-heldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the held request did not return")
+	}
+}
+
+// firstRead reports the first read of a request body, which the client
+// transport performs only after the request headers are written.
+type firstRead struct {
+	r    io.Reader
+	once sync.Once
+	seen chan struct{}
+}
+
+func (h *firstRead) Read(p []byte) (int, error) {
+	h.once.Do(func() { close(h.seen) })
+	return h.r.Read(p)
 }
 
 func TestNotesAddNote(t *testing.T) {

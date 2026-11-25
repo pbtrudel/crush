@@ -76,10 +76,12 @@ func (m *oauthFlow) submitCode(input string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := m.newContext()
 		tok, err := m.flow.SubmitCode(ctx, input)
+		if ctx.Err() != nil {
+			// The dialog moved on: a replaced or dismissed submit drops its
+			// answer instead of completing a sign-in it no longer owns.
+			return nil
+		}
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
 			return ActionOAuthErrored{Error: err}
 		}
 		return ActionCompleteOAuth{Token: tok}
@@ -87,10 +89,15 @@ func (m *oauthFlow) submitCode(input string) tea.Cmd {
 }
 
 // newContext replaces the cancel func under the lock: the dialog's
-// commands run on their own goroutines.
+// commands run on their own goroutines. A command that starts while another
+// runs cancels the older one first, so a dismiss stops every goroutine the
+// dialog started and an answer from the replaced command is dropped.
 func (m *oauthFlow) newContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
 	m.cancel = cancel
 	m.mu.Unlock()
 	return ctx

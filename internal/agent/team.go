@@ -69,6 +69,11 @@ func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member
 // teamRunner runs teammate turns with the coordinator's agent machinery.
 type teamRunner struct {
 	c *coordinator
+	// team is the service this runner was created for. The coordinator's
+	// pointer can be retired by a reload while a turn is in flight, and
+	// the session ids the turn hands out must keep the team that owns
+	// them.
+	team *agentteam.Service
 }
 
 // teamService returns the live Team service, or nil when Agent Teams is off.
@@ -97,7 +102,7 @@ func (c *coordinator) syncAgentTeams() error {
 		if err != nil {
 			return fmt.Errorf("initialize Agent Teams: %w", err)
 		}
-		teamService.SetRunner(&teamRunner{c: c})
+		teamService.SetRunner(&teamRunner{c: c, team: teamService})
 		teamService.SetTaskCompletedHook(c.completeMatchingTodo)
 		c.setTeam(teamService)
 	case !enabled && team != nil:
@@ -346,13 +351,14 @@ func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Membe
 
 // teammateSessionID names a teammate session. Member ids restart with every
 // new Team, so the Team id keeps a fresh team from colliding with the sessions
-// an earlier team left in the same workspace database.
+// an earlier team left in the same workspace database. The runner's own
+// service supplies it, so a reload that retires the coordinator's pointer
+// mid-turn cannot drop the team id.
 func (r *teamRunner) teammateSessionID(member agentteam.Member) string {
-	team := r.c.teamService()
-	if team == nil {
+	if r.team == nil {
 		return "team-" + member.ID
 	}
-	teamID := strings.TrimPrefix(team.TeamID(), "team-")
+	teamID := strings.TrimPrefix(r.team.TeamID(), "team-")
 	if teamID == "" {
 		return "team-" + member.ID
 	}

@@ -255,6 +255,13 @@ func (c *Client) ReloadConfig(ctx context.Context, id string) error {
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
+		msg, code := decodeError(rsp.Body)
+		if code == configReloadBusyCode {
+			return fmt.Errorf("%w: %s", ErrConfigReloadBusy, msg)
+		}
+		if msg != "" {
+			return fmt.Errorf("failed to reload config: status code %d: %s", rsp.StatusCode, msg)
+		}
 		return fmt.Errorf("failed to reload config: status code %d", rsp.StatusCode)
 	}
 	return nil

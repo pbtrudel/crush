@@ -45,5 +45,8 @@ func RunAndCaptureStream(ctx context.Context, opts RunOptions, onProgress func(s
 	return CaptureResult{
 		Output:   buf.buf.String(),
 		ExitCode: exitCode,
+		// See RunAndCapture: the run was interrupted when its own context
+		// ended it, never merely because the context was done afterwards.
+		Interrupted: IsInterrupt(runErr) || (runErr != nil && ctx.Err() != nil),
 	}, nil
 }

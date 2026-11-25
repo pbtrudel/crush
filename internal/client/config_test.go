@@ -189,3 +189,23 @@ func TestReloadConfigPropagatesErrorStatus(t *testing.T) {
 	c := captureClient(t, srv)
 	require.Error(t, c.ReloadConfig(context.Background(), "ws1"))
 }
+
+// TestReloadConfigBusyIsTyped pins that a reload the server refused because
+// a run is in flight answers the client's own busy error, so both frontends
+// can tell "wait for the run" from a failed reload.
+func TestReloadConfigBusyIsTyped(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, err := w.Write([]byte(`{"message":"cannot reload the configuration while an agent is running","code":"config_reload_busy"}`))
+		require.NoError(t, err)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	err := c.ReloadConfig(context.Background(), "ws1")
+	require.ErrorIs(t, err, ErrConfigReloadBusy)
+	require.Contains(t, err.Error(), "while an agent is running")
+}

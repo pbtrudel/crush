@@ -167,8 +167,13 @@ func (w *AppWorkspace) AgentAddNote(_ context.Context, sessionID, text string) e
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
 	var persist shell.PersistFunc
 	if sessionID != "" {
+		// The output is saved even when the run is cancelled: a run the
+		// user interrupted is stored with the TUI's SIGINT code (see
+		// CaptureResult.PersistedExitCode), so the transcript keeps the
+		// partial output and the same code instead of losing the run.
+		persistCtx := context.WithoutCancel(ctx)
 		persist = func(cmd, output string, exitCode int) error {
-			return shell.PersistOutput(ctx, w.app.Messages, sessionID, cmd, output, exitCode, w.store.Config().Options.DataDirectory)
+			return shell.PersistOutput(persistCtx, w.app.Messages, sessionID, cmd, output, exitCode, w.store.Config().Options.DataDirectory)
 		}
 	}
 
@@ -193,7 +198,7 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 
 	// Persist if we used the streaming path (persist wasn't called by RunAndPersist).
 	if onProgress != nil && persist != nil {
-		if persistErr := persist(command, result.Output, result.ExitCode); persistErr != nil {
+		if persistErr := persist(command, result.Output, result.PersistedExitCode()); persistErr != nil {
 			slog.Error("Failed to persist shell command output", "error", persistErr, "command", command)
 		}
 	}
