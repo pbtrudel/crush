@@ -1,5 +1,6 @@
 import {
-  axeScan, awsTest, expect, m3VisualTest, m4VisualTest, promptVisualTest, visualTest as test,
+  axeScan, awsTest, expect, freshTest, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest, seedDisplay,
+  visualTest as test,
 } from './fixture';
 import type { Page } from '@playwright/test';
 
@@ -8,6 +9,7 @@ import type { Page } from '@playwright/test';
 test.setTimeout(120_000);
 m3VisualTest.setTimeout(120_000);
 m4VisualTest.setTimeout(120_000);
+m4bVisualTest.setTimeout(120_000);
 promptVisualTest.setTimeout(120_000);
 awsTest.setTimeout(120_000);
 
@@ -25,6 +27,8 @@ async function prepare(page: Page) {
 test.beforeEach(async ({ page }) => { await prepare(page); });
 m3VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 m4VisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+m4bVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
+freshTest.beforeEach(async ({ page }) => { await prepare(page); });
 promptVisualTest.beforeEach(async ({ page }) => { await prepare(page); });
 
 async function settle(page: Page) {
@@ -103,7 +107,7 @@ test('agents and the inspector', async ({ page, gateway }) => {
   await axe(page);
 });
 
-test('file drawer with a diff', async ({ page, gateway }) => {
+freshTest('file drawer with a diff', async ({ page, gateway }) => {
   // The scene behind the drawer orbits on the frame clock, and its phase is
   // the integral of the frames that rendered: a lazy chunk or a resize
   // observer landing between two clock runs changes how many frames each run
@@ -112,7 +116,7 @@ test('file drawer with a diff', async ({ page, gateway }) => {
   // resize has moved the projector, so the shot no longer depends on where
   // the setup's real-time work landed. The drawer and the diff editor keep
   // animating normally.
-  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  await seedDisplay(page, gateway, 'options.web_display.motion', 'off');
   await page.goto(gateway.launch);
   await settle(page);
   await page.getByRole('button', { name: /^Files/ }).click();
@@ -133,10 +137,16 @@ test('file drawer with a diff', async ({ page, gateway }) => {
   await axe(page);
 });
 
-test('agents in the 2D view', async ({ page, gateway }) => {
-  await page.addInitScript(() => localStorage.setItem('crush-web-low-power', '1'));
+// Low power is the gateway's setting now, so the test turns it on through
+// the dialog. Its own webfake keeps the write off the worker's shared one.
+freshTest('agents in the 2D view', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Display', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Display settings' });
+  await settings.getByRole('checkbox', { name: 'Low power (2D constellation)' }).check();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
   // The roster arrives in stream frames, and a paused clock only delivers
   // them when it moves. The 2D constellation is drawn from state alone, so
   // how far the clock walked here does not change the picture.
@@ -257,6 +267,33 @@ m4VisualTest('sign-in device code', async ({ page, gateway }) => {
   // run and needs no mask.
   await expect(page).toHaveScreenshot('signin-device.png', { timeout: 30_000 });
   await axe(page);
+});
+
+// The M4b surfaces, on the M4b scenario: the display settings dialog, and the
+// solid theme a gateway starts on when the run asks for it.
+m4bVisualTest('display settings', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  // The dialog opens from a click, so no clock from the gateway's start is
+  // involved.
+  await page.getByRole('button', { name: 'Display', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Display settings' })).toBeVisible();
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('display-settings.png', { timeout: 30_000 });
+  await axe(page);
+});
+
+m4bVisualTest.describe('solid theme', () => {
+  m4bVisualTest.use({ theme: 'solid' });
+
+  m4bVisualTest('the solid theme', async ({ page, gateway }) => {
+    await page.goto(gateway.launch);
+    await settle(page);
+    await expect(page.locator('.holodeck')).toHaveAttribute('data-theme', 'solid');
+    await page.clock.runFor(1000);
+    await expect(page).toHaveScreenshot('solid-theme.png', { timeout: 30_000 });
+    await axe(page);
+  });
 });
 
 // The AWS SSO card is a reading surface with no baseline of its own: the axe

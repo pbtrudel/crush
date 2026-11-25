@@ -173,6 +173,37 @@ describe('reduce', () => {
     expect(reduce(live(), { seq: 14, type: 'gateway_closing', payload: {} }).conn).toBe('ended');
   });
 
+  it('takes the display from display_changed and from the snapshot', () => {
+    const solid = { theme: 'solid' as const, motion: 'off' as const, low_power: true, cinematic_hint: false };
+    let s = reduce(initialState(), { seq: 1, type: 'display_changed', payload: solid } as Frame);
+    expect(s.display).toEqual(solid);
+    // A different set proves the snapshot replaces the display rather than
+    // leaving the frame's value alone.
+    const reset = { theme: 'holodeck' as const, motion: '' as const, low_power: false, cinematic_hint: true };
+    s = reduce(s, {
+      seq: 2, type: 'snapshot', payload: { ...(fx.snapshot.payload as Snapshot), display: reset },
+    } as Frame);
+    expect(s.display).toEqual(reset);
+  });
+
+  it('keeps the current display when a snapshot carries none', () => {
+    const solid = { theme: 'solid' as const, motion: 'off' as const, low_power: true, cinematic_hint: false };
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    const s = reduce({ ...initialState(), display: solid }, { seq: 2, type: 'snapshot', payload } as Frame);
+    expect(s.display).toEqual(solid);
+  });
+
+  it('names why the gateway closed, and forgets it once the link is live', () => {
+    let s = reduce(initialState(), { seq: 1, type: 'gateway_closing', payload: { reason: 'detached' } } as Frame);
+    expect(s.endedReason).toBe('detached');
+    expect(s.conn).toBe('ended');
+    s = reduce(initialState(), { seq: 1, type: 'gateway_closing', payload: { reason: 'crush exited' } } as Frame);
+    expect(s.endedReason).toBe('exited');
+    s = reduce(s, { seq: 2, type: 'snapshot', payload: fx.snapshot.payload } as Frame);
+    expect(s.endedReason).toBeNull();
+  });
+
   it('web_error toasts', () => {
     const s = reduce(live(), { seq: 15, type: 'web_error', payload: { error: 'agent busy' } });
     expect(s.toasts.at(-1)).toMatchObject({ tone: 'error', text: 'agent busy' });

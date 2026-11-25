@@ -5,7 +5,7 @@ import type { PermissionMode } from '../api/types';
 import { telemetry } from '../state/telemetry';
 import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
 import { openModels, openSessions } from '../state/palette';
-import { MotionMenu } from './MotionMenu';
+import { openDisplay } from '../state/display';
 import { ActivityChart } from './hud/ActivityChart';
 import { ContextGauge } from './hud/ContextGauge';
 import { Numeral } from './hud/Numeral';
@@ -31,7 +31,9 @@ export function Hud() {
   const linkDetail = s.conn === 'reconnecting'
     ? 'Signal lost. Reconnecting to crush.'
     : s.conn === 'ended'
-      ? 'Session ended. The log stays readable. Start crush with --web or run /web to link a new tab.'
+      ? s.endedReason === 'detached'
+        ? 'Web mode was stopped. Run /web in the terminal for a new link.'
+        : 'Session ended. The log stays readable. Start crush with --web or run /web to link a new tab.'
       : '';
 
   // shell.css places the toasts from --hud-h, so the strip publishes its own
@@ -129,7 +131,7 @@ export function Hud() {
             onClick={() => void actions.setInputMode('code')}
           >Code</button>
         </div>
-        <MotionMenu />
+        <button type="button" class="hud-label hud__display" onClick={() => openDisplay()}>Display</button>
         {canFly && (
           <button
             type="button"

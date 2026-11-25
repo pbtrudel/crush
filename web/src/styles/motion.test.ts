@@ -26,11 +26,13 @@ const EXPECTED_SHEETS = [
   'palette.css',
   'panels.css',
   'sessions.css',
+  'settings.css',
   'shell.css',
   'signin.css',
   'stage.css',
   'systems.css',
   'team.css',
+  'theme-solid.css',
   'tokens.css',
 ];
 

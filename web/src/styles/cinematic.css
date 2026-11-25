@@ -83,7 +83,7 @@
 .holodeck[data-cinematic='true'] .hud__select,
 .holodeck[data-cinematic='true'] .hud__controls > .hud-label,
 .holodeck[data-cinematic='true'] .hud__mode,
-.holodeck[data-cinematic='true'] .motion-menu { display: none; }
+.holodeck[data-cinematic='true'] .hud__display { display: none; }
 
 /* The deck becomes a slim bar: one line of input and no help text. */
 .holodeck[data-cinematic='true'] .deck--slim { padding-block: var(--space-1); gap: 4px; }

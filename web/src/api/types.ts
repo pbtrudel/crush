@@ -88,12 +88,25 @@ export interface SignInResult {
 // AwsSso is the AWS SSO refresh card. A snapshot carries only the command
 // and the URL; an error reaches the card from the result frame.
 export interface AwsSso { command: string; url?: string; error?: string }
+// Theme names the tab's look: the translucent Holodeck glass or the solid
+// glass with neither blur nor scan lines.
+export type Theme = 'holodeck' | 'solid';
+// DisplaySettings is what the settings dialog writes and what the gateway
+// publishes after every write. The empty motion follows the tab's own
+// remembered motion, then the browser's reduced motion setting.
+export interface DisplaySettings {
+  theme: Theme; motion: '' | 'full' | 'reduced' | 'off'; low_power: boolean; cinematic_hint: boolean;
+}
+export interface ConfigView { display: DisplaySettings; agent_teams: boolean }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
   questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   secure_prompts?: SecurePrompt[]; signin?: SignInState; aws_sso?: { command: string; url?: string };
   agent_ready: boolean; plan_ready_session_id?: string;
+  // display is the tab's settings. A snapshot without it keeps whatever the
+  // tab already shows.
+  display?: DisplaySettings;
   busy: boolean; queued: string[];
   lsp?: Record<string, ServerInfo>; mcp?: Record<string, ServerInfo>;
   files?: FileSummary[]; team?: TeamState; agent_runs?: AgentRun[];

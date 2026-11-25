@@ -176,6 +176,56 @@ answer or cancel from the tab is refused.
 The tab sends the secret in the request body, clears the field when you
 submit, and keeps no copy.
 
+## Display settings
+
+The **Display** control in the HUD, and **Display settings** in the command
+palette, open the tab's display settings. They are stored in the global
+config under `options.web_display`, so they follow you across runs and every
+tab of the same Crush reads them:
+
+```json
+{
+  "options": {
+    "web_display": {
+      "theme": "solid",
+      "motion": "reduced",
+      "low_power": false,
+      "cinematic_hint": true
+    }
+  }
+}
+```
+
+The settings are:
+
+- **Theme**: **Holodeck** is the translucent glass with scan lines.
+  **Solid glass** gives every panel the opaque glass, with no blur and no
+  scan lines.
+- **Motion**: **Follow the system** follows the browser's reduced motion
+  setting and forgets the tab's earlier choice. **Full**, **Reduced** and
+  **Off** override it.
+- **Effects**: **Low power (2D constellation)** draws the flat constellation
+  in place of the 3D scene. When the scene or the frame-time guard steps the
+  effects down, **Restore effects** brings them back.
+- **Cinematic view**: **Show the orbit hint in cinematic view** turns the bar
+  naming the orbit keys on or off.
+- **Reset display settings** removes the keys, so every setting returns to
+  its default.
+
+A change from one tab reaches the other tabs at once.
+
+## Stopping web mode
+
+The bottom of the display settings dialog has **Stop web mode**. It asks for
+a confirmation with **Stop web mode now**; the tab disconnects and every tab
+of that gateway shows "Web mode was stopped. Run /web in the terminal for a
+new link." The message box stays disabled for that reason. The terminal keeps
+running and the session is untouched.
+
+Run `/web` in the terminal to start a new gateway; the new link works in the
+same tab. If the terminal exits instead of stopping web mode, the tab says
+the session ended and points at the same `/web` command.
+
 ## Client/server mode
 
 With `CRUSH_CLIENT_SERVER=1`, Crush runs as a client of a Crush server. Web

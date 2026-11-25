@@ -55,15 +55,10 @@
 .hud__link svg { fill: var(--teal); }
 .hud__link[data-conn='reconnecting'] svg { fill: var(--amber); animation: blink 1s steps(2) infinite; }
 .hud__link[data-conn='ended'] svg { fill: var(--magenta); }
-.motion-menu { position: relative; }
-.motion-menu summary { cursor: pointer; list-style: none; padding: 8px; }
-.motion-menu__panel {
-  position: absolute; inset-inline-end: 0; z-index: 30; display: grid; gap: 10px;
-  padding: var(--space-4); min-inline-size: 15rem;
-  background: var(--surface-solid); border: 1px solid var(--edge); border-radius: var(--radius);
-}
-.motion-menu fieldset { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
-.motion-menu label { display: flex; gap: 8px; align-items: center; min-block-size: 32px; }
+/* The Display control keeps the box and the glyphs the details summary had:
+   the same padding and no chrome. base.css already resets a button's font,
+   colour and cursor, so .hud-label keeps its own look here. */
+.hud__display { padding: 8px; background: none; border: 0; }
 /* The banner is absent while linked, so the grid and deck are placed on
    explicit rows; auto-placement would move them up and stretch the deck. */
 .holodeck__grid {

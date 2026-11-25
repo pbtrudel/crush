@@ -4,6 +4,8 @@ import { act } from 'preact/test-utils';
 import { setCinematic } from '../state/cinematic';
 import { resetWebglProbe, sceneFailed } from '../state/effects';
 import { lowPower } from '../state/motion';
+import { initialState } from '../state/reducer';
+import { state } from '../state/store';
 import { CineHint } from './CineHint';
 
 describe('CineHint', () => {
@@ -20,12 +22,19 @@ describe('CineHint', () => {
       expect(root.querySelector('.cine-hint')).toBeNull();
       await act(() => { setCinematic(true); });
       expect(root.querySelector('.cine-hint')!.textContent).toContain('Shift + arrow keys');
+      // The setting hides it without leaving cinematic mode.
+      await act(() => {
+        state.value = { ...state.value, display: { ...state.value.display, cinematic_hint: false } };
+      });
+      expect(root.querySelector('.cine-hint')).toBeNull();
       await act(() => { setCinematic(false); });
+      state.value = initialState();
       expect(root.querySelector('.cine-hint')).toBeNull();
     } finally {
       await act(() => { render(null, root); });
       HTMLCanvasElement.prototype.getContext = original;
       resetWebglProbe();
+      state.value = initialState();
     }
   });
 });

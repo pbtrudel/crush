@@ -1,4 +1,5 @@
 import { signal } from '@preact/signals';
+import { closeDisplay } from './display';
 
 export type PaletteSection = 'all' | 'sessions' | 'models' | 'commands' | 'skills';
 
@@ -134,12 +135,13 @@ export function escapeSystems(): boolean {
   return true;
 }
 
-// closePanels closes the palette and the three HUD panels it can stack
-// with. The Ctrl+K branch and openSignIn share it, so a dialog that opens
-// never leaves another layer and its backdrop on screen.
+// closePanels closes the palette and the HUD panels it can stack with. The
+// Ctrl+K branch and openSignIn share it, so a dialog that opens never leaves
+// another layer and its backdrop on screen.
 export function closePanels(): void {
   closePalette();
   closeSessions();
   closeModels();
   closeSystems();
+  closeDisplay();
 }

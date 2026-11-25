@@ -29,9 +29,11 @@ import {
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
 import { closeSignIn, escapeSignIn, signInOpen } from '../state/signin';
+import { displayOpen, escapeDisplay } from '../state/display';
 import { ModelSelector } from './models/ModelSelector';
 import { SystemsPanel } from './systems/SystemsPanel';
 import { SignInDialog } from './signin/SignInDialog';
+import { DisplaySettings } from './settings/DisplaySettings';
 import { AwsSsoCard } from './signin/AwsSsoCard';
 import { usePublishedHeight } from './usePublishedHeight';
 
@@ -78,7 +80,6 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const focused = document.activeElement;
-      const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
       // closed while a dialog owns the page. It closes every other layer
       // first, so two dialogs never stack.
@@ -131,9 +132,13 @@ export function App() {
         escapeSignIn();
         return;
       }
-      // An open Display menu owns Escape: it closes itself, so the inspector
-      // and the cinematic view must not read the same press.
-      if (e.key === 'Escape' && target instanceof Element && target.closest('details.motion-menu[open]')) return;
+      // The display dialog has no inner layer either; Escape closes it so
+      // the inspector and the cinematic view never read the same press.
+      if (e.key === 'Escape' && displayOpen.value) {
+        e.preventDefault();
+        escapeDisplay();
+        return;
+      }
       // Escape in the deck's note mode leaves that mode and does nothing
       // else, so this capture listener must not read the same press for the
       // inspector or the cinematic view.
@@ -168,6 +173,7 @@ export function App() {
   return (
     <div
       class="holodeck"
+      data-theme={s.display.theme}
       data-motion={motion.value}
       data-low-power={lowPower.value}
       data-conn={s.conn}
@@ -202,6 +208,7 @@ export function App() {
       <ModelSelector inert={modal} />
       <SystemsPanel inert={modal} />
       <SignInDialog inert={modal} />
+      <DisplaySettings inert={modal} />
       <AwsSsoCard inert={modal} />
       <Toasts />
       <CineHint />

@@ -1,12 +1,18 @@
 import type {
-  AgentEvent, AgentRun, AwsSso, FileSummary, Frame, InputMode, Message, ModelInfo, ModelTarget, Part,
-  PermissionMode, PermissionNotification, PermissionRequest, QuestionRequest, SecurePrompt, ServerInfo,
-  Session, ShellOutput, SignInState, Snapshot, TeamState, ToolResultData, UpdateAvailable, WebError,
+  AgentEvent, AgentRun, AwsSso, DisplaySettings, FileSummary, Frame, InputMode, Message, ModelInfo,
+  ModelTarget, Part, PermissionMode, PermissionNotification, PermissionRequest, QuestionRequest, SecurePrompt,
+  ServerInfo, Session, ShellOutput, SignInState, Snapshot, TeamState, ToolResultData, UpdateAvailable, WebError,
   WireEvent,
 } from '../api/types';
 import { toastForAgentEvent } from './notifications';
 
 export type Conn = 'booting' | 'live' | 'reconnecting' | 'ended' | 'unauthorized';
+// EndedReason tells a tab stopped from the browser from one whose terminal
+// exited.
+export type EndedReason = 'detached' | 'exited';
+export const displayDefaults: DisplaySettings = {
+  theme: 'holodeck', motion: '', low_power: false, cinematic_hint: true,
+};
 export type Tone = 'info' | 'success' | 'warn' | 'error';
 export type ToastAction = 'restore-effects' | { kind: 'sign-in'; provider: string; model?: ModelTarget };
 export interface Toast { id: number; tone: Tone; text: string; action?: ToastAction }
@@ -24,6 +30,9 @@ export interface ShellRun {
 
 export interface State {
   conn: Conn;
+  // endedReason names why the gateway closed, or null while the link is
+  // live or was never closed.
+  endedReason: EndedReason | null;
   lastSeq: number;
   // hydrated is true once a snapshot has named the session the terminal
   // shows. Before it, an empty sessionId means "not known yet", not "the
@@ -36,6 +45,8 @@ export interface State {
   project: string;
   branch: string;
   model: ModelInfo;
+  // display is the tab's settings as the gateway last published them.
+  display: DisplaySettings;
   agentReady: boolean;
   planReady: string;
   permissionMode: PermissionMode;
@@ -86,9 +97,9 @@ export interface State {
 
 export function initialState(): State {
   return {
-    conn: 'booting', lastSeq: 0, hydrated: false, version: '', workingDir: '', project: '', branch: '',
-    model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
-    agentReady: true, planReady: '',
+    conn: 'booting', endedReason: null, lastSeq: 0, hydrated: false, version: '', workingDir: '', project: '',
+    branch: '', model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
+    display: { ...displayDefaults }, agentReady: true, planReady: '',
     permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
     permissions: [], question: null, questionQueue: [], securePrompts: [], answeredHere: {},
     signin: null, awsSso: null, busy: false, queued: [], toasts: [],
@@ -320,6 +331,9 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
   return {
     ...s,
     conn: 'live',
+    // A live snapshot means the link is back, so an earlier close no
+    // longer explains the tab.
+    endedReason: null,
     lastSeq: seq,
     hydrated: true,
     version: snap.version,
@@ -327,6 +341,8 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     project: projectName(snap.working_dir),
     branch: snap.branch ?? '',
     model: snap.model,
+    // A snapshot that names no display keeps the one the tab shows.
+    ...(snap.display !== undefined ? { display: snap.display } : {}),
     // The snapshot carries the agent's readiness twice; the top-level field
     // is the same read as model.agent_ready, so either one is authoritative.
     agentReady: snap.agent_ready ?? true,
@@ -530,8 +546,17 @@ export function reduce(s: State, f: Frame): State {
     }
     case 'input_mode_changed':
       return { ...next, inputMode: (f.payload as { mode: InputMode }).mode };
-    case 'gateway_closing':
-      return { ...next, conn: 'ended', busy: false };
+    case 'display_changed':
+      return { ...next, display: f.payload as DisplaySettings };
+    case 'gateway_closing': {
+      const reason = (f.payload as { reason?: string }).reason;
+      return {
+        ...next,
+        conn: 'ended',
+        busy: false,
+        endedReason: reason === 'detached' ? 'detached' : 'exited',
+      };
+    }
     case 'web_error': {
       const e = f.payload as WebError;
       // A replay after a reconnect repeats a seq the state already holds;

@@ -1,7 +1,7 @@
 import type {
-  Attachment, CommandEntry, DiagnosticCounts, FileDiff, FileSummary, InputMode, LspServer, McpPrompt,
-  McpServer, Message, ModelChoice, ModelInfo, ModelTarget, PermissionMode, QuestionAnswer, Session,
-  SignInResult, SignInState, SignInTarget, SkillEntry, Snapshot, SecurePrompt,
+  Attachment, CommandEntry, ConfigView, DiagnosticCounts, DisplaySettings, FileDiff, FileSummary, InputMode,
+  LspServer, McpPrompt, McpServer, Message, ModelChoice, ModelInfo, ModelTarget, PermissionMode, QuestionAnswer,
+  Session, SignInResult, SignInState, SignInTarget, SkillEntry, Snapshot, SecurePrompt,
 } from './types';
 import { forgetToken, token } from '../state/token';
 
@@ -80,6 +80,14 @@ export const api = {
   teamInterrupt: (member: string, sessionId: string) =>
     call<void>('POST', `/api/team/members/${encodeURIComponent(member)}/interrupt`, { session_id: sessionId }),
   reloadConfig: () => call<void>('POST', '/api/config/reload'),
+  // The display settings are the only config the tab may write, and every
+  // write answers the whole set.
+  config: () => call<ConfigView>('GET', '/api/config'),
+  setConfig: (key: string, value: unknown) => call<DisplaySettings>('POST', '/api/config/set', { key, value }),
+  removeConfig: (key: string) => call<DisplaySettings>('POST', '/api/config/remove', { key }),
+  // detach asks the terminal to stop web mode; the gateway answers 202 and
+  // then closes every tab's stream.
+  detach: () => call<void>('POST', '/api/detach'),
   renameSession: (sid: string, title: string) =>
     call<Session>('PUT', `/api/sessions/${encodeURIComponent(sid)}`, { title }),
   deleteSession: (sid: string) => call<void>('DELETE', `/api/sessions/${encodeURIComponent(sid)}`),

@@ -14,7 +14,8 @@ import {
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { closeSignIn, signInOpen } from '../../state/signin';
-import { setMotion } from '../../state/motion';
+import { motion, setMotion } from '../../state/motion';
+import { closeDisplay, displayOpen } from '../../state/display';
 import { App } from '../App';
 
 vi.mock('../stage/SceneLayer', () => ({ SceneLayer: () => null }));
@@ -126,6 +127,7 @@ afterEach(async () => {
   closeModels();
   closeSystems();
   closeSignIn();
+  closeDisplay();
   argumentItem.value = null;
   deckMode.value = null;
   sideAnswer.value = null;
@@ -629,7 +631,7 @@ describe('the command palette', () => {
     expect(document.activeElement).toBe(deck());
   });
 
-  it('opens the Display menu for Display settings', async () => {
+  it('opens the display settings dialog for Display settings', async () => {
     seed();
     stubSources();
     await mount();
@@ -638,10 +640,33 @@ describe('the command palette', () => {
     await type('display');
     await enter();
 
-    const menu = root.querySelector<HTMLDetailsElement>('details.motion-menu')!;
-    expect(menu.open).toBe(true);
     expect(paletteOpen.value).toBeNull();
-    expect(document.activeElement).toBe(menu.querySelector('summary'));
+    expect(displayOpen.value).toBe(true);
+    const dialog = root.querySelector<HTMLElement>('[role="dialog"][aria-label="Display settings"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.contains(document.activeElement)).toBe(true);
+
+    // Pins the deck return: useDialogFocus's own restore already lands on
+    // the deck when the palette opened from it.
+    await pressKey(dialog!.querySelector('input')!, { key: 'Escape', code: 'Escape' });
+    expect(displayOpen.value).toBe(false);
+    expect(document.activeElement).toBe(deck());
+  });
+
+  it('writes the config from the palette motion cycle', async () => {
+    seed();
+    stubSources();
+    const set = vi.spyOn(api, 'setConfig').mockResolvedValue({ ...state.value.display, motion: 'reduced' });
+    await mount();
+    await openWithKey();
+
+    await type('effects');
+    await enter();
+
+    expect(set).toHaveBeenCalledWith('options.web_display.motion', 'reduced');
+    expect(paletteOpen.value).toBeNull();
+    expect(state.value.display.motion).toBe('reduced');
+    expect(motion.value).toBe('reduced');
   });
 
   it('hands the list back from the argument form on Escape', async () => {

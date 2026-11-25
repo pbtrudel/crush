@@ -9,6 +9,14 @@ export function readStored(key: string): string | null {
   }
 }
 
+export function removeStored(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Kept in memory only; see above.
+  }
+}
+
 export function writeStored(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);

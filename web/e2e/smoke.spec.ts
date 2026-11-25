@@ -1,4 +1,4 @@
-import { test, expect } from './fixture';
+import { expect, freshTest, seedDisplay, test } from './fixture';
 import type { Page } from '@playwright/test';
 
 interface Box { x: number; y: number; w: number; h: number }
@@ -87,12 +87,19 @@ test('empty prompt shows an inline error', async ({ page, gateway }) => {
   await expect(page.getByRole('alert').filter({ hasText: 'Type a task' })).toBeVisible();
 });
 
-test('reduced motion and low power', async ({ page, gateway }) => {
+// Its own gateway: low power is the gateway's setting now, and the worker's
+// shared one must not carry this write into the tests after it.
+freshTest('reduced motion and low power', async ({ page, gateway }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(gateway.launch);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'reduced');
-  await page.getByText('Display').click();
+  await page.getByRole('button', { name: 'Display' }).click();
+  const settings = page.getByRole('dialog', { name: 'Display settings' });
+  await settings.waitFor();
   await page.getByLabel('Low power (2D constellation)').check();
+  // The dialog covers the stage, so it closes before the geometry below.
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
   // The toggle reaches the page on a frame and the roster arrives in frames
   // after boot, so both wait past a loaded host's frame budget.
   await expect(page.locator('svg.constellation-svg')).toBeVisible({ timeout: 15_000 });
@@ -115,10 +122,9 @@ test('reduced motion and low power', async ({ page, gateway }) => {
   }
 });
 
-test('cinematic mode works with motion off', async ({ page, gateway }) => {
-  // The Display menu writes this key; seeding it is the same preference
-  // without a click through the menu.
-  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+// Its own gateway carries the motion setting, and the run starts on it.
+freshTest('cinematic mode works with motion off', async ({ page, gateway }) => {
+  await seedDisplay(page, gateway, 'options.web_display.motion', 'off');
   await page.goto(gateway.launch);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-motion', 'off');
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
@@ -165,10 +171,10 @@ test('Alt+C enters and Esc leaves cinematic mode', async ({ page, gateway }) => 
 // The inspector is the second projected screen: at the end of the flight it
 // has to sit whole inside the viewport, with its close button reachable, not
 // just have its body text on screen.
-test('the cinematic inspector fits the viewport', async ({ page, gateway }) => {
+freshTest('the cinematic inspector fits the viewport', async ({ page, gateway }) => {
   // Motion off settles the flight in one frame, so the geometry below is the
   // layout the full flight lands on without waiting out the clock.
-  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  await seedDisplay(page, gateway, 'options.web_display.motion', 'off');
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
 

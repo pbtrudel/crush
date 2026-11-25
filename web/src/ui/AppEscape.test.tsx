@@ -5,6 +5,7 @@ import fixtures from '../state/__fixtures__/events.json';
 import type { Frame, QuestionRequest, SecurePrompt } from '../api/types';
 import { ApiError, api } from '../api/http';
 import { cinematic, setCinematic } from '../state/cinematic';
+import { closeDisplay, displayOpen, openDisplay } from '../state/display';
 import { resetWebglProbe } from '../state/effects';
 import {
   closePalette, closeSessions, deckMode, openPalette, openSessions, paletteOpen, sessionsOpen,
@@ -38,6 +39,7 @@ afterEach(async () => {
   closeSessions();
   closeSignIn();
   closePalette();
+  closeDisplay();
   deckMode.value = null;
   HTMLCanvasElement.prototype.getContext = original;
   resetWebglProbe();
@@ -63,20 +65,21 @@ describe('Escape in cinematic mode', () => {
     expect(cinematic.value).toBe(false);
   });
 
-  it('closes only the display menu when Escape is pressed inside it', async () => {
+  it('closes only the display dialog when Escape is pressed inside it', async () => {
     await act(() => { render(<App />, root); });
     await act(() => { setCinematic(true); });
-    const details = document.querySelector<HTMLDetailsElement>('details.motion-menu')!;
-    details.open = true;
-    const radio = details.querySelector<HTMLInputElement>('input[type="radio"]')!;
+    await act(() => { openDisplay(); });
+    expect(displayOpen.value).toBe(true);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Display settings"]')!;
+    const radio = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!;
     radio.focus();
 
     await act(() => { radio.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); });
 
-    expect(details.open).toBe(false);
+    expect(document.querySelector('[role="dialog"][aria-label="Display settings"]')).toBeNull();
+    expect(displayOpen.value).toBe(false);
     expect(state.value.inspected?.sessionId).toBe('sub-1');
     expect(cinematic.value).toBe(true);
-    expect(document.activeElement).toBe(details.querySelector('summary'));
   });
 
   it('leaves note mode without closing the inspector or the cinematic view', async () => {

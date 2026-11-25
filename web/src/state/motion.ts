@@ -2,8 +2,10 @@ import { signal } from '@preact/signals';
 import { readStored, writeStored } from './storage';
 
 export type Motion = 'full' | 'reduced' | 'off';
-const KEY_MOTION = 'crush-web-motion';
-const KEY_LOW = 'crush-web-low-power';
+// The two storage keys are exported so the display settings can read the
+// per-tab cache without repeating them.
+export const KEY_MOTION = 'crush-web-motion';
+export const KEY_LOW = 'crush-web-low-power';
 
 function initialMotion(): Motion {
   const saved = readStored(KEY_MOTION) as Motion | null;
