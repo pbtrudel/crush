@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -557,53 +558,16 @@ func TestLSPStartOutlivesTheRequest(t *testing.T) {
 	require.Never(t, func() bool { return ctx.Err() != nil }, 100*time.Millisecond, 10*time.Millisecond)
 }
 
-// TestLSPStartRunsOneStartAtATime pins that a second request while a start
-// is in flight answers 202 and runs nothing: the servers a start brings up
-// are the same for every path, so a second call would only repeat the wait.
-func TestLSPStartRunsOneStartAtATime(t *testing.T) {
-	t.Parallel()
-	fake := webtest.NewFake()
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var enteredOnce, releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(unblock)
-	fake.OnLSPStart = func(context.Context, string) {
-		enteredOnce.Do(func() { close(entered) })
-		<-release
-	}
-	g := startFake(t, fake)
-	c := authedClient(t, g)
-
-	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", "{}")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("the first start never reached the LSP manager")
-	}
-
-	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", "{}")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusAccepted, rsp.StatusCode, string(body))
-
-	unblock()
-	require.Eventually(t, func() bool {
-		return countCalls(fake, "LSPStart:"+fake.WorkDir) == 1
-	}, time.Second, 10*time.Millisecond, "a start in flight covers the second request")
-	require.Equal(t, 1, countCalls(fake, "LSPStart:"+fake.WorkDir))
-}
-
-// TestShutdownWaitsForTheLSPStart covers both halves of the wait: an
-// in-flight start holds Shutdown until it settles, and a start that ignores
-// the gateway's cancellation cannot hold it past the caller's deadline.
-func TestShutdownWaitsForTheLSPStart(t *testing.T) {
+// TestLSPStartKeepsOneDrain pins the queue: one goroutine runs starts at a
+// time, a request for a path already running or queued adds nothing, and a
+// request for another path is queued and run by that same goroutine,
+// because the manager's Start filters its servers by path.
+func TestLSPStartKeepsOneDrain(t *testing.T) {
 	t.Parallel()
 
-	// blockedStart starts a gateway whose LSP start blocks until the
+	// runningStart starts a gateway whose start for a.go blocks until the
 	// returned func releases it.
-	blockedStart := func(t *testing.T) (*Gateway, func()) {
+	runningStart := func(t *testing.T) (*Gateway, *webtest.Fake, func()) {
 		t.Helper()
 		fake := webtest.NewFake()
 		entered := make(chan struct{})
@@ -611,12 +575,85 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		var enteredOnce, releaseOnce sync.Once
 		unblock := func() { releaseOnce.Do(func() { close(release) }) }
 		t.Cleanup(unblock)
-		fake.OnLSPStart = func(context.Context, string) {
+		first := filepath.Join(fake.WorkDir, "a.go")
+		fake.OnLSPStart = func(_ context.Context, path string) {
 			enteredOnce.Do(func() { close(entered) })
-			<-release
+			if path == first {
+				<-release
+			}
 		}
 		g := startFake(t, fake)
-		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/lsp/start", "{}")
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/lsp/start", `{"path":"a.go"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("the first start never reached the LSP manager")
+		}
+		return g, fake, unblock
+	}
+
+	t.Run("same path", func(t *testing.T) {
+		t.Parallel()
+		g, fake, unblock := runningStart(t)
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/lsp/start", `{"path":"a.go"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusAccepted, rsp.StatusCode, string(body))
+		unblock()
+		a := filepath.Join(fake.WorkDir, "a.go")
+		require.Eventually(t, func() bool {
+			return countCalls(fake, "LSPStart:"+a) == 1
+		}, time.Second, 10*time.Millisecond, "a path already running is not started twice")
+		require.Equal(t, 1, countCalls(fake, "LSPStart:"+a))
+	})
+
+	t.Run("another path is queued", func(t *testing.T) {
+		t.Parallel()
+		g, fake, unblock := runningStart(t)
+		c := authedClient(t, g)
+		for range 2 {
+			rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", `{"path":"b.py"}`)
+			rsp.Body.Close()
+			require.Equal(t, http.StatusAccepted, rsp.StatusCode, string(body))
+		}
+		b := filepath.Join(fake.WorkDir, "b.py")
+		require.Zero(t, countCalls(fake, "LSPStart:"+b), "the queued path waits for the drain")
+		unblock()
+		require.Eventually(t, func() bool {
+			return countCalls(fake, "LSPStart:"+b) == 1
+		}, 2*time.Second, 10*time.Millisecond, "the drain runs a different path after the first")
+		require.Equal(t, 1, countCalls(fake, "LSPStart:"+b), "a queued path is queued once")
+	})
+}
+
+// TestShutdownWaitsForTheLSPStart covers both halves of the wait: an
+// in-flight start and the paths queued behind it hold Shutdown until they
+// settle, and a start that ignores the gateway's cancellation cannot hold
+// it past the caller's deadline.
+func TestShutdownWaitsForTheLSPStart(t *testing.T) {
+	t.Parallel()
+
+	// blockedStart starts a gateway whose start for a.go blocks until the
+	// returned func releases it, and queues b.py behind it.
+	blockedStart := func(t *testing.T) (*Gateway, *webtest.Fake, func()) {
+		t.Helper()
+		fake := webtest.NewFake()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enteredOnce, releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(unblock)
+		first := filepath.Join(fake.WorkDir, "a.go")
+		fake.OnLSPStart = func(_ context.Context, path string) {
+			enteredOnce.Do(func() { close(entered) })
+			if path == first {
+				<-release
+			}
+		}
+		g := startFake(t, fake)
+		c := authedClient(t, g)
+		rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", `{"path":"a.go"}`)
 		rsp.Body.Close()
 		require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
 		select {
@@ -624,12 +661,15 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("the start never reached the LSP manager")
 		}
-		return g, unblock
+		rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", `{"path":"b.py"}`)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusAccepted, rsp.StatusCode, string(body))
+		return g, fake, unblock
 	}
 
-	t.Run("waits for the start", func(t *testing.T) {
+	t.Run("waits for the start and the queue", func(t *testing.T) {
 		t.Parallel()
-		g, unblock := blockedStart(t)
+		g, fake, unblock := blockedStart(t)
 		done := make(chan error, 1)
 		go func() { done <- g.Shutdown(context.Background()) }()
 		returned := func() bool {
@@ -640,7 +680,7 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 				return false
 			}
 		}
-		require.Never(t, returned, 100*time.Millisecond, 10*time.Millisecond,
+		require.Never(t, returned, 150*time.Millisecond, 10*time.Millisecond,
 			"Shutdown returned while a start was still in flight")
 		unblock()
 		select {
@@ -648,12 +688,14 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("Shutdown did not return after the start settled")
 		}
+		require.Equal(t, 1, countCalls(fake, "LSPStart:"+filepath.Join(fake.WorkDir, "b.py")),
+			"the queued start runs before Shutdown returns")
 	})
 
 	t.Run("bounded by the deadline", func(t *testing.T) {
 		t.Parallel()
-		g, unblock := blockedStart(t)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		g, _, unblock := blockedStart(t)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		done := make(chan error, 1)
 		go func() { done <- g.Shutdown(shutdownCtx) }()

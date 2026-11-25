@@ -137,14 +137,18 @@ type Gateway struct {
 	auths       map[string]context.CancelFunc
 	authWG      sync.WaitGroup
 	authsClosed bool
-	// lspMu guards lspStarting, whether the one detached LSP start the
-	// gateway runs is in flight, and lspClosed, which refuses one during
-	// shutdown. lspWG lets Shutdown wait for the start before the hub
-	// closes; lspCtx is what every start runs on, so cancelling the
-	// gateway stops the start without a per-start context outliving its
-	// call.
+	// lspMu guards the one start drain the gateway runs: lspStarting,
+	// lspPath (the path it is on) and lspQueue with lspQueued (the paths
+	// waiting behind it), plus lspClosed, which refuses new work during
+	// shutdown. lspWG covers the whole drain, so Shutdown waits for the
+	// queued paths too. lspCtx is what every start runs on: cancelling it
+	// bounds a client-mode call whose server is gone, though the
+	// in-process manager runs its own servers and may ignore it.
 	lspMu       sync.Mutex
 	lspStarting bool
+	lspPath     string
+	lspQueue    []string
+	lspQueued   map[string]struct{}
 	lspClosed   bool
 	lspCtx      context.Context
 	lspCancel   context.CancelFunc
@@ -258,6 +262,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		fileStats: newFileStatCache(slots),
 		diffs:     slots,
 		shells:    make(map[string]context.CancelFunc),
+		lspQueued: make(map[string]struct{}),
 		auths:     make(map[string]context.CancelFunc),
 		authPoll:  opts.mcpAuthPoll,
 		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
@@ -476,9 +481,10 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	g.authMu.Unlock()
-	// The LSP start is cancelled here, before the wait below, so a start
-	// that honours its context settles without using up the caller's
-	// deadline. One that ignores it is bounded by the same deadline.
+	// The start drain is cancelled here, before the wait below, so a
+	// client-mode call whose server is gone settles without using up the
+	// caller's deadline. The in-process manager runs its own servers, so a
+	// start that ignores the context is bounded by the same deadline.
 	g.lspMu.Lock()
 	g.lspClosed = true
 	g.lspCancel()

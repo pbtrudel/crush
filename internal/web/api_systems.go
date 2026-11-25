@@ -374,14 +374,16 @@ func (g *Gateway) handleLSPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// LSPManager.Start waits for every server to finish its handshake,
 	// which can take seconds (or the configured timeout), so the browser
-	// is not held for it. The servers persist on the gateway's context.
+	// is not held for it. Start filters its servers by the path, so a
+	// request for another path is queued rather than folded into the
+	// running one: it runs on the same drain, in order, before that
+	// goroutine exits.
 	switch g.lspStart(path) {
 	case lspStartStarted:
 		w.WriteHeader(http.StatusNoContent)
-	case lspStartInFlight:
-		// A start already under way brings up the same servers for every
-		// path in the working directory, so this request only learns it is
-		// still running.
+	case lspStartQueued:
+		// This path is running or waiting on the drain, so the request
+		// only learns the work is under way.
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", "Crush is shutting down")
@@ -392,17 +394,19 @@ func (g *Gateway) handleLSPStart(w http.ResponseWriter, r *http.Request) {
 type lspStartOutcome int
 
 const (
-	// lspStartStarted means this request runs the start.
+	// lspStartStarted means this request starts the drain.
 	lspStartStarted lspStartOutcome = iota
-	// lspStartInFlight means another start already covers the path.
-	lspStartInFlight
+	// lspStartQueued means the path is running or already queued.
+	lspStartQueued
 	// lspStartClosing means the gateway is shutting down.
 	lspStartClosing
 )
 
-// lspStart runs the one detached LSP start the gateway allows at a time.
-// It reports whether this request owns the start, so a second request can
-// answer without a second call and Shutdown knows what it waits for.
+// lspStart schedules the LSP servers for path. One drain goroutine runs at a
+// time: it starts the path it owns and then every queued path in order
+// before it exits, all under one lspWG token, so Shutdown waits for the
+// whole drain within its deadline. A path already running or queued adds
+// nothing; a different path is queued once.
 func (g *Gateway) lspStart(path string) lspStartOutcome {
 	g.lspMu.Lock()
 	if g.lspClosed {
@@ -410,22 +414,46 @@ func (g *Gateway) lspStart(path string) lspStartOutcome {
 		return lspStartClosing
 	}
 	if g.lspStarting {
+		if path != g.lspPath {
+			if _, queued := g.lspQueued[path]; !queued {
+				g.lspQueued[path] = struct{}{}
+				g.lspQueue = append(g.lspQueue, path)
+			}
+		}
 		g.lspMu.Unlock()
-		return lspStartInFlight
+		return lspStartQueued
 	}
 	g.lspStarting = true
+	g.lspPath = path
 	g.lspWG.Add(1)
 	g.lspMu.Unlock()
-	go func() {
-		defer g.lspWG.Done()
-		defer func() {
-			g.lspMu.Lock()
-			g.lspStarting = false
-			g.lspMu.Unlock()
-		}()
-		g.ws.LSPStart(g.lspCtx, path)
-	}()
+	go g.drainLSPStarts()
 	return lspStartStarted
+}
+
+// drainLSPStarts starts the LSP servers for the running path and then for
+// every queued path, in order. It is the only goroutine that calls the
+// manager for a browser request, so one handshake runs at a time.
+func (g *Gateway) drainLSPStarts() {
+	defer g.lspWG.Done()
+	for {
+		g.lspMu.Lock()
+		path := g.lspPath
+		g.lspMu.Unlock()
+		g.ws.LSPStart(g.lspCtx, path)
+		g.lspMu.Lock()
+		if len(g.lspQueue) == 0 {
+			g.lspStarting = false
+			g.lspPath = ""
+			g.lspMu.Unlock()
+			return
+		}
+		path = g.lspQueue[0]
+		g.lspQueue = g.lspQueue[1:]
+		delete(g.lspQueued, path)
+		g.lspPath = path
+		g.lspMu.Unlock()
+	}
 }
 
 func (g *Gateway) handleLSPStop(w http.ResponseWriter, r *http.Request) {
