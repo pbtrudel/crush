@@ -563,6 +563,14 @@ func (w *AppWorkspace) ListSkills(_ context.Context) ([]skills.CatalogEntry, err
 	return skills.Catalog(mgr.ActiveSkills(), mgr.ResolvedPaths(), mgr.WorkingDir()), nil
 }
 
+// ListAllSkills returns every discovered skill, including the ones the
+// config or this repository disabled, so a frontend can still offer to
+// turn them back on.
+func (w *AppWorkspace) ListAllSkills(_ context.Context) ([]skills.CatalogEntry, error) {
+	mgr := w.app.Skills
+	return skills.Catalog(mgr.AllSkills(), mgr.ResolvedPaths(), mgr.WorkingDir()), nil
+}
+
 func (w *AppWorkspace) ReadSkill(_ context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
 	mgr := w.app.Skills
 	return skills.ReadContent(mgr.ActiveSkills(), mgr.ResolvedPaths(), mgr.WorkingDir(), skillID)

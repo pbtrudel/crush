@@ -176,6 +176,18 @@ func (c *controllerV1) handleGetWorkspaceSkills(w http.ResponseWriter, r *http.R
 	jsonEncode(w, skills)
 }
 
+// handleGetWorkspaceSkillsAll returns every discovered skill for a
+// workspace, including the ones the config or this repository disabled.
+func (c *controllerV1) handleGetWorkspaceSkillsAll(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	skills, err := c.backend.ListAllSkills(id)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, skills)
+}
+
 // handlePostWorkspaceSkillsReload re-discovers the workspace's skills
 // and refreshes its agents and subscribers.
 func (c *controllerV1) handlePostWorkspaceSkillsReload(w http.ResponseWriter, r *http.Request) {

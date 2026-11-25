@@ -205,7 +205,7 @@ func TestMCPUnknownServer404(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	c := authedClient(t, g)
-	for _, action := range []string{"start", "refresh", "enable", "disable", "auth"} {
+	for _, action := range []string{"start", "refresh", "enable", "disable", "auth", "enable_global", "disable_global", "auth_cancel"} {
 		rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/ghost/"+action, "")
 		rsp.Body.Close()
 		require.Equal(t, http.StatusNotFound, rsp.StatusCode, action, string(body))
@@ -463,6 +463,125 @@ func TestShutdownBoundsTheMCPAuthWait(t *testing.T) {
 		t.Fatal("Shutdown waited on an auth flow that ignores cancellation")
 	}
 	unblock()
+}
+
+// waitAuthFlows waits for every OAuth flow goroutine to return, bounded so
+// a flow that ignores its release cannot hang the test.
+func waitAuthFlows(t *testing.T, g *Gateway) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		g.authWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an OAuth flow did not return")
+	}
+}
+
+// TestMCPAuthCancel pins the cancel route: it stops the running flow, a
+// second cancel answers no_auth_flow, and a cancelled flow that fails
+// anyway publishes nothing, because only its cancelled context keeps the
+// failure off the hub.
+func TestMCPAuthCancel(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.MCP = map[string]mcp.ClientInfo{"notes": {Name: "notes", State: mcp.StateError}}
+	fake.SetMCPPending([]mcp.PendingAuthServer{{Name: "notes"}})
+	fake.AuthURL = "https://auth.example/x"
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fake.SetMCPAuthRelease(release)
+	// The flow ignores the cancellation and then fails: the context guard,
+	// not the fake's return value, is what must keep the failure private.
+	fake.SetMCPAuthIgnoreCtx(true)
+	fake.SetMCPAuthErr(errors.New("token endpoint returned 500"))
+	c := authedClient(t, g)
+
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.True(t, g.mcpAuthRunning("notes"))
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+	require.False(t, g.mcpAuthRunning("notes"), "a cancelled flow is no longer running")
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "no_auth_flow")
+
+	unblock()
+	waitAuthFlows(t, g)
+	for _, fr := range g.hub.frames() {
+		require.NotEqual(t, frameError, fr.Type, "a cancelled flow publishes no failure")
+	}
+}
+
+// TestMCPAuthCancelAllowsRetry pins the cancel-then-retry window: once a
+// flow is cancelled it no longer counts as running, so a new auth starts a
+// fresh flow even while the cancelled goroutine is still alive.
+func TestMCPAuthCancelAllowsRetry(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.MCP = map[string]mcp.ClientInfo{"notes": {Name: "notes", State: mcp.StateError}}
+	fake.SetMCPPending([]mcp.PendingAuthServer{{Name: "notes"}})
+	fake.AuthURL = "https://auth.example/x"
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fake.SetMCPAuthRelease(release)
+	// The cancelled flow ignores its context, so it is still alive when the
+	// retry starts.
+	fake.SetMCPAuthIgnoreCtx(true)
+	c := authedClient(t, g)
+
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+	require.False(t, g.mcpAuthRunning("notes"))
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.Eventually(t, func() bool {
+		return countCalls(fake, "MCPAuthenticate:notes") == 2
+	}, time.Second, 10*time.Millisecond, "a cancelled flow must not block a new sign-in")
+	require.True(t, g.mcpAuthRunning("notes"), "the new flow owns the registry entry")
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+	require.False(t, g.mcpAuthRunning("notes"))
+
+	unblock()
+	waitAuthFlows(t, g)
+}
+
+// TestStaleMCPAuthFlowKeepsTheNewerOne pins the deferred cleanup: a flow
+// cancelled before a retry must not remove the flow that replaced it.
+func TestStaleMCPAuthFlowKeepsTheNewerOne(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	stale := &mcpAuthFlow{cancel: func() {}}
+	fresh := &mcpAuthFlow{cancel: func() {}}
+	g.authMu.Lock()
+	g.auths["notes"] = fresh
+	g.authMu.Unlock()
+
+	g.finishMCPAuth("notes", stale)
+	require.True(t, g.mcpAuthRunning("notes"), "a stale flow must not delete the newer one")
 }
 
 func TestLSPListAndDiagnostics(t *testing.T) {

@@ -145,11 +145,12 @@ type Gateway struct {
 	shells       map[string]context.CancelFunc
 	shellWG      sync.WaitGroup
 	shellsClosed bool
-	// auths holds the cancel func of every running MCP OAuth flow, keyed
-	// by server name. authWG lets Shutdown wait for them before the hub
-	// closes, and authsClosed refuses a flow started during shutdown.
+	// auths holds every running MCP OAuth flow, keyed by server name. The
+	// entry is a pointer so a cancelled flow's cleanup can tell whether it
+	// still owns the entry. authWG lets Shutdown wait for them before the
+	// hub closes, and authsClosed refuses a flow started during shutdown.
 	authMu      sync.Mutex
-	auths       map[string]context.CancelFunc
+	auths       map[string]*mcpAuthFlow
 	authWG      sync.WaitGroup
 	authsClosed bool
 	// lspMu guards the one start drain the gateway runs: lspStarting,
@@ -305,7 +306,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		diffs:     slots,
 		shells:    make(map[string]context.CancelFunc),
 		lspQueued: make(map[string]struct{}),
-		auths:     make(map[string]context.CancelFunc),
+		auths:     make(map[string]*mcpAuthFlow),
 		authPoll:  opts.mcpAuthPoll,
 		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
 		shellTick: opts.shellTick,
@@ -550,8 +551,8 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.shellMu.Unlock()
 	g.authMu.Lock()
 	g.authsClosed = true
-	for _, cancel := range g.auths {
-		cancel()
+	for _, flow := range g.auths {
+		flow.cancel()
 	}
 	g.authMu.Unlock()
 	// The start drain is cancelled here, before the wait below, so a

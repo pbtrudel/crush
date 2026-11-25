@@ -249,7 +249,8 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	action := r.PathValue("action")
 	switch action {
-	case "start", "refresh", "enable", "disable", "auth":
+	case "start", "refresh", "enable", "disable", "auth",
+		"enable_global", "disable_global", "auth_cancel":
 	default:
 		writeError(w, http.StatusNotFound, "unknown_action", "no such MCP action")
 		return
@@ -281,11 +282,44 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 			writeWorkspaceError(w, "toggle_mcp", err)
 			return
 		}
+	case "enable_global", "disable_global":
+		if err := g.ws.MCPSetServerConfigDisabled(ctx, name, action == "disable_global"); err != nil {
+			writeWorkspaceError(w, "toggle_mcp", err)
+			return
+		}
 	case "auth":
 		g.authenticateMCP(w, r, name)
 		return
+	case "auth_cancel":
+		if !g.cancelMCPAuth(name) {
+			writeError(w, http.StatusNotFound, "no_auth_flow", "no MCP sign-in is running")
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// mcpAuthFlow is one running OAuth flow. The pointer identity lets a flow
+// that outlives a cancel remove only its own registry entry.
+type mcpAuthFlow struct {
+	cancel context.CancelFunc
+}
+
+// cancelMCPAuth cancels the running OAuth flow for name and reports
+// whether one was running. Removing the entry under authMu makes a retry
+// start a fresh flow at once and a second cancel answer no_auth_flow,
+// while the cancelled flow may still be winding down; its own cleanup
+// leaves the newer flow's entry alone.
+func (g *Gateway) cancelMCPAuth(name string) bool {
+	g.authMu.Lock()
+	defer g.authMu.Unlock()
+	flow, ok := g.auths[name]
+	if !ok {
+		return false
+	}
+	delete(g.auths, name)
+	flow.cancel()
+	return true
 }
 
 // authenticateMCP starts the server's OAuth flow and answers the URL the
@@ -344,9 +378,10 @@ func (g *Gateway) startMCPAuth(name string) bool {
 		return true
 	}
 	ctx, cancel := context.WithCancel(g.ctx)
-	g.auths[name] = cancel
+	flow := &mcpAuthFlow{cancel: cancel}
+	g.auths[name] = flow
 	g.authWG.Add(1)
-	go g.runMCPAuth(ctx, name)
+	go g.runMCPAuth(ctx, name, flow)
 	return true
 }
 
@@ -354,13 +389,9 @@ func (g *Gateway) startMCPAuth(name string) bool {
 // entry. The outcome reaches the browser through the workspace's own
 // mcp_event frames; only a failure that is not a cancellation is reported
 // separately, with a fixed message.
-func (g *Gateway) runMCPAuth(ctx context.Context, name string) {
+func (g *Gateway) runMCPAuth(ctx context.Context, name string, flow *mcpAuthFlow) {
 	defer g.authWG.Done()
-	defer func() {
-		g.authMu.Lock()
-		delete(g.auths, name)
-		g.authMu.Unlock()
-	}()
+	defer g.finishMCPAuth(name, flow)
 	if err := g.ws.MCPAuthenticate(ctx, name); err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			return
@@ -368,6 +399,17 @@ func (g *Gateway) runMCPAuth(ctx context.Context, name string) {
 		slog.Warn("Web MCP authentication failed", "server", name, "error", err)
 		g.hub.publishJSON(frameError, mcpAuthFailure())
 	}
+}
+
+// finishMCPAuth drops name's registry entry when it still belongs to
+// flow, so a cancelled flow that outlives a retry never removes the flow
+// that replaced it.
+func (g *Gateway) finishMCPAuth(name string, flow *mcpAuthFlow) {
+	g.authMu.Lock()
+	if g.auths[name] == flow {
+		delete(g.auths, name)
+	}
+	g.authMu.Unlock()
 }
 
 // waitMCPAuthURL polls for the flow's authorization URL. An empty answer

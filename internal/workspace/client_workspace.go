@@ -872,6 +872,22 @@ func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry
 	if err != nil {
 		return nil, err
 	}
+	return catalogEntries(entries), nil
+}
+
+// ListAllSkills returns every discovered skill, including the ones the
+// config or this repository disabled.
+func (w *ClientWorkspace) ListAllSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
+	entries, err := w.client.ListAllSkills(ctx, w.workspaceID())
+	if err != nil {
+		return nil, err
+	}
+	return catalogEntries(entries), nil
+}
+
+// catalogEntries converts the server's skill list back to the catalog the
+// frontends consume.
+func catalogEntries(entries []proto.SkillInfo) []skills.CatalogEntry {
 	result := make([]skills.CatalogEntry, len(entries))
 	for i, entry := range entries {
 		result[i] = skills.CatalogEntry{
@@ -883,7 +899,7 @@ func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry
 			UserInvocable: entry.UserInvocable,
 		}
 	}
-	return result, nil
+	return result
 }
 
 func (w *ClientWorkspace) ReloadSkills(ctx context.Context) error {

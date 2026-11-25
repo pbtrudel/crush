@@ -72,12 +72,16 @@ type Fake struct {
 	teamErr     error
 	seq         int
 	// skillCatalog is the visible skill set; skillContent and
-	// skillDisabled back ReadSkill and the toggles.
-	skillCatalog  []skills.CatalogEntry
-	skillContent  map[string]string
-	skillDisabled map[string]bool
-	// skillsErr, when set, makes ListSkills fail.
-	skillsErr error
+	// skillDisabled back ReadSkill and the toggles. skillDiscovered is the
+	// rest of the discovered set, which only ListAllSkills reports.
+	skillCatalog    []skills.CatalogEntry
+	skillDiscovered []skills.CatalogEntry
+	skillContent    map[string]string
+	skillDisabled   map[string]bool
+	// skillsErr, when set, makes both skill list calls fail; allSkillsErr
+	// makes only ListAllSkills fail. Set them with the setters.
+	skillsErr    error
+	allSkillsErr error
 	// mcpPrompts is the prompt catalog; mcpPromptText is keyed by
 	// "<client>:<prompt>" and holds what GetMCPPrompt returns.
 	mcpPrompts    []commands.MCPPrompt
@@ -117,9 +121,9 @@ type Fake struct {
 	authErr         error
 	authRelease     chan struct{}
 	authIgnoreCtx   bool
-	// configErr makes both config writes fail. configGate, when set,
-	// holds every config write until it closes, so a test can prove two
-	// writes never overlap. Set them with the setters.
+	// configErr makes the config writes and the global toggles fail.
+	// configGate, when set, holds every config write until it closes, so a
+	// test can prove two writes never overlap. Set them with the setters.
 	configErr  error
 	configGate <-chan struct{}
 	// Calls is guarded by mu; read it through CallLog.
@@ -613,8 +617,8 @@ func (f *Fake) SetReloadErr(err error) {
 	f.mu.Unlock()
 }
 
-// SetConfigErr makes SetConfigField and RemoveConfigField fail, the way a
-// full disk or an unwritable file does.
+// SetConfigErr makes SetConfigField, RemoveConfigField and the global
+// toggles fail, the way a full disk or an unwritable file does.
 func (f *Fake) SetConfigErr(err error) {
 	f.mu.Lock()
 	f.configErr = err
@@ -753,6 +757,13 @@ func (f *Fake) MCPSetServerDisabled(_ context.Context, name string, disabled boo
 	return nil
 }
 
+func (f *Fake) MCPSetServerConfigDisabled(_ context.Context, name string, disabled bool) error {
+	f.record("MCPSetServerConfigDisabled:" + name + ":" + strconv.FormatBool(disabled))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.configErr
+}
+
 func (f *Fake) MCPServersDisabled(context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -874,6 +885,36 @@ func (f *Fake) ListSkills(context.Context) ([]skills.CatalogEntry, error) {
 	return append([]skills.CatalogEntry(nil), f.skillCatalog...), nil
 }
 
+// AddDiscoveredSkill adds a skill to the discovered set without making it
+// active: ListAllSkills reports it, ListSkills does not.
+func (f *Fake) AddDiscoveredSkill(entry skills.CatalogEntry) {
+	f.mu.Lock()
+	f.skillDiscovered = append(f.skillDiscovered, entry)
+	f.mu.Unlock()
+}
+
+// SetAllSkillsErr makes only ListAllSkills fail, the way an older server
+// without the full-set route would.
+func (f *Fake) SetAllSkillsErr(err error) {
+	f.mu.Lock()
+	f.allSkillsErr = err
+	f.mu.Unlock()
+}
+
+func (f *Fake) ListAllSkills(context.Context) ([]skills.CatalogEntry, error) {
+	f.record("ListAllSkills")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.skillsErr != nil {
+		return nil, f.skillsErr
+	}
+	if f.allSkillsErr != nil {
+		return nil, f.allSkillsErr
+	}
+	out := append([]skills.CatalogEntry(nil), f.skillCatalog...)
+	return append(out, f.skillDiscovered...), nil
+}
+
 func (f *Fake) ReadSkill(_ context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
 	f.record("ReadSkill:" + skillID)
 	f.mu.Lock()
@@ -911,7 +952,29 @@ func (f *Fake) SkillsDisabled(context.Context) ([]string, error) {
 	return out, nil
 }
 
-func (f *Fake) SkillsEnabled(context.Context) ([]string, error) { return nil, nil }
+// SkillsEnabled reports the repository-scoped enable overrides the way the
+// session store records them: only for skills the config disabled.
+func (f *Fake) SkillsEnabled(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for name, disabled := range f.skillDisabled {
+		if !disabled && f.configDisabled(name) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// configDisabled reports whether the config's disabled list names a skill.
+// The caller holds f.mu.
+func (f *Fake) configDisabled(name string) bool {
+	if f.Cfg == nil || f.Cfg.Options == nil {
+		return false
+	}
+	return slices.Contains(f.Cfg.Options.DisabledSkills, name)
+}
 
 func (f *Fake) SkillSetDisabled(_ context.Context, name string, disabled bool) error {
 	f.record("SkillSetDisabled:" + name + ":" + strconv.FormatBool(disabled))
@@ -919,6 +982,13 @@ func (f *Fake) SkillSetDisabled(_ context.Context, name string, disabled bool) e
 	f.skillDisabled[name] = disabled
 	f.mu.Unlock()
 	return nil
+}
+
+func (f *Fake) SkillSetConfigDisabled(_ context.Context, name string, disabled bool) error {
+	f.record("SkillSetConfigDisabled:" + name + ":" + strconv.FormatBool(disabled))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.configErr
 }
 
 // AddMCPPrompt adds a prompt to the catalog and the text GetMCPPrompt
