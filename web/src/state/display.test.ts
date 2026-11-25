@@ -108,6 +108,27 @@ describe('actions', () => {
     });
   });
 
+  it('leaves a newer choice alone when an older write fails', async () => {
+    const sent: Array<{ resolve: (value: unknown) => void; reject: (err: unknown) => void }> = [];
+    vi.spyOn(api, 'setConfig').mockImplementation(() => new Promise((resolve, reject) => {
+      sent.push({ resolve: resolve as (value: unknown) => void, reject });
+    }));
+    const first = actions.setDisplay('motion', 'off');
+    const second = actions.setDisplay('motion', 'reduced');
+    await flush();
+    expect(sent).toHaveLength(1);
+
+    sent[0].reject(new ApiError(500, 'config_write', 'could not write'));
+    await flush();
+    // The failed write must not put back the value a newer choice replaced.
+    expect(state.value.display.motion).toBe('reduced');
+    expect(sent).toHaveLength(2);
+
+    sent[1].resolve({ ...state.value.display });
+    expect((await first)?.tone).toBe('error');
+    await second;
+  });
+
   it('removes a key rather than writing the empty motion', async () => {
     const remove = vi.spyOn(api, 'removeConfig').mockResolvedValue({ ...state.value.display, motion: '' });
     const set = vi.spyOn(api, 'setConfig');
