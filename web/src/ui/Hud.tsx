@@ -24,6 +24,9 @@ export function Hud() {
   const tokens = s.session ? s.session.prompt_tokens + s.session.completion_tokens : 0;
   const [now, setNow] = useState(() => Date.now());
   const canFly = cinematicAllowed();
+  // A dense server group squeezes the identity track; shell.css gives it a
+  // floor for that case only.
+  const manyServers = Object.keys(s.mcp).length >= 3;
   const root = useRef<HTMLElement>(null);
   const link = s.conn === 'live' ? 'Linked' : s.conn === 'reconnecting' ? 'Reconnecting' : s.conn === 'ended' ? 'Ended' : 'Linking';
   // The short word is all the strip has room for; a lost or ended link
@@ -51,7 +54,7 @@ export function Hud() {
   }, [tools]);
 
   return (
-    <header class="hud holo scanlines flicker-once" ref={root}>
+    <header class="hud holo scanlines flicker-once" data-many-servers={manyServers ? 'true' : undefined} ref={root}>
       <div class={`hud__id${cinematic.value ? ' visually-hidden' : ''}`}>
         <span class="hud-label">{s.project || 'crush'}</span>
         <h1 class="hud__title">
