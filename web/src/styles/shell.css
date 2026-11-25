@@ -40,8 +40,9 @@
 .hud__pin-toggle {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   inline-size: 22px; block-size: 24px; padding: 0; border: 0;
-  /* Sit inside the two 16px gaps rather than widening the strip. */
-  margin: 0 -12px;
+  /* Sit inside the gap and the strip's end padding rather than widening
+     the strip. */
+  margin: 0 -14px;
   border-radius: var(--radius); background: none; color: var(--teal); cursor: pointer;
 }
 .hud__pin-toggle svg { fill: currentColor; }

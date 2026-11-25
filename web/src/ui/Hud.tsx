@@ -137,7 +137,6 @@ export function Hud() {
             onClick={() => void actions.setInputMode('code')}
           >Code</button>
         </div>
-        <PinToggle />
         <button type="button" class="hud-label hud__display" onClick={() => openDisplay()}>Display</button>
         {canFly && (
           <button
@@ -155,6 +154,7 @@ export function Hud() {
           <span aria-hidden="true">{link}</span>
           <span class="visually-hidden">{linkDetail || link}</span>
         </span>
+        <PinToggle />
       </div>
     </header>
   );
