@@ -4,7 +4,7 @@ import { changeBlocks, fileGroups, relativePath } from './fileGroups';
 
 const f = (path: string, over: Partial<FileSummary> = {}): FileSummary => ({
   path, versions: 2, version_ids: [0, 1], additions: 1, removals: 0,
-  diagnostics: { error: 0, warning: 0 }, updated_at: 1, session_ids: ['s1'], ...over,
+  diagnostics: { error: 0, warning: 0 }, updated_at: 1, session_ids: ['s1'], version_tools: [], ...over,
 });
 
 describe('fileGroups', () => {

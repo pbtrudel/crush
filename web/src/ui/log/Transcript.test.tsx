@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import type { Message } from '../../api/types';
+import { toolFocus } from '../../state/focusTool';
 import { Transcript } from './Transcript';
 
 vi.mock('./toolSummary', async (orig) => {
@@ -13,6 +14,7 @@ import { summarizeTool } from './toolSummary';
 const root = document.createElement('div');
 afterEach(async () => {
   await act(() => { render(null, root); });
+  root.removeAttribute('inert');
   vi.clearAllMocks();
 });
 
@@ -84,6 +86,92 @@ describe('Transcript', () => {
     log.dispatchEvent(new Event('scroll'));
     await act(() => { render(<Transcript messages={[...sent]} resetKey="s1" label="Log" />, root); });
     expect(log.scrollTop).toBe(0);
+  });
+
+  it('widens the window to focus a tool card and clears the request', async () => {
+    document.body.append(root);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const many = Array.from({ length: 250 }, (_, i) => msg(`m${i}`, 'assistant', i === 5
+      ? [
+        { type: 'tool_call', data: { id: 'tc-old', name: 'view', input: '{"file_path":"old.go"}' } },
+        { type: 'finish', data: { reason: 'stop', time: i } },
+      ]
+      : [{ type: 'text', data: { text: `line ${i}` } }], i));
+    toolFocus.value = { callId: 'tc-old', sessionId: 's1' };
+    await act(() => {
+      render(<Transcript messages={many} resetKey="s1" label="Log" focusCallId="tc-old" />, root);
+    });
+    // The window grew to hold the message and every message renders.
+    expect(root.querySelectorAll('article.msg')).toHaveLength(250);
+    const card = root.querySelector<HTMLDetailsElement>('details[data-tool-call-id="tc-old"]')!;
+    expect(card.open).toBe(true);
+    expect(document.activeElement).toBe(card.querySelector('summary'));
+    expect(scroll).toHaveBeenCalled();
+    expect(toolFocus.value).toBeNull();
+  });
+
+  it('waits for its panel to be visible and inert-free before focusing', async () => {
+    document.body.append(root);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const one = msg('m1', 'assistant', [
+      { type: 'tool_call', data: { id: 'tc-1', name: 'view', input: '{"file_path":"a.go"}' } },
+      { type: 'finish', data: { reason: 'stop', time: 1 } },
+    ]);
+    root.setAttribute('inert', '');
+    toolFocus.value = { callId: 'tc-1', sessionId: 's1' };
+    await act(() => {
+      render(<Transcript messages={[one]} resetKey="s1" label="Log" focusCallId="tc-1" />, root);
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+    const card = root.querySelector<HTMLDetailsElement>('details[data-tool-call-id="tc-1"]')!;
+    expect(toolFocus.value).not.toBeNull();
+    expect(card.open).toBe(false);
+    expect(scroll).not.toHaveBeenCalled();
+    // The drawer closes and the log leaves inert; the pending request lands.
+    root.removeAttribute('inert');
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+    expect(card.open).toBe(true);
+    expect(document.activeElement).toBe(card.querySelector('summary'));
+    expect(scroll).toHaveBeenCalled();
+    expect(toolFocus.value).toBeNull();
+  });
+
+  it('clears the request when the panel never becomes ready', async () => {
+    document.body.append(root);
+    const one = msg('m1', 'assistant', [
+      { type: 'tool_call', data: { id: 'tc-1', name: 'view', input: '{"file_path":"a.go"}' } },
+      { type: 'finish', data: { reason: 'stop', time: 1 } },
+    ]);
+    root.setAttribute('inert', '');
+    toolFocus.value = { callId: 'tc-1', sessionId: 's1' };
+    vi.useFakeTimers();
+    try {
+      await act(() => {
+        render(<Transcript messages={[one]} resetKey="s1" label="Log" focusCallId="tc-1" />, root);
+      });
+      await act(async () => { vi.advanceTimersByTime(1_200); });
+      // The next click on the same call must be able to ask again.
+      expect(toolFocus.value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a pending request when it mounts for that request', async () => {
+    const one = msg('m1', 'assistant', [{ type: 'text', data: { text: 'one' } }]);
+    toolFocus.value = { callId: 'tc-1', sessionId: 's1' };
+    await act(() => { render(<Transcript messages={[one]} resetKey="s1" label="Log" />, root); });
+    expect(toolFocus.value).not.toBeNull();
+  });
+
+  it('drops a pending request when the session or inspected agent changes', async () => {
+    const one = msg('m1', 'assistant', [{ type: 'text', data: { text: 'one' } }]);
+    await act(() => { render(<Transcript messages={[one]} resetKey="s1" label="Log" />, root); });
+    toolFocus.value = { callId: 'tc-1', sessionId: 's1' };
+    await act(() => { render(<Transcript messages={[one]} resetKey="s2" label="Log" />, root); });
+    expect(toolFocus.value).toBeNull();
   });
 
   it('keeps the view in place when earlier messages are revealed', async () => {
