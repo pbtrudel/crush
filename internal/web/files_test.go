@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/crush/internal/client"
@@ -728,4 +730,77 @@ func TestFileSummariesLoadOneVersionOnce(t *testing.T) {
 	require.Zero(t, files[0].Removals)
 	require.Empty(t, loads(f), "one version has nothing to diff, so it is never loaded")
 	require.Equal(t, 1, g.fileStats.diffCount(), "the counts are known, so the accounting matches a diff")
+}
+
+// writeRecorder counts writes, so a test can prove a handler answered
+// nothing at all rather than merely an empty body.
+type writeRecorder struct {
+	header http.Header
+	code   int
+	writes int
+}
+
+func newWriteRecorder() *writeRecorder { return &writeRecorder{header: http.Header{}} }
+
+func (w *writeRecorder) Header() http.Header { return w.header }
+
+func (w *writeRecorder) Write(p []byte) (int, error) {
+	w.writes += len(p)
+	return len(p), nil
+}
+
+func (w *writeRecorder) WriteHeader(code int) { w.code = code }
+
+// stalledVersionWorkspace blocks its history version loads until the test
+// releases them, so a request can be cancelled mid-load.
+type stalledVersionWorkspace struct {
+	*webtest.Fake
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *stalledVersionWorkspace) GetHistoryVersion(_ context.Context, _ string) (history.File, error) {
+	close(w.entered)
+	<-w.release
+	return history.File{}, errors.New("get history version h0: disk I/O error")
+}
+
+// TestFileDiffAnswersNothingOnceTheRequestIsCancelled pins the silent
+// branch: a tab that went away mid-load gets no answer and no error status,
+// the same for either version the diff loads.
+func TestFileDiffAnswersNothingOnceTheRequestIsCancelled(t *testing.T) {
+	t.Parallel()
+	fake := webtest.NewFake()
+	fake.AddSession(session.Session{ID: "s1", Title: "Root"})
+	fake.AddHistory(history.File{ID: "h0", SessionID: "s1", Path: "/repo/a.go", Version: 0, CreatedAt: 1, Content: "a\n"})
+	fake.AddHistory(history.File{ID: "h1", SessionID: "s1", Path: "/repo/a.go", Version: 1, CreatedAt: 2, Content: "b\n"})
+	ws := &stalledVersionWorkspace{Fake: fake, entered: make(chan struct{}), release: make(chan struct{})}
+	g, err := Start(t.Context(), Options{Workspace: ws})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/sessions/s1/files/diff?path="+url.QueryEscape("/repo/a.go"), nil)
+	req.SetPathValue("sid", "s1")
+	rec := newWriteRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.handleFileDiff(rec, req)
+	}()
+	select {
+	case <-ws.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the diff never loaded a version")
+	}
+	cancel()
+	close(ws.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the handler did not return")
+	}
+	require.Zero(t, rec.writes, "a cancelled request gets no answer")
+	require.Zero(t, rec.code, "a cancelled request gets no status")
 }
