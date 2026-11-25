@@ -456,9 +456,9 @@ describe('M2 actions', () => {
 
     await act(async () => {
       fetched.resolve([
-        { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] },
-        { id: 'm-2', session_id: 'sub-1', role: 'assistant', parts: [] },
-      ] as Message[]);
+        { id: 'm-1', session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [] },
+        { id: 'm-2', session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [] },
+      ]);
       await Promise.resolve();
     });
     await loading;

@@ -41,13 +41,21 @@ describe('deriveAgents', () => {
     expect(agents.map((a) => a.sessionId)).toEqual(['sub-b', 'sub-a', 'sub-c']);
   });
 
-  it('counts a provisioning run as live and starts it after the older ones', () => {
-    const agents = deriveAgents('s1', team({ members: [] }), [
+  it('counts a provisioning teammate as live and starts it after the older ones', () => {
+    // Only a roster entry can be provisioning; a run is running, done or
+    // failed. It still sorts with the live entries, and its missing start
+    // puts it after the run whose start is known.
+    const roster = team({
+      members: [
+        { id: 'm-p', name: 'dave', role: 'teammate', session_id: 'team-p', parent_session_id: 's1', status: 'provisioning' },
+      ],
+    });
+    const agents = deriveAgents('s1', roster, [
       run({ id: 'r1', session_id: 'sub-a', status: 'done', started_at: '2026-11-22T12:00:00Z', finished_at: '2026-11-22T12:05:00Z' }),
-      run({ id: 'r2', session_id: 'sub-b', status: 'provisioning', started_at: '2026-11-22T12:03:00Z' }),
       run({ id: 'r3', session_id: 'sub-c', status: 'running', started_at: '2026-11-22T12:01:00Z' }),
     ]);
-    expect(agents.map((a) => a.sessionId)).toEqual(['sub-c', 'sub-b', 'sub-a']);
+    expect(agents.map((a) => a.sessionId)).toEqual(['sub-c', 'team-p', 'sub-a']);
+    expect(agents[1].status).toBe('provisioning');
   });
 
   it('keeps the roster status for teammates and the registry status for subagents', () => {
