@@ -27,6 +27,12 @@ func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 		f.Cfg.Options = &config.Options{}
 	}
 	f.Cfg.Options.WebDisplay = &config.WebDisplayOptions{Theme: theme}
+	// The HUD layout test asks for a model name long enough to truncate.
+	if name := os.Getenv("WEBFAKE_MODEL_NAME"); name != "" {
+		model := f.AgentModel()
+		model.CatwalkCfg.Name = name
+		f.SetAgentModel(model)
+	}
 	// The m4b scenario carries a channel-capable MCP server, a skill the
 	// global config disables, and a terminal that answers automation.
 	if f.MCP == nil {

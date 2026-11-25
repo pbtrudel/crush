@@ -98,6 +98,18 @@ func TestSeedM4bAddsTheM4bSurfaces(t *testing.T) {
 	require.Equal(t, "Loops: 2 active", reply)
 }
 
+func TestSeedM4bHonoursTheModelName(t *testing.T) {
+	t.Setenv("WEBFAKE_THEME", "")
+	const name = "An extremely long model name that will not fit in the HUD at all"
+	t.Setenv("WEBFAKE_MODEL_NAME", name)
+	f := NewFake()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Equal(t, name, f.AgentModel().CatwalkCfg.Name)
+}
+
 func TestSeedM4bHonoursTheTheme(t *testing.T) {
 	t.Setenv("WEBFAKE_THEME", "solid")
 	f := NewFake()

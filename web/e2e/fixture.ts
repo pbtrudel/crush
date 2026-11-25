@@ -310,3 +310,11 @@ export const m4bVisualTest = webfakeTests.extend<{ gateway: Gateway; theme: stri
   gateway: async ({ webfakeBinary, theme }, use) =>
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z', WEBFAKE_THEME: theme }, use),
 });
+
+// A long model name for the HUD truncation case. It is a launch variable so
+// the shared m4b gateway keeps its usual name.
+export const LONG_MODEL_NAME = 'An extremely long model name that will not fit in the HUD at all';
+export const m4bLongModelTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { ...M4B, WEBFAKE_MODEL_NAME: LONG_MODEL_NAME }, use),
+});

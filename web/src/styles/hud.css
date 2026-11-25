@@ -21,14 +21,6 @@
   text-align: start; white-space: nowrap; cursor: pointer;
 }
 .hud__model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The one-row strip keeps the model line whole by letting it use the gutter
-   to the gauge. Only the names that no longer fit in that gutter truncate. */
-@media (min-width: 1280px) {
-  .hud__meta {
-    inline-size: max-content;
-    max-inline-size: calc(100% + var(--space-4) * 1.5);
-  }
-}
 .hud__model:hover,
 .hud__model:focus-visible {
   color: var(--cyan);

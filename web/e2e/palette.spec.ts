@@ -1,4 +1,6 @@
-import { axeScan, expect, m3FreshTest as freshTest, m3Test as test, m4bTest } from './fixture';
+import {
+  axeScan, expect, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test, m4bLongModelTest, m4bTest,
+} from './fixture';
 
 // Axe keeps the software renderer busy well past the default 30 seconds.
 test.setTimeout(120_000);
@@ -265,15 +267,26 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   const branchCenter = b!.y + b!.height / 2;
   expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
   expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
-  // At 1440 the three dots still leave the names whole; the gutter absorbs
-  // the extra hex rather than clipping it.
-  const clipped = await page.evaluate(() => {
-    const name = document.querySelector('.hud__model-name')!;
-    const label = document.querySelector('.hud__branch')!;
+});
+
+m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  const model = page.locator('p.hud__meta .hud__model');
+  const name = page.locator('.hud__model-name');
+  await expect(name).toHaveText(LONG_MODEL_NAME);
+  await expect(model).toHaveAttribute('title', LONG_MODEL_NAME);
+  const geometry = await page.evaluate(() => {
+    const n = document.querySelector('.hud__model-name') as HTMLElement;
+    const meta = document.querySelector('.hud__meta') as HTMLElement;
+    const gauge = document.querySelector('.gauge') as HTMLElement;
     return {
-      model: name.scrollWidth > name.clientWidth,
-      branch: label.scrollWidth > label.clientWidth,
+      clipped: n.scrollWidth > n.clientWidth,
+      metaRight: meta.getBoundingClientRect().right,
+      gaugeLeft: gauge.getBoundingClientRect().left,
     };
   });
-  expect(clipped).toEqual({ model: false, branch: false });
+  expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
+  expect(geometry.clipped).toBe(true);
 });
