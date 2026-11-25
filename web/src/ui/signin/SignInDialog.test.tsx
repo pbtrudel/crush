@@ -448,7 +448,8 @@ describe('SignInDialog OAuth', () => {
     expect(state.value.toasts.filter((t) => t.text === 'Signed in to GitHub Copilot.')).toHaveLength(1);
   });
 
-  it('names the provider the way its own flow does everywhere', async () => {    const chatgpt: SignInState = {
+  it('names the provider the way its own flow does everywhere', async () => {
+    const chatgpt: SignInState = {
       flow_id: 'f3', provider: 'openai', provider_name: 'ChatGPT', state: 'waiting', kind: 'browser',
       verification_url: 'https://chatgpt.com/auth/login',
     };
@@ -743,6 +744,52 @@ describe('SignInDialog focus', () => {
     (document.activeElement as HTMLElement | null)?.blur();
     expect(document.activeElement).toBe(document.body);
     await act(() => { render(<SignInDialog inert={false} />, root); });
+    await flush();
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it('gives the key field its focus back after a prompt', async () => {
+    openSignIn('openai');
+    await mount();
+    // The method switch renders and leaves the radio focused; the key field
+    // then takes the focus without a render of its own.
+    await click(root.querySelector('input[name="signin-method"][value="api_key"]'));
+    const input = labeled('API key')!;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    await act(() => { render(<SignInDialog inert />, root); });
+    await flush();
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(() => { render(<SignInDialog inert={false} />, root); });
+    await flush();
+
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('leaves the focus with a prompt when the link drops under it', async () => {
+    openSignIn('anthropic');
+    await mount();
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+
+    // A prompt makes the page inert while the link is live.
+    const prompt = {
+      source: 'pinentry' as const, id: 'p1', kind: 'passphrase' as const,
+      title: 'GPG passphrase', message: 'Unlock the signing key',
+    };
+    await act(() => { state.value = { ...state.value, securePrompts: [prompt] }; });
+    await act(() => { render(<SignInDialog inert />, root); });
+    await flush();
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    // The link drops under the prompt, so App stops inerting the page, but
+    // the prompt still needs you and owns the focus.
+    await act(() => { render(<SignInDialog inert={false} />, root); });
+    await flush();
+    expect(document.activeElement).toBe(document.body);
+
+    // The prompt closes: the dialog is the layer that stays open.
+    await act(() => { state.value = { ...state.value, securePrompts: [] }; });
     await flush();
     expect(dialog()!.contains(document.activeElement)).toBe(true);
   });

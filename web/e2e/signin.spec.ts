@@ -137,23 +137,29 @@ awsTest('keeps the AWS SSO card above an open side answer', async ({ page, gatew
 
   const card = page.locator('.aws-sso');
   await expect(card.getByRole('link', { name: 'Open the AWS sign-in page' })).toBeVisible();
-  const bottom = async () => {
-    const box = await card.boundingBox();
-    return box === null ? Number.POSITIVE_INFINITY : box.y + box.height;
-  };
-  const top = async (selector: string) => {
+  // top and bottom are the viewport edges of a selector's box; a missing box
+  // reads as off the offending side so a poll keeps failing.
+  const edge = async (selector: string, side: 'top' | 'bottom') => {
     const box = await page.locator(selector).boundingBox();
-    return box === null ? Number.NEGATIVE_INFINITY : box.y;
+    if (box === null) return side === 'top' ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+    return side === 'top' ? box.y : box.y + box.height;
   };
 
   for (const viewport of [{ width: 1440, height: 860 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
     // --deck-h lands on the next resize callback, so poll rather than race it.
-    await expect.poll(async () => (await bottom()) - (await top('.side-answer')), {
+    await expect.poll(async () => (await edge('.aws-sso', 'bottom')) - (await edge('.side-answer', 'top')), {
       message: `the card clears the side answer at ${viewport.width}px`,
     }).toBeLessThanOrEqual(0.5);
-    await expect.poll(async () => (await bottom()) - (await top('form.deck')), {
+    await expect.poll(async () => (await edge('.aws-sso', 'bottom')) - (await edge('form.deck', 'top')), {
       message: `the card clears the deck at ${viewport.width}px`,
     }).toBeLessThanOrEqual(0.5);
+    // Above the card is the HUD strip: the card starts below it and its title
+    // stays on screen, so the height limit scrolls the body of the card and
+    // never its head.
+    await expect.poll(async () => (await edge('.aws-sso', 'top')) - (await edge('.hud', 'bottom')), {
+      message: `the card starts below the HUD at ${viewport.width}px`,
+    }).toBeGreaterThanOrEqual(-0.5);
+    await expect(card.getByRole('heading', { name: 'AWS sign-in' })).toBeVisible();
   }
 });
