@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -433,10 +434,39 @@ func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
 	require.Contains(t, string(body), "missing_protocol")
+	require.Empty(t, rsp.Header.Get("Sec-WebSocket-Protocol"),
+		"a refused upgrade selects no subprotocol")
 	require.Empty(t, fake.CallLog(), "a refused upgrade reaches no workspace call")
 
 	c = dialStream(t, g, "")
 	require.Equal(t, streamProtocol, c.Subprotocol())
+}
+
+// TestOffersStreamProtocolReadsJoinedHeaders pins the header parse: the page
+// offers crush.v1 in the same comma-separated value as the token entry, and
+// spacing or extra entries must not hide it.
+func TestOffersStreamProtocolReadsJoinedHeaders(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"page pair", "crush.v1, " + authProtocolPrefix + "token", true},
+		{"token only", authProtocolPrefix + "token", false},
+		{"crowded value", "one, two ,crush.v1 , three", true},
+		{"prefix only", "crush.v10", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/stream", nil)
+			if tc.header != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", tc.header)
+			}
+			require.Equal(t, tc.want, offersStreamProtocol(req))
+		})
+	}
 }
 
 func TestStreamSelectsThePlainProtocol(t *testing.T) {
