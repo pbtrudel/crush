@@ -169,7 +169,8 @@ promptLateTest('returns the focus to the panel when a prompt closes over it', as
   await expect(sessions).toBeVisible();
   await expect(sessions.getByLabel('Filter sessions', { exact: true })).toBeFocused();
 
-  // The row the user tabbed to is the control the prompt interrupts.
+  // ArrowDown moves the focus from the filter to the first row, which is the
+  // control the prompt interrupts.
   await page.keyboard.press('ArrowDown');
   const row = await page.evaluate(() => document.activeElement?.id ?? '');
   expect(row).toMatch(/^session-open-/);

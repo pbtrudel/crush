@@ -121,12 +121,23 @@ export interface Gateway {
   origin: string;
 }
 
+// The HUD labels the tab with the basename of the gateway's working
+// directory, and the committed baselines were captured in a checkout named
+// web-mode-m2. A fixed root keeps every run independent of where this repo
+// is checked out: webfake creates it empty, and the sessions, files and
+// diffs a test sees come from the seed, not from the disk.
+const PROJECT_DIR = path.join(tmpdir(), 'web-mode-m2');
+
 async function launchGateway(bin: string, env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
   let proc: ChildProcess | undefined;
   try {
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
-    proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    proc = spawn(bin, [], {
+      cwd: repoRoot,
+      env: { ...process.env, WEBFAKE_PROJECT_DIR: PROJECT_DIR, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const stderr = stderrBuffer();
     proc.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk.toString()));
     const launch = await waitForLaunch(proc, () => stderr.text());
@@ -203,9 +214,9 @@ export const promptElsewhereTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
 });
 
-// The prompt arrives six seconds after the gateway starts, so a test can
-// open a panel before it: a panel opened first is the layer a prompt closes
-// over.
+// The prompt arrives six seconds after the gateway starts. A test opens its
+// panel about two seconds in, so it leaves four seconds of margin before the
+// prompt lands, and the panel is the layer the prompt closes over.
 export const promptLateTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_AFTER_MS: '6000' }, use),
 });

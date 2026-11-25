@@ -30,7 +30,16 @@ func main() {
 	defer stop()
 	fake := webtest.NewFake()
 	fake.OnRun = webtest.Scripted(fake)
-	if wd, err := os.Getwd(); err == nil {
+	// The workspace root is the checkout, so a dev session browses the repo
+	// and @ completion sees real files. A screenshot run pins it instead:
+	// the HUD labels the tab with the basename of this path, so an unpinned
+	// root would make every baseline depend on the folder name.
+	if dir := os.Getenv("WEBFAKE_PROJECT_DIR"); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, "webfake: project dir:", err)
+		}
+		fake.WorkDir = dir
+	} else if wd, err := os.Getwd(); err == nil {
 		fake.WorkDir = wd
 	}
 	clock := time.Now()
