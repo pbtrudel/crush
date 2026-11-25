@@ -267,25 +267,43 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   const branchCenter = b!.y + b!.height / 2;
   expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
   expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
-  // Short names fit whole at 1440, and the page does not overflow sideways.
-  const short = await page.evaluate(() => {
-    const name = document.querySelector('.hud__model-name') as HTMLElement;
-    const label = document.querySelector('.hud__branch') as HTMLElement;
-    const right = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().right;
-    return {
-      model: name.scrollWidth === name.clientWidth,
-      branch: label.scrollWidth === label.clientWidth,
-      overflow: document.documentElement.scrollWidth - window.innerWidth,
-      controls: right('.hud__controls'),
-      deck: right('.holodeck__deck'),
-      viewport: window.innerWidth,
-    };
-  });
-  expect(short.model).toBe(true);
-  expect(short.branch).toBe(true);
-  expect(short.overflow).toBeLessThanOrEqual(0);
-  expect(short.controls).toBeLessThanOrEqual(short.viewport);
-  expect(short.deck).toBeLessThanOrEqual(short.viewport);
+
+  // The pin toggle is shown on this seed (four root sessions) and names its
+  // state in visible text with a target at least 24px tall.
+  const pin = page.getByRole('button', { name: 'Following the terminal' });
+  await expect(pin).toBeVisible();
+  await expect(pin).toHaveText('Following the terminal');
+
+  // Short names fit whole, the pin stays in the strip, and the page does
+  // not overflow sideways at any of the three HUD layouts.
+  for (const width of [1280, 1366, 1440]) {
+    await page.setViewportSize({ width, height: 860 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    const layout = await page.evaluate(() => {
+      const name = document.querySelector('.hud__model-name') as HTMLElement;
+      const label = document.querySelector('.hud__branch') as HTMLElement;
+      const right = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().right;
+      const box = document.querySelector('.hud__pin-slot')!.getBoundingClientRect();
+      return {
+        model: name.scrollWidth === name.clientWidth,
+        branch: label.scrollWidth === label.clientWidth,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        controls: right('.hud__controls'),
+        deck: right('.holodeck__deck'),
+        pinRight: box.right,
+        pinHeight: box.height,
+      };
+    });
+    expect(layout.overflow).toBeLessThanOrEqual(0);
+    expect(layout.controls).toBeLessThanOrEqual(width);
+    expect(layout.deck).toBeLessThanOrEqual(width);
+    expect(layout.pinRight).toBeLessThanOrEqual(width);
+    expect(layout.pinHeight).toBeGreaterThanOrEqual(24);
+    if (width === 1440) {
+      expect(layout.model).toBe(true);
+      expect(layout.branch).toBe(true);
+    }
+  }
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {

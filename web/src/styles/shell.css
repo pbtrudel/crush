@@ -28,26 +28,19 @@
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
-/* The pinned toggle is a glyph in the controls strip, so the strip keeps
-   one row at 1440px; the words live in its accessible name and its title.
-   While browsing it takes a line of its own, which no baseline sees. */
-.hud__pin { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-inline-size: 0; }
-.hud[data-browsing='true'] .hud__controls { flex-wrap: wrap; }
-.hud[data-browsing='true'] .hud__pin { flex: 1 1 100%; }
-.hud__pin-toggle {
-  flex: none; display: inline-flex; align-items: center; justify-content: center;
-  inline-size: 22px; block-size: 24px; padding: 0; border: 0;
-  /* Sit inside the gap and the strip's end padding rather than widening
-     the strip: the gaps and the box cancel out to no width at all. */
-  margin: 0 -19px;
-  border-radius: var(--radius); background: none; color: var(--teal); cursor: pointer;
+/* The pin names the session the tab follows on the strip's second row, so
+   the instruments keep their width at 1280, 1366 and 1440 and short model
+   names stay whole. With one root session it renders nothing and the strip
+   stays one row. */
+.hud__pin-slot {
+  grid-column: 1 / -1; justify-self: start; flex: 1 1 100%;
+  display: inline-flex; flex-wrap: wrap; align-items: center;
+  gap: var(--space-1); min-inline-size: 0;
 }
-.hud__pin-toggle svg { fill: currentColor; }
-.hud__pin-toggle:hover, .hud__pin-toggle:focus-visible { color: var(--cyan); outline: 1px solid var(--cyan); }
 .hud__pin-btn {
+  min-block-size: 28px; padding: 4px 10px;
   background: transparent; color: var(--text-muted); border: 1px solid var(--edge);
-  border-radius: var(--radius); padding: 4px 8px; min-block-size: 28px;
-  font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+  border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); cursor: pointer;
 }
 .hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
 .hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }

@@ -28,8 +28,10 @@ function button(name: string) {
   return Array.from(root.querySelectorAll('button')).find((b) => b.textContent === name);
 }
 
-function labeled(name: string) {
-  return root.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`);
+// accessibleName is what a button exposes when it has no aria-label: its
+// visible text, which the audit requires to match.
+function accessibleName(b: HTMLButtonElement) {
+  return b.getAttribute('aria-label') ?? b.textContent;
 }
 
 afterEach(async () => {
@@ -45,16 +47,17 @@ describe('pin toggle', () => {
   it('stays out of the HUD with one root session', async () => {
     state.value = { ...initialState(), conn: 'live', rootSessions: 1 };
     await mount();
-    expect(labeled('Following the terminal')).toBeNull();
+    expect(button('Following the terminal')).toBeUndefined();
     expect(root.textContent).not.toContain('Browsing');
   });
 
   it('shows the pinned state and opens the session switcher', async () => {
     state.value = { ...initialState(), conn: 'live', rootSessions: 2 };
     await mount();
-    const pin = labeled('Following the terminal')!;
-    expect(pin).not.toBeNull();
+    const pin = button('Following the terminal')!;
+    expect(pin).not.toBeUndefined();
     expect(pin.getAttribute('aria-pressed')).toBe('true');
+    expect(accessibleName(pin)).toBe('Following the terminal');
     await act(() => {
       pin.click();
     });
@@ -74,8 +77,10 @@ describe('pin toggle', () => {
     };
     await mount();
     expect(button('Browsing Tokenizer port')).not.toBeUndefined();
+    expect(accessibleName(button('Browsing Tokenizer port')!)).toBe('Browsing Tokenizer port');
     const back = button("Return to the terminal's session")!;
     expect(back).not.toBeUndefined();
+    expect(accessibleName(back)).toBe("Return to the terminal's session");
     await act(() => {
       back.click();
     });
