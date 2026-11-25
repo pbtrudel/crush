@@ -87,22 +87,27 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   // waiting panel, Try again starting again) hands focus to the panel. An
   // interrupt above the page is inert, and the browser drops the dialog's
   // focus to the body: the dialog is the layer that stays open, so it takes
-  // the focus back when the interrupt closes.
+  // the focus back when the interrupt closes, on the control that had it.
   const wasInert = useRef(inert);
+  const lastInside = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const el = dialog.current;
     const active = document.activeElement;
     const recovered = wasInert.current;
     wasInert.current = inert;
     if (inert) return;
-    if (el && active !== null && el.contains(active)) {
+    if (el && active instanceof HTMLElement && el.contains(active)) {
       hadFocus.current = true;
+      lastInside.current = active;
       return;
     }
     if (!hadFocus.current && !recovered) return;
     hadFocus.current = false;
-    const panel = el?.querySelector<HTMLElement>('.signin__panel');
-    (panel?.querySelector<HTMLElement>('button, input') ?? el)?.focus();
+    const remembered = lastInside.current;
+    const target = remembered !== null && el?.contains(remembered) && remembered.isConnected
+      ? remembered
+      : el?.querySelector<HTMLElement>('.signin__panel button, .signin__panel input') ?? el;
+    target?.focus();
   });
 
   // One request for the targets and one for the flow a reload or the

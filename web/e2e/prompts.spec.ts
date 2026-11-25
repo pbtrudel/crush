@@ -79,9 +79,11 @@ confirmTest('confirms an SSH host key', async ({ page, gateway }) => {
 
 // The sign-in dialog is the layer a prompt can open over. webfake publishes
 // its prompt 300 ms after it starts, long before a tab can open a dialog, so
-// the test holds the frame and hands it over once the dialog owns the page.
+// the test keeps the prompt back (whichever frame carries it) and hands it
+// over once the dialog owns the page.
 promptTest('returns the focus to the sign-in dialog when a prompt closes over it', async ({ page, gateway }) => {
-  const held: string[] = [];
+  let held: unknown[] | null = null;
+  let last = 0;
   let send: ((message: string) => void) | null = null;
   await page.routeWebSocket(/\/api\/stream/, (ws) => {
     const server = ws.connectToServer();
@@ -89,21 +91,27 @@ promptTest('returns the focus to the sign-in dialog when a prompt closes over it
     ws.onMessage((message) => server.send(message));
     server.onMessage((message) => {
       const text = message.toString();
-      // The snapshot is the one frame the page cannot do without, so only the
-      // prompt it carries is dropped.
+      // The snapshot is the one frame the page cannot do without, so it is
+      // forwarded with the prompt taken out of it.
       try {
-        const frame = JSON.parse(text) as { type?: string; payload?: Record<string, unknown> };
-        if (frame.type === 'snapshot' && frame.payload) {
+        const frame = JSON.parse(text) as {
+          seq?: number;
+          type?: string;
+          payload?: { secure_prompts?: unknown[]; prompts?: unknown[] };
+        };
+        if (frame.type === 'snapshot' && frame.payload?.secure_prompts?.length) {
+          held = frame.payload.secure_prompts;
           delete frame.payload.secure_prompts;
           ws.send(JSON.stringify(frame));
           return;
         }
+        if (frame.type === 'secure_prompt' && frame.payload?.prompts?.length) {
+          held = frame.payload.prompts;
+          return;
+        }
+        if (typeof frame.seq === 'number') last = frame.seq;
       } catch {
         // A frame that is not JSON is forwarded untouched.
-      }
-      if (text.includes('secure-pinentry')) {
-        held.push(text);
-        return;
       }
       ws.send(text);
     });
@@ -117,18 +125,21 @@ promptTest('returns the focus to the sign-in dialog when a prompt closes over it
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel('Filter providers')).toBeFocused();
 
-  // The prompt arrives now, over the open dialog, and the tab answers it.
-  expect(held).toHaveLength(1);
-  for (const message of held.splice(0)) send!(message);
+  // The prompt arrives now, over the open dialog, and the tab answers it. Its
+  // seq is the last one the page has seen, which the reducer takes for a
+  // replay and applies all the same.
+  expect(held).not.toBeNull();
+  send!(JSON.stringify({ seq: last, type: 'secure_prompt', payload: { prompts: held } }));
   const prompt = page.getByRole('dialog', { name: 'GPG passphrase' });
   await expect(prompt).toBeVisible();
   await prompt.getByLabel('Passphrase', { exact: true }).fill('hunter2');
   await page.keyboard.press('Enter');
   await expect(prompt).toBeHidden();
 
-  // The dialog stays open, so it must take the focus back from the body.
+  // The dialog stays open, so it takes the focus back from the body, on the
+  // control that had it before the prompt.
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator(':focus')).toHaveCount(1);
+  await expect(dialog.getByLabel('Filter providers')).toBeFocused();
 });
 
 touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => {
