@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import type { AgentRun, Frame, Message, Part } from '../api/types';
-import { chronoEvents } from './chronoline';
+import { chronoEvents, chronoSignature, targetOf } from './chronoline';
 import { initialState, reduce, type State } from './reducer';
 
 const fx = fixtures as unknown as Record<string, Frame>;
@@ -73,5 +73,36 @@ describe('chronoEvents', () => {
   it('names no child session for an agent call the roster does not know', () => {
     const events = chronoEvents(live([assistant('a1', 's1', [call('tc-1', 'agent', '{"prompt":"look"}')])]));
     expect(events[0].childSessionId).toBeUndefined();
+  });
+
+  it('reads the browsed session when the tab browses another one', () => {
+    const events = chronoEvents(live([
+      assistant('a1', 's1', [call('tc-1', 'edit', '{"file_path":"a.go"}')]),
+      assistant('b1', 's-2', [call('tc-9', 'view', '{"file_path":"b.go"}')]),
+    ], { browsing: 's-2', sessionId: 's-2' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ callId: 'tc-9', sessionId: 's-2', tool: 'view', category: 'read' });
+  });
+});
+
+describe('chronoSignature', () => {
+  it('ignores text updates and changes when a call appears', () => {
+    const one = assistant('a1', 's1', [call('tc-1', 'view', '{"file_path":"a.go"}')]);
+    const same = { ...one, updated_at: 9, parts: [...one.parts, { type: 'text' as const, data: { text: 'more' } }] };
+    expect(chronoSignature(live([one]))).toBe('s1:1:tc-1');
+    expect(chronoSignature(live([same]))).toBe('s1:1:tc-1');
+    const two = assistant('a2', 's1', [call('tc-2', 'edit', '{"file_path":"b.go"}')], 2);
+    expect(chronoSignature(live([one, two]))).toBe('s1:2:tc-2');
+    expect(chronoSignature(live([one], { sessionId: 's-2' }))).toBe('s-2:0:');
+  });
+});
+
+describe('targetOf', () => {
+  it('keeps the last segment of a path and leaves commands whole', () => {
+    expect(targetOf('internal/parser/parser.go')).toBe('parser.go');
+    expect(targetOf('C:\\repo\\a.go')).toBe('a.go');
+    expect(targetOf('parser.go')).toBe('parser.go');
+    expect(targetOf('go test ./...')).toBe('go test ./...');
+    expect(targetOf('')).toBe('');
   });
 });

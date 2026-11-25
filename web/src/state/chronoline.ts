@@ -18,6 +18,32 @@ export interface ChronoEvent {
 // the only place a browser can learn that session exists.
 const AGENT_TOOL = 'agent';
 
+// chronoSignature is the cheap key the strip memoises on: the call count and
+// the newest call id of the shown session. Text streaming changes the
+// messages array without changing either.
+export function chronoSignature(s: State): string {
+  let count = 0;
+  let last = '';
+  for (const message of s.messages) {
+    if (message.session_id !== s.sessionId) continue;
+    for (const part of message.parts) {
+      if (part.type === 'tool_call') {
+        count++;
+        last = part.data.id;
+      }
+    }
+  }
+  return `${s.sessionId}:${count}:${last}`;
+}
+
+// targetOf shortens a path-like summary to its last segment. A command or
+// anything else with whitespace keeps its whole label.
+export function targetOf(label: string): string {
+  if (!label || /\s/.test(label)) return label;
+  const cut = Math.max(label.lastIndexOf('/'), label.lastIndexOf('\\'));
+  return cut < 0 ? label : label.slice(cut + 1) || label;
+}
+
 // chronoEvents derives the timeline from the messages the tab already holds:
 // the newest cap tool calls of the shown session, oldest first.
 export function chronoEvents(s: State, cap = 200): ChronoEvent[] {

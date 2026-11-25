@@ -22,6 +22,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-inline-size: 16rem;
   min-block-size: 24px;
   padding: 0 6px;
   border: 1px solid transparent;
@@ -32,8 +33,15 @@
   cursor: pointer;
 }
 /* The children never take the pointer, so the preview does not flicker as
-   it crosses the glyph and the time. */
+   it crosses the glyph and the target. */
 .chronoline__event > * { pointer-events: none; }
+.chronoline__kind { flex: none; color: var(--chrono, var(--text-muted)); }
+.chronoline__target {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chronoline__event:hover { border-color: var(--edge); color: var(--text); }
 .chronoline__event:focus-visible { outline: 2px dashed var(--cyan); outline-offset: 2px; color: var(--text); }
 .chronoline__event[data-category='read'] { --chrono: var(--cyan); }

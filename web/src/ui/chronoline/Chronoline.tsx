@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { findAgent } from '../../state/agents';
-import { chronoEvents } from '../../state/chronoline';
+import { chronoEvents, chronoSignature, targetOf } from '../../state/chronoline';
 import { focusToolCall } from '../../state/focusTool';
 import { state } from '../../state/store';
 import type { ToolCategory } from '../../state/toolCategory';
@@ -9,7 +9,7 @@ const CATEGORY: Record<ToolCategory, string> = {
   read: 'Read', write: 'Write', run: 'Run', network: 'Network',
 };
 
-// clock renders the message time for the button's name and the strip. It
+// clock renders the message time for the preview and the button's name. It
 // pads by hand so the same instant reads the same in every locale.
 function clock(at: number): string {
   const date = new Date(at * 1000);
@@ -23,20 +23,31 @@ function clock(at: number): string {
 // already holds, so nothing new comes from the gateway.
 export function Chronoline() {
   const s = state.value;
-  const events = useMemo(() => chronoEvents(s), [s.messages, s.sessionId, s.team, s.runs]);
+  // The strip re-derives only when a call appears, not on every streamed
+  // token: the signature ignores text updates.
+  const signature = chronoSignature(s);
+  const events = useMemo(() => chronoEvents(s), [signature]);
   const [active, setActive] = useState<number | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const list = useRef<HTMLOListElement>(null);
+  // A new call follows the right edge only while the reader is already
+  // there; scrolling back to read older calls keeps its place.
+  const atEnd = useRef(true);
   const tab = active !== null && active < events.length ? active : events.length - 1;
 
   useEffect(() => {
     // A timeline reads left to right in time, so the newest call sits at the
-    // right edge and the strip follows it.
+    // right edge.
     const el = list.current;
-    if (el) el.scrollLeft = el.scrollWidth;
+    if (el && atEnd.current) el.scrollLeft = el.scrollWidth;
   }, [events.length]);
 
   if (events.length === 0) return null;
+
+  const onScroll = () => {
+    const el = list.current;
+    if (el) atEnd.current = el.scrollWidth - el.scrollLeft - el.clientWidth <= 4;
+  };
 
   const move = (to: number) => {
     const count = events.length;
@@ -48,6 +59,14 @@ export function Chronoline() {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      // Escape closes the innermost layer first: the preview is one.
+      if (hovered !== null) {
+        e.preventDefault();
+        setHovered(null);
+      }
+      return;
+    }
     // Alt, Ctrl and Meta chords belong to the app shortcuts and the browser.
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     switch (e.key) {
@@ -81,12 +100,21 @@ export function Chronoline() {
         <p class="chronoline__preview" aria-hidden="true">
           <span class="chronoline__preview-tool">{preview.tool}</span>
           {' '}{preview.label || 'No summary'}
+          {' '}<time>{clock(preview.at)}</time>
           {started && <span> and starts {started}</span>}
         </p>
       )}
-      <ol class="chronoline__list" aria-label="Timeline of tool calls" ref={list} onKeyDown={onKeyDown}>
+      <ol
+        class="chronoline__list"
+        aria-label="Timeline of tool calls"
+        ref={list}
+        onKeyDown={onKeyDown}
+        onScroll={onScroll}
+      >
         {events.map((e, i) => {
           const at = clock(e.at);
+          const target = targetOf(e.label);
+          const text = target ? `${e.tool} ${target}` : e.tool;
           return (
             <li key={e.callId}>
               <button
@@ -95,7 +123,7 @@ export function Chronoline() {
                 data-category={e.category}
                 data-call-id={e.callId}
                 tabIndex={i === tab ? 0 : -1}
-                aria-label={`${CATEGORY[e.category]} ${e.tool}${e.label ? ` ${e.label}` : ''} at ${at}`}
+                aria-label={`${CATEGORY[e.category]} ${text} at ${at}, ${i + 1} of ${events.length}`}
                 onClick={() => focusToolCall(e.sessionId, e.callId)}
                 onFocus={() => { setActive(i); setHovered(e.callId); }}
                 onBlur={() => setHovered((h) => (h === e.callId ? null : h))}
@@ -103,7 +131,8 @@ export function Chronoline() {
                 onMouseOut={() => setHovered((h) => (h === e.callId ? null : h))}
               >
                 <span class="chronoline__glyph" aria-hidden="true" />
-                <span class="chronoline__time" aria-hidden="true">{at}</span>
+                <span class="chronoline__kind">{e.tool}</span>
+                {target && <>{' '}<span class="chronoline__target">{target}</span></>}
               </button>
             </li>
           );
