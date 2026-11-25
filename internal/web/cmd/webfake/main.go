@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,10 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// A browser detach ends the fake the way a signal does. The signal
+	// context never closes on a detach, so the seeds watch runCtx instead.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	fake := webtest.NewFake()
 	fake.OnRun = webtest.Scripted(fake)
 	// The workspace root is the checkout, so a dev session browses the repo
@@ -69,11 +74,21 @@ func main() {
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
+	// onDetach tells the main goroutine the browser asked to stop web
+	// mode; OnDetach runs once, as the gateway promises.
+	onDetach := make(chan struct{})
+	var detachOnce sync.Once
 	opts := web.Options{
 		Workspace:            fake,
 		AgentTeamsDir:        teamDir,
 		OnInputModeRequested: func(plan bool) { modeRequests <- plan },
-		Now:                  now,
+		OnDetach: func() {
+			detachOnce.Do(func() {
+				close(onDetach)
+				cancelRun()
+			})
+		},
+		Now: now,
 	}
 	// The m3 scenario carries the M3 seeds and the plan handoff the terminal
 	// would confirm; the m4 scenario adds the sign-in and secure prompt
@@ -82,18 +97,22 @@ func main() {
 	planRequests := make(chan struct{}, 8)
 	scenario := os.Getenv("WEBFAKE_SCENARIO")
 	m3 := scenario == "m3"
-	m4 := scenario == "m4"
+	m4 := scenario == "m4" || scenario == "m4b"
 	// signinDone releases a flow still waiting when the server shuts down.
 	signinDone := make(chan struct{})
 	defer close(signinDone)
 	var seams webtest.M4Seams
-	if m4 {
+	if scenario == "m4b" {
+		seams, err = webtest.SeedM4b(fake, signinDone, clock)
+	} else if m4 {
 		seams, err = webtest.SeedM4(fake, signinDone, clock)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "webfake:", err)
-			os.RemoveAll(teamDir)
-			os.Exit(1)
-		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "webfake:", err)
+		os.RemoveAll(teamDir)
+		os.Exit(1)
+	}
+	if m4 {
 		opts.KnownProviders = seams.KnownProviders
 		opts.TestAPIKey = seams.TestAPIKey
 	}
@@ -143,10 +162,10 @@ func main() {
 	}
 	if m4 {
 		if kind := os.Getenv("WEBFAKE_SECURE_PROMPT"); kind != "" {
-			go playSecurePrompt(ctx, fake, kind)
+			go playSecurePrompt(runCtx, fake, kind)
 		}
 		if os.Getenv("WEBFAKE_AWS_SSO") == "1" {
-			go playAWSSSO(ctx, fake)
+			go playAWSSSO(runCtx, fake)
 		}
 	}
 	if os.Getenv("WEBFAKE_PLAN_READY") == "1" {
@@ -160,7 +179,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Dev server: CRUSH_WEB_DEV_PORT=%s npm --prefix web run dev, then open http://localhost:5173/#t=%s\n",
 			u.Port(), strings.TrimPrefix(g.LaunchURL(), g.URL()+"/#t="))
 	}
-	<-ctx.Done()
+	// The terminal's signal and the browser's detach both end the fake;
+	// the cancellation releases the seeds before the shutdown closes
+	// their channels.
+	select {
+	case <-ctx.Done():
+	case <-onDetach:
+	}
+	cancelRun()
 	sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := g.Shutdown(sctx); err != nil {

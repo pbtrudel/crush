@@ -271,3 +271,29 @@ export async function axeScan(page: Page): Promise<void> {
 }
 
 export { expect };
+
+// The M4b surfaces (the display settings dialog) extend the M4 scenario with
+// the tab's display block, so every earlier scenario and baseline stays as it
+// was.
+const M4B = { WEBFAKE_SCENARIO: 'm4b' };
+
+// The read-only M4b tests share one gateway: nothing they do writes the
+// display settings or detaches.
+export const m4bTest = webfakeTests.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M4B, use), { scope: 'worker', timeout: 180_000 }],
+});
+
+// An M4b test that writes the display settings or stops web mode gets its own
+// webfake: a settings write changes the gateway's config for later tests.
+export const m4bFreshTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M4B, use),
+});
+
+// The m4b baselines share the M4 clock. The theme is a launch variable, so a
+// baseline that needs the solid theme asks for it with test.use({ theme:
+// 'solid' }) instead of a fixture of its own.
+export const m4bVisualTest = webfakeTests.extend<{ gateway: Gateway; theme: string }>({
+  theme: ['holodeck', { option: true }],
+  gateway: async ({ webfakeBinary, theme }, use) =>
+    launchGateway(webfakeBinary, { ...M4B, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z', WEBFAKE_THEME: theme }, use),
+});

@@ -80,7 +80,23 @@ const payload = {
   id: 'm1', name: 'Model One', provider: 'p1', context_window: 200000, agent_ready: true,
 };
 
+const display = { theme: 'solid', motion: 'reduced', low_power: true, cinematic_hint: false };
+
 const rows: Row[] = [
+  {
+    name: 'config', run: () => api.config(), method: 'GET', path: '/api/config',
+    response: { display, agent_teams: false }, result: { display, agent_teams: false },
+  },
+  {
+    name: 'setConfig', run: () => api.setConfig('options.web_display.theme', 'solid'), method: 'POST',
+    path: '/api/config/set', body: { key: 'options.web_display.theme', value: 'solid' },
+    response: display, result: display,
+  },
+  {
+    name: 'removeConfig', run: () => api.removeConfig('options.web_display.theme'), method: 'POST',
+    path: '/api/config/remove', body: { key: 'options.web_display.theme' }, response: display, result: display,
+  },
+  { name: 'detach', run: () => api.detach(), method: 'POST', path: '/api/detach', status: 202 },
   { name: 'reloadConfig', run: () => api.reloadConfig(), method: 'POST', path: '/api/config/reload', status: 204 },
   { name: 'renameSession', run: () => api.renameSession('s1', 'Parser'), method: 'PUT', path: '/api/sessions/s1', body: { title: 'Parser' } },
   { name: 'deleteSession', run: () => api.deleteSession('s1'), method: 'DELETE', path: '/api/sessions/s1', status: 204, result: undefined },
