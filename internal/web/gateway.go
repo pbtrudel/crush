@@ -148,10 +148,13 @@ type Gateway struct {
 	now func() time.Time
 	// launchMu guards launch, the private redirect file handed to the
 	// browser opener so the token stays out of its arguments, its TTL
-	// timer and launchClosed, which refuses a file after Shutdown.
+	// timer and generation, and launchClosed, which refuses a file after
+	// Shutdown. Every timer reset bumps the generation, so a callback that
+	// fired just before it cannot remove the renewed file.
 	launchMu     sync.Mutex
 	launch       *launchFile
 	launchTimer  *time.Timer
+	launchGen    uint64
 	launchClosed bool
 	launchTTL    time.Duration
 

@@ -116,12 +116,14 @@ func (g *Gateway) LaunchFile() (string, error) {
 }
 
 // resetLaunchTimerLocked stops the TTL timer of the file it replaces and
-// starts one for lf. The caller holds launchMu.
+// starts one for lf. The generation is the timer's identity: the callback
+// captures it and acts only while it is still current. The caller holds
+// launchMu, so the timer cannot run before it is recorded.
 func (g *Gateway) resetLaunchTimerLocked(lf *launchFile) {
 	g.stopLaunchTimerLocked()
-	var timer *time.Timer
-	timer = time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf, timer) })
-	g.launchTimer = timer
+	g.launchGen++
+	gen := g.launchGen
+	g.launchTimer = time.AfterFunc(g.launchTTL, func() { g.expireLaunchFile(lf, gen) })
 }
 
 // removeLaunchFile removes the current launch file, if any. A later
@@ -130,6 +132,7 @@ func (g *Gateway) removeLaunchFile() {
 	g.launchMu.Lock()
 	defer g.launchMu.Unlock()
 	g.stopLaunchTimerLocked()
+	g.launchGen++
 	g.launch.remove()
 	g.launch = nil
 }
@@ -143,16 +146,17 @@ func (g *Gateway) stopLaunchTimerLocked() {
 	}
 }
 
-// expireLaunchFile removes lf unless a later open replaced the file or
-// reset its timer. A timer that fired just before a reset can wait here
-// for the lock, so the timer identity matters as much as the file.
-func (g *Gateway) expireLaunchFile(lf *launchFile, timer *time.Timer) {
+// expireLaunchFile removes lf unless a later open replaced the file or its
+// timer. A timer that fired just before a reset can wait here for the lock,
+// so gen marks which timer the callback belongs to: only the current one
+// removes the file it was started for.
+func (g *Gateway) expireLaunchFile(lf *launchFile, gen uint64) {
 	g.launchMu.Lock()
 	defer g.launchMu.Unlock()
-	if g.launch != lf || g.launchTimer != timer {
+	if g.launch != lf || g.launchGen != gen {
 		return
 	}
 	g.launch.remove()
 	g.launch = nil
-	g.launchTimer = nil
+	g.stopLaunchTimerLocked()
 }
