@@ -38,6 +38,7 @@ type Controller struct {
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
+	onAutomation         func(ctx context.Context, sessionID, name, args string) (string, error)
 	onStopped            func(reason string)
 	inputMode            bool
 	inputModeSeq         uint64
@@ -84,6 +85,7 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
 			OnPlanHandoff:        c.onPlanHandoff,
+			OnAutomation:         c.onAutomation,
 			OnDetach: func() {
 				c.mu.Lock()
 				started := gw
@@ -134,6 +136,19 @@ func (c *Controller) SetOnPlanHandoff(fn func(sessionID string, yolo bool)) {
 	c.mu.Unlock()
 	if gw != nil {
 		gw.setOnPlanHandoff(fn)
+	}
+}
+
+// SetOnAutomation sets the callback for browser /goal and /loop commands.
+// The terminal owns the automation state, so it runs them. It may be called
+// after Start; the running gateway is updated too.
+func (c *Controller) SetOnAutomation(fn func(ctx context.Context, sessionID, name, args string) (string, error)) {
+	c.mu.Lock()
+	c.onAutomation = fn
+	gw := c.gw
+	c.mu.Unlock()
+	if gw != nil {
+		gw.setOnAutomation(fn)
 	}
 }
 

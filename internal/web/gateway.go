@@ -42,6 +42,10 @@ type Options struct {
 	// caller stops the gateway; the TUI keeps running. Nil means no
 	// terminal is attached, and the detach route answers 503.
 	OnDetach func()
+	// OnAutomation runs a /goal or /loop command in the terminal, which
+	// owns the automation state, and returns the reply to show. Nil means
+	// no terminal is attached, and the automation route answers 503.
+	OnAutomation func(ctx context.Context, sessionID, name, args string) (string, error)
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
@@ -71,6 +75,9 @@ type Options struct {
 	// DockerMCPAvailable reports whether Docker MCP can be enabled. Nil
 	// reads the shared cache the terminal's dialog fills; webfake sets it.
 	DockerMCPAvailable func() bool
+	// automationTimeout overrides how long the automation route waits for
+	// the terminal's reply in tests.
+	automationTimeout time.Duration
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -179,6 +186,9 @@ type Gateway struct {
 	// dockerMCPAvailableFn is Options.DockerMCPAvailable; nil reads the
 	// shared availability cache.
 	dockerMCPAvailableFn func() bool
+	// automationTimeout is Options.automationTimeout; zero uses the
+	// default.
+	automationTimeout time.Duration
 	// launchMu guards launch, the private redirect file handed to the
 	// browser opener so the token stays out of its arguments, its TTL
 	// timer and generation, and launchClosed, which refuses a file after
@@ -197,6 +207,7 @@ type Gateway struct {
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
+	onAutomation         func(ctx context.Context, sessionID, name, args string) (string, error)
 
 	// onDetach is Options.OnDetach, fixed at start. The detach route
 	// answers 503 no_terminal when it is nil, and runs it once.
@@ -305,10 +316,12 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		signInFlowFn:         signInFlowFn,
 		now:                  now,
 		dockerMCPAvailableFn: opts.DockerMCPAvailable,
+		automationTimeout:    opts.automationTimeout,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,
 		onDetach:             opts.OnDetach,
+		onAutomation:         opts.OnAutomation,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
 		// The settings the tab starts from are the ones in the config.
@@ -422,6 +435,22 @@ func (g *Gateway) notifyPlanHandoff(sessionID string, yolo bool) bool {
 	}
 	fn(sessionID, yolo)
 	return true
+}
+
+// setOnAutomation replaces the callback for browser automation commands. It
+// is safe to call while a handler is reading it.
+func (g *Gateway) setOnAutomation(fn func(ctx context.Context, sessionID, name, args string) (string, error)) {
+	g.onMu.Lock()
+	g.onAutomation = fn
+	g.onMu.Unlock()
+}
+
+// automationCallback returns the terminal callback for automation commands,
+// or nil when no terminal is attached.
+func (g *Gateway) automationCallback() func(ctx context.Context, sessionID, name, args string) (string, error) {
+	g.onMu.RLock()
+	defer g.onMu.RUnlock()
+	return g.onAutomation
 }
 
 // InputMode returns the mode the terminal last reported.

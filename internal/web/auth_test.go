@@ -254,6 +254,7 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"DELETE /api/shell/{run}",
 		"POST /api/sessions/{sid}/notes",
 		"POST /api/sessions/{sid}/export",
+		"POST /api/sessions/{sid}/automation",
 		"GET /api/providers",
 		"POST /api/models/select",
 		"POST /api/models/reasoning",
