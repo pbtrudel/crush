@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import type { Message } from '../../api/types';
+import { toolFocus } from '../../state/focusTool';
 import { Transcript } from './Transcript';
 
 vi.mock('./toolSummary', async (orig) => {
@@ -84,6 +85,29 @@ describe('Transcript', () => {
     log.dispatchEvent(new Event('scroll'));
     await act(() => { render(<Transcript messages={[...sent]} resetKey="s1" label="Log" />, root); });
     expect(log.scrollTop).toBe(0);
+  });
+
+  it('widens the window to focus a tool card and clears the request', async () => {
+    document.body.append(root);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const many = Array.from({ length: 250 }, (_, i) => msg(`m${i}`, 'assistant', i === 5
+      ? [
+        { type: 'tool_call', data: { id: 'tc-old', name: 'view', input: '{"file_path":"old.go"}' } },
+        { type: 'finish', data: { reason: 'stop', time: i } },
+      ]
+      : [{ type: 'text', data: { text: `line ${i}` } }], i));
+    toolFocus.value = { callId: 'tc-old', sessionId: 's1' };
+    await act(() => {
+      render(<Transcript messages={many} resetKey="s1" label="Log" focusCallId="tc-old" />, root);
+    });
+    // The window grew to hold the message and every message renders.
+    expect(root.querySelectorAll('article.msg')).toHaveLength(250);
+    const card = root.querySelector<HTMLDetailsElement>('details[data-tool-call-id="tc-old"]')!;
+    expect(card.open).toBe(true);
+    expect(document.activeElement).toBe(card.querySelector('summary'));
+    expect(scroll).toHaveBeenCalled();
+    expect(toolFocus.value).toBeNull();
   });
 
   it('keeps the view in place when earlier messages are revealed', async () => {

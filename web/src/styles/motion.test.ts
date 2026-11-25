@@ -13,6 +13,7 @@ const STYLES_DIR = '.';
 const EXPECTED_SHEETS = [
   'agents.css',
   'base.css',
+  'chronoline.css',
   'cinematic.css',
   'deck.css',
   'diff.css',
