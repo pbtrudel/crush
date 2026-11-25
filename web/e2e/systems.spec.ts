@@ -79,6 +79,8 @@ startingTest('shows a starting state instead of an error', async ({ page, gatewa
   await page.keyboard.press('Control+K');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await palette.getByRole('combobox', { name: 'Command palette' }).fill('compact');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Compact session/ })).toBeVisible();
   await page.keyboard.press('Enter');
 
   const starting = palette.getByRole('status').filter({ hasText: STARTING_TEXT });

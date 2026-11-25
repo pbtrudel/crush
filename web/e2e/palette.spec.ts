@@ -144,6 +144,8 @@ freshTest('asks a side question', async ({ page, gateway }) => {
   await page.keyboard.press('Control+K');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await palette.getByRole('combobox', { name: 'Command palette' }).fill('side question');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Ask side question/ })).toBeVisible();
   await page.keyboard.press('Enter');
   const form = palette.getByRole('form', { name: 'Arguments for Ask side question' });
   await form.getByLabel('Question (required)').fill('How does the parser work?');
@@ -165,6 +167,8 @@ freshTest('adds a note', async ({ page, gateway }) => {
   await page.keyboard.press('Control+K');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await palette.getByRole('combobox', { name: 'Command palette' }).fill('add note');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Add note/ })).toBeVisible();
   await page.keyboard.press('Enter');
   await expect(palette).toBeHidden();
 
