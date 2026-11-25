@@ -1,4 +1,4 @@
-import { axeScan, expect, m3FreshTest as freshTest, m3Test as test } from './fixture';
+import { axeScan, expect, m3FreshTest as freshTest, m3Test as test, m4bTest } from './fixture';
 
 // Axe keeps the software renderer busy well past the default 30 seconds.
 test.setTimeout(120_000);
@@ -177,4 +177,71 @@ freshTest('adds a note', async ({ page, gateway }) => {
   await page.keyboard.press('Enter');
   await expect(page.getByText('Note kept for the next prompt')).toBeVisible();
   await expect(deck).toHaveValue('');
+});
+
+// The M4b palette items. The shared m4b gateway carries the seeded channel
+// server, the globally disabled skill and the terminal automation replies.
+m4bTest.setTimeout(120_000);
+
+m4bTest('sets a goal with its argument', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  const sent = page.waitForRequest((r) => r.method() === 'POST' && /\/automation$/.test(r.url()));
+  await page.getByLabel('Transmit to crush').focus();
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('combobox', { name: 'Command palette' }).fill('set goal');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Set goal/ })).toBeVisible();
+  await page.keyboard.press('Enter');
+
+  const form = palette.getByRole('form', { name: 'Arguments for Set goal' });
+  await expect(form).toBeVisible();
+  await form.getByLabel('Objective (required)').fill('Ship the parser');
+  await form.getByRole('button', { name: 'Run' }).click();
+
+  const request = await sent;
+  expect(request.postDataJSON()).toEqual({ name: 'goal', args: 'Ship the parser' });
+  await expect(palette).toBeHidden();
+  await expect(page.locator('.toast').filter({ hasText: 'Goal set: Ship the parser' })).toBeVisible();
+});
+
+m4bTest('exports the session as Markdown', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  await page.getByLabel('Transmit to crush').focus();
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('combobox', { name: 'Command palette' }).fill('export session');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Export session as Markdown/ })).toBeVisible();
+  await page.keyboard.press('Enter');
+
+  await expect(palette).toBeHidden();
+  await expect(page.locator('.toast').filter({ hasText: /Session exported to .*crush-session-s1\.md/ }))
+    .toBeVisible();
+});
+
+m4bTest('opens Channels in the systems panel', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  await page.getByLabel('Transmit to crush').focus();
+  await page.keyboard.press('Control+K');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('combobox', { name: 'Command palette' }).fill('channels');
+  // Enter only runs the item once the list has answered, so wait for it.
+  await expect(palette.getByRole('option', { name: /Channels/ })).toBeVisible();
+  await page.keyboard.press('Enter');
+
+  const panel = page.getByRole('dialog', { name: 'Systems' });
+  await expect(panel).toBeVisible();
+  const discord = panel.locator('.systems__card[data-server="discord"]');
+  await expect(discord).toBeVisible();
+  await expect(discord).toContainText('Channel');
+  await expect(panel.locator('.systems__card[data-server="github"]')).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Channels' })).toHaveAttribute('aria-pressed', 'true');
+  await axeScan(page);
 });
