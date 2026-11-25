@@ -42,19 +42,29 @@ type FileDiagnostics struct {
 	Warning int `json:"warning"`
 }
 
+// VersionTool names the tool call that produced one version of a file.
+// A version no tool produced, such as a baseline of a file changed outside
+// Crush, carries no id.
+type VersionTool struct {
+	SessionID  string `json:"session_id"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
 // FileSummary is one edited path across a session and every session below
 // it. VersionIDs are positions in that tree's history, in creation order,
 // not history.Version: a subagent's first edit of a path starts a version
-// 0 of its own, so versions collide across sessions.
+// 0 of its own, so versions collide across sessions. VersionTools has one
+// entry per version, in the same order.
 type FileSummary struct {
-	Path        string          `json:"path"`
-	Versions    int             `json:"versions"`
-	VersionIDs  []int64         `json:"version_ids"`
-	Additions   int             `json:"additions"`
-	Removals    int             `json:"removals"`
-	Diagnostics FileDiagnostics `json:"diagnostics"`
-	UpdatedAt   int64           `json:"updated_at"`
-	SessionIDs  []string        `json:"session_ids"`
+	Path         string          `json:"path"`
+	Versions     int             `json:"versions"`
+	VersionIDs   []int64         `json:"version_ids"`
+	VersionTools []VersionTool   `json:"version_tools"`
+	Additions    int             `json:"additions"`
+	Removals     int             `json:"removals"`
+	Diagnostics  FileDiagnostics `json:"diagnostics"`
+	UpdatedAt    int64           `json:"updated_at"`
+	SessionIDs   []string        `json:"session_ids"`
 	// StatsUnknown reports that a version is over the diff cap, so the
 	// counts are not known. They are zero instead of misleading.
 	StatsUnknown bool `json:"stats_unknown,omitempty"`
@@ -150,16 +160,18 @@ func (g *Gateway) fileSummaries(ctx context.Context, root string) ([]FileSummary
 		last := versions[len(versions)-1]
 		additions, removals, unknown := g.fileStats.totals(ctx, path, versions, load)
 		ids := make([]int64, len(versions))
+		tools := make([]VersionTool, len(versions))
 		var sessions []string
 		for i, v := range versions {
 			ids[i] = int64(i)
+			tools[i] = VersionTool{SessionID: v.SessionID, ToolCallID: v.ToolCallID}
 			if !slices.Contains(sessions, v.SessionID) {
 				sessions = append(sessions, v.SessionID)
 			}
 		}
 		d := diags[path]
 		out = append(out, FileSummary{
-			Path: path, Versions: len(versions), VersionIDs: ids,
+			Path: path, Versions: len(versions), VersionIDs: ids, VersionTools: tools,
 			Additions: additions, Removals: removals,
 			Diagnostics: FileDiagnostics{Error: d.Error, Warning: d.Warning},
 			UpdatedAt:   last.UpdatedAt, SessionIDs: sessions,

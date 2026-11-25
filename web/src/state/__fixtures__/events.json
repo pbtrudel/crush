@@ -574,6 +574,15 @@
             0,
             1
           ],
+          "version_tools": [
+            {
+              "session_id": "s1"
+            },
+            {
+              "session_id": "sub-1",
+              "tool_call_id": "tc-0"
+            }
+          ],
           "additions": 3,
           "removals": 1,
           "diagnostics": {

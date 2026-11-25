@@ -1146,13 +1146,14 @@ func (f *Fake) ListSessionHistoryMeta(_ context.Context, sessionID string) ([]hi
 	metas := make([]history.FileMeta, len(files))
 	for i, file := range files {
 		metas[i] = history.FileMeta{
-			ID:        file.ID,
-			SessionID: file.SessionID,
-			Path:      file.Path,
-			Version:   file.Version,
-			CreatedAt: file.CreatedAt,
-			UpdatedAt: file.UpdatedAt,
-			Size:      int64(len(file.Content)),
+			ID:         file.ID,
+			SessionID:  file.SessionID,
+			Path:       file.Path,
+			Version:    file.Version,
+			CreatedAt:  file.CreatedAt,
+			UpdatedAt:  file.UpdatedAt,
+			Size:       int64(len(file.Content)),
+			ToolCallID: file.ToolCallID,
 		}
 	}
 	return metas, nil

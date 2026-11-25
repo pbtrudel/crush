@@ -74,7 +74,7 @@ func NewWriteTool(
 
 				modTime := fileInfo.ModTime().Truncate(time.Second)
 				lastRead := filetracker.LastReadTime(ctx, sessionID, filePath)
-				guardCtx := editContext{ctx: ctx, filetracker: filetracker, workingDir: workingDir}
+				guardCtx := editContext{ctx: ctx, filetracker: filetracker, workingDir: workingDir, callID: call.ID}
 				if modTime.After(lastRead) {
 					// A file never read in this session was not modified
 					// since a read, and comparing against the zero time
@@ -159,7 +159,7 @@ func NewWriteTool(
 				}
 			}
 			// Store the new version
-			_, err = files.CreateVersion(ctx, sessionID, filePath, params.Content)
+			_, err = files.CreateVersion(history.WithToolCallID(ctx, call.ID), sessionID, filePath, params.Content)
 			if err != nil {
 				slog.Error("Error creating file history version", "error", err)
 			}

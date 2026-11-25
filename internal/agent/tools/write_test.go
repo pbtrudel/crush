@@ -159,3 +159,25 @@ func TestWriteRefusalOutsideWorkingDirShowsNoContent(t *testing.T) {
 	require.NotContains(t, resp.Content, "token=abc")
 	require.Empty(t, tracker.reads)
 }
+
+// TestWriteToolRecordsTheToolCall pins the same link for a write: the
+// baseline of a new file names no call, and the version holding the
+// written content names the write's call.
+func TestWriteToolRecordsTheToolCall(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	files, sessionID := newHistoryForToolTest(t)
+	tool := NewWriteTool(nil, &testutil.MockPermissionService{}, files, mockFileTrackerService{}, workingDir)
+	input, err := json.Marshal(WriteParams{FilePath: "a.go", Content: "package a\n"})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, sessionID)
+	_, err = tool.Run(ctx, fantasy.ToolCall{ID: "tc-w", Name: WriteToolName, Input: string(input)})
+	require.NoError(t, err)
+
+	metas, err := files.ListMetaBySession(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, metas, 2)
+	require.Equal(t, "", metas[0].ToolCallID, "the new file's empty baseline names no call")
+	require.Equal(t, "tc-w", metas[1].ToolCallID)
+}
