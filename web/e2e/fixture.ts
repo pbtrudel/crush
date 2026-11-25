@@ -214,11 +214,19 @@ export const promptElsewhereTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
 });
 
-// The prompt arrives six seconds after the gateway starts. A test opens its
-// panel about two seconds in, so it leaves four seconds of margin before the
-// prompt lands, and the panel is the layer the prompt closes over.
-export const promptLateTest = webfakeTests.extend<{ gateway: Gateway }>({
-  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_AFTER_MS: '6000' }, use),
+// The prompt waits for a file the test writes, so it lands once the test has
+// put the focus where the prompt interrupts it rather than on a clock from
+// the gateway's start. The panel is the layer the prompt closes over.
+export const promptLateTest = webfakeTests.extend<{ gateway: Gateway; promptTrigger: string }>({
+  promptTrigger: async ({}, use) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'prompt-trigger-'));
+    try {
+      await use(path.join(dir, 'open'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  gateway: async ({ webfakeBinary, promptTrigger }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ON_FILE: promptTrigger }, use),
 });
 
 export const confirmTest = webfakeTests.extend<{ gateway: Gateway }>({

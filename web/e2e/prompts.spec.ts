@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page, Request } from '@playwright/test';
 import {
@@ -158,10 +159,11 @@ touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => 
   expect(seen.filter((text) => text.includes('Answered in the terminal'))).toEqual([]);
 });
 
-// A panel an earlier test could not open under a prompt: the prompt is held
-// back six seconds, so the switcher opens first and the prompt closes over
-// it. The panel is the layer that stays open, so it takes its focus back.
-promptLateTest('returns the focus to the panel when a prompt closes over it', async ({ page, gateway }) => {
+// A panel an earlier test could not open under a prompt: the prompt waits
+// for this test's trigger, so the switcher opens first and the prompt closes
+// over it. The panel is the layer that stays open, so it takes its focus
+// back.
+promptLateTest('returns the focus to the panel when a prompt closes over it', async ({ page, gateway, promptTrigger }) => {
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
   await page.getByRole('button', { name: 'Session: Holodeck test. Switch session' }).click();
@@ -173,10 +175,17 @@ promptLateTest('returns the focus to the panel when a prompt closes over it', as
   await expect(sessions.locator('.sessions__title').first()).toBeVisible();
 
   // ArrowDown moves the focus from the filter to the first row, which is the
-  // control the prompt interrupts.
+  // control the prompt interrupts. The move lands on a later frame than the
+  // keypress, so the row is polled for rather than read once.
   await page.keyboard.press('ArrowDown');
-  const row = await page.evaluate(() => document.activeElement?.id ?? '');
-  expect(row).toMatch(/^session-open-/);
+  let row = '';
+  await expect.poll(async () => {
+    row = await page.evaluate(() => document.activeElement?.id ?? '');
+    return row;
+  }).toMatch(/^session-open-/);
+
+  // Only now does the prompt open, so it cannot land before the focus move.
+  writeFileSync(promptTrigger, '');
 
   const prompt = page.getByRole('dialog', { name: 'GPG passphrase' });
   await expect(prompt).toBeVisible({ timeout: 20_000 });
