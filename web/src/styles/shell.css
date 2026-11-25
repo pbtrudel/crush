@@ -157,14 +157,6 @@
   .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
   .hud__controls { gap: var(--space-1); }
 }
-/* Three or more MCP servers widen the servers group enough to squeeze a
-   typical "Model One | main" line. The one-row strip gives the identity
-   track its floor instead of shrinking the names. */
-@media (min-width: 1280px) {
-  .hud[data-many-servers='true'] {
-    grid-template-columns: minmax(159px, 1fr) auto auto auto auto auto auto;
-  }
-}
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,
      needs about 1280px of content, so the instruments wrap below it and

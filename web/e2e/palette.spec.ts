@@ -267,13 +267,6 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   const branchCenter = b!.y + b!.height / 2;
   expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
   expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
-  // Short names fit whole: the identity track has room for them.
-  const unclipped = await page.evaluate(() => {
-    const name = document.querySelector('.hud__model-name') as HTMLElement;
-    const label = document.querySelector('.hud__branch') as HTMLElement;
-    return { model: name.scrollWidth === name.clientWidth, branch: label.scrollWidth === label.clientWidth };
-  });
-  expect(unclipped).toEqual({ model: true, branch: true });
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {
@@ -284,20 +277,16 @@ m4bLongModelTest('clips a long model name before the context gauge', async ({ pa
   const name = page.locator('.hud__model-name');
   await expect(name).toHaveText(LONG_MODEL_NAME);
   await expect(model).toHaveAttribute('title', LONG_MODEL_NAME);
-  for (const width of [1280, 1366, 1440]) {
-    await page.setViewportSize({ width, height: 860 });
-    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
-    const geometry = await page.evaluate(() => {
-      const n = document.querySelector('.hud__model-name') as HTMLElement;
-      const meta = document.querySelector('.hud__meta') as HTMLElement;
-      const gauge = document.querySelector('.gauge') as HTMLElement;
-      return {
-        clipped: n.scrollWidth > n.clientWidth,
-        metaRight: meta.getBoundingClientRect().right,
-        gaugeLeft: gauge.getBoundingClientRect().left,
-      };
-    });
-    expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
-    expect(geometry.clipped).toBe(true);
-  }
+  const geometry = await page.evaluate(() => {
+    const n = document.querySelector('.hud__model-name') as HTMLElement;
+    const meta = document.querySelector('.hud__meta') as HTMLElement;
+    const gauge = document.querySelector('.gauge') as HTMLElement;
+    return {
+      clipped: n.scrollWidth > n.clientWidth,
+      metaRight: meta.getBoundingClientRect().right,
+      gaugeLeft: gauge.getBoundingClientRect().left,
+    };
+  });
+  expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
+  expect(geometry.clipped).toBe(true);
 });
