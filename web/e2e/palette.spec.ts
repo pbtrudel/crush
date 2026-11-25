@@ -245,3 +245,35 @@ m4bTest('opens Channels in the systems panel', async ({ page, gateway }) => {
   await expect(panel.getByRole('button', { name: 'Channels' })).toHaveAttribute('aria-pressed', 'true');
   await axeScan(page);
 });
+
+m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+
+  const model = page.locator('p.hud__meta .hud__model');
+  const branch = page.locator('p.hud__meta .hud__branch');
+  await expect(branch).toBeVisible();
+  // A narrowed strip truncates both names, so both carry their full text.
+  await expect(model).toHaveAttribute('title', 'Model One');
+  await expect(branch).toHaveAttribute('title', 'main');
+  const [m, b] = await Promise.all([model.boundingBox(), branch.boundingBox()]);
+  expect(m).not.toBeNull();
+  expect(b).not.toBeNull();
+  // The branch shares the model line even with the m4b seed's three MCP
+  // dots: never the orphan second line that made the HUD grow.
+  const modelCenter = m!.y + m!.height / 2;
+  const branchCenter = b!.y + b!.height / 2;
+  expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
+  expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
+  // At 1440 the three dots still leave the names whole; the gutter absorbs
+  // the extra hex rather than clipping it.
+  const clipped = await page.evaluate(() => {
+    const name = document.querySelector('.hud__model-name')!;
+    const label = document.querySelector('.hud__branch')!;
+    return {
+      model: name.scrollWidth > name.clientWidth,
+      branch: label.scrollWidth > label.clientWidth,
+    };
+  });
+  expect(clipped).toEqual({ model: false, branch: false });
+});
