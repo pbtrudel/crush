@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/eval/checkout"
+	"github.com/charmbracelet/crush/internal/eval/evaltest"
 	"github.com/charmbracelet/crush/internal/eval/grade"
 	"github.com/charmbracelet/crush/internal/eval/task"
 	"github.com/stretchr/testify/require"
@@ -149,7 +150,7 @@ func TestGradeIgnoresRepositoryHooks(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker")
 	script := filepath.Join(dir, "fsmonitor.sh")
-	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nenv > "+marker+"\n"), 0o700))
+	evaltest.WriteExecutable(t, script, []byte("#!/bin/sh\nenv > "+marker+"\n"))
 	git(t, src, "config", "core.fsmonitor", script)
 
 	// The control: git on its own runs the script, and the script sees the

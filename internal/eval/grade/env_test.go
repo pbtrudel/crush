@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/evaltest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,7 +86,7 @@ func countingGo(t *testing.T, root, log string) {
 	bin := filepath.Join(root, "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o755))
 	script := "#!/bin/sh\necho \"$2\" >> " + log + "\necho \"/fake/$2\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+	evaltest.WriteExecutable(t, filepath.Join(bin, "go"), []byte(script))
 }
 
 // silentGo writes a go in root's bin that reports no value for any name.
@@ -93,7 +94,7 @@ func silentGo(t *testing.T, root string) {
 	t.Helper()
 	bin := filepath.Join(root, "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"), 0o700))
+	evaltest.WriteExecutable(t, filepath.Join(bin, "go"), []byte("#!/bin/sh\n"))
 }
 
 // fakeGo writes a go in root's bin that reports /fake/<name> for the go env
@@ -103,5 +104,5 @@ func fakeGo(t *testing.T, root string) {
 	bin := filepath.Join(root, "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o755))
 	script := "#!/bin/sh\necho \"/fake/$2\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+	evaltest.WriteExecutable(t, filepath.Join(bin, "go"), []byte(script))
 }
