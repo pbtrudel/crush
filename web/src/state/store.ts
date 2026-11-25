@@ -107,13 +107,31 @@ function queueChanged(f: Frame): boolean {
 const FILES_DEBOUNCE_MS = 400;
 let filesTimer: ReturnType<typeof setTimeout> | null = null;
 
+// filesInFlight and filesDirty keep one list request at a time: a frame that
+// lands while the request is on its way asks for exactly one more once it
+// settles, however many of them arrive.
+let filesInFlight = false;
+let filesDirty = false;
+
 async function refreshFiles(sid: string) {
+  if (filesInFlight) {
+    filesDirty = true;
+    return;
+  }
+  filesInFlight = true;
   try {
     const files = await api.files(sid);
     dispatch((s) => (s.sessionId === sid ? { ...s, files, filesStale: false } : s));
   } catch {
-    // The list stays as it is; the next file frame or snapshot repairs it.
-    dispatch((s) => ({ ...s, filesStale: false }));
+    // The list stays as it is and filesStale stays set, so the next frame or
+    // snapshot asks for it again.
+  } finally {
+    filesInFlight = false;
+    if (filesDirty) {
+      filesDirty = false;
+      const next = state.value.sessionId;
+      if (next) void refreshFiles(next);
+    }
   }
 }
 
