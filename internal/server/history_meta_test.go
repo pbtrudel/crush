@@ -1,7 +1,12 @@
 package server_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,6 +32,10 @@ type historyHarness struct {
 	workspaceID string
 	sessions    session.Service
 	history     history.Service
+	// app is the workspace's App, so a test can swap a service.
+	app *app.App
+	// logs holds what the server logged.
+	logs *bytes.Buffer
 }
 
 func newHistoryHarness(t *testing.T) *historyHarness {
@@ -35,6 +44,8 @@ func newHistoryHarness(t *testing.T) *historyHarness {
 	t.Cleanup(a.ShutdownForTest)
 
 	srv := server.NewServer(nil, "tcp", "127.0.0.1:0")
+	logs := new(bytes.Buffer)
+	srv.SetLogger(slog.New(slog.NewTextHandler(logs, nil)))
 	ws := &backend.Workspace{ID: "ws-history", Path: t.TempDir(), App: a}
 	backend.SetWorkspaceShutdownFnForTest(ws, func() {})
 	backend.InsertWorkspaceForTest(srv.Backend(), ws)
@@ -57,6 +68,8 @@ func newHistoryHarness(t *testing.T) *historyHarness {
 		workspaceID: ws.ID,
 		sessions:    a.Sessions,
 		history:     a.History,
+		app:         a,
+		logs:        logs,
 	}
 }
 
@@ -161,4 +174,56 @@ func TestChildSessionsRoute(t *testing.T) {
 	children, err = cl.ListChildSessions(t.Context(), h.workspaceID, "no-such-session")
 	require.NoError(t, err)
 	require.Empty(t, children)
+}
+
+// failingHistory fails the two reads behind the history routes, the way a
+// database that cannot open its file does.
+type failingHistory struct {
+	history.Service
+	err error
+}
+
+func (f failingHistory) ListMetaBySession(context.Context, string) ([]history.FileMeta, error) {
+	return nil, f.err
+}
+
+func (f failingHistory) Get(context.Context, string) (history.File, error) {
+	return history.File{}, f.err
+}
+
+// TestHistoryRoutesHideStoreErrors pins that a store failure answers a
+// fixed message: the store's error can name a database path, so it goes to
+// the server log instead of the body.
+func TestHistoryRoutesHideStoreErrors(t *testing.T) {
+	t.Parallel()
+	h := newHistoryHarness(t)
+	sess, err := h.sessions.Create(t.Context(), "history errors")
+	require.NoError(t, err)
+	boom := errors.New("get history: open /home/user/.crush/crush.db: disk I/O error")
+	h.app.History = failingHistory{err: boom}
+	base := h.httpSrv.URL + "/v1/workspaces/" + h.workspaceID
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{"meta", "/sessions/" + sess.ID + "/history/meta", "the file history could not be read"},
+		{"by id", "/history/any-id", "the file version could not be read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+tc.path, nil)
+			require.NoError(t, err)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode, string(body))
+			require.Contains(t, string(body), tc.want)
+			require.NotContains(t, string(body), "disk I/O error")
+			require.NotContains(t, string(body), "/home/user")
+		})
+	}
+	require.Contains(t, h.logs.String(), "disk I/O error", "the store error stays in the log")
 }

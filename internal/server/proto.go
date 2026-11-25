@@ -453,7 +453,7 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	sid := r.PathValue("sid")
 	history, err := c.backend.ListSessionHistory(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file history could not be read", err)
 		return
 	}
 	jsonEncode(w, history)
@@ -466,7 +466,7 @@ func (c *controllerV1) handleGetWorkspaceSessionHistoryMeta(w http.ResponseWrite
 	sid := r.PathValue("sid")
 	metas, err := c.backend.ListSessionHistoryMeta(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file history could not be read", err)
 		return
 	}
 	jsonEncode(w, wire.FileMetasToProto(metas))
@@ -482,7 +482,7 @@ func (c *controllerV1) handleGetWorkspaceHistoryFile(w http.ResponseWriter, r *h
 			jsonError(w, http.StatusNotFound, "file version not found")
 			return
 		}
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file version could not be read", err)
 		return
 	}
 	jsonEncode(w, wire.FileToProto(file))
@@ -1011,6 +1011,19 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleHistoryError answers a failed file-history read. An error with a
+// mapped status keeps its usual answer; anything else is a store failure
+// whose text can name a database path, so the body carries a fixed message
+// and the log keeps the detail.
+func (c *controllerV1) handleHistoryError(w http.ResponseWriter, r *http.Request, message string, err error) {
+	if errors.Is(err, backend.ErrWorkspaceNotFound) {
+		c.handleError(w, r, err)
+		return
+	}
+	c.server.logError(r, err.Error())
+	jsonError(w, http.StatusInternalServerError, message)
 }
 
 // handleSessionError answers a failed session call. A session the
