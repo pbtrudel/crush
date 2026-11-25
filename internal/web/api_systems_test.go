@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -667,7 +669,7 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		return g, fake, unblock
 	}
 
-	t.Run("waits for the start and the queue", func(t *testing.T) {
+	t.Run("waits for the start and drops the queue", func(t *testing.T) {
 		t.Parallel()
 		g, fake, unblock := blockedStart(t)
 		done := make(chan error, 1)
@@ -688,8 +690,8 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("Shutdown did not return after the start settled")
 		}
-		require.Equal(t, 1, countCalls(fake, "LSPStart:"+filepath.Join(fake.WorkDir, "b.py")),
-			"the queued start runs before Shutdown returns")
+		require.Zero(t, countCalls(fake, "LSPStart:"+filepath.Join(fake.WorkDir, "b.py")),
+			"a path queued when Shutdown began is dropped, never started")
 	})
 
 	t.Run("bounded by the deadline", func(t *testing.T) {
@@ -706,6 +708,25 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 		}
 		unblock()
 	})
+}
+
+// TestLSPStartAfterShutdown pins the closing answer: once the gateway has
+// shut down, a start request is refused with the shutting-down state and
+// reaches no workspace call.
+func TestLSPStartAfterShutdown(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	require.NoError(t, g.Shutdown(context.Background()))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/lsp/start", strings.NewReader(`{"path":"a.go"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	g.handleLSPStart(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "shutting_down")
+	require.Empty(t, fake.CallLog(), "a start after shutdown reaches no workspace call")
 }
 
 func TestLSPStop(t *testing.T) {

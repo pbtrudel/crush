@@ -433,7 +433,11 @@ func (g *Gateway) lspStart(path string) lspStartOutcome {
 
 // drainLSPStarts starts the LSP servers for the running path and then for
 // every queued path, in order. It is the only goroutine that calls the
-// manager for a browser request, so one handshake runs at a time.
+// manager for a browser request, so one handshake runs at a time. Once the
+// gateway is closing it stops at the next path boundary and drops the rest
+// of the queue: the in-process manager runs its servers on its own context,
+// so a drain that outlived Shutdown would otherwise keep starting servers
+// after Shutdown returned.
 func (g *Gateway) drainLSPStarts() {
 	defer g.lspWG.Done()
 	for {
@@ -442,6 +446,14 @@ func (g *Gateway) drainLSPStarts() {
 		g.lspMu.Unlock()
 		g.ws.LSPStart(g.lspCtx, path)
 		g.lspMu.Lock()
+		if g.lspClosed {
+			g.lspQueue = nil
+			g.lspQueued = map[string]struct{}{}
+			g.lspStarting = false
+			g.lspPath = ""
+			g.lspMu.Unlock()
+			return
+		}
 		if len(g.lspQueue) == 0 {
 			g.lspStarting = false
 			g.lspPath = ""
