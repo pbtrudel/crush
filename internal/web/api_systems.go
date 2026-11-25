@@ -374,9 +374,58 @@ func (g *Gateway) handleLSPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// LSPManager.Start waits for every server to finish its handshake,
 	// which can take seconds (or the configured timeout), so the browser
-	// is not held for it. The servers persist on their own context.
-	go g.ws.LSPStart(context.WithoutCancel(r.Context()), path)
-	w.WriteHeader(http.StatusNoContent)
+	// is not held for it. The servers persist on the gateway's context.
+	switch g.lspStart(path) {
+	case lspStartStarted:
+		w.WriteHeader(http.StatusNoContent)
+	case lspStartInFlight:
+		// A start already under way brings up the same servers for every
+		// path in the working directory, so this request only learns it is
+		// still running.
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		writeError(w, http.StatusServiceUnavailable, "shutting_down", "Crush is shutting down")
+	}
+}
+
+// lspStartOutcome tells a start request what the gateway did with it.
+type lspStartOutcome int
+
+const (
+	// lspStartStarted means this request runs the start.
+	lspStartStarted lspStartOutcome = iota
+	// lspStartInFlight means another start already covers the path.
+	lspStartInFlight
+	// lspStartClosing means the gateway is shutting down.
+	lspStartClosing
+)
+
+// lspStart runs the one detached LSP start the gateway allows at a time.
+// It reports whether this request owns the start, so a second request can
+// answer without a second call and Shutdown knows what it waits for.
+func (g *Gateway) lspStart(path string) lspStartOutcome {
+	g.lspMu.Lock()
+	if g.lspClosed {
+		g.lspMu.Unlock()
+		return lspStartClosing
+	}
+	if g.lspStarting {
+		g.lspMu.Unlock()
+		return lspStartInFlight
+	}
+	g.lspStarting = true
+	g.lspWG.Add(1)
+	g.lspMu.Unlock()
+	go func() {
+		defer g.lspWG.Done()
+		defer func() {
+			g.lspMu.Lock()
+			g.lspStarting = false
+			g.lspMu.Unlock()
+		}()
+		g.ws.LSPStart(g.lspCtx, path)
+	}()
+	return lspStartStarted
 }
 
 func (g *Gateway) handleLSPStop(w http.ResponseWriter, r *http.Request) {

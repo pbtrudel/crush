@@ -557,6 +557,115 @@ func TestLSPStartOutlivesTheRequest(t *testing.T) {
 	require.Never(t, func() bool { return ctx.Err() != nil }, 100*time.Millisecond, 10*time.Millisecond)
 }
 
+// TestLSPStartRunsOneStartAtATime pins that a second request while a start
+// is in flight answers 202 and runs nothing: the servers a start brings up
+// are the same for every path, so a second call would only repeat the wait.
+func TestLSPStartRunsOneStartAtATime(t *testing.T) {
+	t.Parallel()
+	fake := webtest.NewFake()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fake.OnLSPStart = func(context.Context, string) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+	}
+	g := startFake(t, fake)
+	c := authedClient(t, g)
+
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", "{}")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("the first start never reached the LSP manager")
+	}
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/lsp/start", "{}")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode, string(body))
+
+	unblock()
+	require.Eventually(t, func() bool {
+		return countCalls(fake, "LSPStart:"+fake.WorkDir) == 1
+	}, time.Second, 10*time.Millisecond, "a start in flight covers the second request")
+	require.Equal(t, 1, countCalls(fake, "LSPStart:"+fake.WorkDir))
+}
+
+// TestShutdownWaitsForTheLSPStart covers both halves of the wait: an
+// in-flight start holds Shutdown until it settles, and a start that ignores
+// the gateway's cancellation cannot hold it past the caller's deadline.
+func TestShutdownWaitsForTheLSPStart(t *testing.T) {
+	t.Parallel()
+
+	// blockedStart starts a gateway whose LSP start blocks until the
+	// returned func releases it.
+	blockedStart := func(t *testing.T) (*Gateway, func()) {
+		t.Helper()
+		fake := webtest.NewFake()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enteredOnce, releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(unblock)
+		fake.OnLSPStart = func(context.Context, string) {
+			enteredOnce.Do(func() { close(entered) })
+			<-release
+		}
+		g := startFake(t, fake)
+		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/lsp/start", "{}")
+		rsp.Body.Close()
+		require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("the start never reached the LSP manager")
+		}
+		return g, unblock
+	}
+
+	t.Run("waits for the start", func(t *testing.T) {
+		t.Parallel()
+		g, unblock := blockedStart(t)
+		done := make(chan error, 1)
+		go func() { done <- g.Shutdown(context.Background()) }()
+		returned := func() bool {
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		}
+		require.Never(t, returned, 100*time.Millisecond, 10*time.Millisecond,
+			"Shutdown returned while a start was still in flight")
+		unblock()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shutdown did not return after the start settled")
+		}
+	})
+
+	t.Run("bounded by the deadline", func(t *testing.T) {
+		t.Parallel()
+		g, unblock := blockedStart(t)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- g.Shutdown(shutdownCtx) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shutdown waited on an LSP start that ignores cancellation")
+		}
+		unblock()
+	})
+}
+
 func TestLSPStop(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)

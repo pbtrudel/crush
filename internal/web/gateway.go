@@ -131,6 +131,18 @@ type Gateway struct {
 	auths       map[string]context.CancelFunc
 	authWG      sync.WaitGroup
 	authsClosed bool
+	// lspMu guards lspStarting, whether the one detached LSP start the
+	// gateway runs is in flight, and lspClosed, which refuses one during
+	// shutdown. lspWG lets Shutdown wait for the start before the hub
+	// closes; lspCtx is what every start runs on, so cancelling the
+	// gateway stops the start without a per-start context outliving its
+	// call.
+	lspMu       sync.Mutex
+	lspStarting bool
+	lspClosed   bool
+	lspCtx      context.Context
+	lspCancel   context.CancelFunc
+	lspWG       sync.WaitGroup
 	// authPoll overrides how long an auth request waits for the URL.
 	authPoll time.Duration
 	// signinMu guards signin, the one sign-in flow the gateway runs, and
@@ -211,6 +223,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		signInFlowFn = signin.New
 	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	lspCtx, lspCancel := context.WithCancel(gctx)
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -224,6 +237,8 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		ln:        ln,
 		ctx:       gctx,
 		cancel:    cancel,
+		lspCtx:    lspCtx,
+		lspCancel: lspCancel,
 		done:      make(chan struct{}),
 		hub:       newHub(),
 		pending:   newPending(),
@@ -451,6 +466,13 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	g.authMu.Unlock()
+	// The LSP start is cancelled here, before the wait below, so a start
+	// that honours its context settles without using up the caller's
+	// deadline. One that ignores it is bounded by the same deadline.
+	g.lspMu.Lock()
+	g.lspClosed = true
+	g.lspCancel()
+	g.lspMu.Unlock()
 	// A running sign-in is cancelled and its listener freed here, before
 	// the wait below, so its goroutines settle while the hub is still
 	// open.
@@ -462,6 +484,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	go func() {
 		g.shellWG.Wait()
 		g.authWG.Wait()
+		g.lspWG.Wait()
 		g.signinWG.Wait()
 		close(workDone)
 	}()
