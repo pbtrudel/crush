@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -37,6 +38,10 @@ type Options struct {
 	// OnPlanHandoff is called when the browser confirms a ready plan.
 	// The terminal makes the switch and clears the plan. It may be nil.
 	OnPlanHandoff func(sessionID string, yolo bool)
+	// OnDetach is called when the browser asks to stop web mode. The
+	// caller stops the gateway; the TUI keeps running. Nil means no
+	// terminal is attached, and the detach route answers 503.
+	OnDetach func()
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
@@ -187,6 +192,17 @@ type Gateway struct {
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
 
+	// onDetach is Options.OnDetach, fixed at start. The detach route
+	// answers 503 no_terminal when it is nil, and runs it once.
+	onDetach func()
+	// detachOnce makes a second detach request a no-op: a double click
+	// must not ask the terminal to stop web mode twice.
+	detachOnce sync.Once
+	// closingReason is the reason the gateway_closing frame carries. The
+	// detach route sets it before the shutdown it asks for; the empty
+	// value means the normal exit.
+	closingReason atomic.Value
+
 	modeMu    sync.RWMutex
 	inputMode string
 	planReady string
@@ -199,6 +215,15 @@ type Gateway struct {
 	modelMu   sync.Mutex
 	lastModel ModelInfo
 	modelGen  uint64
+
+	// displayMu guards display, the tab's settings as the gateway last
+	// wrote them. It is seeded from the config at start and published
+	// from this copy rather than a re-read, so a frame never depends on
+	// when a client-mode config cache refreshes. Every config route and
+	// every publish holds it, so the disk, this copy and the frames
+	// always agree.
+	displayMu sync.Mutex
+	display   DisplaySettings
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -276,8 +301,11 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,
+		onDetach:             opts.OnDetach,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
+		// The settings the tab starts from are the ones in the config.
+		display: displayFromConfig(opts.Workspace.Config()),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
@@ -449,6 +477,15 @@ const (
 	inputModePlan = "plan"
 )
 
+// closingReasonText is the reason the gateway_closing frame carries: the
+// one the detach route stored, or the normal exit when nothing did.
+func (g *Gateway) closingReasonText() string {
+	if reason, ok := g.closingReason.Load().(string); ok {
+		return reason
+	}
+	return "crush exited"
+}
+
 func normalizeInputMode(mode string) string {
 	if mode == inputModePlan {
 		return inputModePlan
@@ -508,7 +545,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	case <-workDone:
 	case <-ctx.Done():
 	}
-	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
+	g.hub.publishJSON(frameClosing, map[string]string{"reason": g.closingReasonText()})
 	g.hub.close()
 	g.removeLaunchFile()
 	g.cancel()

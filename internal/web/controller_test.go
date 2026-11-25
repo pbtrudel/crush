@@ -371,3 +371,103 @@ func TestLaunchFileExpiresUnused(t *testing.T) {
 		return errors.Is(err, fs.ErrNotExist)
 	}, 2*time.Second, 10*time.Millisecond, "a launch file no tab used does not linger")
 }
+
+// TestControllerDetachStopsAndReports checks that a browser detach stops
+// the gateway, tells the terminal why, and leaves /web free to start a new
+// gateway with a new token.
+func TestControllerDetachStopsAndReports(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	stopped := make(chan string, 1)
+	c.SetOnStopped(func(reason string) { stopped <- reason })
+
+	u1, err := c.Start(t.Context())
+	require.NoError(t, err)
+	gw := c.gw
+	rsp, _ := doJSON(t, authedClient(t, gw), http.MethodPost, gw.URL()+"/api/detach", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	require.Eventually(t, func() bool { return !c.Running() }, time.Second, 10*time.Millisecond,
+		"the detach stops the gateway")
+	select {
+	case reason := <-stopped:
+		require.Equal(t, "detached", reason)
+	case <-time.After(time.Second):
+		t.Fatal("the terminal was not told why web mode stopped")
+	}
+
+	u2, err := c.Start(t.Context())
+	require.NoError(t, err)
+	tokenOf := func(u string) string { _, token, _ := strings.Cut(u, "/#t="); return token }
+	require.NotEmpty(t, tokenOf(u1))
+	require.NotEqual(t, tokenOf(u1), tokenOf(u2), "a new gateway gets a new token")
+}
+
+// TestControllerDetachReportsOnce checks that a double click reports the
+// stop once. The controller lock is held across both requests so both
+// detach callbacks queue before either can stop the gateway, which is the
+// window a second click lands in.
+func TestControllerDetachReportsOnce(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	stopped := make(chan string, 2)
+	c.SetOnStopped(func(reason string) { stopped <- reason })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	gw := c.gw
+
+	c.mu.Lock()
+	for range 2 {
+		rsp, _ := doJSON(t, authedClient(t, gw), http.MethodPost, gw.URL()+"/api/detach", "")
+		rsp.Body.Close()
+		require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	}
+	c.mu.Unlock()
+	select {
+	case reason := <-stopped:
+		require.Equal(t, "detached", reason)
+	case <-time.After(time.Second):
+		t.Fatal("the terminal was not told web mode stopped")
+	}
+	require.False(t, c.Running())
+	select {
+	case reason := <-stopped:
+		t.Fatalf("the second detach reported again: %q", reason)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// TestControllerDetachFromAnOldGatewayLeavesTheNewOneRunning checks that a
+// detach callback that arrives after /web started a new gateway stops
+// nothing: it belongs to the gateway that is already gone.
+func TestControllerDetachFromAnOldGatewayLeavesTheNewOneRunning(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	stopped := make(chan string, 1)
+	c.SetOnStopped(func(reason string) { stopped <- reason })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	old := c.gw
+	// The terminal stops web mode, /web starts a new gateway, and the old
+	// gateway's delayed detach callback only now runs.
+	require.NoError(t, c.Shutdown(context.Background()))
+	_, err = c.Start(t.Context())
+	require.NoError(t, err)
+	current := c.gw
+	require.NotSame(t, old, current)
+
+	c.detach(old)
+	require.True(t, c.Running(), "a stale detach must not stop the new gateway")
+	require.Same(t, current, c.gw)
+	rsp, body := doJSON(t, authedClient(t, current), http.MethodGet, current.URL()+"/api/health", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	select {
+	case reason := <-stopped:
+		t.Fatalf("a stale detach reported a stop: %q", reason)
+	default:
+	}
+}

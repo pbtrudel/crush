@@ -198,6 +198,9 @@ crush --continue
 		webCtl.SetOnPlanHandoff(func(id string, yolo bool) {
 			go func() { program.Send(ui.WebPlanHandoffMsg{SessionID: id, Yolo: yolo}) }()
 		})
+		webCtl.SetOnStopped(func(reason string) {
+			go func() { program.Send(ui.WebStoppedMsg{Reason: reason}) }()
+		})
 		if webURL != "" {
 			// Hand the link to the TUI once it is starting, so the UI
 			// copies it and opens the browser off the render path. Send

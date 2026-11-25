@@ -609,6 +609,10 @@
           "$ref": "#/$defs/ModelsOptions",
           "description": "Model picker options"
         },
+        "web_display": {
+          "$ref": "#/$defs/WebDisplayOptions",
+          "description": "Display settings of the web mode tab"
+        },
         "debug": {
           "type": "boolean",
           "description": "Enable debug logging",
@@ -1349,6 +1353,40 @@
         },
         "glob": {
           "$ref": "#/$defs/ToolGlob"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "WebDisplayOptions": {
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": [
+            "holodeck",
+            "solid"
+          ],
+          "description": "Web mode theme",
+          "default": "holodeck"
+        },
+        "motion": {
+          "type": "string",
+          "enum": [
+            "full",
+            "reduced",
+            "off"
+          ],
+          "description": "Web mode motion; empty follows the browser's reduced motion setting"
+        },
+        "low_power": {
+          "type": "boolean",
+          "description": "Web mode low power mode: 2D constellation and no bloom",
+          "default": false
+        },
+        "cinematic_hint": {
+          "type": "boolean",
+          "description": "Show the orbit hint in web mode's cinematic view",
+          "default": true
         }
       },
       "additionalProperties": false,

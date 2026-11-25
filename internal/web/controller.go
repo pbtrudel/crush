@@ -17,6 +17,11 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
+// detachTimeout bounds the gateway shutdown a browser detach runs. The
+// gateway stops before the notice reaches the terminal, so the status bar
+// never shows web mode running after it is gone.
+const detachTimeout = 5 * time.Second
+
 // Controller owns the lifetime of one process's gateway. It starts the
 // gateway lazily, so the TUI pays nothing until web mode is requested.
 type Controller struct {
@@ -33,6 +38,7 @@ type Controller struct {
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
+	onStopped            func(reason string)
 	inputMode            bool
 	inputModeSeq         uint64
 	planReady            string
@@ -65,6 +71,12 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 		if c.inputMode {
 			mode = inputModePlan
 		}
+		// The detach callback belongs to the gateway being started: a
+		// delayed detach from an old gateway must never stop a newer one.
+		// Start holds c.mu until gw is assigned, so the callback reads gw
+		// under the same lock: a detach that lands while Start is still
+		// running waits for it instead of racing the assignment.
+		var gw *Gateway
 		gw, err := Start(ctx, Options{
 			Workspace:            c.ws,
 			InputMode:            mode,
@@ -72,6 +84,12 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
 			OnPlanHandoff:        c.onPlanHandoff,
+			OnDetach: func() {
+				c.mu.Lock()
+				started := gw
+				c.mu.Unlock()
+				c.detach(started)
+			},
 		})
 		if err != nil {
 			return "", err
@@ -116,6 +134,44 @@ func (c *Controller) SetOnPlanHandoff(fn func(sessionID string, yolo bool)) {
 	c.mu.Unlock()
 	if gw != nil {
 		gw.setOnPlanHandoff(fn)
+	}
+}
+
+// SetOnStopped sets the callback that reports why web mode stopped. It
+// runs after the gateway is down, so /web can start a new one. It may be
+// nil.
+func (c *Controller) SetOnStopped(fn func(reason string)) {
+	c.mu.Lock()
+	c.onStopped = fn
+	c.mu.Unlock()
+}
+
+// detach stops gw for the browser's detach request, then reports why so the
+// terminal can say how to start it again. The detach route runs it in a
+// goroutine after its answer, so the 202 is flushed before the server
+// stops. Only the gateway the controller still runs is stopped, so a
+// delayed detach from an old gateway leaves a newer one serving.
+func (c *Controller) detach(gw *Gateway) {
+	if gw == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.gw != gw {
+		c.mu.Unlock()
+		return
+	}
+	c.gw = nil
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), detachTimeout)
+	defer cancel()
+	if err := gw.Shutdown(ctx); err != nil {
+		slog.Warn("Failed to stop web mode", "error", err)
+	}
+	c.mu.Lock()
+	fn := c.onStopped
+	c.mu.Unlock()
+	if fn != nil {
+		fn(detachReason)
 	}
 }
 

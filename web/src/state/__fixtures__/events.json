@@ -152,6 +152,16 @@
       }
     }
   },
+  "display_changed": {
+    "seq": 1,
+    "type": "display_changed",
+    "payload": {
+      "theme": "solid",
+      "motion": "reduced",
+      "low_power": true,
+      "cinematic_hint": false
+    }
+  },
   "file": {
     "seq": 1,
     "type": "file",
@@ -581,6 +591,12 @@
       "permission_mode": "normal",
       "input_mode": "code",
       "plan_ready_session_id": "s1",
+      "display": {
+        "theme": "holodeck",
+        "motion": "",
+        "low_power": false,
+        "cinematic_hint": true
+      },
       "model": {
         "id": "claude",
         "name": "Claude",

@@ -192,6 +192,11 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 			State: signInWaiting, Kind: signInKindDevice,
 			UserCode: "WDJB-MJHT", VerificationURL: "https://github.com/login/device",
 		}),
+		// The tab's display settings after a write: the settings dialog
+		// re-renders from this payload.
+		"display_changed": mk(frameDisplayChanged, DisplaySettings{
+			Theme: "solid", Motion: "reduced", LowPower: true, CinematicHint: false,
+		}),
 	}
 }
 
@@ -216,6 +221,7 @@ func snapshotFrame(t *testing.T) frame {
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
 		PermissionMode: "normal", InputMode: "code", PlanReadySessionID: "s1",
+		Display: displayDefaults,
 		Model: ModelInfo{
 			ID: "claude", Name: "Claude", Provider: "anthropic", ContextWindow: 200000,
 			CanReason: true, EffortLevels: []string{"low", "medium", "high"},

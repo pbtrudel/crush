@@ -54,7 +54,7 @@ type lspServerInfo struct {
 	Diagnostics lspDiagnostics `json:"diagnostics"`
 }
 
-// registerSystemRoutes installs the MCP, LSP and config reload routes.
+// registerSystemRoutes installs the MCP, LSP and config routes.
 func (g *Gateway) registerSystemRoutes(api *http.ServeMux) {
 	g.route(api, "GET /api/mcp", g.handleListMCP)
 	g.route(api, "POST /api/mcp/{name}/{action}", g.handleMCPAction)
@@ -63,6 +63,8 @@ func (g *Gateway) registerSystemRoutes(api *http.ServeMux) {
 	g.route(api, "POST /api/lsp/start", g.handleLSPStart)
 	g.route(api, "POST /api/lsp/stop", g.handleLSPStop)
 	g.route(api, "POST /api/config/reload", g.handleConfigReload)
+	g.route(api, "POST /api/config/set", g.handleConfigSet)
+	g.route(api, "POST /api/config/remove", g.handleConfigRemove)
 }
 
 func (g *Gateway) handleListMCP(w http.ResponseWriter, r *http.Request) {

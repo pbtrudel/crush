@@ -497,19 +497,30 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 	}
 }
 
+// WebDisplayOptions holds the web mode tab's display settings. The tab
+// writes them; they live in the config because browser storage is keyed
+// by the gateway's random port and would be lost on every run.
+type WebDisplayOptions struct {
+	Theme         string `json:"theme,omitempty" jsonschema:"description=Web mode theme,enum=holodeck,enum=solid,default=holodeck"`
+	Motion        string `json:"motion,omitempty" jsonschema:"description=Web mode motion; empty follows the browser's reduced motion setting,enum=full,enum=reduced,enum=off"`
+	LowPower      *bool  `json:"low_power,omitempty" jsonschema:"description=Web mode low power mode: 2D constellation and no bloom,default=false"`
+	CinematicHint *bool  `json:"cinematic_hint,omitempty" jsonschema:"description=Show the orbit hint in web mode's cinematic view,default=true"`
+}
+
 type Options struct {
-	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
-	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
-	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
-	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
-	PromptCacheTTL       string         `json:"prompt_cache_ttl,omitempty" jsonschema:"description=Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x\\, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.,enum=5m,enum=1h,default=5m"`
-	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
-	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
-	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
-	Debug                bool           `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
-	DebugLSP             bool           `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
-	DisableAutoSummarize bool           `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
-	Web                  bool           `json:"web,omitempty" jsonschema:"description=Open a browser tab that mirrors the session (web mode),default=false"`
+	ContextPaths         []string           `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
+	GlobalContextPaths   []string           `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
+	ContextMaxBytes      *int               `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
+	MaxImages            *int               `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	PromptCacheTTL       string             `json:"prompt_cache_ttl,omitempty" jsonschema:"description=Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x\\, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.,enum=5m,enum=1h,default=5m"`
+	SkillsPaths          []string           `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
+	TUI                  *TUIOptions        `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
+	Models               *ModelsOptions     `json:"models,omitempty" jsonschema:"description=Model picker options"`
+	WebDisplay           *WebDisplayOptions `json:"web_display,omitempty" jsonschema:"description=Display settings of the web mode tab"`
+	Debug                bool               `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
+	DebugLSP             bool               `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
+	DisableAutoSummarize bool               `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	Web                  bool               `json:"web,omitempty" jsonschema:"description=Open a browser tab that mirrors the session (web mode),default=false"`
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
 	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`

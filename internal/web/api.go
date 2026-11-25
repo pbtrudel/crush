@@ -59,6 +59,8 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.registerCommandRoutes(api)
 	g.registerAgentRoutes(api)
 	g.registerModelRoutes(api)
+	g.route(api, "GET /api/config", g.handleConfigGet)
+	g.route(api, "POST /api/detach", g.handleDetach)
 	g.registerSystemRoutes(api)
 	g.registerPlanRoutes(api)
 	g.registerSignInRoutes(api)

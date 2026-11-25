@@ -1240,6 +1240,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.webInputMode(msg))
 	case WebPlanHandoffMsg:
 		cmds = append(cmds, m.webPlanHandoff(msg))
+	case WebStoppedMsg:
+		cmds = append(cmds, util.ReportInfo("Web mode stopped from the browser. Run /web to start it again."))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -7516,6 +7518,13 @@ func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
 type WebPlanHandoffMsg struct {
 	SessionID string
 	Yolo      bool
+}
+
+// WebStoppedMsg announces that web mode stopped from the browser. The
+// gateway is gone, so the status bar drops its web indicator and /web
+// starts a new one.
+type WebStoppedMsg struct {
+	Reason string
 }
 
 // webPlanHandoff confirms a ready plan for the browser. The terminal keeps
