@@ -10,6 +10,7 @@ import { closeModels, closePalette, modelsOpen, openModels } from '../../state/p
 import { resetWebglProbe } from '../../state/effects';
 import { setCinematic } from '../../state/cinematic';
 import { closeSignIn, signInOpen } from '../../state/signin';
+import { pendingModel, resetPendingModel } from '../../state/pendingModel';
 import { App } from '../App';
 import { formatContext } from './ModelSelector';
 
@@ -146,6 +147,7 @@ afterEach(async () => {
   setCinematic(false);
   HTMLCanvasElement.prototype.getContext = originalGetContext;
   resetWebglProbe();
+  resetPendingModel();
   state.value = initialState();
   vi.restoreAllMocks();
 });
@@ -499,7 +501,7 @@ describe('the model selector', () => {
     stubProviders();
     vi.spyOn(api, 'selectModel')
       .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
-      .mockRejectedValueOnce(new ApiError(409, 'agent_busy', 'the agent is busy'));
+      .mockRejectedValueOnce(new ApiError(400, 'unknown_model', 'no such model'));
     await mount();
     await openFromHud();
 
@@ -546,19 +548,54 @@ describe('the model selector', () => {
     expect(modelsOpen.value).toBe(true);
   });
 
-  it('explains a busy refusal and keeps the dialog open', async () => {
+  it('queues a pick the server refuses as busy and closes the dialog', async () => {
     seed();
     stubProviders();
-    vi.spyOn(api, 'selectModel').mockRejectedValue(new ApiError(409, 'agent_busy', 'the agent is busy'));
+    const select = vi.spyOn(api, 'selectModel').mockRejectedValue(new ApiError(409, 'agent_busy', 'the agent is busy'));
     await mount();
     await openFromHud();
 
     await act(() => { option('Model Two').click(); });
     await flush();
 
-    const alert = dialog()!.querySelector('[role="alert"]')!;
-    expect(alert.textContent).toBe('Crush is busy. Try again when the turn ends.');
+    expect(select).toHaveBeenCalledWith('main', 'p1', 'm2');
+    expect(modelsOpen.value).toBe(false);
+    expect(pendingModel.value).toEqual({ type: 'main', provider: 'p1', model: 'm2', name: 'Model Two' });
+    const toast = state.value.toasts.at(-1)!;
+    expect(toast.tone).toBe('info');
+    expect(toast.text).toBe('Large model will switch to Model Two when the turn ends');
+  });
+
+  it('queues a pick made while the turn runs without calling the API', async () => {
+    seed({}, { busy: true });
+    stubProviders();
+    const select = vi.spyOn(api, 'selectModel');
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    expect(select).not.toHaveBeenCalled();
+    expect(modelsOpen.value).toBe(false);
+    expect(pendingModel.value?.model).toBe('m2');
+    expect(dialog()).toBeNull();
+  });
+
+  it('keeps a queued effort checked until the model frame applies it', async () => {
+    seed({}, { busy: true });
+    stubProviders();
+    const reasoning = vi.spyOn(api, 'setReasoning');
+    await mount();
+    await openFromHud();
+
+    await act(() => { radio('model-effort', 'low').click(); });
+    await flush();
+
+    expect(reasoning).not.toHaveBeenCalled();
     expect(modelsOpen.value).toBe(true);
+    expect(radio('model-effort', 'low').checked).toBe(true);
+    expect(state.value.toasts.at(-1)?.text).toBe('Reasoning effort will be set to low when the turn ends');
   });
 
   it('shows the amber starting line and still lists the choices', async () => {
@@ -644,10 +681,10 @@ describe('the model selector', () => {
     await flush();
     expect(list.getAttribute('aria-busy')).toBe('true');
 
-    await act(async () => { answer.reject(new ApiError(409, 'agent_busy', 'Crush is busy right now')); await Promise.resolve(); });
+    await act(async () => { answer.reject(new ApiError(400, 'bad_model', 'no such model')); await Promise.resolve(); });
     await flush();
     expect(list.getAttribute('aria-busy')).toBeNull();
-    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe('Crush is busy. Try again when the turn ends.');
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe('no such model');
   });
 
   it('retries the refused pick from the top starting line', async () => {
