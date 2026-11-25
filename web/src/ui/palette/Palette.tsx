@@ -5,6 +5,7 @@ import type {
 } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { describeFailure } from '../../state/failure';
+import { selectModelOrQueue, setReasoningOrQueue } from '../../state/pendingModel';
 import { without } from '../../state/record';
 import { adoptSession, pushToast } from '../../state/reducer';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
@@ -227,7 +228,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
       case ACTIONS.drawer: toggleDrawer(); closePalette(); return;
       case ACTIONS.display: paletteReturnFocus.value = true; openDisplay(); return;
       case ACTIONS.reloadConfig: await api.reloadConfig(); closePalette(); return;
-      case ACTIONS.thinking: await api.setReasoning({ think: !s.model.think }); closePalette(); return;
+      case ACTIONS.thinking: await setReasoningOrQueue({ think: !s.model.think }); closePalette(); return;
       case ACTIONS.yolo: await api.setMode(s.permissionMode === 'yolo' ? 'normal' : 'yolo'); closePalette(); return;
       case ACTIONS.plan: await api.setInputMode(s.inputMode === 'plan' ? 'code' : 'plan'); closePalette(); return;
       case ACTIONS.cinematicToggle: setCinematic(!cinematic.value); closePalette(); return;
@@ -317,7 +318,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
           closePalette();
           return;
         case 'session': await api.follow(item.run.id); closePalette(); return;
-        case 'model': await api.selectModel('main', item.run.provider, item.run.model); closePalette(); return;
+        case 'model': await selectModelOrQueue('main', item.run.provider, item.run.model, item.title); closePalette(); return;
         case 'skill': {
           const { attachment } = await api.attachSkill(item.run.name);
           attachFiles([new File([attachment.content], attachment.name, { type: attachment.mime_type })]);

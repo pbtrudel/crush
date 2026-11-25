@@ -1,21 +1,13 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ModelChoice } from '../../api/types';
-import { ApiError, api } from '../../api/http';
+import { api } from '../../api/http';
 import { STARTING_TEXT, describeFailure } from '../../state/failure';
 import { showThinkingToggle } from '../../state/model';
 import { openSignIn } from '../../state/signin';
 import { state } from '../../state/store';
 import { closeModels, modelsFocus, modelsOpen } from '../../state/palette';
+import { selectModelOrQueue, setReasoningOrQueue } from '../../state/pendingModel';
 import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
-
-const BUSY_TEXT = 'Crush is busy. Try again when the turn ends.';
-
-// The busier the agent, the shorter the wait: a refused switch names the
-// turn that has to end, every other failure keeps its own description.
-function describeModelFailure(err: unknown): ReturnType<typeof describeFailure> {
-  if (err instanceof ApiError && err.code === 'agent_busy') return { tone: 'error', text: BUSY_TEXT };
-  return describeFailure(err);
-}
 
 // formatContext shortens a context window for the choice rows: thousands
 // below the point where they would read 1000k, at most one decimal above
@@ -185,10 +177,12 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     selecting.current = true;
     setSelectingBusy(true);
     try {
-      await api.selectModel(type, c.provider, c.id);
+      // A busy agent queues the pick instead of refusing it; the dialog
+      // closes either way, the same as an applied switch.
+      await selectModelOrQueue(type, c.provider, c.id, c.name || c.id);
     } catch (err) {
       if (!alive.current) return;
-      if (describeModelFailure(err).tone === 'starting') setRetryChoice(c);
+      if (describeFailure(err).tone === 'starting') setRetryChoice(c);
       setActionError(err);
       return;
     } finally {
@@ -217,11 +211,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     setEffortDraft(effort);
     setReasoningBusy(true);
     try {
-      const answer = await api.setReasoning({ effort });
+      const answer = await setReasoningOrQueue({ effort });
       if (!alive.current) return;
-      // The answer names the effort the model took, so the radio holds it
-      // instead of flicking back to the old level before the frame lands.
-      setEffortDraft(answer.reasoning_effort ?? effort);
+      // A queued choice keeps the draft the radio already shows; an applied
+      // one holds the effort the answer names until the frame lands.
+      if (answer !== 'queued') setEffortDraft(answer.reasoning_effort ?? effort);
     } catch (err) {
       if (!alive.current) return;
       // The draft goes back to the model's state; this names what went wrong.
@@ -240,7 +234,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     setRetryChoice(null);
     setReasoningBusy(true);
     try {
-      await api.setReasoning({ think });
+      await setReasoningOrQueue({ think });
     } catch (err) {
       if (!alive.current) return;
       setActionError(err);
@@ -259,7 +253,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     else groups.push({ provider: c.provider, name: c.provider_name || c.provider, choices: [c] });
   }
 
-  const shownAction = actionError === null ? null : describeModelFailure(actionError);
+  const shownAction = actionError === null ? null : describeFailure(actionError);
   const shownLoad = loadError === null ? null : describeFailure(loadError);
 
   return (

@@ -244,6 +244,25 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 		m.pendingConfigReload = false
 		cmds = append(cmds, m.reloadConfig(true))
 	}
+	// Selections made while busy replay on the same idle probe, model
+	// first: a queued effort belongs to the model the user picked with it.
+	// Clearing each one before its handler runs keeps a later probe from
+	// applying it twice, and the handler now sees an idle cache, so it takes
+	// its normal write-and-rebuild path.
+	if !busy && m.pendingModelSelect != nil {
+		queued := *m.pendingModelSelect
+		m.pendingModelSelect = nil
+		if cmd := m.handleSelectModel(queued); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if !busy && m.pendingReasoningEffort != nil {
+		queued := *m.pendingReasoningEffort
+		m.pendingReasoningEffort = nil
+		if cmd := m.handleSelectReasoningEffort(queued); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if busy {
 		// A session reload that raced an unpopulated busy cache (the
 		// zero-value read at boot) froze the animation clock even though

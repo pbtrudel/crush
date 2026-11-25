@@ -590,6 +590,14 @@ type UI struct {
 	// coordinator can swap tools and prompts again, and stays set until a
 	// reload lands.
 	pendingConfigReload bool
+	// pendingModelSelect holds the model selection made while the agent was
+	// busy. The next idle probe replays it, so the turn after the current
+	// one runs on the chosen model.
+	pendingModelSelect *dialog.ActionSelectModel
+	// pendingReasoningEffort holds the reasoning effort selected while the
+	// agent was busy. The next idle probe replays it after any queued model
+	// switch, so the effort applies to the model that will run.
+	pendingReasoningEffort *dialog.ActionSelectReasoningEffort
 
 	// agentBusyCache / permModeCache memoize the workspace busy and
 	// permission-mode probes (synchronous HTTP round-trips in client/server
@@ -3317,39 +3325,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 	case dialog.ActionSelectReasoningEffort:
-		if m.isAgentBusy() {
-			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
-			break
+		if cmd := m.handleSelectReasoningEffort(msg); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-
-		cfg := m.com.Config()
-		if cfg == nil {
-			cmds = append(cmds, util.ReportError(errors.New("configuration not found")))
-			break
-		}
-
-		agentCfg, ok := cfg.Agents[config.AgentCoder]
-		if !ok {
-			cmds = append(cmds, util.ReportError(errors.New("agent configuration not found")))
-			break
-		}
-
-		currentModel := cfg.Models[agentCfg.Model]
-		currentModel.ReasoningEffort = msg.Effort
-		if err := workspace.ApplyPreferredModel(m.com.Workspace, agentCfg.Model, currentModel); err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
-		}
-
-		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			ctx, cancel := common.WorkspaceOpContext()
-			defer cancel()
-			if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
-				return util.ReportError(err)()
-			}
-			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
-		}))
-		m.dialog.CloseDialog(dialog.ReasoningID)
 	case dialog.ActionPermissionResponse:
 		m.dialog.CloseDialog(dialog.PermissionsID)
 		switch msg.Action {
@@ -3630,7 +3608,23 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 
 	// we ignore dialogs with the oauth id as they need to be able to be dismissed
 	if m.isAgentBusy() && !m.dialog.ContainsDialog(dialog.OAuthID) {
-		return util.ReportWarn("Agent is busy, please wait...")
+		// Queue the choice instead of refusing it. The coordinator can only
+		// swap models while idle, so the next idle probe applies it and the
+		// turn after this one runs on the new model.
+		queued := msg
+		m.pendingModelSelect = &queued
+		m.dialog.CloseDialog(dialog.ModelsID)
+
+		modelName := msg.Model.Model
+		if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
+			if catwalkModel := cfg.GetModel(msg.Model.Provider, msg.Model.Model); catwalkModel != nil && catwalkModel.Name != "" {
+				modelName = catwalkModel.Name
+			}
+		}
+		return util.ReportInfo(fmt.Sprintf(
+			"%s model will change to %s when the current turn ends",
+			stringext.Capitalize(string(msg.ModelType)), modelName,
+		))
 	}
 
 	cfg := m.com.Config()
@@ -3786,6 +3780,54 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// handleSelectReasoningEffort applies a reasoning effort choice to the coder
+// model. A choice made while the agent is busy is queued instead, and the
+// next idle probe applies it.
+func (m *UI) handleSelectReasoningEffort(msg dialog.ActionSelectReasoningEffort) tea.Cmd {
+	if m.isAgentBusy() {
+		queued := msg
+		m.pendingReasoningEffort = &queued
+		m.dialog.CloseDialog(dialog.ReasoningID)
+		return util.ReportInfo("Reasoning effort will be set to " + msg.Effort + " when the current turn ends")
+	}
+
+	cfg := m.com.Config()
+	if cfg == nil {
+		return util.ReportError(errors.New("configuration not found"))
+	}
+
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return util.ReportError(errors.New("agent configuration not found"))
+	}
+
+	currentModel := cfg.Models[agentCfg.Model]
+	// A model switch queued alongside the effort lands first, so the effort
+	// has to be one the model it ends up on actually offers.
+	var catwalkModel *catwalk.Model
+	if cfg.Providers != nil {
+		catwalkModel = cfg.GetModel(currentModel.Provider, currentModel.Model)
+	}
+	if catwalkModel != nil && !slices.Contains(catwalkModel.ReasoningEffortLevels(), msg.Effort) {
+		return util.ReportError(fmt.Errorf("the model does not offer reasoning effort %q", msg.Effort))
+	}
+
+	currentModel.ReasoningEffort = msg.Effort
+	if err := workspace.ApplyPreferredModel(m.com.Workspace, agentCfg.Model, currentModel); err != nil {
+		return util.ReportError(err)
+	}
+
+	m.dialog.CloseDialog(dialog.ReasoningID)
+	return m.updateAgentModelCmd(func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
+			return util.ReportError(err)()
+		}
+		return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
+	})
 }
 
 func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.SelectedModel, modelType config.SelectedModelType) tea.Cmd {
