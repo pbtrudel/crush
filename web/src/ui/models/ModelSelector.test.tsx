@@ -178,9 +178,13 @@ describe('the model selector', () => {
     expect(options().map((o) => o.querySelector('.models__context')!.textContent))
       .toEqual(['200k', '200k', '200k', '128k', '1.5M']);
 
-    expect(option('Claude').getAttribute('aria-selected')).toBe('true');
-    expect(option('Claude').textContent).toContain('current');
-    expect(option('Model One').getAttribute('aria-selected')).toBe('false');
+    // The marker is the last thing a reader hears, and the row's look hangs
+    // on the data attribute instead of the selected state.
+    expect(option('Claude').hasAttribute('aria-selected')).toBe(false);
+    expect(option('Claude').getAttribute('data-current')).toBe('true');
+    expect(option('Claude').textContent).toMatch(/, current$/);
+    expect(option('Model One').hasAttribute('aria-selected')).toBe(false);
+    expect(option('Model One').getAttribute('data-current')).toBeNull();
     expect(option('Model One').textContent).not.toContain('current');
 
     expect(dialog()!.textContent).toContain('Sign in to another provider');
@@ -287,9 +291,9 @@ describe('the model selector', () => {
     await flush();
 
     // The current mark follows state.model.small.
-    expect(option('Model Two').getAttribute('aria-selected')).toBe('true');
+    expect(option('Model Two').getAttribute('data-current')).toBe('true');
     expect(option('Model Two').textContent).toContain('current');
-    expect(option('Claude').getAttribute('aria-selected')).toBe('false');
+    expect(option('Claude').getAttribute('data-current')).toBeNull();
 
     await act(() => { option('Model One').click(); });
     await flush();
@@ -436,7 +440,7 @@ describe('the model selector', () => {
     expect(radio('model-effort', 'high').checked).toBe(true);
   });
 
-  it('clears the effort draft when the answer settles on the same effort', async () => {
+  it('keeps the chosen effort checked when the answer lands before the frame', async () => {
     seed();
     stubProviders();
     const answer = deferred<ModelInfo>();
@@ -448,16 +452,67 @@ describe('the model selector', () => {
     await flush();
     expect(radio('model-effort', 'low').checked).toBe(true);
 
-    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    // The answer names no effort, so the draft keeps the one that was asked
+    // for instead of flicking back to the model's old level.
+    await act(async () => {
+      answer.resolve({ ...state.value.model, reasoning_effort: undefined });
+      await Promise.resolve();
+    });
     await flush();
 
-    // The settled answer leaves the model's value showing, not the draft.
-    expect(radio('model-effort', 'high').checked).toBe(true);
-    expect(radio('model-effort', 'low').checked).toBe(false);
+    expect(radio('model-effort', 'low').checked).toBe(true);
+    expect(radio('model-effort', 'high').checked).toBe(false);
 
-    await frame({ reasoning_effort: 'high' });
-    expect(radio('model-effort', 'high').checked).toBe(true);
+    await frame({ reasoning_effort: 'low' });
+    expect(radio('model-effort', 'low').checked).toBe(true);
+    expect(radio('model-effort', 'high').checked).toBe(false);
+  });
+
+  it('shows the effort the answer settled on until the frame arrives', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    vi.spyOn(api, 'setReasoning').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { radio('model-effort', 'low').click(); });
+    await flush();
+
+    // The model took another level than the one clicked.
+    await act(async () => {
+      answer.resolve({ ...state.value.model, reasoning_effort: 'medium' });
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(radio('model-effort', 'medium').checked).toBe(true);
     expect(radio('model-effort', 'low').checked).toBe(false);
+    expect(radio('model-effort', 'high').checked).toBe(false);
+
+    await frame({ reasoning_effort: 'medium' });
+    expect(radio('model-effort', 'medium').checked).toBe(true);
+  });
+
+  it('moves the focus to the filter when the chosen row is filtered out', async () => {
+    seed();
+    stubProviders();
+    vi.spyOn(api, 'selectModel')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockRejectedValueOnce(new ApiError(409, 'agent_busy', 'the agent is busy'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+    // The query hides the refused row, so its Retry has no row to hand the
+    // focus to.
+    await type('Model One');
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(document.activeElement).toBe(filter());
   });
 
   it('moves focus to the filter when the frame swaps the control', async () => {
