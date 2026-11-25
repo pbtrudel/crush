@@ -10,6 +10,29 @@ import { redact, stderrBuffer } from './stderr';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
+// Every gateway runs the same binary: `go run` does not forward SIGTERM to
+// the program it starts, which would orphan webfake, so the fixture builds
+// once per worker and launches the binary directly. playwright.config.ts
+// runs one worker, so that is once per run, and a shard is a run.
+const webfakeTests = base.extend<{}, { webfakeBinary: string }>({
+  webfakeBinary: [
+    async ({}, use) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
+      const bin = path.join(dir, 'webfake');
+      try {
+        // Every go command in this repo shares one cache, and a fresh shell
+        // has no GOCACHE: set the shared one unless the caller already did.
+        const goEnv = { ...process.env, GOCACHE: process.env.GOCACHE ?? '/tmp/crush-go-build' };
+        execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, env: goEnv, stdio: 'inherit' });
+        await use(bin);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    { scope: 'worker', timeout: 180_000 },
+  ],
+});
+
 // The launch line carries the session token. It is handed to the page and
 // never logged, so every diagnostic below is redacted first.
 const LAUNCH_LINE = /^http:\/\/127\.0\.0\.1:\d+\/#t=\S+$/;
@@ -98,17 +121,9 @@ export interface Gateway {
   origin: string;
 }
 
-async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
-  // `go run` does not forward SIGTERM to the program it starts, which
-  // would orphan webfake. Build once and run the binary directly.
-  const dir = mkdtempSync(path.join(tmpdir(), 'webfake-'));
-  const bin = path.join(dir, 'webfake');
+async function launchGateway(bin: string, env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
   let proc: ChildProcess | undefined;
   try {
-    // Every go command in this repo shares one cache, and a fresh shell has
-    // no GOCACHE: set the shared one unless the caller already did.
-    const goEnv = { ...process.env, GOCACHE: process.env.GOCACHE ?? '/tmp/crush-go-build' };
-    execFileSync('go', ['build', '-o', bin, './internal/web/cmd/webfake'], { cwd: repoRoot, env: goEnv, stdio: 'inherit' });
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
     proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -118,42 +133,41 @@ async function launchGateway(env: NodeJS.ProcessEnv, use: (gateway: Gateway) => 
     await use({ launch, origin: launch.split('/#')[0] });
   } finally {
     if (proc) await stop(proc);
-    rmSync(dir, { recursive: true, force: true });
   }
 }
 
-export const test = base.extend<{}, { gateway: Gateway }>({
-  gateway: [async ({}, use) => launchGateway({}, use), { scope: 'worker', timeout: 180_000 }],
+export const test = webfakeTests.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, {}, use), { scope: 'worker', timeout: 180_000 }],
 });
 
 // Visual tests get their own webfake: the worker's shared session keeps every
 // message an earlier test sent, and the log and token counts in a screenshot
 // must not depend on which tests ran first.
-export const visualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+export const visualTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
 // A test that writes history (an edited file gets a new version) gets its own
 // webfake too: the worker's shared session carries every version, and the
 // smoke specs assert on the seeded three.
-export const freshTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({}, use),
+export const freshTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, {}, use),
 });
 
 // The M3 surfaces live in their own scenario, so the default seed and every
 // baseline taken against it stay exactly as they were.
 const M3 = { WEBFAKE_SCENARIO: 'm3' };
 
-export const m3Test = base.extend<{}, { gateway: Gateway }>({
-  gateway: [async ({}, use) => launchGateway(M3, use), { scope: 'worker', timeout: 180_000 }],
+export const m3Test = webfakeTests.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M3, use), { scope: 'worker', timeout: 180_000 }],
 });
 
-export const m3FreshTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway(M3, use),
+export const m3FreshTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M3, use),
 });
 
-export const m3VisualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+export const m3VisualTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M3, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
 // The M4 surfaces (secure prompts, provider sign-in and the AWS SSO card)
@@ -163,64 +177,64 @@ const M4 = { WEBFAKE_SCENARIO: 'm4' };
 
 // The read-only M4 tests share one gateway: nothing they do saves a key,
 // finishes a sign-in, leaves a flow running or answers a prompt.
-export const m4Test = base.extend<{}, { gateway: Gateway }>({
-  gateway: [async ({}, use) => launchGateway(M4, use), { scope: 'worker', timeout: 180_000 }],
+export const m4Test = webfakeTests.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M4, use), { scope: 'worker', timeout: 180_000 }],
 });
 
 // An M4 test that changes the gateway's state, or takes a baseline, gets its
 // own webfake.
-export const m4FreshTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway(M4, use),
+export const m4FreshTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, M4, use),
 });
 
-export const m4VisualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+export const m4VisualTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
 // Each secure prompt test scripts one prompt kind on a gateway of its own:
 // the prompt arrives shortly after the gateway starts.
-export const promptTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry' }, use),
+export const promptTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry' }, use),
 });
 
 // The terminal answers the prompt itself five seconds after the gateway
 // starts, long after the prompt has reached the tab.
-export const promptElsewhereTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
+export const promptElsewhereTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
 });
 
-export const confirmTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'confirm' }, use),
+export const confirmTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'confirm' }, use),
 });
 
-export const touchTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'touch' }, use),
+export const touchTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'touch' }, use),
 });
 
-export const promptVisualTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+export const promptVisualTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
 // A device flow finishes on its own three seconds after it starts, the way a
 // user approving it in the provider's page would.
-export const signinDoneTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SIGNIN_MS: '3000' }, use),
+export const signinDoneTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SIGNIN_MS: '3000' }, use),
 });
 
 // One AWS SSO refresh: the command first, then its verification URL.
-export const awsTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_AWS_SSO: '1' }, use),
+export const awsTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_AWS_SSO: '1' }, use),
 });
 
 // A starting agent answers 503 agent_starting on every route that needs it.
-export const startingTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_AGENT_STARTING: '1' }, use),
+export const startingTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M3, WEBFAKE_AGENT_STARTING: '1' }, use),
 });
 
 // A ready plan waits for the browser, the way the terminal leaves it in plan
 // mode.
-export const planTest = base.extend<{ gateway: Gateway }>({
-  gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_PLAN_READY: '1' }, use),
+export const planTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M3, WEBFAKE_PLAN_READY: '1' }, use),
 });
 
 // axeScan is the M1 and M2 accessibility gate: serious and critical
