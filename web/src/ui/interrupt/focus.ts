@@ -92,7 +92,8 @@ export function useDialogFocus(root: { current: HTMLElement | null }, focusKey: 
   // dialog is the layer that stays open, so it takes the focus back when the
   // interrupt closes, on the control that had it. The effect takes no
   // dependency array because a focused button that unmounts changes no
-  // prop, so it has to run after every render.
+  // prop, so it has to run after every render. A panel is modal: a focus
+  // moved outside it is pulled back on the next render.
   const wasInert = useRef(inert);
   useEffect(() => {
     const el = root.current;
@@ -109,6 +110,8 @@ export function useDialogFocus(root: { current: HTMLElement | null }, focusKey: 
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled || el.contains(document.activeElement)) return;
+      // A prompt that landed after this effect still owns the focus.
+      if (inert || needsAttention(state.value)) return;
       hadFocus.current = false;
       const remembered = lastInside.current;
       if (remembered !== null && remembered.isConnected && el.contains(remembered)) {

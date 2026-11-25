@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import type { PermissionRequest } from '../../api/types';
 import { initialState } from '../../state/reducer';
 import { state } from '../../state/store';
@@ -29,6 +29,27 @@ function Harness({ hideSecond }: { hideSecond: boolean }) {
       <div class="harness" role="dialog" aria-label="Harness" tabIndex={-1} ref={dialog}>
         <button type="button">First</button>
         {!hideSecond && <button type="button">Second</button>}
+      </div>
+    </div>
+  );
+}
+
+// LateHarness is a dialog whose caller never re-renders it: the inert flag it
+// was given stays false, so only the hook's own look at the store can keep
+// the focus off a prompt that landed after its effect decided to recover.
+function LateHarness({ landPrompt }: { landPrompt: boolean }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  const landed = useRef(false);
+  useDialogFocus(dialog, 'late');
+  useEffect(() => {
+    if (!landPrompt || landed.current) return;
+    landed.current = true;
+    state.value = { ...state.value, permissions: [permission()] };
+  });
+  return (
+    <div class="late-layer">
+      <div class="late" role="dialog" aria-label="Late" tabIndex={-1} ref={dialog}>
+        <button type="button">First</button>
       </div>
     </div>
   );
@@ -129,6 +150,44 @@ describe('useDialogFocus', () => {
     await answer();
 
     expect(document.activeElement).toBe(second);
+  });
+
+  it('moves no focus when a prompt lands before the recovery runs', async () => {
+    await act(() => { render(<LateHarness landPrompt={false} />, root); });
+    await flush();
+    const first = button('First');
+    expect(document.activeElement).toBe(first);
+
+    // The page drops the focus, and a prompt frame lands after the recovery
+    // effect has decided to take it back, before its microtask runs.
+    first.blur();
+    expect(document.activeElement).toBe(document.body);
+    await act(() => { render(<LateHarness landPrompt />, root); });
+    await flush();
+
+    expect(state.value.permissions).toHaveLength(1);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('takes the focus back when it is moved outside the open dialog', async () => {
+    await mount();
+    const first = button('First');
+    first.focus();
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside';
+    document.body.append(outside);
+    try {
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+
+      // A panel is modal, so any render of it pulls the focus back in.
+      await act(() => { state.value = { ...state.value }; });
+      await flush();
+
+      expect(document.activeElement).toBe(first);
+    } finally {
+      outside.remove();
+    }
   });
 
   it('gives the opener the focus back when the dialog closes', async () => {
