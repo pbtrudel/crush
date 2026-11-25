@@ -262,13 +262,17 @@ func (g *Gateway) runShell(ctx context.Context, cancel context.CancelFunc, id, s
 	stop := make(chan struct{})
 	var ticker sync.WaitGroup
 	ticker.Add(1)
+	tick := g.shellTick
 	go func() {
 		defer ticker.Done()
-		t := time.NewTicker(shellFlushInterval)
-		defer t.Stop()
+		if tick == nil {
+			t := time.NewTicker(shellFlushInterval)
+			defer t.Stop()
+			tick = t.C
+		}
 		for {
 			select {
-			case <-t.C:
+			case <-tick:
 				flush()
 			case <-stop:
 				return

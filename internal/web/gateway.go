@@ -73,6 +73,9 @@ type Options struct {
 	// launchFileTTL overrides how long an unused launch file lives in
 	// tests.
 	launchFileTTL time.Duration
+	// shellTick replaces the shell flush ticker in tests, so a test can
+	// decide exactly when coalesced output is published.
+	shellTick <-chan time.Time
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
@@ -117,6 +120,9 @@ type Gateway struct {
 	knownProvidersFn func(*config.Config) ([]catwalk.Provider, error)
 	// testAPIKeyFn is Options.TestAPIKey; nil falls back to TestConnection.
 	testAPIKeyFn func(context.Context, catwalk.Provider, string, config.VariableResolver) error
+	// shellTick replaces the shell flush ticker in tests, so a test can
+	// decide exactly when coalesced output is published.
+	shellTick <-chan time.Time
 	// shells holds the cancel func of every running shell command, keyed
 	// by run id. shellWG lets Shutdown wait for them before the hub
 	// closes, and shellsClosed refuses a run started during shutdown.
@@ -255,6 +261,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		auths:     make(map[string]context.CancelFunc),
 		authPoll:  opts.mcpAuthPoll,
 		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
+		shellTick: opts.shellTick,
 
 		loadCommandsFn:       opts.LoadCommands,
 		knownProvidersFn:     knownProvidersFn,

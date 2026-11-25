@@ -203,6 +203,65 @@ func TestReplayAfterTheRingWraps(t *testing.T) {
 	require.Equal(t, uint64(ringSize+6), replay[0].Seq)
 }
 
+// TestSinceAtHeadReplaysNothing pins that a tab resuming from the frame it
+// already has gets no replay, wrapped ring or not: it asks for nothing new.
+func TestSinceAtHeadReplaysNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		publishes int
+	}{
+		{"short ring", 3},
+		{"wrapped ring", ringSize + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHub()
+			for range tc.publishes {
+				h.publish("message", json.RawMessage(`{}`))
+			}
+			head := h.head()
+			c, replay, snap, attachedHead := h.attach(int64(head))
+			h.detach(c)
+			require.False(t, snap, "nothing is missing, so no snapshot is needed")
+			require.Empty(t, replay)
+			require.Equal(t, head, attachedHead)
+		})
+	}
+}
+
+// TestRingBoundaryReplay pins the exact ringSize boundary: while the ring
+// is exactly full the first frame is still replayable, and one publish
+// later it is not, so the tab gets a snapshot instead.
+func TestRingBoundaryReplay(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	for range ringSize {
+		h.publish("message", json.RawMessage(`{}`))
+	}
+	require.Equal(t, uint64(ringSize), h.head())
+
+	c, replay, snap, _ := h.attach(0)
+	h.detach(c)
+	require.False(t, snap, "the ring is exactly full, so frame 1 is still there")
+	require.Len(t, replay, ringSize)
+	require.Equal(t, uint64(1), replay[0].Seq)
+	require.Equal(t, uint64(ringSize), replay[len(replay)-1].Seq)
+
+	h.publish("message", json.RawMessage(`{}`))
+	c, replay, snap, _ = h.attach(0)
+	h.detach(c)
+	require.True(t, snap, "frame 1 fell off the ring")
+	require.Empty(t, replay)
+
+	c, replay, snap, _ = h.attach(1)
+	h.detach(c)
+	require.False(t, snap)
+	require.Len(t, replay, ringSize)
+	require.Equal(t, uint64(2), replay[0].Seq)
+	require.Equal(t, uint64(ringSize+1), replay[len(replay)-1].Seq)
+}
+
 func TestSinceAheadOfHeadOrMalformedGetsSnapshot(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
