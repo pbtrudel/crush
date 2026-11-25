@@ -188,7 +188,7 @@ func (g *Gateway) handleAgentTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := g.ws.ReloadConfig(context.WithoutCancel(r.Context())); err != nil {
-		writeReloadError(w, err)
+		writeReloadError(w, "config_write", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -578,17 +578,17 @@ func (g *Gateway) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	writeReloadError(w, err)
+	writeReloadError(w, "config_reload", err)
 }
 
-// writeReloadError answers a failed config reload. A busy agent is the same
-// conflict the terminal reports; a starting or unreachable workspace keeps
-// the writeWorkspaceError mapping, and anything else is a 500 without the
-// error text.
-func writeReloadError(w http.ResponseWriter, err error) {
+// writeReloadError answers a failed config reload with the route's own code.
+// A busy agent is the same conflict the terminal reports; a starting or
+// unreachable workspace keeps the writeWorkspaceError mapping, and anything
+// else is a 500 without the error text.
+func writeReloadError(w http.ResponseWriter, code string, err error) {
 	if errors.Is(err, app.ErrConfigReloadBusy) {
 		writeError(w, http.StatusConflict, "agent_busy", "The agent is busy with a run; reload once it finishes")
 		return
 	}
-	writeWorkspaceError(w, "config_reload", err)
+	writeWorkspaceError(w, code, err)
 }

@@ -144,3 +144,14 @@ func TestAgentTeamsRouteWriteFailure(t *testing.T) {
 	require.Contains(t, string(body), "config_write")
 	require.NotContains(t, string(body), "secret", "the store error stays out of the body")
 }
+
+func TestAgentTeamsRouteReloadFailure(t *testing.T) {
+	t.Parallel()
+	g, f := startTest(t)
+	f.SetReloadErr(errors.New("reload /home/secret/crush.json: parse error"))
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/agent-teams", `{"enabled":true}`)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "config_write")
+	require.NotContains(t, string(body), "secret", "the reload error stays out of the body")
+}
