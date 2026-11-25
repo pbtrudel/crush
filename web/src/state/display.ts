@@ -2,10 +2,10 @@ import { effect, signal } from '@preact/signals';
 import { api } from '../api/http';
 import type { DisplaySettings } from '../api/types';
 import { describeFailure, type Failure } from './failure';
-import { KEY_MOTION, setLowPower, setMotion, type Motion } from './motion';
+import { KEY_MOTION, motion, setLowPower, setMotion, type Motion } from './motion';
 import { closePanels } from './palette';
 import { displayDefaults, type State } from './reducer';
-import { readStored } from './storage';
+import { removeStored } from './storage';
 import { dispatch, state } from './store';
 
 // displayOpen holds the HUD's display settings dialog.
@@ -39,26 +39,29 @@ export function effectiveMotion(d: DisplaySettings, stored: Motion | null, prefe
   return prefersReduced ? 'reduced' : 'full';
 }
 
-// storedMotion is the per-tab cache motion.ts keeps, or null when the tab
-// never chose one.
-function storedMotion(): Motion | null {
-  const saved = readStored(KEY_MOTION);
-  return saved === 'full' || saved === 'reduced' || saved === 'off' ? saved : null;
-}
-
 function prefersReduced(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-// pushDisplay moves the config into the signals the page renders from. The
-// applied object is remembered so an unrelated state change writes neither
-// signal nor storage.
+// pushDisplay moves the config into the signals the page renders from. It
+// waits for the snapshot: before it, the tab renders from its own cache, and
+// the config's defaults must not put a low-power tab back on the 3D scene.
 let applied: DisplaySettings | null = null;
 effect(() => {
-  const d = state.value.display;
+  const s = state.value;
+  if (!s.hydrated) return;
+  const d = s.display;
   if (d === applied) return;
   applied = d;
-  setMotion(effectiveMotion(d, storedMotion(), prefersReduced()));
+  if (d.motion === '') {
+    // Follow the system forgets the tab's choice, so the cache goes and the
+    // browser's reduced-motion setting decides. No setter here: setMotion
+    // would write the cache back.
+    removeStored(KEY_MOTION);
+    motion.value = effectiveMotion(d, null, prefersReduced());
+  } else {
+    setMotion(d.motion);
+  }
   setLowPower(d.low_power);
 });
 

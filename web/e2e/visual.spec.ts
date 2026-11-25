@@ -1,5 +1,5 @@
 import {
-  axeScan, awsTest, expect, freshTest, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest,
+  axeScan, awsTest, expect, freshTest, m3VisualTest, m4VisualTest, m4bVisualTest, promptVisualTest, seedDisplay,
   visualTest as test,
 } from './fixture';
 import type { Page } from '@playwright/test';
@@ -107,7 +107,7 @@ test('agents and the inspector', async ({ page, gateway }) => {
   await axe(page);
 });
 
-test('file drawer with a diff', async ({ page, gateway }) => {
+freshTest('file drawer with a diff', async ({ page, gateway }) => {
   // The scene behind the drawer orbits on the frame clock, and its phase is
   // the integral of the frames that rendered: a lazy chunk or a resize
   // observer landing between two clock runs changes how many frames each run
@@ -116,7 +116,7 @@ test('file drawer with a diff', async ({ page, gateway }) => {
   // resize has moved the projector, so the shot no longer depends on where
   // the setup's real-time work landed. The drawer and the diff editor keep
   // animating normally.
-  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+  await seedDisplay(page, gateway, 'options.web_display.motion', 'off');
   await page.goto(gateway.launch);
   await settle(page);
   await page.getByRole('button', { name: /^Files/ }).click();

@@ -201,9 +201,9 @@ The settings are:
 - **Theme**: **Holodeck** is the translucent glass with scan lines.
   **Solid glass** gives every panel the opaque glass, with no blur and no
   scan lines.
-- **Motion**: **Follow the system** uses the browser's reduced motion
-  setting, and the tab's own last choice when it has one. **Full**,
-  **Reduced** and **Off** override it.
+- **Motion**: **Follow the system** follows the browser's reduced motion
+  setting and forgets the tab's earlier choice. **Full**, **Reduced** and
+  **Off** override it.
 - **Effects**: **Low power (2D constellation)** draws the flat constellation
   in place of the 3D scene. When the scene or the frame-time guard steps the
   effects down, **Restore effects** brings them back.

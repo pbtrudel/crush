@@ -24,6 +24,7 @@ beforeEach(() => {
   // A context object is enough for the probe, so cinematic mode is allowed.
   HTMLCanvasElement.prototype.getContext = (() => ({ getExtension: () => null })) as unknown as typeof original;
   resetWebglProbe();
+  localStorage.clear();
   state.value = { ...reduce(initialState(), fx.snapshot), conn: 'live' };
   document.body.append(root);
 });
@@ -134,9 +135,15 @@ describe('the display settings dialog', () => {
     await mountApp();
     await openFromHud();
     await click(input('display-motion', 'reduced'));
+    expect(motion.value).toBe('reduced');
+
     await click(input('display-motion', ''));
     expect(remove).toHaveBeenCalledWith('options.web_display.motion');
     expect(input('display-motion', '')!.checked).toBe(true);
+    // Follow the system forgets the tab's choice and follows the browser,
+    // which asks for full motion here.
+    expect(motion.value).toBe('full');
+    expect(localStorage.getItem('crush-web-motion')).toBeNull();
   });
 
   it('hides the orbit hint', async () => {

@@ -1,4 +1,4 @@
-import { expect, freshTest, test } from './fixture';
+import { expect, freshTest, seedDisplay, test } from './fixture';
 import type { Page } from '@playwright/test';
 
 // A spec that launches its own webfake pays for a `go build` and a server
@@ -94,8 +94,8 @@ freshTest('delegated work streams into the inspector and the drawer', async ({ p
 // The M2 fix hides a tag whose anchor lies under the open inspector, but with
 // motion off nothing republishes the projection, so opening or closing the
 // panel has to re-run the placement on its own.
-test('re-evaluates tags when the inspector opens and closes with motion off', async ({ page, gateway }) => {
-  await page.addInitScript(() => localStorage.setItem('crush-web-motion', 'off'));
+freshTest('re-evaluates tags when the inspector opens and closes with motion off', async ({ page, gateway }) => {
+  await seedDisplay(page, gateway, 'options.web_display.motion', 'off');
   // The seeded scene is deterministic. Find a viewport where a visible tag
   // lies under the inspector once it opens; fail if none does, so the test
   // can never pass vacuously.
