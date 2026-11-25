@@ -62,20 +62,50 @@ describe('actions', () => {
   });
 
   it('removes the four keys one at a time', async () => {
-    const removed: string[] = [];
-    const remove = vi.spyOn(api, 'removeConfig').mockImplementation(async (key) => {
-      removed.push(key);
-      return { ...state.value.display };
-    });
-    await actions.resetDisplay();
-    expect(remove).toHaveBeenCalledTimes(4);
-    expect(removed).toEqual([
+    const sent: Array<{ key: string; settle: () => void }> = [];
+    vi.spyOn(api, 'removeConfig').mockImplementation((key) => new Promise((resolve) => {
+      sent.push({ key, settle: () => resolve({ ...state.value.display }) });
+    }));
+    const done = actions.resetDisplay();
+    await flush();
+    expect(sent.map((s) => s.key)).toEqual(['options.web_display.theme']);
+    sent[0].settle();
+    await flush();
+    expect(sent.map((s) => s.key)).toEqual(['options.web_display.theme', 'options.web_display.motion']);
+    sent[1].settle();
+    await flush();
+    expect(sent.map((s) => s.key)).toEqual([
+      'options.web_display.theme',
+      'options.web_display.motion',
+      'options.web_display.low_power',
+    ]);
+    sent[2].settle();
+    await flush();
+    expect(sent.map((s) => s.key)).toEqual([
       'options.web_display.theme',
       'options.web_display.motion',
       'options.web_display.low_power',
       'options.web_display.cinematic_hint',
     ]);
+    sent[3].settle();
+    await done;
     expect(state.value.display).toEqual(displayDefaults);
+  });
+
+  it('reverts only the key a removal refused', async () => {
+    vi.spyOn(api, 'removeConfig').mockImplementation(async (key) => {
+      if (key === 'options.web_display.theme') throw new ApiError(500, 'config_write', 'could not write');
+      return { ...state.value.display };
+    });
+    state.value = {
+      ...state.value,
+      display: { theme: 'solid', motion: 'off', low_power: true, cinematic_hint: false },
+    };
+    const failure = await actions.resetDisplay();
+    expect(failure?.tone).toBe('error');
+    expect(state.value.display).toEqual({
+      theme: 'solid', motion: '', low_power: false, cinematic_hint: true,
+    });
   });
 
   it('removes a key rather than writing the empty motion', async () => {
