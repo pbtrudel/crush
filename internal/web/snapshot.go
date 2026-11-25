@@ -60,6 +60,7 @@ type Snapshot struct {
 	WorkingDir         string                `json:"working_dir"`
 	Branch             string                `json:"branch,omitempty"`
 	CurrentSessionID   string                `json:"current_session_id"`
+	RootSessions       int                   `json:"root_sessions"`
 	Session            json.RawMessage       `json:"session,omitempty"`
 	Messages           []json.RawMessage     `json:"messages"`
 	Files              []FileSummary         `json:"files"`
@@ -104,6 +105,7 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 	s.Model = modelInfo(g, readyErr == nil)
 	s.AgentReady = s.Model.AgentReady
 	s.Team, s.AgentRuns = g.team.current()
+	s.RootSessions = g.rootSessionCount(ctx)
 	if branch, err := g.ws.GitBranch(ctx); err == nil {
 		s.Branch = branch
 	}
@@ -151,6 +153,24 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		s.Queued = q
 	}
 	return s
+}
+
+// rootSessionCount counts the sessions the session switcher can show
+// beside the terminal's: the ones with no parent. A failed list answers 0,
+// which hides the browse toggle instead of guessing.
+func (g *Gateway) rootSessionCount(ctx context.Context) int {
+	sessions, err := g.ws.ListSessions(ctx)
+	if err != nil {
+		slog.Debug("Web snapshot could not list sessions", "error", err)
+		return 0
+	}
+	count := 0
+	for _, sess := range sessions {
+		if sess.ParentSessionID == "" {
+			count++
+		}
+	}
+	return count
 }
 
 func errText(err error) string {
