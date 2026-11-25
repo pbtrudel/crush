@@ -23,3 +23,29 @@ func TestWriteWorkspaceErrorMapsAgentStarting(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	require.NotContains(t, rec.Body.String(), "crush.sock")
 }
+
+// TestWriteWorkspaceErrorMapsReconnecting pins that a lost link is a state
+// the tab waits out, not an internal failure: a workspace the server no
+// longer knows and an unreachable server both answer a 503 with a fixed
+// sentence and their own code, so the browser can show reconnecting.
+func TestWriteWorkspaceErrorMapsReconnecting(t *testing.T) {
+	t.Parallel()
+	const text = "Crush is reconnecting to its server. Try again in a moment."
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"workspace gone", fmt.Errorf("reload: %w", workspace.ErrWorkspaceGone), "workspace_gone"},
+		{"server unreachable", fmt.Errorf("status code 502: %w", workspace.ErrServerUnreachable), "server_unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			writeWorkspaceError(rec, "summarize", tc.err)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			require.JSONEq(t, `{"error":"`+text+`","code":"`+tc.code+`"}`, rec.Body.String())
+			require.NotContains(t, rec.Body.String(), workspace.ErrWorkspaceGone.Error())
+		})
+	}
+}

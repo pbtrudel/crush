@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -166,6 +167,33 @@ func TestAgentStartingOnAgentRoutes(t *testing.T) {
 		require.Contains(t, string(body), "agent_starting", tc.target)
 	}
 	require.Empty(t, fake.CallLog())
+}
+
+// TestReconnectingOnAgentRoutes drives the two lost-link states through a
+// route: both answer 503 with their own code and the fixed sentence, and
+// the action never reaches the workspace.
+func TestReconnectingOnAgentRoutes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"workspace gone", workspace.ErrWorkspaceGone, "workspace_gone"},
+		{"server unreachable", fmt.Errorf("get agent info: %w", workspace.ErrServerUnreachable), "server_unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, fake := startTest(t)
+			fake.SetReadyErr(tc.err)
+			rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/sessions/s1/summarize", "")
+			rsp.Body.Close()
+			require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+			require.Contains(t, string(body), tc.code)
+			require.Contains(t, string(body), "Crush is reconnecting to its server. Try again in a moment.")
+			require.Empty(t, fake.CallLog(), "a lost link answers before the action runs")
+		})
+	}
 }
 
 // TestAgentRoutesUnknownSession pins the shared existence check: an

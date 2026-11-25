@@ -12,13 +12,26 @@ import (
 // config reload.
 const agentStartingText = "Crush is starting the agent"
 
-// writeWorkspaceError answers a failed workspace call. An agent that is not
-// ready yet is a state the caller can wait out, so it is 503 with a code
-// the browser shows as "starting"; anything else is a 500 without the error
-// text.
+// reconnectingText is what the browser shows while the client/server link
+// is lost. Reconnecting is a state the caller can wait out, not a failure
+// of the request.
+const reconnectingText = "Crush is reconnecting to its server. Try again in a moment."
+
+// writeWorkspaceError answers a failed workspace call. A state the caller
+// can wait out is a 503 with a code the browser branches on: an agent that
+// is not ready yet reads as "starting", and a lost link reads as
+// "reconnecting", each with a fixed sentence. Anything else is a 500
+// without the error text.
 func writeWorkspaceError(w http.ResponseWriter, code string, err error) {
-	if errors.Is(err, workspace.ErrAgentNotInitialized) {
+	switch {
+	case errors.Is(err, workspace.ErrAgentNotInitialized):
 		writeError(w, http.StatusServiceUnavailable, "agent_starting", agentStartingText)
+		return
+	case errors.Is(err, workspace.ErrWorkspaceGone):
+		writeError(w, http.StatusServiceUnavailable, "workspace_gone", reconnectingText)
+		return
+	case errors.Is(err, workspace.ErrServerUnreachable):
+		writeError(w, http.StatusServiceUnavailable, "server_unreachable", reconnectingText)
 		return
 	}
 	writeInternal(w, code, err)
