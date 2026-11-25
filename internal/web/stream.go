@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,7 +155,26 @@ func (h *hub) close() {
 	}
 }
 
+// offersStreamProtocol reports whether the upgrade offers crush.v1. The
+// page offers it alongside the token entry, and a client that offers only
+// the token cannot be served, so the handshake is refused before it
+// completes.
+func offersStreamProtocol(r *http.Request) bool {
+	for _, field := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, p := range strings.Split(field, ",") {
+			if strings.TrimSpace(p) == streamProtocol {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
+	if !offersStreamProtocol(r) {
+		writeError(w, http.StatusBadRequest, "missing_protocol", "the stream requires the crush.v1 subprotocol")
+		return
+	}
 	since := int64(-1)
 	if s := r.URL.Query().Get("since"); s != "" {
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n >= 0 {

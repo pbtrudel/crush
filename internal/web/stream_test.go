@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -346,6 +347,37 @@ func TestStreamRejectsForeignOrigin(t *testing.T) {
 	require.NotNil(t, rsp)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusForbidden, rsp.StatusCode, "a valid token from a foreign page is still refused")
+}
+
+// TestStreamRefusesAnUpgradeWithoutTheStreamProtocol pins that the
+// subprotocol is checked before the handshake completes: a client that
+// offers only the token entry is refused with a 400, so the upgrade never
+// happens and no workspace call runs. The page offers both entries, and
+// that pair still selects crush.v1.
+func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	target := strings.Replace(g.URL(), "http", "ws", 1) + "/api/stream"
+
+	c, rsp, err := websocket.Dial(ctx, target, &websocket.DialOptions{
+		Subprotocols: []string{authProtocolPrefix + g.token()},
+	})
+	if c != nil {
+		t.Cleanup(func() { c.CloseNow() })
+	}
+	require.Error(t, err, "an upgrade without crush.v1 must be refused")
+	require.NotNil(t, rsp)
+	defer rsp.Body.Close()
+	body, readErr := io.ReadAll(rsp.Body)
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "missing_protocol")
+	require.Empty(t, fake.CallLog(), "a refused upgrade reaches no workspace call")
+
+	c = dialStream(t, g, "")
+	require.Equal(t, streamProtocol, c.Subprotocol())
 }
 
 func TestStreamSelectsThePlainProtocol(t *testing.T) {

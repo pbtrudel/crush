@@ -296,6 +296,21 @@ func TestStateChangingRequestsNeedAnOrigin(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 }
 
+// TestValidTokenWithForeignOriginIsForbidden covers the other half of the
+// Origin rule: a request that carries the real token from another page is
+// still refused, and the action never reaches the workspace.
+func TestValidTokenWithForeignOriginIsForbidden(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/cancel", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://evil.example")
+	rsp := doReq(t, authedClient(t, g), req)
+	rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode, "a valid token from a foreign page is still refused")
+	require.NotContains(t, fake.CallLog(), "AgentCancel:s1")
+}
+
 func TestMissingTokenWithForeignOriginIsForbidden(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
