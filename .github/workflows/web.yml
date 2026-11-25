@@ -16,7 +16,9 @@ concurrency:
 jobs:
   frontend:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    # The Playwright suite runs on one worker and takes about 16 minutes on
+    # a hosted runner, so 20 left no room for setup or a slow test.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
