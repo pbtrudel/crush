@@ -59,6 +59,8 @@ func TestMigrationAddsToolCallIDAndIndex(t *testing.T) {
 	t.Logf("metadata listing plan:\n%s", plan.String())
 	require.Contains(t, plan.String(), "idx_files_session_versions",
 		"the metadata listing must read its columns from the covering index, not from behind the content column")
+	require.NotContains(t, plan.String(), "TEMP B-TREE",
+		"the index supplies the listing's order, so no sort should be needed")
 }
 
 // tableColumns lists a table's column names through PRAGMA table_info.
