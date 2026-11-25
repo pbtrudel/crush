@@ -100,6 +100,9 @@ export interface DisplaySettings {
 export interface ConfigView { display: DisplaySettings; agent_teams: boolean }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
+  // root_sessions is how many sessions have no parent, which decides
+  // whether the HUD offers the pin toggle.
+  root_sessions?: number;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
   questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   secure_prompts?: SecurePrompt[]; signin?: SignInState; aws_sso?: { command: string; url?: string };

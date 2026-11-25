@@ -7,6 +7,7 @@ import { cinematic, cinematicAllowed, setCinematic } from '../state/cinematic';
 import { openModels, openSessions } from '../state/palette';
 import { openDisplay } from '../state/display';
 import { ActivityChart } from './hud/ActivityChart';
+import { PinToggle } from './hud/PinToggle';
 import { ContextGauge } from './hud/ContextGauge';
 import { Numeral } from './hud/Numeral';
 import { ServerHexes } from './hud/ServerHexes';
@@ -150,6 +151,7 @@ export function Hud() {
           <span class="visually-hidden">{linkDetail || link}</span>
         </span>
       </div>
+      <PinToggle />
     </header>
   );
 }

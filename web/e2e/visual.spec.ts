@@ -278,6 +278,10 @@ m4bVisualTest('display settings', async ({ page, gateway }) => {
   // involved.
   await page.getByRole('button', { name: 'Display', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Display settings' })).toBeVisible();
+  // The m4b seed has four root sessions, so the HUD's pin row is on screen
+  // behind the dialog; the baseline tolerates less than 2% of pixels and
+  // this row is most of what the dialog leaves visible of the change.
+  await expect(page.getByRole('button', { name: 'Following the terminal' })).toBeVisible();
   await page.clock.runFor(1000);
   await expect(page).toHaveScreenshot('display-settings.png', { timeout: 30_000 });
   await axe(page);

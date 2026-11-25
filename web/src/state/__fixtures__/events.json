@@ -537,6 +537,7 @@
       "version": "test",
       "working_dir": "/repo",
       "current_session_id": "s1",
+      "root_sessions": 1,
       "messages": [
         {
           "parts": [

@@ -604,3 +604,71 @@ describe('deck modes', () => {
     expect(modeBadge()!.textContent).toBe('Shell');
   });
 });
+
+describe('browsing another session', () => {
+  function byText(text: string) {
+    return Array.from(root.querySelectorAll('button')).find((b) => b.textContent === text);
+  }
+
+  it('shows why it is read-only and both ways out', async () => {
+    seed({ browsing: 's-2', terminalSession: 's1' });
+    await mount();
+
+    expect(textarea().readOnly).toBe(true);
+    expect(root.textContent).toContain(
+      "Prompts go to the terminal's session. Return to it, or open this session in the terminal.",
+    );
+    expect(byText("Return to the terminal's session")).not.toBeUndefined();
+    expect(byText('Open this session in the terminal')).not.toBeUndefined();
+  });
+
+  it('does not send on Enter or a submit while browsing', async () => {
+    seed({ browsing: 's-2', terminalSession: 's1' });
+    const send = vi.spyOn(actions, 'sendPrompt');
+    const shell = vi.spyOn(actions, 'runShell');
+    await mount();
+    await type('Ship it');
+
+    key('Enter');
+    submitForm();
+    await flush();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it('returns to the terminal session', async () => {
+    seed({ browsing: 's-2', terminalSession: 's1' });
+    const repin = vi.spyOn(actions, 'repin').mockResolvedValue(null);
+    await mount();
+
+    await act(() => { byText("Return to the terminal's session")!.click(); });
+
+    expect(repin).toHaveBeenCalled();
+  });
+
+  it('opens the browsed session in the terminal', async () => {
+    seed({ browsing: 's-2', terminalSession: 's1' });
+    const open = vi.spyOn(actions, 'openBrowsedInTerminal').mockResolvedValue(null);
+    await mount();
+
+    await act(() => { byText('Open this session in the terminal')!.click(); });
+
+    expect(open).toHaveBeenCalled();
+  });
+});
+
+describe('browsing failures', () => {
+  it('shows a refused return inline', async () => {
+    seed({ browsing: 's-2', terminalSession: 's1' });
+    vi.spyOn(actions, 'repin').mockResolvedValue({ tone: 'error', text: 'Gateway on fire' });
+    await mount();
+
+    await act(() => {
+      Array.from(root.querySelectorAll('button')).find((b) => b.textContent === "Return to the terminal's session")!.click();
+    });
+    await flush();
+
+    expect(root.querySelector('#deck-error')!.textContent).toBe('Gateway on fire');
+  });
+});
