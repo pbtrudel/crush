@@ -74,4 +74,6 @@
 .systems__status[data-tone='starting'] { color: var(--amber); border-color: var(--amber); }
 .systems__status[data-tone='error'] { color: var(--magenta); border-color: var(--magenta); }
 .systems__note { margin: 0; color: var(--teal); font-size: var(--step--1); }
+.systems__empty { margin: 0; color: var(--text-muted); font-size: var(--step--1); }
+.systems__scope { margin: 0; color: var(--text-muted); font-size: var(--step--1); }
 .systems__note a { color: var(--cyan); }

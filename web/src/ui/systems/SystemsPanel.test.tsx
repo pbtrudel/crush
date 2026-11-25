@@ -8,7 +8,7 @@ import type {
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
-import { closeSystems, paletteOpen, systemsOpen } from '../../state/palette';
+import { closeSystems, openSystems, paletteOpen, systemsOpen } from '../../state/palette';
 import { cinematic, setCinematic } from '../../state/cinematic';
 import { resetWebglProbe } from '../../state/effects';
 import { App } from '../App';
@@ -473,9 +473,22 @@ describe('SystemsPanel actions', () => {
     await mount();
     await openFromHud('mcp');
 
+    expect(card('github')!.textContent).toContain('Applies to every repository');
     await click(cardButton('github', 'Disable for all repositories'));
 
     expect(api.mcpAction).toHaveBeenCalledWith('github', 'disable_global');
+  });
+
+  it('says when the channels filter has nothing to show', async () => {
+    seed();
+    state.value = { ...state.value, mcp: {} };
+    stubLists(MCP);
+    await mount();
+    await openFromHud('mcp');
+
+    await click(sectionButton('MCP servers', 'Channels'));
+
+    expect(section('MCP servers').textContent).toContain('No channel servers');
   });
 
   it('filters the MCP list to channel servers', async () => {
@@ -601,6 +614,18 @@ describe('SystemsPanel authentication', () => {
 });
 
 describe('SystemsPanel focus and Escape', () => {
+  it('opens at the MCP heading for Channels', async () => {
+    seed();
+    stubLists();
+    await mount();
+
+    await act(() => { openSystems('channels'); });
+    await flush();
+
+    expect(document.activeElement).toBe(heading('MCP servers'));
+    expect(sectionButton('MCP servers', 'Channels').getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('traps focus and restores it to the HUD button', async () => {
     seed();
     stubLists();

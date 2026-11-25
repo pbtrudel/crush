@@ -135,7 +135,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   // The opener decides the section: the HUD group's own, or the first one
   // the palette lands on.
   useEffect(() => {
-    const section = systemsFocus.value === 'mcp' ? mcpHeading : lspHeading;
+    const section = systemsFocus.value === 'mcp' || systemsFocus.value === 'channels' ? mcpHeading : lspHeading;
     section.current?.focus();
   }, []);
 
@@ -403,6 +403,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
             {disabled ? mcpButton(row.name, 'Enable', 'enable') : mcpButton(row.name, 'Disable', 'disable')}
             {mcpButton(row.name, 'Disable for all repositories', 'disable_global')}
           </div>
+          <p class="systems__scope">Applies to every repository. Undo it in the terminal config.</p>
           {link !== undefined && (
             <p class="systems__note">
               <a href={link} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>
@@ -474,6 +475,9 @@ function SystemsDialog({ inert }: { inert: boolean }) {
             </div>
           </div>
           <ul class="systems__list">{shownMcpRows.map(mcpCard)}</ul>
+          {channelsOnly && shownMcpRows.length === 0 && (
+            <p class="systems__empty" role="status">No channel servers.</p>
+          )}
           {shownMcpLoad && (
             <div
               class="systems__status"
