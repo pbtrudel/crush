@@ -28,9 +28,6 @@
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
-/* The pinned toggle is a glyph in the model line, so the strip keeps one
-   row at 1440px; the words live in its accessible name and its title. While
-   browsing it gives the state a line of its own, which no baseline sees. */
 /* The pinned toggle is a glyph in the controls strip, so the strip keeps
    one row at 1440px; the words live in its accessible name and its title.
    While browsing it takes a line of its own, which no baseline sees. */
@@ -41,8 +38,8 @@
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   inline-size: 22px; block-size: 24px; padding: 0; border: 0;
   /* Sit inside the gap and the strip's end padding rather than widening
-     the strip. */
-  margin: 0 -14px;
+     the strip: the gaps and the box cancel out to no width at all. */
+  margin: 0 -19px;
   border-radius: var(--radius); background: none; color: var(--teal); cursor: pointer;
 }
 .hud__pin-toggle svg { fill: currentColor; }
