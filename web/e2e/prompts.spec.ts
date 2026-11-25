@@ -168,6 +168,9 @@ promptLateTest('returns the focus to the panel when a prompt closes over it', as
   const sessions = page.getByRole('dialog', { name: 'Sessions' });
   await expect(sessions).toBeVisible();
   await expect(sessions.getByLabel('Filter sessions', { exact: true })).toBeFocused();
+  // ArrowDown only reaches a row once the list has answered, so the first
+  // one is waited for explicitly.
+  await expect(sessions.locator('.sessions__title').first()).toBeVisible();
 
   // ArrowDown moves the focus from the filter to the first row, which is the
   // control the prompt interrupts.
