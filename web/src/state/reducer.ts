@@ -296,6 +296,22 @@ function lastToolCall(m: Message): { id: string; name: string } | null {
   return null;
 }
 
+// keptAnswers prunes the ids this tab answered to the requests a snapshot
+// still carries: a snapshot that lands between an answer and its closing
+// frame must not forget the tab answered, and the map must not grow across
+// sessions.
+function keptAnswers(answeredHere: Record<string, true>, snap: Snapshot): Record<string, true> {
+  const open = new Set<string>();
+  for (const p of snap.secure_prompts ?? []) open.add(p.id);
+  for (const p of snap.permissions ?? []) open.add(p.id);
+  for (const q of snap.questions ?? []) open.add(q.id);
+  const kept: Record<string, true> = {};
+  for (const id in answeredHere) {
+    if (open.has(id)) kept[id] = true;
+  }
+  return kept;
+}
+
 function applySnapshot(s: State, seq: number, snap: Snapshot): State {
   const messages = snap.messages ?? [];
   const last = messages.at(-1);
@@ -324,7 +340,7 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     question: (snap.questions ?? [])[0] ?? null,
     questionQueue: (snap.questions ?? []).slice(1),
     securePrompts: snap.secure_prompts ?? [],
-    answeredHere: {},
+    answeredHere: keptAnswers(s.answeredHere, snap),
     signin: snap.signin ?? null,
     awsSso: snap.aws_sso ? { ...snap.aws_sso } : null,
     busy: snap.busy || (last ? isOpenAssistant(last) : false),
