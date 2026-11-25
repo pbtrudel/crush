@@ -267,6 +267,25 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   const branchCenter = b!.y + b!.height / 2;
   expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
   expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
+  // Short names fit whole at 1440, and the page does not overflow sideways.
+  const short = await page.evaluate(() => {
+    const name = document.querySelector('.hud__model-name') as HTMLElement;
+    const label = document.querySelector('.hud__branch') as HTMLElement;
+    const right = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().right;
+    return {
+      model: name.scrollWidth === name.clientWidth,
+      branch: label.scrollWidth === label.clientWidth,
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+      controls: right('.hud__controls'),
+      deck: right('.holodeck__deck'),
+      viewport: window.innerWidth,
+    };
+  });
+  expect(short.model).toBe(true);
+  expect(short.branch).toBe(true);
+  expect(short.overflow).toBeLessThanOrEqual(0);
+  expect(short.controls).toBeLessThanOrEqual(short.viewport);
+  expect(short.deck).toBeLessThanOrEqual(short.viewport);
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {
@@ -277,16 +296,32 @@ m4bLongModelTest('clips a long model name before the context gauge', async ({ pa
   const name = page.locator('.hud__model-name');
   await expect(name).toHaveText(LONG_MODEL_NAME);
   await expect(model).toHaveAttribute('title', LONG_MODEL_NAME);
-  const geometry = await page.evaluate(() => {
-    const n = document.querySelector('.hud__model-name') as HTMLElement;
-    const meta = document.querySelector('.hud__meta') as HTMLElement;
-    const gauge = document.querySelector('.gauge') as HTMLElement;
-    return {
-      clipped: n.scrollWidth > n.clientWidth,
-      metaRight: meta.getBoundingClientRect().right,
-      gaugeLeft: gauge.getBoundingClientRect().left,
-    };
-  });
-  expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
-  expect(geometry.clipped).toBe(true);
+  for (const width of [1280, 1366, 1440]) {
+    await page.setViewportSize({ width, height: 860 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    const geometry = await page.evaluate(() => {
+      const n = document.querySelector('.hud__model-name') as HTMLElement;
+      const b = document.querySelector('.hud__branch') as HTMLElement;
+      const m = document.querySelector('.hud__model') as HTMLElement;
+      const meta = document.querySelector('.hud__meta') as HTMLElement;
+      const gauge = document.querySelector('.gauge') as HTMLElement;
+      const center = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return r.y + r.height / 2;
+      };
+      return {
+        clipped: n.scrollWidth > n.clientWidth,
+        metaRight: meta.getBoundingClientRect().right,
+        gaugeLeft: gauge.getBoundingClientRect().left,
+        sameLine: Math.abs(center(b) - center(m)) <= 2,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        hudRight: document.querySelector('.hud__controls')!.getBoundingClientRect().right,
+      };
+    });
+    expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
+    expect(geometry.clipped).toBe(true);
+    expect(geometry.sameLine).toBe(true);
+    expect(geometry.overflow).toBeLessThanOrEqual(0);
+    expect(geometry.hudRight).toBeLessThanOrEqual(width);
+  }
 });

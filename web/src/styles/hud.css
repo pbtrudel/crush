@@ -20,15 +20,15 @@
   background: none; color: inherit; font: inherit; letter-spacing: inherit;
   text-align: start; white-space: nowrap; cursor: pointer;
 }
-.hud__model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud__model-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hud__model:hover,
 .hud__model:focus-visible {
   color: var(--cyan);
   text-shadow: var(--glow-text);
 }
-.hud__provider { fill: var(--violet); flex: none; }
+.hud__provider { fill: var(--violet); flex: 0 10000 auto; min-inline-size: 0; }
 .hud__branch {
-  flex: 0 1 auto; min-inline-size: 0;
+  flex: 0 0 auto; max-inline-size: 50%; min-inline-size: 0;
   color: var(--teal); padding-inline-start: var(--space-4); border-inline-start: 1px solid var(--edge);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
