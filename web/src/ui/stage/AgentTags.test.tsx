@@ -21,10 +21,11 @@ function box(left: number, top: number, width: number, height: number): DOMRectR
 }
 
 describe('AgentTags', () => {
-  it('observes a board that mounts after the effect ran', async () => {
+  it('moves a tag when a board that mounts later is resized', async () => {
     const observed: Element[] = [];
+    const callbacks: Array<() => void> = [];
     class FakeResizeObserver {
-      constructor(public cb: () => void) {}
+      constructor(cb: () => void) { callbacks.push(cb); }
       observe(el: Element) { observed.push(el); }
       disconnect() {}
     }
@@ -32,16 +33,30 @@ describe('AgentTags', () => {
     (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
     const board = document.createElement('section');
     board.className = 'taskboard';
+    // A board that covers the tag once it grows, and a tag with a size the
+    // placement can measure.
+    board.getBoundingClientRect = () => box(0, 100, 400, 300) as DOMRect;
     try {
+      stageRect.value = box(0, 0, 800, 600);
       await act(() => { render(<AgentTags agents={[agent]} selected={null} />, root); });
+      const tag = root.querySelector<HTMLElement>('[data-agent-node="sub-1"]')!;
+      Object.defineProperty(tag, 'offsetWidth', { configurable: true, value: 80 });
+      Object.defineProperty(tag, 'offsetHeight', { configurable: true, value: 24 });
+      publishAgentScreens([{ id: 'sub-1', x: 300, y: 200, visible: true }]);
+      // No board yet, so the tag sits above its node.
+      expect(tag.style.transform).toContain('translate(-50%, -140%)');
       expect(observed).toHaveLength(0);
 
-      // The board mounts later, the way the task board does once a task
-      // arrives, and the watcher has to pick it up.
+      // The board mounts later, the way it does once a task arrives, and the
+      // watcher has to pick it up.
       document.body.append(board);
       await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-
       expect(observed).toContain(board);
+
+      // Its resize re-runs placement: the tag now parks above the board.
+      await act(() => { for (const cb of callbacks) cb(); });
+      expect(tag.style.transform).toContain('translate(-50%, -100%)');
+      expect(tag.style.transform).not.toContain('-140%');
     } finally {
       board.remove();
       (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = original;

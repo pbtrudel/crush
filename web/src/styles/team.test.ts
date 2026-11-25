@@ -30,10 +30,11 @@ describe('the team panels at 1024px', () => {
     expect(narrow).toContain('.todo-orbit { display: none; }');
   });
 
-  it('keeps three lanes and the ring at the desktop width and above', () => {
-    // The three-column lane grid is the base rule, so the breakpoint is what
-    // removes it rather than what adds it.
+  it('keeps three lanes and a laid-out ring at the desktop width and above', () => {
+    // The three-column lane grid and the orbit's grid are the base rules, so
+    // the breakpoint is what removes them rather than what adds them.
     expect(team).toMatch(/\.taskboard__lanes \{[^}]*grid-template-columns: repeat\(3/);
     expect(atRule(team, '@media (max-width: 1023px)')).not.toContain('.taskboard__lanes { grid-template-columns: repeat(');
+    expect(team).toMatch(/\.todo-orbit \{[^}]*display: grid/);
   });
 });

@@ -193,6 +193,5 @@ describe('anchorsFor', () => {
     );
     expect(frustum.containsPoint(log.position)).toBe(true);
     expect(frustum.containsPoint(inspector.position)).toBe(true);
-
   });
 });

@@ -36,6 +36,26 @@ describe('TaskBoard', () => {
     expect(inspect).toHaveBeenCalledWith('team-m-1');
   });
 
+  it('shows a task a run owns', async () => {
+    const seeded = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...seeded,
+      runs: [{
+        id: 'r1', kind: 'subagent', name: 'Map the parser', session_id: 'sub-1',
+        parent_session_id: 's1', status: 'running', started_at: '2026-11-22T12:00:00Z',
+      }],
+      team: {
+        ...seeded.team,
+        tasks: [...seeded.team.tasks, {
+          id: 'task-9', revision: 1, subject: 'Run-owned work', description: '',
+          status: 'pending', blocked_by: [], ready: true, session_id: 'sub-1',
+        }],
+      },
+    };
+    await act(() => { render(<TaskBoard />, root); });
+    expect(root.textContent).toContain('Run-owned work');
+  });
+
   it('renders nothing without team tasks', async () => {
     state.value = initialState();
     await act(() => { render(<TaskBoard />, root); });

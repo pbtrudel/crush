@@ -33,10 +33,12 @@ describe('deriveAgents', () => {
   });
 
   it('orders settled runs newest finish first and breaks a tie on the session id', () => {
+    // The input lists sub-c before sub-a, so a stable sort without the
+    // session id tie-break would leave them in that order.
     const agents = deriveAgents('s1', team({ members: [] }), [
+      run({ id: 'r3', session_id: 'sub-c', status: 'failed', started_at: '2026-11-22T12:00:00Z', finished_at: '2026-11-22T12:02:00Z' }),
       run({ id: 'r1', session_id: 'sub-a', status: 'done', started_at: '2026-11-22T12:00:00Z', finished_at: '2026-11-22T12:02:00Z' }),
       run({ id: 'r2', session_id: 'sub-b', status: 'done', started_at: '2026-11-22T12:00:00Z', finished_at: '2026-11-22T12:05:00Z' }),
-      run({ id: 'r3', session_id: 'sub-c', status: 'failed', started_at: '2026-11-22T12:00:00Z', finished_at: '2026-11-22T12:02:00Z' }),
     ]);
     expect(agents.map((a) => a.sessionId)).toEqual(['sub-b', 'sub-a', 'sub-c']);
   });
