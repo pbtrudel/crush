@@ -152,9 +152,11 @@ export function currentTool(messages: Message[]): { name: string; since: number 
   return null;
 }
 
-export function scopedTasks(root: string, team: TeamState): TeamTask[] {
+export function scopedTasks(root: string, team: TeamState, runs: AgentRun[] = []): TeamTask[] {
   const links: Array<[string, string]> = [];
   for (const m of team.members) if (m.parent_session_id && m.session_id) links.push([m.parent_session_id, m.session_id]);
+  // A run's session belongs to the tree too, so a task it owns is in scope.
+  for (const r of runs) if (r.parent_session_id && r.session_id) links.push([r.parent_session_id, r.session_id]);
   const tree = sessionTree(root, links);
   return team.tasks.filter((t) => !!t.session_id && tree.has(t.session_id));
 }
