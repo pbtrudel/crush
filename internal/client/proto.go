@@ -1107,8 +1107,10 @@ func (c *Client) DeleteSession(ctx context.Context, id string, sessionID string)
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to delete session: status code %d", rsp.StatusCode)
+	// The body decides between a workspace the server no longer knows,
+	// which triggers recovery, and a session the workspace does not have.
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to delete session: %w", err)
 	}
 	return nil
 }
