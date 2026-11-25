@@ -14,8 +14,8 @@ const sources: PaletteSources = {
   ],
   prompts: [{ id: 'p1', client_id: 'github', prompt_id: 'summarize_pr', title: 'Summarize PR', args: [] }],
   skills: [
-    { name: 'go-tests', description: 'Write Go tests', disabled: false },
-    { name: 'retired', description: 'No longer used', disabled: true },
+    { name: 'go-tests', description: 'Write Go tests', disabled: false, disabled_globally: false },
+    { name: 'retired', description: 'No longer used', disabled: true, disabled_globally: false },
   ],
   sessions: [{ id: 's-2', title: 'Fix the lexer' }],
   models: [{ provider: 'p1', provider_name: 'Provider One', id: 'm2', name: 'Model Two', context_window: 1000, can_reason: false }],

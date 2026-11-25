@@ -9,9 +9,10 @@ afterEach(() => {
 
 // stub answers every fetch with one JSON body, or an empty response for a
 // status that carries none. The gateway accepts a sign-in code with a bare
-// 202 and no body, so the stub does too.
-function stub(status = 200, body: unknown = {}) {
-  const rsp = status === 204 || status === 202 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
+// 202 and no body, so a 202 without a body answers nothing.
+function stub(status = 200, body?: unknown) {
+  const empty = status === 204 || (status === 202 && body === undefined);
+  const rsp = empty ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
   const fetch = vi.fn().mockResolvedValue(rsp);
   vi.stubGlobal('fetch', fetch);
   return fetch;
@@ -98,6 +99,29 @@ const rows: Row[] = [
   },
   { name: 'detach', run: () => api.detach(), method: 'POST', path: '/api/detach', status: 202 },
   { name: 'reloadConfig', run: () => api.reloadConfig(), method: 'POST', path: '/api/config/reload', status: 204 },
+  {
+    name: 'setAgentTeams', run: () => api.setAgentTeams(true), method: 'POST', path: '/api/agent-teams',
+    body: { enabled: true }, status: 204,
+  },
+  { name: 'dockerMcp enables', run: () => api.dockerMcp(true), method: 'POST', path: '/api/docker-mcp/enable', status: 204 },
+  { name: 'dockerMcp disables', run: () => api.dockerMcp(false), method: 'POST', path: '/api/docker-mcp/disable', status: 204 },
+  {
+    name: 'initProject', run: () => api.initProject(), method: 'POST', path: '/api/project/init',
+    status: 202, response: { session_id: 's1' }, result: { session_id: 's1' },
+  },
+  {
+    name: 'exportSession', run: () => api.exportSession('s1'), method: 'POST', path: '/api/sessions/s1/export',
+    response: { path: '/work/crush-session-s1.md' }, result: { path: '/work/crush-session-s1.md' },
+  },
+  {
+    name: 'automation', run: () => api.automation('s1', 'goal', 'Ship the parser'), method: 'POST',
+    path: '/api/sessions/s1/automation', body: { name: 'goal', args: 'Ship the parser' },
+    response: { reply: 'Goal set: Ship the parser' }, result: { reply: 'Goal set: Ship the parser' },
+  },
+  {
+    name: 'setSkillGlobal', run: () => api.setSkillGlobal('go-tests', true), method: 'POST',
+    path: '/api/skills/go-tests/global', body: { disabled: true }, status: 204,
+  },
   { name: 'renameSession', run: () => api.renameSession('s1', 'Parser'), method: 'PUT', path: '/api/sessions/s1', body: { title: 'Parser' } },
   { name: 'deleteSession', run: () => api.deleteSession('s1'), method: 'DELETE', path: '/api/sessions/s1', status: 204, result: undefined },
   { name: 'follow', run: () => api.follow('s1'), method: 'POST', path: '/api/follow', body: { session_id: 's1' } },
@@ -146,11 +170,30 @@ const rows: Row[] = [
     name: 'setReasoning think', run: () => api.setReasoning({ think: true }), method: 'POST', path: '/api/models/reasoning',
     body: { think: true }, response: payload, result: payload,
   },
-  { name: 'mcpServers', run: () => api.mcpServers(), method: 'GET', path: '/api/mcp' },
+  {
+    name: 'mcpServers', run: () => api.mcpServers(), method: 'GET', path: '/api/mcp',
+    response: {
+      servers: [{
+        name: 'discord', state: 'connected', tools: 3, prompts: 0,
+        disabled: false, needs_auth: false, channel: true,
+      }],
+      docker: { available: true, enabled: false },
+    },
+    result: {
+      servers: [{
+        name: 'discord', state: 'connected', tools: 3, prompts: 0,
+        disabled: false, needs_auth: false, channel: true,
+      }],
+      docker: { available: true, enabled: false },
+    },
+  },
   { name: 'mcpAction start', run: () => api.mcpAction('github', 'start'), method: 'POST', path: '/api/mcp/github/start', status: 204 },
   { name: 'mcpAction refresh', run: () => api.mcpAction('github', 'refresh'), method: 'POST', path: '/api/mcp/github/refresh', status: 204 },
   { name: 'mcpAction enable', run: () => api.mcpAction('github', 'enable'), method: 'POST', path: '/api/mcp/github/enable', status: 204 },
   { name: 'mcpAction disable', run: () => api.mcpAction('github', 'disable'), method: 'POST', path: '/api/mcp/github/disable', status: 204 },
+  { name: 'mcpAction enable_global', run: () => api.mcpAction('github', 'enable_global'), method: 'POST', path: '/api/mcp/github/enable_global', status: 204 },
+  { name: 'mcpAction disable_global', run: () => api.mcpAction('github', 'disable_global'), method: 'POST', path: '/api/mcp/github/disable_global', status: 204 },
+  { name: 'mcpAction auth_cancel', run: () => api.mcpAction('notes', 'auth_cancel'), method: 'POST', path: '/api/mcp/notes/auth_cancel', status: 204 },
   {
     name: 'mcpAuth', run: () => api.mcpAuth('notes'), method: 'POST', path: '/api/mcp/notes/auth',
     response: { url: 'https://auth.example/notes' }, result: { url: 'https://auth.example/notes' },

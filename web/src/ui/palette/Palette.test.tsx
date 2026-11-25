@@ -46,7 +46,7 @@ function stubSources(patch: Stub = {}) {
   });
   vi.spyOn(api, 'mcpPrompts').mockResolvedValue({ prompts: patch.prompts ?? [] });
   vi.spyOn(api, 'skills').mockResolvedValue({
-    skills: patch.skills ?? [{ name: 'go-tests', description: 'Write Go tests', disabled: false }],
+    skills: patch.skills ?? [{ name: 'go-tests', description: 'Write Go tests', disabled: false, disabled_globally: false }],
   });
   vi.spyOn(api, 'sessions').mockResolvedValue(patch.sessions ?? [session('s-2', 'Fix the lexer')]);
   vi.spyOn(api, 'providers').mockResolvedValue({ choices: patch.models ?? [] });
@@ -780,7 +780,7 @@ describe('the command palette', () => {
 
   it('toggles a skill in place from the skills section', async () => {
     seed();
-    stubSources({ skills: [{ name: 'go-tests', description: 'Write Go tests', disabled: false }] });
+    stubSources({ skills: [{ name: 'go-tests', description: 'Write Go tests', disabled: false, disabled_globally: false }] });
     const disable = vi.spyOn(api, 'setSkillDisabled').mockResolvedValue(undefined);
     await mount();
 
@@ -835,7 +835,7 @@ describe('the command palette', () => {
 
   it('keeps the old skills when the refetch after a toggle fails', async () => {
     seed();
-    stubSources({ skills: [{ name: 'go-tests', description: 'Write Go tests', disabled: false }] });
+    stubSources({ skills: [{ name: 'go-tests', description: 'Write Go tests', disabled: false, disabled_globally: false }] });
     const disable = vi.spyOn(api, 'setSkillDisabled').mockResolvedValue(undefined);
     await mount();
     await act(() => { openPalette('skills'); });

@@ -51,6 +51,53 @@ func TestSeedM4bKeepsTheM4Seams(t *testing.T) {
 	require.Equal(t, "holodeck", cfg.Options.WebDisplay.Theme)
 }
 
+func TestSeedM4bAddsTheM4bSurfaces(t *testing.T) {
+	t.Setenv("WEBFAKE_THEME", "")
+	f := NewFake()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	clock := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	seams, err := SeedM4b(f, done, clock)
+	require.NoError(t, err)
+
+	// The m4b scenario carries a channel-capable MCP server.
+	discord, ok := f.MCP["discord"]
+	require.True(t, ok, "the discord server is seeded")
+	require.True(t, discord.ChannelCapable)
+
+	// Docker MCP can be enabled in the fake.
+	require.NotNil(t, seams.DockerMCPAvailable)
+	require.True(t, seams.DockerMCPAvailable())
+
+	// The globally disabled skill is discovered but absent from the active
+	// catalog, the way a config-disabled skill behaves.
+	entries, err := f.ListAllSkills(t.Context())
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name)
+	}
+	require.Contains(t, names, "crush-config")
+	active, err := f.ListSkills(t.Context())
+	require.NoError(t, err)
+	activeNames := make([]string, 0, len(active))
+	for _, entry := range active {
+		activeNames = append(activeNames, entry.Name)
+	}
+	require.NotContains(t, activeNames, "crush-config")
+	require.NotNil(t, f.Cfg.Options)
+	require.Contains(t, f.Cfg.Options.DisabledSkills, "crush-config")
+
+	// The fake's terminal answers the two automation commands.
+	require.NotNil(t, seams.Automation)
+	reply, err := seams.Automation(t.Context(), "s1", "goal", "Ship the parser")
+	require.NoError(t, err)
+	require.Equal(t, "Goal set: Ship the parser", reply)
+	reply, err = seams.Automation(t.Context(), "s1", "loop", "watch the tests")
+	require.NoError(t, err)
+	require.Equal(t, "Loops: 2 active", reply)
+}
+
 func TestSeedM4bHonoursTheTheme(t *testing.T) {
 	t.Setenv("WEBFAKE_THEME", "solid")
 	f := NewFake()

@@ -24,7 +24,7 @@ function counts(error: number, warning = 0): DiagnosticCounts {
 }
 
 function mcpServer(patch: Partial<McpServer> & Pick<McpServer, 'name' | 'state'>): McpServer {
-  return { tools: 0, prompts: 0, disabled: false, needs_auth: false, ...patch };
+  return { tools: 0, prompts: 0, disabled: false, needs_auth: false, channel: false, ...patch };
 }
 
 const MCP: McpServer[] = [
@@ -55,7 +55,7 @@ function seed() {
 }
 
 function stubLists(mcp: McpServer[] = MCP, lsp: LspServer[] = LSP) {
-  const mcpServers = vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: mcp });
+  const mcpServers = vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: mcp, docker: { available: false, enabled: false } });
   const lspServers = vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: lsp });
   return { mcpServers, lspServers };
 }
@@ -681,7 +681,7 @@ describe('SystemsPanel loading', () => {
     seed();
     vi.spyOn(api, 'mcpServers')
       .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
-      .mockResolvedValueOnce({ servers: MCP });
+      .mockResolvedValueOnce({ servers: MCP, docker: { available: false, enabled: false } });
     vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: LSP });
     await mount();
     await openFromHud('mcp');
@@ -713,7 +713,7 @@ describe('SystemsPanel loading', () => {
 
   it('drops a late list answer after the panel closes', async () => {
     seed();
-    const late = deferred<{ servers: McpServer[] }>();
+    const late = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
     vi.spyOn(api, 'mcpServers').mockReturnValueOnce(late.promise);
     vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: LSP });
     await mount();
@@ -722,7 +722,7 @@ describe('SystemsPanel loading', () => {
     await pressKey(window, { key: 'Escape', code: 'Escape' });
     expect(dialog()).toBeNull();
 
-    await act(async () => { late.resolve({ servers: MCP }); await Promise.resolve(); });
+    await act(async () => { late.resolve({ servers: MCP, docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
 
     expect(dialog()).toBeNull();
@@ -734,8 +734,8 @@ describe('SystemsPanel loading', () => {
     // The rows come from the list alone, so an older answer would show.
     state.value = { ...state.value, mcp: {} };
     const fresh = mcpServer({ name: 'fresh', state: 'connected', tools: 1 });
-    const older = deferred<{ servers: McpServer[] }>();
-    const newer = deferred<{ servers: McpServer[] }>();
+    const older = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
+    const newer = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
     vi.spyOn(api, 'mcpServers')
       .mockRejectedValueOnce(new ApiError(500, 'internal', 'the list failed'))
       .mockReturnValueOnce(older.promise)
@@ -747,11 +747,11 @@ describe('SystemsPanel loading', () => {
     await click(retryButton('MCP servers'));
     await click(retryButton('MCP servers'));
 
-    await act(async () => { newer.resolve({ servers: [fresh] }); await Promise.resolve(); });
+    await act(async () => { newer.resolve({ servers: [fresh], docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
     expect(card('fresh')).not.toBeUndefined();
 
-    await act(async () => { older.resolve({ servers: MCP }); await Promise.resolve(); });
+    await act(async () => { older.resolve({ servers: MCP, docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
     expect(card('fresh')).not.toBeUndefined();
     expect(card('github')).toBeUndefined();
