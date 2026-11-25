@@ -193,8 +193,11 @@ type Gateway struct {
 	onPlanHandoff        func(string, bool)
 
 	// onDetach is Options.OnDetach, fixed at start. The detach route
-	// answers 503 no_terminal when it is nil.
+	// answers 503 no_terminal when it is nil, and runs it once.
 	onDetach func()
+	// detachOnce makes a second detach request a no-op: a double click
+	// must not ask the terminal to stop web mode twice.
+	detachOnce sync.Once
 	// closingReason is the reason the gateway_closing frame carries. The
 	// detach route sets it before the shutdown it asks for; the empty
 	// value means the normal exit.

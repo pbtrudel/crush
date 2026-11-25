@@ -71,6 +71,9 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 		if c.inputMode {
 			mode = inputModePlan
 		}
+		// The detach callback belongs to the gateway being started: a
+		// delayed detach from an old gateway must never stop a newer one.
+		var gw *Gateway
 		gw, err := Start(ctx, Options{
 			Workspace:            c.ws,
 			InputMode:            mode,
@@ -78,7 +81,7 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
 			OnPlanHandoff:        c.onPlanHandoff,
-			OnDetach:             c.detach,
+			OnDetach:             func() { c.detach(gw) },
 		})
 		if err != nil {
 			return "", err
@@ -126,23 +129,34 @@ func (c *Controller) SetOnPlanHandoff(fn func(sessionID string, yolo bool)) {
 	}
 }
 
-// SetOnStopped sets the callback that reports why web mode stopped. A
-// browser detach is the only source. It runs after the gateway is down, so
-// /web can start a new one. It may be nil.
+// SetOnStopped sets the callback that reports why web mode stopped. It
+// runs after the gateway is down, so /web can start a new one. It may be
+// nil.
 func (c *Controller) SetOnStopped(fn func(reason string)) {
 	c.mu.Lock()
 	c.onStopped = fn
 	c.mu.Unlock()
 }
 
-// detach stops the gateway for the browser's detach request, then reports
-// why so the terminal can say how to start it again. The detach route runs
-// it in a goroutine after its answer, so the 202 is flushed before the
-// server stops.
-func (c *Controller) detach() {
+// detach stops gw for the browser's detach request, then reports why so the
+// terminal can say how to start it again. The detach route runs it in a
+// goroutine after its answer, so the 202 is flushed before the server
+// stops. Only the gateway the controller still runs is stopped, so a
+// delayed detach from an old gateway leaves a newer one serving.
+func (c *Controller) detach(gw *Gateway) {
+	if gw == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.gw != gw {
+		c.mu.Unlock()
+		return
+	}
+	c.gw = nil
+	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), detachTimeout)
 	defer cancel()
-	if err := c.Shutdown(ctx); err != nil {
+	if err := gw.Shutdown(ctx); err != nil {
 		slog.Warn("Failed to stop web mode", "error", err)
 	}
 	c.mu.Lock()
