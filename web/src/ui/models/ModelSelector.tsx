@@ -359,7 +359,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
                       }}
                     >
                       <span class="models__name">{c.name || c.id}</span>
-                      {current && <span class="models__tag hud-label">current</span>}
+                      {current && <span class="models__tag hud-label" aria-hidden="true">current</span>}
                       {context !== '' && <span class="models__context">{context}</span>}
                       {/* The marker ends the accessible name, so a reader
                           hears it after the model it belongs to. */}
@@ -413,7 +413,8 @@ function ModelsDialog({ inert }: { inert: boolean }) {
             )}
           </fieldset>
         ) : null}
-        {/* The line at the top already says the agent is starting. */}
+        {/* The line at the top already says the agent is starting, and it
+            hides the reconnecting line too: both are wait states. */}
         {shownAction && !(shownAction.tone === 'starting' && !s.agentReady) && (
           <div class="models__status" role={shownAction.tone === 'starting' ? 'status' : 'alert'} data-tone={shownAction.tone}>
             <span>{shownAction.text}</span>
