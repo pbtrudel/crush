@@ -68,6 +68,9 @@ type Options struct {
 	// Now returns the current time the sign-in timestamps are measured
 	// from. Nil uses time.Now; webfake pins it from WEBFAKE_CLOCK.
 	Now func() time.Time
+	// DockerMCPAvailable reports whether Docker MCP can be enabled. Nil
+	// reads the shared cache the terminal's dialog fills; webfake sets it.
+	DockerMCPAvailable func() bool
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -173,6 +176,9 @@ type Gateway struct {
 	signInFlowFn func(string) (signin.Flow, error)
 	// now is Options.Now; nil falls back to time.Now.
 	now func() time.Time
+	// dockerMCPAvailableFn is Options.DockerMCPAvailable; nil reads the
+	// shared availability cache.
+	dockerMCPAvailableFn func() bool
 	// launchMu guards launch, the private redirect file handed to the
 	// browser opener so the token stays out of its arguments, its TTL
 	// timer and generation, and launchClosed, which refuses a file after
@@ -298,6 +304,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		testAPIKeyFn:         testAPIKeyFn,
 		signInFlowFn:         signInFlowFn,
 		now:                  now,
+		dockerMCPAvailableFn: opts.DockerMCPAvailable,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,

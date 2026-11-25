@@ -2909,18 +2909,8 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionExportSession:
 		cmds = append(cmds, func() tea.Msg {
-			ctx := context.Background()
-			sess, err := m.com.Workspace.GetSession(ctx, msg.SessionID)
+			path, err := sessionexport.WriteFile(context.Background(), m.com.Workspace, msg.SessionID)
 			if err != nil {
-				return util.ReportError(err)()
-			}
-			msgs, err := m.com.Workspace.ListMessages(ctx, msg.SessionID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			name := fmt.Sprintf("crush-session-%s.md", filepath.Base(msg.SessionID))
-			path := filepath.Join(m.com.Workspace.WorkingDir(), name)
-			if err := os.WriteFile(path, []byte(sessionexport.Markdown(sess, msgs)), 0o644); err != nil {
 				return util.ReportError(err)()
 			}
 			return util.ReportInfo("Session exported to " + path)()
@@ -6477,35 +6467,16 @@ func (m *UI) reloadConfig(retryWhenIdle bool) tea.Cmd {
 }
 
 // setAgentTeams persists the Agent Teams toggle and applies it in place. The
-// coordinator creates or tears down the Team service during the reload. A
-// workspace config that sets the option outranks the global file, so the
-// toggle is written there too. The workspace file's contents decide that, not
-// the merged config: a busy agent refuses the reload, which would leave the
-// merged value stale. The reload is refused as busy rather than failed, and
-// runs again once the agent is idle.
+// coordinator creates or tears down the Team service during the reload. The
+// reload is refused as busy rather than failed, and runs again once the agent
+// is idle.
 func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 	return func() tea.Msg {
-		scopes := []config.Scope{config.ScopeGlobal}
-		if m.workspaceSetsAgentTeams() {
-			scopes = append(scopes, config.ScopeWorkspace)
-		}
-		for _, scope := range scopes {
-			if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
-				return configReloadedMsg{err: err}
-			}
+		if err := workspace.WriteAgentTeams(m.com.Workspace, enabled); err != nil {
+			return configReloadedMsg{err: err}
 		}
 		return m.reloadConfig(true)()
 	}
-}
-
-// workspaceSetsAgentTeams reports whether the workspace config file sets the
-// Agent Teams option, which is what makes a global write lose to it.
-func (m *UI) workspaceSetsAgentTeams() bool {
-	cfg := m.com.Config()
-	if cfg == nil || cfg.Options == nil {
-		return false
-	}
-	return config.WorkspaceConfigSets(cfg.Options.DataDirectory, "options.agent_teams")
 }
 
 // sendMessage sends a message with the given content and attachments.
