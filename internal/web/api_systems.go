@@ -122,18 +122,27 @@ func (g *Gateway) mcpRepoDisabled(ctx context.Context) map[string]struct{} {
 	return off
 }
 
+// errMCPStateUnavailable reports that the gateway could not tell whether a
+// server is known: the disabled list it reads failed, and the name has no
+// live state either.
+var errMCPStateUnavailable = errors.New("mcp state unavailable")
+
 // mcpKnown reports whether the workspace knows name, either as a live
-// state or as a server disabled for this repository.
-func (g *Gateway) mcpKnown(ctx context.Context, name string) bool {
+// state or as a server disabled for this repository. A live state needs no
+// list read, so it stays known whatever the store says. A name only an
+// unreadable disabled list could know reports errMCPStateUnavailable, so
+// the caller answers the unavailable state instead of claiming the server
+// does not exist.
+func (g *Gateway) mcpKnown(ctx context.Context, name string) (bool, error) {
 	if _, ok := g.ws.MCPGetStates()[name]; ok {
-		return true
+		return true, nil
 	}
 	disabled, err := g.ws.MCPServersDisabled(ctx)
 	if err != nil {
 		slog.Warn("Web MCP action could not read the disabled servers", "error", err)
-		return false
+		return false, errMCPStateUnavailable
 	}
-	return slices.Contains(disabled, name)
+	return slices.Contains(disabled, name), nil
 }
 
 // handleMCPAction dispatches one action on a server. The literal
@@ -148,7 +157,12 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_action", "no such MCP action")
 		return
 	}
-	if !g.mcpKnown(r.Context(), name) {
+	known, err := g.mcpKnown(r.Context(), name)
+	if errors.Is(err, errMCPStateUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "mcp_state_unavailable", "Crush could not read the MCP server state. Try again in a moment.")
+		return
+	}
+	if !known {
 		writeError(w, http.StatusNotFound, "unknown_server", "no such MCP server")
 		return
 	}
@@ -180,6 +194,13 @@ func (g *Gateway) handleMCPAction(w http.ResponseWriter, r *http.Request) {
 // authenticateMCP starts the server's OAuth flow and answers the URL the
 // browser should open, or an empty URL when the flow needs no browser.
 func (g *Gateway) authenticateMCP(w http.ResponseWriter, r *http.Request, name string) {
+	// A server disabled for this repository is not asked to authenticate,
+	// the same filter the list applies to its pending flag: disabling a
+	// server that needs a sign-in must stop the prompt.
+	if _, disabled := g.mcpRepoDisabled(r.Context())[name]; disabled {
+		writeError(w, http.StatusConflict, "auth_not_needed", "the MCP server is disabled for this repository")
+		return
+	}
 	if !g.mcpAuthRunning(name) {
 		pending := slices.ContainsFunc(g.ws.MCPPendingAuth(), func(p mcp.PendingAuthServer) bool {
 			return p.Name == name

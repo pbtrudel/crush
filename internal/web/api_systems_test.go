@@ -128,6 +128,35 @@ func TestMCPListFailsOpenWhenOverridesCannotBeRead(t *testing.T) {
 	}, out.Servers)
 }
 
+// TestMCPActionOnUnreadableDisableList covers a session store failure
+// during the known-server check: a live server still takes its action, and
+// a name that is not live answers the unavailable state instead of
+// claiming no such server exists, which the list could not have shown
+// either.
+func TestMCPActionOnUnreadableDisableList(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.MCP = map[string]mcp.ClientInfo{"live": {Name: "live", State: mcp.StateConnected}}
+	fake.MCPDisabled = []string{"off"}
+	fake.SetMCPOverridesErr(errors.New("session store closed"))
+	c := authedClient(t, g)
+
+	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/live/start", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
+	require.Eventually(t, func() bool {
+		return slices.Contains(fake.CallLog(), "MCPStartServer:live")
+	}, time.Second, 10*time.Millisecond, "a live server is known whatever the overrides say")
+
+	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/off/enable", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "mcp_state_unavailable")
+	require.NotContains(t, string(body), "unknown_server")
+	require.NotContains(t, fake.CallLog(), "MCPSetServerDisabled:off:false",
+		"a name the gateway cannot check reaches no workspace call")
+}
+
 func TestMCPActionsCallTheWorkspace(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
@@ -277,6 +306,23 @@ func TestMCPAuthReturnsOnlyWebURLs(t *testing.T) {
 		require.Contains(t, string(body), "auth_not_needed")
 		require.Empty(t, fake.CallLog(), "a server that is not pending never starts a flow")
 	})
+}
+
+// TestMCPAuthRefusedForRepoDisabledServer pins that a server disabled for
+// this repository never starts an OAuth flow, the same filter the list
+// applies: disabling a server that needs a sign-in must stop the prompt.
+func TestMCPAuthRefusedForRepoDisabledServer(t *testing.T) {
+	t.Parallel()
+	fake := newAuthFake()
+	fake.MCPDisabled = []string{"srv"}
+	g := startAuthTest(t, fake)
+
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/mcp/srv/auth", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusConflict, rsp.StatusCode, string(body))
+	require.Contains(t, string(body), "auth_not_needed")
+	require.NotContains(t, fake.CallLog(), "MCPAuthenticate:srv",
+		"a server disabled for this repository starts no flow")
 }
 
 // TestMCPAuthReusesTheRunningFlow pins that a second request for a name
