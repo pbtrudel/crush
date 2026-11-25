@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -15,6 +17,10 @@ const (
 	automationTimeout = 10 * time.Second
 	// maxAutomationArgs bounds the argument text a command accepts.
 	maxAutomationArgs = 4096
+	// automationFailureText is what the browser shows when the terminal's
+	// reply carries an error. The detail stays in the log, like every
+	// other workspace failure.
+	automationFailureText = "The command could not run. The terminal log has the details."
 )
 
 // handleAutomation runs a /goal or /loop command in the terminal, which
@@ -56,12 +62,28 @@ func (g *Gateway) handleAutomation(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	reply, err := fn(ctx, sid, body.Name, body.Args)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			// The browser left before the terminal answered. Nobody reads
+			// the answer, and a cancel is not a workspace failure, so it
+			// must not reach the log as a 500.
+			return
+		case errors.Is(err, context.DeadlineExceeded):
 			writeError(w, http.StatusGatewayTimeout, "terminal_timeout", "the terminal did not answer in time")
 			return
+		default:
+			writeInternal(w, "automation_failed", err)
+			return
 		}
-		writeInternal(w, "automation_failed", err)
-		return
+	}
+	// The terminal prefixes a failed command with "Error: ", which the
+	// browser must not show verbatim: it can carry paths and sockets. An
+	// empty reply reads as handled, the way the Discord bridge answers.
+	if strings.HasPrefix(reply, "Error: ") {
+		slog.Warn("Web automation command failed", "session_id", sid, "name", body.Name, "error", strings.TrimPrefix(reply, "Error: "))
+		reply = automationFailureText
+	} else if strings.TrimSpace(reply) == "" {
+		reply = "/" + body.Name + " handled."
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
 }
