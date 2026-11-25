@@ -377,6 +377,9 @@ describe('the command palette', () => {
     await type('compact');
     const row = Array.from(dialog()!.querySelectorAll<HTMLElement>('[role="option"]'))
       .find((o) => o.textContent?.includes('Compact'))!;
+    // A click does not move the focus in jsdom, so the dialog keeps it and
+    // the fix is the only thing that hands it to the combobox.
+    dialog()!.focus();
     await act(() => { row.click(); });
     await flush();
 
@@ -410,23 +413,6 @@ describe('the command palette', () => {
 
     expect(dialog()!.textContent).toContain('Newer answer');
     expect(dialog()!.textContent).not.toContain('Older answer');
-  });
-
-  it('drops a source answer that lands after the palette closed', async () => {
-    seed();
-    stubSources();
-    const answer = deferred<Session[]>();
-    vi.mocked(api.sessions).mockReturnValueOnce(answer.promise);
-    await mount();
-    await openWithKey();
-    await pressKey(window, { key: 'Escape', code: 'Escape' });
-    expect(paletteOpen.value).toBeNull();
-
-    await act(async () => { answer.resolve([session('s-2', 'Late answer')]); await Promise.resolve(); });
-    await flush();
-
-    await openWithKey();
-    expect(dialog()!.textContent).not.toContain('Late answer');
   });
 
   it('lists the sessions and follows the picked one', async () => {

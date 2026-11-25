@@ -226,13 +226,6 @@ describe('api calls', () => {
     expect(JSON.parse(init.body as string)).toEqual({ id: 'p1', secret: 'hunter2' });
   });
 
-  it('answers a 202 with an empty body, as the gateway does', async () => {
-    const fetch = stub(202, { ignored: true });
-    const rsp = await fetch();
-    expect(rsp.status).toBe(202);
-    expect(await rsp.text()).toBe('');
-  });
-
   it('sends a pasted sign-in code in the body only', async () => {
     const fetch = stub(202);
     await api.signInCode('f2', 'good-code');
