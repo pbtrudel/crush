@@ -134,6 +134,9 @@ type envelope struct {
 	Response  *controlResponseBody `json:"response"`
 	Message   json.RawMessage      `json:"message"`
 	UUID      string               `json:"uuid"`
+	// Priority "next" marks a message that steers the turn in flight instead
+	// of starting a new one.
+	Priority string `json:"priority"`
 }
 
 // controlResponseBody is the provider's answer to one of the fake's control
@@ -235,8 +238,22 @@ func (c *cli) handleLine(line []byte) {
 			}
 		}()
 	case "user":
+		// Record the message before scripting its turn: the provider may
+		// close stdin as soon as the turn's result arrives, and the log has
+		// to carry the message by then.
+		text, err := c.recordUser(&env)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeclaude: %v\n", err)
+			os.Exit(1)
+		}
+		if env.Priority == "next" {
+			// The CLI steers this message into the turn that is already
+			// running. That turn still ends with the only result, so starting
+			// a second turn here would answer it twice.
+			return
+		}
 		go func() {
-			if err := c.handleUser(&env); err != nil {
+			if err := c.runTurn(text); err != nil {
 				fmt.Fprintf(os.Stderr, "fakeclaude: %v\n", err)
 				os.Exit(1)
 			}
@@ -400,8 +417,8 @@ func (c *cli) emitInit() error {
 	})
 }
 
-// handleUser records the message and plays the scripted turn for it.
-func (c *cli) handleUser(env *envelope) error {
+// recordUser logs a user message and returns its text.
+func (c *cli) recordUser(env *envelope) (string, error) {
 	var payload struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -409,7 +426,7 @@ func (c *cli) handleUser(env *envelope) error {
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(env.Message, &payload); err != nil {
-		return fmt.Errorf("decoding user message: %w", err)
+		return "", fmt.Errorf("decoding user message: %w", err)
 	}
 	var text strings.Builder
 	for _, block := range payload.Content {
@@ -418,7 +435,12 @@ func (c *cli) handleUser(env *envelope) error {
 		}
 	}
 	c.log(map[string]any{"kind": "user", "uuid": env.UUID, "text": text.String()})
-	if strings.Contains(text.String(), "CALL_TOOL") {
+	return text.String(), nil
+}
+
+// runTurn plays the scripted turn for a user message.
+func (c *cli) runTurn(text string) error {
+	if strings.Contains(text, "CALL_TOOL") {
 		return c.runToolTurn()
 	}
 	return c.runTextTurn()
