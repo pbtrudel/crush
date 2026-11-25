@@ -170,6 +170,9 @@ type Fake struct {
 	// agentModelGate holds one AgentModel read; set it with
 	// SetAgentModelGate.
 	agentModelGate *agentModelGate
+	// initializePrompt is what InitializePrompt answers; set it with
+	// SetInitializePrompt.
+	initializePrompt string
 }
 
 // agentModelGate is one held AgentModel read.
@@ -426,6 +429,34 @@ func (f *Fake) SetAgentBusy(busy bool) {
 	f.mu.Lock()
 	f.agentBusy = busy
 	f.mu.Unlock()
+}
+
+// SetInitializePrompt sets what InitializePrompt answers.
+func (f *Fake) SetInitializePrompt(text string) {
+	f.mu.Lock()
+	f.initializePrompt = text
+	f.mu.Unlock()
+}
+
+func (f *Fake) InitializePrompt() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.initializePrompt, nil
+}
+
+func (f *Fake) MarkProjectInitialized() error {
+	f.record("MarkProjectInitialized")
+	return nil
+}
+
+func (f *Fake) EnableDockerMCP(context.Context) error {
+	f.record("EnableDockerMCP")
+	return nil
+}
+
+func (f *Fake) DisableDockerMCP() error {
+	f.record("DisableDockerMCP")
+	return nil
 }
 
 // UpdatePreferredModel records a model choice and replaces the selected

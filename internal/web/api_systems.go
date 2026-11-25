@@ -14,7 +14,9 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/lsp"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 const (
@@ -34,6 +36,16 @@ type mcpServerInfo struct {
 	Error     string `json:"error,omitempty"`
 	Disabled  bool   `json:"disabled"`
 	NeedsAuth bool   `json:"needs_auth"`
+	// Channel marks a server that is a channel, is opted in as one, or
+	// could be one, which is what the terminal's channels dialog lists.
+	Channel bool `json:"channel"`
+}
+
+// dockerMCPInfo is the Docker MCP state the browser lists beside the MCP
+// servers.
+type dockerMCPInfo struct {
+	Available bool `json:"available"`
+	Enabled   bool `json:"enabled"`
 }
 
 // lspDiagnostics is one LSP server's diagnostic counts.
@@ -65,6 +77,12 @@ func (g *Gateway) registerSystemRoutes(api *http.ServeMux) {
 	g.route(api, "POST /api/config/reload", g.handleConfigReload)
 	g.route(api, "POST /api/config/set", g.handleConfigSet)
 	g.route(api, "POST /api/config/remove", g.handleConfigRemove)
+	g.route(api, "POST /api/agent-teams", g.handleAgentTeams)
+	// The Docker MCP routes live under their own prefix: a server named
+	// docker would make /api/mcp/docker/enable ambiguous with the
+	// per-server action route.
+	g.route(api, "POST /api/docker-mcp/enable", g.handleDockerMCPEnable)
+	g.route(api, "POST /api/docker-mcp/disable", g.handleDockerMCPDisable)
 }
 
 func (g *Gateway) handleListMCP(w http.ResponseWriter, r *http.Request) {
@@ -91,12 +109,89 @@ func (g *Gateway) handleListMCP(w http.ResponseWriter, r *http.Request) {
 			Error:     errText(info.Error),
 			Disabled:  disabled || info.State == mcp.StateDisabled,
 			NeedsAuth: needsAuth,
+			Channel:   info.Channel || info.ChannelOptIn || info.ChannelCapable,
 		})
 	}
 	slices.SortFunc(servers, func(a, b mcpServerInfo) int {
 		return strings.Compare(a.Name, b.Name)
 	})
-	writeJSON(w, http.StatusOK, map[string][]mcpServerInfo{"servers": servers})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"servers": servers,
+		"docker":  g.dockerMCPInfo(),
+	})
+}
+
+// dockerMCPInfo reports the shared Docker MCP state: whether it can be
+// enabled and whether the config already has it.
+func (g *Gateway) dockerMCPInfo() dockerMCPInfo {
+	enabled := false
+	if cfg := g.ws.Config(); cfg != nil {
+		enabled = cfg.IsDockerMCPEnabled()
+	}
+	return dockerMCPInfo{Available: g.dockerMCPAvailable(), Enabled: enabled}
+}
+
+// dockerMCPAvailable answers whether Docker MCP can be enabled. It shares
+// the cache the terminal's dialog fills: a fresh answer is reused and a
+// stale or unknown one refreshes it. Options.DockerMCPAvailable overrides
+// the check for tests and webfake.
+func (g *Gateway) dockerMCPAvailable() bool {
+	if g.dockerMCPAvailableFn != nil {
+		return g.dockerMCPAvailableFn()
+	}
+	if available, known := config.DockerMCPAvailabilityCached(); known {
+		return available
+	}
+	return config.RefreshDockerMCPAvailability()
+}
+
+// handleDockerMCPEnable enables Docker MCP through the workspace, which
+// validates the daemon again and persists the config, the way the
+// terminal's command does.
+func (g *Gateway) handleDockerMCPEnable(w http.ResponseWriter, r *http.Request) {
+	if !g.dockerMCPAvailable() {
+		writeError(w, http.StatusConflict, "docker_unavailable", "Docker MCP is not available. Make sure Docker is installed and 'docker mcp version' works.")
+		return
+	}
+	// A server the enable starts must outlive the request, like the MCP
+	// start action.
+	ctx := context.WithoutCancel(r.Context())
+	if err := g.ws.EnableDockerMCP(ctx); err != nil {
+		writeWorkspaceError(w, "docker_mcp", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDockerMCPDisable removes the Docker MCP config through the
+// workspace.
+func (g *Gateway) handleDockerMCPDisable(w http.ResponseWriter, _ *http.Request) {
+	if err := g.ws.DisableDockerMCP(); err != nil {
+		writeWorkspaceError(w, "docker_mcp", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAgentTeams toggles Agent Teams and reloads the config, the way the
+// terminal's "Toggle Agent Teams" command does. The browser shows the new
+// value from GET /api/config once the reload lands.
+func (g *Gateway) handleAgentTeams(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := workspace.WriteAgentTeams(g.ws, body.Enabled); err != nil {
+		writeWorkspaceError(w, "config_write", err)
+		return
+	}
+	if err := g.ws.ReloadConfig(context.WithoutCancel(r.Context())); err != nil {
+		writeReloadError(w, "config_write", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // mcpRepoDisabled returns the servers disabled for this repository, with
@@ -483,11 +578,17 @@ func (g *Gateway) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	writeReloadError(w, "config_reload", err)
+}
+
+// writeReloadError answers a failed config reload with the route's own code.
+// A busy agent is the same conflict the terminal reports; a starting or
+// unreachable workspace keeps the writeWorkspaceError mapping, and anything
+// else is a 500 without the error text.
+func writeReloadError(w http.ResponseWriter, code string, err error) {
 	if errors.Is(err, app.ErrConfigReloadBusy) {
 		writeError(w, http.StatusConflict, "agent_busy", "The agent is busy with a run; reload once it finishes")
 		return
 	}
-	// A starting agent is what writeWorkspaceError already answers with
-	// 503 agent_starting; anything else is an internal failure.
-	writeWorkspaceError(w, "config_reload", err)
+	writeWorkspaceError(w, code, err)
 }

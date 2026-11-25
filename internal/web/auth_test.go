@@ -18,7 +18,12 @@ import (
 func startTest(t *testing.T) (*Gateway, *webtest.Fake) {
 	t.Helper()
 	fake := webtest.NewFake()
-	g, err := Start(t.Context(), Options{Workspace: fake})
+	// The Docker check is pinned so no test shells out to the host's
+	// docker; a test that needs it available passes its own seam.
+	g, err := Start(t.Context(), Options{
+		Workspace:          fake,
+		DockerMCPAvailable: func() bool { return false },
+	})
 	require.NoError(t, err)
 	// t.Context is already cancelled when cleanups run, which would make
 	// Shutdown return without draining.
@@ -253,6 +258,8 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"POST /api/sessions/{sid}/shell",
 		"DELETE /api/shell/{run}",
 		"POST /api/sessions/{sid}/notes",
+		"POST /api/sessions/{sid}/export",
+		"POST /api/sessions/{sid}/automation",
 		"GET /api/providers",
 		"POST /api/models/select",
 		"POST /api/models/reasoning",
@@ -266,7 +273,11 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"GET /api/config",
 		"POST /api/config/set",
 		"POST /api/config/remove",
+		"POST /api/agent-teams",
+		"POST /api/docker-mcp/enable",
+		"POST /api/docker-mcp/disable",
 		"POST /api/detach",
+		"POST /api/project/init",
 		"POST /api/plan/handoff",
 		"GET /api/auth/providers",
 		"POST /api/auth/provider/key",

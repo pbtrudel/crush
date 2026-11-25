@@ -29,6 +29,7 @@ import (
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
+	"github.com/charmbracelet/crush/internal/discord"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/lock"
 	crushlog "github.com/charmbracelet/crush/internal/log"
@@ -197,6 +198,22 @@ crush --continue
 		})
 		webCtl.SetOnPlanHandoff(func(id string, yolo bool) {
 			go func() { program.Send(ui.WebPlanHandoffMsg{SessionID: id, Yolo: yolo}) }()
+		})
+		webCtl.SetOnAutomation(func(ctx context.Context, sessionID, name, args string) (string, error) {
+			// The TUI owns the automation state, so it runs the command and
+			// answers with the text the tab shows. The bridge uses the same
+			// message. Send blocks until the program loop runs, so deliver
+			// from a goroutine.
+			reply := make(chan string, 1)
+			go func() {
+				program.Send(discord.AutomationCommandMsg{SessionID: sessionID, Name: name, Args: args, Reply: reply})
+			}()
+			select {
+			case text := <-reply:
+				return text, nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
 		})
 		webCtl.SetOnStopped(func(reason string) {
 			go func() { program.Send(ui.WebStoppedMsg{Reason: reason}) }()

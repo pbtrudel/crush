@@ -25,6 +25,9 @@ func TestSeedM3FeedsTheRoutes(t *testing.T) {
 		LoadCommands: func(*config.Config) ([]commands.CustomCommand, error) {
 			return webtest.M3Commands(), nil
 		},
+		// The MCP list asks for Docker availability; pin it so the test
+		// never runs the host's docker.
+		DockerMCPAvailable: func() bool { return false },
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
