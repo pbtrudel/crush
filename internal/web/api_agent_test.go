@@ -442,7 +442,11 @@ func TestShellCoalescesProgress(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("the command never wrote its chunks")
 	}
-	ticks <- time.Now()
+	select {
+	case ticks <- time.Now():
+	case <-time.After(time.Second):
+		t.Fatal("the shell flusher never read the injected tick")
+	}
 	f := readFrame(t, c)
 	require.Equal(t, frameShellOutput, f.Type)
 	var chunk shellFrame
