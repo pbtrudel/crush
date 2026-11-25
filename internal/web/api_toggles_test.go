@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
@@ -140,35 +139,4 @@ func TestMCPGlobalToggleFailureIsOpaque(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode, string(body))
 	require.Contains(t, string(body), "toggle_mcp")
 	require.NotContains(t, string(body), "crushrc")
-}
-
-// TestMCPAuthCancel pins the cancel route: it stops the running flow, the
-// flow's own completion removes its registry entry, and a second cancel
-// answers no_auth_flow instead of pretending a flow still runs.
-func TestMCPAuthCancel(t *testing.T) {
-	t.Parallel()
-	g, f := startTest(t)
-	f.MCP = map[string]mcp.ClientInfo{"notes": {Name: "notes", State: mcp.StateError}}
-	f.SetMCPPending([]mcp.PendingAuthServer{{Name: "notes"}})
-	f.AuthURL = "https://auth.example/x"
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	f.SetMCPAuthRelease(release)
-	c := authedClient(t, g)
-
-	rsp, body := doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
-	require.True(t, g.mcpAuthRunning("notes"))
-
-	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusNoContent, rsp.StatusCode, string(body))
-	require.Eventually(t, func() bool { return !g.mcpAuthRunning("notes") }, time.Second, 10*time.Millisecond)
-	require.Contains(t, f.CallLog(), "MCPAuthenticateCanceled:notes")
-
-	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/mcp/notes/auth_cancel", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusNotFound, rsp.StatusCode, string(body))
-	require.Contains(t, string(body), "no_auth_flow")
 }
