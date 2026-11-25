@@ -106,11 +106,32 @@ func TestDockerEnableCallsTheWorkspace(t *testing.T) {
 func TestMCPListMarksChannels(t *testing.T) {
 	t.Parallel()
 	g, f := startTest(t)
-	f.MCP = map[string]mcp.ClientInfo{"discord": {Name: "discord", State: mcp.StateConnected, ChannelCapable: true}}
+	f.MCP = map[string]mcp.ClientInfo{
+		"active":  {Name: "active", State: mcp.StateConnected, Channel: true},
+		"opted":   {Name: "opted", State: mcp.StateConnected, ChannelOptIn: true},
+		"capable": {Name: "capable", State: mcp.StateConnected, ChannelCapable: true},
+		"plain":   {Name: "plain", State: mcp.StateConnected},
+	}
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/mcp", "")
 	defer rsp.Body.Close()
-	require.Contains(t, string(body), `"name":"discord"`)
-	require.Contains(t, string(body), `"channel":true`)
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	// The gateway's test helper pins Docker unreachable, so the list never
+	// depends on the host's docker.
+	require.Contains(t, string(body), `"docker":{"available":false,"enabled":false}`)
+	var out struct {
+		Servers []mcpServerInfo `json:"servers"`
+	}
+	require.NoError(t, json.Unmarshal(body, &out))
+	channels := make(map[string]bool, len(out.Servers))
+	for _, s := range out.Servers {
+		channels[s.Name] = s.Channel
+	}
+	require.Equal(t, map[string]bool{
+		"active":  true,
+		"opted":   true,
+		"capable": true,
+		"plain":   false,
+	}, channels)
 }
 
 func TestAgentTeamsRouteWritesAndReloads(t *testing.T) {

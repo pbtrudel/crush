@@ -18,7 +18,12 @@ import (
 func startTest(t *testing.T) (*Gateway, *webtest.Fake) {
 	t.Helper()
 	fake := webtest.NewFake()
-	g, err := Start(t.Context(), Options{Workspace: fake})
+	// The Docker check is pinned so no test shells out to the host's
+	// docker; a test that needs it available passes its own seam.
+	g, err := Start(t.Context(), Options{
+		Workspace:          fake,
+		DockerMCPAvailable: func() bool { return false },
+	})
 	require.NoError(t, err)
 	// t.Context is already cancelled when cleanups run, which would make
 	// Shutdown return without draining.
