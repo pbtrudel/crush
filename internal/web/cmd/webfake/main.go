@@ -97,12 +97,13 @@ func main() {
 	planRequests := make(chan struct{}, 8)
 	scenario := os.Getenv("WEBFAKE_SCENARIO")
 	m3 := scenario == "m3"
-	m4 := scenario == "m4" || scenario == "m4b"
+	m4b := scenario == "m4b"
+	m4 := scenario == "m4" || m4b
 	// signinDone releases a flow still waiting when the server shuts down.
 	signinDone := make(chan struct{})
 	defer close(signinDone)
 	var seams webtest.M4Seams
-	if scenario == "m4b" {
+	if m4b {
 		seams, err = webtest.SeedM4b(fake, signinDone, clock)
 	} else if m4 {
 		seams, err = webtest.SeedM4(fake, signinDone, clock)
@@ -115,6 +116,13 @@ func main() {
 	if m4 {
 		opts.KnownProviders = seams.KnownProviders
 		opts.TestAPIKey = seams.TestAPIKey
+	}
+	if m4b {
+		// WEBFAKE_DOCKER_MCP=0 exercises the unavailable Docker MCP state.
+		opts.DockerMCPAvailable = func() bool {
+			return os.Getenv("WEBFAKE_DOCKER_MCP") != "0" && seams.DockerMCPAvailable()
+		}
+		opts.OnAutomation = seams.Automation
 	}
 	if m3 {
 		if err := webtest.SeedM3(fake, clock); err != nil {

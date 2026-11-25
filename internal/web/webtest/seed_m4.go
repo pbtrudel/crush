@@ -20,6 +20,13 @@ type M4Seams struct {
 	KnownProviders func(*config.Config) ([]catwalk.Provider, error)
 	TestAPIKey     func(context.Context, catwalk.Provider, string, config.VariableResolver) error
 	SignInFlow     func(string) (signin.Flow, error)
+
+	// DockerMCPAvailable answers whether Docker MCP can be enabled. SeedM4
+	// leaves it nil; SeedM4b fills it.
+	DockerMCPAvailable func() bool
+	// Automation answers a /goal or /loop command the way the terminal's
+	// automation does. SeedM4 leaves it nil; SeedM4b fills it.
+	Automation func(ctx context.Context, sessionID, name, args string) (string, error)
 }
 
 // m4Providers is the catalog the M4 picker lists: the OAuth providers plus

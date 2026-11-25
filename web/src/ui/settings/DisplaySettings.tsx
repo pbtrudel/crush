@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { api } from '../../api/http';
 import type { DisplaySettings as Display, Theme } from '../../api/types';
-import { actions, closeDisplay, displayOpen } from '../../state/display';
+import { actions, closeDisplay, displayConfirmStop, displayOpen } from '../../state/display';
 import { effectsLevel, restoreEffects, sceneFailed } from '../../state/effects';
 import { describeFailure, type Failure } from '../../state/failure';
 import { state } from '../../state/store';
@@ -31,7 +31,7 @@ export function DisplaySettings({ inert }: { inert: boolean }) {
 function DisplayPanel({ inert }: { inert: boolean }) {
   const d = state.value.display;
   const [failure, setFailure] = useState<Failure | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState(displayConfirmStop.value);
   const dialog = useRef<HTMLDivElement>(null);
   const stop = useRef<HTMLButtonElement>(null);
   const confirmStop = useRef<HTMLButtonElement>(null);

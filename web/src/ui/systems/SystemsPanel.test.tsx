@@ -8,7 +8,7 @@ import type {
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
-import { closeSystems, paletteOpen, systemsOpen } from '../../state/palette';
+import { closeSystems, openSystems, paletteOpen, systemsOpen } from '../../state/palette';
 import { cinematic, setCinematic } from '../../state/cinematic';
 import { resetWebglProbe } from '../../state/effects';
 import { App } from '../App';
@@ -24,7 +24,7 @@ function counts(error: number, warning = 0): DiagnosticCounts {
 }
 
 function mcpServer(patch: Partial<McpServer> & Pick<McpServer, 'name' | 'state'>): McpServer {
-  return { tools: 0, prompts: 0, disabled: false, needs_auth: false, ...patch };
+  return { tools: 0, prompts: 0, disabled: false, needs_auth: false, channel: false, ...patch };
 }
 
 const MCP: McpServer[] = [
@@ -55,7 +55,7 @@ function seed() {
 }
 
 function stubLists(mcp: McpServer[] = MCP, lsp: LspServer[] = LSP) {
-  const mcpServers = vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: mcp });
+  const mcpServers = vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: mcp, docker: { available: false, enabled: false } });
   const lspServers = vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: lsp });
   return { mcpServers, lspServers };
 }
@@ -336,9 +336,9 @@ describe('SystemsPanel actions', () => {
     await mount();
     await openFromHud('mcp');
 
-    expect(buttonNames('github')).toEqual(['Refresh', 'Disable']);
-    expect(buttonNames('notes')).toEqual(['Start', 'Disable']);
-    expect(buttonNames('legacy')).toEqual(['Enable']);
+    expect(buttonNames('github')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
+    expect(buttonNames('notes')).toEqual(['Start', 'Disable', 'Disable for all repositories']);
+    expect(buttonNames('legacy')).toEqual(['Enable', 'Disable for all repositories']);
 
     await click(cardButton('github', 'Refresh'));
     expect(api.mcpAction).toHaveBeenCalledWith('github', 'refresh');
@@ -400,7 +400,7 @@ describe('SystemsPanel actions', () => {
     await flush();
 
     expect(cardText('github', '.systems__state')).toBe('disabled');
-    expect(buttonNames('github')).toEqual(['Enable']);
+    expect(buttonNames('github')).toEqual(['Enable', 'Disable for all repositories']);
     expect(card('github')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -417,11 +417,11 @@ describe('SystemsPanel actions', () => {
     await click(enable);
     await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'starting', 0))); });
     await flush();
-    expect(buttonNames('legacy')).toEqual(['Disable']);
+    expect(buttonNames('legacy')).toEqual(['Disable', 'Disable for all repositories']);
 
     await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'connected', 3))); });
     await flush();
-    expect(buttonNames('legacy')).toEqual(['Refresh', 'Disable']);
+    expect(buttonNames('legacy')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
     expect(card('legacy')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -432,7 +432,7 @@ describe('SystemsPanel actions', () => {
     await mount();
     await openFromHud('mcp');
 
-    expect(buttonNames('idle')).toEqual(['Enable']);
+    expect(buttonNames('idle')).toEqual(['Enable', 'Disable for all repositories']);
   });
 
   it('keeps focus inside the card when the pressed button goes away', async () => {
@@ -467,6 +467,68 @@ describe('SystemsPanel actions', () => {
   });
 });
 
+  it('disables a server for all repositories', async () => {
+    seed();
+    stubLists();
+    await mount();
+    await openFromHud('mcp');
+
+    expect(card('github')!.textContent).toContain('Applies to every repository');
+    await click(cardButton('github', 'Disable for all repositories'));
+
+    expect(api.mcpAction).toHaveBeenCalledWith('github', 'disable_global');
+  });
+
+  it('ties the scope note to the global action', async () => {
+    seed();
+    stubLists();
+    await mount();
+    await openFromHud('mcp');
+
+    const note = card('github')!.querySelector('.systems__scope')!;
+    const group = note.closest('.systems__global');
+    expect(group).not.toBeNull();
+    expect(group!.contains(cardButton('github', 'Disable for all repositories'))).toBe(true);
+    expect(group!.querySelectorAll('button')).toHaveLength(1);
+  });
+
+  it('says when the channels filter has nothing to show', async () => {
+    seed();
+    state.value = { ...state.value, mcp: {} };
+    stubLists(MCP);
+    await mount();
+    await openFromHud('mcp');
+
+    await click(sectionButton('MCP servers', 'Channels'));
+
+    expect(section('MCP servers').textContent).toContain('No channel servers');
+  });
+
+  it('filters the MCP list to channel servers', async () => {
+    seed();
+    state.value = { ...state.value, mcp: {} };
+    stubLists([
+      mcpServer({ name: 'discord', state: 'connected', channel: true }),
+      mcpServer({ name: 'github', state: 'connected' }),
+      mcpServer({ name: 'slack', state: 'connected', channel: true }),
+    ]);
+    await mount();
+    await openFromHud('mcp');
+
+    expect(card('github')).not.toBeUndefined();
+    const filter = sectionButton('MCP servers', 'Channels');
+    await click(filter);
+
+    expect(filter.getAttribute('aria-pressed')).toBe('true');
+    expect(card('discord')).not.toBeUndefined();
+    expect(card('slack')).not.toBeUndefined();
+    expect(card('github')).toBeUndefined();
+    expect(cardText('discord', '.systems__tag')).toBe('Channel');
+
+    await click(filter);
+    expect(card('github')).not.toBeUndefined();
+  });
+
 describe('SystemsPanel authentication', () => {
   function authServer(): McpServer[] {
     return [mcpServer({ name: 'notes', state: 'needs auth', needs_auth: true })];
@@ -486,7 +548,7 @@ describe('SystemsPanel authentication', () => {
   it('opens the sign-in page in a new tab and links the same URL', async () => {
     const open = await openAuth('https://auth.example/notes');
 
-    expect(buttonNames('notes')).toEqual(['Authenticate', 'Disable']);
+    expect(buttonNames('notes')).toEqual(['Authenticate', 'Disable', 'Disable for all repositories']);
     await click(cardButton('notes', 'Authenticate'));
 
     expect(api.mcpAuth).toHaveBeenCalledWith('notes');
@@ -496,6 +558,17 @@ describe('SystemsPanel authentication', () => {
     expect(link.getAttribute('href')).toBe('https://auth.example/notes');
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  it('cancels an open sign-in and clears its link', async () => {
+    await openAuth('https://auth.example/notes');
+    await click(cardButton('notes', 'Authenticate'));
+    expect(card('notes')!.querySelector('a')).not.toBeNull();
+
+    await click(cardButton('notes', 'Cancel sign-in'));
+
+    expect(api.mcpAction).toHaveBeenCalledWith('notes', 'auth_cancel');
+    expect(card('notes')!.querySelector('a')).toBeNull();
   });
 
   it('asks the user to finish in the terminal when there is no URL', async () => {
@@ -532,7 +605,7 @@ describe('SystemsPanel authentication', () => {
     await act(() => { dispatch((s) => reduce(s, mcpFrame('notes', 'connected', 4))); });
     await flush();
 
-    expect(buttonNames('notes')).toEqual(['Refresh', 'Disable']);
+    expect(buttonNames('notes')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
     expect(card('notes')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -554,6 +627,18 @@ describe('SystemsPanel authentication', () => {
 });
 
 describe('SystemsPanel focus and Escape', () => {
+  it('opens at the MCP heading for Channels', async () => {
+    seed();
+    stubLists();
+    await mount();
+
+    await act(() => { openSystems('channels'); });
+    await flush();
+
+    expect(document.activeElement).toBe(heading('MCP servers'));
+    expect(sectionButton('MCP servers', 'Channels').getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('traps focus and restores it to the HUD button', async () => {
     seed();
     stubLists();
@@ -681,7 +766,7 @@ describe('SystemsPanel loading', () => {
     seed();
     vi.spyOn(api, 'mcpServers')
       .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
-      .mockResolvedValueOnce({ servers: MCP });
+      .mockResolvedValueOnce({ servers: MCP, docker: { available: false, enabled: false } });
     vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: LSP });
     await mount();
     await openFromHud('mcp');
@@ -713,7 +798,7 @@ describe('SystemsPanel loading', () => {
 
   it('drops a late list answer after the panel closes', async () => {
     seed();
-    const late = deferred<{ servers: McpServer[] }>();
+    const late = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
     vi.spyOn(api, 'mcpServers').mockReturnValueOnce(late.promise);
     vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: LSP });
     await mount();
@@ -722,7 +807,7 @@ describe('SystemsPanel loading', () => {
     await pressKey(window, { key: 'Escape', code: 'Escape' });
     expect(dialog()).toBeNull();
 
-    await act(async () => { late.resolve({ servers: MCP }); await Promise.resolve(); });
+    await act(async () => { late.resolve({ servers: MCP, docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
 
     expect(dialog()).toBeNull();
@@ -734,8 +819,8 @@ describe('SystemsPanel loading', () => {
     // The rows come from the list alone, so an older answer would show.
     state.value = { ...state.value, mcp: {} };
     const fresh = mcpServer({ name: 'fresh', state: 'connected', tools: 1 });
-    const older = deferred<{ servers: McpServer[] }>();
-    const newer = deferred<{ servers: McpServer[] }>();
+    const older = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
+    const newer = deferred<{ servers: McpServer[]; docker: { available: boolean; enabled: boolean } }>();
     vi.spyOn(api, 'mcpServers')
       .mockRejectedValueOnce(new ApiError(500, 'internal', 'the list failed'))
       .mockReturnValueOnce(older.promise)
@@ -747,11 +832,11 @@ describe('SystemsPanel loading', () => {
     await click(retryButton('MCP servers'));
     await click(retryButton('MCP servers'));
 
-    await act(async () => { newer.resolve({ servers: [fresh] }); await Promise.resolve(); });
+    await act(async () => { newer.resolve({ servers: [fresh], docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
     expect(card('fresh')).not.toBeUndefined();
 
-    await act(async () => { older.resolve({ servers: MCP }); await Promise.resolve(); });
+    await act(async () => { older.resolve({ servers: MCP, docker: { available: false, enabled: false } }); await Promise.resolve(); });
     await flush();
     expect(card('fresh')).not.toBeUndefined();
     expect(card('github')).toBeUndefined();

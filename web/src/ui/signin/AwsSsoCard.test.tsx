@@ -125,7 +125,7 @@ describe('AwsSsoCard', () => {
 describe('AwsSsoCard in the app', () => {
   it('comes after the systems panel in the DOM', async () => {
     vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: [] });
-    vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api, 'mcpServers').mockResolvedValue({ servers: [], docker: { available: false, enabled: false } });
     state.value = { ...reduce(initialState(), fx.snapshot), conn: 'live', awsSso: { command: 'aws sso login' } };
     await mount(<App /> as never);
     await act(() => { openSystems(); });

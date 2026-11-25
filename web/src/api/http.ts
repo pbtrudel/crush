@@ -1,5 +1,5 @@
 import type {
-  Attachment, CommandEntry, ConfigView, DiagnosticCounts, DisplaySettings, FileDiff, FileSummary, InputMode,
+  Attachment, CommandEntry, ConfigView, DiagnosticCounts, DisplaySettings, DockerMcp, FileDiff, FileSummary, InputMode,
   LspServer, McpPrompt, McpServer, Message, ModelChoice, ModelInfo, ModelTarget, PermissionMode, QuestionAnswer,
   Session, SignInResult, SignInState, SignInTarget, SkillEntry, Snapshot, SecurePrompt,
 } from './types';
@@ -80,6 +80,10 @@ export const api = {
   teamInterrupt: (member: string, sessionId: string) =>
     call<void>('POST', `/api/team/members/${encodeURIComponent(member)}/interrupt`, { session_id: sessionId }),
   reloadConfig: () => call<void>('POST', '/api/config/reload'),
+  setAgentTeams: (enabled: boolean) => call<void>('POST', '/api/agent-teams', { enabled }),
+  dockerMcp: (enable: boolean) =>
+    call<void>('POST', `/api/docker-mcp/${enable ? 'enable' : 'disable'}`),
+  initProject: () => call<{ session_id: string }>('POST', '/api/project/init'),
   // The display settings are the only config the tab may write, and every
   // write answers the whole set.
   config: () => call<ConfigView>('GET', '/api/config'),
@@ -91,6 +95,10 @@ export const api = {
   renameSession: (sid: string, title: string) =>
     call<Session>('PUT', `/api/sessions/${encodeURIComponent(sid)}`, { title }),
   deleteSession: (sid: string) => call<void>('DELETE', `/api/sessions/${encodeURIComponent(sid)}`),
+  exportSession: (sid: string) =>
+    call<{ path: string }>('POST', `/api/sessions/${encodeURIComponent(sid)}/export`),
+  automation: (sid: string, name: 'goal' | 'loop', args: string) =>
+    call<{ reply: string }>('POST', `/api/sessions/${encodeURIComponent(sid)}/automation`, { name, args }),
   follow: (sid: string) => call<void>('POST', '/api/follow', { session_id: sid }),
   sessions: () => call<Session[]>('GET', '/api/sessions'),
   commands: () => call<{ commands: CommandEntry[] }>('GET', '/api/commands'),
@@ -100,6 +108,8 @@ export const api = {
     call<{ attachment: Attachment }>('POST', `/api/skills/${encodeURIComponent(name)}/attach`),
   setSkillDisabled: (name: string, disabled: boolean) =>
     call<void>('POST', `/api/skills/${encodeURIComponent(name)}/${disabled ? 'disable' : 'enable'}`),
+  setSkillGlobal: (name: string, disabled: boolean) =>
+    call<void>('POST', `/api/skills/${encodeURIComponent(name)}/global`, { disabled }),
   mcpPrompts: () => call<{ prompts: McpPrompt[] }>('GET', '/api/mcp/prompts'),
   runMcpPrompt: (sid: string, clientId: string, promptId: string, args: Record<string, string>) =>
     call<void>('POST', '/api/mcp/prompts/run', { session_id: sid, client_id: clientId, prompt_id: promptId, args }),
@@ -118,8 +128,11 @@ export const api = {
     call<ModelInfo>('POST', '/api/models/select', { type, provider, model }),
   setReasoning: (body: { effort: string } | { think: boolean }) =>
     call<ModelInfo>('POST', '/api/models/reasoning', body),
-  mcpServers: () => call<{ servers: McpServer[] }>('GET', '/api/mcp'),
-  mcpAction: (name: string, action: 'start' | 'refresh' | 'enable' | 'disable') =>
+  mcpServers: () => call<{ servers: McpServer[]; docker: DockerMcp }>('GET', '/api/mcp'),
+  mcpAction: (
+    name: string,
+    action: 'start' | 'refresh' | 'enable' | 'disable' | 'enable_global' | 'disable_global' | 'auth_cancel',
+  ) =>
     call<void>('POST', `/api/mcp/${encodeURIComponent(name)}/${action}`),
   mcpAuth: (name: string) => call<{ url: string }>('POST', `/api/mcp/${encodeURIComponent(name)}/auth`),
   lspServers: () => call<{ servers: LspServer[] }>('GET', '/api/lsp'),

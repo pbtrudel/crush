@@ -73,12 +73,13 @@ export function Hud() {
             class="hud__model"
             tabIndex={cinematic.value ? -1 : 0}
             aria-label={`Model: ${s.model.name || s.model.id || 'Unknown'}. Switch model`}
+            title={s.model.name || s.model.id || 'Unknown'}
             onClick={() => openModels()}
           >
             <svg class="hud__provider" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><polygon points="6,1 11,6 6,11 1,6" /></svg>
-            {s.model.name || s.model.id || 'Unknown'}
+            <span class="hud__model-name">{s.model.name || s.model.id || 'Unknown'}</span>
           </button>
-          {s.branch && <span class="hud__branch">{s.branch}</span>}
+          {s.branch && <span class="hud__branch" title={s.branch}>{s.branch}</span>}
         </p>
       </div>
       <ContextGauge fill={fill} />

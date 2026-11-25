@@ -3,7 +3,11 @@
    height as --hud-h, which shell.css uses to place the toasts. */
 .hud__id { display: grid; gap: 2px; min-inline-size: 0; }
 .hud__meta {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4);
+  /* The model, its divider and the branch are one line at every width. A
+     narrow strip truncates the names instead of wrapping the branch into an
+     orphan line that grows the whole HUD. */
+  display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-4);
+  min-inline-size: 0;
   margin: 2px 0 0; font: 500 var(--step--1)/1.2 var(--font-hud);
   color: var(--text-muted);
 }
@@ -11,17 +15,23 @@
    strip unchanged at rest; only hover or focus adds the cyan edge. */
 .hud__model {
   display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; min-inline-size: 0;
   margin: 0; padding: 0; border: 0;
   background: none; color: inherit; font: inherit; letter-spacing: inherit;
-  text-align: start; overflow-wrap: inherit; cursor: pointer;
+  text-align: start; white-space: nowrap; cursor: pointer;
 }
+.hud__model-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hud__model:hover,
 .hud__model:focus-visible {
   color: var(--cyan);
   text-shadow: var(--glow-text);
 }
 .hud__provider { fill: var(--violet); flex: none; }
-.hud__branch { color: var(--teal); padding-inline-start: var(--space-4); border-inline-start: 1px solid var(--edge); }
+.hud__branch {
+  flex: 0 0 auto; max-inline-size: 50%; min-inline-size: 0;
+  color: var(--teal); padding-inline-start: calc(var(--space-4) - 2px); border-inline-start: 1px solid var(--edge);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .hud__metric { display: grid; gap: var(--space-1); justify-items: start; }
 .hud__chart { display: grid; gap: var(--space-1); justify-items: start; }
 .hud__servers { display: flex; align-items: center; gap: 8px; white-space: nowrap; }

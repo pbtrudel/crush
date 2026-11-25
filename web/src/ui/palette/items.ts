@@ -1,5 +1,5 @@
 import type {
-  CommandArg, CommandEntry, InputMode, McpPrompt, ModelChoice, ModelInfo, PermissionMode, Session,
+  CommandArg, CommandEntry, DockerMcp, InputMode, McpPrompt, ModelChoice, ModelInfo, PermissionMode, Session,
   SkillEntry,
 } from '../../api/types';
 import { showThinkingToggle } from '../../state/model';
@@ -15,7 +15,8 @@ export type PaletteRun =
   | { kind: 'session'; id: string }
   | { kind: 'model'; provider: string; model: string }
   | { kind: 'skill'; name: string }
-  | { kind: 'skill-toggle'; name: string };
+  | { kind: 'skill-toggle'; name: string }
+  | { kind: 'skill-global'; name: string; disabled: boolean };
 
 export interface PaletteItem {
   id: string;
@@ -41,6 +42,10 @@ export interface PaletteSources {
   cinematic: boolean;
   cinematicAllowed: boolean;
   motion: Motion;
+  agentTeams: boolean;
+  agentTeamsLoaded: boolean;
+  docker: DockerMcp;
+  hasChannels: boolean;
 }
 
 // The action ids the palette dispatches. Each one maps to a TUI command.
@@ -65,6 +70,19 @@ export const ACTIONS = {
   plan: 'toggle-plan',
   cinematicToggle: 'toggle-cinematic',
   motionToggle: 'cycle-motion',
+  exportSession: 'export-session',
+  setGoal: 'set-goal',
+  goalStatus: 'goal-status',
+  clearGoal: 'clear-goal',
+  startLoop: 'start-loop',
+  loopStatus: 'loop-status',
+  clearLoops: 'clear-loops',
+  agentTeams: 'toggle-agent-teams',
+  dockerEnable: 'docker-enable',
+  dockerDisable: 'docker-disable',
+  channels: 'channels',
+  initProject: 'init-project',
+  stopWeb: 'stop-web',
 } as const;
 
 function action(id: string, title: string, keywords: string[], hint?: string, args?: CommandArg[]): PaletteItem {
@@ -87,6 +105,12 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.systems, 'Systems', ['mcp', 'lsp', 'servers', 'systems']),
     action(ACTIONS.signIn, 'Sign in to a provider', ['login', 'api key', 'oauth', 'provider', 'auth']),
   ];
+  if (s.hasChannels) actions.push(action(ACTIONS.channels, 'Channels', ['channels', 'mcp', 'discord']));
+  if (s.docker.enabled) {
+    actions.push(action(ACTIONS.dockerDisable, 'Disable Docker MCP catalog', ['docker', 'mcp', 'catalog']));
+  } else if (s.docker.available) {
+    actions.push(action(ACTIONS.dockerEnable, 'Enable Docker MCP catalog', ['docker', 'mcp', 'catalog']));
+  }
   if (s.model.can_reason) {
     actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));
   }
@@ -94,6 +118,17 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
   if (s.hasSession) {
     actions.push(
       action(ACTIONS.compact, 'Compact session', ['summarize']),
+      action(ACTIONS.exportSession, 'Export session as Markdown', ['export', 'markdown', 'download']),
+      action(ACTIONS.setGoal, 'Set goal', ['goal'], undefined, [
+        { id: 'objective', title: 'Objective', required: true },
+      ]),
+      action(ACTIONS.goalStatus, 'Goal status', ['goal', 'status']),
+      action(ACTIONS.clearGoal, 'Clear goal', ['goal', 'clear']),
+      action(ACTIONS.startLoop, 'Start loop', ['loop', 'start'], undefined, [
+        { id: 'task', title: 'Task', required: true },
+      ]),
+      action(ACTIONS.loopStatus, 'Loop status', ['loop', 'status']),
+      action(ACTIONS.clearLoops, 'Clear loops', ['loop', 'clear']),
       action(ACTIONS.addNote, 'Add note', ['note', 'remember', 'keep']),
       action(ACTIONS.askSide, 'Ask side question', ['ask', 'question', 'side'], undefined, [
         { id: 'question', title: 'Question', required: true },
@@ -106,6 +141,8 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.drawer, 'Open file drawer', ['drawer', 'files']),
     action(ACTIONS.display, 'Display settings', ['display', 'motion', 'settings']),
     action(ACTIONS.reloadConfig, 'Reload configuration', ['reload', 'reload-config', 'config']),
+    action(ACTIONS.initProject, 'Initialize project', ['init', 'initialize', 'project', 'onboarding']),
+    action(ACTIONS.stopWeb, 'Stop web mode', ['stop', 'web', 'detach']),
   );
 
   const commands: PaletteItem[] = s.commands
@@ -178,6 +215,15 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     toggles.push(toggle('cinematic', 'Cinematic mode', onOff(s.cinematic), ['cinematic'], ACTIONS.cinematicToggle));
   }
   toggles.push(toggle('motion', 'Motion', s.motion, ['motion', 'reduce', 'effects'], ACTIONS.motionToggle));
+  if (s.agentTeamsLoaded) {
+    toggles.push({
+      id: 'toggle:agent-teams',
+      group: 'Toggles',
+      title: `Agent Teams: ${onOff(s.agentTeams)}`,
+      keywords: ['agent', 'teams', 'toggle-agent-teams'],
+      run: { kind: 'action', action: ACTIONS.agentTeams },
+    });
+  }
 
   return [...actions, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
 }
@@ -185,14 +231,23 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
 // buildSkillToggles lists every skill, disabled ones included, so the skills
 // section can turn one back on. The main list leaves disabled skills out.
 export function buildSkillToggles(skills: SkillEntry[]): PaletteItem[] {
-  return skills.map((k) => ({
-    id: `skill-toggle:${k.name}`,
-    group: 'Skills',
-    title: k.name,
-    hint: k.disabled ? 'Disabled' : 'Enabled',
-    keywords: k.description ? [k.description] : [],
-    run: { kind: 'skill-toggle', name: k.name },
-  }));
+  return skills.flatMap((k) => [
+    {
+      id: `skill-toggle:${k.name}`,
+      group: 'Skills' as const,
+      title: k.name,
+      hint: k.disabled ? 'Disabled' : 'Enabled',
+      keywords: k.description ? [k.description] : [],
+      run: { kind: 'skill-toggle' as const, name: k.name },
+    },
+    {
+      id: `skill-global:${k.name}`,
+      group: 'Skills' as const,
+      title: `${k.disabled_globally ? 'Enable' : 'Disable'} ${k.name} everywhere`,
+      keywords: k.description ? [k.description] : [],
+      run: { kind: 'skill-global' as const, name: k.name, disabled: !k.disabled_globally },
+    },
+  ]);
 }
 
 function words(title: string): string[] {

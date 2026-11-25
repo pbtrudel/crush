@@ -146,11 +146,12 @@ export interface CommandEntry {
 export interface McpPrompt {
   id: string; client_id: string; prompt_id: string; title: string; description?: string; args: CommandArg[];
 }
-export interface SkillEntry { name: string; description?: string; disabled: boolean }
+export interface SkillEntry { name: string; description?: string; disabled: boolean; disabled_globally: boolean }
 export interface McpServer {
   name: string; state: string; tools: number; prompts: number; error?: string;
-  disabled: boolean; needs_auth: boolean;
+  disabled: boolean; needs_auth: boolean; channel: boolean;
 }
+export interface DockerMcp { available: boolean; enabled: boolean }
 export interface DiagnosticCounts { error: number; warning: number; information: number; hint: number }
 export interface LspServer { name: string; state: string; error?: string; diagnostics: DiagnosticCounts }
 export interface ShellOutput {
