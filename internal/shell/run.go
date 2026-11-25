@@ -97,11 +97,29 @@ func Run(ctx context.Context, opts RunOptions) (err error) {
 	return runner.Run(ctx, line)
 }
 
+// InterruptedExitCode is the TUI's conventional SIGINT exit code for a
+// command the user cancelled.
+const InterruptedExitCode = 130
+
 // CaptureResult holds the combined output and exit code from a
 // captured shell execution.
 type CaptureResult struct {
 	Output   string
 	ExitCode int
+	// Interrupted reports that the run itself was stopped (by cancellation
+	// or its deadline) rather than ending on its own.
+	Interrupted bool
+}
+
+// PersistedExitCode reports the exit code a finished run is stored with: a
+// run that was interrupted reads as the TUI's SIGINT code, whatever status
+// the interrupt left behind. A run that ended on its own keeps its own code,
+// even when the caller cancelled after it finished.
+func (r CaptureResult) PersistedExitCode() int {
+	if r.Interrupted {
+		return InterruptedExitCode
+	}
+	return r.ExitCode
 }
 
 // PersistFunc is a callback that persists a shell command result.
@@ -118,7 +136,7 @@ func RunAndPersist(ctx context.Context, opts RunOptions, persist PersistFunc) (C
 	}
 
 	if persist != nil {
-		if persistErr := persist(opts.Command, result.Output, result.ExitCode); persistErr != nil {
+		if persistErr := persist(opts.Command, result.Output, result.PersistedExitCode()); persistErr != nil {
 			slog.Error("Failed to persist shell command output", "error", persistErr, "command", opts.Command)
 		}
 	}
@@ -158,6 +176,12 @@ func RunAndCapture(ctx context.Context, opts RunOptions) (CaptureResult, error) 
 	return CaptureResult{
 		Output:   output,
 		ExitCode: exitCode,
+		// A run is interrupted when its own context ended it: either the
+		// runner reported the cancellation, or it failed while the context
+		// was already done (the interpreter maps some cancelled builtins to
+		// a plain exit status). A run that returned no error finished on its
+		// own, whatever the context did afterwards.
+		Interrupted: IsInterrupt(runErr) || (runErr != nil && ctx.Err() != nil),
 	}, nil
 }
 

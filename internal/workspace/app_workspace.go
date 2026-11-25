@@ -28,10 +28,6 @@ import (
 	"github.com/charmbracelet/crush/internal/sshaskpass"
 )
 
-// shellCancelledExitCode is the TUI's conventional SIGINT exit code for a
-// command the user cancelled.
-const shellCancelledExitCode = 130
-
 // AppWorkspace implements the Workspace interface by delegating
 // directly to an in-process [app.App] instance. This is the default
 // mode when the client/server architecture is not enabled.
@@ -171,14 +167,12 @@ func (w *AppWorkspace) AgentAddNote(_ context.Context, sessionID, text string) e
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
 	var persist shell.PersistFunc
 	if sessionID != "" {
-		// The output is saved even when the run is cancelled: the TUI
-		// shows a cancelled command as SIGINT, so the transcript keeps the
-		// partial output and the same exit code instead of losing the run.
+		// The output is saved even when the run is cancelled: a run the
+		// user interrupted is stored with the TUI's SIGINT code (see
+		// CaptureResult.PersistedExitCode), so the transcript keeps the
+		// partial output and the same code instead of losing the run.
 		persistCtx := context.WithoutCancel(ctx)
 		persist = func(cmd, output string, exitCode int) error {
-			if ctx.Err() != nil {
-				exitCode = shellCancelledExitCode
-			}
 			return shell.PersistOutput(persistCtx, w.app.Messages, sessionID, cmd, output, exitCode, w.store.Config().Options.DataDirectory)
 		}
 	}
@@ -204,7 +198,7 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 
 	// Persist if we used the streaming path (persist wasn't called by RunAndPersist).
 	if onProgress != nil && persist != nil {
-		if persistErr := persist(command, result.Output, result.ExitCode); persistErr != nil {
+		if persistErr := persist(command, result.Output, result.PersistedExitCode()); persistErr != nil {
 			slog.Error("Failed to persist shell command output", "error", persistErr, "command", command)
 		}
 	}

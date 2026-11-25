@@ -379,10 +379,6 @@ func (b *Backend) GetDefaultSmallModel(workspaceID, providerID string) (config.S
 	return ws.GetDefaultSmallModel(providerID), nil
 }
 
-// shellCancelledExitCode is the TUI's conventional SIGINT exit code for a
-// command the user cancelled.
-const shellCancelledExitCode = 130
-
 // RunShellCommand runs a shell command in the workspace directory and
 // persists the command + output as a user message in the session.
 func (b *Backend) RunShellCommand(ctx context.Context, workspaceID string, req proto.ShellCommandRequest) (proto.ShellCommandResponse, error) {
@@ -401,14 +397,12 @@ func (b *Backend) RunShellCommand(ctx context.Context, workspaceID string, req p
 
 	var persist shell.PersistFunc
 	if req.SessionID != "" {
-		// The output is saved even when the run is cancelled: the TUI
-		// shows a cancelled command as SIGINT, so the transcript keeps the
-		// partial output and the same exit code instead of losing the run.
+		// The output is saved even when the run is cancelled: a run the user
+		// interrupted is stored with the TUI's SIGINT code (see
+		// CaptureResult.PersistedExitCode), so the transcript keeps the
+		// partial output and the same code instead of losing the run.
 		persistCtx := context.WithoutCancel(ctx)
 		persist = func(cmd, output string, exitCode int) error {
-			if ctx.Err() != nil {
-				exitCode = shellCancelledExitCode
-			}
 			return shell.PersistOutput(persistCtx, ws.Messages, req.SessionID, cmd, output, exitCode, dataDir)
 		}
 	}
