@@ -44,13 +44,6 @@
 }
 .hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
 .hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }
-/* The wrapped strip has no room for another row: at these widths the AWS
-   card above the deck needs the height, and the session title still opens
-   the switcher, where Browse here sits. The named HUD layouts (1280 and up)
-   keep the toggle. */
-@media (max-width: 1279px) {
-  .hud__pin-slot { display: none; }
-}
 .hud__select {
   appearance: none; color: var(--text); background-color: var(--glass-solid);
   /* The chevron is two 45 degree strokes side by side, so no data URI. */
@@ -187,6 +180,11 @@
   .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); padding: var(--space-4) calc(var(--space-4) * 1.5); }
   .hud__id { flex: 1 1 12rem; }
   .hud__controls { flex: 1 1 100%; flex-wrap: wrap; gap: var(--space-4); }
+  /* The wrapped strip has no room for another row: the AWS card above the
+     deck needs the height, and the session title still opens the switcher,
+     where Browse here sits. The named HUD layouts (1280 and up) keep the
+     toggle. */
+  .hud__pin-slot { display: none; }
   /* The wrapped HUD is taller, so until the HUD reports its height the
      fallback keeps the old 216px offset. */
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
