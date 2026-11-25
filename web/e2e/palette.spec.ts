@@ -316,6 +316,7 @@ m4bLongModelTest('clips a long model name before the context gauge', async ({ pa
         sameLine: Math.abs(center(b) - center(m)) <= 2,
         overflow: document.documentElement.scrollWidth - window.innerWidth,
         hudRight: document.querySelector('.hud__controls')!.getBoundingClientRect().right,
+        glyph: document.querySelector('.hud__provider')!.getBoundingClientRect().width,
       };
     });
     expect(geometry.metaRight).toBeLessThanOrEqual(geometry.gaugeLeft);
@@ -323,5 +324,6 @@ m4bLongModelTest('clips a long model name before the context gauge', async ({ pa
     expect(geometry.sameLine).toBe(true);
     expect(geometry.overflow).toBeLessThanOrEqual(0);
     expect(geometry.hudRight).toBeLessThanOrEqual(width);
+    expect(geometry.glyph).toBeGreaterThan(0);
   }
 });
