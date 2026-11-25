@@ -7880,13 +7880,13 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	textData, textErr := clipboard.Read(clipboard.FormatText)
 	if textErr != nil || len(textData) == 0 {
-		return nil // Clipboard is empty or does not contain an image
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	path := strings.TrimSpace(string(textData))
 	path = strings.ReplaceAll(path, "\\ ", " ")
 	if _, statErr := os.Stat(path); statErr != nil {
-		return nil // Clipboard does not contain an image or valid file path
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	if !common.IsImagePath(path) {
