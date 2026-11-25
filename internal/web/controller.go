@@ -17,6 +17,11 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
+// detachTimeout bounds the gateway shutdown a browser detach runs. The
+// gateway stops before the notice reaches the terminal, so the status bar
+// never shows web mode running after it is gone.
+const detachTimeout = 5 * time.Second
+
 // Controller owns the lifetime of one process's gateway. It starts the
 // gateway lazily, so the TUI pays nothing until web mode is requested.
 type Controller struct {
@@ -33,6 +38,7 @@ type Controller struct {
 	onSessionCreated     func(string)
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
+	onStopped            func(reason string)
 	inputMode            bool
 	inputModeSeq         uint64
 	planReady            string
@@ -72,6 +78,7 @@ func (c *Controller) Start(ctx context.Context) (string, error) {
 			OnSessionCreated:     c.onSessionCreated,
 			OnInputModeRequested: c.onInputModeRequested,
 			OnPlanHandoff:        c.onPlanHandoff,
+			OnDetach:             c.detach,
 		})
 		if err != nil {
 			return "", err
@@ -116,6 +123,33 @@ func (c *Controller) SetOnPlanHandoff(fn func(sessionID string, yolo bool)) {
 	c.mu.Unlock()
 	if gw != nil {
 		gw.setOnPlanHandoff(fn)
+	}
+}
+
+// SetOnStopped sets the callback that reports why web mode stopped. A
+// browser detach is the only source. It runs after the gateway is down, so
+// /web can start a new one. It may be nil.
+func (c *Controller) SetOnStopped(fn func(reason string)) {
+	c.mu.Lock()
+	c.onStopped = fn
+	c.mu.Unlock()
+}
+
+// detach stops the gateway for the browser's detach request, then reports
+// why so the terminal can say how to start it again. The detach route runs
+// it in a goroutine after its answer, so the 202 is flushed before the
+// server stops.
+func (c *Controller) detach() {
+	ctx, cancel := context.WithTimeout(context.Background(), detachTimeout)
+	defer cancel()
+	if err := c.Shutdown(ctx); err != nil {
+		slog.Warn("Failed to stop web mode", "error", err)
+	}
+	c.mu.Lock()
+	fn := c.onStopped
+	c.mu.Unlock()
+	if fn != nil {
+		fn(detachReason)
 	}
 }
 

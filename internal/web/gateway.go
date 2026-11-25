@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -37,6 +38,10 @@ type Options struct {
 	// OnPlanHandoff is called when the browser confirms a ready plan.
 	// The terminal makes the switch and clears the plan. It may be nil.
 	OnPlanHandoff func(sessionID string, yolo bool)
+	// OnDetach is called when the browser asks to stop web mode. The
+	// caller stops the gateway; the TUI keeps running. Nil means no
+	// terminal is attached, and the detach route answers 503.
+	OnDetach func()
 	// InputMode is the terminal's mode when the gateway starts. Empty
 	// means code.
 	InputMode string
@@ -187,6 +192,14 @@ type Gateway struct {
 	onInputModeRequested func(bool)
 	onPlanHandoff        func(string, bool)
 
+	// onDetach is Options.OnDetach, fixed at start. The detach route
+	// answers 503 no_terminal when it is nil.
+	onDetach func()
+	// closingReason is the reason the gateway_closing frame carries. The
+	// detach route sets it before the shutdown it asks for; the empty
+	// value means the normal exit.
+	closingReason atomic.Value
+
 	modeMu    sync.RWMutex
 	inputMode string
 	planReady string
@@ -285,6 +298,7 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,
+		onDetach:             opts.OnDetach,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
 		// The settings the tab starts from are the ones in the config.
@@ -460,6 +474,15 @@ const (
 	inputModePlan = "plan"
 )
 
+// closingReasonText is the reason the gateway_closing frame carries: the
+// one the detach route stored, or the normal exit when nothing did.
+func (g *Gateway) closingReasonText() string {
+	if reason, ok := g.closingReason.Load().(string); ok {
+		return reason
+	}
+	return "crush exited"
+}
+
 func normalizeInputMode(mode string) string {
 	if mode == inputModePlan {
 		return inputModePlan
@@ -519,7 +542,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	case <-workDone:
 	case <-ctx.Done():
 	}
-	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
+	g.hub.publishJSON(frameClosing, map[string]string{"reason": g.closingReasonText()})
 	g.hub.close()
 	g.removeLaunchFile()
 	g.cancel()

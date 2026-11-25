@@ -371,3 +371,35 @@ func TestLaunchFileExpiresUnused(t *testing.T) {
 		return errors.Is(err, fs.ErrNotExist)
 	}, 2*time.Second, 10*time.Millisecond, "a launch file no tab used does not linger")
 }
+
+// TestControllerDetachStopsAndReports checks that a browser detach stops
+// the gateway, tells the terminal why, and leaves /web free to start a new
+// gateway with a new token.
+func TestControllerDetachStopsAndReports(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	stopped := make(chan string, 1)
+	c.SetOnStopped(func(reason string) { stopped <- reason })
+
+	u1, err := c.Start(t.Context())
+	require.NoError(t, err)
+	gw := c.gw
+	rsp, _ := doJSON(t, authedClient(t, gw), http.MethodPost, gw.URL()+"/api/detach", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusAccepted, rsp.StatusCode)
+	require.Eventually(t, func() bool { return !c.Running() }, time.Second, 10*time.Millisecond,
+		"the detach stops the gateway")
+	select {
+	case reason := <-stopped:
+		require.Equal(t, "detached", reason)
+	case <-time.After(time.Second):
+		t.Fatal("the terminal was not told why web mode stopped")
+	}
+
+	u2, err := c.Start(t.Context())
+	require.NoError(t, err)
+	tokenOf := func(u string) string { _, token, _ := strings.Cut(u, "/#t="); return token }
+	require.NotEmpty(t, tokenOf(u1))
+	require.NotEqual(t, tokenOf(u1), tokenOf(u2), "a new gateway gets a new token")
+}

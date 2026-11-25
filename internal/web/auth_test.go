@@ -266,6 +266,7 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"GET /api/config",
 		"POST /api/config/set",
 		"POST /api/config/remove",
+		"POST /api/detach",
 		"POST /api/plan/handoff",
 		"GET /api/auth/providers",
 		"POST /api/auth/provider/key",
