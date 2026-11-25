@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/skills"
 )
 
@@ -33,6 +34,11 @@ func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 		model.CatwalkCfg.Name = name
 		f.SetAgentModel(model)
 	}
+	// The browse spec opens s-2, so it carries a message to show. The id
+	// must not look like nextID output, or the scripted agent reuses it.
+	f.AddMessage(message.Message{ID: "browse-seed-a", SessionID: "s-2", Role: message.Assistant, CreatedAt: clock.Unix(), UpdatedAt: clock.Unix(), Model: "claude-haiku", Provider: "anthropic", Parts: []message.ContentPart{
+		message.TextContent{Text: "Porting the tokenizer."},
+	}})
 	// The m4b scenario carries a channel-capable MCP server, a skill the
 	// global config disables, and a terminal that answers automation.
 	if f.MCP == nil {

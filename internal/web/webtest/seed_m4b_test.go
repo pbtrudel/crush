@@ -124,6 +124,19 @@ func TestSeedM4bHonoursTheTheme(t *testing.T) {
 	require.Equal(t, "solid", cfg.Options.WebDisplay.Theme)
 }
 
+func TestSeedM4bGivesTheBrowsedSessionAMessage(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, clock)
+	require.NoError(t, err)
+	msgs, err := f.ListMessages(t.Context(), "s-2")
+	require.NoError(t, err)
+	require.NotEmpty(t, msgs, "the browsed session has a message to show")
+}
+
 func TestSeedM4bRefusesAnUnknownTheme(t *testing.T) {
 	t.Setenv("WEBFAKE_THEME", "neon")
 	f := NewFake()
