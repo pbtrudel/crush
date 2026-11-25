@@ -710,6 +710,25 @@ func TestShutdownWaitsForTheLSPStart(t *testing.T) {
 	})
 }
 
+// TestLSPStartAfterShutdown pins the closing answer: once the gateway has
+// shut down, a start request is refused with the shutting-down state and
+// reaches no workspace call.
+func TestLSPStartAfterShutdown(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	require.NoError(t, g.Shutdown(context.Background()))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/lsp/start", strings.NewReader(`{"path":"a.go"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	g.handleLSPStart(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "shutting_down")
+	require.Empty(t, fake.CallLog(), "a start after shutdown reaches no workspace call")
+}
+
 func TestLSPStop(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
