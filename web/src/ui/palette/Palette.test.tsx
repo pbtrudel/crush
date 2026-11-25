@@ -14,7 +14,7 @@ import {
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
 import { closeSignIn, signInOpen } from '../../state/signin';
-import { setMotion } from '../../state/motion';
+import { motion, setMotion } from '../../state/motion';
 import { closeDisplay, displayOpen } from '../../state/display';
 import { App } from '../App';
 
@@ -646,7 +646,8 @@ describe('the command palette', () => {
     expect(dialog).not.toBeNull();
     expect(dialog!.contains(document.activeElement)).toBe(true);
 
-    // The palette is gone, so closing the dialog hands the focus to the deck.
+    // Pins the deck return: useDialogFocus's own restore already lands on
+    // the deck when the palette opened from it.
     await pressKey(dialog!.querySelector('input')!, { key: 'Escape', code: 'Escape' });
     expect(displayOpen.value).toBe(false);
     expect(document.activeElement).toBe(deck());
@@ -665,6 +666,7 @@ describe('the command palette', () => {
     expect(set).toHaveBeenCalledWith('options.web_display.motion', 'reduced');
     expect(paletteOpen.value).toBeNull();
     expect(state.value.display.motion).toBe('reduced');
+    expect(motion.value).toBe('reduced');
   });
 
   it('hands the list back from the argument form on Escape', async () => {

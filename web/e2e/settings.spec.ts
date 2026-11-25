@@ -14,7 +14,11 @@ m4bFreshTest('keeps the theme across a reload', async ({ page, gateway }) => {
   const dialog = page.getByRole('dialog', { name: 'Display settings' });
   await expect(dialog).toBeVisible();
 
+  // The reload must happen after the gateway has the setting, not after the
+  // optimistic render.
+  const saved = page.waitForResponse((r) => r.url().endsWith('/api/config/set') && r.request().method() === 'POST');
   await dialog.getByRole('radio', { name: 'Solid glass' }).check();
+  expect((await saved).ok()).toBe(true);
   await expect(page.locator('.holodeck')).toHaveAttribute('data-theme', 'solid');
 
   // The setting is the gateway's now, so a reload reads it back instead of
