@@ -127,3 +127,30 @@ m4bTest('focuses a seeded tool call from the chronoline and the drawer', async (
   await expect(first.locator('summary')).toBeFocused();
   await expect(first).toBeInViewport();
 });
+
+// Between 1024 and 1279 the drawer covers the log column and the log is
+// inert under it, so a version link has to close the drawer before the card
+// can take the focus.
+m4bTest('focuses a version link at 1100 wide', async ({ page, gateway }) => {
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto(gateway.launch);
+  await linked(page);
+
+  await page.getByRole('button', { name: /^Files/ }).click();
+  const drawer = page.locator('#file-drawer');
+  await expect(drawer).toHaveAttribute('data-open', 'true');
+  await page.locator('.drawer__list').getByRole('button', { name: /parser\.go/ }).click();
+  const to = page.locator('select[name="to"]');
+  await expect(to.locator('option[value="3"]')).toHaveCount(1);
+  await to.selectOption('3');
+  const link = page.locator('.diffpanel__made').getByRole('button', { name: 'Made by edit in Coder' });
+  await expect(link).toBeVisible();
+  await link.click();
+
+  await expect(drawer).toHaveAttribute('data-open', 'false');
+  await expect(page.locator('.panel--log')).not.toHaveAttribute('inert');
+  const card = page.locator('details.tool[data-tool-call-id="tc-edit-1"]');
+  await expect(card).toHaveAttribute('open', '');
+  await expect(card.locator('summary')).toBeFocused();
+  await expect(card).toBeInViewport();
+});

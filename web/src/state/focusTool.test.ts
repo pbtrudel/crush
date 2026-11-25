@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fixtures from './__fixtures__/events.json';
 import type { Frame } from '../api/types';
+import { drawerOpen, panelTab } from './drawer';
 import { focusToolCall, toolFocus } from './focusTool';
+import { logInert, overlayWidth } from './overlay';
 import { initialState, reduce } from './reducer';
 import { actions, state } from './store';
 
@@ -11,6 +13,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   toolFocus.value = null;
   state.value = initialState();
+  drawerOpen.value = false;
+  panelTab.value = 'log';
+  overlayWidth.value = false;
 });
 
 describe('focusToolCall', () => {
@@ -45,5 +50,76 @@ describe('focusToolCall', () => {
 
     expect(toolFocus.value).toEqual({ callId: 'sub-tc-1', sessionId: 'sub-1' });
     expect(inspect).toHaveBeenCalledWith('sub-1');
+  });
+
+  // 1024 to 1279: the drawer covers the log column and makes the log inert,
+  // so the request has to close it before the card can take the focus.
+  it('closes the overlay drawer and shows the log', () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    drawerOpen.value = true;
+    overlayWidth.value = true;
+    panelTab.value = 'files';
+    vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    expect(logInert.value).toBe(true);
+
+    focusToolCall('s1', 'tc-1');
+
+    expect(drawerOpen.value).toBe(false);
+    expect(logInert.value).toBe(false);
+    expect(panelTab.value).toBe('log');
+  });
+
+  // Below 1024 the side panels share one slot: the drawer is the files tab,
+  // so a focus request has to pick the log tab back.
+  it('returns from the files tab to the log below 1024', () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    drawerOpen.value = true;
+    overlayWidth.value = false;
+    panelTab.value = 'files';
+    vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+
+    focusToolCall('s1', 'tc-1');
+
+    expect(drawerOpen.value).toBe(false);
+    expect(panelTab.value).toBe('log');
+  });
+
+  it('shows the agent tab for a child session call below 1024', () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    drawerOpen.value = true;
+    overlayWidth.value = false;
+    panelTab.value = 'files';
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+
+    focusToolCall('sub-1', 'sub-tc-1');
+
+    expect(drawerOpen.value).toBe(false);
+    expect(panelTab.value).toBe('agent');
+    expect(inspect).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('keeps a browsed session read-only and starts no work', () => {
+    const base = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...base,
+      browsing: 's-2',
+      terminalSession: 's1',
+      sessionId: 's-2',
+      messages: [{
+        id: 'browse-a', role: 'assistant', session_id: 's-2', model: '', provider: '',
+        created_at: 1, updated_at: 1,
+        parts: [{ type: 'tool_call', data: { id: 'tc-9', name: 'view', input: '{"file_path":"b.go"}' } }],
+      }],
+    };
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    const send = vi.spyOn(actions, 'sendPrompt');
+
+    focusToolCall('s-2', 'tc-9');
+
+    expect(toolFocus.value).toEqual({ callId: 'tc-9', sessionId: 's-2' });
+    expect(state.value.browsing).toBe('s-2');
+    expect(state.value.sessionId).toBe('s-2');
+    expect(inspect).toHaveBeenCalledWith(null);
+    expect(send).not.toHaveBeenCalled();
   });
 });

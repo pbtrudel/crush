@@ -1,4 +1,5 @@
 import { signal } from '@preact/signals';
+import { closeDrawer, panelTab } from './drawer';
 import { actions, state } from './store';
 
 export interface ToolFocus {
@@ -11,11 +12,14 @@ export interface ToolFocus {
 // focuses it, then clears the request.
 export const toolFocus = signal<ToolFocus | null>(null);
 
-// focusToolCall selects the agent that ran a tool call. A call in the shown
-// session is the main agent's, so any child inspector closes and the log
-// keeps the view; a child's call opens that agent's inspector, whose
-// transcript takes the focus request.
+// focusToolCall selects the agent that ran a tool call. The drawer covers the
+// log between 1024 and 1279px and takes the narrow panel slot below 1024px,
+// so the request leaves it first: the log tab for a main-agent call, the
+// agent tab for a child's, whose inspector then takes the request.
 export function focusToolCall(sessionId: string, callId: string): void {
+  const child = sessionId !== state.value.sessionId;
+  closeDrawer();
+  panelTab.value = child ? 'agent' : 'log';
   toolFocus.value = { callId, sessionId };
-  void actions.inspect(sessionId === state.value.sessionId ? null : sessionId);
+  void actions.inspect(child ? sessionId : null);
 }
