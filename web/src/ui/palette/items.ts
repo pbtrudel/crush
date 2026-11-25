@@ -50,6 +50,7 @@ export const ACTIONS = {
   model: 'model',
   reasoningLevel: 'reasoning-level',
   systems: 'systems',
+  signIn: 'sign-in',
   compact: 'compact',
   runShell: 'run-shell',
   addNote: 'add-note',
@@ -84,6 +85,7 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.sessions, 'Sessions', []),
     action(ACTIONS.model, 'Switch model', ['model']),
     action(ACTIONS.systems, 'Systems', ['mcp', 'lsp', 'servers', 'systems']),
+    action(ACTIONS.signIn, 'Sign in to a provider', ['login', 'api key', 'oauth', 'provider', 'auth']),
   ];
   if (s.model.can_reason) {
     actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));

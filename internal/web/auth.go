@@ -11,10 +11,14 @@ import (
 	"strings"
 )
 
-// cookieNamePrefix prefixes the per-gateway cookie. Cookies ignore ports,
-// so a fixed name would let a second gateway overwrite the first tab's
-// cookie and log it out.
-const cookieNamePrefix = "crush_web_"
+const (
+	// streamProtocol is the subprotocol the stream speaks. The page offers
+	// it together with the token entry, and the gateway selects it.
+	streamProtocol = "crush.v1"
+	// authProtocolPrefix carries the token on the WebSocket upgrade, where
+	// a browser cannot set an Authorization header.
+	authProtocolPrefix = "crush.auth."
+)
 
 const csp = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; " +
 	"connect-src 'self'; object-src 'none'; frame-ancestors 'none'"
@@ -35,8 +39,8 @@ func (g *Gateway) hostAllowed(host string) bool {
 // originAllowed checks Origin. Browsers send it on every request that can
 // change state, so a state-changing request without one did not come from
 // the tab and is refused. A missing Origin is allowed on GET, including
-// the WebSocket upgrade: the Host check and SameSite=Strict already cover
-// a cross-site reader that cannot set the header.
+// the WebSocket upgrade: the upgrade now needs the token in a header a
+// cross-site page cannot set, so a foreign reader cannot reach it anyway.
 func (g *Gateway) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -51,6 +55,26 @@ func (g *Gateway) originAllowed(r *http.Request) bool {
 
 func (g *Gateway) tokenMatches(candidate string) bool {
 	return subtle.ConstantTimeCompare([]byte(candidate), []byte(g.secret)) == 1
+}
+
+// requestToken returns the token a request presents: the bearer header,
+// or on a WebSocket upgrade the crush.auth subprotocol entry. A query
+// string never carries it, so the token stays out of URLs and logs.
+func requestToken(r *http.Request) string {
+	if v, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return strings.TrimSpace(v)
+	}
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return ""
+	}
+	for _, field := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, p := range strings.Split(field, ",") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(p), authProtocolPrefix); ok {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // guard applies the host check and security headers to every request.
@@ -77,16 +101,15 @@ func (g *Gateway) guard(next http.Handler) http.Handler {
 	})
 }
 
-// requireAuth protects API routes: same-origin and a valid cookie.
+// requireAuth protects API routes: same-origin and a valid bearer token.
 func (g *Gateway) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.originAllowed(r) {
 			writeError(w, http.StatusForbidden, "forbidden_origin", "cross-origin request rejected")
 			return
 		}
-		c, err := r.Cookie(g.cookieName)
-		if err != nil || !g.tokenMatches(c.Value) {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid session cookie")
+		if !g.tokenMatches(requestToken(r)) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid token")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -105,13 +128,10 @@ func (g *Gateway) handleAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid token")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     g.cookieName,
-		Value:    g.secret,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
+	// The link has served its purpose once a tab signed in. Removing it
+	// before the answer means the page cannot follow it after this
+	// point, and the token outlives it only in the tab.
+	g.removeLaunchFile()
 	w.WriteHeader(http.StatusNoContent)
 }
 

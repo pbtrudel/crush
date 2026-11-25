@@ -156,6 +156,62 @@ export const m3VisualTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
 });
 
+// The M4 surfaces (secure prompts, provider sign-in and the AWS SSO card)
+// have their own scenario on top of the M3 seeds, so every earlier scenario
+// and baseline stays exactly as it was.
+const M4 = { WEBFAKE_SCENARIO: 'm4' };
+
+// The read-only M4 tests share one gateway: nothing they do saves a key,
+// finishes a sign-in, leaves a flow running or answers a prompt.
+export const m4Test = base.extend<{}, { gateway: Gateway }>({
+  gateway: [async ({}, use) => launchGateway(M4, use), { scope: 'worker', timeout: 180_000 }],
+});
+
+// An M4 test that changes the gateway's state, or takes a baseline, gets its
+// own webfake.
+export const m4FreshTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway(M4, use),
+});
+
+export const m4VisualTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+});
+
+// Each secure prompt test scripts one prompt kind on a gateway of its own:
+// the prompt arrives shortly after the gateway starts.
+export const promptTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry' }, use),
+});
+
+// The terminal answers the prompt itself five seconds after the gateway
+// starts, long after the prompt has reached the tab.
+export const promptElsewhereTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
+});
+
+export const confirmTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'confirm' }, use),
+});
+
+export const touchTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'touch' }, use),
+});
+
+export const promptVisualTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_CLOCK: '2026-11-22T12:00:00Z' }, use),
+});
+
+// A device flow finishes on its own three seconds after it starts, the way a
+// user approving it in the provider's page would.
+export const signinDoneTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_SIGNIN_MS: '3000' }, use),
+});
+
+// One AWS SSO refresh: the command first, then its verification URL.
+export const awsTest = base.extend<{ gateway: Gateway }>({
+  gateway: async ({}, use) => launchGateway({ ...M4, WEBFAKE_AWS_SSO: '1' }, use),
+});
+
 // A starting agent answers 503 agent_starting on every route that needs it.
 export const startingTest = base.extend<{ gateway: Gateway }>({
   gateway: async ({}, use) => launchGateway({ ...M3, WEBFAKE_AGENT_STARTING: '1' }, use),

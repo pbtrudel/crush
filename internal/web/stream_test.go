@@ -30,12 +30,11 @@ func dialStream(t *testing.T, g *Gateway, query string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	h := http.Header{}
-	h.Set("Cookie", g.cookieName+"="+g.token())
 	// The 101 body is the hijacked connection, so the websocket owns it.
-	c, _, err := websocket.Dial(ctx, strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream"+query, //nolint:bodyclose // See above.
-		&websocket.DialOptions{HTTPHeader: h})
+	c, rsp, err := websocket.Dial(ctx, strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream"+query, //nolint:bodyclose // See above.
+		&websocket.DialOptions{Subprotocols: []string{streamProtocol, authProtocolPrefix + g.token()}})
 	require.NoError(t, err)
+	require.Equal(t, streamProtocol, rsp.Header.Get("Sec-WebSocket-Protocol"))
 	t.Cleanup(func() { c.CloseNow() })
 	return c
 }
@@ -321,12 +320,38 @@ func TestShutdownSendsClosing(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
-func TestStreamRequiresCookie(t *testing.T) {
+func TestStreamRequiresToken(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
-	_, rsp, err := websocket.Dial(t.Context(), strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream", nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, rsp, err := websocket.Dial(ctx, strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream",
+		&websocket.DialOptions{Subprotocols: []string{streamProtocol, authProtocolPrefix + "nope"}})
 	require.Error(t, err)
 	require.NotNil(t, rsp)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
+}
+
+func TestStreamRejectsForeignOrigin(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	h := http.Header{}
+	h.Set("Origin", "http://evil.example")
+	_, rsp, err := websocket.Dial(ctx, strings.Replace(g.URL(), "http", "ws", 1)+"/api/stream",
+		&websocket.DialOptions{HTTPHeader: h, Subprotocols: []string{streamProtocol, authProtocolPrefix + g.token()}})
+	require.Error(t, err)
+	require.NotNil(t, rsp)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusForbidden, rsp.StatusCode, "a valid token from a foreign page is still refused")
+}
+
+func TestStreamSelectsThePlainProtocol(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	require.Equal(t, streamProtocol, c.Subprotocol())
+	require.NotContains(t, c.Subprotocol(), authProtocolPrefix)
 }

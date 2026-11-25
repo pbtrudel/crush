@@ -3,6 +3,7 @@ import type { ModelChoice } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { STARTING_TEXT, describeFailure } from '../../state/failure';
 import { showThinkingToggle } from '../../state/model';
+import { openSignIn } from '../../state/signin';
 import { state } from '../../state/store';
 import { closeModels, modelsFocus, modelsOpen } from '../../state/palette';
 import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
@@ -363,7 +364,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
           })}
         </div>
         {list.length === 0 && <p class="models__empty">No models match</p>}
-        <p class="models__more">More providers: sign in from the terminal</p>
+        <button
+          type="button"
+          class="link-button models__more"
+          onClick={() => { closeModels(); openSignIn(); }}
+        >Sign in to another provider</button>
         {reasoningKind !== 'none' ? (
           <fieldset
             class={`models__fieldset models__reasoning${reasoningBusy ? ' models__reasoning--busy' : ''}`}

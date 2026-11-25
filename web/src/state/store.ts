@@ -2,15 +2,17 @@ import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, InputMode, Message, PermissionMode, QuestionAnswer, Snapshot, WireEvent,
+  Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, SignInState, Snapshot,
+  WireEvent,
 } from '../api/types';
 import {
-  adoptSession, dismissToast, dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered,
-  dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn, startShell,
-  unmarkAnswered,
+  adoptSession, applySignIn, clearAwsSso, dismissToast, dropQuestion as dropQuestionFrom, initialState,
+  inspect, markAnswered, dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn,
+  startShell, unmarkAnswered,
   type State,
 } from './reducer';
 import { effectsLevel, type EffectsLevel } from './effects';
+import { forgetToken, setToken } from './token';
 import { describeFailure, type Failure } from './failure';
 import { observe, telemetry } from './telemetry';
 
@@ -84,6 +86,14 @@ function dropQuestion(batchId: string) {
 function isNotPending(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'not_pending';
 }
+
+// EXPIRED_TEXT is what a prompt that left before its answer landed says.
+const EXPIRED_TEXT = 'The prompt was already answered or has expired.';
+
+// promptExpired toasts a prompt that left while its answer or cancel was on
+// the way. The server refuses those with not_pending, the same error a
+// prompt the terminal already answered gives.
+const promptExpired = () => dispatch((s) => pushToast(s, 'info', EXPIRED_TEXT));
 
 // queueChanged reports the frames after which the queue may have changed.
 // The event stream carries no queue events, so the deck asks for the list
@@ -160,13 +170,19 @@ export function watchVisibility(): () => void {
 }
 
 export async function boot() {
-  // The token travels in the fragment so it never reaches server logs. It
-  // is exchanged for an HttpOnly cookie and scrubbed from the address bar;
-  // it is never logged.
-  const token = new URLSearchParams(location.hash.slice(1)).get('t');
-  if (token) {
-    await api.auth(token).catch(() => undefined);
+  // The token travels in the fragment so it never reaches server logs.
+  // It is checked, kept for this tab only and scrubbed from the address
+  // bar; it is never logged.
+  const fragment = new URLSearchParams(location.hash.slice(1)).get('t');
+  if (fragment) {
+    // The token leaves the address bar before the request, not after it.
     history.replaceState(null, '', location.pathname + location.search);
+    try {
+      await api.auth(fragment);
+      setToken(fragment);
+    } catch {
+      forgetToken();
+    }
   }
   watchVisibility();
   connectStream({
@@ -399,6 +415,68 @@ export const actions = {
     dispatch((s) => inspect(s, sid));
     if (sid && sid !== state.value.sessionId) await loadInspected(sid);
   },
+  // answerSecure delivers a secret to the open prompt and returns the
+  // failure the dialog shows inline, or null. The secret goes straight into
+  // the request body: it is never stored, and a prompt that leaves before
+  // the request lands is only toasted, because the terminal answered first.
+  async answerSecure(p: SecurePrompt, secret: string): Promise<Failure | null> {
+    dispatch((s) => markAnswered(s, p.id));
+    try {
+      await api.answerSecure(p.source, p.id, secret);
+      return null;
+    } catch (err) {
+      if (isNotPending(err)) {
+        promptExpired();
+        return null;
+      }
+      dispatch((s) => unmarkAnswered(s, p.id));
+      return describeFailure(err);
+    }
+  },
+  // cancelSecure dismisses an open prompt, with the same rules as an
+  // answer: a failure re-arms the dialog so the terminal can still answer.
+  async cancelSecure(p: SecurePrompt): Promise<Failure | null> {
+    dispatch((s) => markAnswered(s, p.id));
+    try {
+      await api.cancelSecure(p.source, p.id);
+      return null;
+    } catch (err) {
+      if (isNotPending(err)) {
+        promptExpired();
+        return null;
+      }
+      dispatch((s) => unmarkAnswered(s, p.id));
+      return describeFailure(err);
+    }
+  },
+  // signInKey saves a provider key and returns what the gateway answered.
+  // The key is a local of the call: no state or signal keeps it.
+  signInKey: (provider: string, apiKey: string, model?: ModelTarget) =>
+    api.signInKey(provider, apiKey, model),
+  // signInStart begins one OAuth sign-in and records the challenge it
+  // answered with, so the dialog shows it before the frame lands. It answers
+  // the state too: a start that finishes at once still belongs to the tab
+  // that asked for it.
+  async signInStart(provider: string, model?: ModelTarget): Promise<SignInState> {
+    const st = await api.signInStart(provider, model);
+    dispatch((s) => applySignIn(s, st));
+    return st;
+  },
+  // signInCancel stops a running flow. A flow that already finished answers
+  // no_flow, which is not a failure to show.
+  async signInCancel(flowId: string): Promise<void> {
+    try {
+      await api.signInCancel(flowId);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'no_flow') return;
+      throw err;
+    }
+  },
+  // signInCode hands back a code pasted from the provider's page. A refused
+  // code reaches the dialog as a signin frame, not as this answer.
+  signInCode: (flowId: string, code: string) => api.signInCode(flowId, code),
+  // dismissAwsSso clears the AWS SSO card; the next refresh opens a new one.
+  dismissAwsSso: () => dispatch((s) => clearAwsSso(s)),
   async messageTeammate(member: string, text: string): Promise<Failure | null> {
     const sid = state.value.sessionId;
     if (!sid) return { tone: 'error', text: 'There is no session to message from' };

@@ -3,8 +3,10 @@ package web
 import (
 	"encoding/json"
 
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/wire"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
@@ -16,6 +18,13 @@ import (
 // workspace.HostThemeEvent) are skipped without logging: wire.Encode
 // reports them as unrecognized instead of warning like wire.Wrap.
 func encode(ev any) (string, json.RawMessage, bool) {
+	// The browser reads secure_prompt instead; these carry no secret but
+	// would make a reducer that ignores them a trap.
+	switch ev.(type) {
+	case pubsub.Event[pinentry.PromptRequest], pubsub.Event[pinentry.Notification],
+		pubsub.Event[sshaskpass.PromptRequest], pubsub.Event[sshaskpass.Notification]:
+		return "", nil, false
+	}
 	if e, ok := ev.(pubsub.Event[workspace.LSPEvent]); ok {
 		raw, err := json.Marshal(pubsub.Event[proto.LSPEvent]{
 			Type: e.Type,

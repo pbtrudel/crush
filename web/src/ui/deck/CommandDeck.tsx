@@ -51,6 +51,7 @@ export function CommandDeck() {
   // the text state and the DOM selection move on separate renders.
   const [caret, setCaret] = useState(0);
   const [suggest, setSuggest] = useState<{ start: number; items: string[]; index: number } | null>(null);
+  const root = useRef<HTMLFormElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   // Completion requests can resolve out of order; only the newest one may
@@ -227,6 +228,7 @@ export function CommandDeck() {
 
   return (
     <form
+      ref={root}
       class={`deck glass${cinematic.value ? ' deck--slim' : ''}`}
       aria-label="Command deck"
       data-busy={s.busy}

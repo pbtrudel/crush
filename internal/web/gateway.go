@@ -11,12 +11,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -50,6 +51,18 @@ type Options struct {
 	// Nil uses commands.LoadCustomCommands with the workspace config,
 	// which lists none when there is no config.
 	LoadCommands func(*config.Config) ([]commands.CustomCommand, error)
+	// KnownProviders lists the provider catalog the sign-in picker offers.
+	// Nil loads it with config.Providers.
+	KnownProviders func(*config.Config) ([]catwalk.Provider, error)
+	// TestAPIKey checks a provider API key before it is saved. Nil builds a
+	// config.ProviderConfig from the catalog entry and runs TestConnection.
+	TestAPIKey func(ctx context.Context, p catwalk.Provider, key string, r config.VariableResolver) error
+	// SignInFlow creates the OAuth flow a browser sign-in runs. Nil uses
+	// the shared flows in internal/oauth/signin.
+	SignInFlow func(providerID string) (signin.Flow, error)
+	// Now returns the current time the sign-in timestamps are measured
+	// from. Nil uses time.Now; webfake pins it from WEBFAKE_CLOCK.
+	Now func() time.Time
 	// idleTimeout overrides the idle read deadline in tests.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
@@ -57,22 +70,27 @@ type Options struct {
 	// mcpAuthPoll overrides how long an MCP auth request waits for the
 	// OAuth URL in tests.
 	mcpAuthPoll time.Duration
+	// launchFileTTL overrides how long an unused launch file lives in
+	// tests.
+	launchFileTTL time.Duration
 }
 
 // Gateway is a running web mode server bound to the loopback interface.
 type Gateway struct {
-	ws         workspace.Workspace
-	secret     string
-	port       int
-	cookieName string
-	ln         net.Listener
-	srv        *http.Server
-	ctx        context.Context
-	cancel     context.CancelFunc
-	done       chan struct{}
-	hub        *hub
-	pending    *pending
-	idle       time.Duration
+	ws      workspace.Workspace
+	secret  string
+	port    int
+	ln      net.Listener
+	srv     *http.Server
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	hub     *hub
+	pending *pending
+	// securePubMu serialises publishing the open secure prompts, so a
+	// publish that read an older set can never land after a newer one.
+	securePubMu sync.Mutex
+	idle        time.Duration
 	// team rereads the Agent Team files; teamDone closes when its
 	// watcher settles on shutdown.
 	team     *teamWatcher
@@ -86,14 +104,19 @@ type Gateway struct {
 	// diffs bounds the diff work every tab shares, so three tabs
 	// refreshing at once queue instead of stacking up.
 	diffs *diffSlots
-	// apiRoutes lists every cookie-guarded /api pattern, method included,
+	// apiRoutes lists every token-guarded /api pattern, method included,
 	// in registration order. The auth test walks it so a route cannot
-	// ship without being covered by the cookie check. The login route is
-	// not here: it has to answer without a cookie.
+	// ship without being covered by the token check. The login route is
+	// not here: it has to answer without a token.
 	apiRoutes []string
 	// loadCommandsFn is Options.LoadCommands; nil falls back to reading
 	// the workspace config.
 	loadCommandsFn func(*config.Config) ([]commands.CustomCommand, error)
+	// knownProvidersFn is Options.KnownProviders; nil falls back to
+	// defaultKnownProviders.
+	knownProvidersFn func(*config.Config) ([]catwalk.Provider, error)
+	// testAPIKeyFn is Options.TestAPIKey; nil falls back to TestConnection.
+	testAPIKeyFn func(context.Context, catwalk.Provider, string, config.VariableResolver) error
 	// shells holds the cancel func of every running shell command, keyed
 	// by run id. shellWG lets Shutdown wait for them before the hub
 	// closes, and shellsClosed refuses a run started during shutdown.
@@ -110,6 +133,30 @@ type Gateway struct {
 	authsClosed bool
 	// authPoll overrides how long an auth request waits for the URL.
 	authPoll time.Duration
+	// signinMu guards signin, the one sign-in flow the gateway runs, and
+	// signinClosed, which refuses a flow started during shutdown.
+	// signinWG lets Shutdown wait for the flow's goroutines before the hub
+	// closes. Add is called under signinMu after the signinClosed check,
+	// so a goroutine can never start after Shutdown began waiting.
+	signinMu     sync.Mutex
+	signin       *signinRun
+	signinWG     sync.WaitGroup
+	signinClosed bool
+	// signInFlowFn is Options.SignInFlow; nil falls back to signin.New.
+	signInFlowFn func(string) (signin.Flow, error)
+	// now is Options.Now; nil falls back to time.Now.
+	now func() time.Time
+	// launchMu guards launch, the private redirect file handed to the
+	// browser opener so the token stays out of its arguments, its TTL
+	// timer and generation, and launchClosed, which refuses a file after
+	// Shutdown. Every timer reset bumps the generation, so a callback that
+	// fired just before it cannot remove the renewed file.
+	launchMu     sync.Mutex
+	launch       *launchFile
+	launchTimer  *time.Timer
+	launchGen    uint64
+	launchClosed bool
+	launchTTL    time.Duration
 
 	// onMu guards the callbacks, which the controller may replace while
 	// the gateway is running.
@@ -146,31 +193,56 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 	if assets == nil {
 		assets = embeddedAssets()
 	}
+	knownProvidersFn := opts.KnownProviders
+	if knownProvidersFn == nil {
+		knownProvidersFn = defaultKnownProviders
+	}
+	testAPIKeyFn := opts.TestAPIKey
+	if testAPIKeyFn == nil {
+		// The catalog endpoint resolves with the workspace resolver, while
+		// the key is checked as typed.
+		ws := opts.Workspace
+		testAPIKeyFn = func(ctx context.Context, p catwalk.Provider, key string, r config.VariableResolver) error {
+			return testAPIKey(ctx, p, key, r, ws.Resolver())
+		}
+	}
+	signInFlowFn := opts.SignInFlow
+	if signInFlowFn == nil {
+		signInFlowFn = signin.New
+	}
 	gctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	slots := newDiffSlots(maxConcurrentDiffs)
 	g := &Gateway{
-		ws:         opts.Workspace,
-		secret:     secret,
-		port:       port,
-		cookieName: cookieNamePrefix + strconv.Itoa(port),
-		ln:         ln,
-		ctx:        gctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		hub:        newHub(),
-		pending:    newPending(),
-		idle:       cmp.Or(opts.idleTimeout, idleTimeout),
-		team:       newTeamWatcher(teamDir(opts)),
-		teamDone:   make(chan struct{}),
-		modelDone:  make(chan struct{}),
-		fileStats:  newFileStatCache(slots),
-		diffs:      slots,
-		shells:     make(map[string]context.CancelFunc),
-		auths:      make(map[string]context.CancelFunc),
-		authPoll:   opts.mcpAuthPoll,
+		ws:        opts.Workspace,
+		secret:    secret,
+		port:      port,
+		ln:        ln,
+		ctx:       gctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		hub:       newHub(),
+		pending:   newPending(),
+		idle:      cmp.Or(opts.idleTimeout, idleTimeout),
+		team:      newTeamWatcher(teamDir(opts)),
+		teamDone:  make(chan struct{}),
+		modelDone: make(chan struct{}),
+		fileStats: newFileStatCache(slots),
+		diffs:     slots,
+		shells:    make(map[string]context.CancelFunc),
+		auths:     make(map[string]context.CancelFunc),
+		authPoll:  opts.mcpAuthPoll,
+		launchTTL: cmp.Or(opts.launchFileTTL, launchFileTTL),
 
 		loadCommandsFn:       opts.LoadCommands,
+		knownProvidersFn:     knownProvidersFn,
+		testAPIKeyFn:         testAPIKeyFn,
+		signInFlowFn:         signInFlowFn,
+		now:                  now,
 		onSessionCreated:     opts.OnSessionCreated,
 		onInputModeRequested: opts.OnInputModeRequested,
 		onPlanHandoff:        opts.OnPlanHandoff,
@@ -209,7 +281,7 @@ func (g *Gateway) routes(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	g.registerAPI(api)
-	// The login route must work without the cookie, so it bypasses
+	// The login route must work without a token, so it bypasses
 	// requireAuth and the registry g.route fills.
 	mux.HandleFunc("POST /api/auth", g.handleAuth)
 	mux.Handle("/api/", g.requireAuth(api))
@@ -357,6 +429,12 @@ func normalizeInputMode(mode string) string {
 // Shutdown tells every tab the session ended, drains their queues and
 // stops the server.
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	// A launch file handed to a browser opener after shutdown began would
+	// outlive the process with the token in it, so the gateway stops
+	// writing them before anything else stops.
+	g.launchMu.Lock()
+	g.launchClosed = true
+	g.launchMu.Unlock()
 	// Cancel every running shell and MCP OAuth flow, then wait for them
 	// before the hub closes, so no final frame is published into a closed
 	// hub. The wait honours the caller's deadline: work that ignores
@@ -373,10 +451,18 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	g.authMu.Unlock()
+	// A running sign-in is cancelled and its listener freed here, before
+	// the wait below, so its goroutines settle while the hub is still
+	// open.
+	g.signinMu.Lock()
+	g.signinClosed = true
+	g.stopRunLocked(g.signin)
+	g.signinMu.Unlock()
 	workDone := make(chan struct{})
 	go func() {
 		g.shellWG.Wait()
 		g.authWG.Wait()
+		g.signinWG.Wait()
 		close(workDone)
 	}()
 	select {
@@ -385,6 +471,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 	g.hub.publishJSON(frameClosing, map[string]string{"reason": "crush exited"})
 	g.hub.close()
+	g.removeLaunchFile()
 	g.cancel()
 	// The watchers settle on their own, but a caller's deadline outranks
 	// them: an expired context must not leave Shutdown waiting on a file
@@ -429,7 +516,9 @@ func (g *Gateway) pump(events <-chan any, last string) {
 				events = nil
 				continue
 			}
-			g.pending.observe(ev)
+			if g.pending.observe(ev) {
+				g.publishSecurePrompts()
+			}
 			if typ, raw, ok := encode(ev); ok {
 				g.hub.publish(typ, raw)
 			}
@@ -440,4 +529,13 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			}
 		}
 	}
+}
+
+// publishSecurePrompts tells every tab the open prompts. The set is read
+// and published under one lock, so a publish that read an older set can
+// never land after one that read a newer set.
+func (g *Gateway) publishSecurePrompts() {
+	g.securePubMu.Lock()
+	defer g.securePubMu.Unlock()
+	g.hub.publishJSON(frameSecurePrompt, map[string][]SecurePrompt{"prompts": g.pending.securePrompts()})
 }

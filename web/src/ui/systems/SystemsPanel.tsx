@@ -9,6 +9,7 @@ import { systemsFocus, systemsOpen } from '../../state/palette';
 import { serverTone, type ServerTone } from '../hud/series';
 import { HexTile } from '../hud/ServerHexes';
 import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
+import { webAddress } from '../webAddress';
 
 type Kind = 'lsp' | 'mcp';
 type McpAction = 'start' | 'refresh' | 'enable' | 'disable';
@@ -48,17 +49,6 @@ function diagnosticText(counts: DiagnosticCounts | undefined, live: number): str
   if (counts.error > 0) parts.push(plural(counts.error, 'error', 'errors'));
   if (counts.warning > 0) parts.push(plural(counts.warning, 'warning', 'warnings'));
   return parts.length === 0 ? 'no problems' : parts.join(', ');
-}
-
-// webAddress keeps only a URL a browser may open; the server answers 502 for
-// anything else, so this is the last guard.
-function webAddress(raw: string): string | null {
-  try {
-    const url = new URL(raw);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
-  } catch {
-    return null;
-  }
 }
 
 // A row merges the fetched list with the live frame map: the list carries

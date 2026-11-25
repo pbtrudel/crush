@@ -9,6 +9,7 @@ import { dispatch, state } from '../../state/store';
 import { closeModels, closePalette, modelsOpen, openModels } from '../../state/palette';
 import { resetWebglProbe } from '../../state/effects';
 import { setCinematic } from '../../state/cinematic';
+import { closeSignIn, signInOpen } from '../../state/signin';
 import { App } from '../App';
 import { formatContext } from './ModelSelector';
 
@@ -141,6 +142,7 @@ afterEach(async () => {
   root.remove();
   closeModels();
   closePalette();
+  closeSignIn();
   setCinematic(false);
   HTMLCanvasElement.prototype.getContext = originalGetContext;
   resetWebglProbe();
@@ -181,7 +183,25 @@ describe('the model selector', () => {
     expect(option('Model One').getAttribute('aria-selected')).toBe('false');
     expect(option('Model One').textContent).not.toContain('current');
 
-    expect(dialog()!.textContent).toContain('More providers: sign in from the terminal');
+    expect(dialog()!.textContent).toContain('Sign in to another provider');
+  });
+
+  it('opens the sign-in dialog from its footer and closes the selector', async () => {
+    seed();
+    stubProviders();
+    vi.spyOn(api, 'signInTargets').mockResolvedValue({ providers: [] });
+    vi.spyOn(api, 'signInStatus').mockRejectedValue(new ApiError(404, 'no_flow', 'no sign-in has started'));
+    await mount();
+    await openFromHud();
+
+    const footer = Array.from(root.querySelectorAll('button'))
+      .find((b) => b.textContent === 'Sign in to another provider')!;
+    await act(() => { footer.click(); });
+    await flush();
+
+    expect(modelsOpen.value).toBe(false);
+    expect(signInOpen.value).toEqual({ provider: undefined });
+    expect(root.querySelector('[role="dialog"][aria-label="Sign in"]')).not.toBeNull();
   });
 
   it('keeps provider headings out of the listbox children axe checks', async () => {

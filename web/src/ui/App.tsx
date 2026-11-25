@@ -23,13 +23,17 @@ import { closeInspector, escapeLeavesDraft } from './inspector/escape';
 import { PanelTabs } from './PanelTabs';
 import { FileDrawer } from './files/FileDrawer';
 import {
-  closeModels, closeSessions, closeSystems, deckMode, escapeModels, escapePalette, escapeSessions,
-  escapeSystems, modelsOpen, paletteOpen, sessionsOpen, systemsOpen, togglePalette,
+  closePanels, deckMode, escapeModels, escapePalette, escapeSessions, escapeSystems, modelsOpen,
+  openPalette, paletteOpen, sessionsOpen, systemsOpen,
 } from '../state/palette';
 import { Palette } from './palette/Palette';
 import { SessionSwitcher } from './sessions/SessionSwitcher';
+import { closeSignIn, escapeSignIn, signInOpen } from '../state/signin';
 import { ModelSelector } from './models/ModelSelector';
 import { SystemsPanel } from './systems/SystemsPanel';
+import { SignInDialog } from './signin/SignInDialog';
+import { AwsSsoCard } from './signin/AwsSsoCard';
+import { usePublishedHeight } from './usePublishedHeight';
 
 export function App() {
   const s = state.value;
@@ -39,7 +43,12 @@ export function App() {
   const camera = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLElement>(null);
   const inspector = useRef<HTMLElement>(null);
+  const deck = useRef<HTMLDivElement>(null);
   const logCovered = useRef(false);
+
+  // signin.css places the AWS SSO card above the whole deck column, the side
+  // answer included, so the column publishes its own height.
+  usePublishedHeight(deck, '--deck-h');
 
   // The log goes inert while the overlay drawer covers it: that is a width
   // plus drawer state, not something a stylesheet can express.
@@ -71,15 +80,15 @@ export function App() {
       const focused = document.activeElement;
       const target = e.target;
       // The palette opens from anywhere, the prompt included, and stays
-      // closed while a dialog owns the page. The sessions switcher and the
-      // model selector make way for it, so two dialogs never stack.
+      // closed while a dialog owns the page. It closes every other layer
+      // first, so two dialogs never stack.
       if (e.code === 'KeyK' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
         if (needsAttention(state.value)) return;
         e.preventDefault();
-        if (sessionsOpen.value) closeSessions();
-        if (modelsOpen.value) closeModels();
-        if (systemsOpen.value !== null) closeSystems();
-        togglePalette();
+        const paletteWasOpen = paletteOpen.value !== null;
+        closePanels();
+        if (signInOpen.value) closeSignIn();
+        if (!paletteWasOpen) openPalette();
         return;
       }
       // A permission or a question owns Escape while it is open: the dialogs
@@ -113,6 +122,13 @@ export function App() {
       if (e.key === 'Escape' && systemsOpen.value !== null) {
         e.preventDefault();
         escapeSystems();
+        return;
+      }
+      // The sign-in dialog has no inner layer either; its trap returns focus
+      // to the control that opened it.
+      if (e.key === 'Escape' && signInOpen.value) {
+        e.preventDefault();
+        escapeSignIn();
         return;
       }
       // An open Display menu owns Escape: it closes itself, so the inspector
@@ -176,7 +192,7 @@ export function App() {
         </section>
         <FileDrawer />
       </main>
-      <div class="holodeck__deck" inert={modal}>
+      <div class="holodeck__deck" inert={modal} ref={deck}>
         <SideAnswer />
         <CommandDeck />
       </div>
@@ -185,6 +201,8 @@ export function App() {
       <SessionSwitcher inert={modal} />
       <ModelSelector inert={modal} />
       <SystemsPanel inert={modal} />
+      <SignInDialog inert={modal} />
+      <AwsSsoCard inert={modal} />
       <Toasts />
       <CineHint />
     </div>

@@ -5,6 +5,7 @@ import { initialState, pushToast, reduce } from '../state/reducer';
 import { state } from '../state/store';
 import { effectsLevel } from '../state/effects';
 import { Toasts } from './Toasts';
+import { signInOpen } from '../state/signin';
 
 const root = document.createElement('div');
 
@@ -18,6 +19,7 @@ afterEach(async () => {
   });
   vi.useRealTimers();
   vi.restoreAllMocks();
+  signInOpen.value = null;
 });
 
 describe('Toasts', () => {
@@ -77,6 +79,44 @@ describe('Toasts', () => {
     });
     expect(effectsLevel.value).toBe(0);
     expect(state.value.toasts).toEqual([]);
+    expect(root.querySelector('.toast')).toBeNull();
+  });
+
+  it('offers a sign-in button that names the provider, opens the dialog and dismisses the toast', async () => {
+    state.value = pushToast(initialState(), 'warn', 'Your copilot login expired. Sign in again.', {
+      kind: 'sign-in', provider: 'copilot',
+    });
+    await act(() => {
+      render(<Toasts />, root);
+    });
+    const signIn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Sign in');
+    expect(signIn).toBeDefined();
+    expect(signIn!.getAttribute('aria-label')).toBe('Sign in to Copilot');
+    await act(() => {
+      signIn!.click();
+    });
+    expect(signInOpen.value).toEqual({ provider: 'copilot' });
+    expect(state.value.toasts).toEqual([]);
+  });
+
+  it('keeps an actionable toast until it is acted on', async () => {
+    state.value = pushToast(initialState(), 'warn', 'Your copilot login expired. Sign in again.', {
+      kind: 'sign-in', provider: 'copilot',
+    });
+    await act(() => {
+      render(<Toasts />, root);
+    });
+
+    // A toast that carries a way forward must not vanish before it is used.
+    await act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(root.querySelectorAll('.toast')).toHaveLength(1);
+
+    const signIn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Sign in')!;
+    await act(() => {
+      signIn.click();
+    });
     expect(root.querySelector('.toast')).toBeNull();
   });
 

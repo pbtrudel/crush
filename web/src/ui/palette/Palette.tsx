@@ -7,6 +7,7 @@ import { without } from '../../state/record';
 import { adoptSession } from '../../state/reducer';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { motion, setMotion, type Motion } from '../../state/motion';
+import { openSignIn } from '../../state/signin';
 import { toggleDrawer } from '../../state/drawer';
 import { actions, dispatch, state } from '../../state/store';
 import {
@@ -208,6 +209,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
       case ACTIONS.model: paletteReturnFocus.value = true; closePalette(); openModels(); return;
       case ACTIONS.reasoningLevel: paletteReturnFocus.value = true; closePalette(); openModels('reasoning'); return;
       case ACTIONS.systems: paletteReturnFocus.value = true; closePalette(); openSystems(); return;
+      case ACTIONS.signIn: paletteReturnFocus.value = true; closePalette(); openSignIn(); return;
       case ACTIONS.compact:
         if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to compact');
         await api.summarize(sid);

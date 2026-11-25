@@ -62,6 +62,13 @@ describe('palette items', () => {
     expect(item.run).toEqual({ kind: 'action', action: 'systems' });
   });
 
+  it('offers the sign-in dialog', () => {
+    const item = buildItems(sources).find((i) => i.id === 'action:sign-in')!;
+    expect(item.title).toBe('Sign in to a provider');
+    expect(item.keywords).toEqual(['login', 'api key', 'oauth', 'provider', 'auth']);
+    expect(item.run).toEqual({ kind: 'action', action: 'sign-in' });
+  });
+
   it('offers the shell command, the note and the side question', () => {
     const items = buildItems(sources);
     const shell = items.find((i) => i.id === 'action:run-shell')!;

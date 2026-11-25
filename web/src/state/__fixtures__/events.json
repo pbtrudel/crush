@@ -23,6 +23,99 @@
       }
     }
   },
+  "agent_event_aws_sso": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "type": "aws_sso_auth",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "amazon-bedrock",
+        "session_id": "s1",
+        "aws_sso_command": "aws sso login --profile dev"
+      }
+    }
+  },
+  "agent_event_aws_sso_result": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "error": "the SSO session expired",
+        "type": "aws_sso_auth_result",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "amazon-bedrock",
+        "session_id": "s1"
+      }
+    }
+  },
+  "agent_event_aws_sso_url": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "type": "aws_sso_auth",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "amazon-bedrock",
+        "session_id": "s1",
+        "aws_sso_command": "aws sso login --profile dev",
+        "aws_sso_url": "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD"
+      }
+    }
+  },
+  "agent_event_reauth": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "type": "re_authenticate",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "openai",
+        "session_id": "s1",
+        "session_title": "Parser refactor"
+      }
+    }
+  },
   "agent_runs": {
     "seq": 1,
     "type": "agent_runs",
@@ -341,6 +434,32 @@
       }
     }
   },
+  "secure_prompt": {
+    "seq": 1,
+    "type": "secure_prompt",
+    "payload": {
+      "prompts": [
+        {
+          "source": "pinentry",
+          "id": "p1",
+          "kind": "passphrase",
+          "title": "GPG passphrase",
+          "message": "Unlock the signing key",
+          "details": [
+            "Key: ABCDEF0123456789",
+            "Holder: Dev \u003cdev@example.com\u003e"
+          ]
+        },
+        {
+          "source": "ssh",
+          "id": "s2",
+          "kind": "confirm",
+          "title": "New Host",
+          "message": "OpenSSH has not seen this host before. Trust its key?"
+        }
+      ]
+    }
+  },
   "session": {
     "seq": 1,
     "type": "session",
@@ -386,6 +505,19 @@
       "run_id": "run-1",
       "session_id": "s1",
       "chunk": "line 1\n"
+    }
+  },
+  "signin": {
+    "seq": 1,
+    "type": "signin",
+    "payload": {
+      "flow_id": "f1",
+      "provider": "copilot",
+      "provider_name": "GitHub Copilot",
+      "state": "waiting",
+      "kind": "device",
+      "user_code": "WDJB-MJHT",
+      "verification_url": "https://github.com/login/device"
     }
   },
   "snapshot": {

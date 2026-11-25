@@ -13,6 +13,7 @@ import {
   paletteOpen, paletteQuery, sessionsOpen, systemsOpen,
 } from '../../state/palette';
 import { setCinematic } from '../../state/cinematic';
+import { closeSignIn, signInOpen } from '../../state/signin';
 import { setMotion } from '../../state/motion';
 import { App } from '../App';
 
@@ -124,6 +125,7 @@ afterEach(async () => {
   closeSessions();
   closeModels();
   closeSystems();
+  closeSignIn();
   argumentItem.value = null;
   deckMode.value = null;
   sideAnswer.value = null;
@@ -445,6 +447,22 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBeNull();
     expect(systemsOpen.value).toBe('all');
     expect(root.querySelector('[role="dialog"][aria-label="Systems"]')).not.toBeNull();
+  });
+
+  it('opens the sign-in dialog from Sign in to a provider', async () => {
+    seed();
+    stubSources();
+    vi.spyOn(api, 'signInTargets').mockResolvedValue({ providers: [] });
+    vi.spyOn(api, 'signInStatus').mockRejectedValue(new ApiError(404, 'no_flow', 'no sign-in has started'));
+    await mount();
+    await openWithKey();
+
+    await type('sign in');
+    await enter();
+
+    expect(paletteOpen.value).toBeNull();
+    expect(signInOpen.value).not.toBeNull();
+    expect(root.querySelector('[role="dialog"][aria-label="Sign in"]')).not.toBeNull();
   });
 
   it('puts a bang in the deck for Run shell command', async () => {

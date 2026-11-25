@@ -28,6 +28,8 @@ const (
 	frameShellOutput  = "shell_output"
 	frameModelChanged = "model_changed"
 	framePlanReady    = "plan_ready"
+	frameSecurePrompt = "secure_prompt"
+	frameSignIn       = "signin"
 )
 
 type frame struct {
@@ -159,11 +161,17 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 			since = n
 		}
 	}
-	ws, err := websocket.Accept(w, r, nil)
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{streamProtocol}})
 	if err != nil {
 		return
 	}
 	defer ws.CloseNow()
+	// The page offers crush.v1 alongside the token entry. A client that
+	// sent the token but not crush.v1 cannot be served.
+	if ws.Subprotocol() != streamProtocol {
+		ws.Close(websocket.StatusPolicyViolation, "missing stream protocol")
+		return
+	}
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()

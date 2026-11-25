@@ -1,14 +1,23 @@
 import type {
   Attachment, CommandEntry, DiagnosticCounts, FileDiff, FileSummary, InputMode, LspServer, McpPrompt,
-  McpServer, Message, ModelChoice, ModelInfo, PermissionMode, QuestionAnswer, Session, SkillEntry, Snapshot,
+  McpServer, Message, ModelChoice, ModelInfo, ModelTarget, PermissionMode, QuestionAnswer, Session,
+  SignInResult, SignInState, SignInTarget, SkillEntry, Snapshot, SecurePrompt,
 } from './types';
+import { forgetToken, token } from '../state/token';
+
+// authHeaders carries the tab's token on every API call. The cookie is
+// gone: cookies ignore ports, so another 127.0.0.1 server would see it.
+export function authHeaders(): Record<string, string> {
+  const t = token();
+  return t ? { Authorization: 'Bearer ' + t } : {};
+}
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
 }
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method, credentials: 'same-origin', headers: {} };
+  const init: RequestInit = { method, credentials: 'omit', headers: { ...authHeaders() } };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -17,7 +26,10 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   const rsp = await fetch(path, init);
   if (rsp.status === 204) return undefined as T;
   const data = await rsp.json().catch(() => ({}));
-  if (!rsp.ok) throw new ApiError(rsp.status, data.code ?? 'http_error', data.error ?? rsp.statusText);
+  if (!rsp.ok) {
+    if (rsp.status === 401) forgetToken();
+    throw new ApiError(rsp.status, data.code ?? 'http_error', data.error ?? rsp.statusText);
+  }
   return data as T;
 }
 
@@ -27,8 +39,11 @@ export const api = {
   auth: (token: string) => call<void>('POST', '/api/auth', { token }),
   async health(): Promise<'ok' | 'unauthorized' | 'down'> {
     try {
-      const rsp = await fetch('/api/health', { credentials: 'same-origin' });
-      if (rsp.status === 401) return 'unauthorized';
+      const rsp = await fetch('/api/health', { credentials: 'omit', headers: authHeaders() });
+      if (rsp.status === 401) {
+        forgetToken();
+        return 'unauthorized';
+      }
       return rsp.ok ? 'ok' : 'down';
     } catch {
       return 'down';
@@ -106,4 +121,20 @@ export const api = {
   lspStop: () => call<void>('POST', '/api/lsp/stop'),
   planHandoff: (sid: string, action: 'code' | 'code_yolo') =>
     call<void>('POST', '/api/plan/handoff', { session_id: sid, action }),
+  // The answer travels in the body only: a secret in a URL would reach
+  // the server log and this tab's history.
+  answerSecure: (source: SecurePrompt['source'], id: string, secret: string) =>
+    call<void>('POST', `/api/${source}/answer`, { id, secret }),
+  cancelSecure: (source: SecurePrompt['source'], id: string) =>
+    call<void>('POST', `/api/${source}/cancel`, { id }),
+  signInTargets: () => call<{ providers: SignInTarget[] }>('GET', '/api/auth/providers'),
+  signInKey: (provider: string, apiKey: string, model?: ModelTarget) =>
+    call<SignInResult>('POST', '/api/auth/provider/key', model ? { provider, api_key: apiKey, model } : { provider, api_key: apiKey }),
+  signInStart: (provider: string, model?: ModelTarget) =>
+    call<SignInState>('POST', '/api/auth/provider/oauth/start', model ? { provider, model } : { provider }),
+  signInStatus: () => call<SignInState>('GET', '/api/auth/provider/oauth/status'),
+  signInCancel: (flowId: string) =>
+    call<void>('POST', '/api/auth/provider/oauth/cancel', { flow_id: flowId }),
+  signInCode: (flowId: string, code: string) =>
+    call<void>('POST', '/api/auth/provider/oauth/code', { flow_id: flowId, code }),
 };

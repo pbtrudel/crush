@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -52,6 +51,18 @@ func doReq(t *testing.T, c *http.Client, req *http.Request) *http.Response {
 	return rsp
 }
 
+// bearer adds the gateway token to every request, the way the page does.
+type bearer struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(r)
+}
+
 func authedClient(t *testing.T, g *Gateway) *http.Client {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth",
@@ -63,21 +74,9 @@ func authedClient(t *testing.T, g *Gateway) *http.Client {
 	require.NoError(t, err)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusNoContent, rsp.StatusCode)
-	cookies := rsp.Cookies()
-	require.Len(t, cookies, 1)
-	c := cookies[0]
-	require.Equal(t, g.cookieName, c.Name)
-	require.True(t, strings.HasPrefix(c.Name, cookieNamePrefix), "the cookie name is scoped per gateway")
-	require.True(t, c.HttpOnly)
-	require.Equal(t, http.SameSiteStrictMode, c.SameSite)
-	jar := &staticJar{c: c}
-	return &http.Client{Jar: jar}
+	require.Empty(t, rsp.Cookies(), "the gateway sets no cookie")
+	return &http.Client{Transport: bearer{token: g.token(), next: http.DefaultTransport}}
 }
-
-type staticJar struct{ c *http.Cookie }
-
-func (j *staticJar) SetCookies(*url.URL, []*http.Cookie) {}
-func (j *staticJar) Cookies(*url.URL) []*http.Cookie     { return []*http.Cookie{j.c} }
 
 func TestStartBindsLoopbackOnly(t *testing.T) {
 	t.Parallel()
@@ -102,7 +101,7 @@ func TestAuthWrongTokenRejected(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
 }
 
-func TestAPIRequiresCookie(t *testing.T) {
+func TestAPIRequiresBearerToken(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	rsp := do(t, nil, http.MethodGet, g.URL()+"/api/health", nil)
@@ -159,32 +158,34 @@ func TestStaticServedWithoutAuthAndHeaders(t *testing.T) {
 	require.Equal(t, "no-cache", rsp.Header.Get("Cache-Control"))
 }
 
-// TestTwoGatewaysKeepTheirOwnCookies shares one browser cookie jar between
-// two gateways, as two tabs on loopback would. Cookies are not isolated by
-// port, so each gateway must read only the cookie it set.
-func TestTwoGatewaysKeepTheirOwnCookies(t *testing.T) {
+func TestTwoGatewaysRefuseEachOthersTokens(t *testing.T) {
 	t.Parallel()
-	jar, err := cookiejar.New(nil)
-	require.NoError(t, err)
-	client := &http.Client{Jar: jar}
 	a, _ := startTest(t)
 	b, _ := startTest(t)
-	for _, g := range []*Gateway{a, b} {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/auth",
-			strings.NewReader(`{"token":"`+g.token()+`"}`))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", g.URL())
-		rsp := doReq(t, client, req)
+	rsp := do(t, authedClient(t, a), http.MethodGet, b.URL()+"/api/health", nil)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
+}
+
+func TestTokenInQueryIsIgnored(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	for _, q := range []string{"?token=", "?t=", "?access_token="} {
+		rsp := do(t, nil, http.MethodGet, g.URL()+"/api/health"+q+g.token(), nil)
 		rsp.Body.Close()
-		require.Equal(t, http.StatusNoContent, rsp.StatusCode)
+		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, q)
 	}
-	// The second login must not have taken the first tab's cookie away.
-	for _, g := range []*Gateway{a, b} {
-		rsp := do(t, client, http.MethodGet, g.URL()+"/api/health", nil)
-		rsp.Body.Close()
-		require.Equal(t, http.StatusOK, rsp.StatusCode, "gateway on port %s lost its cookie", strconv.Itoa(g.port))
-	}
+}
+
+func TestCookieNoLongerAuthenticates(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, g.URL()+"/api/health", nil)
+	require.NoError(t, err)
+	req.Header.Set("Cookie", "crush_web_"+strconv.Itoa(g.port)+"="+g.token())
+	rsp := doReq(t, nil, req)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, rsp.StatusCode)
 }
 
 func TestAssetDirectoryPathsAreNotFound(t *testing.T) {
@@ -216,11 +217,11 @@ func TestAPIResponsesAreNotStored(t *testing.T) {
 // routeParam matches a mux path placeholder such as {sid}.
 var routeParam = regexp.MustCompile(`\{[^}]+\}`)
 
-// TestEveryRouteRequiresTheCookie walks the gateway's own route registry,
+// TestEveryRouteRequiresTheToken walks the gateway's own route registry,
 // so a route cannot ship without proving it refuses a request that has no
-// cookie. The registry is filled by g.route, which every cookie-guarded
-// /api route uses.
-func TestEveryRouteRequiresTheCookie(t *testing.T) {
+// token. The registry is filled by g.route, which every guarded /api
+// route uses.
+func TestEveryRouteRequiresTheToken(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	require.NotEmpty(t, g.apiRoutes)
@@ -235,7 +236,7 @@ func TestEveryRouteRequiresTheCookie(t *testing.T) {
 		rsp.Body.Close()
 		require.Equal(t, http.StatusUnauthorized, rsp.StatusCode, "%s %s", method, path)
 	}
-	// The login route must answer without a cookie, so it is not in the
+	// The login route must answer without a token, so it is not in the
 	// walk and must never be added to it.
 	require.NotContains(t, g.apiRoutes, "POST /api/auth")
 	// The session routes added with the registry are part of the walk.
@@ -263,6 +264,16 @@ func TestEveryRouteRequiresTheCookie(t *testing.T) {
 		"POST /api/lsp/stop",
 		"POST /api/config/reload",
 		"POST /api/plan/handoff",
+		"GET /api/auth/providers",
+		"POST /api/auth/provider/key",
+		"POST /api/auth/provider/oauth/start",
+		"GET /api/auth/provider/oauth/status",
+		"POST /api/auth/provider/oauth/cancel",
+		"POST /api/auth/provider/oauth/code",
+		"POST /api/pinentry/answer",
+		"POST /api/pinentry/cancel",
+		"POST /api/ssh/answer",
+		"POST /api/ssh/cancel",
 	} {
 		require.Contains(t, g.apiRoutes, want)
 	}
@@ -285,7 +296,7 @@ func TestStateChangingRequestsNeedAnOrigin(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 }
 
-func TestMissingCookieWithForeignOriginIsForbidden(t *testing.T) {
+func TestMissingTokenWithForeignOriginIsForbidden(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, g.URL()+"/api/sessions/s1/cancel", nil)

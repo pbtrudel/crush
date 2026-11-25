@@ -52,6 +52,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.route(api, "POST /api/input-mode", g.handleInputMode)
 	g.route(api, "POST /api/questions/answer", g.handleAnswer)
 	g.route(api, "POST /api/questions/cancel", g.handleQuestionCancel)
+	g.registerPromptRoutes(api)
 	g.route(api, "GET /api/complete/files", g.handleCompleteFiles)
 	g.route(api, "POST /api/team/members/{member}/message", g.handleTeamMessage)
 	g.route(api, "POST /api/team/members/{member}/interrupt", g.handleTeamInterrupt)
@@ -60,13 +61,14 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.registerModelRoutes(api)
 	g.registerSystemRoutes(api)
 	g.registerPlanRoutes(api)
+	g.registerSignInRoutes(api)
 }
 
 // route registers an API handler and records its pattern for the auth
-// test. Every cookie-guarded /api route registers through here, the login
+// test. Every token-guarded /api route registers through here, the login
 // route excepted: a direct api.HandleFunc would skip the registry, and
 // with it the test that proves the route refuses a request without the
-// cookie.
+// token.
 func (g *Gateway) route(api *http.ServeMux, pattern string, h http.HandlerFunc) {
 	api.HandleFunc(pattern, h)
 	g.apiRoutes = append(g.apiRoutes, pattern)

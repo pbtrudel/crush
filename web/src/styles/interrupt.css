@@ -38,3 +38,13 @@
 .qform__tabs button[aria-selected='true'] { border-color: var(--cyan); color: var(--cyan); }
 .qform__tabs button[data-done='true']::after { content: ' ✓'; color: var(--teal); }
 @keyframes danger-pulse { 50% { opacity: 1; } }
+/* The secure prompt keeps its field above the buttons: the field takes the
+   full width of the dialog and the two buttons share a row. */
+.sp__form { display: grid; gap: 12px; }
+.sp__field { display: grid; gap: 4px; }
+.sp__input { inline-size: 100%; background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius); padding: 8px; font: 400 1rem var(--font-code); }
+.sp__input[aria-disabled='true'] { opacity: 0.6; }
+.sp__details { margin: 0; padding-inline-start: 18px; color: var(--text-muted); font-size: var(--step--1); overflow-wrap: anywhere; }
+.sp__glyph { color: var(--magenta); }
+.sp__actions { display: flex; gap: 8px; }
+.sp__status { margin: 0; color: var(--amber); font-size: var(--step--1); }

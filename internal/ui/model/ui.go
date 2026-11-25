@@ -3804,41 +3804,37 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		isOnboarding = m.state == uiOnboarding
 	)
 
+	var (
+		providerCfg config.ProviderConfig
+		hasAPIKey   bool
+	)
+	// Only the OpenAI and xAI choice reads the credential: resolving a key
+	// template for any other provider would run a $(...) the dialog never
+	// needed.
 	switch provider.ID {
-	case "hyper":
-		dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
-	case catwalk.InferenceProviderCopilot:
-		dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
-	case catwalk.InferenceProviderOpenAI:
-		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
-		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
-		switch {
-		case model.Model == "" || providerCfg.OAuthToken != nil:
-			// The sign-in placeholder, or a re-authentication while the
-			// ChatGPT login is the credential in force.
+	case catwalk.InferenceProviderOpenAI, catwalk.InferenceProviderXAI:
+		if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
+			providerCfg, _ = cfg.Providers.Get(string(provider.ID))
+			hasAPIKey = providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+		}
+	}
+
+	switch workspace.DefaultAuthChoice(string(provider.ID), providerCfg, hasAPIKey, model.Model == "") {
+	case workspace.AuthChoiceOAuth:
+		switch provider.ID {
+		case "hyper":
+			dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
+		case catwalk.InferenceProviderCopilot:
+			dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
+		case catwalk.InferenceProviderOpenAI:
 			dlg, cmd = dialog.NewOAuthOpenAI(m.com, isOnboarding, provider, model, modelType)
-		case !hasAPIKey:
-			// No credential at all: let the user pick the method.
-			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
-		default:
-			// An API key is the credential in force: edit it.
-			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
-		}
-	case catwalk.InferenceProviderXAI:
-		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
-		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
-		switch {
-		case model.Model == "" || providerCfg.OAuthToken != nil:
-			// The sign-in flow's hand-off, or a re-authentication while
-			// the Grok login is the credential in force.
+		case catwalk.InferenceProviderXAI:
 			dlg, cmd = dialog.NewOAuthGrok(m.com, isOnboarding, provider, model, modelType)
-		case !hasAPIKey:
-			// No credential at all: let the user pick the method.
-			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
 		default:
-			// An API key is the credential in force: edit it.
 			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 		}
+	case workspace.AuthChoicePick:
+		dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
 	default:
 		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 	}

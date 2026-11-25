@@ -11,20 +11,26 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/charmbracelet/crush/internal/oauth/signin"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -114,8 +120,14 @@ type Fake struct {
 	Answers [][]question.Answer
 	// AnswerBatches records the batch each answer named.
 	AnswerBatches []string
-	Resolve       bool
-	OnRun         func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
+	// pinentryOpen and sshOpen hold the prompt ids a tab can answer;
+	// lastSecret is the answer the last respond method delivered, which
+	// LastSecret returns.
+	pinentryOpen map[string]bool
+	sshOpen      map[string]bool
+	lastSecret   string
+	Resolve      bool
+	OnRun        func(ctx context.Context, sessionID, prompt string, att []message.Attachment) error
 	// OnSummarize, OnAsk and OnShell play a scripted agent for the browser
 	// action routes. A nil OnSummarize succeeds, a nil OnAsk falls back to
 	// AskAnswer, and a nil OnShell returns an empty shell response.
@@ -135,6 +147,14 @@ type Fake struct {
 	// provider and model set it reads. A model switch swaps in a copy, so
 	// a reader of a published config never sees its models change.
 	Cfg *config.Config
+	// catalog is the provider catalog SetProviderAPIKey takes models from.
+	catalog []catwalk.Provider
+	// copilotImport is what ImportCopilot reports; set it with
+	// SetCopilotImport.
+	copilotImport *oauth.Token
+	// providerKeyErr makes SetProviderAPIKey fail; set it with
+	// SetProviderKeyErr.
+	providerKeyErr error
 	// agentBusy is what AgentIsBusy reports; set it with SetAgentBusy.
 	agentBusy bool
 	// agentModel is what AgentModel returns; set it with SetAgentModel.
@@ -151,6 +171,8 @@ func NewFake() *Fake {
 		busy:          make(map[string]bool),
 		history:       make(map[string][]history.File),
 		diagnostics:   make(map[string]lsp.DiagnosticCounts),
+		pinentryOpen:  make(map[string]bool),
+		sshOpen:       make(map[string]bool),
 		skillContent:  make(map[string]string),
 		skillDisabled: make(map[string]bool),
 		mcpPromptText: make(map[string]string),
@@ -281,6 +303,65 @@ func (f *Fake) CurrentSessionID() string {
 
 func (f *Fake) WorkingDir() string { return f.WorkDir }
 
+// Resolver returns the identity resolver: a fake never expands a $(...)
+// in a test key as a shell command.
+func (f *Fake) Resolver() config.VariableResolver { return config.IdentityResolver() }
+
+// SetCatalog gives SetProviderAPIKey the provider catalog it takes models
+// from.
+func (f *Fake) SetCatalog(providers []catwalk.Provider) {
+	f.mu.Lock()
+	f.catalog = append([]catwalk.Provider(nil), providers...)
+	f.mu.Unlock()
+}
+
+// SetCopilotImport drives ImportCopilot.
+func (f *Fake) SetCopilotImport(tok *oauth.Token) {
+	f.mu.Lock()
+	f.copilotImport = tok
+	f.mu.Unlock()
+}
+
+// SetProviderKeyErr makes SetProviderAPIKey fail, the way a config write
+// can. nil restores success.
+func (f *Fake) SetProviderKeyErr(err error) {
+	f.mu.Lock()
+	f.providerKeyErr = err
+	f.mu.Unlock()
+}
+
+// SetProviderAPIKey records the mutation without the value and marks the
+// provider configured with the catalog's models. The key itself is never
+// stored.
+func (f *Fake) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
+	kind := "key"
+	if _, ok := apiKey.(*oauth.Token); ok {
+		kind = "oauth"
+	}
+	f.record("SetProviderAPIKey:" + scope.String() + ":" + providerID + ":" + kind)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.providerKeyErr != nil {
+		return f.providerKeyErr
+	}
+	f.Cfg = withProviderKey(f.Cfg, providerID, f.catalog)
+	return nil
+}
+
+// ImportCopilot reports the token SetCopilotImport set. A token marks
+// Copilot configured with the catalog's models, as the real import saves
+// the login to the config.
+func (f *Fake) ImportCopilot() (*oauth.Token, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.copilotImport == nil {
+		return nil, false
+	}
+	f.Calls = append(f.Calls, "ImportCopilot")
+	f.Cfg = withProviderKey(f.Cfg, string(catwalk.InferenceProviderCopilot), f.catalog)
+	return f.copilotImport, true
+}
+
 // Config returns the test's config, or nil: the fake has no data
 // directory, so the gateway's team watcher stays off unless a test sets
 // Options.AgentTeamsDir.
@@ -367,6 +448,45 @@ func withModel(cfg *config.Config, typ config.SelectedModelType, m config.Select
 		clone.Models = make(map[config.SelectedModelType]config.SelectedModel)
 	}
 	clone.Models[typ] = m
+	return &clone
+}
+
+// withProviderKey copies cfg with provider id marked configured, taking
+// the models from the matching catalog entry. The credential value stays
+// out of the fake config.
+func withProviderKey(cfg *config.Config, id string, catalog []catwalk.Provider) *config.Config {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clone := *cfg
+	providers := csync.NewMap[string, config.ProviderConfig]()
+	if cfg.Providers != nil {
+		for name, pc := range cfg.Providers.Seq2() {
+			providers.Set(name, pc)
+		}
+	}
+	pc, _ := providers.Get(id)
+	pc.ID = id
+	if pc.Name == "" {
+		pc.Name = id
+		for _, p := range catalog {
+			if string(p.ID) == id {
+				pc.Name = cmp.Or(p.Name, id)
+				break
+			}
+		}
+	}
+	if len(pc.Models) == 0 {
+		for _, p := range catalog {
+			if string(p.ID) == id {
+				pc.Models = append([]catwalk.Model(nil), p.Models...)
+				break
+			}
+		}
+	}
+	providers.Set(id, pc)
+	clone.Providers = providers
+	clone.Models = maps.Clone(cfg.Models)
 	return &clone
 }
 
@@ -948,6 +1068,108 @@ func (f *Fake) QuestionCancel(batchID string) bool {
 	return f.Resolve
 }
 
+// AddPinentryPrompt opens a GPG prompt and publishes the request event.
+func (f *Fake) AddPinentryPrompt(req pinentry.PromptRequest) {
+	f.mu.Lock()
+	f.pinentryOpen[req.ID] = true
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req})
+}
+
+// PinentryRespond answers an open GPG prompt. The call log names the id
+// only; the secret stays out of it.
+func (f *Fake) PinentryRespond(id, secret string) bool {
+	f.record("PinentryRespond:" + id)
+	f.mu.Lock()
+	if !f.pinentryOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.pinentryOpen, id)
+	f.lastSecret = secret
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	return true
+}
+
+// PinentryCancel dismisses an open GPG prompt.
+func (f *Fake) PinentryCancel(id string) bool {
+	f.record("PinentryCancel:" + id)
+	f.mu.Lock()
+	if !f.pinentryOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.pinentryOpen, id)
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	return true
+}
+
+// AddSSHPrompt opens an SSH prompt and publishes the request event.
+func (f *Fake) AddSSHPrompt(req sshaskpass.PromptRequest) {
+	f.mu.Lock()
+	f.sshOpen[req.ID] = true
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.PromptRequest]{Type: pubsub.CreatedEvent, Payload: req})
+}
+
+// SSHRespond answers an open SSH prompt. The call log names the id only;
+// the secret stays out of it.
+func (f *Fake) SSHRespond(id, secret string) bool {
+	f.record("SSHRespond:" + id)
+	f.mu.Lock()
+	if !f.sshOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.sshOpen, id)
+	f.lastSecret = secret
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	return true
+}
+
+// SSHCancel dismisses an open SSH prompt.
+func (f *Fake) SSHCancel(id string) bool {
+	f.record("SSHCancel:" + id)
+	f.mu.Lock()
+	if !f.sshOpen[id] {
+		f.mu.Unlock()
+		return false
+	}
+	delete(f.sshOpen, id)
+	f.mu.Unlock()
+	f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	return true
+}
+
+// ResolveFromTerminal closes a prompt the way the TUI would, without
+// delivering a secret.
+func (f *Fake) ResolveFromTerminal(source, id string) {
+	f.mu.Lock()
+	switch source {
+	case "pinentry":
+		delete(f.pinentryOpen, id)
+	case "ssh":
+		delete(f.sshOpen, id)
+	}
+	f.mu.Unlock()
+	switch source {
+	case "pinentry":
+		f.Emit(pubsub.Event[pinentry.Notification]{Type: pubsub.UpdatedEvent, Payload: pinentry.Notification{RequestID: id}})
+	case "ssh":
+		f.Emit(pubsub.Event[sshaskpass.Notification]{Type: pubsub.UpdatedEvent, Payload: sshaskpass.Notification{RequestID: id}})
+	}
+}
+
+// LastSecret returns the answer the last respond method delivered.
+func (f *Fake) LastSecret() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSecret
+}
+
 // nextID returns a deterministic, per-fake unique ID. The scripted agent
 // uses it so fixture and smoke-test output stays stable.
 func (f *Fake) nextID(prefix string) string {
@@ -963,3 +1185,123 @@ func (f *Fake) CallLog() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.Calls...)
 }
+
+// FakeFlow is a signin.Flow for tests and webfake. Wait returns Next once,
+// at once, when it is set; otherwise it blocks until Finish or the context
+// ends, then returns Token or WaitErr.
+type FakeFlow struct {
+	FlowName     string // Name; "Fake provider" when empty
+	HasCodeEntry bool   // CodeEntry
+	Challenge    signin.Challenge
+	StartErr     error
+	Next         *signin.Challenge
+	Token        *oauth.Token
+	WaitErr      error
+	CodeOK       string // SubmitCode accepts only this code
+
+	release  chan struct{}
+	finish   sync.Once
+	mu       sync.Mutex
+	nextUsed bool
+	closed   bool
+}
+
+// NewFakeFlow returns a flow whose Wait blocks until Finish, and registers
+// Finish in t.Cleanup so no test leaves a goroutine waiting.
+func NewFakeFlow(t testing.TB) *FakeFlow {
+	t.Helper()
+	f := &FakeFlow{release: make(chan struct{})}
+	t.Cleanup(f.Finish)
+	return f
+}
+
+// NewFakeFlowFor returns a flow whose Wait blocks until done closes, for
+// callers without a *testing.T, such as webfake. Finish still releases it.
+func NewFakeFlowFor(done <-chan struct{}) *FakeFlow {
+	f := &FakeFlow{release: make(chan struct{})}
+	go func() {
+		select {
+		case <-done:
+			f.Finish()
+		case <-f.release:
+		}
+	}()
+	return f
+}
+
+// Finish completes the flow, the way a token arriving would.
+func (f *FakeFlow) Finish() {
+	f.finish.Do(func() {
+		f.mu.Lock()
+		if f.release == nil {
+			f.release = make(chan struct{})
+		}
+		release := f.release
+		f.mu.Unlock()
+		close(release)
+	})
+}
+
+// Closed reports whether the gateway closed the flow.
+func (f *FakeFlow) Closed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// Name is the provider name the dialog shows.
+func (f *FakeFlow) Name() string {
+	if f.FlowName == "" {
+		return "Fake provider"
+	}
+	return f.FlowName
+}
+
+// Start returns Challenge, or StartErr.
+func (f *FakeFlow) Start(context.Context) (signin.Challenge, error) {
+	if f.StartErr != nil {
+		return signin.Challenge{}, f.StartErr
+	}
+	return f.Challenge, nil
+}
+
+// Wait returns Next once when it is set. Otherwise it blocks until Finish
+// or the context ends.
+func (f *FakeFlow) Wait(ctx context.Context, _ signin.Challenge) (*oauth.Token, *signin.Challenge, error) {
+	f.mu.Lock()
+	if f.Next != nil && !f.nextUsed {
+		f.nextUsed = true
+		next := f.Next
+		f.mu.Unlock()
+		return nil, next, nil
+	}
+	release := f.release
+	f.mu.Unlock()
+	select {
+	case <-release:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	return f.Token, nil, f.WaitErr
+}
+
+// CodeEntry is the flow's code entry capability.
+func (f *FakeFlow) CodeEntry() bool { return f.HasCodeEntry }
+
+// SubmitCode accepts only CodeOK. Its error quotes the code, so a gateway
+// that logged or forwarded the text fails the test.
+func (f *FakeFlow) SubmitCode(_ context.Context, code string) (*oauth.Token, error) {
+	if f.CodeOK != "" && code == f.CodeOK {
+		return f.Token, nil
+	}
+	return nil, fmt.Errorf("invalid code %q", code)
+}
+
+// Close records that the flow's listener was released.
+func (f *FakeFlow) Close() {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+}
+
+var _ signin.Flow = (*FakeFlow)(nil)

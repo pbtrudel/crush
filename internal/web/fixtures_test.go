@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/sshaskpass"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,6 +92,30 @@ func fixtureEvents() map[string]any {
 			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeAgentError,
 			ProviderID: "anthropic", Message: "The provider refused the request",
 		}},
+		// An AWS SSO refresh: the command while it runs, the verification
+		// URL once the command prints it, then the result. A tab that
+		// missed both reads the command from the snapshot's aws_sso.
+		"agent_event_aws_sso": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuth, ProviderID: "amazon-bedrock",
+			AWSSOCommand: "aws sso login --profile dev",
+		}},
+		"agent_event_aws_sso_url": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuth, ProviderID: "amazon-bedrock",
+			AWSSOCommand: "aws sso login --profile dev",
+			AWSSOURL:     "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD",
+		}},
+		// A refresh that failed: the browser closes the dialog and toasts
+		// the error from this frame's error field.
+		"agent_event_aws_sso_result": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", Type: notify.TypeAWSSSOAuthResult, ProviderID: "amazon-bedrock",
+			Message: "the SSO session expired",
+		}},
+		// An expired login: the browser toasts the text with a sign-in
+		// action for the provider.
+		"agent_event_reauth": pubsub.Event[notify.Notification]{Type: pubsub.CreatedEvent, Payload: notify.Notification{
+			SessionID: "s1", SessionTitle: "Parser refactor", Type: notify.TypeReAuthenticate,
+			ProviderID: "openai",
+		}},
 		// The config files changed on disk; the browser offers a reload.
 		"config_stale": app.ConfigStaleMsg{
 			Changed: []string{"/repo/crushrc"}, Missing: []string{},
@@ -153,6 +178,19 @@ func gatewayFixtureFrames(t *testing.T) map[string]frame {
 			ReasoningEffort: "high", Think: true,
 			Small:      &ModelRef{ID: "claude-haiku", Provider: "anthropic"},
 			AgentReady: true,
+		}),
+		// The open GPG and SSH prompts, oldest first: the tab renders one
+		// dialog per entry and answers by source and id.
+		"secure_prompt": mk(frameSecurePrompt, map[string][]SecurePrompt{"prompts": {
+			fromPinentry(pinentryReq("p1")),
+			fromSSH(sshaskpass.PromptRequest{ID: "s2", Kind: sshaskpass.KindConfirm, Prompt: "Are you sure you want to continue connecting (yes/no)?"}),
+		}}),
+		// A provider sign-in waiting for the user: the device code, the
+		// link to open and the provider's display name.
+		"signin": mk(frameSignIn, SignInState{
+			FlowID: "f1", Provider: "copilot", ProviderName: "GitHub Copilot",
+			State: signInWaiting, Kind: signInKindDevice,
+			UserCode: "WDJB-MJHT", VerificationURL: "https://github.com/login/device",
 		}),
 	}
 }
