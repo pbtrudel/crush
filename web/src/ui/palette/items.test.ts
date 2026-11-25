@@ -25,6 +25,7 @@ const sources: PaletteSources = {
   cinematicAllowed: false,
   motion: 'full',
   agentTeams: false,
+  agentTeamsLoaded: true,
   docker: { available: true, enabled: false },
   hasChannels: true,
 };
@@ -147,6 +148,12 @@ describe('palette items', () => {
     expect(noSession).toContain('Stop web mode');
   });
 
+  it('offers Disable Docker MCP whenever it is enabled', () => {
+    const titles = buildItems({ ...sources, docker: { available: false, enabled: true } }).map((i) => i.title);
+    expect(titles).toContain('Disable Docker MCP catalog');
+    expect(titles).not.toContain('Enable Docker MCP catalog');
+  });
+
   it('offers Docker MCP by state', () => {
     const off = buildItems(sources).map((i) => i.title);
     expect(off).toContain('Enable Docker MCP catalog');
@@ -167,6 +174,13 @@ describe('palette items', () => {
     expect(off.run).toEqual({ kind: 'action', action: 'toggle-agent-teams' });
     expect(buildItems({ ...sources, agentTeams: true }).find((i) => i.id === 'toggle:agent-teams')!.title)
       .toBe('Agent Teams: On');
+  });
+
+  it('hides Agent Teams until the config loads', () => {
+    const hidden = buildItems({ ...sources, agentTeamsLoaded: false }).map((i) => i.id);
+    expect(hidden).not.toContain('toggle:agent-teams');
+    expect(buildItems({ ...sources, agentTeamsLoaded: true, agentTeams: true })
+      .find((i) => i.id === 'toggle:agent-teams')!.title).toBe('Agent Teams: On');
   });
 
   it('offers Channels only when a server could be one', () => {

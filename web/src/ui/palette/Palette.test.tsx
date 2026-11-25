@@ -1042,6 +1042,25 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBeNull();
   });
 
+  it('hides Agent Teams until the config has loaded', async () => {
+    seed();
+    stubSources();
+    const config = deferred<ConfigView>();
+    vi.mocked(api.config).mockReturnValueOnce(config.promise);
+    await mount();
+    await openWithKey();
+
+    expect(dialog()!.textContent).not.toContain('Agent Teams:');
+    expect(dialog()!.querySelector('#palette-option-0')).not.toBeNull();
+
+    await act(async () => {
+      config.resolve({ display: DISPLAY, agent_teams: false });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(dialog()!.textContent).toContain('Agent Teams: Off');
+  });
+
   it('reads the Agent Teams flag and the Docker state from the gateway', async () => {
     seed();
     stubSources({

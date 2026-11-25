@@ -170,6 +170,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     cinematicAllowed: cinematicAllowed(),
     motion: motion.value,
     agentTeams: loaded.config?.agent_teams ?? false,
+    agentTeamsLoaded: loaded.config !== null,
     docker: loaded.servers?.docker ?? { available: false, enabled: false },
     hasChannels: (loaded.servers?.servers ?? []).some((server) => server.channel),
   };

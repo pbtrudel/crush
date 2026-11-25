@@ -43,6 +43,7 @@ export interface PaletteSources {
   cinematicAllowed: boolean;
   motion: Motion;
   agentTeams: boolean;
+  agentTeamsLoaded: boolean;
   docker: DockerMcp;
   hasChannels: boolean;
 }
@@ -105,10 +106,10 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     action(ACTIONS.signIn, 'Sign in to a provider', ['login', 'api key', 'oauth', 'provider', 'auth']),
   ];
   if (s.hasChannels) actions.push(action(ACTIONS.channels, 'Channels', ['channels', 'mcp', 'discord']));
-  if (s.docker.available) {
-    actions.push(s.docker.enabled
-      ? action(ACTIONS.dockerDisable, 'Disable Docker MCP catalog', ['docker', 'mcp', 'catalog'])
-      : action(ACTIONS.dockerEnable, 'Enable Docker MCP catalog', ['docker', 'mcp', 'catalog']));
+  if (s.docker.enabled) {
+    actions.push(action(ACTIONS.dockerDisable, 'Disable Docker MCP catalog', ['docker', 'mcp', 'catalog']));
+  } else if (s.docker.available) {
+    actions.push(action(ACTIONS.dockerEnable, 'Enable Docker MCP catalog', ['docker', 'mcp', 'catalog']));
   }
   if (s.model.can_reason) {
     actions.push(action(ACTIONS.reasoningLevel, 'Reasoning level', ['reasoning', 'effort', 'think']));
@@ -214,13 +215,15 @@ export function buildItems(s: PaletteSources): PaletteItem[] {
     toggles.push(toggle('cinematic', 'Cinematic mode', onOff(s.cinematic), ['cinematic'], ACTIONS.cinematicToggle));
   }
   toggles.push(toggle('motion', 'Motion', s.motion, ['motion', 'reduce', 'effects'], ACTIONS.motionToggle));
-  toggles.push({
-    id: 'toggle:agent-teams',
-    group: 'Toggles',
-    title: `Agent Teams: ${onOff(s.agentTeams)}`,
-    keywords: ['agent', 'teams', 'toggle-agent-teams'],
-    run: { kind: 'action', action: ACTIONS.agentTeams },
-  });
+  if (s.agentTeamsLoaded) {
+    toggles.push({
+      id: 'toggle:agent-teams',
+      group: 'Toggles',
+      title: `Agent Teams: ${onOff(s.agentTeams)}`,
+      keywords: ['agent', 'teams', 'toggle-agent-teams'],
+      run: { kind: 'action', action: ACTIONS.agentTeams },
+    });
+  }
 
   return [...actions, ...commands, ...skills, ...prompts, ...sessions, ...models, ...toggles];
 }
