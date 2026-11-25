@@ -106,7 +106,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
 
   // The focus trap also restores the opener when the dialog unmounts, and
   // re-focuses the first control when the argument form comes and goes.
-  useDialogFocus(dialog, `${section}:${argumentId ?? ''}`);
+  useDialogFocus(dialog, `${section}:${argumentId ?? ''}`, inert);
 
   // A source can answer after the dialog closed; the flag keeps that answer
   // from reaching an unmounted tree.

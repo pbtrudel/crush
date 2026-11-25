@@ -118,7 +118,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const countDirty = useRef<Set<string>>(new Set());
   const busyRef = useRef<Set<string>>(new Set());
 
-  useDialogFocus(dialog, 'systems');
+  useDialogFocus(dialog, 'systems', inert);
   usePaletteDeckFocus();
 
   // An answer can arrive after the panel closed; the flag keeps it from

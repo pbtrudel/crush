@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
 import type {
-  CommandEntry, Frame, McpPrompt, ModelChoice, Session, SkillEntry,
+  CommandEntry, Frame, McpPrompt, ModelChoice, PermissionRequest, Session, SkillEntry,
 } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
@@ -320,6 +320,51 @@ describe('the command palette', () => {
       };
     });
     expect(layer.hasAttribute('inert')).toBe(true);
+  });
+
+  it('keeps the focus in the panel when a failed source stops failing', async () => {
+    seed();
+    stubSources();
+    vi.mocked(api.sessions).mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openWithKey();
+
+    // The Retry refetches only the source that failed, so a successful one
+    // takes its line away while it holds the focus.
+    const retry = retryButton()!;
+    retry.focus();
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(retryButton()).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(combobox());
+
+    // A prompt makes the page behind it inert, and the browser drops the
+    // focus to the body before the prompt takes it.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const prompt: PermissionRequest = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    await act(() => { state.value = { ...state.value, permissions: [prompt] }; });
+    await flush();
+    const panel = dialog()!;
+    expect(root.querySelector('.palette-layer')!.hasAttribute('inert')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // A prompt that still needs the user owns the focus, so a later render
+    // of the panel under it does not take it back.
+    await act(() => { state.value = { ...state.value, permissions: [prompt, { ...prompt, id: 'p2' }] }; });
+    await flush();
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // The prompt closes: the panel takes the control that had the focus back.
+    await act(() => { state.value = { ...state.value, permissions: [] }; });
+    await flush();
+    expect(document.activeElement).toBe(combobox());
   });
 
   it('lists the sessions and follows the picked one', async () => {

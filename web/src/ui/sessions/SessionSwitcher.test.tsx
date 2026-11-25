@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
-import type { CommandEntry, Frame, McpPrompt, ModelChoice, Session, SkillEntry } from '../../api/types';
+import type { CommandEntry, Frame, McpPrompt, ModelChoice, PermissionRequest, Session, SkillEntry } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
@@ -447,6 +447,51 @@ describe('session switcher', () => {
       };
     });
     expect(layer.hasAttribute('inert')).toBe(true);
+  });
+
+  it('keeps the focus in the panel when the Retry becomes the list', async () => {
+    seed();
+    const sessions = stubSessions();
+    sessions.mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openFromHud();
+
+    const retry = dialog()!.querySelector<HTMLButtonElement>('#session-retry')!;
+    retry.focus();
+    await act(() => { retry.click(); });
+    await flush();
+
+    // The reload replaces the failure with the list, so the focused button
+    // leaves the tree and the filter takes the focus it drops.
+    expect(dialog()!.querySelector('#session-retry')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(filter());
+
+    // A prompt makes the page behind it inert, and the browser drops the
+    // focus to the body before the prompt takes it.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const prompt: PermissionRequest = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    await act(() => { state.value = { ...state.value, permissions: [prompt] }; });
+    await flush();
+    const panel = dialog()!;
+    expect(root.querySelector('.sessions-layer')!.hasAttribute('inert')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // A prompt that still needs the user owns the focus, so a later render
+    // of the panel under it does not take it back.
+    await act(() => { state.value = { ...state.value, permissions: [prompt, { ...prompt, id: 'p2' }] }; });
+    await flush();
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // The prompt closes: the panel takes the control that had the focus back.
+    await act(() => { state.value = { ...state.value, permissions: [] }; });
+    await flush();
+    expect(document.activeElement).toBe(filter());
   });
 
   it('keeps the title button out of the tab order in cinematic mode', async () => {

@@ -62,7 +62,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   // replaces only leaves the DOM a render later.
   const focusRequest = useRef<'filter' | null>(null);
 
-  useDialogFocus(dialog, 'models');
+  useDialogFocus(dialog, 'models', inert);
   usePaletteDeckFocus();
 
   useEffect(() => {

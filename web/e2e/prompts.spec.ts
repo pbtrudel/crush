@@ -1,13 +1,14 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page, Request } from '@playwright/test';
 import {
-  confirmTest, expect, promptElsewhereTest, promptTest, touchTest,
+  confirmTest, expect, promptElsewhereTest, promptLateTest, promptTest, touchTest,
 } from './fixture';
 
 // Each test launches its own webfake, and a cold Go build counts towards the
 // test's own timeout.
 promptTest.setTimeout(60_000);
 promptElsewhereTest.setTimeout(60_000);
+promptLateTest.setTimeout(60_000);
 confirmTest.setTimeout(60_000);
 touchTest.setTimeout(60_000);
 
@@ -155,4 +156,35 @@ touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => 
   // must not be announced over the next two seconds either.
   const seen = await sampleToasts(page, 2000);
   expect(seen.filter((text) => text.includes('Answered in the terminal'))).toEqual([]);
+});
+
+// A panel an earlier test could not open under a prompt: the prompt is held
+// back six seconds, so the switcher opens first and the prompt closes over
+// it. The panel is the layer that stays open, so it takes its focus back.
+promptLateTest('returns the focus to the panel when a prompt closes over it', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  await page.getByRole('button', { name: 'Session: Holodeck test. Switch session' }).click();
+  const sessions = page.getByRole('dialog', { name: 'Sessions' });
+  await expect(sessions).toBeVisible();
+  await expect(sessions.getByLabel('Filter sessions', { exact: true })).toBeFocused();
+
+  // The row the user tabbed to is the control the prompt interrupts.
+  await page.keyboard.press('ArrowDown');
+  const row = await page.evaluate(() => document.activeElement?.id ?? '');
+  expect(row).toMatch(/^session-open-/);
+
+  const prompt = page.getByRole('dialog', { name: 'GPG passphrase' });
+  await expect(prompt).toBeVisible({ timeout: 20_000 });
+  // The page behind a prompt is inert, the open panel included.
+  await expect(page.locator('.sessions-layer')).toHaveJSProperty('inert', true);
+
+  await prompt.getByLabel('Passphrase', { exact: true }).fill('hunter2');
+  await page.keyboard.press('Enter');
+  await expect(prompt).toBeHidden();
+
+  // The panel stays open, so it takes the focus back from the body, on the
+  // control that had it before the prompt.
+  await expect(sessions).toBeVisible();
+  await expect(page.locator(`#${row}`)).toBeFocused();
 });

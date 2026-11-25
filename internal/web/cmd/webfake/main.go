@@ -196,18 +196,27 @@ func signInFlow(seams func(string) (signin.Flow, error), ms int) func(string) (s
 }
 
 // playSecurePrompt opens the prompt WEBFAKE_SECURE_PROMPT names, 300 ms
-// after start, and answers it from the terminal after
-// WEBFAKE_PROMPT_ELSEWHERE_MS when that is set.
+// after start or after WEBFAKE_PROMPT_AFTER_MS when that is set, and answers
+// it from the terminal after WEBFAKE_PROMPT_ELSEWHERE_MS when that is set.
 func playSecurePrompt(ctx context.Context, fake *webtest.Fake, kind string) {
 	ev, ok := webtest.SecurePromptFromEnv(kind)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "webfake: unknown WEBFAKE_SECURE_PROMPT:", kind)
 		return
 	}
+	after := 300
+	if v := os.Getenv("WEBFAKE_PROMPT_AFTER_MS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_PROMPT_AFTER_MS:", v)
+			return
+		}
+		after = n
+	}
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(time.Duration(after) * time.Millisecond):
 	}
 	switch req := ev.(type) {
 	case pinentry.PromptRequest:

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
-import type { Frame, ModelChoice, ModelInfo } from '../../api/types';
+import type { Frame, ModelChoice, ModelInfo, PermissionRequest } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
@@ -864,6 +864,57 @@ describe('the model selector', () => {
       };
     });
     expect(layer.hasAttribute('inert')).toBe(true);
+  });
+
+  it('keeps the focus in the panel when the starting Retry leaves it', async () => {
+    seed({}, { agentReady: false });
+    stubProviders();
+    vi.spyOn(api, 'selectModel').mockRejectedValue(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+
+    // The agent comes up: the starting line that holds the Retry goes away
+    // and the action line under the list takes its place.
+    await act(() => { state.value = { ...state.value, agentReady: true }; });
+    await flush();
+
+    expect(retry.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+    const remembered = document.activeElement as HTMLElement;
+
+    // A prompt makes the page behind it inert, and the browser drops the
+    // focus to the body before the prompt takes it.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const prompt: PermissionRequest = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    await act(() => { state.value = { ...state.value, permissions: [prompt] }; });
+    await flush();
+    const panel = dialog()!;
+    expect(root.querySelector('.models-layer')!.hasAttribute('inert')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // A prompt that still needs the user owns the focus, so a later render
+    // of the panel under it does not take it back.
+    await act(() => { state.value = { ...state.value, permissions: [prompt, { ...prompt, id: 'p2' }] }; });
+    await flush();
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // The prompt closes: the panel takes the control that had the focus back.
+    await act(() => { state.value = { ...state.value, permissions: [] }; });
+    await flush();
+    expect(document.activeElement).toBe(remembered);
   });
 
   it('keeps the model button out of the tab order in cinematic mode', async () => {

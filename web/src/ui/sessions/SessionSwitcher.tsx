@@ -56,7 +56,7 @@ function SessionsDialog({ inert }: { inert: boolean }) {
   const renaming = sessionRenameId.value;
   const deleting = sessionDeleteId.value;
 
-  useDialogFocus(dialog, 'sessions');
+  useDialogFocus(dialog, 'sessions', inert);
   usePaletteDeckFocus();
 
   // An answer can arrive after the dialog closed; the flag keeps it from

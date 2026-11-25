@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { SignInResult, SignInState, SignInTarget } from '../../api/types';
 import { api } from '../../api/http';
 import { describeFailure, type Failure } from '../../state/failure';
 import { openModels } from '../../state/palette';
-import { applySignIn, needsAttention, pushToast } from '../../state/reducer';
+import { applySignIn, pushToast } from '../../state/reducer';
 import { closeSignIn, signInModel, signInOpen } from '../../state/signin';
 import { actions, dispatch, state } from '../../state/store';
 import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
@@ -62,11 +62,8 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   // A selection or a replaced flow invalidates the request in flight, so a
   // late answer never lands in the panel of another provider.
   const generation = useRef(0);
-  // hadFocus lets a control that leaves the tree hand its focus to the
-  // panel instead of dropping it to the page.
-  const hadFocus = useRef(false);
 
-  useDialogFocus(dialog, 'signin');
+  useDialogFocus(dialog, 'signin', inert);
   usePaletteDeckFocus();
 
   const markSeen = (id: string) => {
@@ -81,51 +78,6 @@ function SignInPanel({ provider, inert }: { provider?: string; inert: boolean })
   useEffect(() => {
     const current = state.value.signin;
     if (current !== null && running(current)) markSeen(current.flow_id);
-  });
-
-  // lastInside names the control inside the dialog that last held the focus.
-  // It is recorded from focusin, in a layout effect so the listener is there
-  // before useDialogFocus takes the first focus: tabbing into the key or the
-  // code field renders nothing the other effects could read.
-  const lastInside = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    const el = dialog.current;
-    if (!el) return;
-    const onFocusIn = (e: FocusEvent) => {
-      if (!(e.target instanceof HTMLElement)) return;
-      lastInside.current = e.target;
-      hadFocus.current = true;
-    };
-    el.addEventListener('focusin', onFocusIn);
-    return () => el.removeEventListener('focusin', onFocusIn);
-  }, []);
-
-  // A button that unmounts while it holds focus (Start becoming the
-  // waiting panel, Try again starting again) hands focus to the panel. An
-  // interrupt above the page is inert, and the browser drops the dialog's
-  // focus to the body: the dialog is the layer that stays open, so it takes
-  // the focus back when the interrupt closes, on the control that had it.
-  const wasInert = useRef(inert);
-  useEffect(() => {
-    const el = dialog.current;
-    const active = document.activeElement;
-    const recovered = wasInert.current;
-    wasInert.current = inert;
-    // A prompt that still needs you owns the focus, even when a dropped link
-    // has already made the page interactive again.
-    if (inert || needsAttention(state.value)) return;
-    if (el && active instanceof HTMLElement && el.contains(active)) {
-      hadFocus.current = true;
-      lastInside.current = active;
-      return;
-    }
-    if (!hadFocus.current && !recovered) return;
-    hadFocus.current = false;
-    const remembered = lastInside.current;
-    const target = remembered !== null && el?.contains(remembered) && remembered.isConnected
-      ? remembered
-      : el?.querySelector<HTMLElement>('.signin__panel button, .signin__panel input') ?? el;
-    target?.focus();
   });
 
   // One request for the targets and one for the flow a reload or the
