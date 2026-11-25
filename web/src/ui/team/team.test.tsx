@@ -30,7 +30,9 @@ describe('TaskBoard', () => {
     state.value = reduce(initialState(), fx.snapshot);
     const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
     await act(() => { render(<TaskBoard />, root); });
-    await act(() => { root.querySelector<HTMLButtonElement>('.taskcard__owner')!.click(); });
+    const chip = root.querySelector<HTMLButtonElement>('.taskcard__owner')!;
+    expect(chip.getAttribute('aria-label')).toBe('Inspect alice');
+    await act(() => { chip.click(); });
     expect(inspect).toHaveBeenCalledWith('team-m-1');
   });
 
@@ -51,6 +53,18 @@ describe('TodoOrbit', () => {
     expect(items[0]).toContain('done');
     expect(items[1]).toContain('Porting the parser');
     expect(items[1]).toContain('in progress');
+  });
+
+  it('draws the done share on the ring and leaves the rest of the circle open', async () => {
+    state.value = reduce(reduce(initialState(), fx.snapshot), fx.session);
+    await act(() => { render(<TodoOrbit />, root); });
+    const fill = root.querySelector('.todo-orbit__fill')!;
+    // One of three todos is done, so the arc is a third of the circle and
+    // the stroke carries the measurement in user units.
+    const C = 2 * Math.PI * 20;
+    expect(fill.getAttribute('stroke-dasharray')).toBe(`${(C * 1) / 3} ${C}`);
+    expect(root.querySelector('.todo-orbit__track')).not.toBeNull();
+    expect(root.querySelector('.todo-orbit__ring')!.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('renders nothing without todos', async () => {
