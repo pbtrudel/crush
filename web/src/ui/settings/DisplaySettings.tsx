@@ -69,6 +69,9 @@ function DisplayPanel({ inert }: { inert: boolean }) {
   const detach = async () => {
     try {
       await api.detach();
+      // The gateway is going away, and the ended page behind the dialog is
+      // what explains it from here on.
+      closeDisplay();
     } catch (err) {
       if (alive.current) setFailure(describeFailure(err));
     }

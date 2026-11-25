@@ -186,6 +186,9 @@ describe('the display settings dialog', () => {
     await click(button('Stop web mode'));
     await click(button('Stop web mode now'));
     expect(detach).toHaveBeenCalledTimes(1);
+    // The ended page behind the dialog carries the stopped sentence.
+    expect(displayOpen.value).toBe(false);
+    expect(dialog()).toBeNull();
   });
 
   it('moves focus in on open and returns it to the HUD control on close', async () => {

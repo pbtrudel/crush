@@ -53,6 +53,7 @@ m4bFreshTest('stops web mode from the browser', async ({ page, gateway }) => {
   await dialog.getByRole('button', { name: 'Stop web mode', exact: true }).click();
   await dialog.getByRole('button', { name: 'Stop web mode now' }).click();
 
+  await expect(dialog).toBeHidden();
   const stopped = 'Web mode was stopped. Run /web in the terminal for a new link.';
   await expect(page.getByRole('status').filter({ hasText: stopped })).toBeVisible({ timeout: 30_000 });
   // The deck's input is disabled for the same reason its help line names.
