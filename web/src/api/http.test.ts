@@ -8,9 +8,10 @@ afterEach(() => {
 });
 
 // stub answers every fetch with one JSON body, or an empty response for a
-// status that carries none.
+// status that carries none. The gateway accepts a sign-in code with a bare
+// 202 and no body, so the stub does too.
 function stub(status = 200, body: unknown = {}) {
-  const rsp = status === 204 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
+  const rsp = status === 204 || status === 202 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
   const fetch = vi.fn().mockResolvedValue(rsp);
   vi.stubGlobal('fetch', fetch);
   return fetch;
@@ -223,6 +224,13 @@ describe('api calls', () => {
     expect(String(url)).not.toContain('hunter2');
     expect(JSON.stringify(init.headers)).not.toContain('hunter2');
     expect(JSON.parse(init.body as string)).toEqual({ id: 'p1', secret: 'hunter2' });
+  });
+
+  it('answers a 202 with an empty body, as the gateway does', async () => {
+    const fetch = stub(202, { ignored: true });
+    const rsp = await fetch();
+    expect(rsp.status).toBe(202);
+    expect(await rsp.text()).toBe('');
   });
 
   it('sends a pasted sign-in code in the body only', async () => {
