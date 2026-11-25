@@ -176,7 +176,9 @@ func (g *Gateway) handleConfigSet(w http.ResponseWriter, r *http.Request) {
 
 // handleConfigRemove removes one of the tab's display settings, which
 // returns it to its default, and tells every tab the new set. It holds
-// displayMu for the same reason handleConfigSet does.
+// displayMu for the same reason handleConfigSet does. The remove only
+// touches the global config, so it publishes the default even when a
+// project-scope web_display block overrides the global one.
 func (g *Gateway) handleConfigRemove(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Key string `json:"key"`

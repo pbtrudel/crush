@@ -33,6 +33,8 @@ func TestConfigSetRefusesOtherKeys(t *testing.T) {
 	for _, key := range []string{
 		"options.web", "options.agent_teams", "providers.openai.api_key",
 		"options.web_display", "options.web_display.theme.extra", "options.tui.active_theme",
+		"OPTIONS.WEB_DISPLAY.THEME", " options.web_display.theme",
+		`options.web_display.theme\n`,
 	} {
 		rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/config/set",
 			`{"key":"`+key+`","value":true}`)
@@ -51,6 +53,10 @@ func TestConfigSetValidatesValues(t *testing.T) {
 		`{"key":"options.web_display.theme","value":1}`,
 		`{"key":"options.web_display.motion","value":""}`,
 		`{"key":"options.web_display.low_power","value":"yes"}`,
+		`{"key":"options.web_display.theme","value":null}`,
+		`{"key":"options.web_display.low_power","value":null}`,
+		`{"key":"options.web_display.theme","value":{}}`,
+		`{"key":"options.web_display.theme"}`,
 	} {
 		rsp, rb := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/config/set", body)
 		rsp.Body.Close()
@@ -76,12 +82,19 @@ func TestConfigRemoveRestoresTheDefault(t *testing.T) {
 func TestConfigWriteFailureKeepsTheSettings(t *testing.T) {
 	t.Parallel()
 	g, f := startTest(t)
+	stream := dialStream(t, g, "")
+	_ = readFrame(t, stream)
 	f.SetConfigErr(errors.New("disk full at /home/u/.local/share/crush/crush.json"))
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/config/set", `{"key":"options.web_display.theme","value":"solid"}`)
 	rsp.Body.Close()
 	require.Equal(t, http.StatusInternalServerError, rsp.StatusCode)
 	require.NotContains(t, string(body), "/home/u")
 	require.Equal(t, "holodeck", g.buildSnapshot(t.Context(), "").Display.Theme)
+	// A refused write changes nothing, so no tab is told a new set arrived.
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_, data, err := stream.Read(ctx)
+	require.Error(t, err, "a failed write published %s", data)
 }
 
 func TestSnapshotCarriesDisplayFromConfig(t *testing.T) {
