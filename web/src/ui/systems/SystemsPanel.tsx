@@ -12,7 +12,7 @@ import { useDialogFocus, usePaletteDeckFocus } from '../interrupt/focus';
 import { webAddress } from '../webAddress';
 
 type Kind = 'lsp' | 'mcp';
-type McpAction = 'start' | 'refresh' | 'enable' | 'disable';
+type McpAction = 'start' | 'refresh' | 'enable' | 'disable' | 'disable_global' | 'auth_cancel';
 
 // The state words name the Go enums in plain English; the color alone never
 // carries the state.
@@ -90,6 +90,9 @@ function SystemsDialog({ inert }: { inert: boolean }) {
   const s = state.value;
   const [lsp, setLsp] = useState<LspServer[] | null>(null);
   const [mcp, setMcp] = useState<McpServer[] | null>(null);
+  // The channels filter narrows the MCP list to servers that are, or could
+  // be, channels. The palette's Channels item opens the panel with it on.
+  const [channelsOnly, setChannelsOnly] = useState(systemsFocus.value === 'channels');
   const [lspError, setLspError] = useState<unknown | null>(null);
   const [mcpError, setMcpError] = useState<unknown | null>(null);
   const [liveCounts, setLiveCounts] = useState<Record<string, DiagnosticCounts>>({});
@@ -324,6 +327,7 @@ function SystemsDialog({ inert }: { inert: boolean }) {
 
   const lspRows = mergeRows(lsp, s.lsp);
   const mcpRows = mergeRows(mcp, s.mcp);
+  const shownMcpRows = channelsOnly ? mcpRows.filter((row) => row.item?.channel === true) : mcpRows;
   const shownLspLoad = lspError === null ? null : describeFailure(lspError);
   const shownMcpLoad = mcpError === null ? null : describeFailure(mcpError);
   const shownLspFailure = lspFailure === null && countFailure === null
@@ -388,13 +392,16 @@ function SystemsDialog({ inert }: { inert: boolean }) {
         <HexTile tone={tone} />
         <div class="systems__body">
           <span class="systems__name">{row.name}</span>
+          {row.item?.channel === true && <span class="systems__tag">Channel</span>}
           <span class="systems__state" data-tone={tone}>{word}</span>
           {tools > 0 && <span class="systems__counts">{plural(tools, 'tool', 'tools')}</span>}
           <div class="systems__buttons">
             {liveState === 'connected' && mcpButton(row.name, 'Refresh', 'refresh')}
             {(liveState === 'error' || liveState === 'lazy') && mcpButton(row.name, 'Start', 'start')}
             {needsAuth && mcpButton(row.name, 'Authenticate', 'auth')}
+            {link !== undefined && mcpButton(row.name, 'Cancel sign-in', 'auth_cancel')}
             {disabled ? mcpButton(row.name, 'Enable', 'enable') : mcpButton(row.name, 'Disable', 'disable')}
+            {mcpButton(row.name, 'Disable for all repositories', 'disable_global')}
           </div>
           {link !== undefined && (
             <p class="systems__note">
@@ -457,8 +464,16 @@ function SystemsDialog({ inert }: { inert: boolean }) {
         <section class="systems__section" aria-labelledby="systems-mcp-heading">
           <div class="systems__head">
             <h2 id="systems-mcp-heading" class="systems__heading" ref={mcpHeading} tabIndex={-1}>MCP servers</h2>
+            <div class="systems__buttons">
+              <button
+                type="button"
+                class="systems__action"
+                aria-pressed={channelsOnly}
+                onClick={() => setChannelsOnly((on) => !on)}
+              >Channels</button>
+            </div>
           </div>
-          <ul class="systems__list">{mcpRows.map(mcpCard)}</ul>
+          <ul class="systems__list">{shownMcpRows.map(mcpCard)}</ul>
           {shownMcpLoad && (
             <div
               class="systems__status"

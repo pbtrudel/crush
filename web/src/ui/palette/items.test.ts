@@ -24,6 +24,9 @@ const sources: PaletteSources = {
   cinematic: false,
   cinematicAllowed: false,
   motion: 'full',
+  agentTeams: false,
+  docker: { available: true, enabled: false },
+  hasChannels: true,
 };
 
 describe('palette items', () => {
@@ -119,6 +122,74 @@ describe('palette items', () => {
     expect(filterItems(items, 'reload-skills')[0].id).toBe('action:reload-skills');
   });
 
+  it('lists the M4 commands', () => {
+    const items = buildItems(sources);
+    const titles = items.map((i) => i.title);
+    for (const title of [
+      'Export session as Markdown', 'Set goal', 'Goal status', 'Clear goal',
+      'Start loop', 'Loop status', 'Clear loops', 'Initialize project', 'Stop web mode',
+    ]) {
+      expect(titles).toContain(title);
+    }
+    expect(items.find((i) => i.id === 'action:set-goal')!.args)
+      .toEqual([{ id: 'objective', title: 'Objective', required: true }]);
+    expect(items.find((i) => i.id === 'action:start-loop')!.args)
+      .toEqual([{ id: 'task', title: 'Task', required: true }]);
+
+    const noSession = buildItems({ ...sources, hasSession: false }).map((i) => i.title);
+    for (const title of [
+      'Export session as Markdown', 'Set goal', 'Goal status', 'Clear goal',
+      'Start loop', 'Loop status', 'Clear loops',
+    ]) {
+      expect(noSession).not.toContain(title);
+    }
+    expect(noSession).toContain('Initialize project');
+    expect(noSession).toContain('Stop web mode');
+  });
+
+  it('offers Docker MCP by state', () => {
+    const off = buildItems(sources).map((i) => i.title);
+    expect(off).toContain('Enable Docker MCP catalog');
+    expect(off).not.toContain('Disable Docker MCP catalog');
+
+    const on = buildItems({ ...sources, docker: { available: true, enabled: true } }).map((i) => i.title);
+    expect(on).toContain('Disable Docker MCP catalog');
+    expect(on).not.toContain('Enable Docker MCP catalog');
+
+    const gone = buildItems({ ...sources, docker: { available: false, enabled: false } }).map((i) => i.title);
+    expect(gone).not.toContain('Enable Docker MCP catalog');
+    expect(gone).not.toContain('Disable Docker MCP catalog');
+  });
+
+  it('toggles Agent Teams with its state in the title', () => {
+    const off = buildItems(sources).find((i) => i.id === 'toggle:agent-teams')!;
+    expect(off.title).toBe('Agent Teams: Off');
+    expect(off.run).toEqual({ kind: 'action', action: 'toggle-agent-teams' });
+    expect(buildItems({ ...sources, agentTeams: true }).find((i) => i.id === 'toggle:agent-teams')!.title)
+      .toBe('Agent Teams: On');
+  });
+
+  it('offers Channels only when a server could be one', () => {
+    const item = buildItems(sources).find((i) => i.id === 'action:channels')!;
+    expect(item.title).toBe('Channels');
+    expect(item.run).toEqual({ kind: 'action', action: 'channels' });
+    expect(buildItems({ ...sources, hasChannels: false }).some((i) => i.id === 'action:channels')).toBe(false);
+  });
+
+  it('offers a global toggle beside each skill', () => {
+    const toggles = buildSkillToggles([
+      { name: 'go-tests', description: 'Write Go tests', disabled: false, disabled_globally: false },
+      { name: 'crush-config', description: 'Read the config', disabled: true, disabled_globally: true },
+    ]);
+    const local = toggles.filter((i) => i.id === 'skill-global:go-tests');
+    expect(local.map((i) => i.title)).toEqual(['Disable go-tests everywhere']);
+    expect(local[0].run).toEqual({ kind: 'skill-global', name: 'go-tests', disabled: true });
+
+    const global = toggles.find((i) => i.id === 'skill-global:crush-config')!;
+    expect(global.title).toBe('Enable crush-config everywhere');
+    expect(global.run).toEqual({ kind: 'skill-global', name: 'crush-config', disabled: false });
+  });
+
   it('shows a skill as text and keeps its enabled state out of the main list', () => {
     const items = buildItems(sources);
     const skill = items.find((i) => i.id === 'skill:go-tests')!;
@@ -127,7 +198,7 @@ describe('palette items', () => {
   });
 
   it('lists every skill with its enabled state in the skills section', () => {
-    const toggles = buildSkillToggles(sources.skills);
+    const toggles = buildSkillToggles(sources.skills).filter((i) => i.id.startsWith('skill-toggle:'));
     expect(toggles.map((i) => i.title)).toEqual(['go-tests', 'retired']);
     expect(toggles.map((i) => i.hint)).toEqual(['Enabled', 'Disabled']);
     expect(toggles[1].run).toEqual({ kind: 'skill-toggle', name: 'retired' });

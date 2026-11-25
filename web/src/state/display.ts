@@ -8,17 +8,21 @@ import { displayDefaults, type State } from './reducer';
 import { removeStored } from './storage';
 import { dispatch, state } from './store';
 
-// displayOpen holds the HUD's display settings dialog.
+// displayOpen holds the HUD's display settings dialog, and displayConfirmStop
+// opens it at the Stop web mode confirm step.
 export const displayOpen = signal(false);
+export const displayConfirmStop = signal(false);
 
 // openDisplay closes every panel first, so two dialogs never stack.
-export function openDisplay(): void {
+export function openDisplay(confirmStop = false): void {
   closePanels();
+  displayConfirmStop.value = confirmStop;
   displayOpen.value = true;
 }
 
 export function closeDisplay(): void {
   displayOpen.value = false;
+  displayConfirmStop.value = false;
 }
 
 // escapeDisplay handles Escape while the dialog is open and reports whether

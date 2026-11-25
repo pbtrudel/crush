@@ -3,7 +3,8 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
 import type {
-  CommandEntry, Frame, McpPrompt, ModelChoice, PermissionRequest, Session, SkillEntry,
+  CommandEntry, ConfigView, DockerMcp, Frame, McpPrompt, McpServer, ModelChoice, PermissionRequest, Session,
+  SkillEntry,
 } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
@@ -36,6 +37,16 @@ interface Stub {
   skills?: SkillEntry[];
   sessions?: Session[];
   models?: ModelChoice[];
+  config?: ConfigView;
+  servers?: { servers: McpServer[]; docker: DockerMcp };
+}
+
+const DISPLAY = { theme: 'holodeck' as const, motion: '' as const, low_power: false, cinematic_hint: true };
+
+function mcpServer(name: string, channel: boolean): McpServer {
+  return {
+    name, state: 'connected', tools: 3, prompts: 0, disabled: false, needs_auth: false, channel,
+  };
 }
 
 function stubSources(patch: Stub = {}) {
@@ -50,6 +61,10 @@ function stubSources(patch: Stub = {}) {
   });
   vi.spyOn(api, 'sessions').mockResolvedValue(patch.sessions ?? [session('s-2', 'Fix the lexer')]);
   vi.spyOn(api, 'providers').mockResolvedValue({ choices: patch.models ?? [] });
+  vi.spyOn(api, 'config').mockResolvedValue(patch.config ?? { display: DISPLAY, agent_teams: false });
+  vi.spyOn(api, 'mcpServers').mockResolvedValue(
+    patch.servers ?? { servers: [], docker: { available: false, enabled: false } },
+  );
 }
 
 function seed(patch: Partial<typeof state.value> = {}) {
@@ -969,6 +984,178 @@ describe('the command palette', () => {
     const status = dialog()!.querySelector('[role="status"]')!;
     expect(status.textContent).toBe('No matches');
     expect(listbox.contains(status)).toBe(false);
+  });
+
+  it('runs set goal with its argument and toasts the reply', async () => {
+    seed();
+    stubSources();
+    const automation = vi.spyOn(api, 'automation').mockResolvedValue({ reply: 'Goal set: Ship the parser' });
+    await mount();
+    await openWithKey();
+
+    await type('set goal');
+    await enter();
+
+    const form = root.querySelector<HTMLFormElement>('form.palette__form')!;
+    expect(form.getAttribute('aria-label')).toBe('Arguments for Set goal');
+    const objective = root.querySelector<HTMLInputElement>('#argument-objective')!;
+    await act(() => {
+      objective.value = 'Ship the parser';
+      objective.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+
+    expect(automation).toHaveBeenCalledWith('s1', 'goal', 'Ship the parser');
+    expect(state.value.toasts.at(-1)).toMatchObject({ tone: 'info', text: 'Goal set: Ship the parser' });
+    expect(paletteOpen.value).toBeNull();
+  });
+
+  it('runs goal status without an argument form', async () => {
+    seed();
+    stubSources();
+    const automation = vi.spyOn(api, 'automation').mockResolvedValue({ reply: 'Goal is idle.' });
+    await mount();
+    await openWithKey();
+
+    await type('goal status');
+    await enter();
+
+    expect(automation).toHaveBeenCalledWith('s1', 'goal', 'status');
+    expect(state.value.toasts.at(-1)).toMatchObject({ tone: 'info', text: 'Goal is idle.' });
+  });
+
+  it('toasts the exported session path', async () => {
+    seed();
+    stubSources();
+    const exported = vi.spyOn(api, 'exportSession').mockResolvedValue({ path: '/work/crush-session-s1.md' });
+    await mount();
+    await openWithKey();
+
+    await type('export session');
+    await enter();
+
+    expect(exported).toHaveBeenCalledWith('s1');
+    expect(state.value.toasts.at(-1)).toMatchObject({
+      tone: 'info', text: 'Session exported to /work/crush-session-s1.md',
+    });
+    expect(paletteOpen.value).toBeNull();
+  });
+
+  it('reads the Agent Teams flag and the Docker state from the gateway', async () => {
+    seed();
+    stubSources({
+      config: { display: DISPLAY, agent_teams: true },
+      servers: { servers: [mcpServer('discord', true)], docker: { available: true, enabled: false } },
+    });
+    await mount();
+    await openWithKey();
+
+    expect(dialog()!.textContent).toContain('Agent Teams: On');
+    expect(dialog()!.textContent).toContain('Enable Docker MCP catalog');
+    expect(dialog()!.textContent).toContain('Channels');
+  });
+
+  it('keeps the Agent Teams item when the config refetch fails', async () => {
+    seed();
+    stubSources({ config: { display: DISPLAY, agent_teams: true } });
+    const teams = vi.spyOn(api, 'setAgentTeams').mockResolvedValue(undefined);
+    await mount();
+    await openWithKey();
+    expect(dialog()!.textContent).toContain('Agent Teams: On');
+
+    vi.mocked(api.config).mockRejectedValueOnce(new ApiError(500, 'internal', 'config failed'));
+    await type('agent teams');
+    await enter();
+    await flush();
+
+    expect(teams).toHaveBeenCalledWith(false);
+    expect(dialog()!.textContent).toContain('Agent Teams: On');
+    expect(dialog()!.querySelector('.palette__status')!.textContent).toContain('config failed');
+    expect(paletteOpen.value).toBe('all');
+  });
+
+  it('opens the systems panel filtered to channel servers', async () => {
+    seed();
+    stubSources({
+      servers: {
+        servers: [mcpServer('discord', true), mcpServer('github', false)],
+        docker: { available: false, enabled: false },
+      },
+    });
+    vi.spyOn(api, 'lspServers').mockResolvedValue({ servers: [] });
+    await mount();
+    await openWithKey();
+
+    await type('channels');
+    await enter();
+    await flush();
+
+    expect(systemsOpen.value).toBe('channels');
+    const discord = root.querySelector<HTMLElement>('.systems__card[data-server="discord"]')!;
+    expect(discord).not.toBeNull();
+    expect(discord.textContent).toContain('Channel');
+    expect(root.querySelector('.systems__card[data-server="github"]')).toBeNull();
+    const filter = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === 'Channels')!;
+    expect(filter.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows the global toggle for a skill the config disabled', async () => {
+    seed();
+    stubSources({
+      skills: [{ name: 'crush-config', description: 'Read the config', disabled: true, disabled_globally: true }],
+    });
+    const set = vi.spyOn(api, 'setSkillGlobal').mockResolvedValue(undefined);
+    await mount();
+    await act(() => { openPalette('skills'); });
+    await flush();
+    expect(dialog()!.textContent).toContain('Enable crush-config everywhere');
+
+    await type('everywhere');
+    await enter();
+    await flush();
+
+    expect(set).toHaveBeenCalledWith('crush-config', false);
+  });
+
+  it('starts project initialization and follows the new session', async () => {
+    seed({ sessionId: '' });
+    stubSources();
+    const init = vi.spyOn(api, 'initProject').mockResolvedValue({ session_id: 's-9' });
+    await mount();
+    await openWithKey();
+
+    await type('initialize project');
+    await enter();
+    await flush();
+
+    expect(init).toHaveBeenCalledTimes(1);
+    expect(state.value.sessionId).toBe('s-9');
+    expect(paletteOpen.value).toBeNull();
+  });
+
+  it('opens Stop web mode at the confirm step', async () => {
+    seed();
+    stubSources();
+    const detach = vi.spyOn(api, 'detach').mockResolvedValue(undefined);
+    await mount();
+    await openWithKey();
+
+    await type('stop web');
+    await enter();
+    await flush();
+
+    expect(displayOpen.value).toBe(true);
+    const confirm = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === 'Stop web mode now')!;
+    expect(confirm).not.toBeUndefined();
+    expect(document.activeElement).toBe(confirm);
+
+    await act(() => { confirm.click(); });
+    await flush();
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(displayOpen.value).toBe(false);
   });
 
   it('scrolls the active option into view as the arrows move it', async () => {

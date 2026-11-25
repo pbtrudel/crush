@@ -336,9 +336,9 @@ describe('SystemsPanel actions', () => {
     await mount();
     await openFromHud('mcp');
 
-    expect(buttonNames('github')).toEqual(['Refresh', 'Disable']);
-    expect(buttonNames('notes')).toEqual(['Start', 'Disable']);
-    expect(buttonNames('legacy')).toEqual(['Enable']);
+    expect(buttonNames('github')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
+    expect(buttonNames('notes')).toEqual(['Start', 'Disable', 'Disable for all repositories']);
+    expect(buttonNames('legacy')).toEqual(['Enable', 'Disable for all repositories']);
 
     await click(cardButton('github', 'Refresh'));
     expect(api.mcpAction).toHaveBeenCalledWith('github', 'refresh');
@@ -400,7 +400,7 @@ describe('SystemsPanel actions', () => {
     await flush();
 
     expect(cardText('github', '.systems__state')).toBe('disabled');
-    expect(buttonNames('github')).toEqual(['Enable']);
+    expect(buttonNames('github')).toEqual(['Enable', 'Disable for all repositories']);
     expect(card('github')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -417,11 +417,11 @@ describe('SystemsPanel actions', () => {
     await click(enable);
     await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'starting', 0))); });
     await flush();
-    expect(buttonNames('legacy')).toEqual(['Disable']);
+    expect(buttonNames('legacy')).toEqual(['Disable', 'Disable for all repositories']);
 
     await act(() => { dispatch((s) => reduce(s, mcpFrame('legacy', 'connected', 3))); });
     await flush();
-    expect(buttonNames('legacy')).toEqual(['Refresh', 'Disable']);
+    expect(buttonNames('legacy')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
     expect(card('legacy')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -432,7 +432,7 @@ describe('SystemsPanel actions', () => {
     await mount();
     await openFromHud('mcp');
 
-    expect(buttonNames('idle')).toEqual(['Enable']);
+    expect(buttonNames('idle')).toEqual(['Enable', 'Disable for all repositories']);
   });
 
   it('keeps focus inside the card when the pressed button goes away', async () => {
@@ -467,6 +467,42 @@ describe('SystemsPanel actions', () => {
   });
 });
 
+  it('disables a server for all repositories', async () => {
+    seed();
+    stubLists();
+    await mount();
+    await openFromHud('mcp');
+
+    await click(cardButton('github', 'Disable for all repositories'));
+
+    expect(api.mcpAction).toHaveBeenCalledWith('github', 'disable_global');
+  });
+
+  it('filters the MCP list to channel servers', async () => {
+    seed();
+    state.value = { ...state.value, mcp: {} };
+    stubLists([
+      mcpServer({ name: 'discord', state: 'connected', channel: true }),
+      mcpServer({ name: 'github', state: 'connected' }),
+      mcpServer({ name: 'slack', state: 'connected', channel: true }),
+    ]);
+    await mount();
+    await openFromHud('mcp');
+
+    expect(card('github')).not.toBeUndefined();
+    const filter = sectionButton('MCP servers', 'Channels');
+    await click(filter);
+
+    expect(filter.getAttribute('aria-pressed')).toBe('true');
+    expect(card('discord')).not.toBeUndefined();
+    expect(card('slack')).not.toBeUndefined();
+    expect(card('github')).toBeUndefined();
+    expect(cardText('discord', '.systems__tag')).toBe('Channel');
+
+    await click(filter);
+    expect(card('github')).not.toBeUndefined();
+  });
+
 describe('SystemsPanel authentication', () => {
   function authServer(): McpServer[] {
     return [mcpServer({ name: 'notes', state: 'needs auth', needs_auth: true })];
@@ -486,7 +522,7 @@ describe('SystemsPanel authentication', () => {
   it('opens the sign-in page in a new tab and links the same URL', async () => {
     const open = await openAuth('https://auth.example/notes');
 
-    expect(buttonNames('notes')).toEqual(['Authenticate', 'Disable']);
+    expect(buttonNames('notes')).toEqual(['Authenticate', 'Disable', 'Disable for all repositories']);
     await click(cardButton('notes', 'Authenticate'));
 
     expect(api.mcpAuth).toHaveBeenCalledWith('notes');
@@ -496,6 +532,17 @@ describe('SystemsPanel authentication', () => {
     expect(link.getAttribute('href')).toBe('https://auth.example/notes');
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  it('cancels an open sign-in and clears its link', async () => {
+    await openAuth('https://auth.example/notes');
+    await click(cardButton('notes', 'Authenticate'));
+    expect(card('notes')!.querySelector('a')).not.toBeNull();
+
+    await click(cardButton('notes', 'Cancel sign-in'));
+
+    expect(api.mcpAction).toHaveBeenCalledWith('notes', 'auth_cancel');
+    expect(card('notes')!.querySelector('a')).toBeNull();
   });
 
   it('asks the user to finish in the terminal when there is no URL', async () => {
@@ -532,7 +579,7 @@ describe('SystemsPanel authentication', () => {
     await act(() => { dispatch((s) => reduce(s, mcpFrame('notes', 'connected', 4))); });
     await flush();
 
-    expect(buttonNames('notes')).toEqual(['Refresh', 'Disable']);
+    expect(buttonNames('notes')).toEqual(['Refresh', 'Disable', 'Disable for all repositories']);
     expect(card('notes')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
   });

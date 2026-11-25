@@ -1,10 +1,12 @@
 import { Fragment } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { CommandEntry, McpPrompt, ModelChoice, Session, SkillEntry } from '../../api/types';
+import type {
+  CommandEntry, ConfigView, DockerMcp, McpPrompt, McpServer, ModelChoice, Session, SkillEntry,
+} from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { describeFailure } from '../../state/failure';
 import { without } from '../../state/record';
-import { adoptSession } from '../../state/reducer';
+import { adoptSession, pushToast } from '../../state/reducer';
 import { cinematic, cinematicAllowed, setCinematic } from '../../state/cinematic';
 import { motion, type Motion } from '../../state/motion';
 import { actions as display, openDisplay } from '../../state/display';
@@ -30,9 +32,13 @@ interface Loaded {
   skills: SkillEntry[];
   sessions: Pick<Session, 'id' | 'title'>[];
   models: ModelChoice[];
+  config: ConfigView | null;
+  servers: { servers: McpServer[]; docker: DockerMcp } | null;
 }
 
-const EMPTY: Loaded = { commands: [], prompts: [], skills: [], sessions: [], models: [] };
+const EMPTY: Loaded = {
+  commands: [], prompts: [], skills: [], sessions: [], models: [], config: null, servers: null,
+};
 
 // groupIn narrows a section to the groups it is about; the all section keeps
 // every group in one list.
@@ -51,9 +57,9 @@ function nextMotion(m: Motion): Motion {
 
 // Every group has its own source, so a refetch can name just the groups it
 // needs and a failure only touches that group.
-type SourceKey = 'commands' | 'prompts' | 'skills' | 'sessions' | 'models';
+type SourceKey = 'commands' | 'prompts' | 'skills' | 'sessions' | 'models' | 'config' | 'servers';
 
-const SOURCE_KEYS: SourceKey[] = ['commands', 'prompts', 'skills', 'sessions', 'models'];
+const SOURCE_KEYS: SourceKey[] = ['commands', 'prompts', 'skills', 'sessions', 'models', 'config', 'servers'];
 
 // FETCH reads one source, shaped like the Loaded field it belongs to.
 const FETCH: { [K in SourceKey]: () => Promise<Loaded[K]> } = {
@@ -62,6 +68,8 @@ const FETCH: { [K in SourceKey]: () => Promise<Loaded[K]> } = {
   skills: async () => (await api.skills()).skills,
   sessions: async () => (await api.sessions()).map(({ id, title }) => ({ id, title })),
   models: async () => (await api.providers()).choices,
+  config: async () => api.config(),
+  servers: async () => api.mcpServers(),
 };
 
 function merge<K extends SourceKey>(loaded: Loaded, key: K, value: Loaded[K]): Loaded {
@@ -161,6 +169,9 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     cinematic: cinematic.value,
     cinematicAllowed: cinematicAllowed(),
     motion: motion.value,
+    agentTeams: loaded.config?.agent_teams ?? false,
+    docker: loaded.servers?.docker ?? { available: false, enabled: false },
+    hasChannels: (loaded.servers?.servers ?? []).some((server) => server.channel),
   };
   const scoped = section === 'skills' ? buildSkillToggles(loaded.skills) : buildItems(sources);
   const keep = groupIn(section);
@@ -224,6 +235,57 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
         await display.setDisplay('motion', nextMotion(motion.value));
         closePalette();
         return;
+      case ACTIONS.exportSession: {
+        if (!sid) throw new ApiError(400, 'missing_session', 'There is no session to export');
+        const { path } = await api.exportSession(sid);
+        closePalette();
+        dispatch((next) => pushToast(next, 'info', `Session exported to ${path}`));
+        return;
+      }
+      case ACTIONS.setGoal:
+      case ACTIONS.goalStatus:
+      case ACTIONS.clearGoal:
+      case ACTIONS.startLoop:
+      case ACTIONS.loopStatus:
+      case ACTIONS.clearLoops: {
+        if (!sid) throw new ApiError(400, 'missing_session', 'There is no session for this command');
+        const name = action === ACTIONS.startLoop || action === ACTIONS.loopStatus || action === ACTIONS.clearLoops
+          ? 'loop' : 'goal';
+        let args = 'status';
+        if (action === ACTIONS.setGoal) args = (values?.objective ?? '').trim();
+        else if (action === ACTIONS.startLoop) args = (values?.task ?? '').trim();
+        else if (action === ACTIONS.clearGoal || action === ACTIONS.clearLoops) args = 'clear';
+        const { reply } = await api.automation(sid, name, args);
+        closePalette();
+        dispatch((next) => pushToast(next, 'info', reply));
+        return;
+      }
+      case ACTIONS.agentTeams:
+        await api.setAgentTeams(!sources.agentTeams);
+        await reload(['config']);
+        return;
+      case ACTIONS.dockerEnable:
+      case ACTIONS.dockerDisable:
+        await api.dockerMcp(action === ACTIONS.dockerEnable);
+        await reload(['config', 'servers']);
+        return;
+      case ACTIONS.channels:
+        paletteReturnFocus.value = true;
+        closePalette();
+        openSystems('channels');
+        return;
+      case ACTIONS.initProject: {
+        const { session_id } = await api.initProject();
+        dispatch((cur) => adoptSession(cur, session_id));
+        closePalette();
+        return;
+      }
+      case ACTIONS.stopWeb:
+        // The display dialog owns the one detach code path, confirm step and
+        // all.
+        paletteReturnFocus.value = true;
+        openDisplay(true);
+        return;
     }
   };
 
@@ -265,6 +327,11 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
           const name = item.run.name;
           const skill = loaded.skills.find((k) => k.name === name);
           await api.setSkillDisabled(name, !skill?.disabled);
+          await reload(['skills']);
+          return;
+        }
+        case 'skill-global': {
+          await api.setSkillGlobal(item.run.name, item.run.disabled);
           await reload(['skills']);
           return;
         }
