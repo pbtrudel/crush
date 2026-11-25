@@ -106,7 +106,7 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
 
   // The focus trap also restores the opener when the dialog unmounts, and
   // re-focuses the first control when the argument form comes and goes.
-  useDialogFocus(dialog, `${section}:${argumentId ?? ''}`);
+  useDialogFocus(dialog, `${section}:${argumentId ?? ''}`, inert);
 
   // A source can answer after the dialog closed; the flag keeps that answer
   // from reaching an unmounted tree.
@@ -280,6 +280,9 @@ function PaletteDialog({ section, inert }: { section: PaletteSection; inert: boo
     } catch (err) {
       if (describeFailure(err).tone === 'starting') setFailed({ item, values });
       setFailure(err);
+      // The list keeps the keyboard, so a click that fails hands the focus
+      // back to the combobox instead of the row it is about to rerender.
+      input.current?.focus();
     } finally {
       running.current = false;
     }

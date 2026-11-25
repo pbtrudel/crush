@@ -6,7 +6,7 @@ const LANES: Array<[TaskStatus, string]> = [['pending', 'Pending'], ['in_progres
 
 export function TaskBoard() {
   const s = state.value;
-  const tasks = scopedTasks(s.sessionId, s.team);
+  const tasks = scopedTasks(s.sessionId, s.team, s.runs);
   if (tasks.length === 0) return null;
   const ownerSession = (t: TeamTask) => s.team.members.find((m) => m.id === t.owner_id)?.session_id;
   return (

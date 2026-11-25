@@ -107,13 +107,31 @@ function queueChanged(f: Frame): boolean {
 const FILES_DEBOUNCE_MS = 400;
 let filesTimer: ReturnType<typeof setTimeout> | null = null;
 
+// filesInFlight and filesDirty keep one list request at a time: a frame that
+// lands while the request is on its way asks for exactly one more once it
+// settles, however many of them arrive.
+let filesInFlight = false;
+let filesDirty = false;
+
 async function refreshFiles(sid: string) {
+  if (filesInFlight) {
+    filesDirty = true;
+    return;
+  }
+  filesInFlight = true;
   try {
     const files = await api.files(sid);
     dispatch((s) => (s.sessionId === sid ? { ...s, files, filesStale: false } : s));
   } catch {
-    // The list stays as it is; the next file frame or snapshot repairs it.
-    dispatch((s) => ({ ...s, filesStale: false }));
+    // The list stays as it is and filesStale stays set, so the next frame or
+    // snapshot asks for it again.
+  } finally {
+    filesInFlight = false;
+    if (filesDirty) {
+      filesDirty = false;
+      const next = state.value.sessionId;
+      if (next) void refreshFiles(next);
+    }
   }
 }
 
@@ -128,14 +146,36 @@ function scheduleFiles() {
   }, FILES_DEBOUNCE_MS);
 }
 
+// deletedWhileLoading records the messages a frame deletes while a transcript
+// is on its way, per session, so the answer cannot bring one back. The set is
+// shared by every load of that session in flight: a snapshot that reloads the
+// same transcript beside the first one must see the same deletions.
+const deletedWhileLoading = new Map<string, Set<string>>();
+const inspectedLoads = new Map<string, number>();
+
 async function loadInspected(sid: string) {
+  let gone = deletedWhileLoading.get(sid);
+  if (gone === undefined) {
+    gone = new Set<string>();
+    deletedWhileLoading.set(sid, gone);
+  }
+  inspectedLoads.set(sid, (inspectedLoads.get(sid) ?? 0) + 1);
   try {
     const [messages, session] = await Promise.all([api.messages(sid), api.session(sid).catch(() => null)]);
-    dispatch((s) => mergeInspected(s, sid, messages, session));
+    dispatch((s) => mergeInspected(s, sid, messages.filter((m) => !gone.has(m.id)), session));
   } catch (err) {
     dispatch((s) => (s.inspected?.sessionId === sid
       ? pushToast({ ...s, inspected: { ...s.inspected, loading: false } }, 'error', `Could not load the agent: ${errorText(err)}`)
       : s));
+  } finally {
+    const left = (inspectedLoads.get(sid) ?? 1) - 1;
+    if (left > 0) {
+      inspectedLoads.set(sid, left);
+    } else {
+      // The last answer settled, so nothing can resurrect those ids any more.
+      inspectedLoads.delete(sid);
+      deletedWhileLoading.delete(sid);
+    }
   }
 }
 
@@ -197,6 +237,14 @@ export async function boot() {
 // A batch that holds a snapshot is baseline: the history it carries is not
 // new activity.
 export function handleFrames(frames: Frame[]) {
+  if (deletedWhileLoading.size > 0) {
+    for (const f of frames) {
+      if (f.type !== 'message') continue;
+      const ev = f.payload as WireEvent<Message>;
+      if (ev.type !== 'deleted') continue;
+      deletedWhileLoading.get(ev.payload.session_id)?.add(ev.payload.id);
+    }
+  }
   apply((s) => frames.reduce(reduce, s), frames.some((f) => f.type === 'snapshot'));
   const id = state.value.needsReload;
   if (id) {

@@ -121,12 +121,23 @@ export interface Gateway {
   origin: string;
 }
 
+// The HUD labels the tab with the basename of the gateway's working
+// directory, and the committed baselines were captured in a checkout named
+// web-mode-m2. A fixed root keeps every run independent of where this repo
+// is checked out: webfake creates it empty, and the sessions, files and
+// diffs a test sees come from the seed, not from the disk.
+const PROJECT_DIR = path.join(tmpdir(), 'web-mode-m2');
+
 async function launchGateway(bin: string, env: NodeJS.ProcessEnv, use: (gateway: Gateway) => Promise<void>): Promise<void> {
   let proc: ChildProcess | undefined;
   try {
     // stderr is piped rather than inherited: webfake repeats the token in
     // its dev-server hint and test output must never carry it.
-    proc = spawn(bin, [], { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    proc = spawn(bin, [], {
+      cwd: repoRoot,
+      env: { ...process.env, WEBFAKE_PROJECT_DIR: PROJECT_DIR, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const stderr = stderrBuffer();
     proc.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk.toString()));
     const launch = await waitForLaunch(proc, () => stderr.text());
@@ -201,6 +212,21 @@ export const promptTest = webfakeTests.extend<{ gateway: Gateway }>({
 // starts, long after the prompt has reached the tab.
 export const promptElsewhereTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
+});
+
+// The prompt waits for a file the test writes, so it lands once the test has
+// put the focus where the prompt interrupts it rather than on a clock from
+// the gateway's start. The panel is the layer the prompt closes over.
+export const promptLateTest = webfakeTests.extend<{ gateway: Gateway; promptTrigger: string }>({
+  promptTrigger: async ({}, use) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'prompt-trigger-'));
+    try {
+      await use(path.join(dir, 'open'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  gateway: async ({ webfakeBinary, promptTrigger }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ON_FILE: promptTrigger }, use),
 });
 
 export const confirmTest = webfakeTests.extend<{ gateway: Gateway }>({

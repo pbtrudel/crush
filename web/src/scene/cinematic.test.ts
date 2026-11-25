@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
+import { HOME, WIDE } from './camera';
 import { anchorsFor, startCinematic } from './cinematic';
 import type { SceneHandle } from './mount';
 
@@ -167,5 +168,30 @@ describe('anchorsFor', () => {
     const [log, inspector] = anchorsFor([document.createElement('section'), document.createElement('section')]);
     expect(log.position.x).toBeLessThan(0);
     expect(inspector.position.x).toBeGreaterThan(0);
+  });
+
+  it('places each panel at its own anchor inside the wide camera frustum', () => {
+    const panels = [document.createElement('section'), document.createElement('section')];
+    const [log, inspector] = anchorsFor(panels);
+
+    // The two screens sit apart, turn opposite ways and only the inspector
+    // faces the camera.
+    expect(log.position.distanceTo(inspector.position)).toBeGreaterThan(1);
+    expect(log.rotation.y).toBeGreaterThan(0);
+    expect(inspector.rotation.y).toBeLessThan(0);
+    expect(log.userData.faceCamera).toBe(false);
+    expect(inspector.userData.faceCamera).toBe(true);
+
+    // Both are in view from the cinematic pull-back, which is the pose the
+    // flight looks through.
+    const camera = new THREE.PerspectiveCamera(HOME.fov, 16 / 10, 0.1, 100);
+    camera.position.copy(WIDE.position);
+    camera.lookAt(WIDE.target);
+    camera.updateMatrixWorld();
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(
+      new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
+    );
+    expect(frustum.containsPoint(log.position)).toBe(true);
+    expect(frustum.containsPoint(inspector.position)).toBe(true);
   });
 });

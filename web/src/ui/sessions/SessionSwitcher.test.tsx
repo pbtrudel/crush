@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
-import type { CommandEntry, Frame, McpPrompt, ModelChoice, Session, SkillEntry } from '../../api/types';
+import type { CommandEntry, Frame, McpPrompt, ModelChoice, PermissionRequest, Session, SkillEntry } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
@@ -449,6 +449,51 @@ describe('session switcher', () => {
     expect(layer.hasAttribute('inert')).toBe(true);
   });
 
+  it('keeps the focus in the panel when the Retry becomes the list', async () => {
+    seed();
+    const sessions = stubSessions();
+    sessions.mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openFromHud();
+
+    const retry = dialog()!.querySelector<HTMLButtonElement>('#session-retry')!;
+    retry.focus();
+    await act(() => { retry.click(); });
+    await flush();
+
+    // The reload replaces the failure with the list, so the focused button
+    // leaves the tree and the filter takes the focus it drops.
+    expect(dialog()!.querySelector('#session-retry')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(filter());
+
+    // A prompt makes the page behind it inert, and the browser drops the
+    // focus to the body before the prompt takes it.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const prompt: PermissionRequest = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    await act(() => { state.value = { ...state.value, permissions: [prompt] }; });
+    await flush();
+    const panel = dialog()!;
+    expect(root.querySelector('.sessions-layer')!.hasAttribute('inert')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // A prompt that still needs the user owns the focus, so a later render
+    // of the panel under it does not take it back.
+    await act(() => { state.value = { ...state.value, permissions: [prompt, { ...prompt, id: 'p2' }] }; });
+    await flush();
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // The prompt closes: the panel takes the control that had the focus back.
+    await act(() => { state.value = { ...state.value, permissions: [] }; });
+    await flush();
+    expect(document.activeElement).toBe(filter());
+  });
+
   it('keeps the title button out of the tab order in cinematic mode', async () => {
     seed();
     stubSessions();
@@ -617,6 +662,173 @@ describe('session switcher', () => {
     await flush();
     expect(sessions).toHaveBeenCalledTimes(4);
     expect(dialog()!.textContent).toContain('No sessions match');
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('never waits on a Retry after a reload a newer one superseded', async () => {
+    seed();
+    const four = [...LIST, session('s-4', 'Release notes')];
+    const slow = deferred<Session[]>();
+    const fresh = deferred<Session[]>();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(four)
+      .mockReturnValueOnce(slow.promise)
+      .mockReturnValueOnce(fresh.promise);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    // Delete the lexer: its reload is the slow one.
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    // Delete the port row while that reload is still in flight, so the newer
+    // delete's focus request waits for its own reload.
+    await act(() => { rowButton('Port the parser', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Port the parser', 'Delete').click(); });
+    await flush();
+
+    // The older answer lands first and is dropped as stale: it must not leave
+    // retry state behind for the newer request to wait on.
+    await act(async () => { slow.resolve(four); await Promise.resolve(); });
+    await flush();
+    expect(root.querySelector('#session-retry')).toBeNull();
+
+    await act(async () => {
+      fresh.resolve([session('s-1', 'Fix the parser'), session('s-4', 'Release notes')]);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(titleButton('Port the parser')).toBeUndefined();
+    expect(document.activeElement).toBe(titleButton('Release notes'));
+  });
+
+  it('gives the filter its focus back after a successful Retry', async () => {
+    seed();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockResolvedValueOnce([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    // The reload after a delete fails, so its Retry line sits above the list.
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    expect(retry).toBeInstanceOf(HTMLButtonElement);
+
+    // A click does not move the focus in jsdom, so the row keeps it and the
+    // fix is the only thing that can hand it to the filter.
+    titleButton('Fix the parser').focus();
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(root.querySelector('#session-retry')).toBeNull();
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('keeps the focus in the dialog while the reload after a delete runs', async () => {
+    seed();
+    const answer = deferred<Session[]>();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockReturnValueOnce(answer.promise);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    expect(confirmDialog('Fix the lexer')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      answer.resolve([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(document.activeElement).toBe(titleButton('Port the parser'));
+  });
+
+  it('keeps waiting for the deleted row through a render from another source', async () => {
+    seed();
+    const answer = deferred<Session[]>();
+    vi.spyOn(api, 'sessions')
+      .mockResolvedValueOnce(LIST)
+      .mockReturnValueOnce(answer.promise);
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+
+    // A stream frame renders the dialog while the reload is still in flight.
+    await act(() => { state.value = { ...state.value }; });
+    await flush();
+
+    await act(async () => {
+      answer.resolve([session('s-1', 'Fix the parser'), session('s-3', 'Port the parser')]);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(document.activeElement).toBe(titleButton('Port the parser'));
+  });
+
+  it('never moves the focus to a neighbour when a query hides the kept row', async () => {
+    seed();
+    stubSessions();
+    vi.spyOn(api, 'deleteSession').mockResolvedValue(undefined);
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await act(() => { confirmButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    await flush();
+
+    // The reload kept the row, so the pending focus gave up on the filter.
+    expect(titleButton('Fix the lexer')).not.toBeUndefined();
+    expect(document.activeElement).toBe(filter());
+
+    // A query that hides the row must not hand the focus to its neighbour.
+    await type('parser');
+    expect(document.activeElement).toBe(filter());
+    expect(document.activeElement).not.toBe(titleButton('Port the parser'));
+  });
+
+  it('gives the focus to the filter when a cancelled row has left the list', async () => {
+    seed();
+    stubSessions();
+    await mount();
+    await openFromHud();
+
+    await act(() => { rowButton('Fix the lexer', 'Delete').click(); });
+    await flush();
+    // The query hides the row, and the confirm with it, before it is cleared.
+    await type('parser');
+    await pressKey(window, { key: 'Escape', code: 'Escape' });
+
+    expect(row('Fix the lexer')).toBeUndefined();
+    expect(dialog()!.querySelector('[role="alertdialog"]')).toBeNull();
+    // The request named a row that is gone, so the hook's first-control
+    // fallback is what puts the focus on the filter.
     expect(document.activeElement).toBe(filter());
   });
 

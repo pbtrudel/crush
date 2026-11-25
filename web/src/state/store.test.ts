@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'preact/test-utils';
 import fixtures from './__fixtures__/events.json';
 import { ApiError, api } from '../api/http';
-import type { Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent } from '../api/types';
+import type {
+  FileSummary, Frame, Message, PermissionRequest, QuestionRequest, Session, Snapshot, WireEvent,
+} from '../api/types';
 import { effectsLevel } from './effects';
 import { STARTING_TEXT } from './failure';
 import { adoptSession, initialState } from './reducer';
@@ -23,6 +26,13 @@ function permission(): PermissionRequest {
     id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
     description: 'Run tests', action: 'execute', params: {}, path: '/repo',
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 function seed() {
@@ -428,6 +438,115 @@ describe('M2 actions', () => {
     }
   });
 
+  it('keeps a deletion that lands between two overlapping transcript loads', async () => {
+    seed();
+    const first = deferred<Message[]>();
+    const second = deferred<Message[]>();
+    vi.spyOn(api, 'messages').mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    vi.spyOn(api, 'session').mockResolvedValue({ id: 'sub-1', title: 'Map the parser' } as Session);
+
+    const initial = actions.inspect('sub-1');
+    // A snapshot reloads the same transcript while the first load is still
+    // on its way, so two loads of sub-1 overlap.
+    handleFrames([{ seq: 92, type: 'snapshot', payload: { ...(fx.snapshot.payload as Snapshot) } }]);
+    // The frame that deletes m-1 lands between them.
+    handleFrames([{
+      seq: 93,
+      type: 'message',
+      payload: { type: 'deleted', payload: { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] } },
+    } as unknown as Frame]);
+
+    const record = (id: string): Message => ({
+      id, session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [],
+    });
+    await act(async () => { second.resolve([record('m-1'), record('m-2')]); await Promise.resolve(); });
+    await act(async () => { first.resolve([record('m-1'), record('m-3')]); await Promise.resolve(); });
+    await initial;
+    // Let the second load settle too.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const ids = state.value.inspected?.messages.map((m) => m.id) ?? [];
+    expect(ids).toContain('m-3');
+    expect(ids).not.toContain('m-1');
+  });
+
+  it('does not resurrect a message a frame deleted while the transcript loaded', async () => {
+    seed();
+    const fetched = deferred<Message[]>();
+    vi.spyOn(api, 'messages').mockReturnValue(fetched.promise);
+    vi.spyOn(api, 'session').mockResolvedValue({ id: 'sub-1', title: 'Map the parser' } as Session);
+    const loading = actions.inspect('sub-1');
+    // The frame names the message the fetch is about to bring back.
+    handleFrames([{
+      seq: 91,
+      type: 'message',
+      payload: {
+        type: 'deleted',
+        payload: { id: 'm-1', session_id: 'sub-1', role: 'assistant', parts: [] },
+      },
+    } as unknown as Frame]);
+
+    await act(async () => {
+      fetched.resolve([
+        { id: 'm-1', session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [] },
+        { id: 'm-2', session_id: 'sub-1', role: 'assistant', model: '', provider: '', created_at: 0, updated_at: 0, parts: [] },
+      ]);
+      await Promise.resolve();
+    });
+    await loading;
+
+    const ids = state.value.inspected?.messages.map((m) => m.id) ?? [];
+    expect(ids).toContain('m-2');
+    expect(ids).not.toContain('m-1');
+  });
+
+  it('asks for the file list once more when a frame lands during the fetch', async () => {
+    vi.useFakeTimers();
+    try {
+      seed();
+      const first = deferred<FileSummary[]>();
+      const files = vi.spyOn(api, 'files')
+        .mockReturnValueOnce(first.promise)
+        .mockResolvedValueOnce([]);
+      handleFrames([fx.file]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(1);
+
+      // A file frame lands while that request is on its way: it asks for one
+      // more list after the answer instead of a second request in parallel.
+      handleFrames([fx.file]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(1);
+
+      await act(async () => { first.resolve([]); await Promise.resolve(); });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the file list stale when a fetch fails so the next frame asks again', async () => {
+    vi.useFakeTimers();
+    try {
+      seed();
+      const files = vi.spyOn(api, 'files')
+        .mockRejectedValueOnce(new ApiError(503, 'workspace_gone', 'gone'))
+        .mockResolvedValueOnce([]);
+      handleFrames([fx.file]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(1);
+      expect(state.value.filesStale).toBe(true);
+
+      handleFrames([fx.file]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(files).toHaveBeenCalledTimes(2);
+      expect(state.value.filesStale).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('messages a teammate from the followed session', async () => {
     seed();
     const post = vi.spyOn(api, 'teamMessage').mockResolvedValue(undefined);
@@ -553,16 +672,6 @@ describe('stream and boot hardening', () => {
     expect(token()).toBeNull();
   });
 });
-
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 describe('actions.runShell', () => {
   it('starts a session, runs the command and records the run', async () => {

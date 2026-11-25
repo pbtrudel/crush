@@ -8,9 +8,10 @@ afterEach(() => {
 });
 
 // stub answers every fetch with one JSON body, or an empty response for a
-// status that carries none.
+// status that carries none. The gateway accepts a sign-in code with a bare
+// 202 and no body, so the stub does too.
 function stub(status = 200, body: unknown = {}) {
-  const rsp = status === 204 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
+  const rsp = status === 204 || status === 202 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status });
   const fetch = vi.fn().mockResolvedValue(rsp);
   vi.stubGlobal('fetch', fetch);
   return fetch;

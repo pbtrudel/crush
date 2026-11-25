@@ -62,7 +62,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   // replaces only leaves the DOM a render later.
   const focusRequest = useRef<'filter' | null>(null);
 
-  useDialogFocus(dialog, 'models');
+  useDialogFocus(dialog, 'models', inert);
   usePaletteDeckFocus();
 
   useEffect(() => {
@@ -171,8 +171,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
   const choose = async (c: ModelChoice) => {
     if (selecting.current) return;
     // A Retry click removes the line that holds the button, so the row it
-    // names takes the focus before that render.
-    document.getElementById(optionId(c))?.focus();
+    // names takes the focus before that render; a row the query hides hands
+    // it to the filter instead.
+    const row = document.getElementById(optionId(c));
+    if (row) row.focus();
+    else filterInput.current?.focus();
     setActionError(null);
     setRetryChoice(null);
     if (isCurrent(c)) {
@@ -214,17 +217,19 @@ function ModelsDialog({ inert }: { inert: boolean }) {
     setEffortDraft(effort);
     setReasoningBusy(true);
     try {
-      await api.setReasoning({ effort });
+      const answer = await api.setReasoning({ effort });
+      if (!alive.current) return;
+      // The answer names the effort the model took, so the radio holds it
+      // instead of flicking back to the old level before the frame lands.
+      setEffortDraft(answer.reasoning_effort ?? effort);
     } catch (err) {
       if (!alive.current) return;
-      // The draft clears below either way; this names what went wrong.
+      // The draft goes back to the model's state; this names what went wrong.
       setActionError(err);
+      setEffortDraft(null);
     } finally {
       reasoningRef.current = false;
-      if (alive.current) {
-        setReasoningBusy(false);
-        setEffortDraft(null);
-      }
+      if (alive.current) setReasoningBusy(false);
     }
   };
 
@@ -337,7 +342,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
                       id={optionId(c)}
                       class="models__option"
                       role="option"
-                      aria-selected={current ? 'true' : 'false'}
+                      data-current={current ? 'true' : undefined}
                       tabIndex={index === currentIndex ? 0 : -1}
                       onClick={() => void choose(c)}
                       onKeyDown={(e) => {
@@ -354,8 +359,11 @@ function ModelsDialog({ inert }: { inert: boolean }) {
                       }}
                     >
                       <span class="models__name">{c.name || c.id}</span>
-                      {current && <span class="models__tag hud-label">current</span>}
+                      {current && <span class="models__tag hud-label" aria-hidden="true">current</span>}
                       {context !== '' && <span class="models__context">{context}</span>}
+                      {/* The marker ends the accessible name, so a reader
+                          hears it after the model it belongs to. */}
+                      {current && <span class="visually-hidden">, current</span>}
                     </div>
                   );
                 })}
@@ -388,7 +396,7 @@ function ModelsDialog({ inert }: { inert: boolean }) {
                       checked={checkedEffort === level}
                       onChange={() => void changeEffort(level)}
                     />
-                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                    <span class="models__radio-text">{level.charAt(0).toUpperCase() + level.slice(1)}</span>
                   </label>
                 ))}
               </div>
@@ -400,12 +408,13 @@ function ModelsDialog({ inert }: { inert: boolean }) {
                   class="models__switch"
                   aria-checked={model.think ? 'true' : 'false'}
                   onClick={() => void changeThinking(!model.think)}
-                >Thinking</button>
+                ><span class="models__switch-text">Thinking</span></button>
               </div>
             )}
           </fieldset>
         ) : null}
-        {/* The line at the top already says the agent is starting. */}
+        {/* The line at the top already says the agent is starting, and it
+            hides the reconnecting line too: both are wait states. */}
         {shownAction && !(shownAction.tone === 'starting' && !s.agentReady) && (
           <div class="models__status" role={shownAction.tone === 'starting' ? 'status' : 'alert'} data-tone={shownAction.tone}>
             <span>{shownAction.text}</span>

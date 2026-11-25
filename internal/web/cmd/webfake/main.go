@@ -30,7 +30,16 @@ func main() {
 	defer stop()
 	fake := webtest.NewFake()
 	fake.OnRun = webtest.Scripted(fake)
-	if wd, err := os.Getwd(); err == nil {
+	// The workspace root is the checkout, so a dev session browses the repo
+	// and @ completion sees real files. A screenshot run pins it instead:
+	// the HUD labels the tab with the basename of this path, so an unpinned
+	// root would make every baseline depend on the folder name.
+	if dir := os.Getenv("WEBFAKE_PROJECT_DIR"); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, "webfake: project dir:", err)
+		}
+		fake.WorkDir = dir
+	} else if wd, err := os.Getwd(); err == nil {
 		fake.WorkDir = wd
 	}
 	clock := time.Now()
@@ -196,18 +205,35 @@ func signInFlow(seams func(string) (signin.Flow, error), ms int) func(string) (s
 }
 
 // playSecurePrompt opens the prompt WEBFAKE_SECURE_PROMPT names, 300 ms
-// after start, and answers it from the terminal after
-// WEBFAKE_PROMPT_ELSEWHERE_MS when that is set.
+// after start or after WEBFAKE_PROMPT_AFTER_MS when that is set, or once the
+// file WEBFAKE_PROMPT_ON_FILE names exists, and answers it from the terminal
+// after WEBFAKE_PROMPT_ELSEWHERE_MS when that is set. The file lets a test
+// decide when the prompt opens instead of racing the clock from start.
 func playSecurePrompt(ctx context.Context, fake *webtest.Fake, kind string) {
 	ev, ok := webtest.SecurePromptFromEnv(kind)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "webfake: unknown WEBFAKE_SECURE_PROMPT:", kind)
 		return
 	}
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(300 * time.Millisecond):
+	after := 300
+	if v := os.Getenv("WEBFAKE_PROMPT_AFTER_MS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_PROMPT_AFTER_MS:", v)
+			return
+		}
+		after = n
+	}
+	if file := os.Getenv("WEBFAKE_PROMPT_ON_FILE"); file != "" {
+		if !waitForFile(ctx, file) {
+			return
+		}
+	} else {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(after) * time.Millisecond):
+		}
 	}
 	switch req := ev.(type) {
 	case pinentry.PromptRequest:
@@ -262,4 +288,20 @@ func playAWSSSO(ctx context.Context, fake *webtest.Fake) {
 		AWSSOCommand: "aws sso login --profile dev",
 		AWSSOURL:     "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD",
 	})
+}
+
+// waitForFile polls for a file the test writes, and reports false when the
+// context ends first. The interval is short enough for a prompt to open in a
+// frame or two of the write.
+func waitForFile(ctx context.Context, name string) bool {
+	for {
+		if _, err := os.Stat(name); err == nil {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }

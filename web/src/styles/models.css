@@ -18,7 +18,13 @@
 .models__fieldset {
   margin: 0; padding: 0; border: 0; min-inline-size: 0;
 }
-.models__reasoning--busy { opacity: 0.6; }
+/* A reasoning change in flight dims the content, never the control: an
+   opacity on the fieldset would dim the focus ring of the radio or the
+   switch it holds. */
+.models__reasoning--busy .models__legend,
+.models__reasoning--busy .models__note,
+.models__reasoning--busy .models__radio-text,
+.models__reasoning--busy .models__switch-text { opacity: 0.6; }
 .models__legend {
   padding: 0;
   color: var(--text-muted);
@@ -75,7 +81,7 @@
   padding: 8px 10px; cursor: pointer;
   border-inline-start: 2px solid transparent; border-radius: var(--radius);
 }
-.models__option[aria-selected='true'] {
+.models__option[data-current='true'] {
   border-inline-start-color: var(--cyan);
   background: var(--cyan-dim);
 }

@@ -703,6 +703,50 @@ describe('the M4a wire state', () => {
     expect(s.toasts.length).toBe(before);
   });
 
+  it('keeps answeredHere through a snapshot and does not toast its own answer', () => {
+    let s = reduce(fromSnapshot(), fx.secure_prompt as Frame);
+    const [prompt] = s.securePrompts;
+    s = markAnswered(s, prompt.id);
+    const before = s.toasts.length;
+
+    // A snapshot lands between the tab's answer and the frame that closes
+    // the prompt, and it still carries the prompt.
+    s = reduce(s, {
+      seq: s.lastSeq + 1,
+      type: 'snapshot',
+      payload: { ...(fx.snapshot.payload as Snapshot), secure_prompts: [prompt] },
+    });
+    expect(s.answeredHere).toEqual({ [prompt.id]: true });
+
+    // The prompt was answered here, so its closing frame is not news.
+    s = reduce(s, { seq: s.lastSeq + 1, type: 'secure_prompt', payload: { prompts: [] } });
+    expect(s.securePrompts).toEqual([]);
+    expect(s.toasts.length).toBe(before);
+  });
+
+  it('keeps only the answers a snapshot still shows', () => {
+    const snap = fx.snapshot.payload as Snapshot;
+    let s: State = {
+      ...fromSnapshot(),
+      answeredHere: { 'a-prompt': true, 'a-perm': true, 'a-question': true, gone: true },
+    };
+    s = reduce(s, {
+      seq: s.lastSeq + 1,
+      type: 'snapshot',
+      payload: {
+        ...snap,
+        secure_prompts: [{ source: 'ssh', id: 'a-prompt', kind: 'password', title: 'SSH', message: 'Password for git' }],
+        permissions: [{
+          id: 'a-perm', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+          description: 'Run the tests', action: 'execute', params: {}, path: '/repo',
+        }],
+        questions: [{ id: 'a-question', session_id: 's1', tool_call_id: 'tc1', questions: [] }],
+      },
+    });
+
+    expect(s.answeredHere).toEqual({ 'a-prompt': true, 'a-perm': true, 'a-question': true });
+  });
+
   it('shows a touch prompt as a notice and stays quiet when the terminal confirms it', () => {
     const touch = { source: 'ssh', id: 't1', kind: 'touch', title: 'Security key', message: 'Tap your security key to continue.' };
     let s = reduce(fromSnapshot(), { seq: 80, type: 'secure_prompt', payload: { prompts: [touch] } });

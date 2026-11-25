@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
-import type { Frame, ModelChoice, ModelInfo } from '../../api/types';
+import type { Frame, ModelChoice, ModelInfo, PermissionRequest } from '../../api/types';
 import { ApiError, api } from '../../api/http';
 import { initialState, reduce } from '../../state/reducer';
 import { dispatch, state } from '../../state/store';
@@ -178,9 +178,13 @@ describe('the model selector', () => {
     expect(options().map((o) => o.querySelector('.models__context')!.textContent))
       .toEqual(['200k', '200k', '200k', '128k', '1.5M']);
 
-    expect(option('Claude').getAttribute('aria-selected')).toBe('true');
-    expect(option('Claude').textContent).toContain('current');
-    expect(option('Model One').getAttribute('aria-selected')).toBe('false');
+    // The marker is the last thing a reader hears, and the row's look hangs
+    // on the data attribute instead of the selected state.
+    expect(option('Claude').hasAttribute('aria-selected')).toBe(false);
+    expect(option('Claude').getAttribute('data-current')).toBe('true');
+    expect(option('Claude').textContent).toMatch(/, current$/);
+    expect(option('Model One').hasAttribute('aria-selected')).toBe(false);
+    expect(option('Model One').getAttribute('data-current')).toBeNull();
     expect(option('Model One').textContent).not.toContain('current');
 
     expect(dialog()!.textContent).toContain('Sign in to another provider');
@@ -287,9 +291,9 @@ describe('the model selector', () => {
     await flush();
 
     // The current mark follows state.model.small.
-    expect(option('Model Two').getAttribute('aria-selected')).toBe('true');
+    expect(option('Model Two').getAttribute('data-current')).toBe('true');
     expect(option('Model Two').textContent).toContain('current');
-    expect(option('Claude').getAttribute('aria-selected')).toBe('false');
+    expect(option('Claude').getAttribute('data-current')).toBeNull();
 
     await act(() => { option('Model One').click(); });
     await flush();
@@ -436,7 +440,7 @@ describe('the model selector', () => {
     expect(radio('model-effort', 'high').checked).toBe(true);
   });
 
-  it('clears the effort draft when the answer settles on the same effort', async () => {
+  it('keeps the chosen effort checked when the answer lands before the frame', async () => {
     seed();
     stubProviders();
     const answer = deferred<ModelInfo>();
@@ -448,16 +452,67 @@ describe('the model selector', () => {
     await flush();
     expect(radio('model-effort', 'low').checked).toBe(true);
 
-    await act(async () => { answer.resolve(state.value.model); await Promise.resolve(); });
+    // The answer names no effort, so the draft keeps the one that was asked
+    // for instead of flicking back to the model's old level.
+    await act(async () => {
+      answer.resolve({ ...state.value.model, reasoning_effort: undefined });
+      await Promise.resolve();
+    });
     await flush();
 
-    // The settled answer leaves the model's value showing, not the draft.
-    expect(radio('model-effort', 'high').checked).toBe(true);
-    expect(radio('model-effort', 'low').checked).toBe(false);
+    expect(radio('model-effort', 'low').checked).toBe(true);
+    expect(radio('model-effort', 'high').checked).toBe(false);
 
-    await frame({ reasoning_effort: 'high' });
-    expect(radio('model-effort', 'high').checked).toBe(true);
+    await frame({ reasoning_effort: 'low' });
+    expect(radio('model-effort', 'low').checked).toBe(true);
+    expect(radio('model-effort', 'high').checked).toBe(false);
+  });
+
+  it('shows the effort the answer settled on until the frame arrives', async () => {
+    seed();
+    stubProviders();
+    const answer = deferred<ModelInfo>();
+    vi.spyOn(api, 'setReasoning').mockReturnValue(answer.promise);
+    await mount();
+    await openFromHud();
+
+    await act(() => { radio('model-effort', 'low').click(); });
+    await flush();
+
+    // The model took another level than the one clicked.
+    await act(async () => {
+      answer.resolve({ ...state.value.model, reasoning_effort: 'medium' });
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(radio('model-effort', 'medium').checked).toBe(true);
     expect(radio('model-effort', 'low').checked).toBe(false);
+    expect(radio('model-effort', 'high').checked).toBe(false);
+
+    await frame({ reasoning_effort: 'medium' });
+    expect(radio('model-effort', 'medium').checked).toBe(true);
+  });
+
+  it('moves the focus to the filter when the chosen row is filtered out', async () => {
+    seed();
+    stubProviders();
+    vi.spyOn(api, 'selectModel')
+      .mockRejectedValueOnce(new ApiError(503, 'agent_starting', 'not ready'))
+      .mockRejectedValueOnce(new ApiError(409, 'agent_busy', 'the agent is busy'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+    // The query hides the refused row, so its Retry has no row to hand the
+    // focus to.
+    await type('Model One');
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    await act(() => { retry.click(); });
+    await flush();
+
+    expect(document.activeElement).toBe(filter());
   });
 
   it('moves focus to the filter when the frame swaps the control', async () => {
@@ -864,6 +919,57 @@ describe('the model selector', () => {
       };
     });
     expect(layer.hasAttribute('inert')).toBe(true);
+  });
+
+  it('keeps the focus in the panel when the starting Retry leaves it', async () => {
+    seed({}, { agentReady: false });
+    stubProviders();
+    vi.spyOn(api, 'selectModel').mockRejectedValue(new ApiError(503, 'agent_starting', 'not ready'));
+    await mount();
+    await openFromHud();
+
+    await act(() => { option('Model Two').click(); });
+    await flush();
+
+    const retry = Array.from(dialog()!.querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+
+    // The agent comes up: the starting line that holds the Retry goes away
+    // and the action line under the list takes its place.
+    await act(() => { state.value = { ...state.value, agentReady: true }; });
+    await flush();
+
+    expect(retry.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+    const remembered = document.activeElement as HTMLElement;
+
+    // A prompt makes the page behind it inert, and the browser drops the
+    // focus to the body before the prompt takes it.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const prompt: PermissionRequest = {
+      id: 'p1', session_id: 's1', tool_call_id: 'tc1', tool_name: 'bash',
+      description: 'Run the tests', action: 'execute', params: {}, path: '/tmp/project',
+    };
+    await act(() => { state.value = { ...state.value, permissions: [prompt] }; });
+    await flush();
+    const panel = dialog()!;
+    expect(root.querySelector('.models-layer')!.hasAttribute('inert')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // A prompt that still needs the user owns the focus, so a later render
+    // of the panel under it does not take it back.
+    await act(() => { state.value = { ...state.value, permissions: [prompt, { ...prompt, id: 'p2' }] }; });
+    await flush();
+    expect(panel.contains(document.activeElement)).toBe(false);
+
+    // The prompt closes: the panel takes the control that had the focus back.
+    await act(() => { state.value = { ...state.value, permissions: [] }; });
+    await flush();
+    expect(document.activeElement).toBe(remembered);
   });
 
   it('keeps the model button out of the tab order in cinematic mode', async () => {
