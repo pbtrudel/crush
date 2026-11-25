@@ -57,6 +57,9 @@ type editContext struct {
 	files       history.Service
 	filetracker filetracker.Service
 	workingDir  string
+	// callID is the tool call running the edit, recorded with the version
+	// that holds its output.
+	callID string
 	// withoutRead is the edit_without_read option: an exact, unique match
 	// applies to a file the read guard refuses.
 	withoutRead bool
@@ -89,6 +92,7 @@ func NewEditTool(
 				files:       files,
 				filetracker: filetracker,
 				workingDir:  workingDir,
+				callID:      call.ID,
 				withoutRead: editWithoutRead,
 			}
 
@@ -179,7 +183,7 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 	}
 
 	// Add the new content to the file history
-	_, err = edit.files.CreateVersion(edit.ctx, sessionID, filePath, content)
+	_, err = edit.files.CreateVersion(history.WithToolCallID(edit.ctx, edit.callID), sessionID, filePath, content)
 	if err != nil {
 		// Log error but don't fail the operation
 		slog.Error("Error creating file history version", "error", err)
@@ -370,7 +374,7 @@ func commitFileChange(edit editContext, sessionID, filePath, oldContent, newCont
 			slog.Error("Error creating file history version", "error", err)
 		}
 	}
-	if _, err := edit.files.CreateVersion(edit.ctx, sessionID, filePath, newContent); err != nil {
+	if _, err := edit.files.CreateVersion(history.WithToolCallID(edit.ctx, edit.callID), sessionID, filePath, newContent); err != nil {
 		slog.Error("Error creating file history version", "error", err)
 	}
 

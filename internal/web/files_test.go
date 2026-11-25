@@ -59,12 +59,44 @@ func TestFileSummariesAggregateChildSessions(t *testing.T) {
 	var got []FileSummary
 	require.NoError(t, json.Unmarshal(body, &got))
 	require.Equal(t, []FileSummary{
-		{Path: "/repo/b.go", Versions: 2, VersionIDs: []int64{0, 1}, Additions: 1, UpdatedAt: 14, SessionIDs: []string{"sub-2"}},
 		{
-			Path: "/repo/a.go", Versions: 3, VersionIDs: []int64{0, 1, 2}, Additions: 2,
-			Diagnostics: FileDiagnostics{Error: 1, Warning: 2}, UpdatedAt: 12, SessionIDs: []string{"s1", "sub-1"},
+			Path: "/repo/b.go", Versions: 2, VersionIDs: []int64{0, 1},
+			VersionTools: []VersionTool{{SessionID: "sub-2"}, {SessionID: "sub-2"}},
+			Additions:    1, UpdatedAt: 14, SessionIDs: []string{"sub-2"},
+		},
+		{
+			Path: "/repo/a.go", Versions: 3, VersionIDs: []int64{0, 1, 2},
+			VersionTools: []VersionTool{{SessionID: "s1"}, {SessionID: "sub-1"}, {SessionID: "s1"}},
+			Additions:    2,
+			Diagnostics:  FileDiagnostics{Error: 1, Warning: 2}, UpdatedAt: 12, SessionIDs: []string{"s1", "sub-1"},
 		},
 	}, got)
+}
+
+// TestFileSummariesCarryVersionTools pins the wire contract the drawer's
+// per-version tool links read: one entry per version in version_ids order,
+// each naming its session and the tool call that produced it, with the id
+// left out for a version no tool produced.
+func TestFileSummariesCarryVersionTools(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "s1", Title: "Root"})
+	fake.AddHistory(history.File{
+		ID: "v0", SessionID: "s1", Path: "/repo/a.go", Content: "package a\n", Version: 0, CreatedAt: 1, UpdatedAt: 1,
+	})
+	fake.AddHistory(history.File{
+		ID: "v1", SessionID: "s1", Path: "/repo/a.go", Content: "package b\n", Version: 1, CreatedAt: 2, UpdatedAt: 2,
+		ToolCallID: "tc-9",
+	})
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/sessions/s1/files", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+	require.JSONEq(t, `[{
+		"path": "/repo/a.go", "versions": 2, "version_ids": [0, 1],
+		"additions": 1, "removals": 1, "diagnostics": {"error": 0, "warning": 0},
+		"updated_at": 2, "session_ids": ["s1"],
+		"version_tools": [{"session_id": "s1"}, {"session_id": "s1", "tool_call_id": "tc-9"}]
+	}]`, string(body))
 }
 
 // TestFileSummariesSkipOversizedDiff pins ruling I3: a version above the

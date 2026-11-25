@@ -1852,13 +1852,14 @@ func protoToTodos(todos []proto.Todo) []session.Todo {
 
 func protoToFileMeta(f proto.FileMeta) history.FileMeta {
 	return history.FileMeta{
-		ID:        f.ID,
-		SessionID: f.SessionID,
-		Path:      f.Path,
-		Version:   f.Version,
-		CreatedAt: f.CreatedAt,
-		UpdatedAt: f.UpdatedAt,
-		Size:      f.Size,
+		ID:         f.ID,
+		SessionID:  f.SessionID,
+		Path:       f.Path,
+		Version:    f.Version,
+		CreatedAt:  f.CreatedAt,
+		UpdatedAt:  f.UpdatedAt,
+		Size:       f.Size,
+		ToolCallID: f.ToolCallID,
 	}
 }
 
@@ -1872,13 +1873,14 @@ func protoToFileMetas(files []proto.FileMeta) []history.FileMeta {
 
 func protoToFile(f proto.File) history.File {
 	return history.File{
-		ID:        f.ID,
-		SessionID: f.SessionID,
-		Path:      f.Path,
-		Content:   f.Content,
-		Version:   f.Version,
-		CreatedAt: f.CreatedAt,
-		UpdatedAt: f.UpdatedAt,
+		ID:         f.ID,
+		SessionID:  f.SessionID,
+		Path:       f.Path,
+		Content:    f.Content,
+		Version:    f.Version,
+		CreatedAt:  f.CreatedAt,
+		UpdatedAt:  f.UpdatedAt,
+		ToolCallID: f.ToolCallID,
 	}
 }
 

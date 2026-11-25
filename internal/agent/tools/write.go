@@ -159,7 +159,7 @@ func NewWriteTool(
 				}
 			}
 			// Store the new version
-			_, err = files.CreateVersion(ctx, sessionID, filePath, params.Content)
+			_, err = files.CreateVersion(history.WithToolCallID(ctx, call.ID), sessionID, filePath, params.Content)
 			if err != nil {
 				slog.Error("Error creating file history version", "error", err)
 			}

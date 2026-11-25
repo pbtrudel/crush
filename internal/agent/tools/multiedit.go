@@ -117,6 +117,7 @@ func NewMultiEditTool(
 				files:       files,
 				filetracker: filetracker,
 				workingDir:  workingDir,
+				callID:      call.ID,
 				withoutRead: editWithoutRead,
 			}
 			// Handle file creation case (first edit has empty old_string)
@@ -270,7 +271,7 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		slog.Error("Error creating file history", "error", err)
 	}
 
-	_, err = edit.files.CreateVersion(edit.ctx, sessionID, params.FilePath, currentContent)
+	_, err = edit.files.CreateVersion(history.WithToolCallID(edit.ctx, edit.callID), sessionID, params.FilePath, currentContent)
 	if err != nil {
 		slog.Error("Error creating file history version", "error", err)
 	}

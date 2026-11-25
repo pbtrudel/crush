@@ -330,13 +330,14 @@ func todosToProto(todos []session.Todo) []proto.Todo {
 // FileToProto converts a history file into its wire form.
 func FileToProto(f history.File) proto.File {
 	return proto.File{
-		ID:        f.ID,
-		SessionID: f.SessionID,
-		Path:      f.Path,
-		Content:   f.Content,
-		Version:   f.Version,
-		CreatedAt: f.CreatedAt,
-		UpdatedAt: f.UpdatedAt,
+		ID:         f.ID,
+		SessionID:  f.SessionID,
+		Path:       f.Path,
+		Content:    f.Content,
+		Version:    f.Version,
+		CreatedAt:  f.CreatedAt,
+		UpdatedAt:  f.UpdatedAt,
+		ToolCallID: f.ToolCallID,
 	}
 }
 
@@ -344,13 +345,14 @@ func FileToProto(f history.File) proto.File {
 // wire form.
 func FileMetaToProto(f history.FileMeta) proto.FileMeta {
 	return proto.FileMeta{
-		ID:        f.ID,
-		SessionID: f.SessionID,
-		Path:      f.Path,
-		Version:   f.Version,
-		CreatedAt: f.CreatedAt,
-		UpdatedAt: f.UpdatedAt,
-		Size:      f.Size,
+		ID:         f.ID,
+		SessionID:  f.SessionID,
+		Path:       f.Path,
+		Version:    f.Version,
+		CreatedAt:  f.CreatedAt,
+		UpdatedAt:  f.UpdatedAt,
+		Size:       f.Size,
+		ToolCallID: f.ToolCallID,
 	}
 }
 
