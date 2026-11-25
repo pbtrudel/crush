@@ -295,6 +295,9 @@ type Workspace interface {
 	MarkProjectInitialized() error
 	InitializePrompt() (string, error)
 	ListSkills(ctx context.Context) ([]skills.CatalogEntry, error)
+	// ListAllSkills returns every discovered skill, including the ones the
+	// config or this repository disabled.
+	ListAllSkills(ctx context.Context) ([]skills.CatalogEntry, error)
 	ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error)
 	ReloadSkills(ctx context.Context) error
 	ReloadConfig(ctx context.Context) error

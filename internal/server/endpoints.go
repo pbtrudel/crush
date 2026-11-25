@@ -701,6 +701,15 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSkills),
 
+		apigen.Get("/v1/workspaces/{id}/skills/all").
+			Summary("List every discovered skill").
+			Description("Includes the skills the config or the repository disabled.").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Responds([]proto.SkillInfo{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSkillsAll),
+
 		apigen.Post("/v1/workspaces/{id}/skills/read").
 			Summary("Read skill content").
 			Tags("skills").

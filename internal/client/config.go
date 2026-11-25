@@ -233,6 +233,24 @@ func (c *Client) ListSkills(ctx context.Context, id string) ([]proto.SkillInfo, 
 	return skills, nil
 }
 
+// ListAllSkills retrieves every discovered skill for a workspace,
+// including the ones the config or the repository disabled.
+func (c *Client) ListAllSkills(ctx context.Context, id string) ([]proto.SkillInfo, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/skills/all", id), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all skills: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list all skills: status code %d", rsp.StatusCode)
+	}
+	var skills []proto.SkillInfo
+	if err := json.NewDecoder(rsp.Body).Decode(&skills); err != nil {
+		return nil, fmt.Errorf("failed to decode all skills: %w", err)
+	}
+	return skills, nil
+}
+
 // ReloadSkills asks the server to re-discover a workspace's skills.
 func (c *Client) ReloadSkills(ctx context.Context, id string) error {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/skills/reload", id), nil, nil, nil)
