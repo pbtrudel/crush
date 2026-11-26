@@ -581,6 +581,14 @@
             50
           ]
         },
+        "image_retention_turns": {
+          "type": "integer",
+          "description": "Number of recent user turns whose images stay in the replayed context. Older images are replaced with a short note so the model stops referencing them and the context stays small. 0 drops an image as soon as a newer prompt arrives. A negative value keeps images indefinitely.",
+          "default": 1,
+          "examples": [
+            2
+          ]
+        },
         "prompt_cache_ttl": {
           "type": "string",
           "enum": [

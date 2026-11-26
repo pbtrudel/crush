@@ -298,6 +298,24 @@ func TestOption_MaxBackgroundJobs(t *testing.T) {
 	require.Equal(t, float64(200), opts["max_background_jobs"])
 }
 
+func TestOption_ImageRetentionTurns(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option image-retention-turns 2
+option image-retention-turns -1`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, float64(-1), opts["image_retention_turns"], "negative must pass through as disabled")
+}
+
 func TestOption_RequestTimeoutInvalid(t *testing.T) {
 	t.Parallel()
 

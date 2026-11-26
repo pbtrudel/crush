@@ -261,6 +261,7 @@ var optionSpecs = map[string]optionSpec{
 	"compaction-prune-chars":    {jsonKey: "compaction_prune_chars", kind: optInt},
 	"context-max-bytes":         {jsonKey: "context_max_bytes", kind: optInt},
 	"max-images":                {jsonKey: "max_images", kind: optInt},
+	"image-retention-turns":     {jsonKey: "image_retention_turns", kind: optInt},
 	"tool-output-max-tokens":    {jsonKey: "tool_output_max_tokens", kind: optInt},
 	"max-consecutive-wakes":     {jsonKey: "max_consecutive_wakes", kind: optInt},
 
