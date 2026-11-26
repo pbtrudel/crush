@@ -117,6 +117,8 @@ const (
 	TaskInProgress TaskStatus = "in_progress"
 	TaskCompleted  TaskStatus = "completed"
 	TaskDeleted    TaskStatus = "deleted"
+	// TaskInReview is finished work waiting for its verification task.
+	TaskInReview TaskStatus = "in_review"
 )
 
 // Error codes match the DSH Agent Teams domain so callers can branch on them.
@@ -236,6 +238,20 @@ type Task struct {
 	// written before this field existed carry no session; they are
 	// hidden from every scope so they cannot leak into a new session.
 	SessionID string `json:"session_id,omitempty"`
+	// Role names the role that should do the task. Empty keeps the task
+	// manual: nothing starts it on its own.
+	Role string `json:"role,omitempty"`
+	// Verify says whether finished work goes to a verifier before it
+	// completes. Nil means true for role implementer and false otherwise.
+	Verify *bool `json:"verify,omitempty"`
+	// Verifies is set on a verification task: the id of the task it checks.
+	Verifies string `json:"verifies,omitempty"`
+	// Attempts counts failed auto-starts, failed turns and failed
+	// verifications.
+	Attempts int `json:"attempts,omitempty"`
+	// Escalated means the dispatcher no longer touches the task; the Lead
+	// decides what happens next.
+	Escalated bool `json:"escalated,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -252,6 +268,11 @@ type TaskView struct {
 	Ready              bool       `json:"ready"`
 	WriteScopeWarnings []string   `json:"writeScopeWarnings"`
 	SessionID          string     `json:"sessionId,omitempty"`
+	Role               string     `json:"role,omitempty"`
+	Verify             bool       `json:"verify,omitempty"`
+	Verifies           string     `json:"verifies,omitempty"`
+	Attempts           int        `json:"attempts,omitempty"`
+	Escalated          bool       `json:"escalated,omitempty"`
 }
 
 // Message is one inbox entry.
@@ -290,6 +311,8 @@ type CreateTaskRequest struct {
 	Description string
 	BlockedBy   []string
 	WriteScopes []string
+	Role        string
+	Verify      *bool
 }
 
 // TaskFilter narrows a task listing.
@@ -317,6 +340,12 @@ type UpdateTaskRequest struct {
 	BlockedBy        []string
 	WriteScopes      []string
 	Owner            string
+	// Role replaces the task's role on edit; an empty string clears it.
+	Role *string
+	// Verify replaces the task's verify setting on edit.
+	Verify *bool
+	// Notes describe what failed, for the fail action.
+	Notes string
 	// SessionID is the caller's session. It scopes the task to the caller's
 	// team and reconciles session todos when the Lead completes a task
 	// itself.
@@ -1847,11 +1876,15 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 		if active >= s.cfg.MaxTasks {
 			return false, newError(CodeTaskLimit, "Team task limit %d reached", s.cfg.MaxTasks)
 		}
-		subject, err := requiredText(req.Subject, "subject", 200)
+		subject, err := requiredText(req.Subject, "subject", maxTaskSubject)
 		if err != nil {
 			return false, err
 		}
 		description, err := requiredText(req.Description, "description", 16384)
+		if err != nil {
+			return false, err
+		}
+		role, err := normalizeTaskRole(req.Role)
 		if err != nil {
 			return false, err
 		}
@@ -1865,6 +1898,10 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 			BlockedBy:   []string{},
 			WriteScopes: []string{},
 			SessionID:   root,
+			Role:        role,
+		}
+		if req.Verify != nil {
+			task.Verify = new(*req.Verify)
 		}
 		if req.BlockedBy != nil {
 			blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, task.ID)
@@ -2058,11 +2095,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
-		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil {
-			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, or write_scopes")
+		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil && req.Role == nil && req.Verify == nil {
+			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, write_scopes, role, or verify")
 		}
 		if req.Subject != "" {
-			subject, err := requiredText(req.Subject, "subject", 200)
+			subject, err := requiredText(req.Subject, "subject", maxTaskSubject)
 			if err != nil {
 				return taskUpdate{}, err
 			}
@@ -2081,6 +2118,16 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 				return taskUpdate{}, err
 			}
 			next.WriteScopes = scopes
+		}
+		if req.Role != nil {
+			role, err := normalizeTaskRole(*req.Role)
+			if err != nil {
+				return taskUpdate{}, err
+			}
+			next.Role = role
+		}
+		if req.Verify != nil {
+			next.Verify = new(*req.Verify)
 		}
 	case "set_dependencies":
 		if err := authorizeOwner(); err != nil {
@@ -2149,6 +2196,12 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	}
 
 	next.Revision = current.Revision + 1
+	// The Lead acting on a task takes it back from escalation: the
+	// dispatcher may try it again from a clean count.
+	if lead && (req.Action == "edit" || req.Action == "reassign" || req.Action == "reopen") {
+		next.Escalated = false
+		next.Attempts = 0
+	}
 	if err := assertTaskGraph(s.state.Tasks, next); err != nil {
 		return taskUpdate{}, err
 	}
@@ -2203,6 +2256,40 @@ func requiredText(value, field string, maxLength int) (string, error) {
 		return "", newError(CodeInvalidArgument, "%s must be at most %d characters", field, maxLength)
 	}
 	return trimmed, nil
+}
+
+// Roles the pipeline treats specially, and the subject limit every task
+// shares.
+const (
+	implementerRole = "implementer"
+	verifierRole    = "verifier"
+	maxTaskSubject  = 200
+)
+
+// needsVerification reports whether finished work on t goes to a verifier
+// before it completes. A verification task is never verified itself.
+func (t Task) needsVerification() bool {
+	if t.Verifies != "" {
+		return false
+	}
+	if t.Verify != nil {
+		return *t.Verify
+	}
+	return t.Role == implementerRole
+}
+
+// normalizeTaskRole validates a task role. The tool layer already checked
+// that the role exists; this keeps the stored name a valid member-name stem,
+// short enough that "<role>-<n>" stays within the 64-byte name limit.
+func normalizeTaskRole(value string) (string, error) {
+	role := strings.TrimSpace(value)
+	if role == "" {
+		return "", nil
+	}
+	if !memberNamePattern.MatchString(role) || len(role) > 60 {
+		return "", newError(CodeInvalidArgument, "role %q must be a lower-kebab-case role name of at most 60 characters", value)
+	}
+	return role, nil
 }
 
 // normalizeWriteScopes validates workspace-relative prefixes.
@@ -2279,6 +2366,11 @@ func projectTaskView(state State, task Task) TaskView {
 		WriteScopes: append([]string{}, task.WriteScopes...),
 		Ready:       task.Status == TaskPending && taskReady(state, task),
 		SessionID:   task.SessionID,
+		Role:        task.Role,
+		Verify:      task.needsVerification(),
+		Verifies:    task.Verifies,
+		Attempts:    task.Attempts,
+		Escalated:   task.Escalated,
 	}
 	if task.OwnerID != "" {
 		if task.OwnerID == leadName {
