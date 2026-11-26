@@ -1709,12 +1709,13 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
 
-	// Wrap tools with hook interception for the top-level agent only.
-	// Subagents (the `agent` task tool, `agentic_fetch`, etc.) run
-	// without hook interception to avoid firing the user's hook N times
-	// per delegated turn. The top-level invocation of the subagent tool
-	// itself is still wrapped from the coder's side.
-	filteredTools = wrapToolsWithHooks(filteredTools, c.hookRunner, role.isSubAgent())
+	// Wrap tools with hook interception for the Lead and for teammates,
+	// which fire hooks with their own session id. Dispatched subagents
+	// (the `agent` task tool, `agentic_fetch`, etc.) run without hook
+	// interception to avoid firing the user's hook N times per delegated
+	// turn; the subagent tool call itself is still wrapped on the caller's
+	// side.
+	filteredTools = wrapToolsWithHooks(filteredTools, c.hookRunner, role == roleSubAgent)
 
 	return filteredTools, nil
 }

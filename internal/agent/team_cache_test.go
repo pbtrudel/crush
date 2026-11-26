@@ -15,14 +15,24 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
 // newTeammateTestCoordinator builds the gate test coordinator with a live Team
 // service, so the palette under test includes the Team tools the Lead gets.
-// The Lead's tools are rebuilt afterwards because the gate coordinator builds
-// them before the service exists, which is not the production order.
+// It installs a hook runner with no hooks, as production always does, so the
+// Lead's tools are hook-wrapped like in a real session.
 func newTeammateTestCoordinator(t *testing.T) *coordinator {
+	t.Helper()
+	return newTeammateTestCoordinatorWithHooks(t, hooks.NewRunner(hooks.Static(nil), t.TempDir(), t.TempDir()))
+}
+
+// newTeammateTestCoordinatorWithHooks is newTeammateTestCoordinator with the
+// given hook runner. The Lead's tools are rebuilt afterwards because the gate
+// coordinator builds them before the service and the runner exist, which is
+// not the production order.
+func newTeammateTestCoordinatorWithHooks(t *testing.T, runner *hooks.Runner) *coordinator {
 	t.Helper()
 	coord := newGateTestCoordinator(t, true)
 	// The gate coordinator renders its prompt and tools in the background,
@@ -30,6 +40,7 @@ func newTeammateTestCoordinator(t *testing.T) *coordinator {
 	// assigning the service, or the background read races with the write
 	// below.
 	require.NoError(t, coord.readyWg.Wait())
+	coord.hookRunner = runner
 
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, newTeamFakeRunner())
 	require.NoError(t, err)
@@ -288,4 +299,47 @@ func TestTeammateInheritsLeadAdoptedToolOrder(t *testing.T) {
 	unseeded := toolNames(stableToolOrder(teammate.tools.Copy(), nil))
 	require.NotEqual(t, leadOrder, unseeded,
 		"without the Lead's adopted order the palettes differ, which is what the seed prevents")
+}
+
+// TestTeammateToolRunsBlockingHook pins fix D: a teammate's tool call runs
+// the user's PreToolUse hooks, so a blocking hook stops it.
+func TestTeammateToolRunsBlockingHook(t *testing.T) {
+	coord := newTeammateTestCoordinatorWithHooks(t, newRunner(t, `echo "blocked" >&2; exit 2`))
+	teammate := buildTeammateAgent(t, coord, agentteam.Member{Name: "rev", Role: agentteam.RoleTeammate})
+
+	view := toolByName(teammate.(*sessionAgent).tools.Copy(), tools.ViewToolName)
+	require.NotNil(t, view)
+	ctx := context.WithValue(agentteam.WithMember(t.Context(), "rev"), tools.SessionIDContextKey, "session-teammate")
+	resp, err := view.Run(ctx, fantasy.ToolCall{ID: "call-1", Name: tools.ViewToolName, Input: `{"file_path":"missing.go"}`})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "Tool call blocked by hook")
+}
+
+// TestHookWrapFollowsRole pins which agents fire tool hooks: the Lead and
+// teammates do, a dispatched subagent does not.
+func TestHookWrapFollowsRole(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	parent := func() Model { return coord.mainModels().Large }
+	agents := coord.cfg.Config().Agents
+
+	lead, err := coord.buildTools(t.Context(), agents[config.AgentCoder], roleLead, parent)
+	require.NoError(t, err)
+	for _, tool := range lead {
+		_, hooked := tool.(*hookedTool)
+		require.True(t, hooked, "Lead tool %q must be hook-wrapped", tool.Info().Name)
+	}
+	// A read tool: later write tools also carry the scope gate outside the
+	// hook wrapper (Task 9 pins that order).
+	teammate, err := coord.buildTools(agentteam.WithMember(t.Context(), "rev"), agents[config.AgentCoder], roleTeammate, parent)
+	require.NoError(t, err)
+	_, hooked := toolByName(teammate, tools.ViewToolName).(*hookedTool)
+	require.True(t, hooked, "a teammate's tools must be hook-wrapped")
+
+	built, err := coord.buildTools(t.Context(), agents[config.AgentTask], roleSubAgent, parent)
+	require.NoError(t, err)
+	for _, tool := range built {
+		_, hooked := tool.(*hookedTool)
+		require.False(t, hooked, "subagent tool %q must not be hook-wrapped", tool.Info().Name)
+	}
 }

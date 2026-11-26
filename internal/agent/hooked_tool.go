@@ -25,9 +25,10 @@ func newHookedTool(inner fantasy.AgentTool, runner *hooks.Runner) *hookedTool {
 }
 
 // wrapToolsWithHooks returns a tool slice with each entry wrapped in a
-// hookedTool. Returns the original slice unchanged when runner is nil or
-// when isSubAgent is true — subagents never fire hooks, the top-level
-// invocation of the subagent tool itself is wrapped on the caller's side.
+// hookedTool. It returns the original slice unchanged when runner is nil or
+// when isSubAgent is true: dispatched subagents never fire hooks, and the
+// subagent tool call itself is wrapped on the caller's side. Teammates are
+// not subagents here; they fire hooks with their own session id.
 func wrapToolsWithHooks(tools []fantasy.AgentTool, runner *hooks.Runner, isSubAgent bool) []fantasy.AgentTool {
 	if runner == nil || isSubAgent {
 		return tools
