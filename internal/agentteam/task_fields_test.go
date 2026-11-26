@@ -208,3 +208,21 @@ func TestOwnerCannotChangeRoleOrVerify(t *testing.T) {
 	view = act(t, s, "worker", task.ID, "edit", func(r *UpdateTaskRequest) { r.Subject = "Build it" })
 	require.Equal(t, "Build it", view.Subject, "the owner still edits subject and description")
 }
+
+func TestClaimedWriteScopes(t *testing.T) {
+	t.Parallel()
+	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, newFakeRunner())
+	require.NoError(t, err)
+	_, err = s.SpawnTeammate(context.Background(), leadName, SpawnRequest{Name: "impl", Description: "d", Prompt: "p", ParentID: pipelineSession})
+	require.NoError(t, err)
+	a := createTask(t, s, CreateTaskRequest{Subject: "A", Description: "d", WriteScopes: []string{"internal/agent", "docs"}})
+	b := createTask(t, s, CreateTaskRequest{Subject: "B", Description: "d", WriteScopes: []string{"docs", "README.md"}})
+	createTask(t, s, CreateTaskRequest{Subject: "C", Description: "d", WriteScopes: []string{"internal/ui"}})
+
+	require.Empty(t, s.ClaimedWriteScopes("impl"), "no claimed task, no scopes")
+	act(t, s, "impl", a.ID, "claim", nil)
+	act(t, s, "impl", b.ID, "claim", nil)
+	require.Equal(t, []string{"internal/agent", "docs", "README.md"}, s.ClaimedWriteScopes("impl"))
+	require.Empty(t, s.ClaimedWriteScopes(leadName))
+	require.Empty(t, s.ClaimedWriteScopes("nobody"))
+}

@@ -343,3 +343,43 @@ func TestHookWrapFollowsRole(t *testing.T) {
 		require.False(t, hooked, "subagent tool %q must not be hook-wrapped", tool.Info().Name)
 	}
 }
+
+// TestTeammateWrapperOrderKeepsLeadPrefix pins the wrapper order and the
+// cache rule together: for every role, a teammate's write tools are role
+// gate, then scope gate, then hook wrapper, and its tools block and system
+// prompt still match the Lead's byte for byte.
+func TestTeammateWrapperOrderKeepsLeadPrefix(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+	lead := coord.coderAgent()
+	require.NotNil(t, lead)
+	leadTools := lead.(*sessionAgent).tools.Copy()
+	edit := toolByName(leadTools, tools.EditToolName)
+	_, hooked := edit.(*hookedTool)
+	require.True(t, hooked, "the Lead's tools are hook-wrapped, as in production")
+
+	plain, err := runner.teammateAgent(agentteam.WithMember(t.Context(), "plain"), agentteam.Member{Name: "plain", Role: agentteam.RoleTeammate})
+	require.NoError(t, err)
+	for _, role := range configuredRoles(coord.cfg.Config()) {
+		member := agentteam.Member{Name: "t-" + role.Name, Role: agentteam.RoleTeammate, RoleName: role.Name}
+		agent, err := runner.teammateAgent(agentteam.WithMember(t.Context(), member.Name), member)
+		require.NoError(t, err)
+		teammateTools := agent.(*sessionAgent).tools.Copy()
+		require.Equal(t, toolNames(leadTools), toolNames(teammateTools), role.Name)
+		for i, tool := range teammateTools {
+			want, err := json.Marshal(leadTools[i].Info())
+			require.NoError(t, err)
+			have, err := json.Marshal(tool.Info())
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(have), "%s: tool %q", role.Name, tool.Info().Name)
+		}
+		require.Equal(t, plain.SystemPrompt(), agent.SystemPrompt(), role.Name)
+
+		gate, ok := toolByName(teammateTools, tools.EditToolName).(*roleGatedTool)
+		require.True(t, ok, "%s: role gate is outermost", role.Name)
+		scope, ok := gate.inner.(*scopeGatedTool)
+		require.True(t, ok, "%s: scope gate is next", role.Name)
+		_, ok = scope.inner.(*hookedTool)
+		require.True(t, ok, "%s: hook wrapper is innermost", role.Name)
+	}
+}

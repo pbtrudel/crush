@@ -2140,6 +2140,34 @@ func (s *Service) GetTask(caller, sessionID, id string) (TaskView, error) {
 	return projectTaskView(s.state, task), nil
 }
 
+// ClaimedWriteScopes returns the union of the write scopes of the tasks
+// member owns in progress, in task order. The Lead and unknown members have
+// none, so their calls are never scope-gated. A task in review is not
+// counted: its files are no longer being written, and a failed verification
+// puts the task back in progress before the owner writes again.
+func (s *Service) ClaimedWriteScopes(member string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, ok := s.memberLocked(member)
+	if !ok || owner.Role == RoleLead {
+		return nil
+	}
+	seen := map[string]bool{}
+	var scopes []string
+	for _, task := range s.state.Tasks {
+		if task.OwnerID != owner.ID || task.Status != TaskInProgress {
+			continue
+		}
+		for _, scope := range task.WriteScopes {
+			if !seen[scope] {
+				seen[scope] = true
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	return scopes
+}
+
 // ListTasks returns a filtered page of the caller's shared tasks.
 func (s *Service) ListTasks(caller, sessionID string, filter TaskFilter) (TaskList, error) {
 	s.mu.Lock()
