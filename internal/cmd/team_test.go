@@ -59,3 +59,17 @@ func TestTeamFlagsOnlyInvocationRunsTheRoster(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ran)
 }
+
+func TestRenderTeamPipeline(t *testing.T) {
+	t.Parallel()
+	off := false
+	state := agentteam.State{TeamID: "team-1", Tasks: []agentteam.Task{
+		{ID: "task-1", Revision: 3, Subject: "Build it", Description: "d", Status: agentteam.TaskInReview, Role: "implementer", BlockedBy: []string{}, WriteScopes: []string{}},
+		{ID: "task-2", Revision: 1, Subject: "Verify: Build it", Description: "d", Status: agentteam.TaskPending, Role: "verifier", Verify: &off, Verifies: "task-1", Attempts: 3, Escalated: true, BlockedBy: []string{}, WriteScopes: []string{}},
+	}}
+	output := renderTeam(state)
+	require.Contains(t, output, "◇ task-1   in_review    Build it")
+	require.Contains(t, output, "      role implementer")
+	require.Contains(t, output, "      verifies task-1")
+	require.Contains(t, output, "      ! escalated after 3 attempts")
+}

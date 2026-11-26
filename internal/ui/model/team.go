@@ -323,16 +323,18 @@ func teamTaskBuckets(state agentteam.State, sessions map[string]bool) (active []
 	return active, completed
 }
 
-// teamTaskRank orders live tasks: work in flight first, then ready work,
-// then everything still blocked.
+// teamTaskRank orders live tasks: work in flight first, then work waiting
+// for its verifier, then ready work, then everything still blocked.
 func teamTaskRank(task agentteam.TaskView) int {
 	switch {
 	case task.Status == agentteam.TaskInProgress:
 		return 0
-	case task.Ready:
+	case task.Status == agentteam.TaskInReview:
 		return 1
-	default:
+	case task.Ready:
 		return 2
+	default:
+		return 3
 	}
 }
 
@@ -357,6 +359,9 @@ func teamTaskLine(t *styles.Styles, task agentteam.TaskView, width int) string {
 	if task.OwnerName != "" {
 		line += " · " + task.OwnerName
 	}
+	if task.Escalated {
+		line += " · escalated"
+	}
 	return t.Resource.AdditionalText.Render(ansi.Truncate(line, width, "…"))
 }
 
@@ -380,6 +385,8 @@ func teamTaskGlyph(task agentteam.TaskView) string {
 		return "✓"
 	case task.Status == agentteam.TaskInProgress:
 		return "◐"
+	case task.Status == agentteam.TaskInReview:
+		return "◇"
 	case task.Ready:
 		return "○"
 	default:

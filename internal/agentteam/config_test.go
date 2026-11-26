@@ -20,3 +20,9 @@ func TestConfigPipelineDefaults(t *testing.T) {
 	require.True(t, Config{}.withDefaults().roleExists("anything"), "defaults accept every role")
 	require.False(t, Config{RoleExists: func(string) bool { return false }}.withDefaults().roleExists("gone"), "defaults keep a false RoleExists")
 }
+
+func TestPolicyStartsRoleTasks(t *testing.T) {
+	t.Parallel()
+	require.Contains(t, Policy, "A ready task that names a role starts on its own; tasks without a role stay manual.")
+	require.NotContains(t, Policy, "Task readiness never starts an owner.")
+}
