@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/stretchr/testify/require"
 )
@@ -39,12 +40,19 @@ type stubWeb struct {
 	url      string
 	startErr error
 	openErr  error
+	stopErr  error
+	stops    int
 	opens    int
 	reports  []webModeReport
 	refusals []string
 }
 
 func (s *stubWeb) Start(context.Context) (string, error) { return s.url, s.startErr }
+
+func (s *stubWeb) Stop(context.Context) error {
+	s.stops++
+	return s.stopErr
+}
 
 func (s *stubWeb) OpenBrowser() error {
 	s.opens++
@@ -60,11 +68,15 @@ func (s *stubWeb) SetInputMode(plan bool, seq uint64) {
 func (s *stubWeb) ReportInputModeRefused(reason string) { s.refusals = append(s.refusals, reason) }
 
 func newWebUI(web common.WebLauncher) *UI {
-	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{}}}
+	ws := &slashWorkspace{cfg: &config.Config{Options: &config.Options{TUI: &config.TUIOptions{}}}}
 	com := common.DefaultCommon(ws)
 	com.Web = web
 	m := newSlashUI(ws)
 	m.com = com
+	// The status bar reads the launcher from its own Common, which
+	// newSlashUI built before the launcher was set, so rebuild it around
+	// com.
+	m.status = NewStatus(com, m)
 	// Keep the Update tail from probing the fake workspace.
 	m.agentBusyCache.set(false)
 	m.permModeCache.set(permission.PermissionModeNormal)
@@ -389,4 +401,78 @@ func TestDiscordModeChangedReportsToWeb(t *testing.T) {
 	require.Equal(t, uiInputModePlan, u.mode)
 	runCmdCollect(cmd)
 	require.Equal(t, []webModeReport{{plan: true, seq: 1}}, web.reports)
+}
+
+// runStopWebPalette picks Stop Web Mode in the command palette and returns
+// the messages its commands produce.
+func runStopWebPalette(t *testing.T, m *UI) []tea.Msg {
+	t.Helper()
+	m.openCommandsDialog()
+	require.True(t, m.dialog.ContainsDialog(dialog.CommandsID))
+	for _, r := range "stop web" {
+		m.handleDialogMsg(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	cmd := m.handleDialogMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	require.False(t, m.dialog.ContainsDialog(dialog.CommandsID), "the palette closes on the action")
+	return runCmdCollect(cmd)
+}
+
+// TestStopWebActionStopsAndReports checks that the palette action stops the
+// gateway through the launcher and reports how to start it again. The status
+// bar reads the launcher's running state on every draw, so the web badge is
+// gone once the stop lands.
+func TestStopWebActionStopsAndReports(t *testing.T) {
+	t.Parallel()
+
+	web := &fakeWeb{running: true}
+	m := newWebUI(web)
+	require.Contains(t, m.status.badges(), "WEB")
+
+	msgs := runStopWebPalette(t, m)
+
+	require.Equal(t, 1, web.stops)
+	require.False(t, web.running)
+	require.Contains(t, msgs, util.InfoMsg{
+		Type: util.InfoTypeInfo,
+		Msg:  "Web mode stopped. Run /web to start it again.",
+	})
+	require.NotContains(t, m.status.badges(), "WEB")
+}
+
+// TestStopWebActionReportsFailure checks that a failed stop surfaces the
+// error instead of claiming web mode stopped.
+func TestStopWebActionReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	web := &stubWeb{stopErr: errors.New("gateway already gone")}
+	m := newWebUI(web)
+
+	msgs := runStopWebPalette(t, m)
+
+	require.Equal(t, 1, web.stops)
+	var reported *util.InfoMsg
+	for _, msg := range msgs {
+		if info, ok := msg.(util.InfoMsg); ok {
+			reported = &info
+		}
+	}
+	require.NotNil(t, reported)
+	require.Equal(t, util.InfoTypeError, reported.Type)
+	require.Contains(t, reported.Msg, "gateway already gone")
+}
+
+// TestStopWebActionWithoutLauncher checks the stop command cannot run where
+// web mode is unavailable.
+func TestStopWebActionWithoutLauncher(t *testing.T) {
+	t.Parallel()
+
+	m := newWebUI(nil)
+
+	cmd := m.stopWeb()
+	require.NotNil(t, cmd)
+	msgs := runCmdCollect(cmd)
+	require.Contains(t, msgs, util.InfoMsg{
+		Type: util.InfoTypeWarn,
+		Msg:  "Web mode is not available here",
+	})
 }

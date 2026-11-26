@@ -2902,6 +2902,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionOpenWeb:
 		cmds = append(cmds, m.openWeb())
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionStopWeb:
+		cmds = append(cmds, m.stopWeb())
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSummarize:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))
@@ -7625,6 +7628,22 @@ func (m *UI) openWeb() tea.Cmd {
 			return util.ReportError(fmt.Errorf("web mode: %w", err))()
 		}
 		return WebStartedMsg{URL: u}
+	}
+}
+
+// stopWeb stops the running gateway off the update loop and reports the
+// result. The status bar reads the launcher's running state on every draw,
+// so the web badge disappears with the update that reports the stop.
+func (m *UI) stopWeb() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		if err := web.Stop(context.Background()); err != nil {
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		}
+		return util.ReportInfo("Web mode stopped. Run /web to start it again.")()
 	}
 }
 
