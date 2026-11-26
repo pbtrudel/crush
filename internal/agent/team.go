@@ -53,9 +53,11 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 	return fmt.Sprintf("You are teammate %q.\n\n%s", member.Name, task)
 }
 
-// teammatePrompt is the message a teammate turn starts from: the inherited
-// context a fork member gets, then, on its first turn only, its role block,
-// then its name, then the task.
+// teammatePrompt is the message a teammate turn starts from. On the member's
+// first turn only, it carries the inherited context a fork member gets, then
+// its role block; every turn carries its name, then the task. Later turns
+// already hold both in their history, so repeating them would only resend
+// bytes.
 //
 // The inherited context goes first because it is the same bytes for every fork
 // sibling of one Lead. The role block follows because it is the same bytes for
@@ -63,7 +65,10 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 // shared prefix runs through the whole role block.
 func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string, first bool) string {
 	task = teammateTaskMessage(member, task)
-	if first && member.RoleName != "" {
+	if !first {
+		return task
+	}
+	if member.RoleName != "" {
 		if role, refusal := resolveRole(r.c.cfg.Config(), member.RoleName); refusal == "" {
 			task = roles.Block(*role) + task
 		}
