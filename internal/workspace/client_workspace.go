@@ -889,11 +889,14 @@ func (w *ClientWorkspace) ListAllSkills(ctx context.Context) ([]skills.CatalogEn
 // skillsErr maps a skills call failure to the workspace's link state so
 // the gateway answers 503 while the link recovers. An unsupported route
 // is not a lost link: the server answered, it just predates the route,
-// and callers fall back to the visible skill set.
+// and callers fall back to the visible skill set. A cancelled caller also
+// fails inside a url.Error, but the link is healthy, so it stays as is.
 func skillsErr(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
 	case errors.Is(err, client.ErrUnsupported):
 		return err
 	case errors.Is(err, client.ErrNotFound):
