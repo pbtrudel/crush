@@ -324,3 +324,12 @@ export const m4bLongModelTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) =>
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_MODEL_NAME: LONG_MODEL_NAME }, use),
 });
+
+// The layout case pads the session with hundreds of tool calls, so the
+// chronoline's single row is far wider than the window. It is a launch
+// variable, so the default seed and every baseline stay as they were.
+export const MANY_TOOL_CALLS = 180;
+export const overflowTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { WEBFAKE_TOOL_CALLS: String(MANY_TOOL_CALLS) }, use),
+});

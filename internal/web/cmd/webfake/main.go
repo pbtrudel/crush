@@ -60,6 +60,12 @@ func main() {
 		clock = t
 		now = func() time.Time { return clock }
 	}
+	// WEBFAKE_TOOL_CALLS pads the session with that many tool calls, so the
+	// browser layout tests can draw a chronoline far wider than the window.
+	calls, ok := toolCalls()
+	if !ok {
+		os.Exit(1)
+	}
 	teamDir, err := os.MkdirTemp("", "webfake-team-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "webfake:", err)
@@ -71,6 +77,7 @@ func main() {
 		os.RemoveAll(teamDir)
 		os.Exit(1)
 	}
+	webtest.SeedToolCalls(fake, calls, clock)
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
@@ -200,6 +207,22 @@ func main() {
 	if err := g.Shutdown(sctx); err != nil {
 		fmt.Fprintln(os.Stderr, "webfake: shutdown:", err)
 	}
+}
+
+// toolCalls reads WEBFAKE_TOOL_CALLS, the number of tool calls the layout
+// case seeds on top of the default session. An invalid value reports false
+// after printing, so the caller can exit before creating any state.
+func toolCalls() (int, bool) {
+	v := os.Getenv("WEBFAKE_TOOL_CALLS")
+	if v == "" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		fmt.Fprintln(os.Stderr, "webfake: invalid WEBFAKE_TOOL_CALLS:", v)
+		return 0, false
+	}
+	return n, true
 }
 
 // signinMS reads WEBFAKE_SIGNIN_MS and returns -1 when it is unset. An
