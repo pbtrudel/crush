@@ -110,6 +110,30 @@ func TestSeedM4bHonoursTheModelName(t *testing.T) {
 	require.Equal(t, name, f.AgentModel().CatwalkCfg.Name)
 }
 
+func TestSeedM4bHonoursTheHudServers(t *testing.T) {
+	t.Setenv("WEBFAKE_THEME", "")
+	t.Setenv("WEBFAKE_HUD_SERVERS", "full")
+	f := NewFake()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, f.MCP, 9)
+	require.Len(t, f.LSP, 4)
+	require.Contains(t, f.MCP, "mcp-9")
+	require.Contains(t, f.LSP, "lsp-4")
+}
+
+func TestSeedM4bRefusesAnUnknownHudServers(t *testing.T) {
+	t.Setenv("WEBFAKE_THEME", "")
+	t.Setenv("WEBFAKE_HUD_SERVERS", "some")
+	f := NewFake()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
+	require.ErrorContains(t, err, "WEBFAKE_HUD_SERVERS")
+}
+
 func TestSeedM4bHonoursTheTheme(t *testing.T) {
 	t.Setenv("WEBFAKE_THEME", "solid")
 	f := NewFake()

@@ -29,8 +29,9 @@ m4bTest('browses another session read-only and returns to the terminal', async (
   await expect(page.locator('.panel--log')).toContainText('Porting the tokenizer.');
   await expect(page.getByRole('button', { name: 'Session: Tokenizer port. Switch session' })).toBeVisible();
 
-  // The deck explains why it is read-only and offers both ways out.
-  const area = page.getByLabel('Browsing Tokenizer port');
+  // The deck explains why it is read-only and offers both ways out. The pin
+  // button carries the same accessible name, so name the textbox by role.
+  const area = page.getByRole('textbox', { name: 'Browsing Tokenizer port' });
   await expect(area).not.toBeEditable();
   await expect(page.locator('#deck-readonly'))
     .toHaveText("Prompts go to the terminal's session. Return to it, or open this session in the terminal.");

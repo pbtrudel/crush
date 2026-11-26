@@ -1,5 +1,6 @@
 import {
-  axeScan, expect, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test, m4bLongModelTest, m4bTest,
+  axeScan, expect, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test, m4bFullServersTest,
+  m4bLongModelTest, m4bTest,
 } from './fixture';
 
 // Axe keeps the software renderer busy well past the default 30 seconds.
@@ -268,14 +269,17 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   expect(Math.abs(branchCenter - modelCenter)).toBeLessThanOrEqual(2);
   expect(b!.x).toBeGreaterThanOrEqual(m!.x + m!.width);
 
-  // The pin toggle is shown on this seed (four root sessions) and names its
-  // state in visible text with a target at least 24px tall.
+  // The pin toggle is shown on this seed (four root sessions). Its visible
+  // word is short enough for the servers column; the full state stays in
+  // the accessible name, and the target is at least 24px tall.
   const pin = page.getByRole('button', { name: 'Following the terminal' });
   await expect(pin).toBeVisible();
-  await expect(pin).toHaveText('Following the terminal');
+  await expect(pin).toHaveAccessibleName('Following the terminal');
+  await expect(pin).toHaveText('Following');
 
   // Short names fit whole, the pin stays in the strip, and the page does
-  // not overflow sideways at any of the three HUD layouts.
+  // not overflow sideways at any of the three HUD layouts. The pin shares
+  // the strip's one row, so it must not make the strip any taller.
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
@@ -283,7 +287,17 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
       const name = document.querySelector('.hud__model-name') as HTMLElement;
       const label = document.querySelector('.hud__branch') as HTMLElement;
       const right = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().right;
-      const box = document.querySelector('.hud__pin-slot')!.getBoundingClientRect();
+      const hud = document.querySelector('.hud') as HTMLElement;
+      const pin = document.querySelector('.hud__pin-slot') as HTMLElement;
+      const box = pin.getBoundingClientRect();
+      const servers = document.querySelector('.hud__servers')!.getBoundingClientRect();
+      // Without the pin is the same page with the toggle out of the layout,
+      // which is what a tab with one root session renders.
+      const heightWithPin = hud.getBoundingClientRect().height;
+      const display = pin.style.display;
+      pin.style.display = 'none';
+      const heightWithoutPin = hud.getBoundingClientRect().height;
+      pin.style.display = display;
       return {
         model: name.scrollWidth === name.clientWidth,
         branch: label.scrollWidth === label.clientWidth,
@@ -291,7 +305,13 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
         controls: right('.hud__controls'),
         deck: right('.holodeck__deck'),
         pinRight: box.right,
+        pinTop: box.top,
+        pinBottom: box.bottom,
         pinHeight: box.height,
+        serversBottom: servers.bottom,
+        hudBottom: hud.getBoundingClientRect().bottom,
+        heightWithPin,
+        heightWithoutPin,
       };
     });
     expect(layout.overflow).toBeLessThanOrEqual(0);
@@ -299,11 +319,73 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
     expect(layout.deck).toBeLessThanOrEqual(width);
     expect(layout.pinRight).toBeLessThanOrEqual(width);
     expect(layout.pinHeight).toBeGreaterThanOrEqual(24);
+    expect(layout.pinTop).toBeGreaterThanOrEqual(layout.serversBottom - 1);
+    expect(layout.pinBottom).toBeLessThanOrEqual(layout.hudBottom);
+    expect(Math.abs(layout.heightWithPin - layout.heightWithoutPin)).toBeLessThanOrEqual(1);
     if (width === 1440) {
       expect(layout.model).toBe(true);
       expect(layout.branch).toBe(true);
     }
   }
+});
+
+// A real config carries more servers than the seeds: nine MCP servers and
+// four language servers. The strip must still end inside the window's
+// padding at every named HUD width.
+m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('button', { name: 'Following the terminal' })).toBeVisible();
+
+  for (const width of [1280, 1366, 1440]) {
+    await page.setViewportSize({ width, height: 860 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    const fit = await page.evaluate(() => {
+      const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const hud = document.querySelector('.hud') as HTMLElement;
+      const pin = box('.hud__pin-slot');
+      const pinEl = document.querySelector('.hud__pin-slot') as HTMLElement;
+      // A full loadout must not let the pin widen the servers column and
+      // wrap the session title, so the strip keeps the same height.
+      const heightWithPin = hud.getBoundingClientRect().height;
+      const display = pinEl.style.display;
+      pinEl.style.display = 'none';
+      const heightWithoutPin = hud.getBoundingClientRect().height;
+      pinEl.style.display = display;
+      const hexes = (kind: string) => document.querySelectorAll(`[data-kind="${kind}"] .hex`).length;
+      return {
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        hudRight: box('.hud').right,
+        controlsRight: box('.hud__controls').right,
+        deckRight: box('.holodeck__deck').right,
+        transmitRight: box('.deck__actions .btn--primary').right,
+        pinRight: pin.right,
+        pinBottom: pin.bottom,
+        hudBottom: box('.hud').bottom,
+        scroll: hud.scrollWidth - hud.clientWidth,
+        heightWithPin,
+        heightWithoutPin,
+        mcp: hexes('mcp'),
+        lsp: hexes('lsp'),
+        mcpName: document.querySelector('[data-kind="mcp"]')!.getAttribute('aria-label') ?? '',
+      };
+    });
+    expect(fit.overflow).toBeLessThanOrEqual(0);
+    expect(fit.hudRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.controlsRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.deckRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.transmitRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.pinRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.pinBottom).toBeLessThanOrEqual(fit.hudBottom);
+    // Subpixel layout rounds the strip's scroll box up by a pixel.
+    expect(fit.scroll).toBeLessThanOrEqual(1);
+    expect(Math.abs(fit.heightWithPin - fit.heightWithoutPin)).toBeLessThanOrEqual(1);
+    // One aggregate tile per group, with the count kept in the name.
+    expect(fit.mcp).toBe(1);
+    expect(fit.lsp).toBe(1);
+    expect(fit.mcpName).toContain('mcp-9');
+  }
+  await axeScan(page);
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {

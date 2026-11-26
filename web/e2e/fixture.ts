@@ -318,3 +318,11 @@ export const m4bLongModelTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) =>
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_MODEL_NAME: LONG_MODEL_NAME }, use),
 });
+
+// A realistic server loadout for the HUD width case: nine MCP servers and
+// four language servers, more than any baseline carries. It is a launch
+// variable so the other m4b gateways keep their small seed.
+export const m4bFullServersTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { ...M4B, WEBFAKE_HUD_SERVERS: 'full' }, use),
+});
