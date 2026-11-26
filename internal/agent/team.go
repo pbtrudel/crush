@@ -120,7 +120,10 @@ func (c *coordinator) syncAgentTeams() error {
 	switch {
 	case enabled && team == nil:
 		teamPath := filepath.Join(c.cfg.Config().Options.DataDirectory, "agent-teams", "team.json")
-		teamService, err := agentteam.New(teamPath, agentteam.Config{}, nil)
+		teamService, err := agentteam.New(teamPath, agentteam.Config{
+			Autostart:  c.teamAutostart,
+			RoleExists: c.teamRoleExists,
+		}, nil)
 		if err != nil {
 			return fmt.Errorf("initialize Agent Teams: %w", err)
 		}
@@ -136,6 +139,20 @@ func (c *coordinator) syncAgentTeams() error {
 		team.Shutdown()
 	}
 	return nil
+}
+
+// teamAutostart reports whether the Team service may start teammates for
+// ready tasks that name a role. The service calls it on every pass, so a
+// config reload applies without a restart.
+func (c *coordinator) teamAutostart() bool {
+	opts := c.cfg.Config().Options
+	return opts.GetAgentTeams() && opts.GetAgentTeamAutostart()
+}
+
+// teamRoleExists reports whether a task's role still resolves.
+func (c *coordinator) teamRoleExists(name string) bool {
+	_, refusal := resolveRole(c.cfg.Config(), name)
+	return refusal == ""
 }
 
 // completeMatchingTodo closes the session todo that matches a completed team

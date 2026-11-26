@@ -397,7 +397,17 @@ type Config struct {
 	MaxMembers      int
 	MaxTasks        int
 	MaxMessageBytes int
+	// Autostart reports whether a dispatch pass may start teammates. It is
+	// read on every pass, so a config reload applies at once. Nil means on.
+	Autostart func() bool
+	// RoleExists reports whether a role name still resolves. Nil means every
+	// role exists.
+	RoleExists func(name string) bool
 }
+
+func (c Config) autostart() bool { return c.Autostart == nil || c.Autostart() }
+
+func (c Config) roleExists(name string) bool { return c.RoleExists == nil || c.RoleExists(name) }
 
 func (c Config) withDefaults() Config {
 	if c.MaxMembers <= 0 {
