@@ -8,17 +8,16 @@
   overflow-x: clip;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
+  /* A minmax(0, 1fr) column cannot outgrow the window: the chronoline's
+     hundreds of calls scroll inside the deck, and any other child wider than
+     the shell is clipped instead of widening the page and carrying every
+     right-aligned instrument off the edge. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100dvh;
   padding: var(--space-4);
   gap: var(--space-4);
   padding-inline: max(var(--space-4), env(safe-area-inset-left));
 }
-/* A minmax(0, 1fr) column cannot outgrow the window: the chronoline's
-   hundreds of calls scroll inside the deck instead of widening the shell and
-   carrying every right-aligned instrument off the edge. The clamp is scoped
-   to a mounted chronoline, the only child whose width is unbounded, so
-   layouts without one keep their implicit column and its size. */
-.holodeck:has(.chronoline) { grid-template-columns: minmax(0, 1fr); }
 /* Every instrument keeps its own column, so the strip stays on one row at
    1440px; the identity block takes the slack. The z-index lifts the HUD's
    Display menu over the panels below, which the scan-line isolation would
