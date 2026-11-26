@@ -2095,6 +2095,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
+		// Role and verify decide whether finished work is checked, so an
+		// owning teammate must not change them to pass its own work.
+		if !lead && (req.Role != nil || req.Verify != nil) {
+			return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can change a task's role or verify setting")
+		}
 		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil && req.Role == nil && req.Verify == nil {
 			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, write_scopes, role, or verify")
 		}

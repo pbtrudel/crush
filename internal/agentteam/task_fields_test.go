@@ -1,6 +1,7 @@
 package agentteam
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -166,4 +167,42 @@ func TestOldTeamFileLoads(t *testing.T) {
 
 	act(t, s, leadName, "task-1", "claim", nil)
 	require.Equal(t, TaskCompleted, act(t, s, leadName, "task-1", "complete", nil).Status)
+}
+
+// TestOwnerCannotChangeRoleOrVerify pins that a teammate owning a task cannot
+// change the two fields that decide whether its work is checked: only the
+// Lead may, so an owner cannot turn verification off or rename its role.
+func TestOwnerCannotChangeRoleOrVerify(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestService(t)
+	_, err := s.SpawnTeammate(context.Background(), leadName, SpawnRequest{
+		Name: "worker", Description: "d", Prompt: "p", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	claimed := act(t, s, "worker", task.ID, "claim", nil)
+	require.Equal(t, "worker", claimed.OwnerName)
+
+	off := false
+	require.Equal(t, CodeLeadRequired, ErrorCode(actErr(s, "worker", task.ID, "edit",
+		func(r *UpdateTaskRequest) { r.Verify = &off })))
+	role := "researcher"
+	require.Equal(t, CodeLeadRequired, ErrorCode(actErr(s, "worker", task.ID, "edit",
+		func(r *UpdateTaskRequest) { r.Role = &role })))
+
+	unchanged := taskByID(t, s, task.ID)
+	require.Nil(t, unchanged.Verify, "a refused edit does not store a verify setting")
+	require.Equal(t, "implementer", unchanged.Role)
+	require.Equal(t, claimed.Revision, unchanged.Revision, "a refused edit does not bump the revision")
+
+	view := act(t, s, leadName, task.ID, "edit", func(r *UpdateTaskRequest) {
+		r.Verify = &off
+		r.Role = &role
+	})
+	require.False(t, view.Verify)
+	require.Equal(t, "researcher", view.Role)
+
+	view = act(t, s, "worker", task.ID, "edit", func(r *UpdateTaskRequest) { r.Subject = "Build it" })
+	require.Equal(t, "Build it", view.Subject, "the owner still edits subject and description")
 }
