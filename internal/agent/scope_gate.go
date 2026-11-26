@@ -23,6 +23,7 @@ var scopedWriteTools = []string{
 	tools.EditToolName,
 	tools.MultiEditToolName,
 	tools.WriteToolName,
+	tools.DownloadToolName,
 	tools.ApplyPatchToolName,
 	tools.RenameToolName,
 	tools.ReplaceSymbolToolName,

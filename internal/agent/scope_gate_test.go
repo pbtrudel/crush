@@ -89,7 +89,7 @@ func TestScopeGatePaths(t *testing.T) {
 		{"../outside.go", false},
 		{"/etc/passwd", false},
 	}
-	for _, name := range []string{tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName, tools.ReplaceSymbolToolName} {
+	for _, name := range []string{tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName, tools.DownloadToolName, tools.ReplaceSymbolToolName} {
 		for _, tc := range cases {
 			tool, inner := scopedTool(t, name, wd, "internal/agent", "docs/agent-teams.md")
 			resp := runScoped(t, tool, filePathInput(tc.path))
@@ -101,6 +101,30 @@ func TestScopeGatePaths(t *testing.T) {
 	tool, _ := scopedTool(t, tools.EditToolName, wd, "internal/agent", "docs/agent-teams.md")
 	resp := runScoped(t, tool, filePathInput("internal/ui/x.go"))
 	require.Equal(t, `path "internal/ui/x.go" is outside the write scopes of your claimed task: internal/agent, docs/agent-teams.md`, resp.Content)
+}
+
+// TestScopeGateRefusesDownloadOutsideScopes pins that download writes only
+// inside a teammate's claimed write scopes: it saves the file_path the call
+// names, exactly as write does.
+func TestScopeGateRefusesDownloadOutsideScopes(t *testing.T) {
+	t.Parallel()
+	wd := t.TempDir()
+	tool, inner := scopedTool(t, tools.DownloadToolName, wd, "internal/agent")
+	require.Equal(t, inner.Info(), tool.Info(), "the gate must not change what the provider sees")
+	download := func(path string) string {
+		data, _ := json.Marshal(map[string]string{
+			"url":       "https://example.com/report.txt",
+			"file_path": path,
+		})
+		return string(data)
+	}
+	resp := runScoped(t, tool, download("internal/ui/report.txt"))
+	require.True(t, resp.IsError)
+	require.False(t, inner.called, "a refused download must not reach the real tool")
+	require.Contains(t, resp.Content, `path "internal/ui/report.txt"`)
+
+	require.False(t, runScoped(t, tool, download("internal/agent/report.txt")).IsError)
+	require.True(t, inner.called)
 }
 
 func TestScopeGateApplyPatchChecksEveryFile(t *testing.T) {
