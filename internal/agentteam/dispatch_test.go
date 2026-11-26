@@ -407,6 +407,131 @@ func TestShutdownReleasesAClaimedStart(t *testing.T) {
 	require.Zero(t, durable.Tasks[0].Attempts)
 }
 
+// TestShutdownReleasesAClaimBetweenStartAndSettle pins the window a refused
+// start opens: launch has already dropped the member from starting, and
+// dispatchFailed cannot write once the Team is closed, so Shutdown has to
+// hand the claim back itself.
+func TestShutdownReleasesAClaimBetweenStartAndSettle(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	task := createTask(t, s, CreateTaskRequest{Subject: "Research", Description: "d", Role: "researcher"})
+
+	var start dispatchStart
+	require.NoError(t, s.write(refusable, func() (bool, error) {
+		starts, _, _ := s.planDispatchLocked(pipelineSession)
+		require.Len(t, starts, 1)
+		start = starts[0]
+		return true, nil
+	}))
+	_, err := s.launch(context.Background(), &refusingRunner{}, start.member, start.prompt)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errShutdown)
+
+	// The window: the start dropped the member, and the task is still
+	// claimed, so only the recorded claim can hand it back.
+	s.mu.Lock()
+	_, starting := s.starting[start.member.Name]
+	s.mu.Unlock()
+	require.False(t, starting, "launch drops the member before the settle")
+	require.Equal(t, TaskInProgress, taskByID(t, s, task.ID).Status)
+
+	s.Shutdown()
+	// What dispatchPass does next; the closed guard makes it write nothing.
+	s.dispatchFailed(start, err)
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskPending, got.Status, "Shutdown hands the claim back")
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts, "a refused start is not charged")
+	require.False(t, got.Escalated)
+
+	durable, err := LoadState(s.path)
+	require.NoError(t, err)
+	require.Len(t, durable.Tasks, 1)
+	require.Equal(t, TaskPending, durable.Tasks[0].Status)
+	require.Empty(t, durable.Tasks[0].OwnerID)
+	require.Zero(t, durable.Tasks[0].Attempts)
+}
+
+// TestShutdownKeepsAReassignedTaskOfAStartingMember pins that Shutdown hands
+// back only the dispatcher's own claims: a Lead reassign to a member that is
+// still starting is the Lead's decision, and that member's run settles it.
+func TestShutdownKeepsAReassignedTaskOfAStartingMember(t *testing.T) {
+	t.Parallel()
+	runner := &blockingFailRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, runner)
+	require.NoError(t, err)
+	task := createTask(t, s, CreateTaskRequest{Subject: "Manual", Description: "d"})
+
+	spawned := make(chan struct{})
+	go func() {
+		defer close(spawned)
+		_, _ = s.SpawnTeammate(context.Background(), leadName, SpawnRequest{
+			Name: "worker", Description: "d", Prompt: "p", ParentID: pipelineSession,
+		})
+	}()
+	select {
+	case <-runner.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the spawned start never reached the runner")
+	}
+
+	act(t, s, leadName, task.ID, "reassign", func(r *UpdateTaskRequest) { r.Owner = "worker" })
+	owner := memberID(t, s, "worker")
+	require.Equal(t, owner, taskByID(t, s, task.ID).OwnerID)
+
+	s.Shutdown()
+	close(runner.release)
+	select {
+	case <-spawned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the spawned start never returned after Shutdown")
+	}
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskInProgress, got.Status, "Shutdown releases only the dispatcher's claims")
+	require.Equal(t, owner, got.OwnerID)
+}
+
+// TestSpawnStartErrorAfterShutdownWritesNothing pins that a spawn whose start
+// fails after Shutdown lands no write, so a later enable does not resume the
+// member as failed.
+func TestSpawnStartErrorAfterShutdownWritesNothing(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "team.json")
+	runner := &blockingFailRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	s, err := New(path, Config{}, runner)
+	require.NoError(t, err)
+
+	spawned := make(chan struct{})
+	go func() {
+		defer close(spawned)
+		_, _ = s.SpawnTeammate(context.Background(), leadName, SpawnRequest{
+			Name: "worker", Description: "d", Prompt: "p", ParentID: pipelineSession,
+		})
+	}()
+	select {
+	case <-runner.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the spawned start never reached the runner")
+	}
+
+	s.Shutdown()
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	close(runner.release)
+	select {
+	case <-spawned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the spawned start never returned after Shutdown")
+	}
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "a spawn start error after Shutdown must not write")
+	require.False(t, memberByID(t, s, "worker").Failed)
+}
+
 func TestLeadNoticeReachesOnlyItsLead(t *testing.T) {
 	t.Parallel()
 	s, _ := newPipelineService(t, Config{RoleExists: func(string) bool { return false }})

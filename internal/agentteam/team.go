@@ -456,6 +456,10 @@ type Service struct {
 	// closed is set by Shutdown. A settling run must not resume its member
 	// once it is set, or it would add a watcher after the wait began.
 	closed bool
+	// claims records the task the dispatcher claimed for a member, until
+	// its start records a run or settles its failure. Shutdown hands a
+	// recorded claim back, so a start it refuses strands no task.
+	claims map[string]dispatchClaim
 	// done closes when Shutdown runs, so a goroutine waiting to retry a
 	// dispatch pass ends at once instead of serving out its backoff.
 	done    chan struct{}
@@ -513,6 +517,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		runner:      runner,
 		runs:        make(map[string]Run),
 		starting:    make(map[string]bool),
+		claims:      make(map[string]dispatchClaim),
 		done:        make(chan struct{}),
 		changes:     make(chan struct{}),
 		now:         time.Now,
@@ -1110,6 +1115,9 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 			// it is not counted and must not outlive the wait below.
 			return false, nil
 		}
+		// The run records the claim, so Shutdown has nothing left to
+		// hand back for this member.
+		delete(s.claims, member.Name)
 		s.runs[member.Name] = run
 		s.mine[member.Name] = true
 		for i := range s.state.Members {
@@ -1460,9 +1468,14 @@ func truncateText(s string, n int) string {
 	return s[:n]
 }
 
-// failMember records a creation failure.
+// failMember records a creation failure. A failure that settles after
+// Shutdown writes nothing, so a later enable does not resume the member as
+// failed.
 func (s *Service) failMember(name string, err error) {
 	_ = s.write(mustApply, func() (bool, error) {
+		if s.closed {
+			return false, nil
+		}
 		s.failMemberLocked(name, err)
 		s.notifyLocked()
 		return true, nil
@@ -1897,18 +1910,23 @@ func (s *Service) Shutdown() {
 			delete(s.runs, name)
 			changed = true
 		}
-		// A member marked starting was claimed but holds no run yet, and
-		// its start is refused once the Team is closed. dispatchFailed
-		// cannot write that refusal back, so the claim is handed back
-		// here: pending, unowned and uncharged, for a later Service to
-		// start. A member with a run settles through its watcher instead.
-		for name := range s.starting {
+		// A recorded claim whose start Shutdown refuses has no run to
+		// settle it, and dispatchFailed cannot write the refusal back once
+		// the Team is closed, so the claim is handed back here: pending,
+		// unowned and uncharged, for a later Service to start. A member
+		// with a run settles through its watcher instead. Only the claim
+		// the dispatcher recorded is released, and only while the task
+		// still matches it, so a Lead's reassign is left to its owner.
+		for name, claim := range s.claims {
 			member, ok := s.memberLocked(name)
 			if !ok {
 				continue
 			}
 			for i := range s.state.Tasks {
 				task := &s.state.Tasks[i]
+				if task.ID != claim.taskID || task.Revision != claim.revision {
+					continue
+				}
 				if task.OwnerID != member.ID || task.Status != TaskInProgress {
 					continue
 				}

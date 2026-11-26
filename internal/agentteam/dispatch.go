@@ -19,6 +19,14 @@ const maxTaskAttempts = 3
 // is a short backoff after that wait, not a second copy of it.
 const dispatchRetryDelay = 200 * time.Millisecond
 
+// dispatchClaim is the task the dispatcher claimed for a member. It stays
+// recorded until the start records a run or settles its failure, so Shutdown
+// can hand the exact claim back instead of guessing at a member's tasks.
+type dispatchClaim struct {
+	taskID   string
+	revision int
+}
+
 // dispatchStart is one member start a pass planned under the lock.
 type dispatchStart struct {
 	member    Member
@@ -151,6 +159,7 @@ func (s *Service) planDispatchLocked(root string) (starts []dispatchStart, leads
 		claimed.Status = TaskInProgress
 		claimed.Revision++
 		s.starting[member.Name] = true
+		s.claims[member.Name] = dispatchClaim{taskID: claimed.ID, revision: claimed.Revision}
 		starts = append(starts, dispatchStart{
 			member:    member,
 			taskID:    claimed.ID,
@@ -306,6 +315,13 @@ func (s *Service) dispatchFailed(start dispatchStart, err error) {
 			return false, nil
 		}
 		leadHook = s.leadNotifyHook
+		// The claim is settled in this write, so Shutdown has nothing left
+		// to hand back. A concurrent pass may already hold a newer claim
+		// for the member, and that one must survive.
+		if claim, ok := s.claims[start.member.Name]; ok &&
+			claim.taskID == start.taskID && claim.revision == start.revision {
+			delete(s.claims, start.member.Name)
+		}
 		for i := range s.state.Tasks {
 			task := &s.state.Tasks[i]
 			if task.ID != start.taskID || task.SessionID != start.sessionID {
