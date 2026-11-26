@@ -169,6 +169,15 @@ func renderTeam(state agentteam.State) string {
 		if task.OwnerName != "" {
 			fmt.Fprintf(&sb, "      owner %s\n", task.OwnerName)
 		}
+		if task.Role != "" {
+			fmt.Fprintf(&sb, "      role %s\n", task.Role)
+		}
+		if task.Verifies != "" {
+			fmt.Fprintf(&sb, "      verifies %s\n", task.Verifies)
+		}
+		if task.Escalated {
+			fmt.Fprintf(&sb, "      ! escalated after %d attempts\n", task.Attempts)
+		}
 		if len(task.BlockedBy) > 0 {
 			fmt.Fprintf(&sb, "      blocked by %s\n", strings.Join(task.BlockedBy, ", "))
 		}
@@ -207,6 +216,8 @@ func taskGlyph(task agentteam.TaskView) string {
 		return "✓"
 	case task.Status == agentteam.TaskInProgress:
 		return "◐"
+	case task.Status == agentteam.TaskInReview:
+		return "◇"
 	case task.Ready:
 		return "○"
 	default:

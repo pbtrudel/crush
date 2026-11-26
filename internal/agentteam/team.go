@@ -61,7 +61,7 @@ Keep the shared task board current at every step, because the user watches it. C
 
 Report progress to the Lead as you work. Send a one-line message when you start a task, when you finish it, and when you are blocked; never end a turn silently. A settled turn also sends the Lead an automatic report, and wait_agent returns the current roster and live task board, so the Lead always knows where things stand. Finish your tasks before ending a turn: the service completes the tasks you leave in progress when your turn succeeds, and releases them when it fails.
 
-Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change; it also returns the current roster and live task board, so re-list only when you need the full task details. The Lead must wait for required teammates before giving the final answer.`
+Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. A ready task that names a role starts on its own; tasks without a role stay manual. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change; it also returns the current roster and live task board, so re-list only when you need the full task details. The Lead must wait for required teammates before giving the final answer.`
 
 // ToolNames are the tool names that make the Policy apply. A prompt package
 // cannot import the agent package that declares them, so they are repeated
@@ -117,6 +117,8 @@ const (
 	TaskInProgress TaskStatus = "in_progress"
 	TaskCompleted  TaskStatus = "completed"
 	TaskDeleted    TaskStatus = "deleted"
+	// TaskInReview is finished work waiting for its verification task.
+	TaskInReview TaskStatus = "in_review"
 )
 
 // Error codes match the DSH Agent Teams domain so callers can branch on them.
@@ -236,6 +238,23 @@ type Task struct {
 	// written before this field existed carry no session; they are
 	// hidden from every scope so they cannot leak into a new session.
 	SessionID string `json:"session_id,omitempty"`
+	// Role names the role that should do the task. Empty keeps the task
+	// manual: nothing starts it on its own.
+	Role string `json:"role,omitempty"`
+	// Verify says whether finished work goes to a verifier before it
+	// completes. Nil means true for role implementer and false otherwise.
+	Verify *bool `json:"verify,omitempty"`
+	// Verifies is set on a verification task: the id of the task it checks.
+	Verifies string `json:"verifies,omitempty"`
+	// Attempts counts failed auto-starts, failed turns and failed
+	// verifications.
+	Attempts int `json:"attempts,omitempty"`
+	// Escalated means the dispatcher no longer touches the task; the Lead
+	// decides what happens next.
+	Escalated bool `json:"escalated,omitempty"`
+	// RoleReported records that the Lead was told the task's role no
+	// longer exists, so it is told once.
+	RoleReported bool `json:"role_reported,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -252,6 +271,11 @@ type TaskView struct {
 	Ready              bool       `json:"ready"`
 	WriteScopeWarnings []string   `json:"writeScopeWarnings"`
 	SessionID          string     `json:"sessionId,omitempty"`
+	Role               string     `json:"role,omitempty"`
+	Verify             bool       `json:"verify,omitempty"`
+	Verifies           string     `json:"verifies,omitempty"`
+	Attempts           int        `json:"attempts,omitempty"`
+	Escalated          bool       `json:"escalated,omitempty"`
 }
 
 // Message is one inbox entry.
@@ -262,6 +286,9 @@ type Message struct {
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
 	Delivered bool      `json:"delivered,omitempty"`
+	// SessionID scopes a runtime notice to the Lead session it is for.
+	// Member mail leaves it empty: the sender says which team it is from.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SpawnRequest describes one teammate creation.
@@ -290,6 +317,8 @@ type CreateTaskRequest struct {
 	Description string
 	BlockedBy   []string
 	WriteScopes []string
+	Role        string
+	Verify      *bool
 }
 
 // TaskFilter narrows a task listing.
@@ -317,6 +346,12 @@ type UpdateTaskRequest struct {
 	BlockedBy        []string
 	WriteScopes      []string
 	Owner            string
+	// Role replaces the task's role on edit; an empty string clears it.
+	Role *string
+	// Verify replaces the task's verify setting on edit.
+	Verify *bool
+	// Notes describe what failed, for the fail action.
+	Notes string
 	// SessionID is the caller's session. It scopes the task to the caller's
 	// team and reconciles session todos when the Lead completes a task
 	// itself.
@@ -368,7 +403,17 @@ type Config struct {
 	MaxMembers      int
 	MaxTasks        int
 	MaxMessageBytes int
+	// Autostart reports whether a dispatch pass may start teammates. It is
+	// read on every pass, so a config reload applies at once. Nil means on.
+	Autostart func() bool
+	// RoleExists reports whether a role name still resolves. Nil means every
+	// role exists.
+	RoleExists func(name string) bool
 }
+
+func (c Config) autostart() bool { return c.Autostart == nil || c.Autostart() }
+
+func (c Config) roleExists(name string) bool { return c.RoleExists == nil || c.RoleExists(name) }
 
 func (c Config) withDefaults() Config {
 	if c.MaxMembers <= 0 {
@@ -410,7 +455,14 @@ type Service struct {
 	watchers sync.WaitGroup
 	// closed is set by Shutdown. A settling run must not resume its member
 	// once it is set, or it would add a watcher after the wait began.
-	closed  bool
+	closed bool
+	// claims records the task the dispatcher claimed for a member, until
+	// its start records a run or settles its failure. Shutdown hands a
+	// recorded claim back, so a start it refuses strands no task.
+	claims map[string]dispatchClaim
+	// done closes when Shutdown runs, so a goroutine waiting to retry a
+	// dispatch pass ends at once instead of serving out its backoff.
+	done    chan struct{}
 	changes chan struct{}
 	now     func() time.Time
 	// stamp is the state file this process last read or wrote. A different
@@ -465,6 +517,8 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		runner:      runner,
 		runs:        make(map[string]Run),
 		starting:    make(map[string]bool),
+		claims:      make(map[string]dispatchClaim),
+		done:        make(chan struct{}),
 		changes:     make(chan struct{}),
 		now:         time.Now,
 		stamp:       stamp,
@@ -960,14 +1014,7 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 		// roster: a workspace keeps every member it ever created, so
 		// counting settled members would lock a new team out of the
 		// workspace forever.
-		live := 0
-		for _, existing := range s.state.Members {
-			switch s.statusLocked(existing.Name) {
-			case StatusRunning, StatusProvisioning:
-				live++
-			}
-		}
-		if live >= s.cfg.MaxMembers {
+		if s.liveMembersLocked() >= s.cfg.MaxMembers {
 			return false, newError(CodeMemberLimit, "Team member limit %d reached", s.cfg.MaxMembers)
 		}
 		s.state.NextMember++
@@ -1003,8 +1050,10 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 			return MemberView{}, err
 		}
 		s.failMember(member.Name, err)
+		s.dispatch(ctx, req.ParentID)
 		return s.viewFor(member.Name), nil
 	}
+	s.dispatch(ctx, req.ParentID)
 	return view, nil
 }
 
@@ -1015,6 +1064,23 @@ var (
 
 // startRun starts one turn and records the live run.
 func (s *Service) startRun(ctx context.Context, member Member, prompt string) (MemberView, error) {
+	return s.beginRun(ctx, member, prompt, nil)
+}
+
+// startMail starts the turn that delivers the messages a wake drained. Mail
+// that loses the race to another start goes back to the inbox, so the turn
+// already starting delivers it instead of losing it.
+func (s *Service) startMail(ctx context.Context, member Member, messages []Message) (MemberView, error) {
+	if len(messages) == 0 {
+		return MemberView{}, nil
+	}
+	return s.beginRun(ctx, member, resumePrompt(messages), messages)
+}
+
+// beginRun marks member starting and starts its turn. requeue is the mail the
+// prompt was built from, if any: a start that finds the member already
+// starting puts it back, because that turn is the one that will read it.
+func (s *Service) beginRun(ctx context.Context, member Member, prompt string, requeue []Message) (MemberView, error) {
 	s.mu.Lock()
 	runner := s.runner
 	if runner == nil {
@@ -1024,11 +1090,39 @@ func (s *Service) startRun(ctx context.Context, member Member, prompt string) (M
 	if s.starting[member.Name] {
 		view := s.viewLocked(s.stateMemberLocked(member.Name))
 		s.mu.Unlock()
-		return view, nil
+		return view, s.requeueMail(ctx, member, requeue)
 	}
 	s.starting[member.Name] = true
 	s.mu.Unlock()
 	return s.launch(ctx, runner, member, prompt)
+}
+
+// requeueMail puts mail no turn will read back in the inbox, so the turn
+// already starting for the member delivers it at its next step or when it
+// settles. The start it lost to can end between that check and this write,
+// which would leave the mail for a wake that already ran, so the member is
+// woken here if it is idle again. Callers must not hold s.mu.
+func (s *Service) requeueMail(ctx context.Context, member Member, messages []Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	_ = s.write(mustApply, func() (bool, error) {
+		changed := false
+		for _, message := range messages {
+			for i := range s.state.Messages {
+				if s.state.Messages[i].ID != message.ID || !s.state.Messages[i].Delivered {
+					continue
+				}
+				s.state.Messages[i].Delivered = false
+				changed = true
+			}
+		}
+		if changed {
+			s.notifyLocked()
+		}
+		return changed, nil
+	})
+	return s.wakeIfIdle(ctx, member.Name)
 }
 
 // launch runs one turn for a member the caller already marked as starting,
@@ -1066,6 +1160,9 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 			// it is not counted and must not outlive the wait below.
 			return false, nil
 		}
+		// The run records the claim, so Shutdown has nothing left to
+		// hand back for this member.
+		delete(s.claims, member.Name)
 		s.runs[member.Name] = run
 		s.mine[member.Name] = true
 		for i := range s.state.Members {
@@ -1149,7 +1246,12 @@ func (s *Service) watch(name string, run Run) {
 			}
 		}
 		member = s.stateMemberLocked(name)
-		settled, completed := s.settleTasksLocked(member.ID, runErr)
+		// A turn that ended with mail waiting is resumed with it, and that
+		// next turn owns whatever this one left in progress. Settling it
+		// here would re-review or release work its owner is about to
+		// resume on, before it has read the mail that explains why.
+		hold := runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID)
+		settled, completed := s.settleTasksLocked(member.ID, runErr, hold)
 		complete = completed
 		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 		s.notifyLocked()
@@ -1182,6 +1284,10 @@ func (s *Service) watch(name string, run Run) {
 	if leadHook != nil && !wasClosed {
 		leadHook(member.ParentID)
 	}
+	// The settle may have freed a member or finished a blocker.
+	if !wasClosed {
+		s.dispatch(context.Background(), member.ParentID)
+	}
 	if len(pending) == 0 {
 		return
 	}
@@ -1202,41 +1308,141 @@ func (s *Service) watch(name string, run Run) {
 			})
 			return
 		}
-		text := fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending))
+		var (
+			held       []string
+			resumeHook func(sessionID string)
+			closed     bool
+		)
+		// The held tasks were this turn's to finish, but the turn that
+		// would have finished them never started. Settle them as a failed
+		// turn in the same write that fails the member, so work a verdict
+		// handed back does not stay in progress under a member that can
+		// no longer run.
 		_ = s.write(mustApply, func() (bool, error) {
-			s.appendMessageLocked(name, leadName, text)
+			if s.closed {
+				closed = true
+				return false, nil
+			}
+			for _, task := range s.state.Tasks {
+				if task.OwnerID == member.ID && task.Status == TaskInProgress {
+					held = append(held, task.ID)
+				}
+			}
+			s.settleTasksLocked(member.ID, err, false)
+			s.failMemberLocked(name, err)
+			s.appendMessageLocked(name, leadName, resumeFailedNotice(name, err, held, pending))
 			s.notifyLocked()
+			resumeHook = s.leadNotifyHook
 			return true, nil
 		})
-		s.failMember(name, err)
+		if closed {
+			return
+		}
+		// The notice names the affected tasks, so wake the Lead after it
+		// lands rather than before.
+		wakeLeads(resumeHook, []string{member.ParentID})
+		s.dispatch(context.Background(), member.ParentID)
 	}
 }
 
+// resumeFailedNotice is the Lead message for a member whose resume start was
+// refused. It names the tasks the refused turn would have finished, so the
+// Lead knows what went back to the board.
+func resumeFailedNotice(name string, err error, tasks []string, pending []Message) string {
+	text := fmt.Sprintf("Could not resume %s: %s", name, err)
+	if len(tasks) > 0 {
+		text += fmt.Sprintf("\n\nTask(s) it left in progress: %s.", strings.Join(tasks, ", "))
+	}
+	return text + "\n\n" + resumePrompt(pending)
+}
+
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
-// A successful turn completes them; a failed or interrupted turn releases
-// them back to the board so they never stay half-done forever. It returns
-// the report labels and the subjects of the completed tasks.
-func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, completed []string) {
+// A successful turn completes them, or sends them to review when they are
+// verified; a verification task is never completed this way, because a
+// verifier that never decides must not pass work by default. A failed or
+// interrupted turn releases them back to the board so they never stay
+// half-done forever. With hold set, the member is about to be resumed with
+// pending mail, so its in-progress tasks are left as they are for that turn
+// to finish. It returns the report labels and the subjects of the completed
+// tasks.
+func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (settled, completed []string) {
 	if ownerID == "" || ownerID == leadName {
 		return nil, nil
 	}
+	if hold {
+		return nil, nil
+	}
+	var review []int
 	for i := range s.state.Tasks {
 		task := &s.state.Tasks[i]
 		if task.OwnerID != ownerID || task.Status != TaskInProgress {
 			continue
 		}
 		task.Revision++
-		if runErr == nil {
-			task.Status = TaskCompleted
-			settled = append(settled, task.ID+" completed")
-			completed = append(completed, task.Subject)
-		} else {
+		switch {
+		case task.Verifies != "" && !s.checkWantedLocked(*task):
+			// Its task left review while the check was being reviewed, so
+			// there is nothing left to decide. Released, it would bring a
+			// verifier back for work the board moved on from, and escalate
+			// against a verdict nobody needs.
+			task.Status = TaskDeleted
+			task.OwnerID = ""
+			settled = append(settled, task.ID+" deleted, its task left review")
+		case runErr != nil:
 			task.Status = TaskPending
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" released")
+			s.countFailedTurnLocked(task, runErr)
+		case task.Verifies != "":
+			task.Status = TaskPending
+			task.OwnerID = ""
+			task.Attempts++
+			settled = append(settled, task.ID+" released without a verdict")
+			if task.Attempts >= maxTaskAttempts {
+				task.Escalated = true
+				s.noteLeadLocked(task.SessionID, fmt.Sprintf(
+					"Task %s (%s) got no verdict from its verifier %d times. It is escalated; to continue, %s.",
+					task.ID, task.Subject, task.Attempts, taskRecoveryActions(task.Status)))
+			}
+		case task.needsVerification():
+			task.Status = TaskInReview
+			settled = append(settled, task.ID+" in review")
+			review = append(review, i)
+		default:
+			task.Status = TaskCompleted
+			settled = append(settled, task.ID+" completed")
+			completed = append(completed, task.Subject)
 		}
 	}
+	// Appended after the loop: an append can move the slice, and the loop
+	// holds a pointer into it.
+	for _, i := range review {
+		s.startReviewLocked(s.state.Tasks[i])
+	}
 	return settled, completed
+}
+
+// countFailedTurnLocked charges a failed turn to a task the dispatcher owns,
+// so a teammate whose every turn fails is not restarted forever. An
+// interrupted turn is the Lead's decision, so it escalates at once instead
+// of restarting. A shutdown cancels every run and counts nothing. Callers
+// must hold s.mu.
+func (s *Service) countFailedTurnLocked(task *Task, runErr error) {
+	if task.Role == "" || s.closed {
+		return
+	}
+	if errors.Is(runErr, context.Canceled) {
+		task.Escalated = true
+		s.noteLeadLocked(task.SessionID, fmt.Sprintf(
+			"Task %s (%s) was interrupted. It is escalated; to continue, %s.",
+			task.ID, task.Subject, taskRecoveryActions(task.Status)))
+		return
+	}
+	task.Attempts++
+	if task.Attempts >= maxTaskAttempts {
+		task.Escalated = true
+		s.noteLeadLocked(task.SessionID, escalationNote(*task, runErr.Error()))
+	}
 }
 
 // appendMessageLocked adds one durable inbox message and records it as this
@@ -1387,23 +1593,35 @@ func truncateText(s string, n int) string {
 	return s[:n]
 }
 
-// failMember records a creation failure.
+// failMember records a creation failure. A failure that settles after
+// Shutdown writes nothing, so a later enable does not resume the member as
+// failed.
 func (s *Service) failMember(name string, err error) {
 	_ = s.write(mustApply, func() (bool, error) {
-		for i := range s.state.Members {
-			if s.state.Members[i].Name != name {
-				continue
-			}
-			s.state.Members[i].Failed = true
-			s.state.Members[i].Status = StatusFailed
-			s.state.Members[i].Diagnostics = append(
-				s.state.Members[i].Diagnostics,
-				err.Error(),
-			)
+		if s.closed {
+			return false, nil
 		}
+		s.failMemberLocked(name, err)
 		s.notifyLocked()
 		return true, nil
 	})
+}
+
+// failMemberLocked records a creation failure on the durable roster. Callers
+// must hold s.mu, so a caller that already holds a guarded write can land the
+// failure with the work that caused it.
+func (s *Service) failMemberLocked(name string, err error) {
+	for i := range s.state.Members {
+		if s.state.Members[i].Name != name {
+			continue
+		}
+		s.state.Members[i].Failed = true
+		s.state.Members[i].Status = StatusFailed
+		s.state.Members[i].Diagnostics = append(
+			s.state.Members[i].Diagnostics,
+			err.Error(),
+		)
+	}
 }
 
 func (s *Service) viewFor(name string) MemberView {
@@ -1423,7 +1641,6 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	}
 	var (
 		target      Member
-		running     bool
 		leadSession string
 		leadHook    func(sessionID string)
 	)
@@ -1437,7 +1654,6 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		target, _ = s.memberLocked(req.Target)
 		s.appendMessageLocked(from, target.Name, req.Message)
 		s.notifyLocked()
-		running = s.statusLocked(target.Name) == StatusRunning
 		// The Lead member is the root of the tree and carries no session of
 		// its own; the session that owns this mail is the sender's scope root.
 		leadSession = s.scopeRootLocked(from, sessionID)
@@ -1456,14 +1672,27 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		}
 		return nil
 	}
-	if running {
+	return s.wakeIfIdle(ctx, target.Name)
+}
+
+// wakeIfIdle starts the named member on the mail waiting for it. A member
+// that is running or still starting reads the mail at its next step, so its
+// inbox is left alone; the turn already starting is the one that delivers
+// it. The Lead is not woken here: its own hook does that. It reports an
+// error only when the start is refused.
+func (s *Service) wakeIfIdle(ctx context.Context, name string) error {
+	s.mu.Lock()
+	target, ok := s.memberLocked(name)
+	idle := ok && target.Role != RoleLead && s.statusLocked(name) != StatusRunning
+	s.mu.Unlock()
+	if !idle {
 		return nil
 	}
 	pending := s.DrainInbox(target.Name, target.ParentID)
 	if len(pending) == 0 {
 		return nil
 	}
-	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+	if _, err := s.startMail(ctx, target, pending); err != nil {
 		// The member is no longer starting, so wake whoever reads it as
 		// busy.
 		s.mu.Lock()
@@ -1518,7 +1747,7 @@ func (s *Service) NotifySession(ctx context.Context, sessionID, text string) (bo
 	if len(pending) == 0 {
 		return true, nil
 	}
-	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+	if _, err := s.startMail(ctx, target, pending); err != nil {
 		s.mu.Lock()
 		s.notifyLocked()
 		s.mu.Unlock()
@@ -1596,6 +1825,9 @@ func (s *Service) inboxPendingLocked(scope map[string]bool, message *Message, na
 		return false
 	}
 	if name == leadName {
+		if message.From == noticeSender {
+			return message.SessionID != "" && scope[message.SessionID]
+		}
 		member, ok := s.memberLocked(message.From)
 		return ok && scope[member.ParentID]
 	}
@@ -1793,20 +2025,52 @@ func (s *Service) Changed() <-chan struct{} {
 	return s.changes
 }
 
-// Shutdown cancels this process's live teammate runs and marks its members
-// inactive. It waits for every settling run to write the state, so no write
-// lands after it returns. Other processes run their own members and keep
-// doing so, and the durable state is kept so a later enable resumes the same
-// Team.
+// Shutdown cancels this process's live teammate runs, releases the claims
+// whose start it refuses, and marks its members inactive. It waits for every
+// settling run to write the state, so no write lands after it returns. Other
+// processes run their own members and keep doing so, and the durable state is
+// kept so a later enable resumes the same Team.
 func (s *Service) Shutdown() {
 	var runs []Run
 	_ = s.write(mustApply, func() (bool, error) {
-		s.closed = true
+		if !s.closed {
+			s.closed = true
+			// Released here so a pass waiting to retry ends at once, and
+			// under the lock Shutdown holds before it waits, so it is
+			// either seen by the waiter or never waited at all.
+			close(s.done)
+		}
 		changed := false
 		for name, run := range s.runs {
 			runs = append(runs, run)
 			delete(s.runs, name)
 			changed = true
+		}
+		// A recorded claim whose start Shutdown refuses has no run to
+		// settle it, and dispatchFailed cannot write the refusal back once
+		// the Team is closed, so the claim is handed back here: pending,
+		// unowned and uncharged, for a later Service to start. A member
+		// with a run settles through its watcher instead. Only the claim
+		// the dispatcher recorded is released, and only while the task
+		// still matches it, so a Lead's reassign is left to its owner.
+		for name, claim := range s.claims {
+			member, ok := s.memberLocked(name)
+			if !ok {
+				continue
+			}
+			for i := range s.state.Tasks {
+				task := &s.state.Tasks[i]
+				if task.ID != claim.taskID || task.Revision != claim.revision {
+					continue
+				}
+				if task.OwnerID != member.ID || task.Status != TaskInProgress {
+					continue
+				}
+				task.Status = TaskPending
+				task.OwnerID = ""
+				task.Revision++
+				changed = true
+			}
 		}
 		for i := range s.state.Members {
 			if !s.mine[s.state.Members[i].Name] {
@@ -1830,28 +2094,42 @@ func (s *Service) Shutdown() {
 func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (TaskView, error) {
 	var view TaskView
 	err := s.write(refusable, func() (bool, error) {
-		if _, ok := s.memberLocked(caller); !ok {
+		member, ok := s.memberLocked(caller)
+		if !ok {
 			return false, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
+		}
+		// Verify decides whether finished work is checked, so only the Lead
+		// sets it; a teammate may name a role but never its own check.
+		if member.Role != RoleLead && req.Verify != nil {
+			return false, newError(CodeLeadRequired, "only the Team Lead can set a task's verify setting")
 		}
 		root := s.scopeRootLocked(caller, sessionID)
 		if root == "" {
 			return false, newError(CodeNotMember, "agent %q has no session to own a team task", caller)
 		}
 		scope := s.scopeLocked(caller, sessionID)
+		// A verification task is created by the service, not by the model,
+		// so it never uses up the caller's task budget: one implementer task
+		// stays one task when its check appears.
 		active := 0
 		for _, task := range s.state.Tasks {
-			if task.Status != TaskDeleted && taskVisibleLocked(scope, task) {
-				active++
+			if task.Status == TaskDeleted || task.Verifies != "" || !taskVisibleLocked(scope, task) {
+				continue
 			}
+			active++
 		}
 		if active >= s.cfg.MaxTasks {
 			return false, newError(CodeTaskLimit, "Team task limit %d reached", s.cfg.MaxTasks)
 		}
-		subject, err := requiredText(req.Subject, "subject", 200)
+		subject, err := requiredText(req.Subject, "subject", maxTaskSubject)
 		if err != nil {
 			return false, err
 		}
 		description, err := requiredText(req.Description, "description", 16384)
+		if err != nil {
+			return false, err
+		}
+		role, err := normalizeTaskRole(req.Role)
 		if err != nil {
 			return false, err
 		}
@@ -1865,6 +2143,10 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 			BlockedBy:   []string{},
 			WriteScopes: []string{},
 			SessionID:   root,
+			Role:        role,
+		}
+		if req.Verify != nil {
+			task.Verify = new(*req.Verify)
 		}
 		if req.BlockedBy != nil {
 			blockedBy, err := s.dependenciesLocked(scope, req.BlockedBy, task.ID)
@@ -1894,6 +2176,7 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 	if err != nil {
 		return TaskView{}, err
 	}
+	s.dispatch(context.Background(), view.SessionID)
 	return view, nil
 }
 
@@ -1909,6 +2192,34 @@ func (s *Service) GetTask(caller, sessionID, id string) (TaskView, error) {
 		return TaskView{}, newError(CodeTaskNotFound, "team task %q not found", id)
 	}
 	return projectTaskView(s.state, task), nil
+}
+
+// ClaimedWriteScopes returns the union of the write scopes of the tasks
+// member owns in progress, in task order. The Lead and unknown members have
+// none, so their calls are never scope-gated. A task in review is not
+// counted: its files are no longer being written, and a failed verification
+// puts the task back in progress before the owner writes again.
+func (s *Service) ClaimedWriteScopes(member string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, ok := s.memberLocked(member)
+	if !ok || owner.Role == RoleLead {
+		return nil
+	}
+	seen := map[string]bool{}
+	var scopes []string
+	for _, task := range s.state.Tasks {
+		if task.OwnerID != owner.ID || task.Status != TaskInProgress {
+			continue
+		}
+		for _, scope := range task.WriteScopes {
+			if !seen[scope] {
+				seen[scope] = true
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	return scopes
 }
 
 // ListTasks returns a filtered page of the caller's shared tasks.
@@ -1964,19 +2275,28 @@ func (s *Service) ListTasks(caller, sessionID string, filter TaskFilter) (TaskLi
 	return result, nil
 }
 
-// taskUpdate is one applied task transition and what the caller must
-// report once the write lands.
+// taskUpdate is one applied task transition and what the caller must report
+// once the write lands.
 type taskUpdate struct {
 	view             TaskView
 	parentSessionID  string
 	completedSubject string
+	// wake names members to start once the write lands, such as the owner a
+	// failed verification hands its task back to.
+	wake []string
+	// taskID names the task the update applied to, so a failed wake can
+	// tell the Lead which task is now stranded.
+	taskID string
+	// leadSessions are the Lead sessions a notice was written for.
+	leadSessions []string
 }
 
 // UpdateTask applies one compare-and-set task transition.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
 	var (
-		applied taskUpdate
-		hook    func(sessionID, subject string)
+		applied  taskUpdate
+		hook     func(sessionID, subject string)
+		leadHook func(sessionID string)
 	)
 	err := s.write(refusable, func() (bool, error) {
 		next, err := s.applyTaskUpdateLocked(caller, req)
@@ -1985,17 +2305,40 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		}
 		applied = next
 		hook = s.taskCompletedHook
+		leadHook = s.leadNotifyHook
 		s.notifyLocked()
 		return true, nil
 	})
 	if err != nil {
 		return TaskView{}, err
 	}
-	// The hook runs outside every lock, and only once the record is
-	// durable.
+	// The hooks run outside every lock, and only once the record is durable.
 	if applied.completedSubject != "" && hook != nil {
 		hook(applied.parentSessionID, applied.completedSubject)
 	}
+	wakeLeads(leadHook, applied.leadSessions)
+	// Only the verdict path fills wake, so this is the failed-verification
+	// wake; the log stays generic in case another path ever does.
+	for _, name := range applied.wake {
+		if err := s.wakeIfIdle(context.Background(), name); err != nil {
+			slog.Warn("Could not wake a teammate", "member", name, "error", err)
+			// The verdict handed the task back, but nobody runs to fix
+			// it. A Warn log is invisible to the Lead, so say it in its
+			// inbox, outside every lock, unless the Team is shut down.
+			_ = s.write(mustApply, func() (bool, error) {
+				if s.closed {
+					return false, nil
+				}
+				s.noteLeadLocked(applied.parentSessionID, fmt.Sprintf(
+					"Could not start %s to fix task %s after a failed verification: %s. The task stays in progress with nobody running it; to continue, %s.",
+					name, applied.taskID, err, taskRecoveryActions(TaskInProgress)))
+				s.notifyLocked()
+				return true, nil
+			})
+			wakeLeads(leadHook, []string{applied.parentSessionID})
+		}
+	}
+	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil
 }
 
@@ -2035,6 +2378,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	}
 
 	next := current
+	var (
+		review  bool
+		verdict string
+		notes   string
+	)
 	switch req.Action {
 	case "claim":
 		if current.OwnerID != "" && current.OwnerID != member.ID {
@@ -2042,6 +2390,10 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		if current.Status != TaskPending || !taskReady(s.state, current) {
 			return taskUpdate{}, newError(CodeTaskBlocked, "team task %q is not ready to claim", current.ID)
+		}
+		if !lead && s.verifiesOwnWorkLocked(scope, current, member) {
+			return taskUpdate{}, newError(CodeTaskUnauthorized,
+				"an agent cannot claim the verification task of its own work")
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = member.ID
@@ -2058,11 +2410,16 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
-		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil {
-			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, or write_scopes")
+		// Role and verify decide whether finished work is checked, so an
+		// owning teammate must not change them to pass its own work.
+		if !lead && (req.Role != nil || req.Verify != nil) {
+			return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can change a task's role or verify setting")
+		}
+		if req.Subject == "" && req.Description == "" && req.WriteScopes == nil && req.Role == nil && req.Verify == nil {
+			return taskUpdate{}, newError(CodeInvalidArgument, "task edit requires subject, description, write_scopes, role, or verify")
 		}
 		if req.Subject != "" {
-			subject, err := requiredText(req.Subject, "subject", 200)
+			subject, err := requiredText(req.Subject, "subject", maxTaskSubject)
 			if err != nil {
 				return taskUpdate{}, err
 			}
@@ -2082,6 +2439,19 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 			}
 			next.WriteScopes = scopes
 		}
+		if req.Role != nil {
+			role, err := normalizeTaskRole(*req.Role)
+			if err != nil {
+				return taskUpdate{}, err
+			}
+			if role != next.Role {
+				next.RoleReported = false
+			}
+			next.Role = role
+		}
+		if req.Verify != nil {
+			next.Verify = new(*req.Verify)
+		}
 	case "set_dependencies":
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
@@ -2095,20 +2465,76 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		next.BlockedBy = blockedBy
 	case "complete":
+		// Accepting work as is is the Lead's call: a teammate cannot
+		// complete the task a verifier is still deciding, but the Lead
+		// can close escalated work without a verdict.
+		if current.Status == TaskInReview {
+			if !lead {
+				return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can complete an in-review task")
+			}
+			if current.Verifies != "" {
+				return taskUpdate{}, newError(CodeTaskInvalidTransition,
+					"a verification task records its verdict with action pass, or fail with notes")
+			}
+			next.Status = TaskCompleted
+			completedSubject = next.Subject
+			break
+		}
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
 		if current.Status != TaskInProgress {
-			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress or in-review task can complete")
+		}
+		if current.Verifies != "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"a verification task records its verdict with action pass, or fail with notes")
+		}
+		if current.needsVerification() {
+			next.Status = TaskInReview
+			review = true
+			break
 		}
 		next.Status = TaskCompleted
 		completedSubject = next.Subject
+	case "pass", "fail":
+		if current.Verifies == "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a verification task takes %s", req.Action)
+		}
+		if !owner {
+			return taskUpdate{}, newError(CodeTaskUnauthorized, "only the owner of verification task %q can record its verdict", current.ID)
+		}
+		if !lead && s.verifiesOwnWorkLocked(scope, current, member) {
+			return taskUpdate{}, newError(CodeTaskUnauthorized,
+				"an agent cannot record a verdict on the verification task of its own work")
+		}
+		if current.Status != TaskInProgress {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "a verdict needs the verification task in progress")
+		}
+		notes = strings.TrimSpace(req.Notes)
+		if req.Action == "fail" && notes == "" {
+			return taskUpdate{}, newError(CodeInvalidArgument, "fail requires notes describing what failed")
+		}
+		next.Status = TaskCompleted
+		verdict = req.Action
 	case "reopen":
+		// A verdict is final. Reusing an old check for a later revision
+		// would let it decide work it never saw.
+		if current.Verifies != "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"a verification task records one verdict and cannot reopen")
+		}
+		// An in-review task is the one a verifier is deciding, so only the
+		// Lead takes it back: an owner reopening its own escalated work
+		// would restart the review loop.
+		if current.Status == TaskInReview && !lead {
+			return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can reopen an in-review task")
+		}
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
-		if current.Status != TaskCompleted {
-			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a completed task can reopen")
+		if current.Status != TaskCompleted && current.Status != TaskInReview {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a completed or in-review task can reopen")
 		}
 		next.Status = TaskPending
 		next.OwnerID = ""
@@ -2149,17 +2575,53 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	}
 
 	next.Revision = current.Revision + 1
+	// The Lead acting on a task takes it back from escalation: the
+	// dispatcher may try it again from a clean count.
+	if lead && (req.Action == "edit" || req.Action == "reassign" || req.Action == "reopen") {
+		next.Escalated = false
+		next.Attempts = 0
+	}
+	// Accepting an in-review task ends its escalation too, without putting
+	// it back on the board.
+	if lead && current.Status == TaskInReview && req.Action == "complete" {
+		next.Escalated = false
+	}
 	if err := assertTaskGraph(s.state.Tasks, next); err != nil {
 		return taskUpdate{}, err
 	}
 	// Written by index: an old file may hold the same id twice, and the
 	// copy the caller acted on is the one in its scope.
 	s.state.Tasks[index] = next
-	return taskUpdate{
-		view:             projectTaskView(s.state, next),
-		parentSessionID:  parentSessionID,
-		completedSubject: completedSubject,
-	}, nil
+	update := taskUpdate{parentSessionID: parentSessionID, completedSubject: completedSubject, taskID: current.ID}
+	if review {
+		s.startReviewLocked(next)
+	}
+	if verdict != "" {
+		subject, wake, leads, wakeTask := s.applyVerdictLocked(scope, next, member, verdict, notes)
+		if subject != "" {
+			update.completedSubject = subject
+		}
+		update.wake = wake
+		update.leadSessions = leads
+		if wakeTask != "" {
+			update.taskID = wakeTask
+		}
+	}
+	if current.Status == TaskInReview {
+		switch req.Action {
+		case "reopen", "delete":
+			// Work that left review needs no verdict, so a pending check
+			// goes with it. A check already in progress stays with its
+			// verifier.
+			s.closeChecksLocked(current.ID, false)
+		case "complete":
+			// Accepted work keeps no check, so a verifier still deciding
+			// it is finished too and its late verdict is refused.
+			s.closeChecksLocked(current.ID, true)
+		}
+	}
+	update.view = projectTaskView(s.state, next)
+	return update, nil
 }
 
 // taskIndexLocked finds id in the caller's scope and returns its index, so a
@@ -2203,6 +2665,40 @@ func requiredText(value, field string, maxLength int) (string, error) {
 		return "", newError(CodeInvalidArgument, "%s must be at most %d characters", field, maxLength)
 	}
 	return trimmed, nil
+}
+
+// Roles the pipeline treats specially, and the subject limit every task
+// shares.
+const (
+	implementerRole = "implementer"
+	verifierRole    = "verifier"
+	maxTaskSubject  = 200
+)
+
+// needsVerification reports whether finished work on t goes to a verifier
+// before it completes. A verification task is never verified itself.
+func (t Task) needsVerification() bool {
+	if t.Verifies != "" {
+		return false
+	}
+	if t.Verify != nil {
+		return *t.Verify
+	}
+	return t.Role == implementerRole
+}
+
+// normalizeTaskRole validates a task role. The tool layer already checked
+// that the role exists; this keeps the stored name a valid member-name stem,
+// short enough that "<role>-<n>" stays within the 64-byte name limit.
+func normalizeTaskRole(value string) (string, error) {
+	role := strings.TrimSpace(value)
+	if role == "" {
+		return "", nil
+	}
+	if !memberNamePattern.MatchString(role) || len(role) > 60 {
+		return "", newError(CodeInvalidArgument, "role %q must be a lower-kebab-case role name of at most 60 characters", value)
+	}
+	return role, nil
 }
 
 // normalizeWriteScopes validates workspace-relative prefixes.
@@ -2279,6 +2775,11 @@ func projectTaskView(state State, task Task) TaskView {
 		WriteScopes: append([]string{}, task.WriteScopes...),
 		Ready:       task.Status == TaskPending && taskReady(state, task),
 		SessionID:   task.SessionID,
+		Role:        task.Role,
+		Verify:      task.needsVerification(),
+		Verifies:    task.Verifies,
+		Attempts:    task.Attempts,
+		Escalated:   task.Escalated,
 	}
 	if task.OwnerID != "" {
 		if task.OwnerID == leadName {

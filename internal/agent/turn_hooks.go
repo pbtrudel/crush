@@ -87,10 +87,11 @@ func turnCompactionTrigger(overflowRecovery, guardTripped bool, window int64, th
 	}
 }
 
-// fireTurnHook runs one hook for a top-level turn. Subagent turns (the
-// task tool, agentic_fetch, etc.) are skipped so a delegated turn does
-// not fire the user's hook N times, matching the subagent exclusion
-// applied to tool hooks.
+// fireTurnHook runs one hook for a top-level turn. Subagent and teammate
+// turns are skipped: dispatched subagents fire no hooks at all, and a
+// teammate fires tool hooks but not turn hooks because its calls are
+// non-interactive. Either way a delegated turn does not fire the user's
+// hook N times.
 func (a *sessionAgent) fireTurnHook(ctx context.Context, call SessionAgentCall, ev hooks.Event) {
 	if call.NonInteractive {
 		return

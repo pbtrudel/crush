@@ -830,6 +830,11 @@
           "description": "Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.",
           "default": true
         },
+        "agent_team_autostart": {
+          "type": "boolean",
+          "description": "Start a teammate of the named role on its own when a shared task that names a role becomes ready. Tasks without a role stay manual.",
+          "default": true
+        },
         "repeat_tool_reminders": {
           "type": "boolean",
           "description": "Inject advisory reminders when the model repeats the same tool call",

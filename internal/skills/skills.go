@@ -16,8 +16,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/charlievieth/fastwalk"
-	"github.com/charmbracelet/crush/internal/pubsub"
 	"gopkg.in/yaml.v3"
+
+	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/charmbracelet/crush/internal/pubsub"
 )
 
 const (
@@ -25,6 +27,10 @@ const (
 	MaxNameLength          = 64
 	MaxDescriptionLength   = 1024
 	MaxCompatibilityLength = 500
+
+	// MaxSkillFileBytes bounds one SKILL.md. A larger file is a diagnostic,
+	// so a link to /dev/zero cannot exhaust memory at startup.
+	MaxSkillFileBytes = 256 << 10
 )
 
 var (
@@ -148,7 +154,7 @@ func (s *Skill) Validate() error {
 
 // Parse parses a SKILL.md file from disk.
 func Parse(path string) (*Skill, error) {
-	content, err := os.ReadFile(path)
+	content, err := fsext.ReadRegularFileLimit(path, MaxSkillFileBytes)
 	if err != nil {
 		return nil, err
 	}

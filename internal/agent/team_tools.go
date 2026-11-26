@@ -62,6 +62,8 @@ type teamTaskCreateParams struct {
 	Description string   `json:"description" description:"Complete task details and acceptance criteria."`
 	BlockedBy   []string `json:"blocked_by,omitempty" description:"Task ids that must complete first."`
 	WriteScopes []string `json:"write_scopes,omitempty" description:"Advisory workspace-relative file or directory prefixes this task expects to modify."`
+	Role        string   `json:"role,omitempty" description:"Optional role from the spawn_teammate catalog. A ready task that names a role starts a teammate of that role on its own; without one the task stays manual."`
+	Verify      *bool    `json:"verify,omitempty" description:"Whether a verifier checks the finished work before dependent tasks start. Defaults to true for role implementer, false otherwise."`
 }
 
 type teamTaskListParams struct {
@@ -85,6 +87,9 @@ type teamTaskUpdateParams struct {
 	BlockedBy        []string `json:"blocked_by,omitempty" description:"Complete blocker list for set_dependencies."`
 	WriteScopes      []string `json:"write_scopes,omitempty" description:"Replacement advisory write scopes for edit."`
 	Owner            *string  `json:"owner,omitempty" description:"Member target from spawn_teammate or list_agents for Lead-only reassign; omit to unassign."`
+	Role             *string  `json:"role,omitempty" description:"Replacement role for edit; an empty string clears it."`
+	Verify           *bool    `json:"verify,omitempty" description:"Replacement verify setting for edit."`
+	Notes            *string  `json:"notes,omitempty" description:"What failed, required for the fail verdict on a verification task."`
 }
 
 // teamTools returns the nine Team-scoped tools bound to one caller. The
@@ -167,6 +172,22 @@ func (c *coordinator) teamErrorWithState(ctx context.Context, caller string, err
 		fmt.Fprintf(&sb, "\n- %s: %s", task.ID, task.Subject)
 	}
 	return fantasy.NewTextErrorResponse(sb.String())
+}
+
+// taskRole resolves a task's role the way spawn_teammate does. An empty
+// name is no role; the string is a refusal for the model.
+func (c *coordinator) taskRole(name string) (string, string) {
+	if strings.TrimSpace(name) == "" {
+		return "", ""
+	}
+	if c.cfg == nil {
+		return "", fmt.Sprintf("unknown role %q", name)
+	}
+	role, refusal := resolveRole(c.cfg.Config(), name)
+	if refusal != "" {
+		return "", refusal
+	}
+	return role.Name, ""
 }
 
 // relativizeWriteScopes rewrites absolute write scopes that sit inside the
@@ -400,12 +421,18 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if team == nil {
 				return c.teamError(ErrAgentTeamsDisabled), nil
 			}
+			role, refusal := c.taskRole(params.Role)
+			if refusal != "" {
+				return fantasy.NewTextErrorResponse(refusal), nil
+			}
 			scopes, rewritten := c.relativizeWriteScopes(params.WriteScopes)
 			view, err := team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,
 				BlockedBy:   params.BlockedBy,
 				WriteScopes: scopes,
+				Role:        role,
+				Verify:      params.Verify,
 			})
 			if err != nil {
 				return c.teamErrorWithState(ctx, caller, err, ""), nil
@@ -499,6 +526,17 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			}
 			if params.Owner != nil {
 				request.Owner = *params.Owner
+			}
+			if params.Role != nil {
+				role, refusal := c.taskRole(*params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				request.Role = &role
+			}
+			request.Verify = params.Verify
+			if params.Notes != nil {
+				request.Notes = *params.Notes
 			}
 			view, err := team.UpdateTask(caller, request)
 			if err != nil {

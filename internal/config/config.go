@@ -579,6 +579,7 @@ type Options struct {
 	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
 	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
 	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
+	AgentTeamAutostart         *bool        `json:"agent_team_autostart,omitempty" jsonschema:"description=Start a teammate of the named role on its own when a shared task that names a role becomes ready. Tasks without a role stay manual.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 	// LazyTools sends only a small core tool palette on every request and
@@ -936,6 +937,15 @@ func (o *Options) GetAgentTeams() bool {
 		return true
 	}
 	return *o.AgentTeams
+}
+
+// GetAgentTeamAutostart reports whether a ready shared task that names a
+// role starts a teammate of that role on its own. It is on by default.
+func (o *Options) GetAgentTeamAutostart() bool {
+	if o == nil || o.AgentTeamAutostart == nil {
+		return true
+	}
+	return *o.AgentTeamAutostart
 }
 
 // Prompt profiles select which system prompt template set an agent renders.

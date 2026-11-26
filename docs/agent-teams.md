@@ -200,6 +200,96 @@ Each role line is `name = source, model ...`, where the source is `builtin`,
 diagnostic starts with `!` and names the file and the reason. A broken file is
 skipped and the rest still load.
 
+## Pipeline
+
+A shared task can name a role. `team_task_create` and the `edit` action of
+`team_task_update` take `role` (any role from the `spawn_teammate` catalog)
+and `verify`. A task without a role stays manual: nothing starts it. Only the
+Lead can set a task's `verify`, or change the `role` or `verify` of an
+existing task; a teammate's request is refused. Only the Lead can reopen a
+task in review, or complete it to accept it as is.
+
+### Auto-start
+
+When a task that names a role becomes ready (pending, unowned, every blocker
+completed), the team service starts a teammate on it. It reuses the
+earliest-created idle teammate of that role spawned by the same Lead session,
+or spawns one named `<role>-<n>` with the lowest free number, within the
+live-member limit. At the limit the task waits for a later pass. The teammate
+gets a short brief with the task, its write scopes and how to complete it.
+
+A start that fails, or a turn that fails, puts the task back to pending and
+counts an attempt. After three attempts the task is escalated: the
+dispatcher leaves it alone and the Lead gets a message. An interrupted turn
+escalates at once. A task whose role no longer exists is skipped and
+reported to the Lead once. The Lead takes a task back from escalation with
+`edit`, `reassign` or `reopen`, which also reset its attempts.
+
+Auto-start is on by default. Turn it off with `option agent-team-autostart
+false` in `crushrc`, or `"agent_team_autostart": false` in `crush.json`; the
+setting is read on every pass, so a reload applies at once. With auto-start
+off nothing starts on its own: a role task waits for the Lead to spawn a
+teammate and start the work, and finished verified work still moves to
+`in_review` with its check `pending` until the Lead starts or claims a
+verifier.
+
+The escalation notice names only the actions that work at the task's current
+status: a pending task can be edited or reassigned with no owner, an
+in-progress task can be released or reassigned with no owner, and an
+`in_review` task can be reopened, completed to accept it, or deleted.
+
+### Verification
+
+`verify` defaults to true for role `implementer` and false otherwise. When a
+verified task completes (by `complete`, or by its owner's turn ending), it
+moves to `in_review` and the service creates a verification task, role
+`verifier`, that names the original. Dependents wait until the original is
+`completed`. The verifier records its verdict with `team_task_update`:
+`pass` completes both tasks; `fail` (with `notes`) completes the
+verification task and hands the original back to its owner, with the notes,
+as `in_progress`. If the owner's turn is still running, the failure waits in
+its inbox and that turn settles with the task left in progress, so the owner
+reads the notes before anyone reviews the work again. If the start that would
+resume the owner is refused, the task stays in progress with nobody running
+it and the Lead gets a notice naming the task and the error. The third failed
+verification escalates the original, which stays `in_review` until the Lead
+reopens it. The Lead can also complete an `in_review` task to accept it as
+is: that finishes the task, readies its dependents, deletes its open check,
+and a late verdict on that check is refused. Only the Lead can complete work
+in review. A verifier that ends its turn without a verdict releases the
+verification task and counts an attempt; nothing passes by default.
+
+A member cannot claim the verification task of work it owns, and cannot pass
+or fail that check: the service refuses it, so the verifier stays
+independent of the implementer.
+
+The verifier runs every check itself, but it shares the working directory
+with everyone else, so it sees whatever is on disk when it runs.
+
+### Write scopes
+
+A teammate's `edit`, `multiedit`, `write`, `download`, `apply_patch` and
+`lsp_replace_symbol` calls are checked against the write scopes of the tasks
+it owns in progress; a path outside them is refused with a tool error, before
+any hook or permission prompt. `lsp_rename` is refused while scopes apply,
+because the files it changes are not known in advance. A teammate with no
+scoped task is not restricted, and the Lead never is. `bash` is not covered:
+a command can write anywhere. Symlinks are not resolved: the checked path is
+the one in the call, made relative to the working directory and cleaned.
+Per-teammate worktrees are the planned fix.
+
+### Hooks
+
+Teammates fire `PreToolUse`, `PostToolUse` and `PostToolUseFailure` with
+their own session id, like the Lead. A `PreToolUse` hook that returns
+`allow` pre-approves the teammate's permission prompt, exactly as it does
+for the Lead. Dispatched subagents still fire none of them. Teammates fire
+no turn hooks (`TurnStart`, `TurnEnd`, `Interrupt`, `StopFailure`), because
+their calls are non-interactive.
+
+None of this changes a tool definition or a system prompt per agent: the
+brief, the verification task and every notice travel as messages.
+
 ## Durable state
 
 State lives at `<data-directory>/agent-teams/team.json` (by default
@@ -209,15 +299,19 @@ normalizes any stale `running` status to `inactive`.
 
 Task updates are compare-and-set: every row carries a `revision`, and an
 update based on an outdated copy is rejected with
-`TEAM_TASK_STALE_REVISION`. Readiness follows `blocked_by`, and write
-scopes produce advisory overlap warnings for in-progress tasks.
+`TEAM_TASK_STALE_REVISION`. Readiness follows `blocked_by`: a blocker counts
+only once it is `completed`, so an `in_review` blocker keeps its dependents
+waiting. Write scopes produce overlap warnings for in-progress tasks and are
+enforced for teammates' file tools (see [Pipeline](#pipeline)).
 
 ## Client UI
 
-The chat sidebar shows an **Agent Team** section as soon as a teammate
-exists: one row per member with its availability glyph, followed by up to
-three shared tasks with their status. It refreshes every two seconds and
-hides itself when Agent Teams is disabled.
+The chat sidebar shows an **Agent Team** section for the current session as
+soon as it has a teammate or a shared task: a row for the Lead, one row per
+teammate with its availability glyph, then every live shared task in
+priority order (in progress, in review, ready, blocked), followed by a count
+of completed tasks. It refreshes every second and hides itself when Agent
+Teams is disabled.
 
 The command line offers the same view:
 
@@ -248,3 +342,8 @@ return to the main session without cancelling either agent.
 - Inbox messages reach a running member through its next tool result,
   which is the closest equivalent to a step-boundary steer.
 - Teammates share the working directory; there is no worktree isolation.
+- A shared task can name a role, and a ready one starts a teammate of that
+  role on its own; DSH task readiness never starts an owner. Tasks without a
+  role behave as in DSH.
+- Implementer work goes through a verification task before its dependents
+  start.

@@ -114,3 +114,27 @@ func TestForkSiblingsShareInheritedContext(t *testing.T) {
 	require.True(t, strings.HasSuffix(first, "Add the index the migration is missing."))
 	require.True(t, strings.HasSuffix(second, "Review the login timeout change."))
 }
+
+// TestForkPrefixFirstTurnOnly pins bug C: the inherited Lead transcript is
+// already in a fork teammate's history after its first turn, so a later
+// wake must not send up to 16 KB of it again.
+func TestForkPrefixFirstTurnOnly(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+
+	lead, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	_, err = coord.messages.Create(t.Context(), lead.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "fix the failing tests"}},
+	})
+	require.NoError(t, err)
+	member := agentteam.Member{ID: "member-1", Name: "db-layer", Role: agentteam.RoleTeammate, ParentID: lead.ID, Context: agentteam.ContextFork}
+
+	first := runner.teammatePrompt(t.Context(), member, "Start.", true)
+	require.Contains(t, first, "# Context inherited from the Team Lead")
+
+	later := runner.teammatePrompt(t.Context(), member, "New messages.", false)
+	require.Equal(t, teammateTaskMessage(member, "New messages."), later)
+	require.NotContains(t, later, "fix the failing tests")
+}

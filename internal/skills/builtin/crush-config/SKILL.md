@@ -186,7 +186,8 @@ option reset <list-key>    # clear a list option back to empty
 ```
 
 - **Boolean keys** (value optional, defaults `true`): `debug`, `debug-lsp`,
-  `auto-lsp`, `progress`.
+  `auto-lsp`, `progress`, `agent-teams`, `agent-team-autostart` (start a
+  teammate on its own when a ready shared task names a role; default `true`).
 - **Boolean keys phrased positively** (stored as the negated field): `metrics`,
   `auto-summarize`, `provider-auto-update`,
   `default-providers`. Example: `option metrics false` disables metrics.
@@ -453,6 +454,7 @@ The `$schema` property enables IDE autocomplete but is optional.
 | `option metrics false`               | `options.disable_metrics = true`                       |
 | `option request-timeout 300`          | `options.request_timeout = 300`                        |
 | `option max-background-jobs 200`     | `options.max_background_jobs = 200`                    |
+| `option agent-team-autostart false`  | `options.agent_team_autostart = false`                 |
 | `option prompt coder ./coder.md.tpl` | `options.prompts.coder = "./coder.md.tpl"`             |
 | `option attribution-trailer-style none` | `options.attribution.trailer_style = "none"`        |
 | `option attribution-generated-with false` | `options.attribution.generated_with = false`       |
