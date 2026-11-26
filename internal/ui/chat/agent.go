@@ -252,10 +252,12 @@ func (a *AgentToolMessageItem) DispatchStatus() (DispatchStatus, bool) {
 		return DispatchStatus{}, false
 	}
 	status := DispatchStatus{
-		Label:    a.dispatchLabel,
-		Running:  !a.dispatchSettled() && a.Status() != ToolStatusCanceled,
-		Started:  a.dispatchStarted,
-		Finished: a.dispatchReportedAt,
+		Label:      a.dispatchLabel,
+		Running:    !a.dispatchSettled() && a.Status() != ToolStatusCanceled,
+		Started:    a.dispatchStarted,
+		Finished:   a.dispatchReportedAt,
+		MessageID:  a.MessageID(),
+		ToolCallID: a.ToolCall().ID,
 	}
 	status.Model, status.ModelProvider = splitRunModel(dispatchResultRunModel(a.result))
 	return status, true
@@ -271,6 +273,10 @@ type DispatchStatus struct {
 	// provider serving it. Both are empty until the dispatch records them.
 	Model         string
 	ModelProvider string
+	// MessageID and ToolCallID locate the dispatch in the transcript so a
+	// viewer can open the subagent's session.
+	MessageID  string
+	ToolCallID string
 }
 
 // AgentToolRenderContext renders agent tool messages.

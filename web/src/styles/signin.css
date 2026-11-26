@@ -126,8 +126,29 @@
   color: var(--magenta); font-size: var(--step--1);
 }
 /* A narrow screen wraps the HUD over several rows and the deck column fills
-   the rest, so the card keeps only one gap above the deck: with two, the
-   card's own padding would push its head over the HUD strip. */
+   the rest. The shell can also overflow, so the deck's measured top, not the
+   viewport less --deck-h, is where the card ends: --deck-top keeps the card
+   on the strip above the deck, and the height cap follows the real gap to
+   the HUD. The fallback repeats the old viewport arithmetic until the top
+   is published. */
 @media (max-width: 640px) {
-  .aws-sso { inset-inline: var(--space-4); inset-block-end: calc(var(--space-4) + var(--deck-h, 13rem)); }
+  .aws-sso {
+    inset-inline: var(--space-4);
+    inset-block-end: calc(100dvh - var(--deck-top, calc(100dvh - var(--deck-h, 13rem) - var(--space-4))) + var(--space-1));
+    max-block-size: calc(var(--deck-top, calc(100dvh - var(--deck-h, 13rem) - var(--space-4))) - var(--hud-h, 184px) - var(--space-4) - var(--space-1) * 2);
+  }
+}
+
+/* On a short phone the strip between the HUD and the deck holds only a few
+   lines, so the card packs its command, link and status into that height and
+   lets a long error scroll inside it. */
+@media (max-width: 640px) and (max-height: 700px) {
+  .aws-sso {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    column-gap: 10px; row-gap: 2px;
+    padding: 6px 10px;
+  }
+  .aws-sso__title { font-size: 0.75rem; }
+  .aws-sso__command { font-size: 0.8125rem; line-height: 1.25; }
+  .aws-sso__url, .aws-sso__status { font-size: 0.75rem; line-height: 1.25; }
 }

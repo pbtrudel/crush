@@ -1469,6 +1469,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		titles:               &c.titles,
 		limits:               &c.limits,
 		LazyTools:            c.lazyRegistryIfEnabled,
+		Role:                 agent.Role,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -2851,6 +2852,14 @@ type subAgentParams struct {
 	ToolCallID     string
 	Prompt         string
 	SessionTitle   string
+	// DisplayPrompt is the task as the caller wrote it, without the role
+	// block prepended to Prompt. The run name and the background notice
+	// show this, so role text never becomes a name or a stored task.
+	// Empty means Prompt carries no role block and stands for both.
+	DisplayPrompt string
+	// Role names the role the subagent runs in, so the background registry
+	// entry keeps it for agent_send and a restart. Empty for no role.
+	Role string
 	// Label is the dispatch name the agent list shows for this run. A
 	// caller without one leaves it empty and gets a prompt-derived name.
 	Label string
@@ -2980,7 +2989,7 @@ func (c *coordinator) startSubAgentRun(sess session.Session, params subAgentPara
 	c.agentRuns.Start(agentrun.Run{
 		ID:              sess.ID,
 		Kind:            agentrun.KindSubagent,
-		Name:            cmp.Or(strings.TrimSpace(params.Label), subAgentRunName(params.Prompt)),
+		Name:            cmp.Or(strings.TrimSpace(params.Label), subAgentRunName(cmp.Or(params.DisplayPrompt, params.Prompt))),
 		SessionID:       sess.ID,
 		ParentSessionID: params.SessionID,
 		Status:          agentrun.StatusRunning,

@@ -53,10 +53,11 @@ func TestTeammateSessionIDDoesNotCollideWithAnOlderTeam(t *testing.T) {
 	require.NoError(t, err)
 
 	runner := &teamRunner{c: coord, team: service}
-	sess, err := runner.teammateSession(t.Context(), agentteam.Member{
+	sess, created, err := runner.teammateSession(t.Context(), agentteam.Member{
 		ID: "member-1", Name: "reviewer", ParentID: lead.ID,
 	})
 	require.NoError(t, err)
+	require.True(t, created, "the first turn creates the session")
 	require.NotEqual(t, "team-member-1", sess.ID, "a new team must not reuse an old teammate session id")
 }
 

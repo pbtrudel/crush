@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 //go:embed templates/agent_tool.md
@@ -28,6 +29,7 @@ type AgentParams struct {
 	// the subagent's tools, MCP servers, and context paths.
 	Agent  string `json:"agent,omitempty" description:"Optional configured agent preset to use for this subagent. Defaults to the task preset."`
 	Access string `json:"access,omitempty" description:"\"read\" (default) for a subagent that can only inspect the codebase, or \"write\" for one that can also edit files"`
+	Role   string `json:"role,omitempty" description:"Optional role from the catalog below. It sets the subagent's tool allow-list, prompt and default model; access can only narrow it"`
 }
 
 const (
@@ -146,10 +148,7 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 		return nil, err
 	}
 
-	description := agentToolDescription
-	if presets := availableSubAgentPresets(c.cfg.Config()); len(presets) > 0 {
-		description += "\n\nAvailable presets: " + strings.Join(presets, ", ") + "."
-	}
+	description := agentToolDescription + roleCatalog(c.cfg.Config())
 
 	return fantasy.NewParallelAgentTool(
 		AgentToolName,
@@ -173,6 +172,16 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 			if refusal != "" {
 				return fantasy.NewTextErrorResponse(refusal), nil
 			}
+			prompt := params.Prompt
+			access := params.Access
+			roleName := cmp.Or(strings.TrimSpace(params.Role), roleNameIfRole(c.cfg.Config(), params.Agent))
+			if roleName != "" {
+				if role, refusal := resolveRole(c.cfg.Config(), roleName); refusal == "" {
+					roleName = role.Name
+					prompt = roles.Block(*role) + params.Prompt
+					access, _ = roleAccess(role, params.Access)
+				}
+			}
 
 			sessionID := tools.GetSessionFromContext(ctx)
 			if sessionID == "" {
@@ -184,13 +193,15 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
 			}
 
-			return c.runSubAgentMaybeBackground(ctx, AgentToolName, params.Access, subAgentParams{
+			return c.runSubAgentMaybeBackground(ctx, AgentToolName, access, subAgentParams{
 				Agent:          agent,
 				SessionID:      sessionID,
 				AgentMessageID: agentMessageID,
 				ToolCallID:     call.ID,
-				Prompt:         params.Prompt,
+				Prompt:         prompt,
+				DisplayPrompt:  params.Prompt,
 				SessionTitle:   "New Agent Session",
+				Role:           roleName,
 			})
 		},
 	), nil
@@ -201,6 +212,18 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 // tools the subagent gets; otherwise the access level selects one of the
 // task variants built for this turn.
 func (c *coordinator) resolveAgentToolVariant(ctx context.Context, params AgentParams, agents map[string]SessionAgent, readOnly bool) (SessionAgent, string) {
+	roleName := cmp.Or(strings.TrimSpace(params.Role), roleNameIfRole(c.cfg.Config(), params.Agent))
+	if roleName != "" {
+		role, refusal := resolveRole(c.cfg.Config(), roleName)
+		if refusal != "" {
+			return nil, refusal
+		}
+		if refusal := planModeRoleRefusal(readOnly, role, params.Access); refusal != "" {
+			return nil, refusal
+		}
+		agent, _, _, refusal := c.roleTaskAgent(ctx, role, params.Access, AgentDispatchParams{}, c.mainModel())
+		return agent, refusal
+	}
 	if params.Agent != "" && params.Agent != config.AgentTask {
 		preset, err := resolveSubAgentPreset(c.cfg.Config(), params.Agent)
 		if err != nil {
@@ -219,6 +242,18 @@ func (c *coordinator) resolveAgentToolVariant(ctx context.Context, params AgentP
 		return agent, ""
 	}
 	return resolveSubAgent(agents, params.Access, readOnly)
+}
+
+// roleNameIfRole returns name when it names a role, so the agent tool's
+// preset parameter accepts role names too.
+func roleNameIfRole(cfg *config.Config, name string) string {
+	if cfg == nil {
+		return ""
+	}
+	if agent, ok := cfg.Agents[name]; ok && agent.Role != nil {
+		return name
+	}
+	return ""
 }
 
 // resolveSubAgentPreset returns the configured agent preset a subagent
@@ -254,7 +289,7 @@ func availableSubAgentPresets(cfg *config.Config) []string {
 	}
 	names := make([]string, 0, len(cfg.Agents))
 	for name, preset := range cfg.Agents {
-		if preset.Disabled || slices.Contains(preset.AllowedTools, AgentToolName) {
+		if preset.Disabled || preset.Role != nil || slices.Contains(preset.AllowedTools, AgentToolName) {
 			continue
 		}
 		names = append(names, name)

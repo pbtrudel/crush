@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -24,7 +25,10 @@ type AgentBackgroundMetadata struct {
 	Label        string `json:"label"`
 	Backgrounded bool   `json:"backgrounded"`
 	Access       string `json:"access,omitempty"`
-	Task         string `json:"task,omitempty"`
+	// Role names the role the subagent runs in, so a restart rebuilds it
+	// gated instead of as a plain task subagent.
+	Role string `json:"role,omitempty"`
+	Task string `json:"task,omitempty"`
 }
 
 // backgroundLabel labels an auto-backgrounded subagent after its tool call.
@@ -64,7 +68,7 @@ func (c *coordinator) runSubAgentMaybeBackground(
 
 	label := c.names.name(backgroundLabel(toolName, params.ToolCallID))
 	childSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
-	entry := newDispatchedAgent(label, access, childSessionID, params.SessionID, params.Agent)
+	entry := newDispatchedAgent(label, access, params.Role, childSessionID, params.SessionID, params.Agent)
 	// The entry outlives this call, so it owns the cleanup a reopen needs.
 	entry.setCleanup(params.Cleanup)
 
@@ -103,7 +107,7 @@ func (c *coordinator) runSubAgentMaybeBackground(
 		if !entry.detach(gen) {
 			return takeInline()
 		}
-		return backgroundNotice(label, access, params.Prompt, c.backgroundAfter), nil
+		return backgroundNotice(label, access, params.Role, cmp.Or(params.DisplayPrompt, params.Prompt), c.backgroundAfter), nil
 	case <-ctx.Done():
 		// Cancelled before the handoff: stop it and surface the
 		// cancellation, as a blocking call would; no report is written.
@@ -116,7 +120,7 @@ func (c *coordinator) runSubAgentMaybeBackground(
 
 // backgroundNotice is what the model gets when a subagent is moved to the
 // background. It names the label so the model can follow up on it.
-func backgroundNotice(label, access, prompt string, after time.Duration) fantasy.ToolResponse {
+func backgroundNotice(label, access, role, prompt string, after time.Duration) fantasy.ToolResponse {
 	notice := fmt.Sprintf(
 		"Still working after %s, so this subagent moved to the background as %q. "+
 			"Its report arrives under that label when it finishes and wakes you, so carry on "+
@@ -130,6 +134,7 @@ func backgroundNotice(label, access, prompt string, after time.Duration) fantasy
 			Label:        label,
 			Backgrounded: true,
 			Access:       access,
+			Role:         role,
 			Task:         prompt,
 		},
 	)

@@ -103,8 +103,8 @@ func TestForkSiblingsShareInheritedContext(t *testing.T) {
 	require.Contains(t, inherited, "fix the failing tests", "the fork block must carry the Lead's turns")
 	require.Equal(t, inherited, runner.forkPrefix(t.Context(), authMember), "siblings of one Lead inherit the same block")
 
-	first := runner.teammatePrompt(t.Context(), dbMember, "Add the index the migration is missing.")
-	second := runner.teammatePrompt(t.Context(), authMember, "Review the login timeout change.")
+	first := runner.teammatePrompt(t.Context(), dbMember, "Add the index the migration is missing.", true)
+	second := runner.teammatePrompt(t.Context(), authMember, "Review the login timeout change.", true)
 
 	require.True(t, strings.HasPrefix(first, inherited), "the inherited block must be the message's prefix")
 	require.True(t, strings.HasPrefix(second, inherited),

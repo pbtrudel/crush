@@ -125,6 +125,35 @@ func TestSpawnTeammate(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+// TestSpawnTeammatePersistsRoleName pins that a spawn's role survives the
+// roster: the member view names it and team.json stores it, so a resumed
+// teammate is rebuilt in its role instead of unrestricted.
+func TestSpawnTeammatePersistsRoleName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "team.json")
+	service, err := New(path, Config{}, newFakeRunner())
+	require.NoError(t, err)
+
+	view, err := service.SpawnTeammate(context.Background(), "lead", SpawnRequest{
+		Name:        "rev",
+		Description: "Reviews the diff",
+		Prompt:      "Review the current diff.",
+		ParentID:    "session-a",
+		RoleName:    "reviewer",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "reviewer", view.RoleName)
+
+	saved, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(saved), `"role_name": "reviewer"`)
+
+	members, err := service.ListMembers("lead", "session-a")
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+	require.Equal(t, "reviewer", members[1].RoleName)
+}
+
 // TestSpawnTeammatePersistsModelOverride pins that a model override is
 // durable: a reopened Team still knows the model and reasoning the Lead
 // asked for, which is what lets every later turn rebuild it.
