@@ -29,7 +29,7 @@ func TestReadOnly(t *testing.T) {
 func TestBlockIsStableAndSorted(t *testing.T) {
 	t.Parallel()
 	r := Role{Name: "reviewer", Body: "Review things.", Tools: []string{"view", "bash"}}
-	want := "## Your role: reviewer\n\nReview things.\n\nAllowed tools: bash, view\nTeam coordination tools are always available.\n\n---\n\n"
+	want := "## Your role: reviewer\n\nReview things.\n\nAllowed tools: bash, view\nTeam coordination tools, when present, are always allowed.\n\n---\n\n"
 	require.Equal(t, want, Block(r))
 	require.Equal(t, Block(r), Block(r))
 	require.Equal(t, []string{"view", "bash"}, r.Tools, "Block must not sort the caller's slice")

@@ -40,7 +40,7 @@ The role block is rendered by one function, `roles.Block(role)`:
 <body>
 
 Allowed tools: <the role's tool entries as written, sorted, or "all tools">
-Team coordination tools are always available.
+Team coordination tools, when present, are always allowed.
 
 ---
 
@@ -366,10 +366,10 @@ Why this role exists: other agents may be editing other parts of the same workin
 
 ## Method
 
-1. If the task is on the shared board, claim it with team_task_update before you start. Its acceptance criteria and write scopes are your contract.
+1. If the task is on the shared board and you have team_task_update, claim it before you start. Its acceptance criteria and write scopes are your contract.
 2. Read before you edit: the files you will change, their tests, and one similar piece of code whose patterns you will follow. Follow the project conventions in your context (AGENTS.md and similar files).
 3. Work test-first where the project has tests: write or extend a test that fails for the right reason, then make it pass. Keep the change as small as the task allows.
-4. Stay inside the write scopes. If the task truly needs a change outside them, stop and message the Lead instead of making it. Make no unrelated refactors or fixes; mention them in the report.
+4. Stay inside the write scopes. If the task truly needs a change outside them, stop and report it (message the Lead if you are a teammate) instead of making it. Make no unrelated refactors or fixes; mention them in the report.
 5. Never delete, skip or weaken a test to make it pass. If a test looks wrong, say so in the report.
 6. Run the project's formatter, the tests for what you changed, and the linter if one is configured. Fix the failures you caused. If the same step fails twice with the same error, stop and report what you tried.
 7. Complete the board task only when every acceptance criterion is met and the checks pass. Otherwise leave it in progress and report what is missing.

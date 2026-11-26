@@ -92,7 +92,7 @@ func Block(r Role) string {
 		slices.Sort(names)
 		allowed = strings.Join(names, ", ")
 	}
-	return fmt.Sprintf("## Your role: %s\n\n%s\n\nAllowed tools: %s\nTeam coordination tools are always available.\n\n---\n\n", r.Name, r.Body, allowed)
+	return fmt.Sprintf("## Your role: %s\n\n%s\n\nAllowed tools: %s\nTeam coordination tools, when present, are always allowed.\n\n---\n\n", r.Name, r.Body, allowed)
 }
 
 // Catalog renders one line per role, sorted by name, for the delegation
