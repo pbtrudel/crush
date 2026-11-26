@@ -178,6 +178,15 @@
   .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
   .hud__controls { gap: var(--space-1); }
 }
+/* The wide gutter needs 1464px before the identity block fits the session
+   title on one line, so 1440 alone used to wrap it and grow the strip 28px
+   above the 1366 layout. A pin-bearing HUD takes the tight gutter until
+   then, which keeps the pin row from costing height. Non-pin HUDs keep the
+   wide layout so their baselines do not move. */
+@media (min-width: 1440px) and (max-width: 1463px) {
+  .hud:has(.hud__pin-slot) { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  .hud:has(.hud__pin-slot) .hud__controls { gap: var(--space-1); }
+}
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,
      needs about 1280px of content, so the instruments wrap below it and

@@ -283,7 +283,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
-    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const layout = await page.evaluate(() => {
       const name = document.querySelector('.hud__model-name') as HTMLElement;
       const label = document.querySelector('.hud__branch') as HTMLElement;
@@ -344,7 +344,7 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
-    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const fit = await page.evaluate(() => {
       const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
       const hud = document.querySelector('.hud') as HTMLElement;
