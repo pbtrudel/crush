@@ -592,3 +592,16 @@ func TestCrushInfo_Hooks_NoHooks(t *testing.T) {
 	output := buildCrushInfo(cfg, nil, nil, nil, nil, nil)
 	require.NotContains(t, output, "[hooks]")
 }
+
+func TestCrushInfoListsRoles(t *testing.T) {
+	t.Parallel()
+
+	c := &config.Config{
+		Providers: csync.NewMap[string, config.ProviderConfig](),
+		Options:   &config.Options{},
+	}
+	c.SetupAgents()
+	out := buildCrushInfo(config.NewTestStore(c), nil, nil, nil, nil, nil)
+	require.Contains(t, out, "[roles]\n")
+	require.Contains(t, out, "reviewer = builtin, model inherits\n")
+}

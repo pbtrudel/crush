@@ -32,18 +32,23 @@
   padding: var(--space-4) calc(var(--space-4) * 1.5);
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
-.hud__controls { display: flex; align-items: center; gap: var(--space-4); }
-/* The pin names the session the tab follows on the strip's second row, so
-   the instruments keep their width at 1280, 1366 and 1440 and short model
-   names stay whole. With one root session it renders nothing and the strip
-   stays one row. */
+/* The servers and the controls keep columns 6 and 7 explicitly: the pin
+   shares column 6 with the servers, and an explicitly placed item makes the
+   auto-placement cursor skip its cell, which would otherwise push the
+   servers and the controls onto a second row. */
+.hud__servers { grid-column: 6; grid-row: 1; }
+.hud__controls { grid-column: 7; grid-row: 1; display: flex; align-items: center; gap: var(--space-4); }
+/* The pin names the session the tab follows on the strip's one row: it
+   shares the servers column and takes the empty band under the instruments,
+   so the strip keeps its height at 1280, 1366 and 1440 and the identity
+   block keeps its width. With one root session it renders nothing. */
 .hud__pin-slot {
-  grid-column: 1 / -1; justify-self: start; flex: 1 1 100%;
-  display: inline-flex; flex-wrap: wrap; align-items: center;
+  grid-column: 6; grid-row: 1; align-self: end; justify-self: start;
+  display: inline-flex; flex-wrap: nowrap; align-items: center;
   gap: var(--space-1); min-inline-size: 0;
 }
 .hud__pin-btn {
-  min-block-size: 28px; padding: 4px 10px;
+  min-block-size: 24px; padding: 2px 6px;
   background: transparent; color: var(--text-muted); border: 1px solid var(--edge);
   border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); cursor: pointer;
 }
@@ -177,6 +182,17 @@
 @media (max-width: 1439px) {
   .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
   .hud__controls { gap: var(--space-1); }
+}
+/* The wide gutter needs 1464px before the identity block fits the session
+   title on one line, so 1440 alone used to wrap it and grow the strip 28px
+   above the 1366 layout. A pin-bearing HUD takes the tight gutter until
+   then, which keeps the pin row from costing height. Non-pin HUDs keep the
+   wide layout so their baselines do not move. */
+@media (min-width: 1440px) and (max-width: 1463px) {
+  .hud:has(.hud__pin-slot) { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  /* Keep the wide layout's instrument gap before the controls; the rest of
+     the strip can take the tighter one. */
+  .hud:has(.hud__pin-slot) .hud__controls { gap: var(--space-1); margin-inline-start: 14px; }
 }
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,

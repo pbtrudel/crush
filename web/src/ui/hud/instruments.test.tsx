@@ -122,6 +122,28 @@ describe('ServerHexes', () => {
     expect(systemsOpen.value).toBe('mcp');
   });
 
+  it('collapses a group past three servers into one tile and a count', () => {
+    const root = mount(
+      <ServerHexes
+        kind="mcp"
+        servers={{
+          a: { state: 'connected', diagnostics: 0, tools: 1 },
+          b: { state: 'connected', diagnostics: 0, tools: 2 },
+          c: { state: 'stopped', diagnostics: 0, tools: 3 },
+          d: { state: 'needs auth', diagnostics: 0, tools: 4 },
+        }}
+      />,
+    );
+    const button = root.querySelector<HTMLButtonElement>('button.hexes')!;
+    // One tile at the worst tone, with the total still visible beside it.
+    expect(button.querySelectorAll('.hex')).toHaveLength(1);
+    expect(button.querySelector('.hex')!.getAttribute('data-tone')).toBe('error');
+    expect(button.querySelector('.hexes__count')!.textContent).toBe('4');
+    expect(button.getAttribute('aria-label')).toBe(
+      'MCP servers: a ready, 1 tool, b ready, 2 tools, c stopped, 3 tools, d error, 4 tools. Open systems',
+    );
+  });
+
   it('leaves the tab order with the HUD in cinematic mode', () => {
     setCinematic(true);
     const root = mount(<ServerHexes kind="lsp" servers={{ gopls: { state: '2', diagnostics: 0, tools: 0 } }} />);

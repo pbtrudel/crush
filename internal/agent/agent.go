@@ -52,6 +52,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
@@ -345,6 +346,9 @@ type sessionAgent struct {
 	// keeps the Lead's system message as an exact cacheable prefix.
 	systemPromptSuffix string
 	tools              *csync.Slice[fantasy.AgentTool]
+	// role restricts the tools this agent may call and is re-attached
+	// after compaction. Nil for agents without a role.
+	role *roles.Role
 
 	// modelSwitchMu guards the last model pair retired by SetModels. The
 	// next run uses it to compact with the previous model before adopting a
@@ -538,6 +542,9 @@ type SessionAgentOptions struct {
 	// when no coordinator owns the agent (tests, the agentic-fetch subagent),
 	// and returning nil means the full palette is sent.
 	LazyTools func() *tools.LazyRegistry
+	// Role restricts the tools this agent may call and is re-attached
+	// after compaction. Nil for agents without a role.
+	Role *roles.Role
 }
 
 func NewSessionAgent(
@@ -563,7 +570,8 @@ func NewSessionAgent(
 		nonInteractive:         opts.NonInteractive,
 		isYolo:                 opts.IsYolo,
 		permissions:            opts.Permissions,
-		tools:                  csync.NewSliceFrom(opts.Tools),
+		tools:                  csync.NewSliceFrom(gateToolsForRole(opts.Role, opts.Tools)),
+		role:                   opts.Role,
 		notify:                 opts.Notify,
 		runComplete:            opts.RunComplete,
 		hooks:                  opts.Hooks,
@@ -4049,9 +4057,15 @@ func (a *sessionAgent) filterDisabledMCPTools(ctx context.Context, toolList []fa
 	for _, name := range disabledServers {
 		disabled[name] = struct{}{}
 	}
-	filtered := make([]fantasy.AgentTool, 0, len(toolList))
-	for _, t := range toolList {
-		if mcpTool, ok := t.(*tools.Tool); ok {
+	return dropDisabledMCPTools(toolList, disabled)
+}
+
+// dropDisabledMCPTools removes every tool whose MCP server is in disabled.
+// A tool from a built-in reports no server and is always kept.
+func dropDisabledMCPTools(list []fantasy.AgentTool, disabled map[string]struct{}) []fantasy.AgentTool {
+	filtered := make([]fantasy.AgentTool, 0, len(list))
+	for _, t := range list {
+		if mcpTool, ok := t.(interface{ MCP() string }); ok {
 			if _, off := disabled[mcpTool.MCP()]; off {
 				continue
 			}
@@ -4867,7 +4881,9 @@ func (a *sessionAgent) SetModels(large Model, small Model) {
 }
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(tools)
+	// Every path that replaces the palette goes through here, so the role
+	// gate cannot be skipped by a rebuild after an MCP or model refresh.
+	a.tools.SetSlice(gateToolsForRole(a.role, tools))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
