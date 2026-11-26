@@ -142,7 +142,7 @@ func renderTeam(state agentteam.State) string {
 	sb.WriteString("  ◐ lead                  running       Team Lead\n")
 	for _, member := range state.Members {
 		fmt.Fprintf(&sb, "  %s %-20s %-13s %s\n",
-			statusGlyph(member.Status), member.Name, member.Status, member.Description)
+			statusGlyph(member.Status), memberLabel(member), member.Status, member.Description)
 		for _, diagnostic := range member.Diagnostics {
 			fmt.Fprintf(&sb, "      ! %s\n", diagnostic)
 		}
@@ -180,6 +180,14 @@ func renderTeam(state agentteam.State) string {
 		}
 	}
 	return sb.String()
+}
+
+// memberLabel names a member with its role, as in "rev (reviewer)".
+func memberLabel(member agentteam.Member) string {
+	if member.RoleName == "" {
+		return member.Name
+	}
+	return member.Name + " (" + member.RoleName + ")"
 }
 
 func statusGlyph(status agentteam.Status) string {

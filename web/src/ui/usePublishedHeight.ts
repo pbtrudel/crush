@@ -22,3 +22,28 @@ export function usePublishedHeight(ref: { current: HTMLElement | null }, propert
     };
   }, [ref, property]);
 }
+
+// usePublishedTop publishes an element's viewport top as a CSS custom
+// property on the document root. A surface pinned to an element that can
+// overflow the shell needs the measured edge: the viewport and the element's
+// height do not describe where it starts. A resize moves the edge without
+// resizing the element, so both are watched.
+export function usePublishedTop(ref: { current: HTMLElement | null }, property: string): void {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const doc = document.documentElement;
+    const publish = () => {
+      doc.style.setProperty(property, `${Math.round(el.getBoundingClientRect().top)}px`);
+    };
+    publish();
+    window.addEventListener('resize', publish);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
+    observer?.observe(el);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', publish);
+      doc.style.removeProperty(property);
+    };
+  }, [ref, property]);
+}

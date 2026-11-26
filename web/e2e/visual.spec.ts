@@ -231,6 +231,11 @@ m3VisualTest('model selector', async ({ page, gateway }) => {
 promptVisualTest('secure prompt', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await settle(page);
+  // Every screenshot waits for document.fonts.ready, but only under its own
+  // 30 s: a loaded CI machine still fetching a webfont can run that out
+  // while the clock is paused. Take the wait here, inside the test's budget,
+  // before the clock is stepped for the dialog.
+  await page.evaluate(() => document.fonts.ready);
   const dialog = page.getByRole('dialog', { name: 'GPG passphrase' });
   // The stream batches events into animation frames, so a paused clock needs
   // a frame after the prompt arrives before the dialog can render.
