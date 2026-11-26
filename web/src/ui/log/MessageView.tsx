@@ -5,10 +5,16 @@ import { isHttpUrl, isLocalUrl, Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 
 type FinishPart = Extract<Part, { type: 'finish' }>;
+type TextPart = Extract<Part, { type: 'text' }>;
 type Props = { m: Message; results: Map<string, ToolResultData> };
 
 function MessageViewBody({ m, results }: Props) {
   if (m.role === 'tool') return null;
+  // Harness rows (turn gate, reminders, env snapshot, compaction state)
+  // arrive as user messages whose first text part is hidden. The TUI drops
+  // the whole message, so an empty "You" card never reaches the log.
+  const text = m.parts.find((p): p is TextPart => p.type === 'text');
+  if (m.role === 'user' && text?.data.hidden) return null;
   const finish = m.parts.find((p): p is FinishPart => p.type === 'finish');
   const streaming = m.role === 'assistant' && !finish;
   // A tool call with no result stays running while the turn is open. Once the
@@ -46,7 +52,7 @@ function MessageViewBody({ m, results }: Props) {
               ? <a key={i} href={p.data.url} target="_blank" rel="noopener noreferrer">Image: {p.data.url}</a>
               : <span key={i}>Image: {p.data.url}</span>;
           case 'binary':
-            return <p key={i} class="msg__attachment">Attachment: {p.data.path ?? p.data.mime_type ?? 'file'}</p>;
+            return <p key={i} class="msg__attachment">Attachment: {p.data.Path || p.data.MIMEType || 'file'}</p>;
           case 'shell_command':
             return (
               <div key={i} class="shell">
