@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
@@ -53,13 +54,20 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 }
 
 // teammatePrompt is the message a teammate turn starts from: the inherited
-// context a fork member gets, then its name, then the task.
+// context a fork member gets, then, on its first turn only, its role block,
+// then its name, then the task.
 //
 // The inherited context goes first because it is the same bytes for every fork
-// sibling of one Lead: the per-sibling name in front of it would end the shared
-// prefix at the first line and cost each sibling the whole block.
-func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string) string {
+// sibling of one Lead. The role block follows because it is the same bytes for
+// every sibling with that role; the per-sibling name comes after both, so the
+// shared prefix runs through the whole role block.
+func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string, first bool) string {
 	task = teammateTaskMessage(member, task)
+	if first && member.RoleName != "" {
+		if role, refusal := resolveRole(r.c.cfg.Config(), member.RoleName); refusal == "" {
+			task = roles.Block(*role) + task
+		}
+	}
 	if member.Context == agentteam.ContextFork {
 		return r.forkPrefix(ctx, member) + task
 	}
@@ -179,7 +187,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 	// Lead. WithoutCancel keeps the value across the turn's timeout.
 	memberCtx := agentteam.WithMember(ctx, member.Name)
 
-	sess, err := r.teammateSession(memberCtx, member)
+	sess, created, err := r.teammateSession(memberCtx, member)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +213,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		}
 	}
 
-	promptText = r.teammatePrompt(memberCtx, member, promptText)
+	promptText = r.teammatePrompt(memberCtx, member, promptText, created)
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
@@ -286,7 +294,17 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, errors.New("coder agent not configured")
 	}
 
-	models, err := r.teammateModels(member, lead.Model())
+	var role *roles.Role
+	if member.RoleName != "" {
+		resolved, refusal := resolveRole(r.c.cfg.Config(), member.RoleName)
+		if refusal != "" {
+			return nil, fmt.Errorf("teammate %q: role %q no longer exists", member.Name, member.RoleName)
+		}
+		role = resolved
+		agentCfg.Role = role
+	}
+
+	models, err := r.teammateModels(member, role, lead.Model())
 	if err != nil {
 		return nil, err
 	}
@@ -314,15 +332,19 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 // the shared subagent set. A member with an override is re-resolved against
 // the current config on every build, so a provider or model that went away
 // is an error rather than a silent fallback to the default model.
-func (r *teamRunner) teammateModels(member agentteam.Member, parent Model) (func() ModelSet, error) {
-	if strings.TrimSpace(member.Model) == "" {
-		return nil, nil
-	}
-	sel, ok, refusal := r.c.resolveModelOverride(AgentDispatchParams{
+func (r *teamRunner) teammateModels(member agentteam.Member, role *roles.Role, parent Model) (func() ModelSet, error) {
+	params := AgentDispatchParams{
 		Model:     member.Model,
 		Provider:  member.ModelProvider,
 		Reasoning: member.Reasoning,
-	}, parent)
+	}
+	if strings.TrimSpace(member.Model) == "" {
+		if role == nil || !role.PinsModel() {
+			return nil, nil
+		}
+		params = roleModelParams(role)
+	}
+	sel, ok, refusal := r.c.resolveModelOverride(params, parent)
 	if refusal != "" {
 		return nil, fmt.Errorf("teammate %q: %s", member.Name, refusal)
 	}
@@ -339,14 +361,17 @@ func (r *teamRunner) teammateModels(member agentteam.Member, parent Model) (func
 }
 
 // teammateSession reuses the member's session, or creates it on first run.
-func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Member) (session.Session, error) {
+// The bool is true when the session was created, which is what makes the
+// member's first turn the only one that carries its role block.
+func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Member) (session.Session, bool, error) {
 	if member.SessionID != "" {
 		existing, err := r.c.sessions.Get(ctx, member.SessionID)
 		if err == nil {
-			return existing, nil
+			return existing, false, nil
 		}
 	}
-	return r.c.sessions.CreateTaskSession(ctx, r.teammateSessionID(member), member.ParentID, "Teammate "+member.Name)
+	created, err := r.c.sessions.CreateTaskSession(ctx, r.teammateSessionID(member), member.ParentID, "Teammate "+member.Name)
+	return created, err == nil, err
 }
 
 // teammateSessionID names a teammate session. Member ids restart with every

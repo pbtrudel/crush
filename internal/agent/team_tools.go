@@ -35,6 +35,7 @@ type spawnTeammateParams struct {
 	Description string `json:"description" description:"Short description of the delegated responsibility."`
 	Prompt      string `json:"prompt" description:"Complete initial task for the teammate."`
 	Context     string `json:"context,omitempty" description:"fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh."`
+	Role        string `json:"role,omitempty" description:"Optional role from the catalog in this tool's description. It sets the teammate's tool allow-list, role prompt and default model."`
 
 	// Model override. When none of these is given the teammate runs on
 	// the subagent model with its configured settings.
@@ -208,10 +209,16 @@ func workspaceRelativeScope(workspace, scope string) (string, bool) {
 }
 
 func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model) fantasy.AgentTool {
+	description := "Create one named, durable teammate. Only the Team Lead may call this tool." +
+		" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve."
+	// A coordinator built without config still yields a usable tool, which
+	// is what lets the handlers answer with the disabled error.
+	if c.cfg != nil {
+		description += roleCatalog(c.cfg.Config())
+	}
 	return fantasy.NewAgentTool(
 		SpawnTeammateToolName,
-		"Create one named, durable teammate. Only the Team Lead may call this tool."+
-			" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve.",
+		description,
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
@@ -231,6 +238,20 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				Context:     mode,
 				Provider:    "crush",
 				ParentID:    tools.GetSessionFromContext(ctx),
+			}
+			if strings.TrimSpace(params.Role) != "" {
+				role, refusal := resolveRole(c.cfg.Config(), params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				request.RoleName = role.Name
+				// A role's own model is checked now, so a model the config
+				// cannot serve fails the spawn instead of the first turn.
+				if strings.TrimSpace(params.Model) == "" && strings.TrimSpace(params.Reasoning) == "" && role.PinsModel() {
+					if _, _, refusal := c.resolveModelOverride(roleModelParams(role), parentModel()); refusal != "" {
+						return fantasy.NewTextErrorResponse(fmt.Sprintf("role %q: %s", role.Name, refusal)), nil
+					}
+				}
 			}
 			// Resolve the override first, so a refused model leaves no
 			// roster entry behind and the call can be retried.

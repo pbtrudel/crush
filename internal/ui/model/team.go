@@ -95,7 +95,7 @@ func teamSignature(state agentteam.State) string {
 	var sb strings.Builder
 	sb.WriteString(state.TeamID)
 	for _, member := range state.Members {
-		fmt.Fprintf(&sb, "|m:%s:%s:%s", member.Name, member.Status, strings.Join(member.Diagnostics, ","))
+		fmt.Fprintf(&sb, "|m:%s:%s:%s:%s", member.Name, member.RoleName, member.Status, strings.Join(member.Diagnostics, ","))
 	}
 	for _, task := range state.Tasks {
 		fmt.Fprintf(&sb, "|t:%s:%d:%s:%s:%s", task.ID, task.Revision, task.Status, task.OwnerID, task.Subject)
@@ -141,7 +141,7 @@ func (m *UI) teamInfo(width int) string {
 	}
 	lines := []string{teamMemberLine(t, "lead", agentteam.StatusRunning, busy["lead"], width)}
 	for _, member := range members {
-		lines = append(lines, teamMemberLine(t, member.Name, member.Status, busy[member.Name], width))
+		lines = append(lines, teamMemberLine(t, teamMemberLabel(member), member.Status, busy[member.Name], width))
 	}
 	for _, task := range active {
 		lines = append(lines, teamTaskLine(t, task, width))
@@ -305,6 +305,14 @@ func teamTaskRank(task agentteam.TaskView) int {
 	default:
 		return 2
 	}
+}
+
+// teamMemberLabel names a member with its role, as in "rev (reviewer)".
+func teamMemberLabel(member agentteam.Member) string {
+	if member.RoleName == "" {
+		return member.Name
+	}
+	return member.Name + " (" + member.RoleName + ")"
 }
 
 func teamMemberLine(t *styles.Styles, name string, status agentteam.Status, hasActiveTask bool, width int) string {

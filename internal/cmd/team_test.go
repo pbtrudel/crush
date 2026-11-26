@@ -15,6 +15,7 @@ func TestRenderTeam(t *testing.T) {
 		Members: []agentteam.Member{
 			{ID: "member-1", Name: "reviewer", Role: agentteam.RoleTeammate, Status: agentteam.StatusRunning, Description: "Reviews the diff"},
 			{Name: "tester", Role: agentteam.RoleTeammate, Status: agentteam.StatusFailed, Description: "Runs tests", Diagnostics: []string{"provider unavailable"}},
+			{Name: "rev", Role: agentteam.RoleTeammate, RoleName: "reviewer", Status: agentteam.StatusInactive, Description: "Second opinion"},
 		},
 		Tasks: []agentteam.Task{
 			{ID: "task-1", Revision: 1, Subject: "Add rate limiting", Description: "d", Status: agentteam.TaskPending, BlockedBy: []string{}, WriteScopes: []string{}},
@@ -23,8 +24,9 @@ func TestRenderTeam(t *testing.T) {
 		},
 	}
 	output := renderTeam(state)
-	require.Contains(t, output, "Members (3)")
+	require.Contains(t, output, "Members (4)")
 	require.Contains(t, output, "reviewer")
+	require.Contains(t, output, "rev (reviewer)", "a roster row names the member with its role")
 	require.Contains(t, output, "✗ tester")
 	require.Contains(t, output, "provider unavailable")
 	require.Contains(t, output, "Shared tasks (2)")
