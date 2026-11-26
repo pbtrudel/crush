@@ -1,8 +1,10 @@
 package dialog
 
 import (
+	"image"
 	"os"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -21,6 +23,8 @@ import (
 
 // CommandsID is the identifier for the commands dialog.
 const CommandsID = "commands"
+
+const commandDoubleClickThreshold = 400 * time.Millisecond
 
 // CommandType represents the type of commands being displayed.
 type CommandType uint
@@ -85,6 +89,10 @@ type Commands struct {
 	list  *list.FilterableList
 
 	windowWidth int
+
+	listArea      image.Rectangle
+	lastClickTime time.Time
+	lastClickID   string
 
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
@@ -261,8 +269,56 @@ func (c *Commands) HandleMsg(msg tea.Msg) Action {
 			}
 			return ActionCmd{cmd}
 		}
+	case common.CoalescedWheelMsg:
+		if image.Pt(msg.Mouse.X, msg.Mouse.Y).In(c.commandListArea()) {
+			c.list.ScrollBy(int(msg.DeltaY))
+		}
+	case tea.MouseClickMsg:
+		return c.handleMouseClick(msg)
 	}
 	return nil
+}
+
+func (c *Commands) handleMouseClick(msg tea.MouseClickMsg) Action {
+	if msg.Button != tea.MouseLeft {
+		c.resetMouseClick()
+		return nil
+	}
+	area := c.commandListArea()
+	area.Max.X = min(area.Max.X, area.Min.X+c.list.Width())
+	point := image.Pt(msg.X, msg.Y)
+	if !point.In(area) {
+		c.resetMouseClick()
+		return nil
+	}
+	index, _ := c.list.ItemIndexAtPosition(point.X-area.Min.X, point.Y-area.Min.Y)
+	if index < 0 {
+		c.resetMouseClick()
+		return nil
+	}
+	item, ok := c.list.ItemAt(index).(*CommandItem)
+	if !ok || item == nil {
+		c.resetMouseClick()
+		return nil
+	}
+	now := time.Now()
+	if c.lastClickID == item.ID() && now.Sub(c.lastClickTime) <= commandDoubleClickThreshold {
+		c.resetMouseClick()
+		return item.Action()
+	}
+	c.lastClickTime = now
+	c.lastClickID = item.ID()
+	c.list.SetSelected(index)
+	return nil
+}
+
+func (c *Commands) resetMouseClick() {
+	c.lastClickTime = time.Time{}
+	c.lastClickID = ""
+}
+
+func (c *Commands) commandListArea() image.Rectangle {
+	return c.listArea
 }
 
 func checkDockerMCPAvailabilityCmd() tea.Cmd {
@@ -321,6 +377,7 @@ func commandsTabsView(sty *styles.Styles, selected CommandType, hasUserCmds bool
 // Draw implements [Dialog].
 func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := c.com.Styles
+	c.listArea = image.Rectangle{}
 	width := max(0, min(defaultDialogMaxWidth, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
 	// The palette adds a rule, a preview, and a second rule around the
 	// list, so it needs three more rows than a standard dialog.
@@ -374,12 +431,13 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	listView := t.Dialog.List.Height(c.list.Height()).Render(c.list.Render())
 	rc.AddPart(listView)
 
-	rc.AddPart(styles.ApplyForegroundGrad(
+	bottomRule := styles.ApplyForegroundGrad(
 		t.Dialog.Palette.Rule,
 		strings.Repeat("─", innerWidth),
 		t.Dialog.Palette.RuleToColor,
 		t.Dialog.Palette.RuleFromColor,
-	))
+	)
+	rc.AddPart(bottomRule)
 	rc.Help = renderDialogHelp(t, &c.help, c, innerWidth)
 
 	if c.loading {
@@ -387,10 +445,56 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	view := rc.Render()
+	c.updateCommandListArea(area, view, listView, bottomRule, rc.Help, rc.ViewStyle, t.Dialog.List, innerWidth, c.list.Height())
 
 	cur := c.Cursor()
 	DrawCenterCursor(scr, area, view, cur)
 	return cur
+}
+
+// updateCommandListArea records the absolute rect of the command list so mouse
+// clicks can be hit-tested against it. It mirrors the sessions dialog, working
+// up from the bottom of the centered view past the help and the rule below the
+// list.
+func (c *Commands) updateCommandListArea(
+	area uv.Rectangle,
+	view string,
+	listView string,
+	bottomRule string,
+	helpView string,
+	viewStyle lipgloss.Style,
+	bodyStyle lipgloss.Style,
+	bodyWidth int,
+	bodyHeight int,
+) {
+	viewWidth, viewHeight := lipgloss.Size(view)
+	dialogArea := common.CenterRect(area, min(viewWidth, area.Dx()), min(viewHeight, area.Dy()))
+	bodyViewTop := dialogArea.Max.Y -
+		viewStyle.GetMarginBottom() -
+		viewStyle.GetBorderBottomSize() -
+		viewStyle.GetPaddingBottom() -
+		lipgloss.Height(helpView) -
+		lipgloss.Height(bottomRule) -
+		lipgloss.Height(listView)
+	bodyMin := image.Pt(
+		dialogArea.Min.X+
+			viewStyle.GetMarginLeft()+
+			viewStyle.GetBorderLeftSize()+
+			viewStyle.GetPaddingLeft()+
+			bodyStyle.GetMarginLeft()+
+			bodyStyle.GetBorderLeftSize()+
+			bodyStyle.GetPaddingLeft(),
+		bodyViewTop+
+			bodyStyle.GetMarginTop()+
+			bodyStyle.GetBorderTopSize()+
+			bodyStyle.GetPaddingTop(),
+	)
+	c.listArea = image.Rect(
+		bodyMin.X,
+		bodyMin.Y,
+		bodyMin.X+bodyWidth,
+		bodyMin.Y+bodyHeight,
+	).Intersect(dialogArea).Intersect(area)
 }
 
 // ShortHelp implements [help.KeyMap].

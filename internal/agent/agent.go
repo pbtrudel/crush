@@ -2700,7 +2700,10 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
-	aiMsgs, _ := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
+	// Compaction reuses the live step's retention cut (computed before the
+	// just-finished turn) so it extends the live prefix byte-for-byte instead
+	// of advancing the window and rewriting the images the live step kept.
+	aiMsgs, _ := a.preparePromptForCut(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, compactionRetentionCut(msgs, a.imageRetentionTurns()))
 
 	genCtx, cancel := context.WithCancel(ctx)
 	if !active {
@@ -3830,6 +3833,19 @@ func (a *sessionAgent) preparePrompt(msgs []message.Message, supportsImages, sup
 // and requestModel, dropping the provider-specific reasoning data of
 // messages another model wrote.
 func (a *sessionAgent) preparePromptFor(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptForRetention(msgs, requestProvider, requestModel, supportsImages, supportsAudio, a.imageRetentionTurns(), attachments...)
+}
+
+// preparePromptForRetention is preparePromptFor with an explicit image
+// retention window, used by live, ephemeral, and estimate callers.
+func (a *sessionAgent) preparePromptForRetention(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, retain int, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptForCut(msgs, requestProvider, requestModel, supportsImages, supportsAudio, imageRetentionCut(msgs, retain), attachments...)
+}
+
+// preparePromptForCut is the replay core with an explicit retention cut: image
+// parts in messages before the cut are expired. Compaction supplies the live
+// step's cut so it extends the live prefix instead of advancing the window.
+func (a *sessionAgent) preparePromptForCut(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, retentionCut int, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	if !a.isSubAgent {
 		history = append(history, fantasy.NewUserMessage(
@@ -3899,7 +3915,7 @@ Again do not mention this message to the user.`,
 		}
 	}
 
-	for _, m := range msgs {
+	for i, m := range msgs {
 		if len(m.Parts) == 0 {
 			continue
 		}
@@ -3927,10 +3943,15 @@ Again do not mention this message to the user.`,
 			}
 		}
 		if !supportsImages {
-			for i := range aiMsgs {
-				if aiMsgs[i].Role == fantasy.MessageRoleUser {
-					aiMsgs[i].Content = filterFileParts(aiMsgs[i].Content)
+			for k := range aiMsgs {
+				if aiMsgs[k].Role == fantasy.MessageRoleUser {
+					aiMsgs[k].Content = filterFileParts(aiMsgs[k].Content)
 				}
+			}
+		}
+		if i < retentionCut {
+			for k := range aiMsgs {
+				aiMsgs[k] = omitImagesInMessage(aiMsgs[k], imageExpiredText)
 			}
 		}
 		history = append(history, aiMsgs...)
@@ -3939,6 +3960,9 @@ Again do not mention this message to the user.`,
 			// A message whose calls were all provider-executed has no
 			// replies to replay, and an empty tool message is invalid.
 			if results := toolResultsForCalls(m, toolResultsByCall); len(results.Content) > 0 {
+				if i < retentionCut {
+					results = omitImagesInMessage(results, imageExpiredText)
+				}
 				history = append(history, results)
 			}
 		}
@@ -4963,6 +4987,19 @@ func (a *sessionAgent) maxRequestImages() int {
 		return config.DefaultMaxImages
 	}
 	return cfg.Options.GetMaxImages()
+}
+
+// imageRetentionTurns returns how many recent user turns keep their images in the
+// replayed context. Negative disables expiry.
+func (a *sessionAgent) imageRetentionTurns() int {
+	if a.cfg == nil {
+		return config.DefaultImageRetentionTurns
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultImageRetentionTurns
+	}
+	return cfg.Options.GetImageRetentionTurns()
 }
 
 // workaroundProviderMediaLimitations converts media content in tool results to
