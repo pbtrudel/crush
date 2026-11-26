@@ -252,6 +252,9 @@ type Task struct {
 	// Escalated means the dispatcher no longer touches the task; the Lead
 	// decides what happens next.
 	Escalated bool `json:"escalated,omitempty"`
+	// RoleReported records that the Lead was told the task's role no
+	// longer exists, so it is told once.
+	RoleReported bool `json:"role_reported,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -283,6 +286,9 @@ type Message struct {
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
 	Delivered bool      `json:"delivered,omitempty"`
+	// SessionID scopes a runtime notice to the Lead session it is for.
+	// Member mail leaves it empty: the sender says which team it is from.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SpawnRequest describes one teammate creation.
@@ -449,7 +455,10 @@ type Service struct {
 	watchers sync.WaitGroup
 	// closed is set by Shutdown. A settling run must not resume its member
 	// once it is set, or it would add a watcher after the wait began.
-	closed  bool
+	closed bool
+	// done closes when Shutdown runs, so a goroutine waiting to retry a
+	// dispatch pass ends at once instead of serving out its backoff.
+	done    chan struct{}
 	changes chan struct{}
 	now     func() time.Time
 	// stamp is the state file this process last read or wrote. A different
@@ -504,6 +513,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		runner:      runner,
 		runs:        make(map[string]Run),
 		starting:    make(map[string]bool),
+		done:        make(chan struct{}),
 		changes:     make(chan struct{}),
 		now:         time.Now,
 		stamp:       stamp,
@@ -999,14 +1009,7 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 		// roster: a workspace keeps every member it ever created, so
 		// counting settled members would lock a new team out of the
 		// workspace forever.
-		live := 0
-		for _, existing := range s.state.Members {
-			switch s.statusLocked(existing.Name) {
-			case StatusRunning, StatusProvisioning:
-				live++
-			}
-		}
-		if live >= s.cfg.MaxMembers {
+		if s.liveMembersLocked() >= s.cfg.MaxMembers {
 			return false, newError(CodeMemberLimit, "Team member limit %d reached", s.cfg.MaxMembers)
 		}
 		s.state.NextMember++
@@ -1042,8 +1045,10 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 			return MemberView{}, err
 		}
 		s.failMember(member.Name, err)
+		s.dispatch(ctx, req.ParentID)
 		return s.viewFor(member.Name), nil
 	}
+	s.dispatch(ctx, req.ParentID)
 	return view, nil
 }
 
@@ -1221,6 +1226,10 @@ func (s *Service) watch(name string, run Run) {
 	if leadHook != nil && !wasClosed {
 		leadHook(member.ParentID)
 	}
+	// The settle may have freed a member or finished a blocker.
+	if !wasClosed {
+		s.dispatch(context.Background(), member.ParentID)
+	}
 	if len(pending) == 0 {
 		return
 	}
@@ -1265,17 +1274,42 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 			continue
 		}
 		task.Revision++
-		if runErr == nil {
-			task.Status = TaskCompleted
-			settled = append(settled, task.ID+" completed")
-			completed = append(completed, task.Subject)
-		} else {
+		switch {
+		case runErr != nil:
 			task.Status = TaskPending
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" released")
+			s.countFailedTurnLocked(task, runErr)
+		default:
+			task.Status = TaskCompleted
+			settled = append(settled, task.ID+" completed")
+			completed = append(completed, task.Subject)
 		}
 	}
 	return settled, completed
+}
+
+// countFailedTurnLocked charges a failed turn to a task the dispatcher owns,
+// so a teammate whose every turn fails is not restarted forever. An
+// interrupted turn is the Lead's decision, so it escalates at once instead
+// of restarting. A shutdown cancels every run and counts nothing. Callers
+// must hold s.mu.
+func (s *Service) countFailedTurnLocked(task *Task, runErr error) {
+	if task.Role == "" || s.closed {
+		return
+	}
+	if errors.Is(runErr, context.Canceled) {
+		task.Escalated = true
+		s.noteLeadLocked(task.SessionID, fmt.Sprintf(
+			"Task %s (%s) was interrupted. It is escalated; edit, reassign or reopen it to continue.",
+			task.ID, task.Subject))
+		return
+	}
+	task.Attempts++
+	if task.Attempts >= maxTaskAttempts {
+		task.Escalated = true
+		s.noteLeadLocked(task.SessionID, escalationNote(*task, runErr.Error()))
+	}
 }
 
 // appendMessageLocked adds one durable inbox message and records it as this
@@ -1635,6 +1669,9 @@ func (s *Service) inboxPendingLocked(scope map[string]bool, message *Message, na
 		return false
 	}
 	if name == leadName {
+		if message.From == noticeSender {
+			return message.SessionID != "" && scope[message.SessionID]
+		}
 		member, ok := s.memberLocked(message.From)
 		return ok && scope[member.ParentID]
 	}
@@ -1840,7 +1877,13 @@ func (s *Service) Changed() <-chan struct{} {
 func (s *Service) Shutdown() {
 	var runs []Run
 	_ = s.write(mustApply, func() (bool, error) {
-		s.closed = true
+		if !s.closed {
+			s.closed = true
+			// Released here so a pass waiting to retry ends at once, and
+			// under the lock Shutdown holds before it waits, so it is
+			// either seen by the waiter or never waited at all.
+			close(s.done)
+		}
 		changed := false
 		for name, run := range s.runs {
 			runs = append(runs, run)
@@ -1941,6 +1984,7 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 	if err != nil {
 		return TaskView{}, err
 	}
+	s.dispatch(context.Background(), view.SessionID)
 	return view, nil
 }
 
@@ -2043,6 +2087,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	if applied.completedSubject != "" && hook != nil {
 		hook(applied.parentSessionID, applied.completedSubject)
 	}
+	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil
 }
 
@@ -2138,6 +2183,9 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 			role, err := normalizeTaskRole(*req.Role)
 			if err != nil {
 				return taskUpdate{}, err
+			}
+			if role != next.Role {
+				next.RoleReported = false
 			}
 			next.Role = role
 		}

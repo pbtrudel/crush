@@ -174,7 +174,9 @@ func TestOldTeamFileLoads(t *testing.T) {
 // Lead may, so an owner cannot turn verification off or rename its role.
 func TestOwnerCannotChangeRoleOrVerify(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestService(t)
+	// Autostart off: the role task below is claimed by hand, and the
+	// dispatcher would otherwise claim it for an implementer first.
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
 	_, err := s.SpawnTeammate(context.Background(), leadName, SpawnRequest{
 		Name: "worker", Description: "d", Prompt: "p", ParentID: pipelineSession,
 	})
