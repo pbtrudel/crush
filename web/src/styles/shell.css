@@ -185,7 +185,9 @@
    wide layout so their baselines do not move. */
 @media (min-width: 1440px) and (max-width: 1463px) {
   .hud:has(.hud__pin-slot) { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
-  .hud:has(.hud__pin-slot) .hud__controls { gap: var(--space-1); }
+  /* Keep the wide layout's instrument gap before the controls; the rest of
+     the strip can take the tighter one. */
+  .hud:has(.hud__pin-slot) .hud__controls { gap: var(--space-1); margin-inline-start: 14px; }
 }
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,

@@ -292,6 +292,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
       const pin = document.querySelector('.hud__pin-slot') as HTMLElement;
       const box = pin.getBoundingClientRect();
       const servers = document.querySelector('.hud__servers')!.getBoundingClientRect();
+      const controls = document.querySelector('.hud__controls')!.getBoundingClientRect();
       // Without the pin is the same page with the toggle out of the layout,
       // which is what a tab with one root session renders.
       const heightWithPin = hud.getBoundingClientRect().height;
@@ -310,6 +311,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
         pinBottom: box.bottom,
         pinHeight: box.height,
         serversBottom: servers.bottom,
+        serverGap: controls.left - servers.right,
         hudBottom: hud.getBoundingClientRect().bottom,
         heightWithPin,
         heightWithoutPin,
@@ -322,6 +324,10 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
     expect(layout.pinHeight).toBeGreaterThanOrEqual(24);
     expect(layout.pinTop).toBeGreaterThanOrEqual(layout.serversBottom - 1);
     expect(layout.pinBottom).toBeLessThanOrEqual(layout.hudBottom);
+    // The wide layout's instrument gap at 1440 is 24px; the pin takes the
+    // tight gutter but must keep that gap before the controls. The tighter
+    // layouts keep at least 8px.
+    expect(layout.serverGap).toBeGreaterThanOrEqual(width === 1440 ? 24 : 8);
     expect(Math.abs(layout.heightWithPin - layout.heightWithoutPin)).toBeLessThanOrEqual(1);
     if (width === 1440) {
       expect(layout.model).toBe(true);
@@ -350,6 +356,8 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
       const hud = document.querySelector('.hud') as HTMLElement;
       const pin = box('.hud__pin-slot');
       const chrono = box('.chronoline');
+      const servers = box('.hud__servers');
+      const controls = box('.hud__controls');
       const pinEl = document.querySelector('.hud__pin-slot') as HTMLElement;
       // A full loadout must not let the pin widen the servers column and
       // wrap the session title, so the strip keeps the same height.
@@ -367,6 +375,7 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
         transmitRight: box('.deck__actions .btn--primary').right,
         pinRight: pin.right,
         pinBottom: pin.bottom,
+        serverGap: controls.left - servers.right,
         hudBottom: box('.hud').bottom,
         chronoLeft: chrono.left,
         chronoRight: chrono.right,
@@ -388,6 +397,7 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
     expect(fit.transmitRight).toBeLessThanOrEqual(width - 16);
     expect(fit.pinRight).toBeLessThanOrEqual(width - 16);
     expect(fit.pinBottom).toBeLessThanOrEqual(fit.hudBottom);
+    expect(fit.serverGap).toBeGreaterThanOrEqual(width === 1440 ? 24 : 8);
     expect(fit.chronoLeft).toBeGreaterThanOrEqual(16);
     expect(fit.chronoRight).toBeLessThanOrEqual(width - 16);
     expect(fit.chronoTop).toBeGreaterThanOrEqual(fit.hudBottom);
