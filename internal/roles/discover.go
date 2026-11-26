@@ -11,10 +11,17 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/charmbracelet/crush/internal/fsext"
 )
 
 //go:embed builtin/*.md
 var builtinFS embed.FS
+
+// maxRoleFileBytes bounds one role file: the largest body plus room for the
+// frontmatter. A bigger file fails the body limit anyway, and the bound
+// keeps a link to /dev/zero from exhausting memory.
+const maxRoleFileBytes = MaxBodyBytes + 4<<10
 
 // layer is one directory of role files at one priority.
 type layer struct {
@@ -99,7 +106,7 @@ func readLayer(l layer) ([]definition, []Diagnostic) {
 			continue
 		}
 		display := l.display(entry.Name())
-		content, err := fs.ReadFile(l.fsys, entry.Name())
+		content, err := fsext.ReadRegularFSFileLimit(l.fsys, entry.Name(), maxRoleFileBytes)
 		if err != nil {
 			diags = append(diags, Diagnostic{Path: display, Message: err.Error()})
 			continue

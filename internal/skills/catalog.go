@@ -3,9 +3,10 @@ package skills
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/charmbracelet/crush/internal/fsext"
 )
 
 // SourceType describes where a visible skill comes from.
@@ -96,7 +97,7 @@ func ReadContent(active []*Skill, skillPaths []string, workingDir string, skillI
 		return content, result, nil
 	}
 
-	content, err := os.ReadFile(skill.SkillFilePath)
+	content, err := fsext.ReadRegularFileLimit(skill.SkillFilePath, MaxSkillFileBytes)
 	if err != nil {
 		return nil, SkillReadResult{}, fmt.Errorf("read skill %q: %w", skillID, err)
 	}
