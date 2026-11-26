@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -106,7 +107,7 @@ func (c *coordinator) runSubAgentMaybeBackground(
 		if !entry.detach(gen) {
 			return takeInline()
 		}
-		return backgroundNotice(label, access, params.Role, params.Prompt, c.backgroundAfter), nil
+		return backgroundNotice(label, access, params.Role, cmp.Or(params.DisplayPrompt, params.Prompt), c.backgroundAfter), nil
 	case <-ctx.Done():
 		// Cancelled before the handoff: stop it and surface the
 		// cancellation, as a blocking call would; no report is written.

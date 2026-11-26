@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/roles"
 )
@@ -337,4 +340,86 @@ func TestAgentStatusShowsEffectiveRoleAccess(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
 	require.Len(t, meta.Agents, 1)
 	require.Equal(t, accessWrite, meta.Agents[0].Access, "an implementer runs write even when the call asked for no access")
+}
+
+// TestRoleAgentToolRunNameSkipsRoleBlock pins that the sidebar run name of a
+// role subagent comes from the task the tool was called with, not from the
+// role block prepended to the prompt the model receives.
+func TestRoleAgentToolRunNameSkipsRoleBlock(t *testing.T) {
+	c, env := newOverrideTestCoordinator(t)
+	path := filepath.Join(t.TempDir(), "agents.json")
+	c.agentRuns = agentrun.New(path)
+
+	tool, err := c.agentTool(t.Context(), config.AgentCoder)
+	require.NoError(t, err)
+
+	parent, err := env.sessions.Create(t.Context(), "parent")
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(t.Context(), parent.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "dispatching"}},
+	})
+	require.NoError(t, err)
+	callCtx := context.WithValue(t.Context(), tools.SessionIDContextKey, parent.ID)
+	callCtx = context.WithValue(callCtx, tools.MessageIDContextKey, assistant.ID)
+	// The run is recorded before the model call, which this test does not
+	// need; the timeout keeps the unreachable test provider from retrying.
+	callCtx, cancel := context.WithTimeout(callCtx, 2*time.Second)
+	defer cancel()
+
+	resp, err := tool.Run(callCtx, fantasy.ToolCall{
+		ID:    "a1",
+		Name:  AgentToolName,
+		Input: `{"prompt":"Inspect the diff.","role":"reviewer"}`,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Content)
+
+	runs := agentrun.Load(path)
+	require.NotEmpty(t, runs, "the agent tool must record its run")
+	require.Equal(t, "Inspect the diff.", runs[0].Name)
+	require.NotContains(t, runs[0].Name, "## Your role:")
+}
+
+// TestBackgroundedRoleTaskKeepsDisplayPrompt pins the task text stored in the
+// background notice: a role block in the prompt must not leak into it.
+func TestBackgroundedRoleTaskKeepsDisplayPrompt(t *testing.T) {
+	const providerID = "test-provider"
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+	coord.interactive = true
+	coord.dispatched = csync.NewMap[string, *dispatchedAgent]()
+	coord.backgroundAfter = 20 * time.Millisecond
+
+	parent, err := env.sessions.Create(t.Context(), "Parent")
+	require.NoError(t, err)
+
+	agent := newMockAgent(providerID, 4096, func(ctx context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	role := roles.Role{Name: "reviewer", Body: "Review."}
+
+	resp, err := coord.runSubAgentMaybeBackground(t.Context(), AgentToolName, accessRead, subAgentParams{
+		Agent:          agent,
+		SessionID:      parent.ID,
+		AgentMessageID: "msg-1",
+		ToolCallID:     "toolcall999999",
+		Prompt:         roles.Block(role) + "long task",
+		DisplayPrompt:  "long task",
+		SessionTitle:   "Test",
+		Role:           role.Name,
+	})
+	require.NoError(t, err)
+
+	var meta AgentBackgroundMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.True(t, meta.Backgrounded)
+	require.Equal(t, "long task", meta.Task)
+	require.NotContains(t, meta.Task, "## Your role:")
+
+	entry, ok := coord.dispatched.Get(dispatchKey(parent.ID, meta.Label))
+	require.True(t, ok)
+	require.True(t, entry.stop("test stop"))
+	require.True(t, entry.awaitSettled(2*time.Second))
 }

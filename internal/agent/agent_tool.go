@@ -199,6 +199,7 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 				AgentMessageID: agentMessageID,
 				ToolCallID:     call.ID,
 				Prompt:         prompt,
+				DisplayPrompt:  params.Prompt,
 				SessionTitle:   "New Agent Session",
 				Role:           roleName,
 			})
