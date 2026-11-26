@@ -79,10 +79,17 @@ type Role struct {
 	Path        string
 }
 
-func Discover(globalDirs, projectDirs []string) (map[string]Role, []Diagnostic)
-func (r Role) EffectiveTools(base []string) []string
-func (r Role) ReadOnly(base []string) bool
-func Block(r Role, effective []string) string
+type Dir struct {
+	Path   string
+	Source Source
+}
+
+func Discover(dirs []Dir, knownTools []string) (map[string]Role, []Diagnostic)
+func (r Role) Allows(tool string) bool
+func (r Role) ReadOnly(writeTools []string) bool
+func (r Role) PinsModel() bool
+func Block(r Role) string
+func Catalog(list []Role) string
 ```
 
 **Search order, lowest to highest priority:**
@@ -137,13 +144,13 @@ Role prompt body.
 Role *roles.Role // nil for coder, task and plan
 ```
 
-`AllowedTools` holds the role's effective tools against the coder's list, and `AllowedMCP` is the coder's. `Config` gains `RoleDirs []roles.Dir` (filled by `setDefaults` from the working directory) and `RoleDiagnostics []roles.Diagnostic`, both `json:"-"`; `crush_info` lists the roles and diagnostics under `[roles]`.
+`AllowedTools` is the coder's list unchanged and `AllowedMCP` is the coder's; the role restriction is enforced at call time (section 1). `Config` gains `RoleDirs []roles.Dir` (filled by `setDefaults` from the working directory) and `RoleDiagnostics []roles.Diagnostic`, both `json:"-"`; `crush_info` lists the roles and diagnostics under `[roles]`.
 
 **Security.** A project role file can only narrow tools; it cannot add one beyond the base list. Hooks and permission prompts still apply. A project role that pins a model is shown in the catalog as `(project, pins model)` so a cloned repository cannot silently move spend to another model.
 
 ### 3. Runtime wiring
 
-**Catalog.** `roles.Catalog(cfg)` renders one line per role, sorted by name:
+**Catalog.** `roles.Catalog` renders one line per role from the loaded list, sorted by name:
 
 ```
 - reviewer (builtin): Challenges assumptions and finds risks in a design or diff.
