@@ -116,17 +116,23 @@ describe('App layout', () => {
     state.value = { ...initialState(), conn: 'live' };
     const root = document.createElement('div');
     // The column holds the side answer and the deck, so it is taller than the
-    // form the AWS card used to be placed above.
+    // form the AWS card used to be placed above. Its top is measured too: on
+    // a short screen the deck runs past the shell, so the card cannot derive
+    // the top from the viewport and the height.
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      const height = this.classList.contains('holodeck__deck') ? 240 : 146;
-      return { height } as DOMRect;
+      const deck = this.classList.contains('holodeck__deck');
+      const height = deck ? 240 : 146;
+      const top = deck ? 320 : 0;
+      return { height, top } as DOMRect;
     });
     try {
       await act(() => { render(<App />, root); });
       expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('240px');
+      expect(document.documentElement.style.getPropertyValue('--deck-top')).toBe('320px');
     } finally {
       await act(() => { render(null, root); });
       expect(document.documentElement.style.getPropertyValue('--deck-h')).toBe('');
+      expect(document.documentElement.style.getPropertyValue('--deck-top')).toBe('');
       vi.restoreAllMocks();
       state.value = initialState();
     }
