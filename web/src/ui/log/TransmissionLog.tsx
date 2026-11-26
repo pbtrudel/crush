@@ -1,3 +1,4 @@
+import { toolFocus } from '../../state/focusTool';
 import { planPending } from '../../state/reducer';
 import { state } from '../../state/store';
 import { PlanHandoff } from './PlanHandoff';
@@ -7,6 +8,9 @@ import { Transcript } from './Transcript';
 export function TransmissionLog() {
   const { messages, sessionId, conn } = state.value;
   const pending = planPending(state.value);
+  // A focus request belongs to the transcript that holds the card, and the
+  // inspector reads its own session's request.
+  const focus = toolFocus.value;
   return (
     <>
       {/* The card is not a live region, so the announcement is its own
@@ -16,6 +20,7 @@ export function TransmissionLog() {
         messages={messages}
         resetKey={sessionId}
         label="Transmissions"
+        focusCallId={focus && focus.sessionId === sessionId ? focus.callId : undefined}
         footer={<><ShellCard /><PlanHandoff /></>}
         empty={conn !== 'booting' && (
           <div class="log__empty">

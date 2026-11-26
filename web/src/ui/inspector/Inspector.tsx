@@ -2,6 +2,7 @@ import type { Ref } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { agentTask, currentTool, findAgent, statusLabel, type Agent } from '../../state/agents';
 import { describeFailure, type Failure } from '../../state/failure';
+import { toolFocus } from '../../state/focusTool';
 import { actions, state } from '../../state/store';
 import { Transcript } from '../log/Transcript';
 import { closeInspector, escapeLeavesDraft } from './escape';
@@ -34,6 +35,8 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
   const main = !!ins && ins.sessionId === s.sessionId;
   const messages = main ? s.messages : ins?.messages ?? [];
   const session = main ? s.session : ins?.session ?? null;
+  const focus = toolFocus.value;
+  const focusCallId = focus && ins && focus.sessionId === ins.sessionId ? focus.callId : undefined;
   const tool = currentTool(messages);
   const task = agent ? agentTask(s.team, agent) : null;
   const running = agent?.status === 'running' || agent?.status === 'provisioning';
@@ -172,7 +175,7 @@ export function Inspector({ panelRef }: { panelRef?: Ref<HTMLElement> } = {}) {
               )}
               {ins.loading
                 ? <p class="hud-label">Loading the transcript</p>
-                : <Transcript messages={messages} resetKey={ins.sessionId} label={`${agent.name} transcript`} empty={<p class="hud-label">No messages yet</p>} />}
+                : <Transcript messages={messages} resetKey={ins.sessionId} label={`${agent.name} transcript`} focusCallId={focusCallId} empty={<p class="hud-label">No messages yet</p>} />}
             </>
           ) : (
             <p class="hud-label inspector__gone">This agent is no longer in the roster.</p>
