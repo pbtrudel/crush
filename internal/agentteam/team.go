@@ -1308,14 +1308,52 @@ func (s *Service) watch(name string, run Run) {
 			})
 			return
 		}
-		text := fmt.Sprintf("Could not resume %s: %s\n\n%s", name, err, resumePrompt(pending))
+		var (
+			held       []string
+			resumeHook func(sessionID string)
+			closed     bool
+		)
+		// The held tasks were this turn's to finish, but the turn that
+		// would have finished them never started. Settle them as a failed
+		// turn in the same write that fails the member, so work a verdict
+		// handed back does not stay in progress under a member that can
+		// no longer run.
 		_ = s.write(mustApply, func() (bool, error) {
-			s.appendMessageLocked(name, leadName, text)
+			if s.closed {
+				closed = true
+				return false, nil
+			}
+			for _, task := range s.state.Tasks {
+				if task.OwnerID == member.ID && task.Status == TaskInProgress {
+					held = append(held, task.ID)
+				}
+			}
+			s.settleTasksLocked(member.ID, err, false)
+			s.failMemberLocked(name, err)
+			s.appendMessageLocked(name, leadName, resumeFailedNotice(name, err, held, pending))
 			s.notifyLocked()
+			resumeHook = s.leadNotifyHook
 			return true, nil
 		})
-		s.failMember(name, err)
+		if closed {
+			return
+		}
+		// The notice names the affected tasks, so wake the Lead after it
+		// lands rather than before.
+		wakeLeads(resumeHook, []string{member.ParentID})
+		s.dispatch(context.Background(), member.ParentID)
 	}
+}
+
+// resumeFailedNotice is the Lead message for a member whose resume start was
+// refused. It names the tasks the refused turn would have finished, so the
+// Lead knows what went back to the board.
+func resumeFailedNotice(name string, err error, tasks []string, pending []Message) string {
+	text := fmt.Sprintf("Could not resume %s: %s", name, err)
+	if len(tasks) > 0 {
+		text += fmt.Sprintf("\n\nTask(s) it left in progress: %s.", strings.Join(tasks, ", "))
+	}
+	return text + "\n\n" + resumePrompt(pending)
 }
 
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
@@ -2293,7 +2331,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 				}
 				s.noteLeadLocked(applied.parentSessionID, fmt.Sprintf(
 					"Could not start %s to fix task %s after a failed verification: %s. The task stays in progress with nobody running it; to continue, %s.",
-					name, applied.taskID, err, taskRecoveryActions(TaskPending)))
+					name, applied.taskID, err, taskRecoveryActions(TaskInProgress)))
 				s.notifyLocked()
 				return true, nil
 			})

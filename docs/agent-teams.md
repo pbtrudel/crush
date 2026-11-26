@@ -234,7 +234,8 @@ teammate and start the work, and finished verified work still moves to
 verifier.
 
 The escalation notice names only the actions that work at the task's current
-status: a pending task can be edited or reassigned with no owner, while an
+status: a pending task can be edited or reassigned with no owner, an
+in-progress task can be released or reassigned with no owner, and an
 `in_review` task can be reopened, completed to accept it, or deleted.
 
 ### Verification

@@ -304,10 +304,14 @@ func scopesText(task Task) string {
 // status. A pending task cannot reopen, and a named reassign of one leaves
 // it in progress with nobody started, so only the actions that work appear.
 func taskRecoveryActions(status TaskStatus) string {
-	if status == TaskInReview {
+	switch status {
+	case TaskInReview:
 		return "reopen it, complete it to accept it as is, or delete it"
+	case TaskInProgress:
+		return "release it, or reassign it with no owner"
+	default:
+		return "edit it, or reassign it with no owner"
 	}
-	return "edit it, or reassign it with no owner"
 }
 
 // escalationNote is the Lead notice for a task the dispatcher gave up on.

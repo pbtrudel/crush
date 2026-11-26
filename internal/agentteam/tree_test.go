@@ -90,7 +90,7 @@ func TestTreeCountsATeammateBeingResumed(t *testing.T) {
 		require.Equal(t, 1, tree.Active, "a teammate being resumed is not idle")
 		require.Zero(t, tree.UnreadByTeammates)
 	case <-time.After(time.Second):
-		t.Fatal("task completed hook was not called")
+		t.Fatal("the Lead notify hook was not called")
 	}
 	require.Eventually(t, func() bool {
 		return runner.promptCount() == 2

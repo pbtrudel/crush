@@ -124,6 +124,40 @@ func TestFailReopensAndWakesTheOwner(t *testing.T) {
 		"verifier-1: Verification of task %s failed:\n\nTestX fails\n\nFix it and complete the task again.", task.ID))
 }
 
+// leadInbox returns every message the Lead has, scoped notices included.
+func leadInbox(t *testing.T, s *Service) []string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var texts []string
+	for _, message := range s.state.Messages {
+		if message.To == leadName {
+			texts = append(texts, message.Text)
+		}
+	}
+	return texts
+}
+
+// runRecorded reports whether the service holds a run for name.
+func runRecorded(s *Service, name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.runs[name]
+	return ok
+}
+
+// memberIDOrEmpty returns the durable ID of name, or "" when the roster has
+// no such member.
+func memberIDOrEmpty(s *Service, name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	member, ok := s.memberLocked(name)
+	if !ok {
+		return ""
+	}
+	return member.ID
+}
+
 // checksFor counts every verification task ever created for originalID,
 // including the deleted and completed ones.
 func checksFor(t *testing.T, s *Service, originalID string) int {
@@ -183,17 +217,17 @@ func TestFailedVerdictWhileTheOwnerTurnRunsKeepsTheTaskInProgress(t *testing.T) 
 	require.Equal(t, TaskCompleted, taskByID(t, s, task.ID).Status)
 }
 
-// failOnWakeRunner starts every turn until failFor names a member, then
+// refusingStartRunner starts every turn until failFor names a member, then
 // refuses that member's starts, the way a model the config no longer serves
 // does.
-type failOnWakeRunner struct {
+type refusingStartRunner struct {
 	*fakeRunner
 	mu      sync.Mutex
 	name    string
 	failing bool
 }
 
-func (r *failOnWakeRunner) Start(ctx context.Context, member Member, prompt string) (Run, error) {
+func (r *refusingStartRunner) Start(ctx context.Context, member Member, prompt string) (Run, error) {
 	r.mu.Lock()
 	failing := r.failing && member.Name == r.name
 	r.mu.Unlock()
@@ -203,10 +237,100 @@ func (r *failOnWakeRunner) Start(ctx context.Context, member Member, prompt stri
 	return r.fakeRunner.Start(ctx, member, prompt)
 }
 
-func (r *failOnWakeRunner) failFor(name string) {
+func (r *refusingStartRunner) failFor(name string) {
 	r.mu.Lock()
 	r.name, r.failing = name, true
 	r.mu.Unlock()
+}
+
+// TestHeldResumeFailsReleasesTheTask pins the case a held settle opens: the
+// owner's turn ends with the failure notes queued, and the start that would
+// deliver them is refused. The held task must go back to the board as a
+// failed turn, with the failed resume charged, instead of staying in progress
+// under a member that can no longer run. The next failed verification then
+// reaches the attempts cap.
+func TestHeldResumeFailsReleasesTheTask(t *testing.T) {
+	t.Parallel()
+	runner := &refusingStartRunner{fakeRunner: newFakeRunner()}
+	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, runner)
+	require.NoError(t, err)
+	t.Cleanup(s.Shutdown)
+
+	woken := make(chan bool, 32)
+	s.SetLeadNotifyHook(func(string) {
+		mentioned := false
+		for _, note := range leadInbox(t, s) {
+			if strings.Contains(note, "Could not resume") {
+				mentioned = true
+			}
+		}
+		woken <- mentioned
+	})
+
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	require.Eventually(t, func() bool {
+		got := taskByID(t, s, task.ID)
+		return got.Status == TaskInProgress && got.OwnerID != "" &&
+			got.OwnerID == memberIDOrEmpty(s, "implementer-1") && runRecorded(s, "implementer-1")
+	}, time.Second, 10*time.Millisecond, "implementer-1 owns the task and its turn runs")
+
+	// The implementer completes, and the verdict fails while its turn is
+	// still running, so the notes wait in its inbox.
+	act(t, s, "implementer-1", task.ID, "complete", nil)
+	check := verificationTaskFor(t, s, task.ID)
+	act(t, s, ownerName(t, s, check.ID), check.ID, "fail", func(r *UpdateTaskRequest) {
+		r.Notes = "TestX fails"
+	})
+	require.Equal(t, TaskInProgress, taskByID(t, s, task.ID).Status, "the verdict hands the task back")
+
+	runner.failFor("implementer-1")
+	runner.finish("implementer-1")
+
+	notice := ""
+	require.Eventually(t, func() bool {
+		for _, note := range leadInbox(t, s) {
+			if strings.Contains(note, "Could not resume implementer-1") {
+				notice = note
+				return true
+			}
+		}
+		return false
+	}, time.Second, 10*time.Millisecond, "the Lead is told the resume failed")
+	require.Contains(t, notice, "Task(s) it left in progress: "+task.ID+".", "the notice names the stranded task")
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case after := <-woken:
+				if after {
+					return true
+				}
+			default:
+				return false
+			}
+		}
+	}, time.Second, 10*time.Millisecond, "the Lead is woken after the notice lands")
+
+	// The verdict charged one attempt and the failed resume another, and
+	// the released task reaches a fresh implementer because the failed
+	// member is never reused.
+	require.Eventually(t, func() bool {
+		got := taskByID(t, s, task.ID)
+		return got.Attempts == 2 && got.Status == TaskInProgress &&
+			got.OwnerID != "" && got.OwnerID == memberIDOrEmpty(s, "implementer-2") &&
+			runRecorded(s, "implementer-2")
+	}, time.Second, 10*time.Millisecond, "the released task reaches a fresh implementer")
+
+	// The next failed verification reaches the cap and escalates.
+	act(t, s, "implementer-2", task.ID, "complete", nil)
+	next := verificationTaskFor(t, s, task.ID)
+	act(t, s, ownerName(t, s, next.ID), next.ID, "fail", func(r *UpdateTaskRequest) {
+		r.Notes = "still broken"
+	})
+	got := taskByID(t, s, task.ID)
+	require.True(t, got.Escalated, "the third failure escalates the task")
+	require.Equal(t, maxTaskAttempts, got.Attempts)
+	require.Equal(t, TaskInReview, got.Status)
+	require.NotContains(t, runner.memberNames(), "implementer-3", "an escalated task starts nobody")
 }
 
 // TestFailedWakeAfterFailNoticesTheLead pins the stranded case: a fail
@@ -216,7 +340,7 @@ func (r *failOnWakeRunner) failFor(name string) {
 // nobody reads.
 func TestFailedWakeAfterFailNoticesTheLead(t *testing.T) {
 	t.Parallel()
-	runner := &failOnWakeRunner{fakeRunner: newFakeRunner()}
+	runner := &refusingStartRunner{fakeRunner: newFakeRunner()}
 	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{Autostart: func() bool { return false }}, runner)
 	require.NoError(t, err)
 	t.Cleanup(s.Shutdown)
@@ -246,7 +370,7 @@ func TestFailedWakeAfterFailNoticesTheLead(t *testing.T) {
 	require.Len(t, notes, 1)
 	require.Contains(t, notes[0], task.ID)
 	require.Contains(t, notes[0], "model unavailable")
-	require.Contains(t, notes[0], "edit it, or reassign it with no owner")
+	require.Contains(t, notes[0], "release it, or reassign it with no owner")
 }
 
 func TestThirdFailEscalatesInReview(t *testing.T) {
