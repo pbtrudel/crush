@@ -6,7 +6,16 @@ Sub-project 2 of role-based orchestration. Sub-project 1 (agent roles, `docs/sup
 
 The Lead should not have to start every teammate by hand. A task on the shared board can name a role; when it becomes ready, the team service starts a teammate of that role on it. Finished implementer work is checked by a verifier before the tasks that depend on it start. A teammate cannot edit files outside the write scopes of the task it claimed. Everything is deterministic Go in the team service: coordination costs no model tokens, and it behaves the same in the TUI, web mode and `crush run`.
 
-Prompt caching stays the first constraint: no part of this changes a tool definition or a system prompt. Pipeline text travels in messages only.
+Prompt caching stays the first constraint: no tool definition, tool list or system prompt may differ between the Lead and any teammate. Pipeline text travels in messages only. Two static changes happen once, with the same bytes for every agent: the Policy sentence (section 1) and the new optional parameters `role` and `verify` on `team_task_create` and `role`, `verify`, `notes` on `team_task_update`.
+
+Decisions made while planning (see the plan for detail):
+- A dispatch pass only considers the Lead session tree of the write that triggered it, so one Lead's board never starts another Lead's teammates.
+- Lead notices (escalation, removed role) come from a "Crush" sender scoped to that Lead's session, so they reach only that Lead's inbox and wake it.
+- A failed teammate turn on a role task counts as an attempt; an interrupted turn escalates at once, so a teammate the Lead stopped is not restarted on its own.
+- `reopen` also accepts an `in_review` task, so the Lead can recover a task escalated after three failed verifications.
+- `Task.RoleReported` records that a removed role was reported. Task roles are at most 60 characters, so `<role>-<n>` fits the 64-character member name limit.
+- Verification tasks do not count against `MaxTasks`.
+- Skills are bounded in `Parse` and in `ReadContent` (`internal/skills/catalog.go`); there is no `ReadSkill`.
 
 Non-goals: per-teammate worktrees, enforcing write scopes for `bash`, an LLM "manager" agent, running the eval suite.
 
@@ -119,7 +128,7 @@ The scope gate sits outside the hook wrapper, so a refused call runs no hook and
 ### 5. Bug fixes A, B, C
 
 - **A.** `func (h *hookedTool) MCP() string` returns the inner tool's `MCP()`, or `""`. The Lead's MCP tools are filtered again, and the Lead's tools block matches its teammates' when a server is disabled or a channel is active.
-- **B.** `fsext.ReadRegularFileLimit(path string, max int64) ([]byte, error)` and an `fs.FS` variant `fsext.ReadRegularFSFileLimit(fsys fs.FS, name string, max int64)`. Both stat first (following symlinks), refuse anything that is not a regular file before opening it, and read at most `max` bytes, failing above. Roles use `MaxBodyBytes + 4 KiB`; skills use a new `skills.MaxSkillFileBytes = 256 KiB` in `Parse` and `ReadSkill`. A refused file is a diagnostic, like any other broken file.
+- **B.** `fsext.ReadRegularFileLimit(path string, max int64) ([]byte, error)` and an `fs.FS` variant `fsext.ReadRegularFSFileLimit(fsys fs.FS, name string, max int64)`. Both stat first (following symlinks), refuse anything that is not a regular file before opening it, and read at most `max` bytes, failing above. Roles use `MaxBodyBytes + 4 KiB`; skills use a new `skills.MaxSkillFileBytes = 256 KiB` in `Parse` and `ReadContent`. A refused file is a diagnostic, like any other broken file.
 - **C.** The fork prefix is prepended only on a member's first turn (`teammateFirstTurn`), like the role block.
 
 ### 6. Errors
