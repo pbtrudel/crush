@@ -225,7 +225,7 @@ The full files, frontmatter and body, are in [Appendix A](#appendix-a-built-in-r
 4. **Gate:** refuses tools outside the allow-list, always passes team tools, runs before hooks and permissions, matches `*` patterns against MCP tools that connect after the role loads.
 5. **Wiring:** `role` on `spawn_teammate`, `agent_dispatch` and `agent`; model precedence; the `access` narrowing rules; `role_name` round-trips through `team.json`; a role-less spawn produces today's request bytes.
 6. **Compaction:** after a summary, an agent with a role gets the role block at the top of the state message; one without gets today's block.
-7. **Prompt quality:** the built-in bodies are compared on the `internal/eval` task suite, role-less teammates against role teammates, before shipping. Results go in the PR description.
+7. **Prompt quality:** deferred. The first release ships without an eval run, by decision of the project owner on 2026-11-26. `evals/experiments/2026-11-25-agent-roles.yaml` holds a regression comparison (main against this branch) that can be run later; a fair test of the prompts also needs an arm that forces roles, since the Lead picks one only when it chooses to.
 
 ### 7. Documentation
 
@@ -238,7 +238,7 @@ Automatic claiming of ready tasks, hand-off when a task completes, waking the Le
 
 ## Appendix A: Built-in role files
 
-These are the literal contents of `internal/roles/builtin/*.md`. Prompt quality is judged on the eval suite (Testing, item 7), and wording changes after that run go back into this appendix.
+These are the literal contents of `internal/roles/builtin/*.md`. Prompt quality is not yet measured (Testing, item 7); wording changes after a later eval run go back into this appendix.
 
 ### architect.md
 
