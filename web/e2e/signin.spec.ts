@@ -1,11 +1,12 @@
 import type { Locator, Page } from '@playwright/test';
 import {
-  awsTest, expect, m4FreshTest, m4Test, signinDoneTest, type Gateway,
+  awsTest, expect, m4FreshTest, m4bAwsTest, m4Test, signinDoneTest, type Gateway,
 } from './fixture';
 
 // Each test starts its own webfake, and a cold build of it counts towards the
 // test's own timeout.
 awsTest.setTimeout(60_000);
+m4bAwsTest.setTimeout(60_000);
 m4FreshTest.setTimeout(60_000);
 m4Test.setTimeout(60_000);
 signinDoneTest.setTimeout(60_000);
@@ -162,6 +163,32 @@ awsTest('keeps the AWS SSO card above an open side answer', async ({ page, gatew
     await expect.poll(async () => (await edge('.aws-sso', 'top')) - (await edge('.hud', 'bottom')), {
       message: `the card starts below the HUD at ${viewport.width}px`,
     }).toBeGreaterThanOrEqual(-0.5);
+    await expect(card.getByRole('heading', { name: 'AWS sign-in' })).toBeVisible();
+  }
+});
+
+// The chronoline joins the deck column, so --deck-h must measure it too: the
+// card sits above the strip at a desktop width. Below 768px the chronoline
+// hides, so the card only has to clear the column the strip lives in.
+m4bAwsTest('keeps the AWS SSO card above the chronoline', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  const card = page.locator('.aws-sso');
+  await expect(card.getByRole('link', { name: 'Open the AWS sign-in page' })).toBeVisible();
+  await expect(page.locator('.chronoline')).toBeVisible();
+
+  const edge = async (selector: string, side: 'top' | 'bottom') => {
+    const box = await page.locator(selector).boundingBox();
+    if (box === null) return side === 'top' ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+    return side === 'top' ? box.y : box.y + box.height;
+  };
+
+  for (const viewport of [{ width: 1440, height: 860 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const above = viewport.width >= 768 ? '.chronoline' : '.holodeck__deck';
+    await expect.poll(async () => (await edge('.aws-sso', 'bottom')) - (await edge(above, 'top')), {
+      message: `the card clears the chronoline at ${viewport.width}px`,
+    }).toBeLessThanOrEqual(0.5);
     await expect(card.getByRole('heading', { name: 'AWS sign-in' })).toBeVisible();
   }
 });

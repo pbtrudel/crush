@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, api } from '../../api/http';
-import type { FileDiff } from '../../api/types';
+import type { FileDiff, Message } from '../../api/types';
 import { findAgent, type Agent } from '../../state/agents';
 import { diffMode, setDiffMode, type DiffMode } from '../../state/drawer';
+import { focusToolCall } from '../../state/focusTool';
 import { actions, state } from '../../state/store';
 import { relativePath } from './fileGroups';
+
+// toolCallName finds the name of a call the loaded messages hold, so the
+// drawer can say which tool wrote a version.
+function toolCallName(messages: Message[], id: string): string | null {
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (p.type === 'tool_call' && p.data.id === id) return p.data.name;
+    }
+  }
+  return null;
+}
 
 function lineKind(line: string): 'add' | 'rem' | 'hunk' | 'ctx' {
   if (line.startsWith('@@')) return 'hunk';
@@ -84,6 +96,18 @@ export function DiffPanel({ path }: { path: string }) {
     setRange({ from: diff?.from, to: diff?.to, [key]: v });
   };
   const editors = (file?.session_ids ?? []).map((id) => findAgent(s, id)).filter((a): a is Agent => a !== null);
+  // The versions the range shows, newest side first, each with the tool call
+  // that recorded it when one was tagged.
+  const made = diff
+    ? (diff.from === diff.to ? [diff.to] : [diff.to, diff.from]).map((version) => {
+      const index = versions.indexOf(version);
+      const tool = index < 0 ? undefined : file?.version_tools[index];
+      return { version, sessionId: tool?.session_id, callId: tool?.tool_call_id };
+    })
+    : [];
+  // A range with nothing to link says nothing: the drawer has a fixed height
+  // and a row of placeholders would only shrink the diff.
+  const linked = made.some((m) => m.callId !== undefined);
 
   const versionOptions = versions.map((v) => <option key={v} value={String(v)}>Version {v}</option>);
 
@@ -116,6 +140,21 @@ export function DiffPanel({ path }: { path: string }) {
           </div>
         </div>
       </header>
+      {linked && (
+        <p class="diffpanel__made hud-label">
+          {made.map(({ version, sessionId, callId }) => (
+            <span key={version} class="diffpanel__made-line">
+              {callId && sessionId
+                ? (
+                  <button type="button" class="link-button" onClick={() => focusToolCall(sessionId, callId)}>
+                    Made by {toolCallName(s.messages, callId) ?? 'a tool'} in {findAgent(s, sessionId)?.name ?? 'another agent'}
+                  </button>
+                )
+                : 'Recorded before the change'}
+            </span>
+          ))}
+        </p>
+      )}
       {error && (
         <p class="diffpanel__error" role="alert">{error}{' '}
           <button type="button" class="link-button" onClick={() => setAttempt((n) => n + 1)}>Retry</button>
