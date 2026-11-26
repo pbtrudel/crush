@@ -3,6 +3,7 @@ package webtest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -61,6 +62,40 @@ const parserV2 = "package parser\n\n// Parse reads one token stream.\nfunc Parse
 
 func (f *Fake) parserPath() string {
 	return filepath.Join(f.WorkingDir(), "internal", "parser", "parser.go")
+}
+
+// SeedToolCalls appends count finished tool calls to the current session, so
+// a browser test can draw the chronoline with a strip far wider than the
+// window. One assistant message holds them all, the way a single long turn
+// does.
+func SeedToolCalls(f *Fake, count int, clock time.Time) {
+	if count <= 0 {
+		return
+	}
+	// Four categories with path-like targets keep each entry close to the
+	// width a real call takes.
+	calls := []struct{ name, input string }{
+		{"grep", `{"pattern":"func ParseTokenStream"}`},
+		{"view", `{"file_path":"internal/parser/parser.go"}`},
+		{"bash", `{"command":"go test ./internal/parser/..."}`},
+		{"edit", `{"file_path":"web/src/state/chronoline.ts"}`},
+	}
+	parts := make([]message.ContentPart, 0, count)
+	for i := range count {
+		call := calls[i%len(calls)]
+		parts = append(parts, message.ToolCall{
+			ID:       fmt.Sprintf("overflow-tc-%d", i),
+			Name:     call.name,
+			Input:    call.input,
+			Finished: true,
+		})
+	}
+	at := clock.Unix()
+	f.AddMessage(message.Message{
+		ID: "overflow-a", SessionID: "s1", Role: message.Assistant,
+		CreatedAt: at, UpdatedAt: at, Model: "claude-haiku", Provider: "anthropic",
+		Parts: parts,
+	})
 }
 
 // SeedHolodeck gives the fake a teammate, a subagent, edited files and
