@@ -52,7 +52,7 @@ describe('FileDrawer', () => {
       ...reduce(initialState(), fx.snapshot),
       files: [{
         path: '/repo/big.go', versions: 2, version_ids: [0, 1], additions: 0, removals: 0,
-        diagnostics: { error: 0, warning: 0 }, updated_at: 1, session_ids: ['s1'], stats_unknown: true,
+        diagnostics: { error: 0, warning: 0 }, updated_at: 1, session_ids: ['s1'], version_tools: [], stats_unknown: true,
       }],
     };
     await act(() => { render(<FileDrawer />, root); });

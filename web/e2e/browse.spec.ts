@@ -89,3 +89,71 @@ m4bTest('returns from the browsed deck at 760 by 900', async ({ page, gateway })
   await expect(page.getByLabel('Transmit to crush')).toBeEditable();
   await expect(page.getByRole('button', { name: 'Session: Holodeck test. Switch session' })).toBeVisible();
 });
+
+// Both surfaces resolve to the same action: scroll the log to the tool card,
+// open it and put the focus on it.
+m4bTest('focuses a seeded tool call from the chronoline and the drawer', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await linked(page);
+
+  const timeline = page.getByRole('list', { name: 'Timeline of tool calls' });
+  await expect(timeline).toBeVisible();
+  const events = timeline.getByRole('button');
+  await expect(events).toHaveCount(2);
+  await expect(events.nth(0)).toHaveAttribute('data-call-id', 'tc-edit-1');
+  await expect(events.nth(1)).toHaveAttribute('data-call-id', 'tc-edit-2');
+
+  await events.nth(1).click();
+  const second = page.locator('details.tool[data-tool-call-id="tc-edit-2"]');
+  await expect(second).toHaveAttribute('open', '');
+  await expect(second.locator('summary')).toBeFocused();
+  await expect(second).toBeInViewport();
+
+  // The drawer's link for tc-edit-1 reaches the other card. To picks a
+  // single version, so the panel draws one line, not a recorded and a
+  // linked one. The drawer has its own column at this width, so it stays
+  // open and the reader can step through versions.
+  await page.getByRole('button', { name: /^Files/ }).click();
+  const drawer = page.locator('#file-drawer');
+  await page.locator('.drawer__list').getByRole('button', { name: /parser\.go/ }).click();
+  const to = page.locator('select[name="to"]');
+  await expect(to.locator('option[value="3"]')).toHaveCount(1);
+  await to.selectOption('3');
+  const made = page.locator('.diffpanel__made');
+  const link = made.getByRole('button', { name: 'Made by edit in Coder' });
+  await expect(link).toBeVisible();
+  await link.click();
+
+  await expect(drawer).toHaveAttribute('data-open', 'true');
+  const first = page.locator('details.tool[data-tool-call-id="tc-edit-1"]');
+  await expect(first).toHaveAttribute('open', '');
+  await expect(first.locator('summary')).toBeFocused();
+  await expect(first).toBeInViewport();
+});
+
+// Between 1024 and 1279 the drawer covers the log column and the log is
+// inert under it, so a version link has to close the drawer before the card
+// can take the focus.
+m4bTest('focuses a version link at 1100 wide', async ({ page, gateway }) => {
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto(gateway.launch);
+  await linked(page);
+
+  await page.getByRole('button', { name: /^Files/ }).click();
+  const drawer = page.locator('#file-drawer');
+  await expect(drawer).toHaveAttribute('data-open', 'true');
+  await page.locator('.drawer__list').getByRole('button', { name: /parser\.go/ }).click();
+  const to = page.locator('select[name="to"]');
+  await expect(to.locator('option[value="3"]')).toHaveCount(1);
+  await to.selectOption('3');
+  const link = page.locator('.diffpanel__made').getByRole('button', { name: 'Made by edit in Coder' });
+  await expect(link).toBeVisible();
+  await link.click();
+
+  await expect(drawer).toHaveAttribute('data-open', 'false');
+  await expect(page.locator('.panel--log')).not.toHaveAttribute('inert');
+  const card = page.locator('details.tool[data-tool-call-id="tc-edit-1"]');
+  await expect(card).toHaveAttribute('open', '');
+  await expect(card.locator('summary')).toBeFocused();
+  await expect(card).toBeInViewport();
+});
