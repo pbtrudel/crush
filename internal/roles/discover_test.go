@@ -119,6 +119,23 @@ func TestDiscoverDiagnostics(t *testing.T) {
 	require.NotContains(t, joined, "notes.txt")
 }
 
+func TestDiscoverSkipsAllUnknownTools(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeRole(t, dir, "hollow", "---\nname: hollow\ndescription: d\ntools: View, Grep\n---\nBody.\n")
+
+	found, diags := Discover([]Dir{{Path: dir, Source: SourceGlobal}}, []string{"view", "grep"})
+	require.NotContains(t, found, "hollow", "a role with no usable tool must not load as an empty allow-list")
+
+	var text []string
+	for _, d := range diags {
+		text = append(text, d.String())
+	}
+	joined := strings.Join(text, "\n")
+	require.Contains(t, joined, `hollow.md: unknown tool "View" dropped`)
+	require.Contains(t, joined, "hollow.md: no known tools left after dropping unknown names; role skipped")
+}
+
 func TestDiscoverBuiltinToolsAreKnown(t *testing.T) {
 	t.Parallel()
 	// Mirrors config.AllToolNames(); config imports roles, so the list is

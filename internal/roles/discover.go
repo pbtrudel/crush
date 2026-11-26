@@ -68,6 +68,12 @@ func Discover(dirs []Dir, knownTools []string) (map[string]Role, []Diagnostic) {
 				continue
 			}
 			role.Tools, diags = dropUnknownTools(role, knownTools, diags)
+			// An allow-list emptied by the drop would leave a role that
+			// can call nothing but team tools, so it is skipped instead.
+			if role.Tools != nil && len(role.Tools) == 0 {
+				diags = append(diags, Diagnostic{Path: role.Path, Message: "no known tools left after dropping unknown names; role skipped"})
+				continue
+			}
 			found[role.Name] = role
 		}
 	}
