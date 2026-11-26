@@ -71,9 +71,8 @@ func TestListAllSkillsPath(t *testing.T) {
 	require.Equal(t, "/v1/workspaces/ws1/skills/all", path)
 }
 
-// TestListAllSkillsPropagatesErrorStatus verifies the SDK mirrors
-// ListSkills' bare status check: a non-200 answer is an error, not a
-// catalog decoded from whatever body came with it.
+// TestListAllSkillsPropagatesErrorStatus verifies a non-200 answer is an
+// error, not a catalog decoded from whatever body came with it.
 func TestListAllSkillsPropagatesErrorStatus(t *testing.T) {
 	t.Parallel()
 
@@ -86,4 +85,85 @@ func TestListAllSkillsPropagatesErrorStatus(t *testing.T) {
 	c := captureClient(t, srv)
 	_, err := c.ListAllSkills(context.Background(), "ws1")
 	require.Error(t, err)
+}
+
+// TestSkillListServerErrorCarriesMessage pins that both list calls decode
+// the server's error body, the way the rest of the SDK reports a failed
+// call, instead of discarding the message.
+func TestSkillListServerErrorCarriesMessage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"catalog unavailable"}`))
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	_, err := c.ListSkills(context.Background(), "ws1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "status code 500")
+	require.Contains(t, err.Error(), "catalog unavailable")
+	require.NotErrorIs(t, err, ErrNotFound)
+
+	_, err = c.ListAllSkills(context.Background(), "ws1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "status code 500")
+	require.Contains(t, err.Error(), "catalog unavailable")
+	require.NotErrorIs(t, err, ErrNotFound)
+}
+
+// TestListSkillsMapsNotFound pins the shared status mapping: a 404 from a
+// workspace the server no longer knows is ErrNotFound, carrying the
+// server's message, so the workspace layer can treat it as gone.
+func TestListSkillsMapsNotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"workspace not found"}`))
+	}))
+	defer srv.Close()
+
+	_, err := captureClient(t, srv).ListSkills(context.Background(), "ws1")
+	require.ErrorIs(t, err, ErrNotFound)
+	require.Contains(t, err.Error(), "workspace not found")
+}
+
+// TestListAllSkillsMapsNotFound pins the same 404 mapping for the full-set
+// route: a JSON error body means the server knows the route and has lost
+// the workspace.
+func TestListAllSkillsMapsNotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"workspace not found"}`))
+	}))
+	defer srv.Close()
+
+	_, err := captureClient(t, srv).ListAllSkills(context.Background(), "ws1")
+	require.ErrorIs(t, err, ErrNotFound)
+	require.Contains(t, err.Error(), "workspace not found")
+}
+
+// TestListAllSkillsMissingRouteIsUnsupported pins the older-server answer:
+// a 404 with no server error body is Go's mux replying to a route the
+// server does not have. It must read as unsupported so a caller can fall
+// back to the visible set instead of treating the workspace as gone.
+func TestListAllSkillsMissingRouteIsUnsupported(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/workspaces/ws1/skills", func(http.ResponseWriter, *http.Request) {})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := captureClient(t, srv).ListAllSkills(context.Background(), "ws1")
+	require.ErrorIs(t, err, ErrUnsupported)
+	require.NotErrorIs(t, err, ErrNotFound)
+	require.Contains(t, err.Error(), "status code 404")
 }

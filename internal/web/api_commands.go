@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 const (
@@ -263,11 +264,16 @@ func (g *Gateway) handleListSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 // listAllSkills lists every discovered skill, falling back to the active
-// set when the full set cannot be read, so the list never empties.
+// set when the full set cannot be read, so the list never empties. A lost
+// link is the exception: the active set cannot answer it either, and the
+// route must report the state instead of a partial list.
 func (g *Gateway) listAllSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
 	entries, err := g.ws.ListAllSkills(ctx)
 	if err == nil {
 		return entries, nil
+	}
+	if errors.Is(err, workspace.ErrWorkspaceGone) || errors.Is(err, workspace.ErrServerUnreachable) {
+		return nil, err
 	}
 	slog.Warn("Failed to list every skill; using the active set", "error", err)
 	return g.ws.ListSkills(ctx)

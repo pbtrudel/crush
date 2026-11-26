@@ -2,12 +2,14 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,6 +58,37 @@ func TestSkillsListFallsBackWhenTheFullCatalogFails(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
 	require.Contains(t, string(body), `"name":"go-tests"`)
 	require.NotContains(t, string(body), "catalog unavailable")
+}
+
+// TestReconnectingOnSkillsRoute drives both lost-link states through the
+// skills list: each answers 503 with its own code and the fixed sentence,
+// and the route does not fall back to the visible set, which cannot answer
+// a lost link either.
+func TestReconnectingOnSkillsRoute(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"workspace gone", workspace.ErrWorkspaceGone, "workspace_gone"},
+		{"server unreachable", fmt.Errorf("list every skill: %w", workspace.ErrServerUnreachable), "server_unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, f := startTest(t)
+			f.AddSkill(skills.CatalogEntry{ID: "a", Name: "go-tests"}, "")
+			f.SetAllSkillsErr(tc.err)
+
+			rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/skills", "")
+			rsp.Body.Close()
+			require.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode, string(body))
+			require.Contains(t, string(body), tc.code)
+			require.Contains(t, string(body), "Crush is reconnecting to its server. Try again in a moment.")
+			require.Contains(t, f.CallLog(), "ListAllSkills")
+			require.NotContains(t, f.CallLog(), "ListSkills", "a lost link answers before the fallback runs")
+		})
+	}
 }
 
 // TestSkillGlobalToggle pins the global skill toggle: the body's flag

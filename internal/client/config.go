@@ -223,8 +223,8 @@ func (c *Client) ListSkills(ctx context.Context, id string) ([]proto.SkillInfo, 
 		return nil, fmt.Errorf("failed to list skills: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list skills: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to list skills: %w", err)
 	}
 	var skills []proto.SkillInfo
 	if err := json.NewDecoder(rsp.Body).Decode(&skills); err != nil {
@@ -234,15 +234,17 @@ func (c *Client) ListSkills(ctx context.Context, id string) ([]proto.SkillInfo, 
 }
 
 // ListAllSkills retrieves every discovered skill for a workspace,
-// including the ones the config or the repository disabled.
+// including the ones the config or the repository disabled. A server that
+// predates the route answers 404, reported as [ErrUnsupported] so callers
+// can fall back to [Client.ListSkills].
 func (c *Client) ListAllSkills(ctx context.Context, id string) ([]proto.SkillInfo, error) {
 	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/skills/all", id), nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list all skills: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list all skills: status code %d", rsp.StatusCode)
+	if err := checkStatusAllowMissingRoute(rsp); err != nil {
+		return nil, fmt.Errorf("failed to list all skills: %w", err)
 	}
 	var skills []proto.SkillInfo
 	if err := json.NewDecoder(rsp.Body).Decode(&skills); err != nil {
