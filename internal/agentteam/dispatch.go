@@ -276,16 +276,20 @@ func (s *Service) addAutoMemberLocked(task Task) Member {
 // text in a message, so the role block before it on a first turn stays the
 // shared prefix of every sibling with that role.
 func taskBrief(task Task) string {
-	scopes := "none"
-	if len(task.WriteScopes) > 0 {
-		scopes = strings.Join(task.WriteScopes, ", ")
-	}
 	last := fmt.Sprintf("Complete it with team_task_update (action \"complete\", expected_revision %d) when the acceptance criteria are met.", task.Revision)
 	if task.Verifies != "" {
 		last = `Record your verdict with team_task_update, action "pass", or action "fail" with notes describing what failed.`
 	}
 	return fmt.Sprintf("Task %s on the shared board was claimed for you: %s\n\n%s\n\nWrite scopes: %s\n%s",
-		task.ID, task.Subject, task.Description, scopes, last)
+		task.ID, task.Subject, task.Description, scopesText(task), last)
+}
+
+// scopesText renders a task's write scopes for a message.
+func scopesText(task Task) string {
+	if len(task.WriteScopes) == 0 {
+		return "none"
+	}
+	return strings.Join(task.WriteScopes, ", ")
 }
 
 // escalationNote is the Lead notice for a task the dispatcher gave up on.

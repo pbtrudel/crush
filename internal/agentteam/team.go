@@ -1064,6 +1064,23 @@ var (
 
 // startRun starts one turn and records the live run.
 func (s *Service) startRun(ctx context.Context, member Member, prompt string) (MemberView, error) {
+	return s.beginRun(ctx, member, prompt, nil)
+}
+
+// startMail starts the turn that delivers the messages a wake drained. Mail
+// that loses the race to another start goes back to the inbox, so the turn
+// already starting delivers it instead of losing it.
+func (s *Service) startMail(ctx context.Context, member Member, messages []Message) (MemberView, error) {
+	if len(messages) == 0 {
+		return MemberView{}, nil
+	}
+	return s.beginRun(ctx, member, resumePrompt(messages), messages)
+}
+
+// beginRun marks member starting and starts its turn. requeue is the mail the
+// prompt was built from, if any: a start that finds the member already
+// starting puts it back, because that turn is the one that will read it.
+func (s *Service) beginRun(ctx context.Context, member Member, prompt string, requeue []Message) (MemberView, error) {
 	s.mu.Lock()
 	runner := s.runner
 	if runner == nil {
@@ -1073,11 +1090,37 @@ func (s *Service) startRun(ctx context.Context, member Member, prompt string) (M
 	if s.starting[member.Name] {
 		view := s.viewLocked(s.stateMemberLocked(member.Name))
 		s.mu.Unlock()
+		s.requeueMail(requeue)
 		return view, nil
 	}
 	s.starting[member.Name] = true
 	s.mu.Unlock()
 	return s.launch(ctx, runner, member, prompt)
+}
+
+// requeueMail puts mail no turn will read back in the inbox, so the turn
+// already starting for the member delivers it at its next step or when it
+// settles. Callers must not hold s.mu.
+func (s *Service) requeueMail(messages []Message) {
+	if len(messages) == 0 {
+		return
+	}
+	_ = s.write(mustApply, func() (bool, error) {
+		changed := false
+		for _, message := range messages {
+			for i := range s.state.Messages {
+				if s.state.Messages[i].ID != message.ID || !s.state.Messages[i].Delivered {
+					continue
+				}
+				s.state.Messages[i].Delivered = false
+				changed = true
+			}
+		}
+		if changed {
+			s.notifyLocked()
+		}
+		return changed, nil
+	})
 }
 
 // launch runs one turn for a member the caller already marked as starting,
@@ -1269,13 +1312,17 @@ func (s *Service) watch(name string, run Run) {
 }
 
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
-// A successful turn completes them; a failed or interrupted turn releases
-// them back to the board so they never stay half-done forever. It returns
-// the report labels and the subjects of the completed tasks.
+// A successful turn completes them, or sends them to review when they are
+// verified; a verification task is never completed this way, because a
+// verifier that never decides must not pass work by default. A failed or
+// interrupted turn releases them back to the board so they never stay
+// half-done forever. It returns the report labels and the subjects of the
+// completed tasks.
 func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, completed []string) {
 	if ownerID == "" || ownerID == leadName {
 		return nil, nil
 	}
+	var review []int
 	for i := range s.state.Tasks {
 		task := &s.state.Tasks[i]
 		if task.OwnerID != ownerID || task.Status != TaskInProgress {
@@ -1288,11 +1335,31 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" released")
 			s.countFailedTurnLocked(task, runErr)
+		case task.Verifies != "":
+			task.Status = TaskPending
+			task.OwnerID = ""
+			task.Attempts++
+			settled = append(settled, task.ID+" released without a verdict")
+			if task.Attempts >= maxTaskAttempts {
+				task.Escalated = true
+				s.noteLeadLocked(task.SessionID, fmt.Sprintf(
+					"Task %s (%s) got no verdict from its verifier %d times. It is escalated; edit, reassign or reopen it to continue.",
+					task.ID, task.Subject, task.Attempts))
+			}
+		case task.needsVerification():
+			task.Status = TaskInReview
+			settled = append(settled, task.ID+" in review")
+			review = append(review, i)
 		default:
 			task.Status = TaskCompleted
 			settled = append(settled, task.ID+" completed")
 			completed = append(completed, task.Subject)
 		}
+	}
+	// Appended after the loop: an append can move the slice, and the loop
+	// holds a pointer into it.
+	for _, i := range review {
+		s.startReviewLocked(s.state.Tasks[i])
 	}
 	return settled, completed
 }
@@ -1516,7 +1583,6 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 	}
 	var (
 		target      Member
-		running     bool
 		leadSession string
 		leadHook    func(sessionID string)
 	)
@@ -1530,7 +1596,6 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		target, _ = s.memberLocked(req.Target)
 		s.appendMessageLocked(from, target.Name, req.Message)
 		s.notifyLocked()
-		running = s.statusLocked(target.Name) == StatusRunning
 		// The Lead member is the root of the tree and carries no session of
 		// its own; the session that owns this mail is the sender's scope root.
 		leadSession = s.scopeRootLocked(from, sessionID)
@@ -1549,14 +1614,27 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		}
 		return nil
 	}
-	if running {
+	return s.wakeIfIdle(ctx, target.Name)
+}
+
+// wakeIfIdle starts the named member on the mail waiting for it. A member
+// that is running or still starting reads the mail at its next step, so its
+// inbox is left alone; the turn already starting is the one that delivers
+// it. The Lead is not woken here: its own hook does that. It reports an
+// error only when the start is refused.
+func (s *Service) wakeIfIdle(ctx context.Context, name string) error {
+	s.mu.Lock()
+	target, ok := s.memberLocked(name)
+	idle := ok && target.Role != RoleLead && s.statusLocked(name) != StatusRunning
+	s.mu.Unlock()
+	if !idle {
 		return nil
 	}
 	pending := s.DrainInbox(target.Name, target.ParentID)
 	if len(pending) == 0 {
 		return nil
 	}
-	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+	if _, err := s.startMail(ctx, target, pending); err != nil {
 		// The member is no longer starting, so wake whoever reads it as
 		// busy.
 		s.mu.Lock()
@@ -1611,7 +1689,7 @@ func (s *Service) NotifySession(ctx context.Context, sessionID, text string) (bo
 	if len(pending) == 0 {
 		return true, nil
 	}
-	if _, err := s.startRun(ctx, target, resumePrompt(pending)); err != nil {
+	if _, err := s.startMail(ctx, target, pending); err != nil {
 		s.mu.Lock()
 		s.notifyLocked()
 		s.mu.Unlock()
@@ -1966,11 +2044,15 @@ func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (T
 			return false, newError(CodeNotMember, "agent %q has no session to own a team task", caller)
 		}
 		scope := s.scopeLocked(caller, sessionID)
+		// A verification task is created by the service, not by the model,
+		// so it never uses up the caller's task budget: one implementer task
+		// stays one task when its check appears.
 		active := 0
 		for _, task := range s.state.Tasks {
-			if task.Status != TaskDeleted && taskVisibleLocked(scope, task) {
-				active++
+			if task.Status == TaskDeleted || task.Verifies != "" || !taskVisibleLocked(scope, task) {
+				continue
 			}
+			active++
 		}
 		if active >= s.cfg.MaxTasks {
 			return false, newError(CodeTaskLimit, "Team task limit %d reached", s.cfg.MaxTasks)
@@ -2101,19 +2183,25 @@ func (s *Service) ListTasks(caller, sessionID string, filter TaskFilter) (TaskLi
 	return result, nil
 }
 
-// taskUpdate is one applied task transition and what the caller must
-// report once the write lands.
+// taskUpdate is one applied task transition and what the caller must report
+// once the write lands.
 type taskUpdate struct {
 	view             TaskView
 	parentSessionID  string
 	completedSubject string
+	// wake names members to start once the write lands, such as the owner a
+	// failed verification hands its task back to.
+	wake []string
+	// leadSessions are the Lead sessions a notice was written for.
+	leadSessions []string
 }
 
 // UpdateTask applies one compare-and-set task transition.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
 	var (
-		applied taskUpdate
-		hook    func(sessionID, subject string)
+		applied  taskUpdate
+		hook     func(sessionID, subject string)
+		leadHook func(sessionID string)
 	)
 	err := s.write(refusable, func() (bool, error) {
 		next, err := s.applyTaskUpdateLocked(caller, req)
@@ -2122,16 +2210,22 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		}
 		applied = next
 		hook = s.taskCompletedHook
+		leadHook = s.leadNotifyHook
 		s.notifyLocked()
 		return true, nil
 	})
 	if err != nil {
 		return TaskView{}, err
 	}
-	// The hook runs outside every lock, and only once the record is
-	// durable.
+	// The hooks run outside every lock, and only once the record is durable.
 	if applied.completedSubject != "" && hook != nil {
 		hook(applied.parentSessionID, applied.completedSubject)
+	}
+	wakeLeads(leadHook, applied.leadSessions)
+	for _, name := range applied.wake {
+		if err := s.wakeIfIdle(context.Background(), name); err != nil {
+			slog.Warn("Could not wake a teammate after a failed verification", "member", name, "error", err)
+		}
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil
@@ -2173,6 +2267,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	}
 
 	next := current
+	var (
+		review  bool
+		verdict string
+		notes   string
+	)
 	switch req.Action {
 	case "claim":
 		if current.OwnerID != "" && current.OwnerID != member.ID {
@@ -2257,14 +2356,45 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if current.Status != TaskInProgress {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
 		}
+		if current.Verifies != "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"a verification task records its verdict with action pass, or fail with notes")
+		}
+		if current.needsVerification() {
+			next.Status = TaskInReview
+			review = true
+			break
+		}
 		next.Status = TaskCompleted
 		completedSubject = next.Subject
+	case "pass", "fail":
+		if current.Verifies == "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a verification task takes %s", req.Action)
+		}
+		if !owner {
+			return taskUpdate{}, newError(CodeTaskUnauthorized, "only the owner of verification task %q can record its verdict", current.ID)
+		}
+		if current.Status != TaskInProgress {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "a verdict needs the verification task in progress")
+		}
+		notes = strings.TrimSpace(req.Notes)
+		if req.Action == "fail" && notes == "" {
+			return taskUpdate{}, newError(CodeInvalidArgument, "fail requires notes describing what failed")
+		}
+		next.Status = TaskCompleted
+		verdict = req.Action
 	case "reopen":
+		// A verdict is final. Reusing an old check for a later revision
+		// would let it decide work it never saw.
+		if current.Verifies != "" {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"a verification task records one verdict and cannot reopen")
+		}
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
-		if current.Status != TaskCompleted {
-			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a completed task can reopen")
+		if current.Status != TaskCompleted && current.Status != TaskInReview {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only a completed or in-review task can reopen")
 		}
 		next.Status = TaskPending
 		next.OwnerID = ""
@@ -2317,11 +2447,25 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	// Written by index: an old file may hold the same id twice, and the
 	// copy the caller acted on is the one in its scope.
 	s.state.Tasks[index] = next
-	return taskUpdate{
-		view:             projectTaskView(s.state, next),
-		parentSessionID:  parentSessionID,
-		completedSubject: completedSubject,
-	}, nil
+	update := taskUpdate{parentSessionID: parentSessionID, completedSubject: completedSubject}
+	if review {
+		s.startReviewLocked(next)
+	}
+	if verdict != "" {
+		subject, wake, leads := s.applyVerdictLocked(scope, next, member, verdict, notes)
+		if subject != "" {
+			update.completedSubject = subject
+		}
+		update.wake = wake
+		update.leadSessions = leads
+	}
+	if current.Status == TaskInReview && (req.Action == "reopen" || req.Action == "delete") {
+		// Work that left review needs no verdict, so a pending check goes
+		// with it. A check already in progress stays with its verifier.
+		s.closeChecksLocked(current.ID, false)
+	}
+	update.view = projectTaskView(s.state, next)
+	return update, nil
 }
 
 // taskIndexLocked finds id in the caller's scope and returns its index, so a
