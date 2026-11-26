@@ -2,7 +2,6 @@ import {
   axeScan, expect, freshTest as defaultTest, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test,
   m4bFullServersTest, m4bLongModelTest, m4bTest,
 } from './fixture';
-import type { Page } from '@playwright/test';
 
 // Axe keeps the software renderer busy well past the default 30 seconds.
 test.setTimeout(120_000);
@@ -10,19 +9,7 @@ freshTest.setTimeout(120_000);
 defaultTest.setTimeout(120_000);
 
 // The three named HUD layouts share one row only when the strip keeps the
-// same height at each. A wrapped session title grew it by 27.5px at 1280,
-// and the wide 1440 gutter did the same to a HUD without the pin.
-async function hudHeights(page: Page): Promise<number[]> {
-  const heights: number[] = [];
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }, { width: 1440, height: 860 }]) {
-    await page.setViewportSize(viewport);
-    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(viewport.width);
-    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    heights.push(await page.evaluate(() => document.querySelector('.hud')!.getBoundingClientRect().height));
-  }
-  return heights;
-}
-
+// same height at each.
 function expectOneRow(heights: number[]): void {
   const [laptop, desktop, wide] = heights;
   expect(Math.abs(laptop - desktop), `the 1280 and 1366 HUD heights: ${heights.join(', ')}`).toBeLessThanOrEqual(1);
@@ -446,42 +433,97 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
 
 // The default seed carries no pin and one root session, so this is the
 // plainest strip: the identity block's title, the instruments and the
-// controls still have to share one row at every named layout.
+// controls still have to share one row at every named layout. The strip
+// gives the title a 16rem track before it reaches for the ellipsis.
 defaultTest('keeps the HUD one row on the default seed', async ({ page, gateway }) => {
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
-  expectOneRow(await hudHeights(page));
+  const heights: number[] = [];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }, { width: 1440, height: 860 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(viewport.width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const layout = await page.evaluate(() => {
+      const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const btn = document.querySelector('.hud__title-btn') as HTMLElement;
+      const range = document.createRange();
+      range.selectNodeContents(btn);
+      const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+      return {
+        height: box('.hud').height,
+        identity: box('.hud__id').width,
+        clipped: btn.scrollWidth > btn.clientWidth,
+        text: btn.textContent ?? '',
+        title: btn.getAttribute('title') ?? '',
+        lines: tops.size,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        idRight: box('.hud__id').right,
+        gaugeLeft: box('.gauge').left,
+        serverGap: box('.hud__controls').left - box('.hud__servers').right,
+      };
+    });
+    heights.push(layout.height);
+    // "Holodeck test" is short enough to stay whole at all three named
+    // layouts; the ellipsis is only the fallback for longer titles.
+    expect(layout.clipped, `the title at ${viewport.width}px`).toBe(false);
+    expect(layout.title).toBe(layout.text);
+    expect(layout.lines).toBe(1);
+    expect(layout.identity, `the identity track at ${viewport.width}px`).toBeGreaterThanOrEqual(255);
+    expect(layout.overflow).toBeLessThanOrEqual(0);
+    expect(layout.idRight).toBeLessThanOrEqual(layout.gaugeLeft);
+    expect(layout.serverGap).toBeGreaterThanOrEqual(8);
+  }
+  expectOneRow(heights);
+});
 
-  // At 1280 the identity track is narrower than the title, so it ellipsizes
-  // on one line and keeps the full text in the tooltip rather than wrapping
-  // into the second line that used to grow the strip. The block still ends
-  // before the gauge, the servers keep their gap before the controls, and
-  // the page does not scroll sideways.
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1280);
-  const layout = await page.evaluate(() => {
-    const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
-    const btn = document.querySelector('.hud__title-btn') as HTMLElement;
-    const range = document.createRange();
-    range.selectNodeContents(btn);
-    const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
-    return {
-      clipped: btn.scrollWidth > btn.clientWidth,
-      text: btn.textContent ?? '',
-      title: btn.getAttribute('title') ?? '',
-      lines: tops.size,
-      overflow: document.documentElement.scrollWidth - window.innerWidth,
-      idRight: box('.hud__id').right,
-      gaugeLeft: box('.gauge').left,
-      serverGap: box('.hud__controls').left - box('.hud__servers').right,
-    };
-  });
-  expect(layout.clipped).toBe(true);
-  expect(layout.title).toBe(layout.text);
-  expect(layout.lines).toBe(1);
-  expect(layout.overflow).toBeLessThanOrEqual(0);
-  expect(layout.idRight).toBeLessThanOrEqual(layout.gaugeLeft);
-  expect(layout.serverGap).toBeGreaterThanOrEqual(8);
+// A title longer than the 16rem track keeps the ellipsis and the tooltip,
+// and still holds the strip to one row at every named layout.
+const LONG_TITLE = 'Futuristic web mode UI for Crush sessions';
+
+defaultTest('clips a long session title and keeps the HUD one row', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+
+  // Rename the current session through the switcher, so the HUD receives
+  // the long title on the normal session frame.
+  await page.getByRole('button', { name: 'Session: Holodeck test. Switch session' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Sessions' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Rename Holodeck test' }).click();
+  const input = dialog.getByRole('textbox', { name: 'Rename Holodeck test' });
+  await input.fill(LONG_TITLE);
+  await input.press('Enter');
+  await expect(page.getByRole('button', { name: `Session: ${LONG_TITLE}. Switch session` })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  const heights: number[] = [];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }, { width: 1440, height: 860 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(viewport.width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const layout = await page.evaluate(() => {
+      const btn = document.querySelector('.hud__title-btn') as HTMLElement;
+      const range = document.createRange();
+      range.selectNodeContents(btn);
+      const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+      return {
+        height: document.querySelector('.hud')!.getBoundingClientRect().height,
+        clipped: btn.scrollWidth > btn.clientWidth,
+        text: btn.textContent ?? '',
+        title: btn.getAttribute('title') ?? '',
+        lines: tops.size,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    });
+    heights.push(layout.height);
+    expect(layout.clipped, `the long title at ${viewport.width}px`).toBe(true);
+    expect(layout.title).toBe(LONG_TITLE);
+    expect(layout.title).toBe(layout.text);
+    expect(layout.lines).toBe(1);
+    expect(layout.overflow).toBeLessThanOrEqual(0);
+  }
+  expectOneRow(heights);
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {

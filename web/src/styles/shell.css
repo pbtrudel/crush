@@ -201,15 +201,21 @@
   .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
   .hud__controls { gap: var(--space-1); }
 }
-/* The wide gutter needs 1464px before the identity block fits the session
-   title whole, so at 1440 it sits at its 9rem floor. A title wider than that
-   ellipsizes (above); a pin-bearing HUD takes the tight gutter until 1464px
-   instead, which keeps its title whole and its baselines where they were. */
+/* From 1280px to 1439px the tight gutter leaves the identity track below a
+   typical title. The column gaps drop to their 8px minimum and the
+   permissions label goes screen-reader-only, which gives the track about
+   17rem at 1280 and leaves every instrument on the controls. */
+@media (min-width: 1280px) and (max-width: 1439px) {
+  .hud { gap: var(--space-1) 8px; }
+  .hud__perm-label { clip-path: inset(50%); white-space: nowrap; inline-size: 1px; block-size: 1px; position: absolute; overflow: hidden; }
+}
+/* The wide gutter leaves the identity at 146px at 1440, too little for a
+   typical session title, so every HUD takes the tight gutter until the
+   wide layout has room. The 14px margin keeps the wide 24px gap before the
+   controls. */
 @media (min-width: 1440px) and (max-width: 1463px) {
-  .hud:has(.hud__pin-slot) { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
-  /* Keep the wide layout's instrument gap before the controls; the rest of
-     the strip can take the tighter one. */
-  .hud:has(.hud__pin-slot) .hud__controls { gap: var(--space-1); margin-inline-start: 14px; }
+  .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  .hud .hud__controls { gap: var(--space-1); margin-inline-start: 14px; }
 }
 @media (max-width: 1279px) {
   /* The one-row grid, captions and empty-server placeholders included,
