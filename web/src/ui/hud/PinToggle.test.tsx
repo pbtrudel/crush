@@ -25,11 +25,13 @@ async function mount() {
 }
 
 function button(name: string) {
-  return Array.from(root.querySelectorAll('button')).find((b) => b.textContent === name);
+  return Array.from(root.querySelectorAll('button')).find(
+    (b) => accessibleName(b) === name,
+  );
 }
 
-// accessibleName is what a button exposes when it has no aria-label: its
-// visible text, which the audit requires to match.
+// accessibleName is the aria-label when one is set, else the visible text;
+// the audit requires the visible text to match the name.
 function accessibleName(b: HTMLButtonElement) {
   return b.getAttribute('aria-label') ?? b.textContent;
 }
@@ -56,6 +58,7 @@ describe('pin toggle', () => {
     await mount();
     const pin = button('Following the terminal')!;
     expect(pin).not.toBeUndefined();
+    expect(pin.textContent).toBe('Following');
     expect(pin.getAttribute('aria-pressed')).toBe('true');
     expect(accessibleName(pin)).toBe('Following the terminal');
     await act(() => {
@@ -76,10 +79,15 @@ describe('pin toggle', () => {
       session: session('s-2', 'Tokenizer port'),
     };
     await mount();
-    expect(button('Browsing Tokenizer port')).not.toBeUndefined();
-    expect(accessibleName(button('Browsing Tokenizer port')!)).toBe('Browsing Tokenizer port');
+    const browse = button('Browsing Tokenizer port')!;
+    expect(browse).not.toBeUndefined();
+    // The servers column is narrow enough for the pair only with the short
+    // visible words; the accessible names keep the full state.
+    expect(browse.textContent).toBe('Browsing');
+    expect(accessibleName(browse)).toBe('Browsing Tokenizer port');
     const back = button("Return to the terminal's session")!;
     expect(back).not.toBeUndefined();
+    expect(back.textContent).toBe('Return');
     expect(accessibleName(back)).toBe("Return to the terminal's session");
     await act(() => {
       back.click();

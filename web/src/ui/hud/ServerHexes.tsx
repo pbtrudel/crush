@@ -51,6 +51,24 @@ export function HexTile({ tone, label }: { tone: ServerTone; label?: string }) {
   );
 }
 
+// A real config can carry nine MCP servers. The HUD has room for a few
+// tiles, so past this many the group shows one tile in its worst tone and
+// the count, which keeps the strip inside the window at 1280.
+const MAX_TILES = 3;
+
+const TONE_RANK: Record<ServerTone, number> = { lit: 0, dim: 1, error: 2 };
+
+// groupTone sums a collapsed group: an error outranks a stopped server, and
+// a stopped one outranks a ready group.
+function groupTone(kind: 'lsp' | 'mcp', servers: Record<string, ServerState>): ServerTone {
+  let worst: ServerTone = 'lit';
+  for (const server of Object.values(servers)) {
+    const tone = serverTone(kind, server.state);
+    if (TONE_RANK[tone] > TONE_RANK[worst]) worst = tone;
+  }
+  return worst;
+}
+
 // ServerHexes is one small hexagon per language server or MCP server, and
 // the whole group is one button that opens the systems panel.
 export function ServerHexes({ kind, servers }: { kind: 'lsp' | 'mcp'; servers: Record<string, ServerState> }) {
@@ -68,10 +86,17 @@ export function ServerHexes({ kind, servers }: { kind: 'lsp' | 'mcp'; servers: R
     >
       {entries.length === 0
         ? <span class="hexes__none">none</span>
-        : entries.map(([name, server]) => {
-          const tone = serverTone(kind, server.state);
-          return <HexTile key={name} tone={tone} label={hexLabel(kind, name, server, tone)} />;
-        })}
+        : entries.length > MAX_TILES
+          ? (
+            <>
+              <HexTile tone={groupTone(kind, servers)} label={`${entries.length} servers`} />
+              <span class="hexes__count" aria-hidden="true">{entries.length}</span>
+            </>
+          )
+          : entries.map(([name, server]) => {
+            const tone = serverTone(kind, server.state);
+            return <HexTile key={name} tone={tone} label={hexLabel(kind, name, server, tone)} />;
+          })}
     </button>
   );
 }
