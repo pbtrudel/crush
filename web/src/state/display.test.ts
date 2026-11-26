@@ -85,6 +85,37 @@ describe('a snapshot without display', () => {
     expect(localStorage.getItem('crush-web-motion')).toBe('off');
     expect(localStorage.getItem('crush-web-low-power')).toBe('1');
   });
+
+  it('lets a dialog write release the push after a snapshot without display', async () => {
+    const set = vi.spyOn(api, 'setConfig').mockResolvedValue({ ...displayDefaults });
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+    motion.value = 'off';
+    lowPower.value = true;
+
+    await actions.setDisplay('motion', 'reduced');
+
+    expect(set).toHaveBeenCalledWith('options.web_display.motion', 'reduced');
+    expect(motion.value).toBe('reduced');
+    // The push takes the whole display the tab now holds, defaults included.
+    expect(lowPower.value).toBe(false);
+  });
+
+  it('lets a reset release the push after a snapshot without display', async () => {
+    const remove = vi.spyOn(api, 'removeConfig').mockResolvedValue({ ...displayDefaults });
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+    motion.value = 'off';
+    lowPower.value = true;
+
+    await actions.resetDisplay();
+
+    expect(remove).toHaveBeenCalledTimes(4);
+    expect(motion.value).toBe('full');
+    expect(lowPower.value).toBe(false);
+  });
 });
 
 describe('actions', () => {
