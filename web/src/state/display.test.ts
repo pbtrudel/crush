@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fixtures from './__fixtures__/events.json';
+import type { Frame, Snapshot } from '../api/types';
 import { ApiError, api } from '../api/http';
-import { displayDefaults, initialState } from './reducer';
+import { lowPower, motion } from './motion';
+import { displayDefaults, initialState, reduce } from './reducer';
 import { state } from './store';
 import { actions, displayOpen, effectiveMotion, openDisplay, closeDisplay } from './display';
 import { openSessions, sessionsOpen } from './palette';
+
+const fx = fixtures as unknown as Record<string, Frame>;
 
 // flush runs the microtasks the write chain and the setDisplay calls queue.
 async function flush(turns = 8) {
@@ -24,15 +29,92 @@ afterEach(() => {
 });
 
 describe('effectiveMotion', () => {
-  it('takes the config motion over the stored one', () => {
-    expect(effectiveMotion({ ...displayDefaults, motion: 'off' }, 'full', false)).toBe('off');
+  it('takes the config motion over the system setting', () => {
+    expect(effectiveMotion({ ...displayDefaults, motion: 'off' }, false)).toBe('off');
+    expect(effectiveMotion({ ...displayDefaults, motion: 'reduced' }, false)).toBe('reduced');
   });
 
-  it('falls back to the stored motion, then the system setting', () => {
+  it('follows the system setting when the config motion is empty', () => {
     const d = { ...displayDefaults, motion: '' as const };
-    expect(effectiveMotion(d, 'reduced', false)).toBe('reduced');
-    expect(effectiveMotion(d, null, true)).toBe('reduced');
-    expect(effectiveMotion(d, null, false)).toBe('full');
+    expect(effectiveMotion(d, true)).toBe('reduced');
+    expect(effectiveMotion(d, false)).toBe('full');
+  });
+});
+
+describe('a snapshot without display', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('keeps the tab settings and writes nothing', () => {
+    localStorage.setItem('crush-web-motion', 'off');
+    localStorage.setItem('crush-web-low-power', '1');
+    motion.value = 'off';
+    lowPower.value = true;
+    const set = vi.spyOn(api, 'setConfig');
+    const remove = vi.spyOn(api, 'removeConfig');
+    const before = state.value.display;
+
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+
+    expect(state.value.display).toBe(before);
+    // The session snapshot landed; the display one did not.
+    expect(state.value.hydrated).toBe(true);
+    expect(state.value.displayHydrated).toBe(false);
+    expect(motion.value).toBe('off');
+    expect(lowPower.value).toBe(true);
+    expect(localStorage.getItem('crush-web-motion')).toBe('off');
+    expect(localStorage.getItem('crush-web-low-power')).toBe('1');
+    expect(set).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('applies the first display the gateway names afterwards', () => {
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+
+    const solid = { theme: 'solid' as const, motion: 'off' as const, low_power: true, cinematic_hint: false };
+    state.value = reduce(state.value, { seq: 3, type: 'display_changed', payload: solid } as Frame);
+
+    expect(state.value.displayHydrated).toBe(true);
+    expect(motion.value).toBe('off');
+    expect(lowPower.value).toBe(true);
+    expect(localStorage.getItem('crush-web-motion')).toBe('off');
+    expect(localStorage.getItem('crush-web-low-power')).toBe('1');
+  });
+
+  it('lets a dialog write release the push after a snapshot without display', async () => {
+    const set = vi.spyOn(api, 'setConfig').mockResolvedValue({ ...displayDefaults });
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+    motion.value = 'off';
+    lowPower.value = true;
+
+    await actions.setDisplay('motion', 'reduced');
+
+    expect(set).toHaveBeenCalledWith('options.web_display.motion', 'reduced');
+    expect(motion.value).toBe('reduced');
+    // The push takes the whole display the tab now holds, defaults included.
+    expect(lowPower.value).toBe(false);
+  });
+
+  it('lets a reset release the push after a snapshot without display', async () => {
+    const remove = vi.spyOn(api, 'removeConfig').mockResolvedValue({ ...displayDefaults });
+    const payload: Partial<Snapshot> = structuredClone(fx.snapshot.payload as Snapshot);
+    delete payload.display;
+    state.value = reduce(state.value, { seq: 2, type: 'snapshot', payload } as Frame);
+    motion.value = 'off';
+    lowPower.value = true;
+
+    await actions.resetDisplay();
+
+    expect(remove).toHaveBeenCalledTimes(4);
+    expect(motion.value).toBe('full');
+    expect(lowPower.value).toBe(false);
   });
 });
 
