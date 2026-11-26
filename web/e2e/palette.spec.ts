@@ -1,11 +1,20 @@
 import {
-  axeScan, expect, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test, m4bFullServersTest,
-  m4bLongModelTest, m4bTest,
+  axeScan, expect, freshTest as defaultTest, LONG_MODEL_NAME, m3FreshTest as freshTest, m3Test as test,
+  m4bFullServersTest, m4bLongModelTest, m4bTest,
 } from './fixture';
 
 // Axe keeps the software renderer busy well past the default 30 seconds.
 test.setTimeout(120_000);
 freshTest.setTimeout(120_000);
+defaultTest.setTimeout(120_000);
+
+// The three named HUD layouts share one row only when the strip keeps the
+// same height at each.
+function expectOneRow(heights: number[]): void {
+  const [laptop, desktop, wide] = heights;
+  expect(Math.abs(laptop - desktop), `the 1280 and 1366 HUD heights: ${heights.join(', ')}`).toBeLessThanOrEqual(1);
+  expect(Math.abs(desktop - wide), `the 1366 and 1440 HUD heights: ${heights.join(', ')}`).toBeLessThanOrEqual(1);
+}
 
 // Opening the palette needs only the seeded catalog, so the shared worker
 // gateway serves it. Anything that sends, switches or renames gets its own.
@@ -280,6 +289,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   // Short names fit whole, the pin stays in the strip, and the page does
   // not overflow sideways at any of the three HUD layouts. The pin shares
   // the strip's one row, so it must not make the strip any taller.
+  const heights: number[] = [];
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
@@ -313,10 +323,12 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
         serversBottom: servers.bottom,
         serverGap: controls.left - servers.right,
         hudBottom: hud.getBoundingClientRect().bottom,
+        height: hud.getBoundingClientRect().height,
         heightWithPin,
         heightWithoutPin,
       };
     });
+    heights.push(layout.height);
     expect(layout.overflow).toBeLessThanOrEqual(0);
     expect(layout.controls).toBeLessThanOrEqual(width);
     expect(layout.deck).toBeLessThanOrEqual(width);
@@ -334,6 +346,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
       expect(layout.branch).toBe(true);
     }
   }
+  expectOneRow(heights);
 });
 
 // A real config carries more servers than the seeds: nine MCP servers and
@@ -347,6 +360,7 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
   // server loadout at every width.
   await expect(page.getByRole('list', { name: 'Timeline of tool calls' })).toBeVisible();
 
+  const heights: number[] = [];
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
@@ -383,6 +397,7 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
         chronoBottom: chrono.bottom,
         chronoHeight: chrono.height,
         scroll: hud.scrollWidth - hud.clientWidth,
+        height: hud.getBoundingClientRect().height,
         heightWithPin,
         heightWithoutPin,
         mcp: hexes('mcp'),
@@ -406,12 +421,109 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
     // Subpixel layout rounds the strip's scroll box up by a pixel.
     expect(fit.scroll).toBeLessThanOrEqual(1);
     expect(Math.abs(fit.heightWithPin - fit.heightWithoutPin)).toBeLessThanOrEqual(1);
+    heights.push(fit.height);
     // One aggregate tile per group, with the count kept in the name.
     expect(fit.mcp).toBe(1);
     expect(fit.lsp).toBe(1);
     expect(fit.mcpName).toContain('mcp-9');
   }
+  expectOneRow(heights);
   await axeScan(page);
+});
+
+// The default seed carries no pin and one root session, so this is the
+// plainest strip: the identity block's title, the instruments and the
+// controls still have to share one row at every named layout. The strip
+// gives the title a 16rem track before it reaches for the ellipsis.
+defaultTest('keeps the HUD one row on the default seed', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+  const heights: number[] = [];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }, { width: 1440, height: 860 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(viewport.width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const layout = await page.evaluate(() => {
+      const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const btn = document.querySelector('.hud__title-btn') as HTMLElement;
+      const range = document.createRange();
+      range.selectNodeContents(btn);
+      const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+      return {
+        height: box('.hud').height,
+        identity: box('.hud__id').width,
+        clipped: btn.scrollWidth > btn.clientWidth,
+        text: btn.textContent ?? '',
+        title: btn.getAttribute('title') ?? '',
+        lines: tops.size,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        idRight: box('.hud__id').right,
+        gaugeLeft: box('.gauge').left,
+        serverGap: box('.hud__controls').left - box('.hud__servers').right,
+      };
+    });
+    heights.push(layout.height);
+    // "Holodeck test" is short enough to stay whole at all three named
+    // layouts; the ellipsis is only the fallback for longer titles.
+    expect(layout.clipped, `the title at ${viewport.width}px`).toBe(false);
+    expect(layout.title).toBe(layout.text);
+    expect(layout.lines).toBe(1);
+    expect(layout.identity, `the identity track at ${viewport.width}px`).toBeGreaterThanOrEqual(255);
+    expect(layout.overflow).toBeLessThanOrEqual(0);
+    expect(layout.idRight).toBeLessThanOrEqual(layout.gaugeLeft);
+    expect(layout.serverGap).toBeGreaterThanOrEqual(8);
+  }
+  expectOneRow(heights);
+});
+
+// A title longer than the 16rem track keeps the ellipsis and the tooltip,
+// and still holds the strip to one row at every named layout.
+const LONG_TITLE = 'Futuristic web mode UI for Crush sessions';
+
+defaultTest('clips a long session title and keeps the HUD one row', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
+
+  // Rename the current session through the switcher, so the HUD receives
+  // the long title on the normal session frame.
+  await page.getByRole('button', { name: 'Session: Holodeck test. Switch session' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Sessions' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Rename Holodeck test' }).click();
+  const input = dialog.getByRole('textbox', { name: 'Rename Holodeck test' });
+  await input.fill(LONG_TITLE);
+  await input.press('Enter');
+  await expect(page.getByRole('button', { name: `Session: ${LONG_TITLE}. Switch session` })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  const heights: number[] = [];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }, { width: 1440, height: 860 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(viewport.width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const layout = await page.evaluate(() => {
+      const btn = document.querySelector('.hud__title-btn') as HTMLElement;
+      const range = document.createRange();
+      range.selectNodeContents(btn);
+      const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+      return {
+        height: document.querySelector('.hud')!.getBoundingClientRect().height,
+        clipped: btn.scrollWidth > btn.clientWidth,
+        text: btn.textContent ?? '',
+        title: btn.getAttribute('title') ?? '',
+        lines: tops.size,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    });
+    heights.push(layout.height);
+    expect(layout.clipped, `the long title at ${viewport.width}px`).toBe(true);
+    expect(layout.title).toBe(LONG_TITLE);
+    expect(layout.title).toBe(layout.text);
+    expect(layout.lines).toBe(1);
+    expect(layout.overflow).toBeLessThanOrEqual(0);
+  }
+  expectOneRow(heights);
 });
 
 m4bLongModelTest('clips a long model name before the context gauge', async ({ page, gateway }) => {

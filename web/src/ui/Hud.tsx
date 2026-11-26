@@ -58,10 +58,13 @@ export function Hud() {
         <h1 class="hud__title">
           {/* The identity block is off screen in cinematic mode, so an
               invisible control must not take a tab stop. */}
+          {/* The title tooltip carries the full name once a narrow
+              identity track ellipsizes it. */}
           <button
             type="button"
             class="hud__title-btn"
             tabIndex={cinematic.value ? -1 : 0}
+            title={s.session?.title || 'New session'}
             aria-label={`Session: ${s.session?.title || 'New session'}. Switch session`}
             onClick={() => openSessions()}
           >{s.session?.title || 'New session'}</button>
@@ -105,7 +108,9 @@ export function Hud() {
         <ServerHexes kind="mcp" servers={s.mcp} />
       </div>
       <div class="hud__controls">
-        <label class="hud-label" for="perm-mode">Permissions</label>
+        {/* The label names the select; the tight laptop layouts hide it
+            visually so the identity track can keep the session title. */}
+        <label class="hud-label hud__perm-label" for="perm-mode">Permissions</label>
         <select
           id="perm-mode"
           class="hud__select"
