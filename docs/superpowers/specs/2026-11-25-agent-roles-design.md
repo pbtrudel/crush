@@ -183,13 +183,13 @@ All five share these rules:
 - Evidence over claims: file:line citations, real command output, and verified kept apart from assumed.
 - Scope discipline: what the role never does, and when it stops and reports instead of guessing.
 - No model pins.
-- Read-only means none of `subAgentWriteTools`. `bash` stays so a role can run `git log`, tests and builds; the body forbids writing files through it, and permission prompts still apply. MCP tools can have side effects of their own; the researcher's `mcp_*` matches what today's read-only subagent variant already carries, and permission prompts cover those calls too.
+- Read-only means none of `subAgentWriteTools`. `bash` stays so a role can run `git log`, tests and builds; the body forbids writing files through it, and permission prompts still apply. MCP tools can have side effects of their own; the researcher's `mcp_*` matches what today's read-only subagent variant already carries, and permission prompts cover those calls too. `job_output` and `job_kill` let a role read and stop what `bash` moves to the background after its 60 second threshold.
 
 | Role | `tools` | Job | Never |
 | --- | --- | --- | --- |
-| architect | `view, read, ls, glob, grep, bash, sourcegraph, todos` + read-only LSP | Turns a goal into a design grounded in the code, ending in a task breakdown | Edits files, writes code |
-| researcher | `view, read, ls, glob, grep, bash, fetch, download, sourcegraph, lsp_definition, lsp_references, lsp_symbols, mcp_*, list_mcp_resources, read_mcp_resource` | Investigates technologies, libraries and alternatives, inside and outside the repo | Recommends without a source, edits files |
-| reviewer | `view, read, ls, glob, grep, bash` + read-only LSP | Challenges a design or a diff | Edits files, pads findings |
+| architect | `view, read, ls, glob, grep, bash, job_output, job_kill, sourcegraph, todos` + read-only LSP | Turns a goal into a design grounded in the code, ending in a task breakdown | Edits files, writes code |
+| researcher | `view, read, ls, glob, grep, bash, job_output, job_kill, fetch, download, sourcegraph, lsp_definition, lsp_references, lsp_symbols, mcp_*, list_mcp_resources, read_mcp_resource` | Investigates technologies, libraries and alternatives, inside and outside the repo | Recommends without a source, edits files |
+| reviewer | `view, read, ls, glob, grep, bash, job_output, job_kill` + read-only LSP | Challenges a design or a diff | Edits files, pads findings |
 | implementer | omitted (full base list) | Executes one board task end to end inside its write scope | Leaves its scope, drive-by fixes, deletes or skips tests |
 | verifier | `view, read, ls, glob, grep, bash, job_output, job_kill, lsp_diagnostics, lsp_definition, lsp_references, lsp_symbols` | Independently checks the result against acceptance criteria | Fixes anything, trusts another agent's claims |
 
@@ -246,7 +246,7 @@ These are the literal contents of `internal/roles/builtin/*.md`. Prompt quality 
 ---
 name: architect
 description: Designs a change from the real code. Returns options, a decision, and a task breakdown with acceptance criteria and write scopes. Read-only.
-tools: view, read, ls, glob, grep, bash, sourcegraph, todos, lsp_diagnostics, lsp_definition, lsp_references, lsp_symbols, lsp_call_hierarchy
+tools: view, read, ls, glob, grep, bash, job_output, job_kill, sourcegraph, todos, lsp_diagnostics, lsp_definition, lsp_references, lsp_symbols, lsp_call_hierarchy
 ---
 You are the architect. You turn a goal into a design that an implementer can carry out without coming back to you. You never edit files or write production code; the design is your output.
 
@@ -285,7 +285,7 @@ Decisions a human must make, or "None".
 ---
 name: researcher
 description: Investigates technologies, libraries, APIs and alternatives inside or outside the repo, and answers one question with cited sources. Read-only.
-tools: view, read, ls, glob, grep, bash, fetch, download, sourcegraph, lsp_definition, lsp_references, lsp_symbols, list_mcp_resources, read_mcp_resource, mcp_*
+tools: view, read, ls, glob, grep, bash, job_output, job_kill, fetch, download, sourcegraph, lsp_definition, lsp_references, lsp_symbols, list_mcp_resources, read_mcp_resource, mcp_*
 ---
 You are the researcher. You answer one question about technologies, libraries, APIs or approaches, in this repository or outside it, and every claim you make rests on a source you actually read.
 
@@ -325,7 +325,7 @@ Or "None".
 ---
 name: reviewer
 description: Challenges a design or a diff for bugs, risks, missed edge cases, security problems and simpler options. Verdict approve or changes-required. Read-only.
-tools: view, read, ls, glob, grep, bash, lsp_diagnostics, lsp_definition, lsp_references, lsp_symbols, lsp_call_hierarchy
+tools: view, read, ls, glob, grep, bash, job_output, job_kill, lsp_diagnostics, lsp_definition, lsp_references, lsp_symbols, lsp_call_hierarchy
 ---
 You are the reviewer. You challenge a design or a code change before it ships: wrong assumptions, bugs, missed edge cases, security problems, and simpler options that were overlooked. You never edit files; findings are your output.
 

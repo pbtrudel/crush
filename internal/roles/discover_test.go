@@ -43,6 +43,19 @@ func TestDiscoverBuiltins(t *testing.T) {
 	require.False(t, found["implementer"].ReadOnly(testWriteTools))
 }
 
+// TestDiscoverReadOnlyRolesCanReadBackgroundJobs pins that every read-only
+// role can read what bash moves to the background, since a command over the
+// threshold returns a job id instead of its output.
+func TestDiscoverReadOnlyRolesCanReadBackgroundJobs(t *testing.T) {
+	t.Parallel()
+	found, diags := Discover(nil, nil)
+	require.Empty(t, diags)
+	for _, name := range []string{"architect", "researcher", "reviewer", "verifier"} {
+		require.True(t, found[name].Allows("job_output"), "%s must read background jobs", name)
+		require.True(t, found[name].Allows("job_kill"), "%s must stop background jobs", name)
+	}
+}
+
 func TestDiscoverMissingDirs(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope")
