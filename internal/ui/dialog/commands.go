@@ -4,7 +4,6 @@ import (
 	"image"
 	"os"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -23,8 +22,6 @@ import (
 
 // CommandsID is the identifier for the commands dialog.
 const CommandsID = "commands"
-
-const commandDoubleClickThreshold = 400 * time.Millisecond
 
 // CommandType represents the type of commands being displayed.
 type CommandType uint
@@ -90,9 +87,7 @@ type Commands struct {
 
 	windowWidth int
 
-	listArea      image.Rectangle
-	lastClickTime time.Time
-	lastClickID   string
+	listArea image.Rectangle
 
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
@@ -281,40 +276,27 @@ func (c *Commands) HandleMsg(msg tea.Msg) Action {
 
 func (c *Commands) handleMouseClick(msg tea.MouseClickMsg) Action {
 	if msg.Button != tea.MouseLeft {
-		c.resetMouseClick()
 		return nil
 	}
 	area := c.commandListArea()
 	area.Max.X = min(area.Max.X, area.Min.X+c.list.Width())
 	point := image.Pt(msg.X, msg.Y)
 	if !point.In(area) {
-		c.resetMouseClick()
 		return nil
 	}
 	index, _ := c.list.ItemIndexAtPosition(point.X-area.Min.X, point.Y-area.Min.Y)
 	if index < 0 {
-		c.resetMouseClick()
 		return nil
 	}
 	item, ok := c.list.ItemAt(index).(*CommandItem)
 	if !ok || item == nil {
-		c.resetMouseClick()
 		return nil
 	}
-	now := time.Now()
-	if c.lastClickID == item.ID() && now.Sub(c.lastClickTime) <= commandDoubleClickThreshold {
-		c.resetMouseClick()
-		return item.Action()
-	}
-	c.lastClickTime = now
-	c.lastClickID = item.ID()
+	// A click chooses the command the way a menu item does: select it and
+	// run it at once, so every entry answers one click instead of waiting
+	// for a double-click the terminal may never deliver.
 	c.list.SetSelected(index)
-	return nil
-}
-
-func (c *Commands) resetMouseClick() {
-	c.lastClickTime = time.Time{}
-	c.lastClickID = ""
+	return item.Action()
 }
 
 func (c *Commands) commandListArea() image.Rectangle {

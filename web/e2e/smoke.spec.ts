@@ -926,6 +926,11 @@ test('the agent list row keeps the focused option in view', async ({ page, gatew
 // log it covers leaves the tab order. The states either side of the band keep
 // it reachable.
 test('the covered log leaves the tab order over the overlay drawer', async ({ page, gateway }) => {
+  // Every press and read in the walk below waits for the renderer's main
+  // thread, which the animated scene keeps busy: the 24 stops took 20 s on
+  // one worker under load and ran past the default 30 s with four, so the
+  // case gets a budget of its own.
+  test.setTimeout(120_000);
   await page.goto(gateway.launch);
   await expect(page.locator('.boot')).toBeHidden();
   const log = page.locator('.panel--log');
@@ -958,17 +963,41 @@ test('the covered log leaves the tab order over the overlay drawer', async ({ pa
   await page.setViewportSize({ width: 1100, height: 800 });
   await expect(log).toHaveAttribute('inert', '');
   expect(await focusLogControl(), 'the covered log is out of reach').toBe('blocked');
-  // From inside the drawer, twenty four tabs must never stop in the log.
+  // From inside the drawer, twenty four tabs must never stop in the log. The
+  // focus moves on a later task than the key event, so each stop is polled
+  // for: a walk that stopped moving fails on the tab that stuck instead of
+  // reading the previous stop again. The walk is also bounded, so a machine
+  // too slow to finish it fails with the stops it saw rather than with an
+  // empty test timeout.
+  const stopAt = () => page.evaluate(() => {
+    const el = document.activeElement;
+    if (el === null || el === document.body) return { key: 'body', tag: 'body' };
+    // The element's position keeps two stops of the same tag apart, so a Tab
+    // onto the next button is not read as the stop it just left.
+    const all = document.querySelectorAll('*');
+    return {
+      key: `${el.tagName}:${el.id}:${Array.prototype.indexOf.call(all, el)}`,
+      tag: el.closest('.panel--log') !== null ? 'log' : el.tagName.toLowerCase(),
+    };
+  });
   await page.evaluate(() => document.querySelector<HTMLElement>('#file-drawer .file-row')?.focus());
   const stops: string[] = [];
+  let at = await stopAt();
+  const walkDeadline = Date.now() + 90_000;
   for (let i = 0; i < 24; i++) {
+    if (Date.now() > walkDeadline) break;
+    const from = at.key;
     await page.keyboard.press('Tab');
-    stops.push(await page.evaluate(() => {
-      const el = document.activeElement;
-      if (el === null || el === document.body) return 'body';
-      return el.closest('.panel--log') !== null ? 'log' : el.tagName.toLowerCase();
-    }));
+    await expect.poll(async () => {
+      at = await stopAt();
+      return at.key;
+    }, {
+      message: `tab ${i + 1} moves the focus off ${from}`,
+      timeout: 10_000,
+    }).not.toBe(from);
+    stops.push(at.tag);
   }
+  expect(stops.length, `the walk makes all 24 stops; it stopped at ${stops.join(', ')}`).toBe(24);
   expect(stops, 'no tab stop lands in the covered log').not.toContain('log');
   expect(stops.some((s) => s !== 'body'), 'the tabs still move through the page').toBe(true);
 

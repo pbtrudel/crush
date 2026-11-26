@@ -4192,6 +4192,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 			case key.Matches(msg, m.keyMap.Editor.AddImage):
 				if !m.currentModelSupportsImages() {
+					cmds = append(cmds, util.ReportWarn("The current model does not support image attachments"))
 					break
 				}
 				if cmd := m.openFilesDialog(); cmd != nil {
@@ -4199,9 +4200,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 			case key.Matches(msg, m.keyMap.Editor.PasteImage):
-				if !m.currentModelSupportsImages() {
-					break
-				}
+				// No vision guard here: pasteImageFromClipboard reports it
+				// itself, so a model without vision says so instead of the
+				// keystroke doing nothing.
 				cmds = append(cmds, m.pasteImageFromClipboard)
 			case key.Matches(msg, m.keyMap.Editor.PasteText):
 				cmds = append(cmds, m.pasteTextFromClipboard)

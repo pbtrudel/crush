@@ -35,7 +35,7 @@ import { SystemsPanel } from './systems/SystemsPanel';
 import { SignInDialog } from './signin/SignInDialog';
 import { DisplaySettings } from './settings/DisplaySettings';
 import { AwsSsoCard } from './signin/AwsSsoCard';
-import { usePublishedHeight } from './usePublishedHeight';
+import { usePublishedHeight, usePublishedTop } from './usePublishedHeight';
 import { Chronoline } from './chronoline/Chronoline';
 
 export function App() {
@@ -50,8 +50,11 @@ export function App() {
   const logCovered = useRef(false);
 
   // signin.css places the AWS SSO card above the whole deck column, the side
-  // answer included, so the column publishes its own height.
+  // answer included, so the column publishes its own height. A short shell
+  // lets the column run past the viewport, so it publishes its top too and
+  // the card anchors to that edge instead of deriving it.
   usePublishedHeight(deck, '--deck-h');
+  usePublishedTop(deck, '--deck-top');
 
   // The log goes inert while the overlay drawer covers it: that is a width
   // plus drawer state, not something a stylesheet can express.

@@ -119,6 +119,75 @@ awsTest('shows the AWS SSO card', async ({ page, gateway }) => {
   );
 });
 
+// A portrait phone leaves the card only a strip between the wrapped HUD and
+// the deck, so the card has to stay in that strip with its command, link and
+// status readable instead of being squeezed to its padding.
+awsTest('keeps the AWS SSO card readable on a short phone screen', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  const card = page.locator('.aws-sso');
+  await expect(card.getByRole('link', { name: 'Open the AWS sign-in page' })).toBeVisible();
+
+  const layout = () => page.evaluate(() => {
+    const rect = (selector: string) => {
+      const el = document.querySelector(selector);
+      if (el === null) return null;
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    };
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+      hud: rect('.hud'),
+      deck: rect('form.deck'),
+      input: rect('#deck-input'),
+      transmit: rect('.deck button[type="submit"]'),
+      card: rect('.aws-sso'),
+      command: rect('.aws-sso__command'),
+      link: rect('.aws-sso__url a'),
+      status: rect('.aws-sso__status'),
+    };
+  });
+
+  for (const viewport of [{ width: 390, height: 640 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(async () => {
+      const l = await layout();
+      if (l.card === null || l.hud === null || l.deck === null) return false;
+      return l.card.top >= l.hud.bottom - 0.5 && l.card.bottom <= l.deck.top + 0.5;
+    }, { message: `the card sits between the HUD and the deck at ${viewport.height}px` }).toBe(true);
+    const l = await layout();
+    expect(l.width).toBe(viewport.width);
+    expect(l.height).toBe(viewport.height);
+    expect(l.overflow, 'the page does not scroll sideways').toBeLessThanOrEqual(0);
+
+    // The card's box is wholly on screen and between the two strips.
+    expect(l.card, 'the card renders').not.toBeNull();
+    expect(l.card!.top, 'the card starts on screen').toBeGreaterThanOrEqual(-0.5);
+    expect(l.card!.bottom, 'the card ends on screen').toBeLessThanOrEqual(l.height + 0.5);
+    expect(l.card!.left).toBeGreaterThanOrEqual(-0.5);
+    expect(l.card!.right).toBeLessThanOrEqual(l.width + 0.5);
+    expect(l.card!.top, 'the card starts below the HUD').toBeGreaterThanOrEqual(l.hud!.bottom - 0.5);
+    expect(l.card!.bottom, 'the card ends above the deck').toBeLessThanOrEqual(l.deck!.top + 0.5);
+    expect(l.input, 'the prompt field renders').not.toBeNull();
+    expect(l.transmit, 'the Transmit button renders').not.toBeNull();
+    expect(l.card!.bottom, 'the card clears the prompt field').toBeLessThanOrEqual(l.input!.top + 0.5);
+    expect(l.card!.bottom, 'the card clears the Transmit button').toBeLessThanOrEqual(l.transmit!.top + 0.5);
+
+    // The three reading lines are inside the card's own box, not scrolled out
+    // of its overflow.
+    for (const [name, part] of [['command', l.command], ['link', l.link], ['status', l.status]] as const) {
+      expect(part, `the card ${name} renders`).not.toBeNull();
+      expect(part!.top, `the card ${name} starts inside the card`).toBeGreaterThanOrEqual(l.card!.top - 0.5);
+      expect(part!.bottom, `the card ${name} ends inside the card`).toBeLessThanOrEqual(l.card!.bottom + 0.5);
+      expect(part!.left, `the card ${name} is inside the card`).toBeGreaterThanOrEqual(l.card!.left - 0.5);
+      expect(part!.right, `the card ${name} is inside the card`).toBeLessThanOrEqual(l.card!.right + 0.5);
+    }
+    await expect(card.getByRole('link', { name: 'Open the AWS sign-in page' })).toBeVisible();
+    await expect(card.getByRole('status')).toHaveText('Waiting for the AWS CLI to finish');
+  }
+});
+
 // The side answer joins the deck column, so --deck-h must measure both: the
 // card sits above the column at a desktop width and a phone one, never over
 // the answer or the prompt box.
