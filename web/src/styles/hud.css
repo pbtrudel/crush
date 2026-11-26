@@ -105,6 +105,9 @@
 
 .hexes { display: inline-flex; align-items: center; gap: var(--space-1); }
 .hexes__none { color: var(--text-muted); opacity: 0.6; font: 500 var(--step--1)/1 var(--font-hud); }
+/* The count beside a collapsed group keeps the total visible when the HUD
+   carries one aggregate tile instead of one tile per server. */
+.hexes__count { color: var(--text-muted); font: 600 var(--step--1)/1 var(--font-hud); font-variant-numeric: tabular-nums; }
 .hex { display: block; }
 .hex polygon { fill: var(--cyan); }
 .hex[data-tone='dim'] polygon { fill: var(--text-muted); opacity: 0.4; }
