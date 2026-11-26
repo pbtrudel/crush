@@ -1421,6 +1421,7 @@ func (c *coordinator) buildAgentWithModels(ctx context.Context, ready *errgroup.
 		titles:               &c.titles,
 		limits:               &c.limits,
 		LazyTools:            c.lazyRegistryIfEnabled,
+		Role:                 agent.Role,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the

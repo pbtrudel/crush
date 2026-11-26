@@ -1,0 +1,114 @@
+package agent
+
+import (
+	"context"
+	"testing"
+
+	"charm.land/fantasy"
+	"github.com/stretchr/testify/require"
+
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
+)
+
+type noInput struct{}
+
+func roleRecordingTool(name string, ran map[string]bool) fantasy.AgentTool {
+	return fantasy.NewAgentTool(name, "test tool "+name,
+		func(_ context.Context, _ noInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			ran[name] = true
+			return fantasy.NewTextResponse("ok"), nil
+		})
+}
+
+func runTool(t *testing.T, tool fantasy.AgentTool) fantasy.ToolResponse {
+	t.Helper()
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-1", Name: tool.Info().Name, Input: "{}"})
+	require.NoError(t, err)
+	return resp
+}
+
+func TestRoleGateRefusesDisallowedTool(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	role := &roles.Role{Name: "reviewer", Tools: []string{"view"}}
+	gated := gateToolsForRole(role, []fantasy.AgentTool{
+		roleRecordingTool("view", ran),
+		roleRecordingTool("edit", ran),
+		roleRecordingTool(SendMessageToolName, ran),
+		roleRecordingTool(TeamTaskUpdateToolName, ran),
+	})
+	for _, tool := range gated {
+		runTool(t, tool)
+	}
+	require.True(t, ran["view"])
+	require.False(t, ran["edit"], "a disallowed tool must not run")
+	require.True(t, ran[SendMessageToolName], "team coordination tools always pass")
+	require.True(t, ran[TeamTaskUpdateToolName], "team coordination tools always pass")
+
+	resp := runTool(t, gated[1])
+	require.True(t, resp.IsError)
+	require.Equal(t, `tool "edit" is not available to role "reviewer". Allowed tools: view`, resp.Content)
+}
+
+func TestRoleGateMatchesLateMCPTool(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	role := &roles.Role{Name: "researcher", Tools: []string{"view", "mcp_*"}}
+	gated := gateToolsForRole(role, []fantasy.AgentTool{roleRecordingTool("mcp_tavily_tavily_search", ran)})
+	runTool(t, gated[0])
+	require.True(t, ran["mcp_tavily_tavily_search"])
+}
+
+func TestRoleGateKeepsToolInfo(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	inner := roleRecordingTool("edit", ran)
+	gated := gateToolsForRole(&roles.Role{Name: "r", Tools: []string{"view"}}, []fantasy.AgentTool{inner})
+	require.Equal(t, inner.Info(), gated[0].Info(), "the gate must not change what the provider sees")
+	again := gateToolsForRole(&roles.Role{Name: "r", Tools: []string{"view"}}, gated)
+	_, double := again[0].(*roleGatedTool).inner.(*roleGatedTool)
+	require.False(t, double, "re-gating must not stack wrappers")
+	require.Same(t, inner, gateToolsForRole(nil, []fantasy.AgentTool{inner})[0], "no role, no wrapper")
+}
+
+func TestSetToolsAppliesRoleGate(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	agent := NewSessionAgent(SessionAgentOptions{Role: &roles.Role{Name: "reviewer", Tools: []string{"view"}}}).(*sessionAgent)
+	agent.SetTools([]fantasy.AgentTool{roleRecordingTool("edit", ran)})
+	runTool(t, agent.tools.Copy()[0])
+	require.False(t, ran["edit"])
+}
+
+func TestWithRoleBlock(t *testing.T) {
+	t.Parallel()
+	role := &roles.Role{Name: "reviewer", Body: "Review."}
+	require.Equal(t, "state", withRoleBlock(nil, "state"))
+	require.Equal(t, roles.Block(*role)+"state", withRoleBlock(role, "state"))
+	require.Equal(t, roles.Block(*role), withRoleBlock(role, ""), "a role alone still produces a state message")
+}
+
+func TestResolveRole(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Options: &config.Options{}}
+	cfg.SetupAgents()
+
+	role, refusal := resolveRole(cfg, "reviewer")
+	require.Empty(t, refusal)
+	require.Equal(t, "reviewer", role.Name)
+
+	_, refusal = resolveRole(cfg, "task")
+	require.Contains(t, refusal, `unknown role "task"`)
+	_, refusal = resolveRole(cfg, "nope")
+	require.Contains(t, refusal, "available: architect, implementer, researcher, reviewer, verifier")
+}
+
+func TestRoleCatalog(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Options: &config.Options{}}
+	cfg.SetupAgents()
+	catalog := roleCatalog(cfg)
+	require.Contains(t, catalog, "\n\nRoles (pass one as `role`):\n- architect (builtin): ")
+	require.Equal(t, catalog, roleCatalog(cfg), "the catalog must be byte-stable")
+}
