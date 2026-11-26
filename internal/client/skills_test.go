@@ -151,19 +151,34 @@ func TestListAllSkillsMapsNotFound(t *testing.T) {
 }
 
 // TestListAllSkillsMissingRouteIsUnsupported pins the older-server answer:
-// a 404 with no server error body is Go's mux replying to a route the
-// server does not have. It must read as unsupported so a caller can fall
-// back to the visible set instead of treating the workspace as gone.
+// a 404 with no named server error is Go's mux replying to a route the
+// server does not have, or an intermediary answering in its place. It must
+// read as unsupported so a caller can fall back to the visible set instead
+// of treating the workspace as gone.
 func TestListAllSkillsMissingRouteIsUnsupported(t *testing.T) {
 	t.Parallel()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/workspaces/ws1/skills", func(http.ResponseWriter, *http.Request) {})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"plain text", "404 page not found\n"},
+		{"empty object", "{}"},
+		{"empty body", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err := captureClient(t, srv).ListAllSkills(context.Background(), "ws1")
-	require.ErrorIs(t, err, ErrUnsupported)
-	require.NotErrorIs(t, err, ErrNotFound)
-	require.Contains(t, err.Error(), "status code 404")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := captureClient(t, srv).ListAllSkills(context.Background(), "ws1")
+			require.ErrorIs(t, err, ErrUnsupported)
+			require.NotErrorIs(t, err, ErrNotFound)
+			require.Contains(t, err.Error(), "status code 404")
+		})
+	}
 }
