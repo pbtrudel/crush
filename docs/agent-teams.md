@@ -207,7 +207,7 @@ A shared task can name a role. `team_task_create` and the `edit` action of
 and `verify`. A task without a role stays manual: nothing starts it. Only the
 Lead can set a task's `verify`, or change the `role` or `verify` of an
 existing task; a teammate's request is refused. Only the Lead can reopen a
-task in review.
+task in review, or complete it to accept it as is.
 
 ### Auto-start
 
@@ -227,7 +227,15 @@ reported to the Lead once. The Lead takes a task back from escalation with
 
 Auto-start is on by default. Turn it off with `option agent-team-autostart
 false` in `crushrc`, or `"agent_team_autostart": false` in `crush.json`; the
-setting is read on every pass, so a reload applies at once.
+setting is read on every pass, so a reload applies at once. With auto-start
+off nothing starts on its own: a role task waits for the Lead to spawn a
+teammate and start the work, and finished verified work still moves to
+`in_review` with its check `pending` until the Lead starts or claims a
+verifier.
+
+The escalation notice names only the actions that work at the task's current
+status: a pending task can be edited or reassigned with no owner, while an
+`in_review` task can be reopened, completed to accept it, or deleted.
 
 ### Verification
 
@@ -238,10 +246,17 @@ moves to `in_review` and the service creates a verification task, role
 `completed`. The verifier records its verdict with `team_task_update`:
 `pass` completes both tasks; `fail` (with `notes`) completes the
 verification task and hands the original back to its owner, with the notes,
-as `in_progress`. The third failed verification escalates the original,
-which stays `in_review` until the Lead reopens it. A verifier that ends its
-turn without a verdict releases the verification task and counts an
-attempt; nothing passes by default.
+as `in_progress`. If the owner's turn is still running, the failure waits in
+its inbox and that turn settles with the task left in progress, so the owner
+reads the notes before anyone reviews the work again. If the start that would
+resume the owner is refused, the task stays in progress with nobody running
+it and the Lead gets a notice naming the task and the error. The third failed
+verification escalates the original, which stays `in_review` until the Lead
+reopens it. The Lead can also complete an `in_review` task to accept it as
+is: that finishes the task, readies its dependents, deletes its open check,
+and a late verdict on that check is refused. Only the Lead can complete work
+in review. A verifier that ends its turn without a verdict releases the
+verification task and counts an attempt; nothing passes by default.
 
 A member cannot claim the verification task of work it owns, and cannot pass
 or fail that check: the service refuses it, so the verifier stays
@@ -252,7 +267,7 @@ with everyone else, so it sees whatever is on disk when it runs.
 
 ### Write scopes
 
-A teammate's `edit`, `multiedit`, `write`, `apply_patch` and
+A teammate's `edit`, `multiedit`, `write`, `download`, `apply_patch` and
 `lsp_replace_symbol` calls are checked against the write scopes of the tasks
 it owns in progress; a path outside them is refused with a tool error, before
 any hook or permission prompt. `lsp_rename` is refused while scopes apply,
