@@ -47,12 +47,13 @@ function prefersReduced(): boolean {
 }
 
 // pushDisplay moves the config into the signals the page renders from. It
-// waits for the snapshot: before it, the tab renders from its own cache, and
-// the config's defaults must not put a low-power tab back on the 3D scene.
+// waits for the snapshot and for a display the gateway named: until then the
+// tab renders from its own cache, and the config's defaults must not put a
+// low-power tab back on the 3D scene.
 let applied: DisplaySettings | null = null;
 effect(() => {
   const s = state.value;
-  if (!s.hydrated) return;
+  if (!s.hydrated || !s.displayHydrated) return;
   const d = s.display;
   if (d === applied) return;
   applied = d;
@@ -76,7 +77,7 @@ const KEY_PREFIX = 'options.web_display.';
 function withKey<K extends keyof DisplaySettings>(s: State, key: K, value: DisplaySettings[K]): State {
   const display: DisplaySettings = { ...s.display };
   display[key] = value;
-  return { ...s, display };
+  return { ...s, display, displayHydrated: true };
 }
 
 // writes is the one chain every config write from this dialog runs through,
@@ -114,7 +115,7 @@ export const actions = {
   // failed removal puts only its own key back and leaves the rest removed.
   async resetDisplay(): Promise<Failure | null> {
     const prev = state.value.display;
-    dispatch((s) => ({ ...s, display: { ...displayDefaults } }));
+    dispatch((s) => ({ ...s, display: { ...displayDefaults }, displayHydrated: true }));
     return enqueue(async () => {
       let failure: Failure | null = null;
       for (const key of DISPLAY_KEYS) {
