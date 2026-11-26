@@ -10,8 +10,10 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 // SeedM4b adds the M4b surfaces on top of the M4 seeds. The tab's display
@@ -77,6 +79,9 @@ func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 		Counts:         mcp.Counts{Tools: 3},
 		ChannelCapable: true,
 	}
+	if err := seedHudServers(f); err != nil {
+		return M4Seams{}, err
+	}
 	f.AddDiscoveredSkill(skills.CatalogEntry{
 		ID:            "crush-config",
 		Name:          "crush-config",
@@ -89,6 +94,31 @@ func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 	seams.DockerMCPAvailable = func() bool { return true }
 	seams.Automation = m4bAutomation
 	return seams, nil
+}
+
+// seedHudServers widens the HUD's server groups to a realistic count when
+// WEBFAKE_HUD_SERVERS=full: nine MCP servers and four language servers, the
+// load that once pushed the strip past a 1440px window. It replaces the
+// smaller M4b server maps, so only the run that asks for it sees them.
+func seedHudServers(f *Fake) error {
+	switch v := os.Getenv("WEBFAKE_HUD_SERVERS"); v {
+	case "":
+		return nil
+	case "full":
+		f.MCP = make(map[string]mcp.ClientInfo, 9)
+		for i := 1; i <= 9; i++ {
+			name := fmt.Sprintf("mcp-%d", i)
+			f.MCP[name] = mcp.ClientInfo{Name: name, State: mcp.StateConnected, Counts: mcp.Counts{Tools: i}}
+		}
+		f.LSP = make(map[string]workspace.LSPClientInfo, 4)
+		for i := 1; i <= 4; i++ {
+			name := fmt.Sprintf("lsp-%d", i)
+			f.LSP[name] = workspace.LSPClientInfo{Name: name, State: lsp.StateReady, DiagnosticCount: i}
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid WEBFAKE_HUD_SERVERS: %q", v)
+	}
 }
 
 // m4bAutomation answers the two automation commands the m4b scenario runs,

@@ -325,6 +325,23 @@ export const m4bLongModelTest = webfakeTests.extend<{ gateway: Gateway }>({
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_MODEL_NAME: LONG_MODEL_NAME }, use),
 });
 
+// A realistic server loadout for the HUD width case: nine MCP servers and
+// four language servers, more than any baseline carries. It is a launch
+// variable so the other m4b gateways keep their small seed.
+export const m4bFullServersTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { ...M4B, WEBFAKE_HUD_SERVERS: 'full' }, use),
+});
+
+// The layout case pads the session with hundreds of tool calls, so the
+// chronoline's single row is far wider than the window. It is a launch
+// variable, so the default seed and every baseline stay as they were.
+export const MANY_TOOL_CALLS = 180;
+export const overflowTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { WEBFAKE_TOOL_CALLS: String(MANY_TOOL_CALLS) }, use),
+});
+
 // The log layout case needs one tool path far wider than a log column. It
 // rides the default seeds behind an opt-in variable, so every baseline
 // keeps its seeded log.
