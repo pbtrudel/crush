@@ -47,9 +47,9 @@ export interface State {
   model: ModelInfo;
   // display is the tab's settings as the gateway last published them.
   display: DisplaySettings;
-  // displayHydrated is true once a snapshot or a frame has named the tab's
-  // settings. An older gateway never names them, so the tab keeps its own
-  // cached motion and low power until one does.
+  // displayHydrated is true once a snapshot, a frame or the dialog has named
+  // the tab's settings. An older gateway never names them, so the tab keeps
+  // its own cached motion and low power until one does.
   displayHydrated: boolean;
   agentReady: boolean;
   planReady: string;

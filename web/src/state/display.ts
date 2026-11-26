@@ -47,9 +47,9 @@ function prefersReduced(): boolean {
 }
 
 // pushDisplay moves the config into the signals the page renders from. It
-// waits for the snapshot and for a display the gateway named: until then the
-// tab renders from its own cache, and the config's defaults must not put a
-// low-power tab back on the 3D scene.
+// waits for the snapshot and for a display the gateway named, or the dialog
+// wrote: until then the tab renders from its own cache, and the config's
+// defaults must not put a low-power tab back on the 3D scene.
 let applied: DisplaySettings | null = null;
 effect(() => {
   const s = state.value;
@@ -77,6 +77,7 @@ const KEY_PREFIX = 'options.web_display.';
 function withKey<K extends keyof DisplaySettings>(s: State, key: K, value: DisplaySettings[K]): State {
   const display: DisplaySettings = { ...s.display };
   display[key] = value;
+  // The tab's write is a known display, so defaults follow on old gateways.
   return { ...s, display, displayHydrated: true };
 }
 
