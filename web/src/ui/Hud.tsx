@@ -58,10 +58,13 @@ export function Hud() {
         <h1 class="hud__title">
           {/* The identity block is off screen in cinematic mode, so an
               invisible control must not take a tab stop. */}
+          {/* The title tooltip carries the full name once a narrow
+              identity track ellipsizes it. */}
           <button
             type="button"
             class="hud__title-btn"
             tabIndex={cinematic.value ? -1 : 0}
+            title={s.session?.title || 'New session'}
             aria-label={`Session: ${s.session?.title || 'New session'}. Switch session`}
             onClick={() => openSessions()}
           >{s.session?.title || 'New session'}</button>

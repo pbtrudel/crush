@@ -32,6 +32,24 @@
   padding: var(--space-4) calc(var(--space-4) * 1.5);
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+/* From 1280px up the seven columns share one row, so the identity track
+   can be narrower than the session title. The title ellipsizes with its
+   full text in the tooltip instead of wrapping onto a second line, which
+   grew the whole strip by 27.5px at 1280 and again at 1440 where the wide
+   gutter leaves the track at its 9rem floor. */
+@media (min-width: 1280px) {
+  /* The heading is a grid item, so its automatic minimum is the one-line
+     title's width; zero it out or the identity column outgrows its track
+     and the title runs under the gauge instead of ellipsizing. */
+  .hud__id .hud__title { min-inline-size: 0; overflow: hidden; }
+  .hud__id .hud__title-btn {
+    display: inline-block;
+    max-inline-size: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
 /* The servers and the controls keep columns 6 and 7 explicitly: the pin
    shares column 6 with the servers, and an explicitly placed item makes the
    auto-placement cursor skip its cell, which would otherwise push the
@@ -184,10 +202,9 @@
   .hud__controls { gap: var(--space-1); }
 }
 /* The wide gutter needs 1464px before the identity block fits the session
-   title on one line, so 1440 alone used to wrap it and grow the strip 28px
-   above the 1366 layout. A pin-bearing HUD takes the tight gutter until
-   then, which keeps the pin row from costing height. Non-pin HUDs keep the
-   wide layout so their baselines do not move. */
+   title whole, so at 1440 it sits at its 9rem floor. A title wider than that
+   ellipsizes (above); a pin-bearing HUD takes the tight gutter until 1464px
+   instead, which keeps its title whole and its baselines where they were. */
 @media (min-width: 1440px) and (max-width: 1463px) {
   .hud:has(.hud__pin-slot) { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
   /* Keep the wide layout's instrument gap before the controls; the rest of
