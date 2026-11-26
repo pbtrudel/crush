@@ -74,6 +74,15 @@ func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member
 	return task
 }
 
+// teammateFirstTurn reports whether this turn is the member's first, the
+// only one that carries its role block. A session with no messages counts
+// even when it was not created now: a run can save the session id and end
+// before its first message lands, and the retry must still reach the model
+// with its role.
+func teammateFirstTurn(created bool, sess session.Session) bool {
+	return created || sess.MessageCount == 0
+}
+
 // teamRunner runs teammate turns with the coordinator's agent machinery.
 type teamRunner struct {
 	c *coordinator
@@ -180,23 +189,28 @@ func (r *teamRun) Output() string        { return r.output }
 func (r *teamRun) Err() error            { return r.err }
 func (r *teamRun) Cancel()               { r.cancel() }
 
-// Start creates or reuses the teammate session and runs one turn.
+// Start builds the teammate's agent, then creates or reuses its session and
+// runs one turn.
 func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptText string) (agentteam.Run, error) {
 	// The member identity has to reach tool.Run: the agent and question
 	// tools stay in the palette for cache parity but refuse outside the
 	// Lead. WithoutCancel keeps the value across the turn's timeout.
 	memberCtx := agentteam.WithMember(ctx, member.Name)
 
+	// Build the agent before the session. A build can fail on a role or a
+	// model the config no longer serves, and a session created for a turn
+	// that never ran would hold the member's deterministic session id, so
+	// the retry could never create it again.
+	agent, err := r.teammateAgent(memberCtx, member)
+	if err != nil {
+		return nil, err
+	}
+
 	sess, created, err := r.teammateSession(memberCtx, member)
 	if err != nil {
 		return nil, err
 	}
 	r.c.approveForHeadlessRun(sess.ID, member.ParentID)
-
-	agent, err := r.teammateAgent(memberCtx, member)
-	if err != nil {
-		return nil, err
-	}
 
 	// The Lead's session decides how the teammate's request is filtered and
 	// routed: its channel keeps channel-scoped MCP tools in the palette, and
@@ -213,7 +227,7 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		}
 	}
 
-	promptText = r.teammatePrompt(memberCtx, member, promptText, created)
+	promptText = r.teammatePrompt(memberCtx, member, promptText, teammateFirstTurn(created, sess))
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{

@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/roles"
+	"github.com/charmbracelet/crush/internal/session"
 )
 
 // TestRoleTeammateKeepsLeadPrefix pins the cache rule for teammates: a
@@ -112,4 +114,78 @@ func TestSpawnTeammateRoleWiring(t *testing.T) {
 	response = runTeamToolRaw(t, tool, params)
 	require.False(t, response.IsError, response.Content)
 	require.Contains(t, response.Content, `"role_name":"reviewer"`)
+}
+
+// TestRoleTeammateFirstTurnRetry pins the order of Start and the first-turn
+// signal together. A build that fails because the role went away must leave
+// no session behind, and once the role is back the retried first turn must
+// still carry the role block even though its session already exists.
+func TestRoleTeammateFirstTurnRetry(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+	agents := coord.cfg.Config().Agents
+	implementer, ok := agents["implementer"]
+	require.True(t, ok)
+	require.NotNil(t, implementer.Role)
+
+	delete(agents, "implementer")
+	member := agentteam.Member{
+		ID: "member-1", Name: "impl", Role: agentteam.RoleTeammate,
+		RoleName: "implementer", Context: agentteam.ContextFresh,
+	}
+
+	_, err := runner.Start(t.Context(), member, "Do task.")
+	require.ErrorContains(t, err, `role "implementer" no longer exists`)
+	_, err = coord.sessions.Get(t.Context(), runner.teammateSessionID(member))
+	require.Error(t, err, "a failed build must not leave a session behind")
+
+	agents["implementer"] = implementer
+	run, err := runner.Start(t.Context(), member, "Do task.")
+	require.NoError(t, err)
+
+	// The first user message is stored before the request goes out, so it
+	// shows the exact prompt the model is sent.
+	var prompt string
+	require.Eventually(t, func() bool {
+		messages, err := coord.messages.List(t.Context(), run.SessionID())
+		if err != nil || len(messages) == 0 {
+			return false
+		}
+		prompt = messages[0].Content().Text
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+	run.Cancel()
+	<-run.Done()
+
+	require.True(t, strings.HasPrefix(prompt, roles.Block(*implementer.Role)),
+		"the retried first turn must carry the role block")
+}
+
+// TestTeammateFirstTurn pins what makes a turn the member's first: a new
+// session, or one that exists but has no stored message yet.
+func TestTeammateFirstTurn(t *testing.T) {
+	t.Parallel()
+	require.True(t, teammateFirstTurn(true, session.Session{}))
+	require.True(t, teammateFirstTurn(false, session.Session{ID: "s1"}),
+		"a session saved before its first message still needs the role block")
+	require.False(t, teammateFirstTurn(false, session.Session{ID: "s2", MessageCount: 2}))
+}
+
+// TestTeammatePromptRoleBlockFollowsHistory pins the role block against the
+// history rather than against creation alone.
+func TestTeammatePromptRoleBlockFollowsHistory(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+	role, refusal := resolveRole(coord.cfg.Config(), "reviewer")
+	require.Empty(t, refusal)
+	member := agentteam.Member{Name: "rev", Role: agentteam.RoleTeammate, RoleName: "reviewer", Context: agentteam.ContextFresh}
+
+	empty := session.Session{ID: "empty"}
+	reopened := runner.teammatePrompt(t.Context(), member, "x", teammateFirstTurn(false, empty))
+	require.True(t, strings.HasPrefix(reopened, roles.Block(*role)),
+		"an existing session with no messages is still a first turn")
+
+	started := session.Session{ID: "started", MessageCount: 1}
+	continued := runner.teammatePrompt(t.Context(), member, "x", teammateFirstTurn(false, started))
+	require.NotContains(t, continued, "## Your role:")
 }
