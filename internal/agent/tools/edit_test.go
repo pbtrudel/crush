@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/filetracker"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/home"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -346,4 +349,53 @@ func TestRefusalOutsideWorkingDirShowsNoContent(t *testing.T) {
 	require.Contains(t, resp.Content, "you must read the file before editing it")
 	require.NotContains(t, resp.Content, "token=abc")
 	require.Empty(t, tracker.reads)
+}
+
+// newHistoryForToolTest opens a fresh database and returns a history
+// service with one session, so a tool's history writes can be read back.
+func newHistoryForToolTest(t *testing.T) (history.Service, string) {
+	t.Helper()
+	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		// Release closes this test's pooled connection. Do not call
+		// db.ResetPool: parallel tests share the global pool.
+		require.NoError(t, db.Release(dataDir))
+	})
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	q := db.New(conn)
+	sess, err := session.NewService(q, conn).Create(t.Context(), "tool call ids")
+	require.NoError(t, err)
+	return history.NewService(q, conn), sess.ID
+}
+
+// TestEditToolRecordsTheToolCall pins the drawer's link from a version to
+// the tool call that produced it: an edit records the call's id on the
+// version holding its output and none on the baselines that precede it.
+func TestEditToolRecordsTheToolCall(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "a.go")
+	require.NoError(t, os.WriteFile(filePath, []byte("package a\n"), 0o644))
+	files, sessionID := newHistoryForToolTest(t)
+
+	tool := NewEditTool(nil, &mockPermissionService{}, files, &mockEditFileTracker{lastRead: time.Now().Add(time.Second)}, dir, false)
+	input, err := json.Marshal(EditParams{FilePath: filePath, OldString: "package a", NewString: "package b"})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, sessionID)
+	_, err = tool.Run(ctx, fantasy.ToolCall{ID: "tc-1", Name: EditToolName, Input: string(input)})
+	require.NoError(t, err)
+
+	metas, err := files.ListMetaBySession(t.Context(), sessionID)
+	require.NoError(t, err)
+	var ids []string
+	for _, m := range metas {
+		ids = append(ids, m.ToolCallID)
+	}
+	// A session with no history of the path stores the old content twice:
+	// the missing-history Create, then the intermediate version the tool
+	// records because the zero history value differs from the file. Both
+	// are baselines and name no call.
+	require.Equal(t, []string{"", "", "tc-1"}, ids, "only the version holding the edit's output names the call")
 }

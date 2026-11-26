@@ -278,6 +278,10 @@ m4bVisualTest('display settings', async ({ page, gateway }) => {
   // involved.
   await page.getByRole('button', { name: 'Display', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Display settings' })).toBeVisible();
+  // The m4b seed has four root sessions, so the HUD's pin row is on screen
+  // behind the dialog; the baseline tolerates less than 2% of pixels and
+  // this row is most of what the dialog leaves visible of the change.
+  await expect(page.getByRole('button', { name: 'Following the terminal' })).toBeVisible();
   await page.clock.runFor(1000);
   await expect(page).toHaveScreenshot('display-settings.png', { timeout: 30_000 });
   await axe(page);
@@ -294,6 +298,17 @@ m4bVisualTest.describe('solid theme', () => {
     await expect(page).toHaveScreenshot('solid-theme.png', { timeout: 30_000 });
     await axe(page);
   });
+});
+
+// The chronoline with the m4b seed's two edits, above the deck and under the
+// HUD. The strip is the one surface this baseline exists for.
+m4bVisualTest('chronoline', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await expect(page.getByRole('list', { name: 'Timeline of tool calls' })).toBeVisible();
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('chronoline.png', { timeout: 30_000 });
+  await axe(page);
 });
 
 // The AWS SSO card is a reading surface with no baseline of its own: the axe

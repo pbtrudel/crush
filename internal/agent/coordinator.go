@@ -751,6 +751,54 @@ func (c *coordinator) deliverNotice(ctx context.Context, sessionID, notice strin
 	}()
 }
 
+// wakeLeadForTeamMessage delivers the Lead's pending team mail as a turn. A
+// teammate's report or direct message lands in the Lead's inbox, but an idle
+// Lead has no step left to drain it, so without this wake the report waits
+// for the next user prompt and the Lead appears to stop working.
+//
+// It wakes the way a subagent report does, not the way a background-job
+// notice does: a busy Lead folds the mail into its next step through the
+// message queue, and an idle one is woken with a hidden turn. There is no
+// consecutive-wake budget here, because a teammate report is delegated work
+// coming back, not a background completion, and the Lead must act on every
+// one.
+func (c *coordinator) wakeLeadForTeamMessage(sessionID string) {
+	team := c.teamService()
+	if team == nil || sessionID == "" {
+		return
+	}
+	agent := c.currentAgent()
+	if agent == nil || c.sessions == nil {
+		return
+	}
+	if c.sessions.IsAgentToolSession(sessionID) {
+		return
+	}
+	ctx := context.Background()
+	if _, err := c.sessions.Get(ctx, sessionID); err != nil {
+		return
+	}
+	pending := team.DrainInbox(agentteam.LeadName, sessionID)
+	if len(pending) == 0 {
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("<teammate_message>\nA teammate reported to you. Read it and continue your work.\n")
+	for _, msg := range pending {
+		fmt.Fprintf(&sb, "\nMessage from %s: %s\n", msg.From, msg.Text)
+	}
+	sb.WriteString("</teammate_message>")
+	notice := sb.String()
+	// Counted from here, so the tree is busy before the goroutine runs.
+	c.runStarted(sessionID)
+	go func() {
+		defer c.runFinished(sessionID)
+		if _, err := c.runWithOptions(ctx, nil, nil, sessionID, notice, runOptions{hidden: true, wakeup: true}); err != nil {
+			slog.Warn("Failed to wake the Lead for a teammate report", "session_id", sessionID, "error", err)
+		}
+	}()
+}
+
 func (c *coordinator) resetWakeCount(sessionID string) {
 	c.wakeMu.Lock()
 	delete(c.wakeCounts, sessionID)
@@ -2807,6 +2855,9 @@ type subAgentParams struct {
 	// Role names the role the subagent runs in, so the background registry
 	// entry keeps it for agent_send and a restart. Empty for no role.
 	Role string
+	// Label is the dispatch name the agent list shows for this run. A
+	// caller without one leaves it empty and gets a prompt-derived name.
+	Label string
 	// Channel is the channel the parent session runs in. A teammate inherits
 	// it so filterToolsForChannel keeps the same channel-scoped MCP tools in
 	// its palette as the Lead's; an empty channel would drop them and change
@@ -2933,7 +2984,7 @@ func (c *coordinator) startSubAgentRun(sess session.Session, params subAgentPara
 	c.agentRuns.Start(agentrun.Run{
 		ID:              sess.ID,
 		Kind:            agentrun.KindSubagent,
-		Name:            subAgentRunName(params.Prompt),
+		Name:            cmp.Or(strings.TrimSpace(params.Label), subAgentRunName(params.Prompt)),
 		SessionID:       sess.ID,
 		ParentSessionID: params.SessionID,
 		Status:          agentrun.StatusRunning,

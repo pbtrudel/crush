@@ -28,6 +28,22 @@
 }
 .hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .hud__controls { display: flex; align-items: center; gap: var(--space-4); }
+/* The pin names the session the tab follows on the strip's second row, so
+   the instruments keep their width at 1280, 1366 and 1440 and short model
+   names stay whole. With one root session it renders nothing and the strip
+   stays one row. */
+.hud__pin-slot {
+  grid-column: 1 / -1; justify-self: start; flex: 1 1 100%;
+  display: inline-flex; flex-wrap: wrap; align-items: center;
+  gap: var(--space-1); min-inline-size: 0;
+}
+.hud__pin-btn {
+  min-block-size: 28px; padding: 4px 10px;
+  background: transparent; color: var(--text-muted); border: 1px solid var(--edge);
+  border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
+.hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }
 .hud__select {
   appearance: none; color: var(--text); background-color: var(--glass-solid);
   /* The chevron is two 45 degree strokes side by side, so no data URI. */
@@ -164,6 +180,11 @@
   .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); padding: var(--space-4) calc(var(--space-4) * 1.5); }
   .hud__id { flex: 1 1 12rem; }
   .hud__controls { flex: 1 1 100%; flex-wrap: wrap; gap: var(--space-4); }
+  /* The wrapped strip has no room for another row: the AWS card above the
+     deck needs the height, and the session title still opens the switcher,
+     where Browse here sits. The named HUD layouts (1280 and up) keep the
+     toggle. */
+  .hud__pin-slot { display: none; }
   /* The wrapped HUD is taller, so until the HUD reports its height the
      fallback keeps the old 216px offset. */
   .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }

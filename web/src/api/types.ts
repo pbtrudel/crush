@@ -9,7 +9,9 @@ export type Part =
   | { type: 'tool_result'; data: ToolResultData }
   | { type: 'finish'; data: { reason: string; time: number; message?: string; details?: string } }
   | { type: 'image_url'; data: { url: string; detail?: string } }
-  | { type: 'binary'; data: { path?: string; mime_type?: string } }
+  // Binary parts keep Go's field names on the wire: the proto struct has
+  // no JSON tags.
+  | { type: 'binary'; data: { Path?: string; MIMEType?: string } }
   | { type: 'shell_command'; data: { command: string; output: string; exit_code: number } }
   | { type: 'compaction_stats'; data: { tokens_before: number; saved_tokens: number; kept_messages: number } }
   | { type: 'sub_agent_report'; data: { label: string; output: string; failed?: boolean; model?: string } };
@@ -100,6 +102,9 @@ export interface DisplaySettings {
 export interface ConfigView { display: DisplaySettings; agent_teams: boolean }
 export interface Snapshot {
   version: string; working_dir: string; branch?: string; current_session_id: string;
+  // root_sessions is how many sessions have no parent, which decides
+  // whether the HUD offers the pin toggle.
+  root_sessions?: number;
   session?: Session; messages: Message[]; permissions: PermissionRequest[];
   questions?: QuestionRequest[]; permission_mode: PermissionMode; input_mode: InputMode; model: ModelInfo;
   secure_prompts?: SecurePrompt[]; signin?: SignInState; aws_sso?: { command: string; url?: string };
@@ -112,9 +117,14 @@ export interface Snapshot {
   files?: FileSummary[]; team?: TeamState; agent_runs?: AgentRun[];
 }
 
+export interface VersionTool {
+  session_id: string; tool_call_id?: string;
+}
 export interface FileSummary {
   path: string; versions: number; version_ids: number[]; additions: number; removals: number;
   diagnostics: { error: number; warning: number }; updated_at: number; session_ids: string[];
+  // version_tools has one entry per version in version_ids order.
+  version_tools: VersionTool[];
   stats_unknown?: boolean;
 }
 export interface FileDiff {

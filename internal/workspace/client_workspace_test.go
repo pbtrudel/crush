@@ -1783,11 +1783,11 @@ func TestClientWorkspaceHistoryMeta(t *testing.T) {
 		case "/v1/workspaces/ws-1/sessions/s1/history/meta":
 			_ = json.NewEncoder(w).Encode([]proto.FileMeta{
 				{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
-				{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5},
+				{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5, ToolCallID: "tc-9"},
 			})
 		case "/v1/workspaces/ws-1/history/h2":
 			_ = json.NewEncoder(w).Encode(proto.File{
-				ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13,
+				ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13, ToolCallID: "tc-9",
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -1806,13 +1806,13 @@ func TestClientWorkspaceHistoryMeta(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []history.FileMeta{
 		{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
-		{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5},
+		{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5, ToolCallID: "tc-9"},
 	}, metas)
 
 	got, err := ws.GetHistoryVersion(t.Context(), "h2")
 	require.NoError(t, err)
 	require.Equal(t, history.File{
-		ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13,
+		ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13, ToolCallID: "tc-9",
 	}, got)
 
 	_, err = ws.GetHistoryVersion(t.Context(), "nope")

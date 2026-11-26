@@ -36,6 +36,7 @@ import { SignInDialog } from './signin/SignInDialog';
 import { DisplaySettings } from './settings/DisplaySettings';
 import { AwsSsoCard } from './signin/AwsSsoCard';
 import { usePublishedHeight } from './usePublishedHeight';
+import { Chronoline } from './chronoline/Chronoline';
 
 export function App() {
   const s = state.value;
@@ -199,6 +200,7 @@ export function App() {
         <FileDrawer />
       </main>
       <div class="holodeck__deck" inert={modal} ref={deck}>
+        <Chronoline />
         <SideAnswer />
         <CommandDeck />
       </div>

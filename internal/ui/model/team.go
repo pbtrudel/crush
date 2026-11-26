@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 )
 
@@ -234,25 +235,53 @@ func sessionTree(sessionID string, links [][2]string) map[string]bool {
 	}
 }
 
+// sidebarAgentHit ties a line of the Agents section (relative to the section
+// start) to the agent whose row is drawn there.
+type sidebarAgentHit struct {
+	line       int
+	descriptor dialog.AgentDescriptor
+}
+
 // agentsInfo renders the live agent section for the current session. It
-// stays empty when this session has no running agent.
-func (m *UI) agentsInfo(width int) string {
+// stays empty when this session has no running agent. The returned hits map
+// each run's row to its content line so a click can open that agent.
+func (m *UI) agentsInfo(width int) (string, []sidebarAgentHit) {
 	if m.com == nil {
-		return ""
+		return "", nil
 	}
 	sessionID := m.currentSessionID()
 	runs := sessionAgentRuns(m.agentRuns, sessionID)
 	if len(runs) == 0 {
-		return ""
+		return "", nil
 	}
 	t := m.com.Styles
 	title := common.Section(t, t.Resource.Heading.Render("▮ Agents"), width)
 	lines := make([]string, 0, len(runs))
+	hits := make([]sidebarAgentHit, 0, len(runs))
+	// The section is the title, a blank line, then one row per run. Track
+	// the running line so a row maps to its content line even if it wraps.
+	rowLine := lipgloss.Height(title) + 1
 	for _, run := range runs {
-		lines = append(lines, agentRunLine(t, run, width))
+		line := agentRunLine(t, run, width)
+		lines = append(lines, line)
+		if run.SessionID != "" {
+			hits = append(hits, sidebarAgentHit{
+				line: rowLine,
+				descriptor: dialog.AgentDescriptor{
+					SessionID:       run.SessionID,
+					ParentSessionID: run.ParentSessionID,
+					Name:            run.Name,
+					Kind:            run.Kind,
+					Status:          run.Status,
+					StartedAt:       run.StartedAt,
+					FinishedAt:      run.FinishedAt,
+				},
+			})
+		}
+		rowLine += lipgloss.Height(line)
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body))
+	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body)), hits
 }
 
 func agentRunLine(t *styles.Styles, run agentrun.Run, width int) string {

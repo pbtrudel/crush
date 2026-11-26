@@ -50,7 +50,7 @@ func applyImageBudget(messages []fantasy.Message, limit int) []fantasy.Message {
 		changed := false
 		for j, part := range msg.Content {
 			if toOmit > 0 {
-				if replaced, ok := omitImagePart(part); ok {
+				if replaced, ok := omitImagePart(part, imageOmittedText); ok {
 					content[j] = replaced
 					toOmit--
 					changed = true
@@ -103,27 +103,27 @@ func isImagePart(part fantasy.MessagePart) bool {
 	return false
 }
 
-// omitImagePart replaces an image part with a text placeholder. It reports
-// false for parts that do not carry an image.
-func omitImagePart(part fantasy.MessagePart) (fantasy.MessagePart, bool) {
+// omitImagePart replaces an image part with the given text placeholder. It
+// reports false for parts that do not carry an image.
+func omitImagePart(part fantasy.MessagePart, text string) (fantasy.MessagePart, bool) {
 	if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok {
 		if !isImageMediaType(file.MediaType) {
 			return nil, false
 		}
-		return fantasy.TextPart{Text: imageOmittedText, ProviderOptions: file.ProviderOptions}, true
+		return fantasy.TextPart{Text: text, ProviderOptions: file.ProviderOptions}, true
 	}
 	if result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
 		media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](result.Output)
 		if !ok || !isImageMediaType(media.MediaType) {
 			return nil, false
 		}
-		text := imageOmittedText
+		out := text
 		if media.Text != "" {
-			text = media.Text + "\n" + imageOmittedText
+			out = media.Text + "\n" + out
 		}
 		return fantasy.ToolResultPart{
 			ToolCallID:       result.ToolCallID,
-			Output:           fantasy.ToolResultOutputContentText{Text: text},
+			Output:           fantasy.ToolResultOutputContentText{Text: out},
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderOptions:  result.ProviderOptions,
 			ClientMetadata:   result.ClientMetadata,

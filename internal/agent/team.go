@@ -121,6 +121,7 @@ func (c *coordinator) syncAgentTeams() error {
 		}
 		teamService.SetRunner(&teamRunner{c: c, team: teamService})
 		teamService.SetTaskCompletedHook(c.completeMatchingTodo)
+		teamService.SetLeadNotifyHook(c.wakeLeadForTeamMessage)
 		c.setTeam(teamService)
 	case !enabled && team != nil:
 		// Retire the service before shutting it down, so the next reader

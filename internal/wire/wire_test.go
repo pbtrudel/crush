@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -416,4 +417,24 @@ func TestConfigStaleMsgToProto_RoundTrip(t *testing.T) {
 func TestWrapReturnsNilForUnrecognized(t *testing.T) {
 	t.Parallel()
 	require.Nil(t, Wrap(struct{ Unknown int }{}))
+}
+
+// TestFileToolCallIDToProto pins the server side of the drawer's
+// per-version tool links: both history payloads carry the id in client
+// mode, where the gateway only sees the proto forms.
+func TestFileToolCallIDToProto(t *testing.T) {
+	t.Parallel()
+
+	f := history.File{
+		ID: "h1", SessionID: "s1", Path: "a.go", Content: "x",
+		Version: 2, CreatedAt: 3, UpdatedAt: 4, ToolCallID: "tc-1",
+	}
+	require.Equal(t, "tc-1", FileToProto(f).ToolCallID)
+
+	m := history.FileMeta{
+		ID: "h1", SessionID: "s1", Path: "a.go",
+		Version: 2, CreatedAt: 3, UpdatedAt: 4, Size: 1, ToolCallID: "tc-1",
+	}
+	require.Equal(t, "tc-1", FileMetaToProto(m).ToolCallID)
+	require.Equal(t, "tc-1", FileMetasToProto([]history.FileMeta{m})[0].ToolCallID)
 }

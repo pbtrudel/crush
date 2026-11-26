@@ -3,12 +3,16 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import fixtures from '../../state/__fixtures__/events.json';
 import { ApiError, api } from '../../api/http';
-import type { FileDiff, Frame } from '../../api/types';
+import type { FileDiff, Frame, Message } from '../../api/types';
 import { diffMode } from '../../state/drawer';
 import { initialState, reduce } from '../../state/reducer';
 import { actions, state } from '../../state/store';
 
 const mounted = vi.hoisted(() => ({ modes: [] as string[], destroyed: 0, fail: false }));
+const focused = vi.hoisted(() => ({ calls: [] as Array<[string, string]> }));
+vi.mock('../../state/focusTool', () => ({
+  focusToolCall: (sessionId: string, callId: string) => { focused.calls.push([sessionId, callId]); },
+}));
 vi.mock('./diff/codemirror', () => ({
   mountDiff: async (host: HTMLElement, _d: unknown, mode: string) => {
     if (mounted.fail) {
@@ -79,6 +83,60 @@ describe('DiffPanel', () => {
     expect(root.querySelector('pre.diff-unified')).toBeNull();
   });
 
+  it('links each shown version to the tool call that made it', async () => {
+    const base = reduce(initialState(), fx.snapshot);
+    const made: Message = {
+      id: 'a1', role: 'assistant', session_id: 's1', model: '', provider: '', created_at: 3, updated_at: 3,
+      parts: [{ type: 'tool_call', data: { id: 'tc-edit-1', name: 'edit', input: '{"file_path":"/repo/parser.go"}' } }],
+    };
+    state.value = {
+      ...base,
+      messages: [made],
+      team: {
+        team_id: 't',
+        members: [
+          { id: 'lead', name: 'Lead', role: 'lead', session_id: 's1' },
+          { id: 'm-1', name: 'alice', role: 'teammate', session_id: 'team-m-1', parent_session_id: 's1' },
+        ],
+        tasks: [],
+      },
+      files: [{
+        path: '/repo/parser.go', versions: 2, version_ids: [1, 2],
+        version_tools: [{ session_id: 's1' }, { session_id: 'team-m-1', tool_call_id: 'tc-edit-1' }],
+        additions: 1, removals: 0, diagnostics: { error: 0, warning: 0 }, updated_at: 1,
+        session_ids: ['s1', 'team-m-1'],
+      }],
+    };
+    vi.spyOn(api, 'diff').mockResolvedValue(diff({ from: 1, to: 2 }));
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    const lines = root.querySelector('.diffpanel__made')!;
+    // The To version names a recorded tool call; the From version predates
+    // the tagging, so it says so and offers no link.
+    expect(lines.textContent).toContain('Recorded before the change');
+    const button = lines.querySelector<HTMLButtonElement>('button')!;
+    expect(button.textContent).toBe('Made by edit in alice');
+    await act(() => { button.click(); });
+    expect(focused.calls).toEqual([['team-m-1', 'tc-edit-1']]);
+  });
+
+  it('keeps the diff room when no shown version records a tool call', async () => {
+    const base = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...base,
+      files: [{
+        path: '/repo/parser.go', versions: 2, version_ids: [0, 1],
+        version_tools: [{ session_id: 's1' }, { session_id: 's1' }],
+        additions: 1, removals: 0, diagnostics: { error: 0, warning: 0 }, updated_at: 1,
+        session_ids: ['s1'],
+      }],
+    };
+    vi.spyOn(api, 'diff').mockResolvedValue(diff());
+    await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
+    await flush();
+    expect(root.querySelector('.diffpanel__made')).toBeNull();
+  });
+
   it('asks for the versions the stepper picks', async () => {
     const get = vi.spyOn(api, 'diff').mockResolvedValue(diff());
     await act(() => { render(<DiffPanel path="/repo/parser.go" />, root); });
@@ -102,7 +160,7 @@ describe('DiffPanel', () => {
       ...reduce(initialState(), fx.snapshot),
       files: [{
         path: '/repo/parser.go', versions: 3, version_ids: [0, 1, 2], additions: 3, removals: 1,
-        diagnostics: { error: 1, warning: 0 }, updated_at: 104, session_ids: ['s1', 'sub-1'],
+        diagnostics: { error: 1, warning: 0 }, updated_at: 104, session_ids: ['s1', 'sub-1'], version_tools: [],
       }],
     };
     const get = vi.spyOn(api, 'diff').mockResolvedValue(diff({ from: 0, to: 2 }));

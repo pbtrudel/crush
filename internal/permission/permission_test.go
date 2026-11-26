@@ -140,6 +140,10 @@ func TestPermissionService_SkipMode(t *testing.T) {
 		service := NewPermissionService("/tmp", []string{}, nil)
 		service.SetPermissionMode(PermissionModeNormal)
 
+		// Subscribe before the request starts: the broker drops events that
+		// are published with no subscriber, which hung this test in CI.
+		events := service.Subscribe(t.Context())
+
 		done := make(chan struct{})
 		go func() {
 			result, err := service.Request(t.Context(), CreatePermissionRequest{
@@ -157,7 +161,6 @@ func TestPermissionService_SkipMode(t *testing.T) {
 		}()
 
 		// Wait for permission request to be published.
-		events := service.Subscribe(t.Context())
 		event := <-events
 		assert.Equal(t, "bash", event.Payload.ToolName)
 		assert.Equal(t, "sudo", event.Payload.Danger)

@@ -143,11 +143,14 @@ func IsAudioPath(path string) bool {
 	})
 }
 
-// WebLauncher starts web mode and opens its browser tab. It is nil when
-// web mode is unavailable.
+// WebLauncher starts web mode, opens its browser tab and stops it again. It
+// is nil when web mode is unavailable.
 type WebLauncher interface {
 	// Start brings the gateway up if needed and returns the launch URL.
 	Start(ctx context.Context) (string, error)
+	// Stop shuts the running gateway down so a later Start brings up a
+	// fresh one with a new link.
+	Stop(ctx context.Context) error
 	// OpenBrowser opens a browser tab for the running gateway.
 	OpenBrowser() error
 	// SetInputMode reports the terminal's plan or code mode to the

@@ -513,6 +513,7 @@ type Options struct {
 	GlobalContextPaths   []string           `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
 	ContextMaxBytes      *int               `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
 	MaxImages            *int               `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	ImageRetentionTurns  *int               `json:"image_retention_turns,omitempty" jsonschema:"description=Number of recent user turns whose images stay in the replayed context. Older images are replaced with a short note so the model stops referencing them and the context stays small. 0 drops an image as soon as a newer prompt arrives. A negative value keeps images indefinitely.,default=1,example=2"`
 	PromptCacheTTL       string             `json:"prompt_cache_ttl,omitempty" jsonschema:"description=Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x\\, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.,enum=5m,enum=1h,default=5m"`
 	SkillsPaths          []string           `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
 	TUI                  *TUIOptions        `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
@@ -732,6 +733,10 @@ const DefaultContextMaxBytes = 64 * 1024
 // not configured a budget. The oldest images are replaced first.
 const DefaultMaxImages = 100
 
+// DefaultImageRetentionTurns is how many recent user turns keep their images in
+// the replayed context when the user has not configured retention.
+const DefaultImageRetentionTurns = 1
+
 // Prompt cache lifetimes accepted in prompt_cache_ttl. The extended lifetime
 // costs more per cache write, so it only pays off when pauses between turns
 // outlast the default five-minute window.
@@ -831,6 +836,16 @@ func (o *Options) GetMaxImages() int {
 		return DefaultMaxImages
 	}
 	return max(0, *o.MaxImages)
+}
+
+// GetImageRetentionTurns returns how many recent user turns keep their images.
+// The nil receiver and the unset field both mean DefaultImageRetentionTurns. A
+// negative value disables expiry.
+func (o *Options) GetImageRetentionTurns() int {
+	if o == nil || o.ImageRetentionTurns == nil {
+		return DefaultImageRetentionTurns
+	}
+	return *o.ImageRetentionTurns
 }
 
 // GetPromptCacheTTL returns the prompt-cache lifetime as configured: the

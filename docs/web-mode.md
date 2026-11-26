@@ -176,6 +176,67 @@ answer or cancel from the tab is refused.
 The tab sends the secret in the request body, clears the field when you
 submit, and keeps no copy.
 
+## Browsing other sessions
+
+The tab follows the terminal's session by default. When the workspace has
+more than one top-level session, the pin control in the HUD, labelled
+**Following the terminal**, opens the session switcher. Every row other than
+the terminal's offers **Browse here**. Browsing shows that session's
+transcript, edited files and agents in the tab without moving the terminal;
+the HUD says **Browsing** and names the session.
+
+On widths below 1280 the HUD has no room for the pin row, so it is hidden.
+Open the session switcher from the session title and use **Browse here**
+there; the deck's **Return to the terminal's session** is the way back.
+
+A browsed session is read-only. The message box explains why: prompts go to
+the terminal's session. **Return to the terminal's session** goes back to
+whatever the terminal shows now, including a session it switched to while
+you were browsing. **Open this session in the terminal** asks the terminal
+to show the browsed session; the tab follows it and the message box unlocks.
+
+While browsing, the command palette hides commands, MCP prompts, skills and
+the actions that start work, and the deck and the plan card refuse to send.
+Permission, question and secure prompt dialogs stay global: they open
+wherever they belong while you browse.
+
+## The chronoline and file history links
+
+The strip above the message box is the chronoline: one mark per tool call or
+edit in the session the tab shows, oldest on the left and newest on the
+right. Each mark names the kind of tool and its target, as **edit
+parser.go**, shortened with an ellipsis when the target is long. A read is a
+cyan circle, a write a teal square, a run an amber triangle and a network
+call a violet diamond, so the shape tells the category as well as the color.
+A long session keeps its newest 200 calls. The strip hides below 768px,
+where the scene also shrinks to a strip.
+
+Hover a mark, or focus it with the keyboard, for the full summary, the time
+and the agent an agent call started. The arrow keys move along the strip and
+Home and End jump to its ends. Selecting a mark scrolls the transmission log
+to that tool card, opens it and puts the focus on it, so the call and its
+output are in front of you.
+
+The same action is behind each file version. Open the file drawer and select
+a file: under the version controls every version in the shown range names
+the tool and agent that made it, as **Made by edit in Coder**. Select it to
+reach the same card in the log. When another version in the shown range is
+linked, a version recorded before Crush kept tool calls says **Recorded
+before the change** and offers no link; a range with no linked version shows
+nothing.
+
+Between 1024 and 1279px the drawer opens over the log column; following a
+link for a call in the session the tab shows closes it so the card is
+visible. At 1280px and up the drawer keeps its own column and stays open, so
+you can step through versions. Below 1024px the panels share one slot;
+following a link closes the drawer and shows the log, or the agent tab for a
+call a child agent ran, so the card is never left on a covered or hidden
+panel.
+
+Browsing another session shows its own chronoline and file versions, and
+both links open its tool calls. A call a child agent ran opens that agent's
+inspector at the card.
+
 ## Display settings
 
 The **Display** control in the HUD, and **Display settings** in the command
@@ -225,6 +286,11 @@ running and the session is untouched.
 Run `/web` in the terminal to start a new gateway; the new link works in the
 same tab. If the terminal exits instead of stopping web mode, the tab says
 the session ended and points at the same `/web` command.
+
+The terminal's command palette (`Ctrl+P`) lists **Stop Web Mode** while a
+gateway is running. Choosing it stops the gateway without quitting Crush: the
+terminal reports "Web mode stopped. Run /web to start it again." and every tab
+shows the same stopped notice the display settings stop shows.
 
 ## Palette commands
 

@@ -215,9 +215,12 @@ func snapshotFrame(t *testing.T) frame {
 	require.NotNil(t, msg)
 	raw, err := json.Marshal(Snapshot{
 		Version: "test", WorkingDir: "/repo", CurrentSessionID: "s1",
-		Messages: []json.RawMessage{msg}, Permissions: []json.RawMessage{},
+		RootSessions: 1,
+		Messages:     []json.RawMessage{msg}, Permissions: []json.RawMessage{},
 		Files: []FileSummary{{
-			Path: "/repo/parser.go", Versions: 2, VersionIDs: []int64{0, 1}, Additions: 3, Removals: 1,
+			Path: "/repo/parser.go", Versions: 2, VersionIDs: []int64{0, 1},
+			VersionTools: []VersionTool{{SessionID: "s1"}, {SessionID: "sub-1", ToolCallID: "tc-0"}},
+			Additions:    3, Removals: 1,
 			Diagnostics: FileDiagnostics{Error: 1}, UpdatedAt: 104, SessionIDs: []string{"s1", "sub-1"},
 		}},
 		PermissionMode: "normal", InputMode: "code", PlanReadySessionID: "s1",

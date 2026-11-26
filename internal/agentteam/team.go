@@ -432,6 +432,10 @@ type Service struct {
 	// taskCompletedHook is called after a task settles as completed. It
 	// runs without the service lock and is best-effort.
 	taskCompletedHook func(sessionID, subject string)
+	// leadNotifyHook is called when a teammate's report or message lands in
+	// the Lead's inbox, so an idle Lead can be woken to read it. It runs
+	// without the service lock and is best-effort.
+	leadNotifyHook func(sessionID string)
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -491,6 +495,15 @@ func (s *Service) SetTaskCompletedHook(hook func(sessionID, subject string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.taskCompletedHook = hook
+}
+
+// SetLeadNotifyHook installs a best-effort callback invoked when a teammate's
+// report or message lands in the Lead's inbox. It receives the Lead's session
+// ID and runs without the service lock, so the Lead can be woken to read it.
+func (s *Service) SetLeadNotifyHook(hook func(sessionID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.leadNotifyHook = hook
 }
 
 // notifyLocked wakes every waiter. Callers must hold s.mu.
@@ -1106,11 +1119,13 @@ func (s *Service) watch(name string, run Run) {
 
 	runErr := run.Err()
 	var (
-		member   Member
-		pending  []Message
-		runner   Runner
-		hook     func(sessionID, subject string)
-		complete []string
+		member    Member
+		pending   []Message
+		runner    Runner
+		hook      func(sessionID, subject string)
+		complete  []string
+		leadHook  func(sessionID string)
+		wasClosed bool
 	)
 	// The run already happened, so its settlement must land even when
 	// another process keeps the state lock.
@@ -1139,6 +1154,8 @@ func (s *Service) watch(name string, run Run) {
 		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 		s.notifyLocked()
 		hook = s.taskCompletedHook
+		leadHook = s.leadNotifyHook
+		wasClosed = s.closed
 		if s.closed {
 			// Shutdown owns the member now. Leave its inbox queued on disk
 			// for a later Service instead of starting a turn that would
@@ -1159,6 +1176,11 @@ func (s *Service) watch(name string, run Run) {
 		for _, subject := range complete {
 			hook(member.ParentID, subject)
 		}
+	}
+	// The report just landed in the Lead's inbox. Wake an idle Lead so it
+	// can act on it without waiting for a user prompt.
+	if leadHook != nil && !wasClosed {
+		leadHook(member.ParentID)
 	}
 	if len(pending) == 0 {
 		return
@@ -1400,8 +1422,10 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		return newError(CodeMessageTooLarge, "message exceeds %d bytes", s.cfg.MaxMessageBytes)
 	}
 	var (
-		target  Member
-		running bool
+		target      Member
+		running     bool
+		leadSession string
+		leadHook    func(sessionID string)
 	)
 	err := s.write(refusable, func() (bool, error) {
 		if _, ok := s.memberLocked(from); !ok {
@@ -1414,13 +1438,25 @@ func (s *Service) SendMessage(ctx context.Context, from, sessionID string, req S
 		s.appendMessageLocked(from, target.Name, req.Message)
 		s.notifyLocked()
 		running = s.statusLocked(target.Name) == StatusRunning
+		// The Lead member is the root of the tree and carries no session of
+		// its own; the session that owns this mail is the sender's scope root.
+		leadSession = s.scopeRootLocked(from, sessionID)
+		leadHook = s.leadNotifyHook
 		return true, nil
 	})
 	if err != nil {
 		return err
 	}
 
-	if running || target.Role == RoleLead {
+	if target.Role == RoleLead {
+		// Mail for the Lead is drained by its own turn. Wake an idle Lead
+		// so a teammate's message is read without waiting for a user prompt.
+		if leadHook != nil {
+			leadHook(leadSession)
+		}
+		return nil
+	}
+	if running {
 		return nil
 	}
 	pending := s.DrainInbox(target.Name, target.ParentID)

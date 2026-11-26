@@ -16,19 +16,47 @@ import (
 const wslReadTimeout = 10 * time.Second
 
 // powershellImageScript asks Windows for the clipboard image and writes the
-// encoded PNG straight to stdout. GetImage returns null when the clipboard
-// holds no image; exiting 1 keeps that case distinct from an empty stream.
+// encoded bytes straight to stdout; exiting 1 means "no image", which keeps
+// that case distinct from an empty stream. GetImage alone is not enough: it
+// only reads bitmap formats, so it returns null for images that browsers and
+// Electron apps publish solely as "PNG", and for an image file copied in
+// Explorer. Those are tried before and after it, PNG first because it keeps
+// transparency that the bitmap round trip drops.
 const powershellImageScript = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-$img = [System.Windows.Forms.Clipboard]::GetImage()
-if ($null -eq $img) { exit 1 }
-$ms = New-Object System.IO.MemoryStream
-$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
 $out = [Console]::OpenStandardOutput()
-$bytes = $ms.ToArray()
-$out.Write($bytes, 0, $bytes.Length)
-$out.Flush()
+function Emit([byte[]]$bytes) {
+	if ($null -eq $bytes -or $bytes.Length -eq 0) { return }
+	$out.Write($bytes, 0, $bytes.Length)
+	$out.Flush()
+	exit 0
+}
+$data = [System.Windows.Forms.Clipboard]::GetDataObject()
+if ($null -eq $data) { exit 1 }
+if ($data.GetDataPresent('PNG')) {
+	$png = $data.GetData('PNG')
+	if ($png -is [System.IO.Stream]) {
+		if ($png.CanSeek) { $png.Position = 0 }
+		$ms = New-Object System.IO.MemoryStream
+		$png.CopyTo($ms)
+		Emit $ms.ToArray()
+	}
+}
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if ($null -ne $img) {
+	$ms = New-Object System.IO.MemoryStream
+	$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+	Emit $ms.ToArray()
+}
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+	foreach ($file in [System.Windows.Forms.Clipboard]::GetFileDropList()) {
+		if ($file -match '\.(png|jpe?g)$' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+			Emit ([System.IO.File]::ReadAllBytes($file))
+		}
+	}
+}
+exit 1
 `
 
 // isWSL reports whether this Linux process runs under the Windows Subsystem

@@ -2,15 +2,16 @@ import { effect, signal } from '@preact/signals';
 import { api, ApiError, type GrantAction } from '../api/http';
 import { connectStream } from '../api/stream';
 import type {
-  Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, SignInState, Snapshot,
-  WireEvent,
+  Attachment, Frame, InputMode, Message, ModelTarget, PermissionMode, QuestionAnswer, SecurePrompt, SignInState,
+  Snapshot, WireEvent,
 } from '../api/types';
 import {
-  adoptSession, applySignIn, clearAwsSso, dismissToast, dropQuestion as dropQuestionFrom, initialState,
-  inspect, markAnswered, dropRun, mergeInspected, pushToast, reduce, removeShell as removeShellRun, setConn,
-  startShell, unmarkAnswered,
+  adoptSession, applySignIn, applyTerminalSnapshot, clearAwsSso, dismissToast,
+  dropQuestion as dropQuestionFrom, initialState, inspect, markAnswered, dropRun, mergeInspected, pushToast,
+  reduce, removeShell as removeShellRun, setConn, startShell, unmarkAnswered,
   type State,
 } from './reducer';
+import { applyBrowse } from './pin';
 import { effectsLevel, type EffectsLevel } from './effects';
 import { forgetToken, setToken } from './token';
 import { describeFailure, type Failure } from './failure';
@@ -31,6 +32,10 @@ export const sideAnswer = signal<SideAnswerState | null>(null);
 // A newer question or a Dismiss invalidates the answer still in flight, so
 // only the newest ask may reach the card.
 let sideAnswerGeneration = 0;
+
+// pinGeneration invalidates a browse or re-pin answer the user has moved
+// past: only the newest choice owns the view.
+let pinGeneration = 0;
 
 export function dismissSideAnswer(): void {
   resetSideAnswer();
@@ -60,6 +65,16 @@ export function dispatch(fn: (s: State) => State) {
 
 function errorText(err: unknown): string {
   return describeFailure(err).text;
+}
+
+// BROWSING_REFUSED is why a tab reading another session cannot start work:
+// the prompt, command or skill would run in a session the terminal is not
+// showing, and the deck is read-only.
+const BROWSING_REFUSED = "The tab is browsing another session. Return to the terminal's session to send.";
+
+// browsingFailure reports the refusal while the tab is browsing, or null.
+function browsingFailure(): Failure | null {
+  return state.value.browsing !== null ? { tone: 'error', text: BROWSING_REFUSED } : null;
 }
 
 // report toasts an error for actions with no control to show it on.
@@ -193,7 +208,14 @@ async function refreshQueue(sid: string) {
 async function reloadSession(id: string) {
   try {
     const snap: Snapshot = await api.snapshot(id);
-    apply((s) => (s.sessionId === id ? reduce(s, { seq: s.lastSeq, type: 'snapshot', payload: snap }) : s), true);
+    apply((s) => {
+      if (s.sessionId !== id) return s;
+      // While browsing, the answer replaces the browsed view through
+      // applyBrowse, which never sets needsReload: the reload it answers
+      // must not ask for itself again.
+      if (s.browsing !== null) return s.browsing === id ? applyBrowse(s, snap) : s;
+      return reduce(s, { seq: s.lastSeq, type: 'snapshot', payload: snap });
+    }, true);
   } catch (err) {
     dispatch((s) => pushToast(s, 'error', `Could not load the session: ${errorText(err)}`));
   }
@@ -324,6 +346,8 @@ export const actions = {
   // With no current session the browser starts one the way the terminal
   // does on a first prompt; the gateway then asks the terminal to open it.
   async sendPrompt(prompt: string, files: File[]): Promise<Failure | null> {
+    const blocked = browsingFailure();
+    if (blocked) return blocked;
     try {
       const sid = await ensureSession();
       await api.sendPrompt(sid, prompt, files);
@@ -336,6 +360,8 @@ export const actions = {
   // runShell returns the failure for the deck to show inline, or null. A
   // shell command never queues: it runs beside the conversation.
   async runShell(command: string): Promise<Failure | null> {
+    const blocked = browsingFailure();
+    if (blocked) return blocked;
     try {
       const sid = await ensureSession();
       const { run_id } = await api.shell(sid, command);
@@ -399,6 +425,77 @@ export const actions = {
     } catch (err) {
       report(err);
     }
+  },
+  // browse shows another session read-only. The newest choice owns the
+  // view, so an answer for a session the user has left is dropped.
+  async browse(sid: string): Promise<Failure | null> {
+    const generation = ++pinGeneration;
+    try {
+      const snap = await api.snapshot(sid);
+      if (generation !== pinGeneration) return null;
+      dispatch((s) => (generation === pinGeneration ? applyBrowse(s, snap) : s));
+      return null;
+    } catch (err) {
+      if (generation !== pinGeneration) return null;
+      return describeFailure(err);
+    }
+  },
+  // repin returns to the terminal's session, wherever the terminal is now.
+  async repin(): Promise<Failure | null> {
+    const generation = ++pinGeneration;
+    try {
+      const snap = await api.snapshot();
+      if (generation !== pinGeneration) return null;
+      dispatch((s) => (generation === pinGeneration ? applyTerminalSnapshot(s, snap) : s));
+      return null;
+    } catch (err) {
+      if (generation !== pinGeneration) return null;
+      return describeFailure(err);
+    }
+  },
+  // openBrowsedInTerminal asks the terminal to show the browsed session.
+  // The session_follow frame it causes pins the tab back to the terminal.
+  async openBrowsedInTerminal(): Promise<Failure | null> {
+    const sid = state.value.browsing;
+    if (!sid) return null;
+    try {
+      await api.follow(sid);
+      return null;
+    } catch (err) {
+      return describeFailure(err);
+    }
+  },
+  // runCommand starts a custom command in the session the caller names. A
+  // browsing tab refuses, like the prompt path, so hiding the palette rows
+  // is not the only barrier.
+  async runCommand(sid: string, id: string, args: Record<string, string>): Promise<Failure | null> {
+    const blocked = browsingFailure();
+    if (blocked) return blocked;
+    try {
+      await api.runCommand(sid, id, args);
+      return null;
+    } catch (err) {
+      return describeFailure(err);
+    }
+  },
+  // runMcpPrompt starts an MCP prompt, with the same browsing refusal.
+  async runMcpPrompt(
+    sid: string, clientId: string, promptId: string, args: Record<string, string>,
+  ): Promise<Failure | null> {
+    const blocked = browsingFailure();
+    if (blocked) return blocked;
+    try {
+      await api.runMcpPrompt(sid, clientId, promptId, args);
+      return null;
+    } catch (err) {
+      return describeFailure(err);
+    }
+  },
+  // attachSkill returns the skill's attachment, or the browsing refusal.
+  async attachSkill(name: string): Promise<{ attachment: Attachment } | Failure> {
+    const blocked = browsingFailure();
+    if (blocked) return blocked;
+    return api.attachSkill(name);
   },
   // grant returns the error text for the dialog to show inline, or null.
   async grant(id: string, action: GrantAction): Promise<string | null> {

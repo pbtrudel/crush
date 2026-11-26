@@ -47,11 +47,24 @@ export interface State {
   model: ModelInfo;
   // display is the tab's settings as the gateway last published them.
   display: DisplaySettings;
+  // displayHydrated is true once a snapshot, a frame or the dialog has named
+  // the tab's settings. An older gateway never names them, so the tab keeps
+  // its own cached motion and low power until one does.
+  displayHydrated: boolean;
   agentReady: boolean;
   planReady: string;
   permissionMode: PermissionMode;
   inputMode: InputMode;
   sessionId: string;
+  // terminalSession is the session the terminal shows. While browsing it
+  // differs from sessionId, which names the transcript on screen.
+  terminalSession: string;
+  // browsing names the session the tab reads without following, or null
+  // while the tab is pinned to the terminal's.
+  browsing: string | null;
+  // rootSessions is how many sessions have no parent, which decides
+  // whether the HUD offers the pin toggle.
+  rootSessions: number;
   session: Session | null;
   messages: Message[];
   permissions: PermissionRequest[];
@@ -99,8 +112,9 @@ export function initialState(): State {
   return {
     conn: 'booting', endedReason: null, lastSeq: 0, hydrated: false, version: '', workingDir: '', project: '',
     branch: '', model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
-    display: { ...displayDefaults }, agentReady: true, planReady: '',
-    permissionMode: 'normal', inputMode: 'code', sessionId: '', session: null, messages: [],
+    display: { ...displayDefaults }, displayHydrated: false, agentReady: true, planReady: '',
+    permissionMode: 'normal', inputMode: 'code', sessionId: '', terminalSession: '', browsing: null,
+    rootSessions: 0, session: null, messages: [],
     permissions: [], question: null, questionQueue: [], securePrompts: [], answeredHere: {},
     signin: null, awsSso: null, busy: false, queued: [], toasts: [],
     nextToastId: 1, answered: [], lsp: {}, mcp: {}, needsReload: null,
@@ -341,8 +355,9 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     project: projectName(snap.working_dir),
     branch: snap.branch ?? '',
     model: snap.model,
-    // A snapshot that names no display keeps the one the tab shows.
-    ...(snap.display !== undefined ? { display: snap.display } : {}),
+    // A snapshot that names no display keeps the one the tab shows, and
+    // leaves the tab's own cached settings alone.
+    ...(snap.display !== undefined ? { display: snap.display, displayHydrated: true } : {}),
     // The snapshot carries the agent's readiness twice; the top-level field
     // is the same read as model.agent_ready, so either one is authoritative.
     agentReady: snap.agent_ready ?? true,
@@ -352,6 +367,9 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     permissionMode: snap.permission_mode,
     inputMode: snap.input_mode,
     sessionId: snap.current_session_id,
+    terminalSession: snap.current_session_id,
+    browsing: null,
+    rootSessions: snap.root_sessions ?? 0,
     session: snap.session ?? null,
     messages,
     permissions: snap.permissions ?? [],
@@ -370,6 +388,31 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     filesStale: false,
     team: snap.team ?? emptyTeam(),
     runs: snap.agent_runs ?? [],
+  };
+}
+
+// applyTerminalSnapshot applies a fetch of the terminal's session, the
+// answer the Return control and a re-pin wait for. It clears browsing
+// before the snapshot's fields land, so the browsed transcript never
+// lingers beside the terminal's.
+export function applyTerminalSnapshot(s: State, snap: Snapshot): State {
+  return applySnapshot({ ...s, browsing: null }, s.lastSeq, snap);
+}
+
+// applyBrowsingSnapshot applies the global parts of a live snapshot while
+// the tab reads another session: the browsed transcript, files and team
+// stay, and needsReload asks the store for a fresh copy of them.
+function applyBrowsingSnapshot(s: State, seq: number, snap: Snapshot): State {
+  const next = applySnapshot(s, seq, snap);
+  return {
+    ...next,
+    browsing: s.browsing,
+    sessionId: s.browsing ?? s.sessionId,
+    session: s.session,
+    messages: s.messages,
+    files: s.files,
+    filesStale: s.filesStale,
+    needsReload: s.browsing || null,
   };
 }
 
@@ -539,15 +582,25 @@ export function reduce(s: State, f: Frame): State {
   const ev = f.payload as WireEvent<any>;
   switch (f.type) {
     case 'snapshot':
-      return applySnapshot(s, f.seq, f.payload as Snapshot);
+      return s.browsing !== null
+        ? applyBrowsingSnapshot(s, f.seq, f.payload as Snapshot)
+        : applySnapshot(s, f.seq, f.payload as Snapshot);
     case 'session_follow': {
       const id = (f.payload as { session_id: string }).session_id;
-      return id === s.sessionId ? next : { ...adoptSession(next, id), needsReload: id || null };
+      // While browsing, a follow moves the terminal only; the browsed
+      // transcript stays until the terminal lands on the same session, and
+      // then the tab is pinned again.
+      if (s.browsing !== null) {
+        if (id !== s.browsing) return { ...next, terminalSession: id };
+        return { ...next, browsing: null, sessionId: id, terminalSession: id, needsReload: id || null };
+      }
+      if (id === s.sessionId) return { ...next, terminalSession: id };
+      return { ...adoptSession(next, id), terminalSession: id };
     }
     case 'input_mode_changed':
       return { ...next, inputMode: (f.payload as { mode: InputMode }).mode };
     case 'display_changed':
-      return { ...next, display: f.payload as DisplaySettings };
+      return { ...next, display: f.payload as DisplaySettings, displayHydrated: true };
     case 'gateway_closing': {
       const reason = (f.payload as { reason?: string }).reason;
       return {
@@ -634,6 +687,20 @@ export function reduce(s: State, f: Frame): State {
     case 'session': {
       const sess = ev.payload as Session;
       let base = next;
+      // The HUD's pin toggle needs a count that survives a reconnect: the
+      // terminal can create or delete a root session while the tab reads
+      // another one.
+      // A replay repeats a seq the tab already counted; only a new frame
+      // changes the count.
+      if (f.seq > s.lastSeq && sess.parent_session_id === '') {
+        if (ev.type === 'created') base = { ...base, rootSessions: s.rootSessions + 1 };
+        else if (ev.type === 'deleted') base = { ...base, rootSessions: Math.max(0, s.rootSessions - 1) };
+      }
+      // The session on screen is gone, so the tab cannot keep reading it;
+      // the terminal's session is the one it can show next.
+      if (ev.type === 'deleted' && s.browsing === sess.id) {
+        return { ...base, browsing: null, sessionId: s.terminalSession, needsReload: s.terminalSession || null };
+      }
       if (s.inspected && s.inspected.sessionId === sess.id) {
         base = { ...base, inspected: { ...s.inspected, session: sess } };
       }

@@ -537,6 +537,7 @@
       "version": "test",
       "working_dir": "/repo",
       "current_session_id": "s1",
+      "root_sessions": 1,
       "messages": [
         {
           "parts": [
@@ -573,6 +574,15 @@
           "version_ids": [
             0,
             1
+          ],
+          "version_tools": [
+            {
+              "session_id": "s1"
+            },
+            {
+              "session_id": "sub-1",
+              "tool_call_id": "tc-0"
+            }
           ],
           "additions": 3,
           "removals": 1,

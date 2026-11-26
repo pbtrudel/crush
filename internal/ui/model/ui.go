@@ -540,6 +540,10 @@ type UI struct {
 	sidebarMaxOffsetVal     int    // max scroll offset, computed in updateSidebarScrollState
 	sidebarContent          string // cached rendered sidebar content
 	sidebarTotalLines       int    // total lines in sidebarContent
+	// sidebarAgentHits maps a content line index to the agent whose row is
+	// drawn there, so a click opens that agent's session. Rebuilt with the
+	// memoized sidebar content.
+	sidebarAgentHits map[int]dialog.AgentDescriptor
 
 	// sidebarKey/pillsKey memoize the per-frame sidebar and pills
 	// rebuilds; sidebarBuilds/pillsBuilds count rebuilds so tests can
@@ -1771,6 +1775,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, cmd)
 					}
 				}
+			} else if cmd := m.handleSidebarAgentClick(msg); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 
@@ -2901,6 +2907,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionOpenWeb:
 		cmds = append(cmds, m.openWeb())
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionStopWeb:
+		cmds = append(cmds, m.stopWeb())
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSummarize:
 		if m.isAgentBusy() {
@@ -7054,6 +7063,28 @@ func (m *UI) reopenAgentsList(saved *agentsListState) {
 	m.dialog.OpenDialog(agents)
 }
 
+// handleSidebarAgentClick opens the agent whose sidebar row was clicked. A
+// single left click opens the transcript; clicks on non-agent lines, the logo,
+// or the scrollbar do nothing.
+func (m *UI) handleSidebarAgentClick(msg tea.MouseClickMsg) tea.Cmd {
+	if msg.Button != uv.MouseLeft || m.session == nil || len(m.sidebarAgentHits) == 0 {
+		return nil
+	}
+	contentMinY := m.layout.sidebar.Min.Y + lipgloss.Height(m.sidebarDrawLogo)
+	if msg.Y < contentMinY || msg.Y >= contentMinY+m.sidebarContentHeight {
+		return nil
+	}
+	if msg.X < m.layout.sidebar.Min.X || msg.X >= m.layout.sidebar.Min.X+m.sidebarContentWidth {
+		return nil
+	}
+	line := m.sidebarOffset + (msg.Y - contentMinY)
+	descriptor, ok := m.sidebarAgentHits[line]
+	if !ok {
+		return nil
+	}
+	return m.openAgentViewer(descriptor)
+}
+
 // openAgentViewer opens an independent transcript without changing the main
 // session or consuming the agent's run lifecycle.
 func (m *UI) openAgentViewer(descriptor dialog.AgentDescriptor) tea.Cmd {
@@ -7628,6 +7659,22 @@ func (m *UI) openWeb() tea.Cmd {
 	}
 }
 
+// stopWeb stops the running gateway off the update loop and reports the
+// result. The status bar reads the launcher's running state on every draw,
+// so the web badge disappears with the update that reports the stop.
+func (m *UI) stopWeb() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		if err := web.Stop(context.Background()); err != nil {
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		}
+		return util.ReportInfo("Web mode stopped. Run /web to start it again.")()
+	}
+}
+
 // nextWebModeSeq returns the sequence for the next mode report. Commands run
 // in their own goroutines, so the sequence, not their arrival order, decides
 // which report is newest.
@@ -7880,13 +7927,13 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	textData, textErr := clipboard.Read(clipboard.FormatText)
 	if textErr != nil || len(textData) == 0 {
-		return nil // Clipboard is empty or does not contain an image
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	path := strings.TrimSpace(string(textData))
 	path = strings.ReplaceAll(path, "\\ ", " ")
 	if _, statErr := os.Stat(path); statErr != nil {
-		return nil // Clipboard does not contain an image or valid file path
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	if !common.IsImagePath(path) {

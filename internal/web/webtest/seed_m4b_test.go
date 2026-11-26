@@ -6,6 +6,8 @@ import (
 
 	"charm.land/catwalk/v3/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -124,6 +126,19 @@ func TestSeedM4bHonoursTheTheme(t *testing.T) {
 	require.Equal(t, "solid", cfg.Options.WebDisplay.Theme)
 }
 
+func TestSeedM4bGivesTheBrowsedSessionAMessage(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, clock)
+	require.NoError(t, err)
+	msgs, err := f.ListMessages(t.Context(), "s-2")
+	require.NoError(t, err)
+	require.NotEmpty(t, msgs, "the browsed session has a message to show")
+}
+
 func TestSeedM4bRefusesAnUnknownTheme(t *testing.T) {
 	t.Setenv("WEBFAKE_THEME", "neon")
 	f := NewFake()
@@ -131,4 +146,44 @@ func TestSeedM4bRefusesAnUnknownTheme(t *testing.T) {
 	t.Cleanup(func() { close(done) })
 	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
 	require.ErrorContains(t, err, "WEBFAKE_THEME")
+}
+
+// toolCallIDs lists the tool call each history version records.
+func toolCallIDs(metas []history.FileMeta) []string {
+	ids := make([]string, 0, len(metas))
+	for _, m := range metas {
+		if m.ToolCallID != "" {
+			ids = append(ids, m.ToolCallID)
+		}
+	}
+	return ids
+}
+
+// TestSeedM4bLinksEveryToolCall pins the drawer's links: each seeded history
+// version that records a tool call names one that exists in s1's messages.
+func TestSeedM4bLinksEveryToolCall(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	_, err := SeedM4b(f, done, clock)
+	require.NoError(t, err)
+	msgs, err := f.ListMessages(t.Context(), "s1")
+	require.NoError(t, err)
+	calls := map[string]bool{}
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if tc, ok := p.(message.ToolCall); ok {
+				calls[tc.ID] = true
+			}
+		}
+	}
+	for _, id := range []string{"tc-edit-1", "tc-edit-2"} {
+		require.True(t, calls[id], "the seeded history id %s has a tool call", id)
+	}
+	metas, err := f.ListSessionHistoryMeta(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Contains(t, toolCallIDs(metas), "tc-edit-1")
+	require.Contains(t, toolCallIDs(metas), "tc-edit-2")
 }
