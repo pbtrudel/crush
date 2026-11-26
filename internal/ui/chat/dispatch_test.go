@@ -51,6 +51,18 @@ func TestDispatchRunsUntilItReports(t *testing.T) {
 	require.False(t, dispatch.Spinning())
 }
 
+// TestDispatchStatusCarriesIDs pins that the status carries the transcript
+// identifiers a viewer needs to open the subagent's session.
+func TestDispatchStatusCarriesIDs(t *testing.T) {
+	t.Parallel()
+
+	dispatch := dispatchItem(t)
+	status, ok := dispatch.DispatchStatus()
+	require.True(t, ok)
+	require.Equal(t, "msg-1", status.MessageID)
+	require.Equal(t, "call-1", status.ToolCallID)
+}
+
 // The plain agent tool is not a dispatch, so it carries no dispatch status.
 func TestSyncAgentToolHasNoDispatchStatus(t *testing.T) {
 	t.Parallel()
