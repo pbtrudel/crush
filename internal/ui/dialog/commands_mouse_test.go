@@ -3,7 +3,6 @@ package dialog
 import (
 	"image"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -30,7 +29,9 @@ func selectedCommandID(c *Commands) string {
 	return ""
 }
 
-func TestCommandMouseClickHighlightsItem(t *testing.T) {
+// TestCommandMouseClickRunsItem pins that a single left click runs the command
+// under the pointer and selects it, the way a menu item behaves.
+func TestCommandMouseClickRunsItem(t *testing.T) {
 	t.Parallel()
 
 	c := newCommandsMouseDialog(t)
@@ -45,49 +46,42 @@ func TestCommandMouseClickHighlightsItem(t *testing.T) {
 		Button: tea.MouseLeft,
 	}))
 
-	require.Nil(t, action)
+	_, ok := action.(ActionOpenWeb)
+	require.True(t, ok, "clicking Open Web Mode must run it")
 	require.Equal(t, "open_web", selectedCommandID(c))
 }
 
-func TestCommandMouseDoubleClickRunsItemLikeEnter(t *testing.T) {
+// TestCommandMouseClickRunsEveryVisibleItem pins the fix: every command in the
+// list runs on a single click, not only a few, so the whole palette responds to
+// the mouse.
+func TestCommandMouseClickRunsEveryVisibleItem(t *testing.T) {
 	t.Parallel()
 
-	c := newCommandsMouseDialog(t)
-	scr := uv.NewScreenBuffer(80, 30)
-	c.Draw(scr, image.Rect(0, 0, 80, 30))
-	area := c.commandListArea()
-	click := tea.MouseClickMsg(tea.Mouse{
-		X:      area.Min.X,
-		Y:      area.Min.Y + 1,
-		Button: tea.MouseLeft,
-	})
+	rows := func() int {
+		c := newCommandsMouseDialog(t)
+		scr := uv.NewScreenBuffer(80, 30)
+		c.Draw(scr, image.Rect(0, 0, 80, 30))
+		return min(c.list.Height(), len(c.list.FilteredItems()))
+	}()
+	require.Greater(t, rows, 1)
 
-	require.Nil(t, c.HandleMsg(click))
-	enterAction := c.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	doubleClickAction := c.HandleMsg(click)
+	for row := 0; row < rows; row++ {
+		c := newCommandsMouseDialog(t)
+		scr := uv.NewScreenBuffer(80, 30)
+		c.Draw(scr, image.Rect(0, 0, 80, 30))
+		area := c.commandListArea()
+		item, ok := c.list.FilteredItems()[row].(*CommandItem)
+		require.True(t, ok)
 
-	require.Equal(t, enterAction, doubleClickAction)
-	_, ok := doubleClickAction.(ActionOpenWeb)
-	require.True(t, ok, "double-clicking Open Web Mode must emit ActionOpenWeb")
-}
+		action := c.HandleMsg(tea.MouseClickMsg(tea.Mouse{
+			X:      area.Min.X,
+			Y:      area.Min.Y + row,
+			Button: tea.MouseLeft,
+		}))
 
-func TestCommandMouseDoubleClickExpires(t *testing.T) {
-	t.Parallel()
-
-	c := newCommandsMouseDialog(t)
-	scr := uv.NewScreenBuffer(80, 30)
-	c.Draw(scr, image.Rect(0, 0, 80, 30))
-	area := c.commandListArea()
-	click := tea.MouseClickMsg(tea.Mouse{
-		X:      area.Min.X,
-		Y:      area.Min.Y + 1,
-		Button: tea.MouseLeft,
-	})
-
-	require.Nil(t, c.HandleMsg(click))
-	c.lastClickTime = time.Now().Add(-commandDoubleClickThreshold - time.Millisecond)
-	require.Nil(t, c.HandleMsg(click))
-	require.Equal(t, "open_web", selectedCommandID(c))
+		require.Equal(t, item.Action(), action, "row %d (%s) must run on a single click", row, item.ID())
+		require.Equal(t, item.ID(), selectedCommandID(c))
+	}
 }
 
 func TestCommandMouseClickIgnoresUnsupportedClicks(t *testing.T) {
@@ -144,15 +138,12 @@ func TestCommandMouseClickFilteredItem(t *testing.T) {
 	c.Draw(scr, image.Rect(0, 0, 80, 30))
 	area := c.commandListArea()
 
-	click := tea.MouseClickMsg(tea.Mouse{
+	action := c.HandleMsg(tea.MouseClickMsg(tea.Mouse{
 		X:      area.Min.X,
 		Y:      area.Min.Y,
 		Button: tea.MouseLeft,
-	})
-	require.Nil(t, c.HandleMsg(click))
-	require.Equal(t, "open_web", selectedCommandID(c))
-
-	action := c.HandleMsg(click)
+	}))
 	_, ok := action.(ActionOpenWeb)
-	require.True(t, ok, "double-clicking the filtered Open Web Mode item must run it")
+	require.True(t, ok, "clicking the filtered Open Web Mode item must run it")
+	require.Equal(t, "open_web", selectedCommandID(c))
 }
