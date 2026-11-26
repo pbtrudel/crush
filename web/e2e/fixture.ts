@@ -233,8 +233,13 @@ export const confirmTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'confirm' }, use),
 });
 
+// The touch prompt only becomes a toast on the secure_prompt frame, not
+// from the snapshot, so it must arrive after the tab's stream connects.
+// The merged bundle loads slower than the old 300ms default, so give it
+// 1.5s; the test's first wait is 5s.
 export const touchTest = webfakeTests.extend<{ gateway: Gateway }>({
-  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'touch' }, use),
+  gateway: async ({ webfakeBinary }, use) =>
+    launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'touch', WEBFAKE_PROMPT_AFTER_MS: '1500' }, use),
 });
 
 export const promptVisualTest = webfakeTests.extend<{ gateway: Gateway }>({
