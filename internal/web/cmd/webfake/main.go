@@ -71,6 +71,11 @@ func main() {
 		os.RemoveAll(teamDir)
 		os.Exit(1)
 	}
+	// The log layout case needs one message wider than a log column, which
+	// no shared seed can carry without moving the baselines.
+	if os.Getenv("WEBFAKE_LONG_PATH") == "1" {
+		webtest.SeedLogLayout(fake, clock)
+	}
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)

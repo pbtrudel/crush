@@ -1,6 +1,7 @@
-.log { flex: 1; overflow-y: auto; padding: var(--space-4); display: grid; align-content: start; gap: var(--space-4); scrollbar-color: var(--edge) transparent; }
+/* Zero the grid tracks so a long path cannot widen the log. */
+.log { flex: 1; overflow-y: auto; padding: var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--space-4); scrollbar-color: var(--edge) transparent; }
 .log__empty { margin-block: 20%; text-align: center; color: var(--text-muted); max-inline-size: 34ch; justify-self: center; }
-.msg { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid transparent; }
+.msg { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid transparent; }
 .msg[data-role='user'] { background: color-mix(in oklch, var(--violet) 12%, transparent); border-color: var(--violet-dim); }
 .msg[data-role='assistant'] { background: color-mix(in oklch, var(--cyan) 5%, transparent); border-color: color-mix(in oklch, var(--cyan) 14%, transparent); }
 .msg__who { color: var(--cyan); }
@@ -15,7 +16,8 @@
 .thought { border-inline-start: 2px solid var(--violet); padding-inline-start: 10px; color: var(--text-muted); }
 .thought summary { cursor: pointer; color: var(--violet); }
 .tool { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--void-deep); }
-.tool summary { display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; cursor: pointer; list-style: none; min-block-size: 40px; }
+/* The nowrap path needs a shrinkable track to ellipsize. */
+.tool summary { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; cursor: pointer; list-style: none; min-block-size: 40px; }
 .tool__name { font: 600 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.08em; color: var(--cyan); }
 .tool__summary { font: 400 var(--step--1) var(--font-code); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool[data-status='running'] .tool__glyph { color: var(--cyan); animation: blink 0.9s steps(2) infinite; }
