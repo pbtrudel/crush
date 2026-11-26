@@ -14,8 +14,9 @@ import (
 const maxTaskAttempts = 3
 
 // dispatchRetryDelay is how long a skipped pass waits before its one retry.
-// It is long enough to outlast a tool-facing write's lock timeout in another
-// process, and short enough that a task waits less than a second.
+// The refused write already waited the whole lock timeout, so the retry only
+// has to come back after the other writer has had time to finish: the delay
+// is a short backoff after that wait, not a second copy of it.
 const dispatchRetryDelay = 200 * time.Millisecond
 
 // dispatchStart is one member start a pass planned under the lock.
@@ -300,7 +301,7 @@ func (s *Service) dispatchFailed(start dispatchStart, err error) {
 	_ = s.write(mustApply, func() (bool, error) {
 		if s.closed {
 			// Shutdown owns the Team now, and a write here would land
-			// after it returned.
+			// after it returned. Shutdown hands the claim back itself.
 			closed = true
 			return false, nil
 		}
@@ -312,7 +313,7 @@ func (s *Service) dispatchFailed(start dispatchStart, err error) {
 			}
 			if task.OwnerID != start.member.ID || task.Status != TaskInProgress || task.Revision != start.revision {
 				// Someone moved the task on since the claim; leave it.
-				return false, nil
+				break
 			}
 			task.Revision++
 			task.Status = TaskPending
@@ -325,16 +326,20 @@ func (s *Service) dispatchFailed(start dispatchStart, err error) {
 					leads = append(leads, task.SessionID)
 				}
 			}
-			s.notifyLocked()
-			return true, nil
+			break
 		}
-		return false, nil
+		if !shutdown {
+			// The member failed in this write too, so a Shutdown that
+			// lands next cannot mark it failed after it returned.
+			s.failMemberLocked(start.member.Name, err)
+		}
+		s.notifyLocked()
+		return true, nil
 	})
 	if shutdown || closed {
 		return
 	}
 	wakeLeads(leadHook, leads)
-	s.failMember(start.member.Name, err)
 	s.dispatch(context.Background(), start.sessionID)
 }
 

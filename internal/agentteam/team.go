@@ -1463,20 +1463,27 @@ func truncateText(s string, n int) string {
 // failMember records a creation failure.
 func (s *Service) failMember(name string, err error) {
 	_ = s.write(mustApply, func() (bool, error) {
-		for i := range s.state.Members {
-			if s.state.Members[i].Name != name {
-				continue
-			}
-			s.state.Members[i].Failed = true
-			s.state.Members[i].Status = StatusFailed
-			s.state.Members[i].Diagnostics = append(
-				s.state.Members[i].Diagnostics,
-				err.Error(),
-			)
-		}
+		s.failMemberLocked(name, err)
 		s.notifyLocked()
 		return true, nil
 	})
+}
+
+// failMemberLocked records a creation failure on the durable roster. Callers
+// must hold s.mu, so a caller that already holds a guarded write can land the
+// failure with the work that caused it.
+func (s *Service) failMemberLocked(name string, err error) {
+	for i := range s.state.Members {
+		if s.state.Members[i].Name != name {
+			continue
+		}
+		s.state.Members[i].Failed = true
+		s.state.Members[i].Status = StatusFailed
+		s.state.Members[i].Diagnostics = append(
+			s.state.Members[i].Diagnostics,
+			err.Error(),
+		)
+	}
 }
 
 func (s *Service) viewFor(name string) MemberView {
@@ -1869,11 +1876,11 @@ func (s *Service) Changed() <-chan struct{} {
 	return s.changes
 }
 
-// Shutdown cancels this process's live teammate runs and marks its members
-// inactive. It waits for every settling run to write the state, so no write
-// lands after it returns. Other processes run their own members and keep
-// doing so, and the durable state is kept so a later enable resumes the same
-// Team.
+// Shutdown cancels this process's live teammate runs, releases the claims
+// whose start it refuses, and marks its members inactive. It waits for every
+// settling run to write the state, so no write lands after it returns. Other
+// processes run their own members and keep doing so, and the durable state is
+// kept so a later enable resumes the same Team.
 func (s *Service) Shutdown() {
 	var runs []Run
 	_ = s.write(mustApply, func() (bool, error) {
@@ -1889,6 +1896,27 @@ func (s *Service) Shutdown() {
 			runs = append(runs, run)
 			delete(s.runs, name)
 			changed = true
+		}
+		// A member marked starting was claimed but holds no run yet, and
+		// its start is refused once the Team is closed. dispatchFailed
+		// cannot write that refusal back, so the claim is handed back
+		// here: pending, unowned and uncharged, for a later Service to
+		// start. A member with a run settles through its watcher instead.
+		for name := range s.starting {
+			member, ok := s.memberLocked(name)
+			if !ok {
+				continue
+			}
+			for i := range s.state.Tasks {
+				task := &s.state.Tasks[i]
+				if task.OwnerID != member.ID || task.Status != TaskInProgress {
+					continue
+				}
+				task.Status = TaskPending
+				task.OwnerID = ""
+				task.Revision++
+				changed = true
+			}
 		}
 		for i := range s.state.Members {
 			if !s.mine[s.state.Members[i].Name] {

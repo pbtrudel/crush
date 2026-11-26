@@ -348,10 +348,11 @@ func (r *blockingFailRunner) Start(_ context.Context, _ Member, _ string) (Run, 
 	return nil, errors.New("provider unavailable")
 }
 
-// TestDispatchFailedAfterShutdownKeepsState pins that a start which fails
-// after Shutdown neither writes the state nor charges the task: the claim
-// Shutdown found is left as it was.
-func TestDispatchFailedAfterShutdownKeepsState(t *testing.T) {
+// TestShutdownReleasesAClaimedStart pins that a claim whose start Shutdown
+// refused goes back to the board: the task is pending and unowned with no
+// attempt charged, so a later Service starts it again, and the failed start
+// writes nothing after Shutdown returned.
+func TestShutdownReleasesAClaimedStart(t *testing.T) {
 	t.Parallel()
 	var autostart atomic.Bool
 	path := filepath.Join(t.TempDir(), "team.json")
@@ -384,18 +385,26 @@ func TestDispatchFailedAfterShutdownKeepsState(t *testing.T) {
 
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
-	require.Equal(t, before, after, "a failed start after Shutdown must not write the state")
+	require.Equal(t, before, after, "a start refused by Shutdown must not write after it")
 
 	got := taskByID(t, s, task.ID)
-	require.Equal(t, TaskInProgress, got.Status, "the claim Shutdown found stays")
-	require.Equal(t, memberID(t, s, "researcher-1"), got.OwnerID)
-	require.Zero(t, got.Attempts)
+	require.Equal(t, TaskPending, got.Status, "Shutdown releases a claim whose start never ran")
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts, "a refused start is not charged")
 	require.False(t, got.Escalated)
 	require.Empty(t, leadNotices(t, s, pipelineSession))
 	s.mu.Lock()
 	failed := s.stateMemberLocked("researcher-1").Failed
 	s.mu.Unlock()
 	require.False(t, failed, "a member must not be marked failed after Shutdown")
+
+	// A later Service reads the task as ready work again.
+	durable, err := LoadState(path)
+	require.NoError(t, err)
+	require.Len(t, durable.Tasks, 1)
+	require.Equal(t, TaskPending, durable.Tasks[0].Status)
+	require.Empty(t, durable.Tasks[0].OwnerID)
+	require.Zero(t, durable.Tasks[0].Attempts)
 }
 
 func TestLeadNoticeReachesOnlyItsLead(t *testing.T) {
