@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page, Request } from '@playwright/test';
 import {
-  confirmTest, expect, promptElsewhereTest, promptLateTest, promptTest, touchTest,
+  confirmTest, expect, promptElsewhereTest, promptLateTest, promptTest, touchLateTest,
 } from './fixture';
 
 // Each test launches its own webfake, and a cold Go build counts towards the
@@ -11,7 +11,7 @@ promptTest.setTimeout(60_000);
 promptElsewhereTest.setTimeout(60_000);
 promptLateTest.setTimeout(60_000);
 confirmTest.setTimeout(60_000);
-touchTest.setTimeout(60_000);
+touchLateTest.setTimeout(60_000);
 
 const passphrase = (page: Page) => page.getByRole('dialog', { name: 'GPG passphrase' });
 
@@ -144,8 +144,15 @@ promptTest('returns the focus to the sign-in dialog when a prompt closes over it
   await expect(dialog.getByLabel('Filter providers')).toBeFocused();
 });
 
-touchTest('shows a touch notice without a dialog', async ({ page, gateway }) => {
+// The touch notice is raised by the stream frame that brings the prompt, and
+// the snapshot only carries the prompt itself. The prompt therefore waits
+// for this test's file: a page load slow enough to find it in the snapshot
+// would never see the toast, and a delay from the gateway's start races
+// exactly that.
+touchLateTest('shows a touch notice without a dialog', async ({ page, gateway, promptTrigger }) => {
   await page.goto(gateway.launch);
+  await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible();
+  writeFileSync(promptTrigger, '');
   await expect(page.locator('.toast').filter({ hasText: 'Tap your security key to continue.' })).toBeVisible();
 
   // A touch prompt is a notice the terminal answers itself: it never takes
