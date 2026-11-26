@@ -1,11 +1,13 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
@@ -130,6 +132,51 @@ func TestClientWorkspaceSkillsMapLostLink(t *testing.T) {
 		require.ErrorIs(t, err, ErrServerUnreachable)
 		_, err = w.ListSkills(t.Context())
 		require.ErrorIs(t, err, ErrServerUnreachable)
+	})
+}
+
+// TestClientWorkspaceSkillsKeepCallerCancellation pins that a caller that
+// gave up, or whose deadline passed, keeps that error. The gateway maps
+// ErrServerUnreachable to a 503 "reconnecting" answer, which would tell
+// the browser to retry a request the caller already abandoned.
+func TestClientWorkspaceSkillsKeepCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	// Cleanup, not defer: the parallel subtests run after this function
+	// returns.
+	t.Cleanup(srv.Close)
+
+	w := newTestClientWorkspace(t, srv)
+
+	t.Run("cancelled", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		_, err := w.ListAllSkills(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotErrorIs(t, err, ErrServerUnreachable)
+
+		_, err = w.ListSkills(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotErrorIs(t, err, ErrServerUnreachable)
+	})
+
+	t.Run("deadline exceeded", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+		defer cancel()
+
+		_, err := w.ListAllSkills(ctx)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotErrorIs(t, err, ErrServerUnreachable)
+
+		_, err = w.ListSkills(ctx)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotErrorIs(t, err, ErrServerUnreachable)
 	})
 }
 
