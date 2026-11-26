@@ -34,12 +34,11 @@ export function escapeDisplay(): boolean {
   return true;
 }
 
-// effectiveMotion is the one place the three motion sources meet: the config
-// value wins, then the tab's remembered motion, then the browser's reduced
-// motion setting.
-export function effectiveMotion(d: DisplaySettings, stored: Motion | null, prefersReduced: boolean): Motion {
+// effectiveMotion is the one place the config value and the browser's
+// reduced motion setting meet: the config value wins, then the browser's
+// setting.
+export function effectiveMotion(d: DisplaySettings, prefersReduced: boolean): Motion {
   if (d.motion !== '') return d.motion;
-  if (stored !== null) return stored;
   return prefersReduced ? 'reduced' : 'full';
 }
 
@@ -62,7 +61,7 @@ effect(() => {
     // browser's reduced-motion setting decides. No setter here: setMotion
     // would write the cache back.
     removeStored(KEY_MOTION);
-    motion.value = effectiveMotion(d, null, prefersReduced());
+    motion.value = effectiveMotion(d, prefersReduced());
   } else {
     setMotion(d.motion);
   }

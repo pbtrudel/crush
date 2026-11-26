@@ -24,15 +24,15 @@ afterEach(() => {
 });
 
 describe('effectiveMotion', () => {
-  it('takes the config motion over the stored one', () => {
-    expect(effectiveMotion({ ...displayDefaults, motion: 'off' }, 'full', false)).toBe('off');
+  it('takes the config motion over the system setting', () => {
+    expect(effectiveMotion({ ...displayDefaults, motion: 'off' }, false)).toBe('off');
+    expect(effectiveMotion({ ...displayDefaults, motion: 'reduced' }, false)).toBe('reduced');
   });
 
-  it('falls back to the stored motion, then the system setting', () => {
+  it('follows the system setting when the config motion is empty', () => {
     const d = { ...displayDefaults, motion: '' as const };
-    expect(effectiveMotion(d, 'reduced', false)).toBe('reduced');
-    expect(effectiveMotion(d, null, true)).toBe('reduced');
-    expect(effectiveMotion(d, null, false)).toBe('full');
+    expect(effectiveMotion(d, true)).toBe('reduced');
+    expect(effectiveMotion(d, false)).toBe('full');
   });
 });
 
