@@ -161,7 +161,7 @@ It is appended to the descriptions of `spawn_teammate`, `agent_dispatch` and `ag
 **`spawn_teammate`.** New optional `role` parameter.
 - `SpawnRequest` and `Member` gain `RoleName string` (`json:"role_name,omitempty"`), stored in `team.json`. The existing `Role` (lead/teammate) is untouched.
 - An unknown role is a tool error that lists the available roles.
-- Model precedence: the spawn's `model`, then the role's `model`, then the shared subagent set. The role's model is resolved through `resolveModelOverride` like a spawn override; a model that cannot be served fails the spawn, naming it.
+- Model precedence: the spawn's `model`, then the role's `model`, then the shared subagent set. The spawn's `model`, `provider` and `reasoning` are one group: setting any of them replaces the role's group whole. The role's model is resolved through `resolveModelOverride` like a spawn override; a model that cannot be served fails the spawn, naming it.
 - `teammatePrompt` inserts `roles.Block` between the fork prefix and the name. Later `send_message` turns do not repeat it.
 - `teammateAgent` resolves the role again on every build and wraps the tools with `roleGatedTool`. A role that no longer exists fails the turn with `role "x" no longer exists`.
 - `list_agents`, the sidebar Agent Team section and `crush team status --json` show `teammate (reviewer)` and the `role_name` field.
@@ -169,7 +169,7 @@ It is appended to the descriptions of `spawn_teammate`, `agent_dispatch` and `ag
 **`agent_dispatch` and `agent`.** `agent_dispatch` gains `role`. The `agent` tool's `agent` parameter resolves role names (built-in presets stay valid).
 - The role picks the base list: read variant if `ReadOnly`, write variant otherwise.
 - `access` only narrows: `access=read` on a write role runs the read variant with the role's tools intersected; `access=write` on a read-only role is a tool error. A plan-mode parent, which may only dispatch read-only subagents, refuses a write role unless `access=read` is passed.
-- Model precedence matches teammates: dispatch `model`, then role `model`, then the shared set.
+- Model precedence matches teammates: dispatch `model`, then role `model`, then the shared set. The dispatch's model group replaces the role's group whole, as it does at spawn.
 - `buildTaskAgent` still uses the `task` template. The role block goes in front of the prompt, and the tools are wrapped with `roleGatedTool`.
 
 **Compaction.** `compactionStateText` takes the agent's role. When the agent has one, the hidden state message starts with `roles.Block(role)`, outside the byte caps of the state lists. A reviewer therefore stays a reviewer after its first message is summarized away.

@@ -105,6 +105,15 @@ func TestResolveRole(t *testing.T) {
 	require.Contains(t, refusal, "available: architect, implementer, researcher, reviewer, verifier")
 }
 
+func TestExplicitModelOverride(t *testing.T) {
+	t.Parallel()
+	require.False(t, explicitModelOverride(AgentDispatchParams{}))
+	require.False(t, explicitModelOverride(AgentDispatchParams{Model: " ", Provider: "\t", Reasoning: "\n"}))
+	require.True(t, explicitModelOverride(AgentDispatchParams{Model: "m"}))
+	require.True(t, explicitModelOverride(AgentDispatchParams{Provider: "p"}))
+	require.True(t, explicitModelOverride(AgentDispatchParams{Reasoning: "high"}))
+}
+
 func TestRoleCatalog(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Options: &config.Options{}}

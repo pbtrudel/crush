@@ -287,8 +287,7 @@ func (c *coordinator) roleTaskAgent(ctx context.Context, role *roles.Role, acces
 	if refusal != "" {
 		return nil, config.SelectedModel{}, false, refusal
 	}
-	explicit := strings.TrimSpace(params.Model) != "" || strings.TrimSpace(params.Provider) != "" || strings.TrimSpace(params.Reasoning) != ""
-	if !explicit && role.PinsModel() {
+	if !explicitModelOverride(params) && role.PinsModel() {
 		params = roleModelParams(role)
 	}
 	sel, hasOverride, refusal := c.resolveModelOverride(params, parentModel)

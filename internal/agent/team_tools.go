@@ -239,6 +239,11 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				Provider:    "crush",
 				ParentID:    tools.GetSessionFromContext(ctx),
 			}
+			override := AgentDispatchParams{
+				Model:     params.Model,
+				Provider:  params.Provider,
+				Reasoning: params.Reasoning,
+			}
 			if strings.TrimSpace(params.Role) != "" {
 				role, refusal := resolveRole(c.cfg.Config(), params.Role)
 				if refusal != "" {
@@ -247,7 +252,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				request.RoleName = role.Name
 				// A role's own model is checked now, so a model the config
 				// cannot serve fails the spawn instead of the first turn.
-				if strings.TrimSpace(params.Model) == "" && strings.TrimSpace(params.Reasoning) == "" && role.PinsModel() {
+				if !explicitModelOverride(override) && role.PinsModel() {
 					if _, _, refusal := c.resolveModelOverride(roleModelParams(role), parentModel()); refusal != "" {
 						return fantasy.NewTextErrorResponse(fmt.Sprintf("role %q: %s", role.Name, refusal)), nil
 					}
@@ -255,11 +260,7 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 			}
 			// Resolve the override first, so a refused model leaves no
 			// roster entry behind and the call can be retried.
-			sel, hasOverride, refusal := c.resolveModelOverride(AgentDispatchParams{
-				Model:     params.Model,
-				Provider:  params.Provider,
-				Reasoning: params.Reasoning,
-			}, parentModel())
+			sel, hasOverride, refusal := c.resolveModelOverride(override, parentModel())
 			if refusal != "" {
 				return fantasy.NewTextErrorResponse(refusal), nil
 			}

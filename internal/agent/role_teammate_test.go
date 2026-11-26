@@ -189,3 +189,35 @@ func TestTeammatePromptRoleBlockFollowsHistory(t *testing.T) {
 	continued := runner.teammatePrompt(t.Context(), member, "x", teammateFirstTurn(false, started))
 	require.NotContains(t, continued, "## Your role:")
 }
+
+// TestTeammateModelsUsesRolePinnedModel pins that a teammate with no override
+// of its own runs on the model its role pins.
+func TestTeammateModelsUsesRolePinnedModel(t *testing.T) {
+	c, _ := newOverrideTestCoordinator(t)
+	runner := &teamRunner{c: c}
+	role := &roles.Role{Name: "pinned", Model: "other-model", Provider: "other"}
+
+	modelsFn, err := runner.teammateModels(agentteam.Member{Name: "rev"}, role, c.mainModels().Large)
+	require.NoError(t, err)
+	require.NotNil(t, modelsFn)
+	set := modelsFn()
+	require.Equal(t, "other", set.Large.ModelCfg.Provider)
+	require.Equal(t, "other-model", set.Large.ModelCfg.Model)
+}
+
+// TestTeammateModelsReasoningOnlyReplacesRoleModel pins the model group rule
+// at turn time: an explicit reasoning replaces the role's whole group, so the
+// teammate runs on the shared subagent model at that effort, not the role's.
+func TestTeammateModelsReasoningOnlyReplacesRoleModel(t *testing.T) {
+	c, _ := newOverrideTestCoordinator(t)
+	runner := &teamRunner{c: c}
+	role := &roles.Role{Name: "pinned", Model: "other-model", Provider: "other"}
+
+	modelsFn, err := runner.teammateModels(agentteam.Member{Name: "rev", Reasoning: "high"}, role, c.mainModels().Large)
+	require.NoError(t, err)
+	require.NotNil(t, modelsFn)
+	set := modelsFn()
+	require.Equal(t, "mock", set.Large.ModelCfg.Provider)
+	require.Equal(t, "mock-reasoner", set.Large.ModelCfg.Model)
+	require.Equal(t, "high", set.Large.ModelCfg.ReasoningEffort)
+}

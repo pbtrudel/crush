@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 // teamTestSessionID is the Lead session every Team tool test runs as.
@@ -465,4 +466,69 @@ func TestTeamTaskCreateRejectsScratchWriteScope(t *testing.T) {
 	require.True(t, refused.IsError)
 	require.Contains(t, refused.Content, "invalid workspace-relative write scope")
 	require.Contains(t, refused.Content, "write scopes must be inside the workspace; leave scratch paths out")
+}
+
+// addPinnedRole registers a role on the coordinator's config. The role tests
+// use it instead of role files so they can pin an exact model group.
+func addPinnedRole(t *testing.T, c *coordinator, role roles.Role) {
+	t.Helper()
+	cfg := c.cfg.Config()
+	cfg.Agents[role.Name] = config.Agent{
+		ID:   role.Name,
+		Name: role.Name,
+		Role: &role,
+	}
+}
+
+// TestTeamToolsSpawnReasoningOnlyIgnoresRoleModel pins the model group rule
+// at spawn time: an explicit reasoning replaces the role's model instead of
+// inheriting it, matching what the teammate turn resolves.
+func TestTeamToolsSpawnReasoningOnlyIgnoresRoleModel(t *testing.T) {
+	c, _ := newTeamTestCoordinator(t)
+	addPinnedRole(t, c, roles.Role{
+		Name: "pinned", Description: "Pins a model.",
+		Model: "other-model", Provider: "other",
+	})
+	leadTools := testTeamTools(c, "lead")
+
+	spawned := runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "rev",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"role":        "pinned",
+		"reasoning":   "high",
+	})
+	require.Contains(t, spawned, `"model":"mock-reasoner"`,
+		"an explicit reasoning takes the shared subagent model")
+	require.Contains(t, spawned, `"model_provider":"mock"`)
+	require.Contains(t, spawned, `"reasoning":"high"`)
+	require.NotContains(t, spawned, "other-model", "the role's model group must be replaced whole")
+}
+
+// TestSpawnTeammateRefusesUnservableRoleModel pins that a role whose pinned
+// model the config cannot serve fails before the roster gains a member.
+func TestSpawnTeammateRefusesUnservableRoleModel(t *testing.T) {
+	c, runner := newTeamTestCoordinator(t)
+	addPinnedRole(t, c, roles.Role{
+		Name: "pinned", Description: "Pins a model.",
+		Model: "gone-model", Provider: "mock",
+	})
+	leadTools := testTeamTools(c, "lead")
+
+	resp := runTeamToolRaw(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "rev",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"role":        "pinned",
+	})
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, `role "pinned": model "gone-model" is not available from provider "mock"`)
+
+	runner.mu.Lock()
+	started := runner.count
+	runner.mu.Unlock()
+	require.Zero(t, started, "a refused role model must not start a member")
+
+	listed := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.NotContains(t, listed, `"target":"rev"`, "a refused role model must leave no roster entry")
 }

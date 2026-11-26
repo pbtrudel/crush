@@ -353,7 +353,9 @@ func (r *teamRunner) teammateModels(member agentteam.Member, role *roles.Role, p
 		Provider:  member.ModelProvider,
 		Reasoning: member.Reasoning,
 	}
-	if strings.TrimSpace(member.Model) == "" {
+	// One field of the member's group replaces the role's group whole,
+	// exactly as an overlay and a dispatch override do.
+	if !explicitModelOverride(params) {
 		if role == nil || !role.PinsModel() {
 			return nil, nil
 		}

@@ -125,6 +125,15 @@ func roleModelParams(role *roles.Role) AgentDispatchParams {
 	return AgentDispatchParams{Model: role.Model, Provider: role.Provider, Reasoning: role.Reasoning}
 }
 
+// explicitModelOverride reports whether the call set any field of the model
+// group. A caller that sets one replaces a role's whole group, so every
+// spawn, dispatch and teammate turn decides this the same way.
+func explicitModelOverride(p AgentDispatchParams) bool {
+	return strings.TrimSpace(p.Model) != "" ||
+		strings.TrimSpace(p.Provider) != "" ||
+		strings.TrimSpace(p.Reasoning) != ""
+}
+
 // roleCatalog is the role list appended to the delegation tools'
 // descriptions. It changes only when config reloads, so the tools block
 // stays byte-stable within a session.

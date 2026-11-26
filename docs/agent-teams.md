@@ -155,7 +155,9 @@ write`, and a project role that pins a model is marked `pins model`, so a
 cloned repository cannot quietly move spend to another model.
 
 **Model precedence:** an explicit `model`, `provider`, or `reasoning` on the
-spawn or dispatch, then the role's, then the shared subagent model. The `agent`
+spawn or dispatch, then the role's, then the shared subagent model. The spawn or
+dispatch `model`, `provider`, and `reasoning` are one group: setting any of them
+replaces the role's group whole. The `agent`
 tool takes no model override, so a role there runs on its model or the shared
 subagent model. A role's model that the config cannot serve fails the call,
 naming the model; nothing falls back.
