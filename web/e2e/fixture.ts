@@ -214,27 +214,38 @@ export const promptElsewhereTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ELSEWHERE_MS: '5000' }, use),
 });
 
+// promptOnFileTest scripts one prompt kind on a gateway of its own, and the
+// prompt waits for a file the test writes instead of a clock from the
+// gateway's start. A test that writes the file once the tab is listening
+// sees a stream frame; one that raced a slow page load would only find the
+// prompt in the snapshot, which carries no notice of its arrival.
+function promptOnFileTest(kind: string) {
+  return webfakeTests.extend<{ gateway: Gateway; promptTrigger: string }>({
+    promptTrigger: async ({}, use) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'prompt-trigger-'));
+      try {
+        await use(path.join(dir, 'open'));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    gateway: async ({ webfakeBinary, promptTrigger }, use) =>
+      launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: kind, WEBFAKE_PROMPT_ON_FILE: promptTrigger }, use),
+  });
+}
+
 // The prompt waits for a file the test writes, so it lands once the test has
 // put the focus where the prompt interrupts it rather than on a clock from
 // the gateway's start. The panel is the layer the prompt closes over.
-export const promptLateTest = webfakeTests.extend<{ gateway: Gateway; promptTrigger: string }>({
-  promptTrigger: async ({}, use) => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'prompt-trigger-'));
-    try {
-      await use(path.join(dir, 'open'));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-  gateway: async ({ webfakeBinary, promptTrigger }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'pinentry', WEBFAKE_PROMPT_ON_FILE: promptTrigger }, use),
-});
+export const promptLateTest = promptOnFileTest('pinentry');
+
+// A touch prompt is only announced when its stream frame arrives, so it too
+// waits for the test's file instead of a clock that a slow page load can
+// outrun.
+export const touchLateTest = promptOnFileTest('touch');
 
 export const confirmTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'confirm' }, use),
-});
-
-export const touchTest = webfakeTests.extend<{ gateway: Gateway }>({
-  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4, WEBFAKE_SECURE_PROMPT: 'touch' }, use),
 });
 
 export const promptVisualTest = webfakeTests.extend<{ gateway: Gateway }>({
