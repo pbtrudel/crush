@@ -164,7 +164,17 @@ func (m *UI) updateSidebarScrollState() {
 		sections = append(sections, "", agentsSection)
 	}
 	subAgents := m.subAgentStatuses()
-	if subAgentSection := m.subAgentsInfo(subAgents, contentWidth, len(subAgents), true); subAgentSection != "" {
+	subAgentSection, subAgentHits := m.subAgentsInfo(subAgents, contentWidth, len(subAgents), true)
+	if subAgentSection != "" {
+		// Offset each subagent row hit to an absolute content line, exactly
+		// like the Agents section above.
+		start := lipgloss.Height("")
+		for _, s := range sections {
+			start += lipgloss.Height(s)
+		}
+		for _, hit := range subAgentHits {
+			m.sidebarAgentHits[start+hit.line] = hit.descriptor
+		}
 		sections = append(sections, "", subAgentSection)
 	}
 	sections = append(

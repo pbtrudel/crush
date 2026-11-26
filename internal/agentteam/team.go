@@ -49,7 +49,7 @@ Agent Teams is available in this session. Use it by default: the Lead coordinate
 
 Work solo only for a single trivial action (one command, one file read, a direct factual answer) or when the user explicitly asks you to. Everything else goes to the Team: create shared tasks, spawn at least one teammate, and delegate. Requests with two or more steps, multiple files, investigation, or tests must use the Team. Reuse existing teammates before spawning new ones. When in doubt, delegate.
 
-One teammate per concrete, self-contained brief, never a wave. Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small. Cap a fan-out at what the task actually needs.
+One teammate per concrete, self-contained brief, never a wave. Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small. Cap a fan-out at what the task actually needs. Pick a role from the spawn_teammate catalog when one fits the brief.
 
 The Team Lead and all teammates share the same working directory and filesystem. Edits are immediately visible to every member. Split write work into disjoint scopes, record expected write scopes on shared tasks, and use task dependencies when work must be ordered. Write-scope overlap is advisory, not a lock.
 
@@ -199,6 +199,7 @@ type Member struct {
 	Model         string      `json:"model,omitempty"`
 	ModelProvider string      `json:"model_provider,omitempty"`
 	Reasoning     string      `json:"reasoning,omitempty"`
+	RoleName      string      `json:"role_name,omitempty"`
 	SessionID     string      `json:"session_id,omitempty"`
 	ParentID      string      `json:"parent_session_id,omitempty"`
 	Status        Status      `json:"status,omitempty"`
@@ -217,6 +218,7 @@ type MemberView struct {
 	Model         string      `json:"model,omitempty"`
 	ModelProvider string      `json:"model_provider,omitempty"`
 	Reasoning     string      `json:"reasoning,omitempty"`
+	RoleName      string      `json:"role_name,omitempty"`
 	Diagnostics   []string    `json:"diagnostics"`
 }
 
@@ -272,6 +274,7 @@ type SpawnRequest struct {
 	Model         string
 	ModelProvider string
 	Reasoning     string
+	RoleName      string
 	ParentID      string
 }
 
@@ -883,6 +886,7 @@ func (s *Service) viewLocked(member Member) MemberView {
 		Model:         member.Model,
 		ModelProvider: member.ModelProvider,
 		Reasoning:     member.Reasoning,
+		RoleName:      member.RoleName,
 		Diagnostics:   append([]string{}, member.Diagnostics...),
 	}
 	if view.Role == RoleLead {
@@ -977,6 +981,7 @@ func (s *Service) SpawnTeammate(ctx context.Context, caller string, req SpawnReq
 			Model:         req.Model,
 			ModelProvider: req.ModelProvider,
 			Reasoning:     req.Reasoning,
+			RoleName:      req.RoleName,
 			ParentID:      req.ParentID,
 			Status:        StatusProvisioning,
 		}

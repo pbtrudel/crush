@@ -76,7 +76,7 @@ func TestDispatchHistory(t *testing.T) {
 func TestDispatchedAgentStaleRunCannotSettleNewerRun(t *testing.T) {
 	t.Parallel()
 
-	entry := newDispatchedAgent("a", accessRead, "child", "parent", nil)
+	entry := newDispatchedAgent("a", accessRead, "", "child", "parent", nil)
 	_, first, ok := entry.claim()
 	require.True(t, ok)
 	_, _, ok = entry.claim()
@@ -111,7 +111,7 @@ func newDispatchTestCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 // it is stopped.
 func startBlockingDispatch(t *testing.T, c *coordinator, parentID, label string) *dispatchedAgent {
 	t.Helper()
-	entry := newDispatchedAgent(label, accessRead, "child-"+label, parentID, nil)
+	entry := newDispatchedAgent(label, accessRead, "", "child-"+label, parentID, nil)
 	ctx, gen, ok := entry.claim()
 	require.True(t, ok)
 	c.dispatched.Set(dispatchKey(parentID, label), entry)
@@ -262,7 +262,7 @@ func TestAgentStatusToolReportsLiveAndInterruptedSubAgents(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "x0", Name: "bash", Content: "refused", IsError: true}},
 	})
 	require.NoError(t, err)
-	entry := newDispatchedAgent("live", accessRead, childID, parent.ID, nil)
+	entry := newDispatchedAgent("live", accessRead, "", childID, parent.ID, nil)
 	_, _, ok := entry.claim()
 	require.True(t, ok)
 	c.dispatched.Set(dispatchKey(parent.ID, "live"), entry)
@@ -296,11 +296,11 @@ func TestPruneDispatchedKeepsRunningAndNewest(t *testing.T) {
 	c, _ := newDispatchTestCoordinator(t)
 	base := time.Now()
 	for i := range keptFinishedDispatches + 3 {
-		entry := newDispatchedAgent(fmt.Sprintf("done-%02d", i), accessRead, "s", "p", nil)
+		entry := newDispatchedAgent(fmt.Sprintf("done-%02d", i), accessRead, "", "s", "p", nil)
 		entry.ended = base.Add(time.Duration(i) * time.Second)
 		c.dispatched.Set(dispatchKey("p", entry.Label), entry)
 	}
-	live := newDispatchedAgent("live", accessRead, "s", "p", nil)
+	live := newDispatchedAgent("live", accessRead, "", "s", "p", nil)
 	_, _, ok := live.claim()
 	require.True(t, ok)
 	c.dispatched.Set(dispatchKey("p", "live"), live)
@@ -328,7 +328,7 @@ func TestReopenRestoresPrunedEntry(t *testing.T) {
 		<-release
 		return agentResultWithText("done"), nil
 	})
-	entry := newDispatchedAgent("betty-pruned", accessRead, "child", parent.ID, agent)
+	entry := newDispatchedAgent("betty-pruned", accessRead, "", "child", parent.ID, agent)
 
 	require.True(t, c.reopen(entry, "more please", nil))
 	got, ok := c.dispatched.Get(dispatchKey(parent.ID, "betty-pruned"))

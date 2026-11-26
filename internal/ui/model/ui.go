@@ -8032,7 +8032,8 @@ func (m *UI) drawSessionDetails(scr uv.Screen, area uv.Rectangle) {
 	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), sectionWidth, maxItemsPerSection, false)
 	sections := lipgloss.JoinHorizontal(lipgloss.Top, filesSection, " ", lspSection, " ", mcpSection, " ", skillsSection)
 	if len(subAgents) > 0 {
-		sections = lipgloss.JoinHorizontal(lipgloss.Top, m.subAgentsInfo(subAgents, sectionWidth, maxItemsPerSection, false), " ", sections)
+		subAgentSection, _ := m.subAgentsInfo(subAgents, sectionWidth, maxItemsPerSection, false)
+		sections = lipgloss.JoinHorizontal(lipgloss.Top, subAgentSection, " ", sections)
 	}
 	sections = lipgloss.NewStyle().MaxWidth(width).MaxHeight(max(0, remainingHeight)).Render(sections)
 	uv.NewStyledString(

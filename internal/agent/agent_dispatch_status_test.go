@@ -192,7 +192,7 @@ func TestReopenedDispatchRunsCleanupAgain(t *testing.T) {
 		<-release
 		return agentResultWithText("done"), nil
 	})
-	entry := newDispatchedAgent("betty-cleanup", accessRead, "child", parent.ID, agent)
+	entry := newDispatchedAgent("betty-cleanup", accessRead, "", "child", parent.ID, agent)
 
 	var cleans atomic.Int64
 	entry.setCleanup(func() { cleans.Add(1) })
