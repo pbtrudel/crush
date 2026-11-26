@@ -80,6 +80,13 @@ func boolValue(raw json.RawMessage) (any, bool) {
 
 // displayKeys is the only config the browser may write: its own display
 // settings, each with its value check.
+//
+// Both write routes touch the global config only. A web_display block in
+// a project-scope config still overrides what a tab writes here, and a
+// remove cannot clear the project's value. That limit is accepted:
+// display settings describe the person at the browser, not the
+// repository, and the web UI never writes project scope, so a project
+// that pins web_display does so on purpose and keeps it.
 var displayKeys = map[string]func(json.RawMessage) (any, bool){
 	"options.web_display.theme":          enumString("holodeck", "solid"),
 	"options.web_display.motion":         enumString("full", "reduced", "off"),
