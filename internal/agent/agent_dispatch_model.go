@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 // mainModel returns the model the main agent runs on, or the zero Model
@@ -222,9 +223,25 @@ func (c *coordinator) sendOnNewModel(ctx context.Context, entry *dispatchedAgent
 		return fantasy.NewTextErrorResponse(running)
 	}
 	override := AgentDispatchParams{Model: params.Model, Provider: params.Provider, Reasoning: params.Reasoning}
-	agent, sel, _, refusal := c.overrideDispatchAgent(ctx, entry.Access, override, parentModel)
-	if refusal != "" {
-		return fantasy.NewTextErrorResponse(refusal)
+	var agent SessionAgent
+	var sel config.SelectedModel
+	if entry.Role != "" {
+		// A role subagent is rebuilt in its role, so a model switch never
+		// brings it back ungated.
+		role, refusal := resolveRole(c.cfg.Config(), entry.Role)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("role %q no longer exists", entry.Role))
+		}
+		agent, sel, _, refusal = c.roleTaskAgent(ctx, role, entry.Access, override, parentModel)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal)
+		}
+	} else {
+		var refusal string
+		agent, sel, _, refusal = c.overrideDispatchAgent(ctx, entry.Access, override, parentModel)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal)
+		}
 	}
 	if !c.reopen(entry, params.Message, agent) {
 		return fantasy.NewTextErrorResponse(running)
@@ -235,4 +252,79 @@ func (c *coordinator) sendOnNewModel(ctx context.Context, entry *dispatchedAgent
 		"Moved %q to %s and delivered the message. It will answer in a new report.",
 		entry.Label, meta.RunModel,
 	)), meta)
+}
+
+// roleAccess picks the subagent variant for a role. A role that allows no
+// file-editing tool runs read-only; access may narrow a write role to read
+// but never widen a read-only one.
+func roleAccess(role *roles.Role, requested string) (string, string) {
+	readOnly := role.ReadOnly(config.SubAgentWriteTools())
+	switch requested {
+	case "":
+		if readOnly {
+			return accessRead, ""
+		}
+		return accessWrite, ""
+	case accessRead:
+		return accessRead, ""
+	case accessWrite:
+		if readOnly {
+			return "", fmt.Sprintf("role %q is read-only; access %q is not allowed", role.Name, requested)
+		}
+		return accessWrite, ""
+	default:
+		return "", fmt.Sprintf("unknown access %q", requested)
+	}
+}
+
+// roleTaskAgent builds a task subagent for a role. It runs on one of the
+// two existing variants, so its tools block and system prompt match an
+// agent without a role; the role's gate and block ride on top. The model
+// is the dispatch's override if it has one, then the role's, then the
+// shared subagent model.
+func (c *coordinator) roleTaskAgent(ctx context.Context, role *roles.Role, access string, params AgentDispatchParams, parentModel Model) (SessionAgent, config.SelectedModel, bool, string) {
+	access, refusal := roleAccess(role, access)
+	if refusal != "" {
+		return nil, config.SelectedModel{}, false, refusal
+	}
+	if !explicitModelOverride(params) && role.PinsModel() {
+		params = roleModelParams(role)
+	}
+	sel, hasOverride, refusal := c.resolveModelOverride(params, parentModel)
+	if refusal != "" {
+		return nil, config.SelectedModel{}, false, fmt.Sprintf("role %q: %s", role.Name, refusal)
+	}
+	var modelsFn func() ModelSet
+	if hasOverride {
+		entry, err := c.overrideModel(sel)
+		if err != nil {
+			return nil, sel, true, "failed to set up the requested model: " + err.Error()
+		}
+		modelsFn = func() ModelSet {
+			return ModelSet{Large: entry.current(c), Small: c.subAgentModels().Small}
+		}
+	}
+	agentCfg, canWrite := c.taskAgentConfig(access)
+	agentCfg.Role = role
+	var ready errgroup.Group
+	agent, err := c.buildTaskAgent(ctx, &ready, agentCfg, canWrite, modelsFn)
+	if err != nil {
+		return nil, sel, hasOverride, "failed to start a subagent for role " + role.Name + ": " + err.Error()
+	}
+	if err := ready.Wait(); err != nil {
+		return nil, sel, hasOverride, "failed to start a subagent for role " + role.Name + ": " + err.Error()
+	}
+	return agent, sel, hasOverride, ""
+}
+
+// planModeRoleRefusal refuses a role that would write from a read-only
+// parent, as resolveSubAgent refuses access=write there.
+func planModeRoleRefusal(readOnly bool, role *roles.Role, access string) string {
+	if !readOnly {
+		return ""
+	}
+	if want, _ := roleAccess(role, access); want == accessWrite {
+		return fmt.Sprintf(`plan mode subagents are read-only; role %q can write, so pass access "read" or pick a read-only role`, role.Name)
+	}
+	return ""
 }

@@ -17,7 +17,7 @@ func TestReportIsSavedEvenWhenWakingFails(t *testing.T) {
 	c.readyWg.Go(func() error { return errors.New("not ready") })
 	parent, err := env.sessions.Create(t.Context(), "parent")
 	require.NoError(t, err)
-	entry := newDispatchedAgent("betty-review", accessRead, "child", parent.ID, newMockAgent("p", 4096, nil))
+	entry := newDispatchedAgent("betty-review", accessRead, "", "child", parent.ID, newMockAgent("p", 4096, nil))
 
 	c.reportDispatchResult(entry, fantasy.NewTextResponse("all good"), nil)
 

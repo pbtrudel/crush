@@ -1,0 +1,20 @@
+date: 2026-11-25
+name: agent-roles
+variants:
+  - name: control
+    ref: 1653c84fe706a905fa2303358445a8008e8d1da2
+  - name: roles
+    ref: 772efed03e36822d562c09c7f4dd92abfbb597b7
+routes: [deepseek-flash]
+repetitions: 3
+# Agent roles give a teammate or subagent a prompt, a tool allow-list and an
+# optional model, all read from markdown files. The control is main; the roles
+# arm is the branch head. Both arms run the route's default prompt profile, so
+# only the role machinery differs. A role never changes the tool list or the
+# system prompt, and a role-less run must send today's bytes, so the control
+# should hold its pass rate. Pass rate is the primary metric with a 10-point
+# margin; steps and tokens come from the compare tables.
+primary_metric: pass_rate
+margin: 0.1
+baseline: evals/baselines/2026-11-19-deepseek-flash.json
+detectable_effect: 0.09085640776123453

@@ -52,6 +52,7 @@ func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills 
 	writeLSP(&b, lspManager, cfg)
 	writeMCP(&b, mcp.GetStates(), cfg)
 	writeSkills(&b, allSkills, activeSkills, skillTracker, cfg)
+	writeRoles(&b, cfg)
 	writeHooks(&b, cfg)
 	writePermissions(&b, cfg)
 	writeDisabledTools(&b, cfg)
@@ -362,6 +363,36 @@ func writeSkills(b *strings.Builder, allSkills []*skills.Skill, activeSkills []*
 	fmt.Fprintf(b, "loaded_this_session = %d/%d\n", tracker.LoadedCount(), len(activeSkills))
 	for _, e := range entries {
 		fmt.Fprintf(b, "%s = %s, %s\n", e.name, e.origin, e.state)
+	}
+	b.WriteString("\n")
+}
+
+func writeRoles(b *strings.Builder, cfg *config.ConfigStore) {
+	c := cfg.Config()
+	var names []string
+	for name, agent := range c.Agents {
+		if agent.Role != nil {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 && len(c.RoleDiagnostics) == 0 {
+		return
+	}
+	slices.Sort(names)
+	b.WriteString("[roles]\n")
+	for _, name := range names {
+		role := c.Agents[name].Role
+		model := "inherits"
+		if role.Model != "" {
+			model = role.Model
+			if role.Provider != "" {
+				model = role.Provider + "/" + role.Model
+			}
+		}
+		fmt.Fprintf(b, "%s = %s, model %s\n", name, role.Source, model)
+	}
+	for _, d := range c.RoleDiagnostics {
+		fmt.Fprintf(b, "! %s\n", d.String())
 	}
 	b.WriteString("\n")
 }

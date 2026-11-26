@@ -53,9 +53,6 @@ func TestTeammateInheritsTheApprovalOfAHeadlessLead(t *testing.T) {
 			require.NoError(t, coord.readyWg.Wait())
 			approvals := &recordingApprovals{Service: coord.permissions}
 			coord.permissions = approvals
-			// Without a coder agent the turn fails right after its session
-			// is set up, so no model is called.
-			coord.agents = map[string]SessionAgent{}
 
 			lead, err := coord.sessions.Create(t.Context(), "Lead")
 			require.NoError(t, err)
@@ -63,10 +60,14 @@ func TestTeammateInheritsTheApprovalOfAHeadlessLead(t *testing.T) {
 				approvals.AutoApproveSession(lead.ID)
 			}
 			runner := &teamRunner{c: coord}
-			_, err = runner.Start(t.Context(), agentteam.Member{
+			run, err := runner.Start(t.Context(), agentteam.Member{
 				ID: "member-1", Name: "worker", Role: agentteam.RoleTeammate, ParentID: lead.ID,
 			}, "Work.")
-			require.ErrorContains(t, err, "coder agent not configured")
+			require.NoError(t, err)
+			// The approval is recorded before Start returns. The provider is
+			// a closed port, so the turn only has to be stopped here.
+			run.Cancel()
+			<-run.Done()
 
 			var want []string
 			if tt.approveLead {
