@@ -383,3 +383,47 @@ func TestTeammateWrapperOrderKeepsLeadPrefix(t *testing.T) {
 		require.True(t, ok, "%s: hook wrapper is innermost", role.Name)
 	}
 }
+
+// TestTeammateScopesKeepLeadPrefix pins spec 7.5: a teammate that has claimed
+// an in-progress task with write scopes still sends the Lead's tools block
+// byte for byte, in the same order, and the gate that holds it to those scopes
+// is live on that same palette.
+func TestTeammateScopesKeepLeadPrefix(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	team := coord.teamService()
+	_, err := team.SpawnTeammate(t.Context(), agentteam.LeadName, agentteam.SpawnRequest{Name: "impl", Description: "d", Prompt: "p", ParentID: teamTestSessionID})
+	require.NoError(t, err)
+	task, err := team.CreateTask(agentteam.LeadName, teamTestSessionID, agentteam.CreateTaskRequest{Subject: "A", Description: "d", WriteScopes: []string{"internal/agent"}})
+	require.NoError(t, err)
+	_, err = team.UpdateTask("impl", agentteam.UpdateTaskRequest{TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"internal/agent"}, coord.claimedScopes(agentteam.WithMember(t.Context(), "impl")))
+
+	lead := coord.coderAgent()
+	require.NotNil(t, lead)
+	leadTools := lead.(*sessionAgent).tools.Copy()
+
+	runner := &teamRunner{c: coord}
+	member := agentteam.Member{Name: "impl", Role: agentteam.RoleTeammate}
+	agent, err := runner.teammateAgent(agentteam.WithMember(t.Context(), "impl"), member)
+	require.NoError(t, err)
+	teammateTools := agent.(*sessionAgent).tools.Copy()
+	require.Equal(t, toolNames(leadTools), toolNames(teammateTools))
+	for i, tool := range teammateTools {
+		want, err := json.Marshal(leadTools[i].Info())
+		require.NoError(t, err)
+		have, err := json.Marshal(tool.Info())
+		require.NoError(t, err)
+		require.Equal(t, string(want), string(have), "tool %q", tool.Info().Name)
+	}
+
+	// The same palette is scope-gated: a write outside the claimed scope is
+	// refused, so the byte parity above does not come from a missing gate.
+	resp, err := toolByName(teammateTools, tools.EditToolName).Run(
+		agentteam.WithMember(t.Context(), "impl"),
+		fantasy.ToolCall{ID: "call-1", Name: tools.EditToolName, Input: filePathInput("internal/ui/x.go")},
+	)
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "outside the write scopes of your claimed task")
+}

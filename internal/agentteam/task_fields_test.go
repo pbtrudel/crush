@@ -225,4 +225,12 @@ func TestClaimedWriteScopes(t *testing.T) {
 	require.Equal(t, []string{"internal/agent", "docs", "README.md"}, s.ClaimedWriteScopes("impl"))
 	require.Empty(t, s.ClaimedWriteScopes(leadName))
 	require.Empty(t, s.ClaimedWriteScopes("nobody"))
+
+	// A task in review no longer contributes: its files are no longer being
+	// written, and a failed verification puts it back in progress first.
+	verify := true
+	reviewed := createTask(t, s, CreateTaskRequest{Subject: "D", Description: "d", WriteScopes: []string{"internal/ui"}, Verify: &verify})
+	act(t, s, "impl", reviewed.ID, "claim", nil)
+	require.Equal(t, TaskInReview, act(t, s, "impl", reviewed.ID, "complete", nil).Status)
+	require.Equal(t, []string{"internal/agent", "docs", "README.md"}, s.ClaimedWriteScopes("impl"))
 }

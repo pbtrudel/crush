@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/home"
 )
 
 func fixedScopes(scopes ...string) func(context.Context) []string {
@@ -122,6 +124,69 @@ func TestScopeGateApplyPatchChecksEveryFile(t *testing.T) {
 	require.True(t, resp.IsError)
 	require.False(t, inner.called, "one file outside the scopes refuses the whole patch")
 	require.Contains(t, resp.Content, `path "internal/ui/b.go"`)
+}
+
+// TestScopeGateApplyPatchChecksDirectives covers the section headers a patch
+// writes through besides Add File: an update, a delete, and a move whose
+// destination is outside the scopes while its source is inside.
+func TestScopeGateApplyPatchChecksDirectives(t *testing.T) {
+	t.Parallel()
+	patchInput := func(body string) string {
+		data, _ := json.Marshal(tools.ApplyPatchParams{Patch: body})
+		return string(data)
+	}
+	cases := []struct {
+		name  string
+		patch string
+		path  string
+	}{
+		{
+			name:  "update file",
+			patch: "*** Begin Patch\n*** Update File: internal/ui/a.go\n@@\n-old\n+new\n*** End Patch",
+			path:  "internal/ui/a.go",
+		},
+		{
+			name:  "delete file",
+			patch: "*** Begin Patch\n*** Delete File: internal/ui/a.go\n*** End Patch",
+			path:  "internal/ui/a.go",
+		},
+		{
+			name:  "move destination",
+			patch: "*** Begin Patch\n*** Update File: internal/agent/a.go\n*** Move to: internal/ui/a.go\n@@\n-old\n+new\n*** End Patch",
+			path:  "internal/ui/a.go",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tool, inner := scopedTool(t, tools.ApplyPatchToolName, t.TempDir(), "internal/agent")
+			resp := runScoped(t, tool, patchInput(tc.patch))
+			require.True(t, resp.IsError)
+			require.False(t, inner.called, "a refused patch must not reach the real tool")
+			require.Contains(t, resp.Content, `path "`+tc.path+`"`)
+		})
+	}
+}
+
+// TestScopeGateHomePathOutsideWorkspace pins that a home-relative path is
+// expanded the way the edit tools expand it, so a teammate cannot escape its
+// scopes by writing through ~.
+func TestScopeGateHomePathOutsideWorkspace(t *testing.T) {
+	// The home package already uses a scratch directory under go test, so
+	// HOME is pinned only to make the intent explicit: either way the home
+	// sits outside the workspace below.
+	t.Setenv("HOME", t.TempDir())
+	wd := t.TempDir()
+	require.False(t,
+		strings.HasPrefix(filepath.Clean(home.Long("~/outside.go")), filepath.Clean(wd)+string(filepath.Separator)),
+		"the test home must not sit inside the workspace",
+	)
+
+	tool, inner := scopedTool(t, tools.EditToolName, wd, "internal/agent")
+	resp := runScoped(t, tool, filePathInput("~/outside.go"))
+	require.True(t, resp.IsError)
+	require.False(t, inner.called)
+	require.Contains(t, resp.Content, `path "~/outside.go"`)
 }
 
 func TestScopeGateRefusesRenameUnderScopes(t *testing.T) {
