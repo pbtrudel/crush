@@ -540,6 +540,10 @@ type UI struct {
 	sidebarMaxOffsetVal     int    // max scroll offset, computed in updateSidebarScrollState
 	sidebarContent          string // cached rendered sidebar content
 	sidebarTotalLines       int    // total lines in sidebarContent
+	// sidebarAgentHits maps a content line index to the agent whose row is
+	// drawn there, so a click opens that agent's session. Rebuilt with the
+	// memoized sidebar content.
+	sidebarAgentHits map[int]dialog.AgentDescriptor
 
 	// sidebarKey/pillsKey memoize the per-frame sidebar and pills
 	// rebuilds; sidebarBuilds/pillsBuilds count rebuilds so tests can
@@ -1771,6 +1775,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, cmd)
 					}
 				}
+			} else if cmd := m.handleSidebarAgentClick(msg); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 
@@ -7055,6 +7061,28 @@ func (m *UI) reopenAgentsList(saved *agentsListState) {
 	agents := dialog.NewAgents(m.com, m.agentDescriptors())
 	agents.Restore(saved.filter, saved.sessionID)
 	m.dialog.OpenDialog(agents)
+}
+
+// handleSidebarAgentClick opens the agent whose sidebar row was clicked. A
+// single left click opens the transcript; clicks on non-agent lines, the logo,
+// or the scrollbar do nothing.
+func (m *UI) handleSidebarAgentClick(msg tea.MouseClickMsg) tea.Cmd {
+	if msg.Button != uv.MouseLeft || m.session == nil || len(m.sidebarAgentHits) == 0 {
+		return nil
+	}
+	contentMinY := m.layout.sidebar.Min.Y + lipgloss.Height(m.sidebarDrawLogo)
+	if msg.Y < contentMinY || msg.Y >= contentMinY+m.sidebarContentHeight {
+		return nil
+	}
+	if msg.X < m.layout.sidebar.Min.X || msg.X >= m.layout.sidebar.Min.X+m.sidebarContentWidth {
+		return nil
+	}
+	line := m.sidebarOffset + (msg.Y - contentMinY)
+	descriptor, ok := m.sidebarAgentHits[line]
+	if !ok {
+		return nil
+	}
+	return m.openAgentViewer(descriptor)
 }
 
 // openAgentViewer opens an independent transcript without changing the main
