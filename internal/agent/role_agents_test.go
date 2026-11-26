@@ -110,7 +110,8 @@ func TestRoleCatalog(t *testing.T) {
 	cfg := &config.Config{Options: &config.Options{}}
 	cfg.SetupAgents()
 	catalog := roleCatalog(cfg)
-	require.Contains(t, catalog, "\n\nRoles (pass one as `role`):\n- architect (builtin): ")
+	require.Contains(t, catalog, "\n\nRoles (pass one as `role`):\n- architect (builtin, read-only): ")
+	require.Contains(t, catalog, "\n- implementer (builtin, can write): ")
 	require.Equal(t, catalog, roleCatalog(cfg), "the catalog must be byte-stable")
 }
 

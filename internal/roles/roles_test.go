@@ -41,10 +41,25 @@ func TestBlockIsStableAndSorted(t *testing.T) {
 func TestCatalog(t *testing.T) {
 	t.Parallel()
 	list := []Role{
-		{Name: "verifier", Description: "Checks.", Source: SourceBuiltin},
+		{Name: "verifier", Description: "Checks.", Source: SourceBuiltin, Tools: []string{"view", "bash"}},
 		{Name: "reviewer", Description: "Reviews.", Source: SourceProject, Model: "m"},
-		{Name: "architect", Description: "Designs.", Source: SourceGlobal, Model: "m"},
+		{Name: "implementer", Description: "Builds.", Source: SourceBuiltin},
+		{Name: "architect", Description: "Designs.", Source: SourceGlobal, Model: "m", Tools: []string{"view"}},
 	}
-	want := "- architect (global): Designs.\n- reviewer (project, pins model): Reviews.\n- verifier (builtin): Checks.\n"
-	require.Equal(t, want, Catalog(list))
+	want := "- architect (global, read-only): Designs.\n" +
+		"- implementer (builtin, can write): Builds.\n" +
+		"- reviewer (project, can write, pins model): Reviews.\n" +
+		"- verifier (builtin, read-only): Checks.\n"
+	require.Equal(t, want, Catalog(list, testWriteTools))
+}
+
+// TestCatalogReportsWidenedOverlay pins that the access marker follows the
+// resolved tool list: an overlay that only widens a read-only built-in is
+// shown as a write role, whatever the built-in description says.
+func TestCatalogReportsWidenedOverlay(t *testing.T) {
+	t.Parallel()
+	widened := Role{Name: "reviewer", Description: "Reviews.", Source: SourceProject, Tools: []string{"view", "edit"}}
+	narrowed := Role{Name: "reviewer", Description: "Reviews.", Source: SourceProject, Tools: []string{"view"}}
+	require.Contains(t, Catalog([]Role{widened}, testWriteTools), "- reviewer (project, can write): ")
+	require.Contains(t, Catalog([]Role{narrowed}, testWriteTools), "- reviewer (project, read-only): ")
 }

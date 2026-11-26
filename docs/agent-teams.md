@@ -150,9 +150,9 @@ diagnostic.
 An unknown role is a tool error that lists the roles that exist. A role that is
 removed while a teammate exists fails that teammate's next turn with
 `role "x" no longer exists`. The role catalog in the delegation tools'
-descriptions shows each role's source, and a project role that pins a model is
-marked `pins model`, so a cloned repository cannot quietly move spend to
-another model.
+descriptions shows each role's source and whether it is `read-only` or `can
+write`, and a project role that pins a model is marked `pins model`, so a
+cloned repository cannot quietly move spend to another model.
 
 **Model precedence:** an explicit `model`, `provider`, or `reasoning` on the
 spawn or dispatch, then the role's, then the shared subagent model. The `agent`

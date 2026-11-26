@@ -101,7 +101,7 @@ func commonPrefixLen(a, b string) int {
 func TestSpawnTeammateRoleWiring(t *testing.T) {
 	coord := newTeammateTestCoordinator(t)
 	tool := coord.spawnTeammateTool("lead", func() Model { return coord.mainModels().Large })
-	require.Contains(t, tool.Info().Description, "reviewer (builtin)",
+	require.Contains(t, tool.Info().Description, "reviewer (builtin, read-only)",
 		"the spawn tool must offer the roles it accepts")
 
 	params := map[string]any{"name": "rev", "description": "Reviews the diff", "prompt": "Review."}

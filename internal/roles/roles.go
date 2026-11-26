@@ -96,14 +96,20 @@ func Block(r Role) string {
 }
 
 // Catalog renders one line per role, sorted by name, for the delegation
-// tool descriptions. A project role that pins a model says so, so a cloned
-// repository cannot move spend to another model unnoticed.
-func Catalog(list []Role) string {
+// tool descriptions. The access marker comes from the resolved allow-list,
+// not the description, so an overlay that widens a read-only role cannot
+// claim to be read-only. A project role that pins a model says so, so a
+// cloned repository cannot move spend to another model unnoticed.
+func Catalog(list []Role, writeTools []string) string {
 	sorted := slices.Clone(list)
 	slices.SortFunc(sorted, func(a, b Role) int { return strings.Compare(a.Name, b.Name) })
 	var b strings.Builder
 	for _, r := range sorted {
-		origin := string(r.Source)
+		access := "can write"
+		if r.ReadOnly(writeTools) {
+			access = "read-only"
+		}
+		origin := string(r.Source) + ", " + access
 		if r.Source == SourceProject && r.PinsModel() {
 			origin += ", pins model"
 		}

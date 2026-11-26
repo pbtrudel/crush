@@ -89,7 +89,7 @@ func (r Role) Allows(tool string) bool
 func (r Role) ReadOnly(writeTools []string) bool
 func (r Role) PinsModel() bool
 func Block(r Role) string
-func Catalog(list []Role) string
+func Catalog(list []Role, writeTools []string) string
 ```
 
 **Search order, lowest to highest priority:**
@@ -150,10 +150,10 @@ Role *roles.Role // nil for coder, task and plan
 
 ### 3. Runtime wiring
 
-**Catalog.** `roles.Catalog` renders one line per role from the loaded list, sorted by name:
+**Catalog.** `roles.Catalog` renders one line per role from the loaded list, sorted by name. The origin parenthesis carries the source and whether the resolved allow-list can write:
 
 ```
-- reviewer (builtin): Challenges assumptions and finds risks in a design or diff.
+- reviewer (builtin, read-only): Challenges assumptions and finds risks in a design or diff.
 ```
 
 It is appended to the descriptions of `spawn_teammate`, `agent_dispatch` and `agent`, replacing today's preset list on `agent`. The catalog changes only on config reload, so the tool list stays byte-stable for a session and every teammate shares it. The Team policy (`internal/agentteam/team.go:46-64`) gains one fixed sentence: "Pick a role from the spawn_teammate catalog when one fits the task."

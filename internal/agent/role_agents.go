@@ -133,5 +133,5 @@ func roleCatalog(cfg *config.Config) string {
 	if len(list) == 0 {
 		return ""
 	}
-	return "\n\nRoles (pass one as `role`):\n" + strings.TrimRight(roles.Catalog(list), "\n")
+	return "\n\nRoles (pass one as `role`):\n" + strings.TrimRight(roles.Catalog(list, config.SubAgentWriteTools()), "\n")
 }
