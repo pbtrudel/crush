@@ -772,7 +772,9 @@ func TestSummarize_AppliesTheLiveStepMediaPasses(t *testing.T) {
 	env := testEnv(t)
 	model := &toolRequestModel{text: "done"}
 	imageLimit := 1
-	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit}})
+	// Retention would expire these old images before the budget pass this
+	// test pins, so keep them all and let the budget do the omitting.
+	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit, ImageRetentionTurns: ptr(-1)}})
 	agent := newVisionCompactionAgent(env, model, cfg, &recordingTool{name: "alpha"})
 
 	ctx := t.Context()

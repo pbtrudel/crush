@@ -8,6 +8,11 @@
   overflow-x: clip;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
+  /* A minmax(0, 1fr) column cannot outgrow the window: the chronoline's
+     hundreds of calls scroll inside the deck, and any other child wider than
+     the shell is clipped instead of widening the page and carrying every
+     right-aligned instrument off the edge. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100dvh;
   padding: var(--space-4);
   gap: var(--space-4);

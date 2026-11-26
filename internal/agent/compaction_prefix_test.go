@@ -21,7 +21,11 @@ func TestCompaction_RequestExtendsTheLastStep(t *testing.T) {
 	env := testEnv(t)
 	model := &toolRequestModel{text: "the answer", toolSteps: 1}
 	imageLimit := 1
-	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit}})
+	// Retention would expire these old images before the budget pass this
+	// test pins, so keep them all and let the budget do the omitting. The
+	// default-retention prefix invariant is covered by
+	// TestSummarize_ExtendsLivePrefixUnderDefaultRetention.
+	cfg := config.NewTestStore(&config.Config{Options: &config.Options{MaxImages: &imageLimit, ImageRetentionTurns: ptr(-1)}})
 	agent := newVisionCompactionAgent(env, model, cfg,
 		&recordingTool{name: "alpha"}, &recordingTool{name: "beta"}, &probeTool{output: "tool output"})
 

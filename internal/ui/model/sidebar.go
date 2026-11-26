@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
@@ -101,6 +102,7 @@ func (m *UI) updateSidebarScrollState() {
 	}
 	m.sidebarKey, m.sidebarKeyValid = key, true
 	m.sidebarBuilds++
+	m.sidebarAgentHits = make(map[int]dialog.AgentDescriptor)
 
 	const logoHeightBreakpoint = 30
 
@@ -147,7 +149,18 @@ func (m *UI) updateSidebarScrollState() {
 	if teamSection := m.teamInfo(contentWidth); teamSection != "" {
 		sections = append(sections, "", teamSection)
 	}
-	if agentsSection := m.agentsInfo(contentWidth); agentsSection != "" {
+	agentsSection, agentHits := m.agentsInfo(contentWidth)
+	if agentsSection != "" {
+		// The section starts after everything already appended plus the
+		// blank separator line; offset each row hit to an absolute content
+		// line so a click maps to the right agent.
+		start := lipgloss.Height("")
+		for _, s := range sections {
+			start += lipgloss.Height(s)
+		}
+		for _, hit := range agentHits {
+			m.sidebarAgentHits[start+hit.line] = hit.descriptor
+		}
 		sections = append(sections, "", agentsSection)
 	}
 	subAgents := m.subAgentStatuses()
