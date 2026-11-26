@@ -261,7 +261,7 @@ func TestDispatchEscalatesAfterThreeFailedStarts(t *testing.T) {
 		"a failed member is never picked again, and an escalated task is not started")
 	require.Equal(t, StatusFailed, memberStatus(s, "researcher-1"))
 	require.Equal(t, []string{fmt.Sprintf(
-		"Task %s (Research) could not be started: provider unavailable. It is escalated; edit, reassign or reopen it to continue.", task.ID,
+		"Task %s (Research) could not be started: provider unavailable. It is escalated; to continue, edit it, or reassign it with no owner.", task.ID,
 	)}, leadNotices(t, s, pipelineSession))
 }
 
@@ -323,7 +323,8 @@ func TestDispatchInterruptedTurnEscalates(t *testing.T) {
 	require.Eventually(t, func() bool { return taskByID(t, s, task.ID).Escalated }, time.Second, 10*time.Millisecond)
 	s.Shutdown()
 	require.Equal(t, []string{"researcher-1"}, runner.memberNames(), "an interrupted task does not restart on its own")
-	require.Contains(t, leadNotices(t, s, pipelineSession)[0], "was interrupted")
+	require.Contains(t, leadNotices(t, s, pipelineSession)[0],
+		"It is escalated; to continue, edit it, or reassign it with no owner.")
 }
 
 func TestDispatchAfterShutdownStartsNothing(t *testing.T) {

@@ -300,10 +300,20 @@ func scopesText(task Task) string {
 	return strings.Join(task.WriteScopes, ", ")
 }
 
+// taskRecoveryActions names the actions the Lead can take on a task at
+// status. A pending task cannot reopen, and a named reassign of one leaves
+// it in progress with nobody started, so only the actions that work appear.
+func taskRecoveryActions(status TaskStatus) string {
+	if status == TaskInReview {
+		return "reopen it, complete it to accept it as is, or delete it"
+	}
+	return "edit it, or reassign it with no owner"
+}
+
 // escalationNote is the Lead notice for a task the dispatcher gave up on.
 func escalationNote(task Task, reason string) string {
-	return fmt.Sprintf("Task %s (%s) could not be started: %s. It is escalated; edit, reassign or reopen it to continue.",
-		task.ID, task.Subject, reason)
+	return fmt.Sprintf("Task %s (%s) could not be started: %s. It is escalated; to continue, %s.",
+		task.ID, task.Subject, reason, taskRecoveryActions(task.Status))
 }
 
 // dispatchFailed releases a claim whose start failed. A failure counts as an

@@ -36,42 +36,43 @@ func (s *Service) newVerificationTaskLocked(original Task) Task {
 // applyVerdictLocked applies a verifier's verdict to the task check verifies.
 // An original that already left review (reopened, deleted) is left alone, so
 // a late verdict never rewrites work the board has moved on from. It returns
-// the completed subject for the todo hook, the members to wake, and the Lead
-// sessions a notice was written for. Callers must hold s.mu.
-func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier Member, verdict, notes string) (completedSubject string, wake, leads []string) {
+// the completed subject for the todo hook, the members to wake, the Lead
+// sessions a notice was written for, and the task a wake delivers back to
+// its owner. Callers must hold s.mu.
+func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier Member, verdict, notes string) (completedSubject string, wake, leads []string, wakeTask string) {
 	index, original, ok := s.taskIndexLocked(scope, check.Verifies)
 	if !ok || original.Status != TaskInReview {
-		return "", nil, nil
+		return "", nil, nil, ""
 	}
 	original.Revision++
 	if verdict == "pass" {
 		original.Status = TaskCompleted
 		s.state.Tasks[index] = original
-		return original.Subject, nil, nil
+		return original.Subject, nil, nil, ""
 	}
 	original.Attempts++
 	if original.Attempts >= maxTaskAttempts {
 		original.Escalated = true
 		s.state.Tasks[index] = original
 		s.noteLeadLocked(original.SessionID, fmt.Sprintf(
-			"Task %s (%s) failed verification %d times and stays in review, escalated. Reopen it to try again, or delete it. Last notes:\n\n%s",
-			original.ID, original.Subject, original.Attempts, notes))
-		return "", nil, []string{original.SessionID}
+			"Task %s (%s) failed verification %d times and stays in review, escalated. To recover, %s. Last notes:\n\n%s",
+			original.ID, original.Subject, original.Attempts, taskRecoveryActions(original.Status), notes))
+		return "", nil, []string{original.SessionID}, ""
 	}
 	original.Status = TaskInProgress
 	s.state.Tasks[index] = original
 	text := fmt.Sprintf("Verification of task %s failed:\n\n%s\n\nFix it and complete the task again.", original.ID, notes)
 	if original.OwnerID == leadName {
 		s.noteLeadLocked(original.SessionID, text)
-		return "", nil, []string{original.SessionID}
+		return "", nil, []string{original.SessionID}, ""
 	}
 	for _, member := range s.state.Members {
 		if member.ID == original.OwnerID {
 			s.appendMessageLocked(verifier.Name, member.Name, text)
-			return "", []string{member.Name}, nil
+			return "", []string{member.Name}, nil, original.ID
 		}
 	}
-	return "", nil, nil
+	return "", nil, nil, ""
 }
 
 // startReviewLocked sends task to review with a fresh check. Any older check

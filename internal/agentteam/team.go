@@ -1246,7 +1246,12 @@ func (s *Service) watch(name string, run Run) {
 			}
 		}
 		member = s.stateMemberLocked(name)
-		settled, completed := s.settleTasksLocked(member.ID, runErr)
+		// A turn that ended with mail waiting is resumed with it, and that
+		// next turn owns whatever this one left in progress. Settling it
+		// here would re-review or release work its owner is about to
+		// resume on, before it has read the mail that explains why.
+		hold := runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID)
+		settled, completed := s.settleTasksLocked(member.ID, runErr, hold)
 		complete = completed
 		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 		s.notifyLocked()
@@ -1318,10 +1323,15 @@ func (s *Service) watch(name string, run Run) {
 // verified; a verification task is never completed this way, because a
 // verifier that never decides must not pass work by default. A failed or
 // interrupted turn releases them back to the board so they never stay
-// half-done forever. It returns the report labels and the subjects of the
-// completed tasks.
-func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, completed []string) {
+// half-done forever. With hold set, the member is about to be resumed with
+// pending mail, so its in-progress tasks are left as they are for that turn
+// to finish. It returns the report labels and the subjects of the completed
+// tasks.
+func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (settled, completed []string) {
 	if ownerID == "" || ownerID == leadName {
+		return nil, nil
+	}
+	if hold {
 		return nil, nil
 	}
 	var review []int
@@ -1353,8 +1363,8 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 			if task.Attempts >= maxTaskAttempts {
 				task.Escalated = true
 				s.noteLeadLocked(task.SessionID, fmt.Sprintf(
-					"Task %s (%s) got no verdict from its verifier %d times. It is escalated; edit, reassign or reopen it to continue.",
-					task.ID, task.Subject, task.Attempts))
+					"Task %s (%s) got no verdict from its verifier %d times. It is escalated; to continue, %s.",
+					task.ID, task.Subject, task.Attempts, taskRecoveryActions(task.Status)))
 			}
 		case task.needsVerification():
 			task.Status = TaskInReview
@@ -1386,8 +1396,8 @@ func (s *Service) countFailedTurnLocked(task *Task, runErr error) {
 	if errors.Is(runErr, context.Canceled) {
 		task.Escalated = true
 		s.noteLeadLocked(task.SessionID, fmt.Sprintf(
-			"Task %s (%s) was interrupted. It is escalated; edit, reassign or reopen it to continue.",
-			task.ID, task.Subject))
+			"Task %s (%s) was interrupted. It is escalated; to continue, %s.",
+			task.ID, task.Subject, taskRecoveryActions(task.Status)))
 		return
 	}
 	task.Attempts++
@@ -2236,6 +2246,9 @@ type taskUpdate struct {
 	// wake names members to start once the write lands, such as the owner a
 	// failed verification hands its task back to.
 	wake []string
+	// taskID names the task the update applied to, so a failed wake can
+	// tell the Lead which task is now stranded.
+	taskID string
 	// leadSessions are the Lead sessions a notice was written for.
 	leadSessions []string
 }
@@ -2271,6 +2284,20 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	for _, name := range applied.wake {
 		if err := s.wakeIfIdle(context.Background(), name); err != nil {
 			slog.Warn("Could not wake a teammate", "member", name, "error", err)
+			// The verdict handed the task back, but nobody runs to fix
+			// it. A Warn log is invisible to the Lead, so say it in its
+			// inbox, outside every lock, unless the Team is shut down.
+			_ = s.write(mustApply, func() (bool, error) {
+				if s.closed {
+					return false, nil
+				}
+				s.noteLeadLocked(applied.parentSessionID, fmt.Sprintf(
+					"Could not start %s to fix task %s after a failed verification: %s. The task stays in progress with nobody running it; to continue, %s.",
+					name, applied.taskID, err, taskRecoveryActions(TaskPending)))
+				s.notifyLocked()
+				return true, nil
+			})
+			wakeLeads(leadHook, []string{applied.parentSessionID})
 		}
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
@@ -2400,11 +2427,26 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		next.BlockedBy = blockedBy
 	case "complete":
+		// Accepting work as is is the Lead's call: a teammate cannot
+		// complete the task a verifier is still deciding, but the Lead
+		// can close escalated work without a verdict.
+		if current.Status == TaskInReview {
+			if !lead {
+				return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can complete an in-review task")
+			}
+			if current.Verifies != "" {
+				return taskUpdate{}, newError(CodeTaskInvalidTransition,
+					"a verification task records its verdict with action pass, or fail with notes")
+			}
+			next.Status = TaskCompleted
+			completedSubject = next.Subject
+			break
+		}
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
 		}
 		if current.Status != TaskInProgress {
-			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress task can complete")
+			return taskUpdate{}, newError(CodeTaskInvalidTransition, "only an in-progress or in-review task can complete")
 		}
 		if current.Verifies != "" {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition,
@@ -2501,28 +2543,44 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		next.Escalated = false
 		next.Attempts = 0
 	}
+	// Accepting an in-review task ends its escalation too, without putting
+	// it back on the board.
+	if lead && current.Status == TaskInReview && req.Action == "complete" {
+		next.Escalated = false
+	}
 	if err := assertTaskGraph(s.state.Tasks, next); err != nil {
 		return taskUpdate{}, err
 	}
 	// Written by index: an old file may hold the same id twice, and the
 	// copy the caller acted on is the one in its scope.
 	s.state.Tasks[index] = next
-	update := taskUpdate{parentSessionID: parentSessionID, completedSubject: completedSubject}
+	update := taskUpdate{parentSessionID: parentSessionID, completedSubject: completedSubject, taskID: current.ID}
 	if review {
 		s.startReviewLocked(next)
 	}
 	if verdict != "" {
-		subject, wake, leads := s.applyVerdictLocked(scope, next, member, verdict, notes)
+		subject, wake, leads, wakeTask := s.applyVerdictLocked(scope, next, member, verdict, notes)
 		if subject != "" {
 			update.completedSubject = subject
 		}
 		update.wake = wake
 		update.leadSessions = leads
+		if wakeTask != "" {
+			update.taskID = wakeTask
+		}
 	}
-	if current.Status == TaskInReview && (req.Action == "reopen" || req.Action == "delete") {
-		// Work that left review needs no verdict, so a pending check goes
-		// with it. A check already in progress stays with its verifier.
-		s.closeChecksLocked(current.ID, false)
+	if current.Status == TaskInReview {
+		switch req.Action {
+		case "reopen", "delete":
+			// Work that left review needs no verdict, so a pending check
+			// goes with it. A check already in progress stays with its
+			// verifier.
+			s.closeChecksLocked(current.ID, false)
+		case "complete":
+			// Accepted work keeps no check, so a verifier still deciding
+			// it is finished too and its late verdict is refused.
+			s.closeChecksLocked(current.ID, true)
+		}
 	}
 	update.view = projectTaskView(s.state, next)
 	return update, nil

@@ -2,8 +2,10 @@ package agentteam
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,6 +124,131 @@ func TestFailReopensAndWakesTheOwner(t *testing.T) {
 		"verifier-1: Verification of task %s failed:\n\nTestX fails\n\nFix it and complete the task again.", task.ID))
 }
 
+// checksFor counts every verification task ever created for originalID,
+// including the deleted and completed ones.
+func checksFor(t *testing.T, s *Service, originalID string) int {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, task := range s.state.Tasks {
+		if task.Verifies == originalID {
+			count++
+		}
+	}
+	return count
+}
+
+// TestFailedVerdictWhileTheOwnerTurnRunsKeepsTheTaskInProgress pins the race
+// between a fail verdict and the turn that called complete: the owner is
+// still running, so the verdict cannot wake it. Its turn must settle with the
+// task left in progress, under the notes waiting in its inbox, instead of
+// sending the task to review again with a second check before the owner has
+// read what failed.
+func TestFailedVerdictWhileTheOwnerTurnRunsKeepsTheTaskInProgress(t *testing.T) {
+	t.Parallel()
+	s, runner := newPipelineService(t, Config{})
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer", WriteScopes: []string{"internal/x"}})
+	require.Equal(t, []string{"implementer-1"}, runner.memberNames())
+
+	act(t, s, "implementer-1", task.ID, "complete", nil)
+	first := verificationTaskFor(t, s, task.ID)
+	require.Equal(t, "verifier-1", ownerName(t, s, first.ID))
+	require.Equal(t, StatusRunning, memberStatus(s, "implementer-1"), "the owner is still in the turn that completed")
+
+	act(t, s, "verifier-1", first.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = "TestX fails" })
+	require.Equal(t, TaskInProgress, taskByID(t, s, task.ID).Status)
+	require.Equal(t, StatusRunning, memberStatus(s, "implementer-1"))
+
+	runner.finish("implementer-1")
+	require.Eventually(t, func() bool {
+		return strings.Contains(runner.lastPrompt(), "TestX fails")
+	}, time.Second, 10*time.Millisecond, "the owner is resumed with the failure notes")
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskInProgress, got.Status, "the resumed turn owns the task")
+	require.Equal(t, 1, got.Attempts)
+	require.Equal(t, 1, checksFor(t, s, task.ID), "no second check before the owner reads the verdict")
+	require.NotContains(t, runner.memberNames(), "verifier-2", "no second verifier is started")
+	require.Equal(t, 3, runner.promptCount(), "the resume is the only new turn")
+	require.Equal(t, []string{"internal/x"}, s.ClaimedWriteScopes("implementer-1"), "the owner keeps its scopes")
+
+	// The resumed owner fixes the work, completes again, and a fresh check
+	// decides the new revision.
+	act(t, s, "implementer-1", task.ID, "complete", nil)
+	second := verificationTaskFor(t, s, task.ID)
+	require.NotEqual(t, first.ID, second.ID)
+	require.Equal(t, 2, checksFor(t, s, task.ID))
+	act(t, s, ownerName(t, s, second.ID), second.ID, "pass", nil)
+	require.Equal(t, TaskCompleted, taskByID(t, s, task.ID).Status)
+}
+
+// failOnWakeRunner starts every turn until failFor names a member, then
+// refuses that member's starts, the way a model the config no longer serves
+// does.
+type failOnWakeRunner struct {
+	*fakeRunner
+	mu      sync.Mutex
+	name    string
+	failing bool
+}
+
+func (r *failOnWakeRunner) Start(ctx context.Context, member Member, prompt string) (Run, error) {
+	r.mu.Lock()
+	failing := r.failing && member.Name == r.name
+	r.mu.Unlock()
+	if failing {
+		return nil, errors.New("model unavailable")
+	}
+	return r.fakeRunner.Start(ctx, member, prompt)
+}
+
+func (r *failOnWakeRunner) failFor(name string) {
+	r.mu.Lock()
+	r.name, r.failing = name, true
+	r.mu.Unlock()
+}
+
+// TestFailedWakeAfterFailNoticesTheLead pins the stranded case: a fail
+// verdict hands the task back to an idle owner, but the start that would
+// resume it is refused. The task stays in progress with nobody running it, so
+// the Lead gets a notice naming the task and the error instead of a Warn log
+// nobody reads.
+func TestFailedWakeAfterFailNoticesTheLead(t *testing.T) {
+	t.Parallel()
+	runner := &failOnWakeRunner{fakeRunner: newFakeRunner()}
+	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{Autostart: func() bool { return false }}, runner)
+	require.NoError(t, err)
+	t.Cleanup(s.Shutdown)
+
+	_, err = s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "imp", Description: "Implementer", Prompt: "Work.", RoleName: "implementer", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	runner.finish("imp")
+	require.Eventually(t, func() bool { return memberStatus(s, "imp") == StatusInactive }, time.Second, 10*time.Millisecond)
+
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	act(t, s, "imp", task.ID, "claim", nil)
+	act(t, s, "imp", task.ID, "complete", nil)
+	check := verificationTaskFor(t, s, task.ID)
+	_, err = s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "ver", Description: "Verifier", Prompt: "Check.", RoleName: "verifier", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	act(t, s, "ver", check.ID, "claim", nil)
+
+	runner.failFor("imp")
+	act(t, s, "ver", check.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = "still broken" })
+
+	require.Equal(t, TaskInProgress, taskByID(t, s, task.ID).Status, "the task stays with its owner")
+	notes := leadNotices(t, s, pipelineSession)
+	require.Len(t, notes, 1)
+	require.Contains(t, notes[0], task.ID)
+	require.Contains(t, notes[0], "model unavailable")
+	require.Contains(t, notes[0], "edit it, or reassign it with no owner")
+}
+
 func TestThirdFailEscalatesInReview(t *testing.T) {
 	t.Parallel()
 	s, _ := newPipelineService(t, Config{})
@@ -140,6 +267,7 @@ func TestThirdFailEscalatesInReview(t *testing.T) {
 	notes := leadNotices(t, s, pipelineSession)
 	require.Len(t, notes, 1)
 	require.Contains(t, notes[0], "failed verification 3 times")
+	require.Contains(t, notes[0], "To recover, reopen it, complete it to accept it as is, or delete it.")
 	require.Contains(t, notes[0], "attempt 3 broke")
 
 	act(t, s, leadName, task.ID, "reopen", nil)
@@ -191,6 +319,8 @@ func TestNoVerdictReleasesAndEscalates(t *testing.T) {
 	require.True(t, taskByID(t, s, check.ID).Escalated)
 	require.Equal(t, TaskInReview, taskByID(t, s, task.ID).Status, "no verdict never passes the work")
 	require.Contains(t, leadNotices(t, s, pipelineSession)[0], "got no verdict")
+	require.Contains(t, leadNotices(t, s, pipelineSession)[0],
+		"It is escalated; to continue, edit it, or reassign it with no owner.")
 }
 
 func TestSettleSendsVerifiedWorkToReview(t *testing.T) {
@@ -553,6 +683,55 @@ func TestOnlyTheLeadReopensAnInReviewTask(t *testing.T) {
 // requeue opens: when the turn that was starting settles between the start's
 // check and the requeue write, the mail is delivered at once instead of
 // waiting for a wake that already ran.
+// TestLeadCompletesInReviewWork pins that the Lead can accept escalated work
+// as is: completing an in-review task finishes it, deletes its open check,
+// and readies its dependents. A teammate cannot complete in-review work.
+func TestLeadCompletesInReviewWork(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	a := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	b := createTask(t, s, CreateTaskRequest{Subject: "Next", Description: "d", Role: "researcher", BlockedBy: []string{a.ID}})
+	_, err := s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "imp", Description: "Implementer", Prompt: "Work.", RoleName: "implementer", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	_, err = s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "ver", Description: "Verifier", Prompt: "Check.", RoleName: "verifier", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+
+	act(t, s, "imp", a.ID, "claim", nil)
+	act(t, s, "imp", a.ID, "complete", nil)
+	check := verificationTaskFor(t, s, a.ID)
+	act(t, s, "ver", check.ID, "claim", nil)
+	require.Equal(t, TaskInProgress, taskByID(t, s, check.ID).Status)
+
+	// The escalated case is three failed verifications, which leaves the
+	// original in review with its check open.
+	s.mu.Lock()
+	for i := range s.state.Tasks {
+		if s.state.Tasks[i].ID == a.ID {
+			s.state.Tasks[i].Escalated = true
+			s.state.Tasks[i].Attempts = maxTaskAttempts
+		}
+	}
+	s.mu.Unlock()
+
+	require.Equal(t, CodeLeadRequired, ErrorCode(actErr(s, "imp", a.ID, "complete", nil)),
+		"a teammate cannot accept in-review work")
+	require.Equal(t, TaskInReview, taskByID(t, s, a.ID).Status)
+
+	view := act(t, s, leadName, a.ID, "complete", nil)
+	require.Equal(t, TaskCompleted, view.Status)
+	require.Equal(t, TaskDeleted, taskByID(t, s, check.ID).Status, "the open check goes with the accepted work")
+	require.Equal(t, CodeTaskDeleted, ErrorCode(actErr(s, "ver", check.ID, "fail",
+		func(r *UpdateTaskRequest) { r.Notes = "late" })), "a stale verdict is refused")
+
+	dependent, err := s.GetTask(leadName, pipelineSession, b.ID)
+	require.NoError(t, err)
+	require.True(t, dependent.Ready, "the dependent is ready once the Lead accepts the blocker")
+}
+
 func TestRequeueWakesMailWhenTheStartSettledInTheWindow(t *testing.T) {
 	t.Parallel()
 	s, runner := newPipelineService(t, Config{Autostart: func() bool { return false }})
