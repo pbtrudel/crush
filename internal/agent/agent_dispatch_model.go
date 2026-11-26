@@ -223,9 +223,25 @@ func (c *coordinator) sendOnNewModel(ctx context.Context, entry *dispatchedAgent
 		return fantasy.NewTextErrorResponse(running)
 	}
 	override := AgentDispatchParams{Model: params.Model, Provider: params.Provider, Reasoning: params.Reasoning}
-	agent, sel, _, refusal := c.overrideDispatchAgent(ctx, entry.Access, override, parentModel)
-	if refusal != "" {
-		return fantasy.NewTextErrorResponse(refusal)
+	var agent SessionAgent
+	var sel config.SelectedModel
+	if entry.Role != "" {
+		// A role subagent is rebuilt in its role, so a model switch never
+		// brings it back ungated.
+		role, refusal := resolveRole(c.cfg.Config(), entry.Role)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("role %q no longer exists", entry.Role))
+		}
+		agent, sel, _, refusal = c.roleTaskAgent(ctx, role, entry.Access, override, parentModel)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal)
+		}
+	} else {
+		var refusal string
+		agent, sel, _, refusal = c.overrideDispatchAgent(ctx, entry.Access, override, parentModel)
+		if refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal)
+		}
 	}
 	if !c.reopen(entry, params.Message, agent) {
 		return fantasy.NewTextErrorResponse(running)

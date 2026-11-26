@@ -2804,6 +2804,9 @@ type subAgentParams struct {
 	ToolCallID     string
 	Prompt         string
 	SessionTitle   string
+	// Role names the role the subagent runs in, so the background registry
+	// entry keeps it for agent_send and a restart. Empty for no role.
+	Role string
 	// Channel is the channel the parent session runs in. A teammate inherits
 	// it so filterToolsForChannel keeps the same channel-scoped MCP tools in
 	// its palette as the Lead's; an empty channel would drop them and change

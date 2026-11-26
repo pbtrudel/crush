@@ -151,6 +151,9 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 				if meta.Role != "" {
 					record.Role = meta.Role
 				}
+				if meta.Access != "" {
+					record.Access = meta.Access
+				}
 				if name := strings.TrimSpace(meta.Label); name != "" && name != record.Label {
 					records.unlink(record)
 					records.link(record, name)
@@ -185,6 +188,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 					MessageID: bgCallMsg[result.ToolCallID],
 					CallID:    result.ToolCallID,
 					Tool:      result.Name,
+					Role:      strings.TrimSpace(meta.Role),
 					Open:      true,
 				}, label)
 			}
@@ -340,7 +344,7 @@ func (c *coordinator) summarizeDispatch(parentSessionID string, record *dispatch
 	sum := AgentStatusSummary{
 		Label:     record.Label,
 		State:     SubagentFinished,
-		Access:    record.Access,
+		Access:    c.recordEffectiveAccess(record),
 		ToolCalls: activity.toolCalls,
 		Cost:      activity.cost,
 	}
@@ -354,6 +358,9 @@ func (c *coordinator) summarizeDispatch(parentSessionID string, record *dispatch
 			sum.State, sum.Detail = SubagentInterrupted, "Crush exited"
 		}
 		return sum
+	}
+	if entry.Access != "" {
+		sum.Access = entry.Access
 	}
 	snap := entry.snapshot()
 	sum.State = snap.State.reported()
@@ -566,4 +573,21 @@ func recordAccess(params AgentDispatchParams) string {
 		return params.Access
 	}
 	return accessOrRead(params.Access)
+}
+
+// recordEffectiveAccess resolves what a record's access means now. A role
+// dispatch runs on the variant its role picks, so a record that still holds
+// the raw request, or no access at all, reports the effective one.
+func (c *coordinator) recordEffectiveAccess(record *dispatchRecord) string {
+	if record.Role == "" {
+		return record.Access
+	}
+	role, refusal := resolveRole(c.cfg.Config(), record.Role)
+	if refusal != "" {
+		return record.Access
+	}
+	if access, refusal := roleAccess(role, record.Access); refusal == "" {
+		return access
+	}
+	return record.Access
 }

@@ -173,9 +173,13 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 				return fantasy.NewTextErrorResponse(refusal), nil
 			}
 			prompt := params.Prompt
-			if name := cmp.Or(strings.TrimSpace(params.Role), roleNameIfRole(c.cfg.Config(), params.Agent)); name != "" {
-				if role, refusal := resolveRole(c.cfg.Config(), name); refusal == "" {
+			access := params.Access
+			roleName := cmp.Or(strings.TrimSpace(params.Role), roleNameIfRole(c.cfg.Config(), params.Agent))
+			if roleName != "" {
+				if role, refusal := resolveRole(c.cfg.Config(), roleName); refusal == "" {
+					roleName = role.Name
 					prompt = roles.Block(*role) + params.Prompt
+					access, _ = roleAccess(role, params.Access)
 				}
 			}
 
@@ -189,13 +193,14 @@ func (c *coordinator) agentTool(ctx context.Context, parentAgentID string) (fant
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
 			}
 
-			return c.runSubAgentMaybeBackground(ctx, AgentToolName, params.Access, subAgentParams{
+			return c.runSubAgentMaybeBackground(ctx, AgentToolName, access, subAgentParams{
 				Agent:          agent,
 				SessionID:      sessionID,
 				AgentMessageID: agentMessageID,
 				ToolCallID:     call.ID,
 				Prompt:         prompt,
 				SessionTitle:   "New Agent Session",
+				Role:           roleName,
 			})
 		},
 	), nil

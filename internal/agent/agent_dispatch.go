@@ -103,6 +103,9 @@ type AgentDispatchResponseMetadata struct {
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Role      string `json:"role,omitempty"`
+	// Access is the effective access a role dispatch ran on, so a resume
+	// and agent_status do not re-derive it from the raw request.
+	Access string `json:"access,omitempty"`
 	// RunModel is provider/model for display; rehydration ignores it.
 	RunModel string `json:"run_model,omitempty"`
 }
@@ -176,6 +179,10 @@ type dispatchedAgent struct {
 	SessionID       string
 	ParentSessionID string
 	Access          string
+	// Role names the role this subagent runs in, or "" for one without a
+	// role. A rebuild of its agent resolves the role again, so it never
+	// comes back ungated.
+	Role string
 	// agent is the SessionAgent instance actually running this subagent.
 	// Busy state and the message queue live on that instance, not on the
 	// coordinator's main agent, so a message meant for a subagent has to
@@ -219,10 +226,11 @@ type runOutcome struct {
 
 // newDispatchedAgent returns an entry for a subagent that is not running.
 // Callers start it with claim.
-func newDispatchedAgent(label, access, sessionID, parentSessionID string, agent SessionAgent) *dispatchedAgent {
+func newDispatchedAgent(label, access, role, sessionID, parentSessionID string, agent SessionAgent) *dispatchedAgent {
 	return &dispatchedAgent{
 		Label:           label,
 		Access:          access,
+		Role:            role,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		agent:           agent,
@@ -440,6 +448,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				agent       SessionAgent
 				sel         config.SelectedModel
 				hasOverride bool
+				roleName    string
 			)
 			if strings.TrimSpace(params.Role) != "" {
 				role, refusal := resolveRole(c.cfg.Config(), params.Role)
@@ -454,6 +463,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 					return fantasy.NewTextErrorResponse(refusal), nil
 				}
 				access, _ = roleAccess(role, params.Access)
+				roleName = role.Name
 				prompt = roles.Block(*role) + params.Prompt
 			} else {
 				var refusal string
@@ -503,6 +513,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			entry := newDispatchedAgent(
 				label,
 				access,
+				roleName,
 				c.sessions.CreateAgentToolSessionID(agentMessageID, toolCallID),
 				parentSessionID,
 				agent,
@@ -530,7 +541,12 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			if hasOverride {
 				meta.Model, meta.Provider, meta.Reasoning = overrideRecord(params, sel)
 			}
-			meta.Role = strings.TrimSpace(params.Role)
+			meta.Role = roleName
+			if roleName != "" {
+				// The transcript keeps the effective access, so a
+				// resume and agent_status never see the raw request.
+				meta.Access = access
+			}
 			return fantasy.WithResponseMetadata(
 				fantasy.NewTextResponse(fmt.Sprintf("Started subagent %q.", label)+reportArrivesOnItsOwn),
 				meta,
@@ -1057,6 +1073,11 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		if refusal != "" {
 			return nil, fmt.Errorf("subagent %q cannot be resumed: role %q no longer exists", label, record.Role)
 		}
+		// The record keeps the effective access, so the entry, agent_send
+		// and agent_status all see the variant the role picks now.
+		if access, refusal := roleAccess(role, record.Access); refusal == "" {
+			record.Access = access
+		}
 		params := AgentDispatchParams{Model: record.Model, Provider: record.Provider, Reasoning: record.Reasoning}
 		agent, _, _, refusal := c.roleTaskAgent(ctx, role, record.Access, params, c.mainModel())
 		if refusal != "" {
@@ -1115,7 +1136,7 @@ func (c *coordinator) reopenDispatched(ctx context.Context, parentSessionID, lab
 		return nil, err
 	}
 
-	entry := newDispatchedAgent(label, record.Access, sessionID, parentSessionID, agent)
+	entry := newDispatchedAgent(label, record.Access, record.Role, sessionID, parentSessionID, agent)
 	// Seed the roll-up with what the child has already cost. The parent was
 	// billed for all of it during the original run, so starting from zero
 	// would bill the whole total a second time.

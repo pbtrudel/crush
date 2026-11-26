@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 
+	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/roles"
 )
@@ -94,12 +99,12 @@ func TestResolveAgentToolVariantPicksRole(t *testing.T) {
 }
 
 // TestDispatchHistoryRecordsRole pins that a resume finds the role and the
-// access the role dispatch was asked for.
+// effective access the role dispatch ran on.
 func TestDispatchHistoryRecordsRole(t *testing.T) {
 	t.Parallel()
 	input, err := json.Marshal(AgentDispatchParams{Prompt: "do", Label: "rev", Role: "reviewer"})
 	require.NoError(t, err)
-	meta, err := json.Marshal(AgentDispatchResponseMetadata{Label: "rev", Role: "reviewer"})
+	meta, err := json.Marshal(AgentDispatchResponseMetadata{Label: "rev", Role: "reviewer", Access: accessRead})
 	require.NoError(t, err)
 	records := dispatchHistory([]message.Message{
 		{ID: "m1", Role: message.Assistant, Parts: []message.ContentPart{
@@ -112,9 +117,224 @@ func TestDispatchHistoryRecordsRole(t *testing.T) {
 	record := records.byLabel["rev"]
 	require.NotNil(t, record)
 	require.Equal(t, "reviewer", record.Role)
-	require.Empty(t, record.Access, "a role dispatch keeps its access as asked")
+	require.Equal(t, accessRead, record.Access, "the result records the effective access")
 
+	// Until a result lands the record keeps the raw request, which the role
+	// branch of rehydration resolves again.
 	require.Empty(t, recordAccess(AgentDispatchParams{Role: "reviewer"}))
 	require.Equal(t, accessWrite, recordAccess(AgentDispatchParams{Role: "implementer", Access: accessWrite}))
 	require.Equal(t, accessRead, recordAccess(AgentDispatchParams{}))
+}
+
+// assertGatedRole checks that an agent runs in role and that every tool it
+// carries goes through the role gate.
+func assertGatedRole(t *testing.T, agent SessionAgent, role string) {
+	t.Helper()
+	sa, ok := agent.(*sessionAgent)
+	require.True(t, ok, "expected a *sessionAgent")
+	require.NotNil(t, sa.role)
+	require.Equal(t, role, sa.role.Name)
+	got := sa.tools.Copy()
+	require.NotEmpty(t, got)
+	for _, tool := range got {
+		_, gated := tool.(*roleGatedTool)
+		require.True(t, gated, "tool %q must be gated", tool.Info().Name)
+	}
+}
+
+// TestRoleDispatchRehydratesGated pins that a role dispatch rebuilt after a
+// restart comes back in its role, not as a plain task subagent.
+func TestRoleDispatchRehydratesGated(t *testing.T) {
+	t.Parallel()
+	c, env := newOverrideTestCoordinator(t)
+	ctx := t.Context()
+
+	parent, err := env.sessions.Create(ctx, "parent")
+	require.NoError(t, err)
+	input, err := json.Marshal(AgentDispatchParams{Prompt: "review", Label: "rev", Role: "reviewer"})
+	require.NoError(t, err)
+	meta, err := json.Marshal(AgentDispatchResponseMetadata{
+		Label:  "rev",
+		Role:   "reviewer",
+		Access: accessRead,
+	})
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "c1", Name: AgentDispatchToolName, Input: string(input), Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Tool,
+		Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: "c1", Name: AgentDispatchToolName, Metadata: string(meta)},
+		},
+	})
+	require.NoError(t, err)
+	childID := env.sessions.CreateAgentToolSessionID(assistant.ID, "c1")
+	_, err = env.sessions.CreateTaskSession(ctx, childID, parent.ID, "Subagent")
+	require.NoError(t, err)
+
+	entry, err := c.rehydrateDispatch(ctx, parent.ID, "rev")
+	require.NoError(t, err)
+	require.Equal(t, accessRead, entry.Access)
+	require.Equal(t, "reviewer", entry.Role)
+	assertGatedRole(t, entry.agent, "reviewer")
+}
+
+// TestAgentSendModelSwitchKeepsRole pins that moving a role subagent to
+// another model rebuilds it inside its role, never ungated.
+func TestAgentSendModelSwitchKeepsRole(t *testing.T) {
+	t.Parallel()
+	c, env := newOverrideTestCoordinator(t)
+	ctx := t.Context()
+	agents, err := c.taskAgents(ctx, false)
+	require.NoError(t, err)
+	dispatch, err := c.agentDispatchTool(ctx, config.AgentCoder, agents[accessRead].Model)
+	require.NoError(t, err)
+	send := c.agentSendTool(agents[accessRead].Model)
+
+	parent, err := env.sessions.Create(ctx, "parent")
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "dispatching"}},
+	})
+	require.NoError(t, err)
+	callCtx := context.WithValue(ctx, tools.SessionIDContextKey, parent.ID)
+	callCtx = context.WithValue(callCtx, tools.MessageIDContextKey, assistant.ID)
+
+	resp, err := dispatch.Run(callCtx, fantasy.ToolCall{ID: "d1", Name: AgentDispatchToolName, Input: `{"prompt":"do","label":"rev","role":"reviewer"}`})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	var dmeta AgentDispatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &dmeta))
+	require.Equal(t, "reviewer", dmeta.Role)
+	require.Equal(t, accessRead, dmeta.Access, "the result records the effective access")
+
+	entry, ok := c.dispatched.Get(dispatchKey(parent.ID, dmeta.Label))
+	require.True(t, ok)
+	require.Equal(t, "reviewer", entry.Role)
+
+	// Let the first run settle before the switch, so the test does not
+	// depend on how fast the closed provider fails.
+	entry.stop("test done")
+	require.True(t, entry.awaitSettled(10*time.Second))
+
+	resp, err = send.Run(callCtx, fantasy.ToolCall{
+		ID:    "s1",
+		Name:  AgentSendToolName,
+		Input: `{"label":"` + dmeta.Label + `","message":"carry on","model":"other-model","provider":"other"}`,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	entry, ok = c.dispatched.Get(dispatchKey(parent.ID, dmeta.Label))
+	require.True(t, ok)
+	require.Equal(t, "other-model", entry.runner().Model().ModelCfg.Model)
+	assertGatedRole(t, entry.runner(), "reviewer")
+
+	entry.stop("test done")
+	require.True(t, entry.awaitSettled(10*time.Second))
+}
+
+// TestDispatchHistoryBackgroundedRoleCall pins that a backgrounded agent-tool
+// role call keeps its role and effective access in the record.
+func TestDispatchHistoryBackgroundedRoleCall(t *testing.T) {
+	t.Parallel()
+	bgMeta, err := json.Marshal(AgentBackgroundMetadata{
+		Label:        "agent-1",
+		Backgrounded: true,
+		Access:       accessWrite,
+		Role:         "implementer",
+		Task:         "do",
+	})
+	require.NoError(t, err)
+	records := dispatchHistory([]message.Message{
+		{ID: "m1", Role: message.Assistant, Parts: []message.ContentPart{
+			message.ToolCall{ID: "c1", Name: AgentToolName, Input: `{"prompt":"do","role":"implementer"}`, Finished: true},
+		}},
+		{ID: "t1", Role: message.Tool, Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: "c1", Name: AgentToolName, Metadata: string(bgMeta)},
+		}},
+	})
+	record := records.byLabel["agent-1"]
+	require.NotNil(t, record)
+	require.Equal(t, "implementer", record.Role)
+	require.Equal(t, accessWrite, record.Access, "the background result records the effective access")
+	require.Equal(t, "m1", record.MessageID)
+	require.Equal(t, "c1", record.CallID)
+}
+
+// TestBackgroundedRoleCallRehydratesGated pins that a role call moved to the
+// background comes back gated after a restart.
+func TestBackgroundedRoleCallRehydratesGated(t *testing.T) {
+	t.Parallel()
+	c, env := newOverrideTestCoordinator(t)
+	ctx := t.Context()
+
+	parent, err := env.sessions.Create(ctx, "parent")
+	require.NoError(t, err)
+	bgMeta, err := json.Marshal(AgentBackgroundMetadata{
+		Label:        "agent-1",
+		Backgrounded: true,
+		Access:       accessWrite,
+		Role:         "implementer",
+		Task:         "do",
+	})
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "c1", Name: AgentToolName, Input: `{"prompt":"do","role":"implementer"}`, Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Tool,
+		Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: "c1", Name: AgentToolName, Metadata: string(bgMeta)},
+		},
+	})
+	require.NoError(t, err)
+	childID := env.sessions.CreateAgentToolSessionID(assistant.ID, "c1")
+	_, err = env.sessions.CreateTaskSession(ctx, childID, parent.ID, "Subagent")
+	require.NoError(t, err)
+
+	entry, err := c.rehydrateDispatch(ctx, parent.ID, "agent-1")
+	require.NoError(t, err)
+	require.Equal(t, accessWrite, entry.Access)
+	require.Equal(t, "implementer", entry.Role)
+	assertGatedRole(t, entry.agent, "implementer")
+}
+
+// TestAgentStatusShowsEffectiveRoleAccess pins that agent_status reports the
+// access a role dispatch runs on, even when the call asked for none and its
+// result never landed.
+func TestAgentStatusShowsEffectiveRoleAccess(t *testing.T) {
+	t.Parallel()
+	c, env := newOverrideTestCoordinator(t)
+	ctx := t.Context()
+
+	parent, err := env.sessions.Create(ctx, "parent")
+	require.NoError(t, err)
+	input, err := json.Marshal(AgentDispatchParams{Prompt: "do", Label: "impl", Role: "implementer"})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, parent.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "c1", Name: AgentDispatchToolName, Input: string(input), Finished: true},
+		},
+	})
+	require.NoError(t, err)
+
+	callCtx := context.WithValue(ctx, tools.SessionIDContextKey, parent.ID)
+	resp, err := c.agentStatusTool().Run(callCtx, fantasy.ToolCall{ID: "s1", Name: AgentStatusToolName, Input: `{"label":"impl"}`})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	var meta AgentStatusResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Len(t, meta.Agents, 1)
+	require.Equal(t, accessWrite, meta.Agents[0].Access, "an implementer runs write even when the call asked for no access")
 }
