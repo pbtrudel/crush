@@ -105,6 +105,26 @@ func (s *Service) closeChecksLocked(originalID string, closeStarted bool) {
 	}
 }
 
+// verifiesOwnWorkLocked reports whether task is a verification task for work
+// member owns. A teammate must not check its own work, so such a claim or
+// verdict is refused and the Lead decides instead. An original outside the
+// caller's scope decides nothing. Callers must hold s.mu.
+func (s *Service) verifiesOwnWorkLocked(scope map[string]bool, task Task, member Member) bool {
+	if task.Verifies == "" {
+		return false
+	}
+	_, original, ok := s.taskIndexLocked(scope, task.Verifies)
+	return ok && original.OwnerID == member.ID
+}
+
+// checkWantedLocked reports whether the verification task check still has a
+// task in review to decide. A check whose original moved on is stale. Callers
+// must hold s.mu.
+func (s *Service) checkWantedLocked(check Task) bool {
+	original, ok := findTask(s.state, check.Verifies)
+	return ok && original.Status == TaskInReview
+}
+
 // truncateRunes cuts s to at most n runes.
 func truncateRunes(s string, n int) string {
 	runes := []rune(s)

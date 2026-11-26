@@ -173,8 +173,16 @@ func (s *Service) planDispatchLocked(root string) (starts []dispatchStart, leads
 }
 
 // dispatchable reports whether the dispatcher may start task: pending,
-// ready, unowned, naming a role, not escalated, and owned by a session.
+// ready, unowned, naming a role, not escalated, and owned by a session. A
+// verification task also needs its original still in review, because a check
+// of work the board moved on from has nothing left to decide.
 func dispatchable(state State, task Task) bool {
+	if task.Verifies != "" {
+		original, ok := findTask(state, task.Verifies)
+		if !ok || original.Status != TaskInReview {
+			return false
+		}
+	}
 	return task.Role != "" &&
 		task.Status == TaskPending &&
 		task.OwnerID == "" &&

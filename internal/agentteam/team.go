@@ -1090,8 +1090,7 @@ func (s *Service) beginRun(ctx context.Context, member Member, prompt string, re
 	if s.starting[member.Name] {
 		view := s.viewLocked(s.stateMemberLocked(member.Name))
 		s.mu.Unlock()
-		s.requeueMail(requeue)
-		return view, nil
+		return view, s.requeueMail(ctx, member, requeue)
 	}
 	s.starting[member.Name] = true
 	s.mu.Unlock()
@@ -1100,10 +1099,12 @@ func (s *Service) beginRun(ctx context.Context, member Member, prompt string, re
 
 // requeueMail puts mail no turn will read back in the inbox, so the turn
 // already starting for the member delivers it at its next step or when it
-// settles. Callers must not hold s.mu.
-func (s *Service) requeueMail(messages []Message) {
+// settles. The start it lost to can end between that check and this write,
+// which would leave the mail for a wake that already ran, so the member is
+// woken here if it is idle again. Callers must not hold s.mu.
+func (s *Service) requeueMail(ctx context.Context, member Member, messages []Message) error {
 	if len(messages) == 0 {
-		return
+		return nil
 	}
 	_ = s.write(mustApply, func() (bool, error) {
 		changed := false
@@ -1121,6 +1122,7 @@ func (s *Service) requeueMail(messages []Message) {
 		}
 		return changed, nil
 	})
+	return s.wakeIfIdle(ctx, member.Name)
 }
 
 // launch runs one turn for a member the caller already marked as starting,
@@ -1330,6 +1332,14 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error) (settled, comp
 		}
 		task.Revision++
 		switch {
+		case task.Verifies != "" && !s.checkWantedLocked(*task):
+			// Its task left review while the check was being reviewed, so
+			// there is nothing left to decide. Released, it would bring a
+			// verifier back for work the board moved on from, and escalate
+			// against a verdict nobody needs.
+			task.Status = TaskDeleted
+			task.OwnerID = ""
+			settled = append(settled, task.ID+" deleted, its task left review")
 		case runErr != nil:
 			task.Status = TaskPending
 			task.OwnerID = ""
@@ -2222,9 +2232,11 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		hook(applied.parentSessionID, applied.completedSubject)
 	}
 	wakeLeads(leadHook, applied.leadSessions)
+	// Only the verdict path fills wake, so this is the failed-verification
+	// wake; the log stays generic in case another path ever does.
 	for _, name := range applied.wake {
 		if err := s.wakeIfIdle(context.Background(), name); err != nil {
-			slog.Warn("Could not wake a teammate after a failed verification", "member", name, "error", err)
+			slog.Warn("Could not wake a teammate", "member", name, "error", err)
 		}
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
@@ -2279,6 +2291,10 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		if current.Status != TaskPending || !taskReady(s.state, current) {
 			return taskUpdate{}, newError(CodeTaskBlocked, "team task %q is not ready to claim", current.ID)
+		}
+		if !lead && s.verifiesOwnWorkLocked(scope, current, member) {
+			return taskUpdate{}, newError(CodeTaskUnauthorized,
+				"an agent cannot claim the verification task of its own work")
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = member.ID
@@ -2374,6 +2390,10 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if !owner {
 			return taskUpdate{}, newError(CodeTaskUnauthorized, "only the owner of verification task %q can record its verdict", current.ID)
 		}
+		if !lead && s.verifiesOwnWorkLocked(scope, current, member) {
+			return taskUpdate{}, newError(CodeTaskUnauthorized,
+				"an agent cannot record a verdict on the verification task of its own work")
+		}
 		if current.Status != TaskInProgress {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition, "a verdict needs the verification task in progress")
 		}
@@ -2389,6 +2409,12 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if current.Verifies != "" {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition,
 				"a verification task records one verdict and cannot reopen")
+		}
+		// An in-review task is the one a verifier is deciding, so only the
+		// Lead takes it back: an owner reopening its own escalated work
+		// would restart the review loop.
+		if current.Status == TaskInReview && !lead {
+			return taskUpdate{}, newError(CodeLeadRequired, "only the Team Lead can reopen an in-review task")
 		}
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err

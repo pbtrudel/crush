@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -458,4 +459,158 @@ func TestAVerdictIsFinal(t *testing.T) {
 	require.Equal(t, CodeTaskInvalidTransition, ErrorCode(actErr(s, "verifier-1", check.ID, "reopen", nil)))
 	require.Equal(t, CodeTaskInvalidTransition, ErrorCode(actErr(s, leadName, check.ID, "reopen", nil)),
 		"even the Lead cannot reuse a verdict")
+}
+
+// TestAnImplementerCannotVerifyItsOwnWork pins that a teammate cannot check
+// its own work: neither the claim nor the verdict is allowed, so the original
+// waits for an independent verifier.
+func TestAnImplementerCannotVerifyItsOwnWork(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	_, err := s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "imp", Description: "Implementer", Prompt: "Work.", RoleName: "implementer", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	a := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	b := createTask(t, s, CreateTaskRequest{Subject: "Next", Description: "d", BlockedBy: []string{a.ID}})
+
+	act(t, s, "imp", a.ID, "claim", nil)
+	act(t, s, "imp", a.ID, "complete", nil)
+	check := verificationTaskFor(t, s, a.ID)
+	require.Equal(t, TaskPending, check.Status)
+
+	require.Equal(t, CodeTaskUnauthorized, ErrorCode(actErr(s, "imp", check.ID, "claim", nil)),
+		"an implementer cannot claim the check of its own task")
+
+	// The Lead forces the check onto the implementer.
+	act(t, s, leadName, check.ID, "reassign", func(r *UpdateTaskRequest) { r.Owner = "imp" })
+	require.Equal(t, CodeTaskUnauthorized, ErrorCode(actErr(s, "imp", check.ID, "pass", nil)),
+		"an implementer cannot pass its own work")
+	require.Equal(t, CodeTaskUnauthorized, ErrorCode(actErr(s, "imp", check.ID, "fail",
+		func(r *UpdateTaskRequest) { r.Notes = "looks fine to me" })),
+		"an implementer cannot fail its own work either")
+
+	require.Equal(t, TaskInReview, taskByID(t, s, a.ID).Status, "the original waits for a verdict")
+	view, err := s.GetTask(leadName, pipelineSession, b.ID)
+	require.NoError(t, err)
+	require.False(t, view.Ready, "the dependent waits for an independent verdict")
+}
+
+// TestACheckOfAReopenedTaskIsDeletedNotRestarted pins that a check whose
+// original left review is not put back on the board: no verifier is started
+// again and no false no-verdict escalation reaches the Lead.
+func TestACheckOfAReopenedTaskIsDeletedNotRestarted(t *testing.T) {
+	t.Parallel()
+	s, runner := newPipelineService(t, Config{})
+	a := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	act(t, s, "implementer-1", a.ID, "complete", nil)
+	check := verificationTaskFor(t, s, a.ID)
+	require.Equal(t, TaskInProgress, check.Status)
+
+	act(t, s, leadName, a.ID, "reopen", nil)
+	require.Equal(t, TaskInProgress, taskByID(t, s, check.ID).Status, "the started check stays with its verifier")
+	starts := runner.memberNames()
+
+	runner.finish("verifier-1")
+	require.Eventually(t, func() bool { return taskByID(t, s, check.ID).Status == TaskDeleted },
+		time.Second, 10*time.Millisecond, "a check of a task that left review is deleted")
+	got := taskByID(t, s, check.ID)
+	require.Zero(t, got.Attempts, "a check nobody needs is not charged an attempt")
+	require.False(t, got.Escalated)
+	require.Equal(t, starts, runner.memberNames(), "no verifier is started again")
+	require.Empty(t, leadNotices(t, s, pipelineSession), "the Lead is not told about a check nobody needs")
+}
+
+// TestOnlyTheLeadReopensAnInReviewTask pins that the owner of an escalated
+// in-review task cannot reopen it to restart the review loop.
+func TestOnlyTheLeadReopensAnInReviewTask(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{})
+	a := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	act(t, s, "implementer-1", a.ID, "complete", nil)
+	s.mu.Lock()
+	for i := range s.state.Tasks {
+		if s.state.Tasks[i].ID == a.ID {
+			s.state.Tasks[i].Escalated = true
+			s.state.Tasks[i].Attempts = maxTaskAttempts
+		}
+	}
+	s.mu.Unlock()
+	before := taskByID(t, s, a.ID)
+	require.True(t, before.Escalated)
+
+	require.Equal(t, CodeLeadRequired, ErrorCode(actErr(s, "implementer-1", a.ID, "reopen", nil)),
+		"only the Lead reopens an in-review task")
+	require.Equal(t, before, taskByID(t, s, a.ID), "a refused reopen changes nothing")
+
+	view := act(t, s, leadName, a.ID, "reopen", nil)
+	require.Equal(t, TaskPending, view.Status)
+	require.False(t, view.Escalated)
+	require.Zero(t, view.Attempts)
+}
+
+// TestRequeueWakesMailWhenTheStartSettledInTheWindow pins the window a
+// requeue opens: when the turn that was starting settles between the start's
+// check and the requeue write, the mail is delivered at once instead of
+// waiting for a wake that already ran.
+func TestRequeueWakesMailWhenTheStartSettledInTheWindow(t *testing.T) {
+	t.Parallel()
+	s, runner := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	_, err := s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+		Name: "worker", Description: "d", Prompt: "Work.", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	runner.finish("worker")
+	require.Eventually(t, func() bool { return memberStatus(s, "worker") == StatusInactive }, time.Second, 10*time.Millisecond)
+	before := runner.promptCount()
+
+	require.NoError(t, s.write(mustApply, func() (bool, error) {
+		s.appendMessageLocked(leadName, "worker", "Try again.")
+		return true, nil
+	}))
+	pending := s.DrainInbox("worker", pipelineSession)
+	require.Len(t, pending, 1)
+
+	// The wake found the member starting, and that turn settles in the window
+	// before the requeue write lands.
+	s.mu.Lock()
+	s.starting["worker"] = true
+	s.mu.Unlock()
+	s.mu.Lock()
+	delete(s.starting, "worker")
+	s.mu.Unlock()
+
+	require.NoError(t, s.requeueMail(context.Background(), memberByID(t, s, "worker"), pending))
+	require.Equal(t, before+1, runner.promptCount(), "the mail is delivered at once")
+	require.Contains(t, runner.lastPrompt(), "Try again.")
+}
+
+// TestDispatchSkipsACheckOfATaskThatLeftReview pins that a pending check
+// whose original is not in review starts nobody, so no verifier is started on
+// work the board moved on from.
+func TestDispatchSkipsACheckOfATaskThatLeftReview(t *testing.T) {
+	t.Parallel()
+	var on atomic.Bool
+	s, runner := newPipelineService(t, Config{Autostart: on.Load})
+	a := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	act(t, s, leadName, a.ID, "claim", nil)
+	act(t, s, leadName, a.ID, "complete", nil)
+	check := verificationTaskFor(t, s, a.ID)
+	require.Equal(t, TaskPending, check.Status)
+
+	// The original leaves the board without the check being closed, the way
+	// an older Team file can hold it.
+	s.mu.Lock()
+	for i := range s.state.Tasks {
+		if s.state.Tasks[i].ID == a.ID {
+			s.state.Tasks[i].Status = TaskDeleted
+			s.state.Tasks[i].Revision++
+		}
+	}
+	s.mu.Unlock()
+
+	on.Store(true)
+	s.dispatch(context.Background(), pipelineSession)
+	require.Empty(t, runner.memberNames(), "a stale check starts nobody")
+	require.Equal(t, TaskPending, taskByID(t, s, check.ID).Status)
 }
