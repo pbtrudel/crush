@@ -51,6 +51,15 @@ func (h *hookedTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 	h.inner.SetProviderOptions(opts)
 }
 
+// MCP reports the MCP server of the wrapped tool, or "" for a built-in
+// tool, so the per-turn MCP filters see through the hook wrapper.
+func (h *hookedTool) MCP() string {
+	if mcpTool, ok := h.inner.(interface{ MCP() string }); ok {
+		return mcpTool.MCP()
+	}
+	return ""
+}
+
 func (h *hookedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	ev := hooks.Event{
 		Name:      hooks.EventPreToolUse,
