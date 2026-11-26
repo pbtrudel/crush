@@ -4033,9 +4033,15 @@ func (a *sessionAgent) filterDisabledMCPTools(ctx context.Context, toolList []fa
 	for _, name := range disabledServers {
 		disabled[name] = struct{}{}
 	}
-	filtered := make([]fantasy.AgentTool, 0, len(toolList))
-	for _, t := range toolList {
-		if mcpTool, ok := t.(*tools.Tool); ok {
+	return dropDisabledMCPTools(toolList, disabled)
+}
+
+// dropDisabledMCPTools removes every tool whose MCP server is in disabled.
+// A tool from a built-in reports no server and is always kept.
+func dropDisabledMCPTools(list []fantasy.AgentTool, disabled map[string]struct{}) []fantasy.AgentTool {
+	filtered := make([]fantasy.AgentTool, 0, len(list))
+	for _, t := range list {
+		if mcpTool, ok := t.(interface{ MCP() string }); ok {
 			if _, off := disabled[mcpTool.MCP()]; off {
 				continue
 			}

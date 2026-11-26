@@ -7,6 +7,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/roles"
 )
@@ -111,4 +112,71 @@ func TestRoleCatalog(t *testing.T) {
 	catalog := roleCatalog(cfg)
 	require.Contains(t, catalog, "\n\nRoles (pass one as `role`):\n- architect (builtin): ")
 	require.Equal(t, catalog, roleCatalog(cfg), "the catalog must be byte-stable")
+}
+
+// roleMCPTool is an MCP-backed tool the gate tests can identify by server.
+type roleMCPTool struct {
+	name   string
+	server string
+}
+
+func (t *roleMCPTool) Info() fantasy.ToolInfo { return fantasy.ToolInfo{Name: t.name} }
+
+func (*roleMCPTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	return fantasy.NewTextResponse("ok"), nil
+}
+
+func (*roleMCPTool) ProviderOptions() fantasy.ProviderOptions { return nil }
+
+func (*roleMCPTool) SetProviderOptions(fantasy.ProviderOptions) {}
+
+func (t *roleMCPTool) MCP() string { return t.server }
+
+func TestRoleGateReportsMCPIdentity(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	gated := gateToolsForRole(&roles.Role{Name: "researcher", Tools: []string{"mcp_*", "view"}}, []fantasy.AgentTool{
+		&roleMCPTool{name: "mcp_signal_send", server: "signal"},
+		roleRecordingTool("view", ran),
+	})
+	mcpTool, ok := gated[0].(interface{ MCP() string })
+	require.True(t, ok, "the gate must expose the wrapped tool's MCP server")
+	require.Equal(t, "signal", mcpTool.MCP())
+
+	builtin, ok := gated[1].(interface{ MCP() string })
+	require.True(t, ok)
+	require.Empty(t, builtin.MCP(), "a gated built-in reports no MCP server")
+}
+
+func TestRoleGateKeepsChannelFiltering(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	gated := gateToolsForRole(&roles.Role{Name: "researcher", Tools: []string{"mcp_*", "view"}}, []fantasy.AgentTool{
+		&roleMCPTool{name: "mcp_signal_send", server: "signal"},
+		&roleMCPTool{name: "mcp_switchboard_send", server: "switchboard"},
+		roleRecordingTool("view", ran),
+	})
+	states := map[string]mcp.ClientInfo{"signal": {Channel: true}, "switchboard": {Channel: true}}
+
+	// A switchboard turn sees its own server's tools plus the built-in.
+	filtered := filterToolsForChannel(gated, "switchboard", states)
+	require.Equal(t, []string{"mcp_switchboard_send", "view"}, toolNames(filtered))
+
+	// A local turn keeps every tool.
+	require.Len(t, filterToolsForChannel(gated, "", states), 3)
+}
+
+func TestRoleGateKeepsDisabledMCPFiltering(t *testing.T) {
+	t.Parallel()
+	ran := map[string]bool{}
+	gated := gateToolsForRole(&roles.Role{Name: "researcher", Tools: []string{"mcp_*", "view"}}, []fantasy.AgentTool{
+		&roleMCPTool{name: "mcp_off_send", server: "off"},
+		roleRecordingTool("view", ran),
+	})
+
+	filtered := dropDisabledMCPTools(gated, map[string]struct{}{"off": {}})
+	require.Equal(t, []string{"view"}, toolNames(filtered), "a disabled server's gated tool must be dropped")
+
+	filtered = dropDisabledMCPTools(gated, map[string]struct{}{"other": {}})
+	require.Equal(t, []string{"mcp_off_send", "view"}, toolNames(filtered))
 }

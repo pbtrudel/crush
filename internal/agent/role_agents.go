@@ -51,6 +51,15 @@ func gateToolsForRole(role *roles.Role, list []fantasy.AgentTool) []fantasy.Agen
 
 func (g *roleGatedTool) Info() fantasy.ToolInfo { return g.inner.Info() }
 
+// MCP reports the MCP server of the wrapped tool, or "" for a built-in
+// tool, so MCP filtering sees through the role gate.
+func (g *roleGatedTool) MCP() string {
+	if mcpTool, ok := g.inner.(interface{ MCP() string }); ok {
+		return mcpTool.MCP()
+	}
+	return ""
+}
+
 func (g *roleGatedTool) ProviderOptions() fantasy.ProviderOptions {
 	return g.inner.ProviderOptions()
 }
