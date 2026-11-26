@@ -11,12 +11,19 @@ import (
 type fakeWeb struct {
 	running bool
 	starts  int
+	stops   int
 	opens   int
 }
 
 func (f *fakeWeb) Start(context.Context) (string, error) {
 	f.starts++
 	return "http://127.0.0.1:1/#t=x", nil
+}
+
+func (f *fakeWeb) Stop(context.Context) error {
+	f.stops++
+	f.running = false
+	return nil
 }
 
 func (f *fakeWeb) OpenBrowser() error {

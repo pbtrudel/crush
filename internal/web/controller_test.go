@@ -471,3 +471,87 @@ func TestControllerDetachFromAnOldGatewayLeavesTheNewOneRunning(t *testing.T) {
 	default:
 	}
 }
+
+// TestControllerStopStopsTheGateway checks that a terminal stop shuts the
+// gateway the way a browser detach does: the controller stops running, the
+// old link no longer answers, and a new start brings up a fresh link.
+func TestControllerStopStopsTheGateway(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+
+	u1, err := c.Start(t.Context())
+	require.NoError(t, err)
+	old := c.gw
+	require.True(t, c.Running())
+
+	require.NoError(t, c.Stop(t.Context()))
+	require.False(t, c.Running(), "the stop clears the gateway")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, old.URL()+"/api/health", nil)
+	require.NoError(t, err)
+	rsp, err := http.DefaultClient.Do(req)
+	if rsp != nil {
+		rsp.Body.Close()
+	}
+	require.Error(t, err, "the stopped gateway no longer answers")
+
+	u2, err := c.Start(t.Context())
+	require.NoError(t, err)
+	require.True(t, c.Running())
+	tokenOf := func(u string) string { _, token, _ := strings.Cut(u, "/#t="); return token }
+	require.NotEmpty(t, tokenOf(u1))
+	require.NotEqual(t, tokenOf(u1), tokenOf(u2), "a new gateway gets a new token")
+
+	rsp, body := doJSON(t, authedClient(t, c.gw), http.MethodGet, c.gw.URL()+"/api/health", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
+}
+
+// TestControllerStopRequiresGateway checks that stopping web mode when it
+// is not running reports an error instead of succeeding silently.
+func TestControllerStopRequiresGateway(t *testing.T) {
+	t.Parallel()
+	c := NewController(webtest.NewFake())
+	require.Error(t, c.Stop(t.Context()))
+
+	require.NoError(t, c.Shutdown(t.Context()))
+	require.Error(t, c.Stop(t.Context()), "a stopped controller has nothing to stop")
+}
+
+// TestControllerStopClosesTabsWithTheDetachNotice checks that every tab
+// learns the gateway is gone on a terminal stop and shows the same notice
+// a browser detach shows.
+func TestControllerStopClosesTabsWithTheDetachNotice(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+	gw := c.gw
+	conn := dialStream(t, gw, "")
+	readFrame(t, conn) // Snapshot.
+
+	require.NoError(t, c.Stop(t.Context()))
+	fr := nextFrameOfType(t.Context(), t, conn, frameClosing)
+	require.JSONEq(t, `{"reason":"detached"}`, string(fr.Payload))
+}
+
+// TestControllerStopDoesNotReportThroughOnStopped checks that a terminal
+// stop leaves the report to the caller: the onStopped callback speaks for a
+// browser detach and would show the wrong message.
+func TestControllerStopDoesNotReportThroughOnStopped(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := NewController(webtest.NewFake())
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+	stopped := make(chan string, 1)
+	c.SetOnStopped(func(reason string) { stopped <- reason })
+	_, err := c.Start(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, c.Stop(t.Context()))
+	select {
+	case reason := <-stopped:
+		t.Fatalf("a terminal stop reported through onStopped: %q", reason)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
