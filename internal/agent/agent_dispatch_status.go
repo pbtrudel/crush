@@ -43,6 +43,7 @@ type dispatchRecord struct {
 	Model     string
 	Provider  string
 	Reasoning string
+	Role      string
 	// Open is true while the latest dispatch or follow-up has no report.
 	Open       bool
 	LastReport *message.SubAgentReport
@@ -110,7 +111,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 			}
 			record := &dispatchRecord{
 				Label:     label,
-				Access:    accessOrRead(params.Access),
+				Access:    recordAccess(params),
 				Task:      params.Prompt,
 				MessageID: msg.ID,
 				CallID:    call.ID,
@@ -118,6 +119,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 				Model:     strings.TrimSpace(params.Model),
 				Provider:  strings.TrimSpace(params.Provider),
 				Reasoning: strings.TrimSpace(params.Reasoning),
+				Role:      strings.TrimSpace(params.Role),
 				Open:      true,
 			}
 			// Filed under the label asked for until the result names it.
@@ -145,6 +147,9 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 					record.Model = meta.Model
 					record.Provider = meta.Provider
 					record.Reasoning = meta.Reasoning
+				}
+				if meta.Role != "" {
+					record.Role = meta.Role
 				}
 				if name := strings.TrimSpace(meta.Label); name != "" && name != record.Label {
 					records.unlink(record)
@@ -552,4 +557,13 @@ func (c *coordinator) teammateNames(ctx context.Context) string {
 		names = append(names, member.Target)
 	}
 	return strings.Join(names, ", ")
+}
+
+// recordAccess keeps a role dispatch's access as asked, so a resume lets
+// the role pick its variant again instead of forcing read.
+func recordAccess(params AgentDispatchParams) string {
+	if strings.TrimSpace(params.Role) != "" {
+		return params.Access
+	}
+	return accessOrRead(params.Access)
 }

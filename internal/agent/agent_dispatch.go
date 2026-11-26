@@ -18,7 +18,9 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 //go:embed templates/agent_dispatch_tool.md
@@ -69,6 +71,7 @@ type AgentDispatchParams struct {
 	Prompt string `json:"prompt" description:"The task for the subagent to perform"`
 	Label  string `json:"label" description:"A short label for this subagent's scope; the result returns the name to address it by"`
 	Access string `json:"access,omitempty" description:"\"read\" (default) for a subagent that can only inspect the codebase, or \"write\" for one that can also edit files"`
+	Role   string `json:"role,omitempty" description:"Optional role from the catalog below. It sets the subagent's tool allow-list, prompt and default model; access can only narrow it"`
 
 	// Model override. When none of these is given the subagent runs on the
 	// session's subagent model with its configured settings.
@@ -99,6 +102,7 @@ type AgentDispatchResponseMetadata struct {
 	Model     string `json:"model,omitempty"`
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
+	Role      string `json:"role,omitempty"`
 	// RunModel is provider/model for display; rehydration ignores it.
 	RunModel string `json:"run_model,omitempty"`
 }
@@ -418,7 +422,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 
 	return fantasy.NewParallelAgentTool(
 		AgentDispatchToolName,
-		strings.TrimSpace(agentDispatchToolDescription),
+		strings.TrimSpace(agentDispatchToolDescription)+roleCatalog(c.cfg.Config()),
 		func(ctx context.Context, params AgentDispatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
@@ -430,26 +434,49 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				return fantasy.NewTextErrorResponse("label is required"), nil
 			}
 
-			agent, refusal := resolveSubAgent(agents, params.Access, readOnly)
-			if refusal != "" {
-				return fantasy.NewTextErrorResponse(refusal), nil
+			access := accessOrRead(params.Access)
+			prompt := params.Prompt
+			var (
+				agent       SessionAgent
+				sel         config.SelectedModel
+				hasOverride bool
+			)
+			if strings.TrimSpace(params.Role) != "" {
+				role, refusal := resolveRole(c.cfg.Config(), params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				if refusal := planModeRoleRefusal(readOnly, role, params.Access); refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				agent, sel, hasOverride, refusal = c.roleTaskAgent(ctx, role, params.Access, params, parentModel())
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				access, _ = roleAccess(role, params.Access)
+				prompt = roles.Block(*role) + params.Prompt
+			} else {
+				var refusal string
+				agent, refusal = resolveSubAgent(agents, params.Access, readOnly)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				// A model override swaps the shared subagent for a dedicated
+				// one running on the requested model. It is resolved before the
+				// label is taken, so a refused override leaves the label free
+				// and the call can be retried immediately.
+				overrideAgent, overrideSel, override, refusal := c.overrideDispatchAgent(ctx, access, params, parentModel())
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				if overrideAgent != nil {
+					agent = overrideAgent
+				}
+				sel, hasOverride = overrideSel, override
 			}
 			agentMessageID := tools.GetMessageFromContext(ctx)
 			if agentMessageID == "" {
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
-			}
-
-			// A model override swaps the shared subagent for a dedicated
-			// one running on the requested model. It is resolved before the
-			// label is taken, so a refused override leaves the label free
-			// and the call can be retried immediately.
-			access := accessOrRead(params.Access)
-			overrideAgent, sel, hasOverride, refusal := c.overrideDispatchAgent(ctx, access, params, parentModel())
-			if refusal != "" {
-				return fantasy.NewTextErrorResponse(refusal), nil
-			}
-			if overrideAgent != nil {
-				agent = overrideAgent
 			}
 
 			parentSessionID := tools.GetSessionFromContext(ctx)
@@ -490,7 +517,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 					SessionID:      parentSessionID,
 					AgentMessageID: agentMessageID,
 					ToolCallID:     toolCallID,
-					Prompt:         params.Prompt,
+					Prompt:         prompt,
 					SessionTitle:   "Subagent: " + label,
 					SkipCostRollup: true,
 				})
@@ -503,6 +530,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			if hasOverride {
 				meta.Model, meta.Provider, meta.Reasoning = overrideRecord(params, sel)
 			}
+			meta.Role = strings.TrimSpace(params.Role)
 			return fantasy.WithResponseMetadata(
 				fantasy.NewTextResponse(fmt.Sprintf("Started subagent %q.", label)+reportArrivesOnItsOwn),
 				meta,
@@ -1024,6 +1052,19 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		return nil, fmt.Errorf("subagent %q was a search and cannot be resumed", label)
 	}
 
+	if record.Role != "" {
+		role, refusal := resolveRole(c.cfg.Config(), record.Role)
+		if refusal != "" {
+			return nil, fmt.Errorf("subagent %q cannot be resumed: role %q no longer exists", label, record.Role)
+		}
+		params := AgentDispatchParams{Model: record.Model, Provider: record.Provider, Reasoning: record.Reasoning}
+		agent, _, _, refusal := c.roleTaskAgent(ctx, role, record.Access, params, c.mainModel())
+		if refusal != "" {
+			return nil, fmt.Errorf("subagent %q cannot be resumed: %s", label, refusal)
+		}
+		return c.reopenDispatched(ctx, parentSessionID, label, record, agent)
+	}
+
 	// Rehydration replays the access level recorded in the transcript, so
 	// both variants have to be available to look it up. A read-only parent
 	// could never have recorded a write dispatch in the first place.
@@ -1060,6 +1101,12 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		agent = overrideAgent
 	}
 
+	return c.reopenDispatched(ctx, parentSessionID, label, record, agent)
+}
+
+// reopenDispatched registers a rehydrated subagent under its label, seeded
+// with what its session has already cost.
+func (c *coordinator) reopenDispatched(ctx context.Context, parentSessionID, label string, record *dispatchRecord, agent SessionAgent) (*dispatchedAgent, error) {
 	sessionID := c.sessions.CreateAgentToolSessionID(record.MessageID, record.CallID)
 	child, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
