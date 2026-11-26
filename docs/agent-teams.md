@@ -205,8 +205,9 @@ skipped and the rest still load.
 A shared task can name a role. `team_task_create` and the `edit` action of
 `team_task_update` take `role` (any role from the `spawn_teammate` catalog)
 and `verify`. A task without a role stays manual: nothing starts it. Only the
-Lead can set or change a task's `role` or `verify`, and only the Lead can
-reopen a task in review; a teammate's request is refused.
+Lead can set a task's `verify`, or change the `role` or `verify` of an
+existing task; a teammate's request is refused. Only the Lead can reopen a
+task in review.
 
 ### Auto-start
 
@@ -289,10 +290,12 @@ enforced for teammates' file tools (see [Pipeline](#pipeline)).
 
 ## Client UI
 
-The chat sidebar shows an **Agent Team** section as soon as a teammate
-exists: one row per member with its availability glyph, followed by up to
-three shared tasks with their status. It refreshes every two seconds and
-hides itself when Agent Teams is disabled.
+The chat sidebar shows an **Agent Team** section for the current session as
+soon as it has a teammate or a shared task: a row for the Lead, one row per
+teammate with its availability glyph, then every live shared task in
+priority order (in progress, in review, ready, blocked), followed by a count
+of completed tasks. It refreshes every second and hides itself when Agent
+Teams is disabled.
 
 The command line offers the same view:
 

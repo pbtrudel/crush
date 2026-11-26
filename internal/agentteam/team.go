@@ -2046,8 +2046,14 @@ func (s *Service) Shutdown() {
 func (s *Service) CreateTask(caller, sessionID string, req CreateTaskRequest) (TaskView, error) {
 	var view TaskView
 	err := s.write(refusable, func() (bool, error) {
-		if _, ok := s.memberLocked(caller); !ok {
+		member, ok := s.memberLocked(caller)
+		if !ok {
 			return false, newError(CodeNotMember, "agent %q is not a member of an active Agent Team", caller)
+		}
+		// Verify decides whether finished work is checked, so only the Lead
+		// sets it; a teammate may name a role but never its own check.
+		if member.Role != RoleLead && req.Verify != nil {
+			return false, newError(CodeLeadRequired, "only the Team Lead can set a task's verify setting")
 		}
 		root := s.scopeRootLocked(caller, sessionID)
 		if root == "" {

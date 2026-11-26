@@ -209,6 +209,45 @@ func TestOwnerCannotChangeRoleOrVerify(t *testing.T) {
 	require.Equal(t, "Build it", view.Subject, "the owner still edits subject and description")
 }
 
+// TestCreateVerifyOnlyForLead pins that a teammate may create a task that
+// names a role but cannot say whether it is verified: only the Lead sets
+// verify, so a teammate cannot arrange for its own work to pass unchecked.
+func TestCreateVerifyOnlyForLead(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	_, err := s.SpawnTeammate(context.Background(), leadName, SpawnRequest{
+		Name: "worker", Description: "d", Prompt: "p", ParentID: pipelineSession,
+	})
+	require.NoError(t, err)
+	countTasks := func() int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.state.Tasks)
+	}
+
+	before := countTasks()
+	off := false
+	_, err = s.CreateTask("worker", pipelineSession, CreateTaskRequest{
+		Subject: "Build", Description: "d", Verify: &off,
+	})
+	require.Equal(t, CodeLeadRequired, ErrorCode(err))
+	require.Equal(t, before, countTasks(), "a refused create stores no task")
+
+	view, err := s.CreateTask("worker", pipelineSession, CreateTaskRequest{
+		Subject: "Build", Description: "d", Role: "implementer",
+	})
+	require.NoError(t, err, "a teammate may still name a role on create")
+	require.Equal(t, "implementer", view.Role)
+	require.Nil(t, taskByID(t, s, view.ID).Verify)
+
+	view, err = s.CreateTask(leadName, pipelineSession, CreateTaskRequest{
+		Subject: "Check", Description: "d", Role: "implementer", Verify: &off,
+	})
+	require.NoError(t, err, "the Lead sets role and verify on create")
+	require.Equal(t, "implementer", view.Role)
+	require.False(t, view.Verify)
+}
+
 func TestClaimedWriteScopes(t *testing.T) {
 	t.Parallel()
 	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, newFakeRunner())
