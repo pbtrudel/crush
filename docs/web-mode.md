@@ -287,6 +287,11 @@ Run `/web` in the terminal to start a new gateway; the new link works in the
 same tab. If the terminal exits instead of stopping web mode, the tab says
 the session ended and points at the same `/web` command.
 
+The terminal's command palette (`Ctrl+P`) lists **Stop Web Mode** while a
+gateway is running. Choosing it stops the gateway without quitting Crush: the
+terminal reports "Web mode stopped. Run /web to start it again." and every tab
+shows the same stopped notice the display settings stop shows.
+
 ## Palette commands
 
 `Ctrl+K` (`Cmd+K` on macOS) opens the command palette. Besides the sessions,

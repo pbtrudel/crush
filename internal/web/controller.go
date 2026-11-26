@@ -17,9 +17,9 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
-// detachTimeout bounds the gateway shutdown a browser detach runs. The
-// gateway stops before the notice reaches the terminal, so the status bar
-// never shows web mode running after it is gone.
+// detachTimeout bounds the gateway shutdown a browser detach or a terminal
+// stop runs. The gateway stops before the notice reaches the terminal, so
+// the status bar never shows web mode running after it is gone.
 const detachTimeout = 5 * time.Second
 
 // Controller owns the lifetime of one process's gateway. It starts the
@@ -152,9 +152,9 @@ func (c *Controller) SetOnAutomation(fn func(ctx context.Context, sessionID, nam
 	}
 }
 
-// SetOnStopped sets the callback that reports why web mode stopped. It
-// runs after the gateway is down, so /web can start a new one. It may be
-// nil.
+// SetOnStopped sets the callback that reports a browser detach. A stop the
+// terminal starts reports through its caller instead. It runs after the
+// gateway is down, so /web can start a new one. It may be nil.
 func (c *Controller) SetOnStopped(fn func(reason string)) {
 	c.mu.Lock()
 	c.onStopped = fn
@@ -167,20 +167,10 @@ func (c *Controller) SetOnStopped(fn func(reason string)) {
 // stops. Only the gateway the controller still runs is stopped, so a
 // delayed detach from an old gateway leaves a newer one serving.
 func (c *Controller) detach(gw *Gateway) {
-	if gw == nil {
+	// The request context is gone by the time the route's goroutine runs,
+	// so the stop gets its own bounded context.
+	if !c.stopGateway(context.Background(), gw) {
 		return
-	}
-	c.mu.Lock()
-	if c.gw != gw {
-		c.mu.Unlock()
-		return
-	}
-	c.gw = nil
-	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), detachTimeout)
-	defer cancel()
-	if err := gw.Shutdown(ctx); err != nil {
-		slog.Warn("Failed to stop web mode", "error", err)
 	}
 	c.mu.Lock()
 	fn := c.onStopped
@@ -188,6 +178,48 @@ func (c *Controller) detach(gw *Gateway) {
 	if fn != nil {
 		fn(detachReason)
 	}
+}
+
+// stopGateway clears gw as the controller's gateway and shuts it down,
+// reporting whether this call stopped it. A nil or stale gateway is left
+// alone, so a delayed detach from an old gateway cannot stop a newer one.
+// The detach reason goes to every connected tab first, so a stop the
+// terminal starts shows the same notice a browser detach shows instead of
+// the exit text.
+func (c *Controller) stopGateway(ctx context.Context, gw *Gateway) bool {
+	if gw == nil {
+		return false
+	}
+	c.mu.Lock()
+	if c.gw != gw {
+		c.mu.Unlock()
+		return false
+	}
+	c.gw = nil
+	c.mu.Unlock()
+	gw.closingReason.Store(detachReason)
+	ctx, cancel := context.WithTimeout(ctx, detachTimeout)
+	defer cancel()
+	if err := gw.Shutdown(ctx); err != nil {
+		slog.Warn("Failed to stop web mode", "error", err)
+	}
+	return true
+}
+
+// Stop stops the running gateway the way a browser detach does, so the
+// terminal can leave web mode without quitting and a later Start brings up
+// a fresh gateway with a new link. It reports an error when web mode is not
+// running. onStopped is not called: the caller stopped it and reports its
+// own message, while the tabs learn it from the closing frame Shutdown
+// sends.
+func (c *Controller) Stop(ctx context.Context) error {
+	c.mu.Lock()
+	gw := c.gw
+	c.mu.Unlock()
+	if !c.stopGateway(ctx, gw) {
+		return errors.New("web mode is not running")
+	}
+	return nil
 }
 
 // SetInputMode records the terminal's input mode for the snapshot and

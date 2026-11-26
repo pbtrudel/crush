@@ -47,6 +47,10 @@ export interface State {
   model: ModelInfo;
   // display is the tab's settings as the gateway last published them.
   display: DisplaySettings;
+  // displayHydrated is true once a snapshot, a frame or the dialog has named
+  // the tab's settings. An older gateway never names them, so the tab keeps
+  // its own cached motion and low power until one does.
+  displayHydrated: boolean;
   agentReady: boolean;
   planReady: string;
   permissionMode: PermissionMode;
@@ -108,7 +112,7 @@ export function initialState(): State {
   return {
     conn: 'booting', endedReason: null, lastSeq: 0, hydrated: false, version: '', workingDir: '', project: '',
     branch: '', model: { id: '', name: '', provider: '', context_window: 0, agent_ready: true },
-    display: { ...displayDefaults }, agentReady: true, planReady: '',
+    display: { ...displayDefaults }, displayHydrated: false, agentReady: true, planReady: '',
     permissionMode: 'normal', inputMode: 'code', sessionId: '', terminalSession: '', browsing: null,
     rootSessions: 0, session: null, messages: [],
     permissions: [], question: null, questionQueue: [], securePrompts: [], answeredHere: {},
@@ -351,8 +355,9 @@ function applySnapshot(s: State, seq: number, snap: Snapshot): State {
     project: projectName(snap.working_dir),
     branch: snap.branch ?? '',
     model: snap.model,
-    // A snapshot that names no display keeps the one the tab shows.
-    ...(snap.display !== undefined ? { display: snap.display } : {}),
+    // A snapshot that names no display keeps the one the tab shows, and
+    // leaves the tab's own cached settings alone.
+    ...(snap.display !== undefined ? { display: snap.display, displayHydrated: true } : {}),
     // The snapshot carries the agent's readiness twice; the top-level field
     // is the same read as model.agent_ready, so either one is authoritative.
     agentReady: snap.agent_ready ?? true,
@@ -595,7 +600,7 @@ export function reduce(s: State, f: Frame): State {
     case 'input_mode_changed':
       return { ...next, inputMode: (f.payload as { mode: InputMode }).mode };
     case 'display_changed':
-      return { ...next, display: f.payload as DisplaySettings };
+      return { ...next, display: f.payload as DisplaySettings, displayHydrated: true };
     case 'gateway_closing': {
       const reason = (f.payload as { reason?: string }).reason;
       return {

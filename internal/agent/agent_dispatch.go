@@ -492,6 +492,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 					ToolCallID:     toolCallID,
 					Prompt:         params.Prompt,
 					SessionTitle:   "Subagent: " + label,
+					Label:          label,
 					SkipCostRollup: true,
 				})
 			})

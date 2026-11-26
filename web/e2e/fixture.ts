@@ -333,3 +333,11 @@ export const overflowTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) =>
     launchGateway(webfakeBinary, { WEBFAKE_TOOL_CALLS: String(MANY_TOOL_CALLS) }, use),
 });
+
+// The log layout case needs one tool path far wider than a log column. It
+// rides the default seeds behind an opt-in variable, so every baseline
+// keeps its seeded log.
+const LONG_PATH = { WEBFAKE_LONG_PATH: '1' };
+export const longPathTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, LONG_PATH, use),
+});
