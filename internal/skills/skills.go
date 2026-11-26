@@ -16,9 +16,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/charlievieth/fastwalk"
+	"gopkg.in/yaml.v3"
+
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/pubsub"
-	"gopkg.in/yaml.v3"
 )
 
 const (
