@@ -30,6 +30,39 @@ type frontmatter struct {
 	Model       *string   `yaml:"model"`
 	Provider    *string   `yaml:"provider"`
 	Reasoning   *string   `yaml:"reasoning"`
+
+	// toolsNull records a tools key with a null value. The pointer above
+	// cannot tell that apart from an omitted key, and the two mean
+	// different things: omitted allows every tool, null is a mistake.
+	toolsNull bool
+}
+
+// UnmarshalYAML records whether the tools key is present with a null value
+// before decoding the rest of the frontmatter.
+func (f *frontmatter) UnmarshalYAML(node *yaml.Node) error {
+	type plain frontmatter
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*f = frontmatter(decoded)
+	f.toolsNull = nullMappingValue(node, "tools")
+	return nil
+}
+
+// nullMappingValue reports whether a mapping node has key with a null value.
+func nullMappingValue(node *yaml.Node, key string) bool {
+	if node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != key {
+			continue
+		}
+		value := node.Content[i+1]
+		return value.Kind == yaml.ScalarNode && value.Tag == "!!null"
+	}
+	return false
 }
 
 // toolList accepts a comma-separated string or a YAML list.
@@ -100,7 +133,7 @@ func (d definition) validate() error {
 		return fmt.Errorf("name %q must match the file name %q", d.fm.Name, stem)
 	case len(d.body) > MaxBodyBytes:
 		return fmt.Errorf("body is %d bytes, more than %d", len(d.body), MaxBodyBytes)
-	case d.fm.Tools != nil && len(*d.fm.Tools) == 0:
+	case d.fm.toolsNull || d.fm.Tools != nil && len(*d.fm.Tools) == 0:
 		return errors.New("tools is empty; omit it to allow every tool")
 	}
 	if d.fm.Description == nil {

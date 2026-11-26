@@ -82,6 +82,17 @@ func TestParseRejectsEmptyTools(t *testing.T) {
 	}
 }
 
+// TestParseRejectsNullTools pins that a tools key with a null value is an
+// error, not a silent request for every tool.
+func TestParseRejectsNullTools(t *testing.T) {
+	t.Parallel()
+	for _, tools := range []string{"", " ~", " null"} {
+		content := "---\nname: r\ndescription: d\ntools:" + tools + "\n---\nb"
+		_, err := parse([]byte(content), "r.md", SourceGlobal)
+		require.ErrorContains(t, err, "tools is empty", "tools:%s", tools)
+	}
+}
+
 func TestOverlay(t *testing.T) {
 	t.Parallel()
 	base := Role{
