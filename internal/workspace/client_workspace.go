@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -870,7 +871,7 @@ func (w *ClientWorkspace) InitializePrompt() (string, error) {
 func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
 	entries, err := w.client.ListSkills(ctx, w.workspaceID())
 	if err != nil {
-		return nil, err
+		return nil, skillsErr(err)
 	}
 	return catalogEntries(entries), nil
 }
@@ -880,9 +881,35 @@ func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry
 func (w *ClientWorkspace) ListAllSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
 	entries, err := w.client.ListAllSkills(ctx, w.workspaceID())
 	if err != nil {
-		return nil, err
+		return nil, skillsErr(err)
 	}
 	return catalogEntries(entries), nil
+}
+
+// skillsErr maps a skills call failure to the workspace's link state so
+// the gateway answers 503 while the link recovers. An unsupported route
+// is not a lost link: the server answered, it just predates the route,
+// and callers fall back to the visible skill set.
+func skillsErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, client.ErrUnsupported):
+		return err
+	case errors.Is(err, client.ErrNotFound):
+		return fmt.Errorf("%w: %w", ErrWorkspaceGone, err)
+	case errors.Is(err, client.ErrServerShuttingDown), isTransportErr(err):
+		return fmt.Errorf("%w: %w", ErrServerUnreachable, err)
+	}
+	return err
+}
+
+// isTransportErr reports whether err means the request never got an
+// answer, as opposed to the server answering with a failure. The HTTP
+// client wraps every round-trip failure in a url.Error.
+func isTransportErr(err error) bool {
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
 }
 
 // catalogEntries converts the server's skill list back to the catalog the
