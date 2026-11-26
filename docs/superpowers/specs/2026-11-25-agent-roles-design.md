@@ -146,7 +146,7 @@ Role *roles.Role // nil for coder, task and plan
 
 `AllowedTools` is the coder's list unchanged and `AllowedMCP` is the coder's; the role restriction is enforced at call time (section 1). `Config` gains `RoleDirs []roles.Dir` (filled by `setDefaults` from the working directory) and `RoleDiagnostics []roles.Diagnostic`, both `json:"-"`; `crush_info` lists the roles and diagnostics under `[roles]`.
 
-**Security.** A project role file can only narrow tools; it cannot add one beyond the base list. Hooks and permission prompts still apply. A project role that pins a model is shown in the catalog as `(project, pins model)` so a cloned repository cannot silently move spend to another model.
+**Security.** A project role file can only narrow tools; it cannot add one beyond the base list. Hooks and permission prompts still apply. A project role that pins a model is shown in the catalog with a `pins model` marker, as in `(project, read-only, pins model)`, so a cloned repository cannot silently move spend to another model.
 
 ### 3. Runtime wiring
 
