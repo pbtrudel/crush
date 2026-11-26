@@ -28,6 +28,7 @@ import (
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/home"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/charmbracelet/crush/internal/shellconfig"
 	powernapConfig "github.com/charmbracelet/x/powernap/pkg/config"
 	"github.com/qjebbs/go-jsons"
@@ -946,6 +947,8 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	// Project specific skills dirs.
 	c.Options.SkillsPaths = append(c.Options.SkillsPaths, ProjectSkillsDir(workingDir)...)
 
+	c.RoleDirs = RoleDirs(workingDir)
+
 	if str, ok := os.LookupEnv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE"); ok {
 		c.Options.DisableProviderAutoUpdate, _ = strconv.ParseBool(str)
 	}
@@ -1680,6 +1683,25 @@ func GlobalSkillsDirs() []string {
 	}
 
 	return paths
+}
+
+// GlobalAgentsDir returns the directory global role files load from.
+func GlobalAgentsDir() string {
+	if dir := os.Getenv("CRUSH_AGENTS_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(home.Config(), appName, "agents")
+}
+
+// RoleDirs returns the role directories for a working directory, lowest
+// priority first: the global directory, the git root's .crush/agents, then
+// the working directory's, so a subdirectory's roles win in a monorepo.
+func RoleDirs(workingDir string) []roles.Dir {
+	dirs := []roles.Dir{{Path: GlobalAgentsDir(), Source: roles.SourceGlobal}}
+	if root := worktreeRoot(workingDir); root != "" && root != workingDir {
+		dirs = append(dirs, roles.Dir{Path: filepath.Join(root, ".crush", "agents"), Source: roles.SourceProject})
+	}
+	return append(dirs, roles.Dir{Path: filepath.Join(workingDir, ".crush", "agents"), Source: roles.SourceProject})
 }
 
 // projectSkillSubdirs lists the conventional subdirectories where

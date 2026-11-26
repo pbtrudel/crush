@@ -254,7 +254,7 @@ func availableSubAgentPresets(cfg *config.Config) []string {
 	}
 	names := make([]string, 0, len(cfg.Agents))
 	for name, preset := range cfg.Agents {
-		if preset.Disabled || slices.Contains(preset.AllowedTools, AgentToolName) {
+		if preset.Disabled || preset.Role != nil || slices.Contains(preset.AllowedTools, AgentToolName) {
 			continue
 		}
 		names = append(names, name)

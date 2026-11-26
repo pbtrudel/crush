@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/invopop/jsonschema"
 )
 
@@ -1276,6 +1277,10 @@ type Agent struct {
 
 	// Overrides the context paths for this agent
 	ContextPaths []string `json:"context_paths,omitempty"`
+
+	// Role is the role definition this agent was built from; nil for the
+	// coder, task and plan agents. It never enters the JSON config.
+	Role *roles.Role `json:"-"`
 }
 
 type Tools struct {
@@ -1345,6 +1350,13 @@ type Config struct {
 	Env map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set on startup"`
 
 	Agents map[string]Agent `json:"-"`
+
+	// RoleDirs are the directories role files load from, lowest priority
+	// first. setDefaults fills them; SetupAgents reads them.
+	RoleDirs []roles.Dir `json:"-"`
+	// RoleDiagnostics are the problems the last SetupAgents found in role
+	// files. crush_info lists them.
+	RoleDiagnostics []roles.Diagnostic `json:"-"`
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -1736,6 +1748,12 @@ func SubAgentExcludedTools() []string {
 	return slices.Clone(subAgentExcludedTools)
 }
 
+// SubAgentWriteTools returns the tools that change files. A role that
+// allows none of them runs on the read-only subagent variant.
+func SubAgentWriteTools() []string {
+	return slices.Clone(subAgentWriteTools)
+}
+
 // subAgentWriteTools are the tools that change files. Only the read-write
 // subagent variant gets them.
 var subAgentWriteTools = []string{
@@ -1804,6 +1822,21 @@ func (c *Config) SetupAgents() {
 			// NO MCPs or LSPs by default
 			AllowedMCP: map[string][]string{},
 		},
+	}
+
+	found, diagnostics := roles.Discover(c.RoleDirs, allToolNames())
+	c.RoleDiagnostics = diagnostics
+	for name, role := range found {
+		agents[name] = Agent{
+			ID:           name,
+			Name:         name,
+			Description:  role.Description,
+			Model:        SelectedModelTypeMain,
+			ContextPaths: c.Options.ContextPaths,
+			AllowedTools: allowedTools,
+			AllowedMCP:   coder.AllowedMCP,
+			Role:         &role,
+		}
 	}
 	c.Agents = agents
 }
