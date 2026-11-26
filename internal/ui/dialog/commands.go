@@ -510,8 +510,13 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
 		NewCommandItem(c.com.Styles, "open_web", "Open Web Mode", "", ActionOpenWeb{}).WithAliases("web").WithIcon("◈"),
-		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
 	}
+	if c.com.Web != nil && c.com.Web.Running() {
+		// Stop sits next to Open: both act on the same gateway, and a
+		// user who opened web mode may want it gone without the tab.
+		commands = append(commands, NewCommandItem(c.com.Styles, "stop_web", "Stop Web Mode", "", ActionStopWeb{}).WithAliases("web stop", "stop web").WithIcon("◈"))
+	}
+	commands = append(commands, NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"))
 	if c.hasSession && c.com.Config().Options.GetAgentTeams() {
 		commands = append(commands, NewCommandItem(c.com.Styles, "view_agents", "View Agents", "", ActionOpenDialog{AgentsID}).WithAliases("agents", "subagents", "teammates").WithIcon("⧉"))
 	}

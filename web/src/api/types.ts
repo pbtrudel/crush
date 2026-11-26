@@ -9,7 +9,9 @@ export type Part =
   | { type: 'tool_result'; data: ToolResultData }
   | { type: 'finish'; data: { reason: string; time: number; message?: string; details?: string } }
   | { type: 'image_url'; data: { url: string; detail?: string } }
-  | { type: 'binary'; data: { path?: string; mime_type?: string } }
+  // Binary parts keep Go's field names on the wire: the proto struct has
+  // no JSON tags.
+  | { type: 'binary'; data: { Path?: string; MIMEType?: string } }
   | { type: 'shell_command'; data: { command: string; output: string; exit_code: number } }
   | { type: 'compaction_stats'; data: { tokens_before: number; saved_tokens: number; kept_messages: number } }
   | { type: 'sub_agent_report'; data: { label: string; output: string; failed?: boolean; model?: string } };
@@ -122,7 +124,7 @@ export interface FileSummary {
   path: string; versions: number; version_ids: number[]; additions: number; removals: number;
   diagnostics: { error: number; warning: number }; updated_at: number; session_ids: string[];
   // version_tools has one entry per version in version_ids order.
-  version_tools?: VersionTool[];
+  version_tools: VersionTool[];
   stats_unknown?: boolean;
 }
 export interface FileDiff {

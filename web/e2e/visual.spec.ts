@@ -300,6 +300,17 @@ m4bVisualTest.describe('solid theme', () => {
   });
 });
 
+// The chronoline with the m4b seed's two edits, above the deck and under the
+// HUD. The strip is the one surface this baseline exists for.
+m4bVisualTest('chronoline', async ({ page, gateway }) => {
+  await page.goto(gateway.launch);
+  await settle(page);
+  await expect(page.getByRole('list', { name: 'Timeline of tool calls' })).toBeVisible();
+  await page.clock.runFor(1000);
+  await expect(page).toHaveScreenshot('chronoline.png', { timeout: 30_000 });
+  await axe(page);
+});
+
 // The AWS SSO card is a reading surface with no baseline of its own: the axe
 // scan is the check that it stays accessible. Every test in this file gets the
 // paused clock, so this one steps frames until the card's URL frame lands.

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
-import type { Message, ToolResultData } from '../../api/types';
+import type { Message, Part, ToolResultData } from '../../api/types';
 import { MessageView } from './MessageView';
 
 const root = document.createElement('div');
@@ -13,6 +13,10 @@ const base: Message = { id: 'a', role: 'assistant', session_id: 's1', model: '',
 async function show(m: Message, results = new Map<string, ToolResultData>()) {
   await act(() => { render(<MessageView m={m} results={results} />, root); });
   return root.querySelector<HTMLElement>('.tool')!.dataset.status;
+}
+
+async function renderMsg(m: Message) {
+  await act(() => { render(<MessageView m={m} results={new Map()} />, root); });
 }
 
 describe('MessageView', () => {
@@ -51,6 +55,36 @@ describe('MessageView', () => {
     await act(() => { render(<MessageView m={{ ...base, parts: [long] }} results={new Map()} />, root); });
     expect(root.querySelector('.tool__body pre')!.textContent!.length).toBeLessThanOrEqual(4000);
     expect(root.textContent).toContain('Show full input');
+  });
+
+  it('hides a harness user message whose text part is hidden', async () => {
+    const hidden = { ...base, role: 'user' as const, parts: [{ type: 'text' as const, data: { text: 'turn-end gate', hidden: true } }] };
+    await renderMsg(hidden);
+    expect(root.querySelector('.msg')).toBeNull();
+    expect(root.textContent).not.toContain('You');
+  });
+
+  it('still shows a visible user message', async () => {
+    const visible = { ...base, role: 'user' as const, parts: [{ type: 'text' as const, data: { text: 'hello there' } }] };
+    await renderMsg(visible);
+    expect(root.querySelector('.msg')).not.toBeNull();
+    expect(root.textContent).toContain('You');
+    expect(root.textContent).toContain('hello there');
+  });
+
+  it('still shows an image-only user message', async () => {
+    const image = { ...base, role: 'user' as const, parts: [{ type: 'image_url' as const, data: { url: 'data:image/png;base64,AAAA' } }] };
+    await renderMsg(image);
+    expect(root.querySelector('.msg')).not.toBeNull();
+    expect(root.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+  });
+
+  it('names a binary attachment by its wire path', async () => {
+    // The wire keeps Go's field names: internal/proto.BinaryContent has no
+    // JSON tags, so the browser receives Path and MIMEType.
+    const part = JSON.parse('{"type":"binary","data":{"Path":"/tmp/shot.png","MIMEType":"image/png"}}') as Part;
+    await renderMsg({ ...base, role: 'user' as const, parts: [part] });
+    expect(root.textContent).toContain('Attachment: /tmp/shot.png');
   });
 
   it('caps the full output and says the terminal has the rest', async () => {

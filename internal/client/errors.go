@@ -105,6 +105,28 @@ func decodeError(body io.Reader) (message, code string) {
 	return e.Message, e.Code
 }
 
+// checkStatusAllowMissingRoute maps rsp like checkStatus, except that a
+// 404 without a proto.Error body is [ErrUnsupported]. A server that
+// predates a route answers Go's plain "404 page not found", while a
+// server that knows the route names the missing workspace in a
+// proto.Error body. Callers whose route is newer than their fallback use
+// this so an old server is not mistaken for a lost workspace.
+func checkStatusAllowMissingRoute(rsp *http.Response) error {
+	if rsp.StatusCode != http.StatusNotFound {
+		return checkStatus(rsp)
+	}
+	data, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		return checkStatus(rsp)
+	}
+	rsp.Body = io.NopCloser(bytes.NewReader(data))
+	var e proto.Error
+	if json.Unmarshal(data, &e) != nil || (e.Message == "" && e.Code == "") {
+		return fmt.Errorf("%w: status code %d", ErrUnsupported, rsp.StatusCode)
+	}
+	return checkStatus(rsp)
+}
+
 // TeamError is a team action failure as the server sent it: the HTTP
 // status plus the machine code and message from the error body. Callers
 // that need the original error type match it with errors.As.

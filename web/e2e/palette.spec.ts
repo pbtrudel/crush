@@ -283,6 +283,7 @@ m4bTest('keeps the model and branch on one line', async ({ page, gateway }) => {
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const layout = await page.evaluate(() => {
       const name = document.querySelector('.hud__model-name') as HTMLElement;
       const label = document.querySelector('.hud__branch') as HTMLElement;
@@ -336,14 +337,19 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
   await page.goto(gateway.launch);
   await expect(page.getByRole('status').filter({ hasText: 'Linked' })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: 'Following the terminal' })).toBeVisible();
+  // The merged m4b seed carries the chronoline; it must survive the full
+  // server loadout at every width.
+  await expect(page.getByRole('list', { name: 'Timeline of tool calls' })).toBeVisible();
 
   for (const width of [1280, 1366, 1440]) {
     await page.setViewportSize({ width, height: 860 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const fit = await page.evaluate(() => {
       const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
       const hud = document.querySelector('.hud') as HTMLElement;
       const pin = box('.hud__pin-slot');
+      const chrono = box('.chronoline');
       const pinEl = document.querySelector('.hud__pin-slot') as HTMLElement;
       // A full loadout must not let the pin widen the servers column and
       // wrap the session title, so the strip keeps the same height.
@@ -362,6 +368,11 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
         pinRight: pin.right,
         pinBottom: pin.bottom,
         hudBottom: box('.hud').bottom,
+        chronoLeft: chrono.left,
+        chronoRight: chrono.right,
+        chronoTop: chrono.top,
+        chronoBottom: chrono.bottom,
+        chronoHeight: chrono.height,
         scroll: hud.scrollWidth - hud.clientWidth,
         heightWithPin,
         heightWithoutPin,
@@ -377,6 +388,11 @@ m4bFullServersTest('fits the HUD with a full server loadout', async ({ page, gat
     expect(fit.transmitRight).toBeLessThanOrEqual(width - 16);
     expect(fit.pinRight).toBeLessThanOrEqual(width - 16);
     expect(fit.pinBottom).toBeLessThanOrEqual(fit.hudBottom);
+    expect(fit.chronoLeft).toBeGreaterThanOrEqual(16);
+    expect(fit.chronoRight).toBeLessThanOrEqual(width - 16);
+    expect(fit.chronoTop).toBeGreaterThanOrEqual(fit.hudBottom);
+    expect(fit.chronoBottom).toBeLessThanOrEqual(860);
+    expect(fit.chronoHeight).toBeGreaterThan(0);
     // Subpixel layout rounds the strip's scroll box up by a pixel.
     expect(fit.scroll).toBeLessThanOrEqual(1);
     expect(Math.abs(fit.heightWithPin - fit.heightWithoutPin)).toBeLessThanOrEqual(1);

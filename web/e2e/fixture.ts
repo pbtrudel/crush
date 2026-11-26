@@ -311,6 +311,12 @@ export const m4bVisualTest = webfakeTests.extend<{ gateway: Gateway; theme: stri
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_CLOCK: '2026-11-22T12:00:00Z', WEBFAKE_THEME: theme }, use),
 });
 
+// The AWS SSO card has to stay above the chronoline, so the case needs both
+// surfaces on one gateway.
+export const m4bAwsTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, { ...M4B, WEBFAKE_AWS_SSO: '1' }, use),
+});
+
 // A long model name for the HUD truncation case. It is a launch variable so
 // the shared m4b gateway keeps its usual name.
 export const LONG_MODEL_NAME = 'An extremely long model name that will not fit in the HUD at all';
@@ -325,4 +331,12 @@ export const m4bLongModelTest = webfakeTests.extend<{ gateway: Gateway }>({
 export const m4bFullServersTest = webfakeTests.extend<{ gateway: Gateway }>({
   gateway: async ({ webfakeBinary }, use) =>
     launchGateway(webfakeBinary, { ...M4B, WEBFAKE_HUD_SERVERS: 'full' }, use),
+});
+
+// The log layout case needs one tool path far wider than a log column. It
+// rides the default seeds behind an opt-in variable, so every baseline
+// keeps its seeded log.
+const LONG_PATH = { WEBFAKE_LONG_PATH: '1' };
+export const longPathTest = webfakeTests.extend<{ gateway: Gateway }>({
+  gateway: async ({ webfakeBinary }, use) => launchGateway(webfakeBinary, LONG_PATH, use),
 });

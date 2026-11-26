@@ -21,7 +21,7 @@ export function ToolCard({ call, result, settled = false }: {
 }) {
   const status: Status = result ? (result.is_error ? 'error' : 'done') : settled ? 'canceled' : 'running';
   return (
-    <details class="tool" data-status={status}>
+    <details class="tool" data-status={status} data-tool-call-id={call.id}>
       <summary>
         <span class="tool__glyph" aria-hidden="true">{GLYPH[status]}</span>
         <span class="tool__name">{call.name}</span>
