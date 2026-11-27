@@ -3,15 +3,15 @@ package web
 import (
 	"io"
 	"net/http"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// TestRootServesThePlaceholderPage pins the page a tab gets while the new
-// UI is being built. The CSP allows no inline script and no inline style,
-// so either one would leave the tab blank.
-func TestRootServesThePlaceholderPage(t *testing.T) {
+// TestRootServesTheShell pins the page a tab gets: the built index, with
+// no inline script or style, because the CSP allows self only.
+func TestRootServesTheShell(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	rsp := do(t, nil, http.MethodGet, g.URL()+"/", nil)
@@ -22,15 +22,21 @@ func TestRootServesThePlaceholderPage(t *testing.T) {
 	body, err := io.ReadAll(rsp.Body)
 	require.NoError(t, err)
 	page := string(body)
-	require.Contains(t, page, "being rebuilt")
-	require.Contains(t, page, `href="/style.css"`)
-	require.NotContains(t, page, "<script", "the CSP allows no inline script")
+	require.Contains(t, page, `<div id="root">`)
+	require.Contains(t, page, `/assets/`)
+	// Every script tag must load an external module: an inline script is
+	// blocked by the CSP and leaves the tab blank.
+	tags := regexp.MustCompile(`<script[^>]*>`).FindAllString(page, -1)
+	require.NotEmpty(t, tags, "the built page loads no script")
+	for _, tag := range tags {
+		require.Contains(t, tag, "src=", "the CSP allows no inline script")
+	}
+	require.NotContains(t, page, "<style", "the CSP allows no inline style block")
 	require.NotContains(t, page, `style="`, "the CSP allows no inline style")
 }
 
-// TestPlaceholderAnswersAnyPath pins the deep-link case: assetHandler
-// rewrites an unknown path to "/" so a bookmark opens the page.
-func TestPlaceholderAnswersAnyPath(t *testing.T) {
+// TestShellAnswersAnyPath pins the deep-link case.
+func TestShellAnswersAnyPath(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	for _, path := range []string{"/sessions/s1", "/settings/appearance"} {
@@ -39,20 +45,31 @@ func TestPlaceholderAnswersAnyPath(t *testing.T) {
 		rsp.Body.Close()
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, rsp.StatusCode, path)
-		require.Contains(t, string(body), "being rebuilt", path)
+		require.Contains(t, string(body), `<div id="root">`, path)
 	}
 }
 
-// TestPlaceholderStylesheetIsServed pins the external stylesheet the page
-// loads: a 404 here means an unstyled page under the strict CSP.
-func TestPlaceholderStylesheetIsServed(t *testing.T) {
+// TestHashedAssetIsImmutable pins the cache header the entry bundle needs.
+func TestHashedAssetIsImmutable(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
-	rsp := do(t, nil, http.MethodGet, g.URL()+"/style.css", nil)
+	entry := builtEntry(t, g.URL())
+	rsp := do(t, nil, http.MethodGet, g.URL()+entry, nil)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	require.Contains(t, rsp.Header.Get("Content-Type"), "text/css")
-	require.Equal(t, "no-cache", rsp.Header.Get("Cache-Control"))
+	require.Equal(t, "public, max-age=31536000, immutable", rsp.Header.Get("Cache-Control"))
+}
+
+// builtEntry returns the first /assets/ script the served page loads.
+func builtEntry(t *testing.T, origin string) string {
+	t.Helper()
+	rsp := do(t, nil, http.MethodGet, origin+"/", nil)
+	defer rsp.Body.Close()
+	body, err := io.ReadAll(rsp.Body)
+	require.NoError(t, err)
+	m := regexp.MustCompile(`src="(/assets/[^"]+\.js)"`).FindStringSubmatch(string(body))
+	require.Len(t, m, 2, "the built page loads no hashed script")
+	return m[1]
 }
 
 // TestStaleHashedAssetIsNotFoundAndNotCached pins the cached-tab case: a

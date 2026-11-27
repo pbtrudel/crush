@@ -103,7 +103,7 @@ func TestSelectModelSwitchesAndPublishes(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
 		`{"type":"main","provider":"p1","model":"m2"}`)
@@ -142,7 +142,7 @@ func TestSelectSmallModelSwitches(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
 		`{"type":"small","provider":"p1","model":"m1"}`)
@@ -169,7 +169,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 
-	snap := snapshotOf(t, g, "")
+	snap := bootstrapOf(t, g)
 	require.Equal(t, "m1", snap.Model.ID)
 	require.True(t, snap.Model.CanReason)
 	require.Equal(t, []string{"low", "high"}, snap.Model.EffortLevels)
@@ -181,7 +181,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 
 	// A starting agent says so in both places, from one check.
 	fake.SetReadyErr(workspace.ErrAgentNotInitialized)
-	snap = snapshotOf(t, g, "")
+	snap = bootstrapOf(t, g)
 	require.False(t, snap.Model.AgentReady)
 	require.False(t, snap.AgentReady)
 }
@@ -394,7 +394,7 @@ func TestModelWatchPublishesTerminalChanges(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	// The terminal switches models, out of the gateway's sight.
 	fake.SetAgentModel(workspace.AgentModel{
@@ -433,7 +433,7 @@ func TestModelWatchReportsReadiness(t *testing.T) {
 
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c) // Snapshot, taken while the agent starts.
-	var loaded Snapshot
+	var loaded Bootstrap
 	require.NoError(t, json.Unmarshal(snap.Payload, &loaded))
 	require.False(t, loaded.AgentReady)
 	require.False(t, loaded.Model.AgentReady)
@@ -455,7 +455,7 @@ func TestModelWatchSkipsUnreachableWorkspace(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	fake.SetReadyErr(fmt.Errorf("get agent info: %w", workspace.ErrServerUnreachable))
 	fake.SetAgentModel(workspace.AgentModel{})
@@ -490,7 +490,7 @@ func TestStaleModelWatchCannotOverwriteASelect(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	entered := make(chan struct{})
 	release := make(chan struct{})

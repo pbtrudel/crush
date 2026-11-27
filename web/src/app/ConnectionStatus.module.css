@@ -1,0 +1,13 @@
+.status {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  font-size: 12px;
+  text-align: center;
+}
+
+.ended {
+  color: var(--dsw-alias-state-error-primary);
+}

@@ -112,7 +112,7 @@ func TestTeamFramesKeepLastGoodRuns(t *testing.T) {
 	writeRuns(t, dir, []agentrun.Run{{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: time.Now()}})
 	g, _ := startWith(t, Options{AgentTeamsDir: dir, teamPollInterval: 20 * time.Millisecond})
 	c := dialStream(t, g, "")
-	var snap Snapshot
+	var snap Bootstrap
 	require.NoError(t, json.Unmarshal(readFrame(t, c).Payload, &snap))
 	require.Len(t, snap.AgentRuns, 1)
 
@@ -130,7 +130,7 @@ func TestTeamFramesKeepLastGoodRuns(t *testing.T) {
 		}
 	}
 	// The snapshot keeps the last good runs as well.
-	later := snapshotOf(t, g, "")
+	later := bootstrapOf(t, g)
 	require.Len(t, later.AgentRuns, 1)
 	require.Equal(t, "sub-1", later.AgentRuns[0].ID)
 
@@ -174,7 +174,7 @@ func TestTeamFramesReachTheTab(t *testing.T) {
 	writeRuns(t, dir, []agentrun.Run{{ID: "sub-1", Kind: agentrun.KindSubagent, Name: "Map the parser", SessionID: "sub-1", ParentSessionID: "s1", Status: agentrun.StatusRunning, StartedAt: time.Now()}})
 	g, _ := startWith(t, Options{AgentTeamsDir: dir, teamPollInterval: 20 * time.Millisecond})
 	c := dialStream(t, g, "")
-	var snap Snapshot
+	var snap Bootstrap
 	require.NoError(t, json.Unmarshal(readFrame(t, c).Payload, &snap))
 	require.Equal(t, "team-1", snap.Team.TeamID)
 	require.Len(t, snap.AgentRuns, 1)

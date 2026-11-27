@@ -103,7 +103,7 @@ func TestSummarizeFailurePublishesWebError(t *testing.T) {
 		return errors.New("dial unix /tmp/crush.sock: refused")
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost,
 		g.URL()+"/api/sessions/s1/summarize", "")
 	defer rsp.Body.Close()
@@ -207,7 +207,7 @@ func TestOverClientDetachedPromptAnswersAgentStarting(t *testing.T) {
 	t.Parallel()
 	g := startClientGateway(t, nil)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -258,7 +258,8 @@ func TestShellStreamsAndFinishes(t *testing.T) {
 		return proto.ShellCommandResponse{Output: "line 1\nline 2\n", ExitCode: 0}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	runID := startShell(t, authedClient(t, g), g, "printf lines")
 	output, done := readShellOutput(t, c, runID)
 	require.Equal(t, "line 1\nline 2\n", output)
@@ -280,7 +281,8 @@ func TestShellCancelReleasedOnFinish(t *testing.T) {
 		return proto.ShellCommandResponse{ExitCode: 0}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	runID := startShell(t, authedClient(t, g), g, "true")
 	_, done := readShellOutput(t, c, runID)
 	require.True(t, done.Done)
@@ -305,7 +307,7 @@ func TestShellFirstMessageFlag(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 	client := authedClient(t, g)
 	startShell(t, client, g, "ls")
 	require.Eventually(t, func() bool {
@@ -331,7 +333,8 @@ func TestShellChunksCutOnRuneBoundary(t *testing.T) {
 		return proto.ShellCommandResponse{Output: output}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	runID := startShell(t, authedClient(t, g), g, "generate")
 	var chunks []string
 	for {
@@ -364,7 +367,8 @@ func TestShellCancel(t *testing.T) {
 		return proto.ShellCommandResponse{}, err
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	client := authedClient(t, g)
 	runID := startShell(t, client, g, "sleep 10")
 	require.Eventually(t, func() bool {
@@ -402,7 +406,8 @@ func TestShellCancelAfterContextDone(t *testing.T) {
 		return proto.ShellCommandResponse{ExitCode: 1}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	client := authedClient(t, g)
 	runID := startShell(t, client, g, "sleep 10")
 	rsp, body := doJSON(t, client, http.MethodDelete, g.URL()+"/api/shell/"+runID, "")
@@ -435,7 +440,8 @@ func TestShellCoalescesProgress(t *testing.T) {
 		return proto.ShellCommandResponse{Output: "one\ntwo\nthree\n"}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	startShell(t, authedClient(t, g), g, "printf three")
 	select {
 	case <-written:
@@ -478,7 +484,8 @@ func TestShellFailureReportsFixedError(t *testing.T) {
 		return proto.ShellCommandResponse{Output: "partial\n", ExitCode: 2}, errors.New("exec: no such file")
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	runID := startShell(t, authedClient(t, g), g, "nope")
 	output, done := readShellOutput(t, c, runID)
 	require.Equal(t, "partial\n", output)
@@ -499,7 +506,8 @@ func TestShellCancelledOnShutdown(t *testing.T) {
 		return proto.ShellCommandResponse{ExitCode: 1}, nil
 	}
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
 	runID := startShell(t, authedClient(t, g), g, "sleep 10")
 	require.Eventually(t, func() bool {
 		return slices.Contains(fake.CallLog(), "AgentRunShellCommand:s1:sleep 10:true")

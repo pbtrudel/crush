@@ -1,22 +1,12 @@
 package web
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"log/slog"
 	"reflect"
-	"strconv"
 	"time"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
@@ -51,104 +41,6 @@ type ServerInfo struct {
 	DiagnosticCount int    `json:"diagnostic_count,omitempty"`
 	ToolCount       int    `json:"tool_count,omitempty"`
 	Error           string `json:"error,omitempty"`
-}
-
-// Snapshot is the full state a tab needs to render from scratch. Entity
-// fields hold the same JSON as the matching live event payloads.
-type Snapshot struct {
-	Version            string                `json:"version"`
-	WorkingDir         string                `json:"working_dir"`
-	Branch             string                `json:"branch,omitempty"`
-	CurrentSessionID   string                `json:"current_session_id"`
-	Session            json.RawMessage       `json:"session,omitempty"`
-	Messages           []json.RawMessage     `json:"messages"`
-	Files              []FileSummary         `json:"files"`
-	Permissions        []json.RawMessage     `json:"permissions"`
-	Questions          []json.RawMessage     `json:"questions,omitempty"`
-	SecurePrompts      []SecurePrompt        `json:"secure_prompts,omitempty"`
-	SignIn             *SignInState          `json:"signin,omitempty"`
-	AWSSSO             *AWSSSO               `json:"aws_sso,omitempty"`
-	PermissionMode     string                `json:"permission_mode"`
-	InputMode          string                `json:"input_mode"`
-	PlanReadySessionID string                `json:"plan_ready_session_id,omitempty"`
-	Model              ModelInfo             `json:"model"`
-	AgentReady         bool                  `json:"agent_ready"`
-	Busy               bool                  `json:"busy"`
-	Queued             []string              `json:"queued"`
-	LSP                map[string]ServerInfo `json:"lsp"`
-	MCP                map[string]ServerInfo `json:"mcp"`
-	Team               TeamState             `json:"team"`
-	AgentRuns          []agentrun.Run        `json:"agent_runs"`
-}
-
-func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot {
-	s := Snapshot{
-		Version:            version.Version,
-		WorkingDir:         g.ws.WorkingDir(),
-		CurrentSessionID:   sessionID,
-		Messages:           []json.RawMessage{},
-		Files:              []FileSummary{},
-		Permissions:        []json.RawMessage{},
-		Queued:             []string{},
-		LSP:                map[string]ServerInfo{},
-		MCP:                map[string]ServerInfo{},
-		PermissionMode:     string(proto.PermissionModeToProto(g.ws.PermissionMode())),
-		InputMode:          g.InputMode(),
-		PlanReadySessionID: g.PlanReadySessionID(),
-	}
-	// One readiness call feeds both fields, so the snapshot cannot say the
-	// agent is ready while its model says otherwise.
-	readyErr := g.ws.AgentReadyErr()
-	s.Model = modelInfo(g, readyErr == nil)
-	s.AgentReady = s.Model.AgentReady
-	s.Team, s.AgentRuns = g.team.current()
-	if branch, err := g.ws.GitBranch(ctx); err == nil {
-		s.Branch = branch
-	}
-	for name, info := range g.ws.LSPGetStates() {
-		s.LSP[name] = ServerInfo{
-			State:           strconv.Itoa(int(info.State)),
-			DiagnosticCount: info.DiagnosticCount,
-			Error:           errText(info.Error),
-		}
-	}
-	for name, info := range g.ws.MCPGetStates() {
-		s.MCP[name] = ServerInfo{
-			State:     info.State.String(),
-			ToolCount: info.Counts.Tools,
-			Error:     errText(info.Error),
-		}
-	}
-	s.Permissions = entities(g.pending.permissions())
-	if prompts := g.pending.securePrompts(); len(prompts) > 0 {
-		s.SecurePrompts = prompts
-	}
-	s.SignIn = g.signInState()
-	s.AWSSSO = g.pending.awsSSO()
-	for _, q := range g.pending.questions() {
-		s.Questions = append(s.Questions, innerPayload(pubsub.Event[question.Request]{Type: pubsub.CreatedEvent, Payload: q}))
-	}
-	if sessionID == "" {
-		return s
-	}
-	if sess, err := g.ws.GetSession(ctx, sessionID); err == nil {
-		s.Session = innerPayload(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: sess})
-	} else {
-		slog.Debug("Web snapshot could not load session", "session_id", sessionID, "error", err)
-	}
-	if msgs, err := g.ws.ListMessages(ctx, sessionID); err == nil {
-		s.Messages = entities(msgs)
-	}
-	if files, err := g.fileSummaries(ctx, sessionID); err == nil {
-		s.Files = files
-	} else {
-		slog.Debug("Web snapshot could not list edited files", "session_id", sessionID, "error", err)
-	}
-	s.Busy = g.ws.AgentIsSessionBusy(sessionID)
-	if q := g.ws.AgentQueuedPromptsList(sessionID); q != nil {
-		s.Queued = q
-	}
-	return s
 }
 
 func errText(err error) string {

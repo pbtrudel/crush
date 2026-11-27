@@ -174,6 +174,9 @@ type Fake struct {
 	// agentModelGate holds one AgentModel read; set it with
 	// SetAgentModelGate.
 	agentModelGate *agentModelGate
+	// listMessagesGate holds one ListMessages read; set it with
+	// SetListMessagesGate.
+	listMessagesGate *agentModelGate
 	// initializePrompt is what InitializePrompt answers; set it with
 	// SetInitializePrompt.
 	initializePrompt string
@@ -426,6 +429,15 @@ func (f *Fake) SetAgentModelGate(entered chan<- struct{}, release <-chan struct{
 	f.mu.Lock()
 	f.agentModelGate = &agentModelGate{entered: entered, release: release}
 	f.mu.Unlock()
+}
+
+// SetListMessagesGate holds the next ListMessages call until release is
+// closed, reporting on entered first. It is one-shot: later reads pass
+// through, so a test only gates the snapshot it means to hold.
+func (f *Fake) SetListMessagesGate(entered chan<- struct{}, release <-chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listMessagesGate = &agentModelGate{entered: entered, release: release}
 }
 
 // SetAgentBusy makes AgentIsBusy report busy, as a running turn would.
@@ -1122,10 +1134,21 @@ func (f *Fake) SetSessionQueued(id string, prompts []string) {
 	f.queued[id] = append([]string(nil), prompts...)
 }
 
-func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, error) {
+func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]message.Message(nil), f.messages[id]...), nil
+	gate := f.listMessagesGate
+	f.listMessagesGate = nil
+	messages := append([]message.Message(nil), f.messages[id]...)
+	f.mu.Unlock()
+	if gate != nil {
+		gate.entered <- struct{}{}
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return messages, nil
 }
 
 func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.Session, error) {

@@ -473,14 +473,13 @@ func TestEncodeStripsFileContent(t *testing.T) {
 	require.Contains(t, string(raw), `"version":3`)
 }
 
+// TestSnapshotIncludesFiles pins the edited files a subscribed tab renders.
+// They ride the per-session snapshot now, not the stream's first frame.
 func TestSnapshotIncludesFiles(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	seedTree(fake)
-	c := dialStream(t, g, "")
-	f := readFrame(t, c)
-	var snap Snapshot
-	require.NoError(t, json.Unmarshal(f.Payload, &snap))
+	snap := g.buildSessionSnapshot(t.Context(), "s1", "", messagePageSize)
 	require.Len(t, snap.Files, 2)
 	require.Equal(t, "/repo/b.go", snap.Files[0].Path)
 }

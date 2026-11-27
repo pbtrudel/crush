@@ -3,6 +3,9 @@ package web
 import (
 	"encoding/json"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pinentry"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -52,6 +55,20 @@ func encode(ev any) (string, json.RawMessage, bool) {
 		return p.Type, withoutFileContent(p.Payload), true
 	}
 	return p.Type, p.Payload, true
+}
+
+// eventSessionID returns the session a per-session frame belongs to, or ""
+// for a frame every tab receives.
+func eventSessionID(ev any) string {
+	switch e := ev.(type) {
+	case pubsub.Event[message.Message]:
+		return e.Payload.SessionID
+	case pubsub.Event[history.File]:
+		return e.Payload.SessionID
+	case pubsub.Event[notify.RunComplete]:
+		return e.Payload.SessionID
+	}
+	return ""
 }
 
 // withoutAttachmentData removes the base64 attachment bytes from a message

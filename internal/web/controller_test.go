@@ -157,7 +157,7 @@ func TestControllerReportsInputModeBeforeStart(t *testing.T) {
 	_, err := c.Start(t.Context())
 	require.NoError(t, err)
 
-	require.Equal(t, "plan", snapshotOf(t, c.gw, "").InputMode)
+	require.Equal(t, "plan", bootstrapOf(t, c.gw).InputMode)
 }
 
 // TestControllerIgnoresStaleInputModeReports checks that reports racing in
@@ -244,7 +244,7 @@ func TestPlanReadyPublishesAndSnapshots(t *testing.T) {
 	require.Equal(t, framePlanReady, f.Type)
 	require.JSONEq(t, `{"session_id":"s1"}`, string(f.Payload))
 	require.Equal(t, "s1", g.PlanReadySessionID())
-	require.Equal(t, "s1", g.buildSnapshot(t.Context(), "s1").PlanReadySessionID)
+	require.Equal(t, "s1", g.buildBootstrap(t.Context()).PlanReadySessionID)
 
 	// A repeat changes nothing, so the next frame the tab sees is the
 	// clear rather than a second report of the same session.
@@ -254,7 +254,7 @@ func TestPlanReadyPublishesAndSnapshots(t *testing.T) {
 	require.Equal(t, framePlanReady, f.Type)
 	require.JSONEq(t, `{"session_id":""}`, string(f.Payload))
 	require.Empty(t, g.PlanReadySessionID())
-	require.Empty(t, g.buildSnapshot(t.Context(), "s1").PlanReadySessionID)
+	require.Empty(t, g.buildBootstrap(t.Context()).PlanReadySessionID)
 }
 
 // TestControllerReportsPlanReadyBeforeStart checks that a pending plan
@@ -268,7 +268,7 @@ func TestControllerReportsPlanReadyBeforeStart(t *testing.T) {
 	_, err := c.Start(t.Context())
 	require.NoError(t, err)
 
-	require.Equal(t, "s1", snapshotOf(t, c.gw, "").PlanReadySessionID)
+	require.Equal(t, "s1", bootstrapOf(t, c.gw).PlanReadySessionID)
 }
 
 // TestControllerIgnoresStalePlanReadyReports checks that reports racing in
@@ -515,7 +515,7 @@ func TestControllerStopClosesTabsWithTheDetachNotice(t *testing.T) {
 	require.NoError(t, err)
 	gw := c.gw
 	conn := dialStream(t, gw, "")
-	readFrame(t, conn) // Snapshot.
+	readFrame(t, conn) // Bootstrap.
 
 	require.NoError(t, c.Stop(t.Context()))
 	fr := nextFrameOfType(t.Context(), t, conn, frameClosing)

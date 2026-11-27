@@ -252,7 +252,7 @@ func (g *Gateway) runShell(ctx context.Context, cancel context.CancelFunc, id, s
 					n = min(len(data), shellChunkBytes)
 				}
 			}
-			g.hub.publishJSON(frameShellOutput, shellOutputPayload{
+			g.hub.publishSessionJSON(sessionID, frameShellOutput, shellOutputPayload{
 				RunID: id, SessionID: sessionID, Chunk: data[:n],
 			})
 			data = data[n:]
@@ -297,7 +297,7 @@ func (g *Gateway) runShell(ctx context.Context, cancel context.CancelFunc, id, s
 		slog.Warn("Web shell command failed", "session_id", sessionID, "error", err)
 		done.Error = shellFailedText
 	}
-	g.hub.publishJSON(frameShellOutput, done)
+	g.hub.publishSessionJSON(sessionID, frameShellOutput, done)
 }
 
 func (g *Gateway) handleShellCancel(w http.ResponseWriter, r *http.Request) {

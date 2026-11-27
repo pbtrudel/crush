@@ -50,25 +50,26 @@ func doJSON(t *testing.T, c *http.Client, method, target, body string) (*http.Re
 	return rsp, data
 }
 
-// snapshotOf builds the payload the gateway sends as the first frame of a
-// stream. An empty session ID means the terminal's current session, as it
-// does for the stream; GET /api/snapshot served the same payload until M0
-// removed it.
-func snapshotOf(t *testing.T, g *Gateway, sessionID string) Snapshot {
+// bootstrapOf builds the payload the gateway sends as the first frame of a
+// stream.
+func bootstrapOf(t *testing.T, g *Gateway) Bootstrap {
 	t.Helper()
-	if sessionID == "" {
-		sessionID = g.ws.CurrentSessionID()
-	}
-	return g.buildSnapshot(t.Context(), sessionID)
+	return g.buildBootstrap(t.Context())
 }
 
-// snapshotJSON is snapshotOf as JSON, for the tests that assert a secret
+// bootstrapJSON is bootstrapOf as JSON, for the tests that assert a secret
 // never reaches a tab.
-func snapshotJSON(t *testing.T, g *Gateway, sessionID string) string {
+func bootstrapJSON(t *testing.T, g *Gateway) string {
 	t.Helper()
-	raw, err := json.Marshal(snapshotOf(t, g, sessionID))
+	raw, err := json.Marshal(bootstrapOf(t, g))
 	require.NoError(t, err)
 	return string(raw)
+}
+
+// sessionSnapshotOf builds the payload a subscription answers with.
+func sessionSnapshotOf(t *testing.T, g *Gateway, sessionID string) SessionSnapshot {
+	t.Helper()
+	return g.buildSessionSnapshot(t.Context(), sessionID, "", messagePageSize)
 }
 
 // runResult is what the fake agent run reports back to the test goroutine.
@@ -290,10 +291,15 @@ func TestSessionsAndMessages(t *testing.T) {
 	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/s1/messages", "")
 	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var msgs []map[string]any
-	require.NoError(t, json.Unmarshal(body, &msgs))
-	require.Len(t, msgs, 1)
-	require.Equal(t, "m1", msgs[0]["id"])
+	var page messagesResponse
+	require.NoError(t, json.Unmarshal(body, &page))
+	require.Len(t, page.Messages, 1)
+	var first struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(page.Messages[0], &first))
+	require.Equal(t, "m1", first.ID)
+	require.False(t, page.HasMore)
 
 	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/sessions", `{"title":"New"}`)
 	defer rsp.Body.Close()
@@ -301,27 +307,14 @@ func TestSessionsAndMessages(t *testing.T) {
 	require.Contains(t, string(body), `"title":"New"`)
 }
 
-func TestHealthAndSnapshot(t *testing.T) {
+func TestHealth(t *testing.T) {
 	t.Parallel()
-	g, fake := startTest(t)
+	g, _ := startTest(t)
 	c := authedClient(t, g)
 	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/health", "")
 	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.JSONEq(t, `{"ok":true}`, string(body))
-
-	snap := snapshotOf(t, g, "")
-	require.Equal(t, "s1", snap.CurrentSessionID)
-	require.NotNil(t, snap.Session)
-	require.Equal(t, "main", snap.Branch)
-
-	missing := snapshotOf(t, g, "missing")
-	require.Equal(t, "missing", missing.CurrentSessionID)
-	require.Nil(t, missing.Session)
-
-	// The terminal's current session changes the default.
-	fake.SetCurrent("other")
-	require.Equal(t, "other", snapshotOf(t, g, "").CurrentSessionID)
 }
 
 // TestSnapshotRouteIsGone pins the M0 removal: a tab loads a bootstrap plus
@@ -336,15 +329,15 @@ func TestSnapshotRouteIsGone(t *testing.T) {
 	require.NotContains(t, string(body), "current_session_id")
 }
 
-// TestSnapshotExposesEveryPendingBatch checks that a reload restores each
+// TestBootstrapExposesEveryPendingBatch checks that a reload restores each
 // open question, not just the one that arrived last.
-func TestSnapshotExposesEveryPendingBatch(t *testing.T) {
+func TestBootstrapExposesEveryPendingBatch(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s2"})
 	emitQuestion(t, g, fake, question.Request{ID: "b2", SessionID: "s3"})
 
-	snap := snapshotOf(t, g, "")
+	snap := bootstrapOf(t, g)
 	require.Len(t, snap.Questions, 2)
 	var first, second struct {
 		ID string `json:"id"`
@@ -811,7 +804,7 @@ func TestPromptFailurePublishesSafeError(t *testing.T) {
 				return tc.err
 			}
 			c := dialStream(t, g, "")
-			readFrame(t, c) // Snapshot.
+			readFrame(t, c) // Bootstrap.
 
 			var buf bytes.Buffer
 			mw := multipart.NewWriter(&buf)
@@ -842,9 +835,9 @@ func TestPromptFailurePublishesSafeError(t *testing.T) {
 	}
 }
 
-// TestSnapshotReportsAgentReady pins that a tab can tell on load whether
+// TestBootstrapReportsAgentReady pins that a tab can tell on load whether
 // the agent is starting.
-func TestSnapshotReportsAgentReady(t *testing.T) {
+func TestBootstrapReportsAgentReady(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
@@ -858,7 +851,7 @@ func TestSnapshotReportsAgentReady(t *testing.T) {
 			t.Parallel()
 			g, fake := startTest(t)
 			fake.SetReadyErr(tc.ready)
-			require.Equal(t, tc.want, snapshotOf(t, g, "").AgentReady)
+			require.Equal(t, tc.want, bootstrapOf(t, g).AgentReady)
 		})
 	}
 }
