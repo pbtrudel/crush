@@ -77,6 +77,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       store.set((state) => ({
         selectedSessionId: sessionID,
         lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
+        error: errorForSelection(state.error, sessionID),
       }))
       persistSeen(before)
     },
@@ -120,6 +121,7 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
     // would show a marker for a session the person has been reading.
     lastSeen:
       selectedSessionId === null ? pruned : markSeen(pruned, selectedSessionId, updatedAtIn(payload.sessions, selectedSessionId)),
+    error: errorForSelection(state.error, selectedSessionId),
   }
 }
 
@@ -266,12 +268,14 @@ function mergeSessionEvent(rows: SessionRow[], payload: unknown): SessionRow[] {
 function dropSession(state: AppState, sessionID: string): AppState {
   const sessionData = { ...state.sessionData }
   delete sessionData[sessionID]
+  const selectedSessionId = state.selectedSessionId === sessionID ? null : state.selectedSessionId
   return {
     ...state,
     sessions: state.sessions.filter((row) => row.id !== sessionID),
     sessionData,
-    selectedSessionId: state.selectedSessionId === sessionID ? null : state.selectedSessionId,
+    selectedSessionId,
     lastSeen: withoutKey(state.lastSeen, sessionID),
+    error: errorForSelection(state.error, selectedSessionId),
   }
 }
 
@@ -345,6 +349,16 @@ export function isUnread(state: AppState, sessionID: string): boolean {
     return false
   }
   return updatedAtIn(state.sessions, sessionID) > (state.lastSeen[sessionID] ?? 0)
+}
+
+// errorForSelection drops an error that names a session the tab is no longer
+// on, so a stale message neither shows up later nor comes back when the
+// selection returns. An error with an empty session_id is global and stays.
+function errorForSelection(error: WebError | null, selectedSessionId: string | null): WebError | null {
+  if (error === null || error.session_id === '') {
+    return error
+  }
+  return error.session_id === selectedSessionId ? error : null
 }
 
 // visibleError answers the error the tab should show for the session on

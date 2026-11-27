@@ -37,13 +37,43 @@ describe('boot', () => {
     await expect(boot(env())).resolves.toMatchObject({ ok: false, reason: 'unauthorized' })
   })
 
+  it('strips the fragment before the token is exchanged', async () => {
+    const stripHash = vi.fn()
+    const authenticate = vi.fn(async () => undefined)
+    const e = env({ hash: '#t=abc123', stripHash, client: { ...env().client, authenticate } })
+    await expect(boot(e)).resolves.toEqual({ ok: true })
+    expect(stripHash.mock.invocationCallOrder[0]).toBeLessThan(authenticate.mock.invocationCallOrder[0])
+  })
+
   it('treats a refused token as unauthorized', async () => {
     const e = env({
       hash: '#t=bad',
-      client: { ...env().client, authenticate: vi.fn(async () => Promise.reject(new Error('invalid token'))) },
+      client: {
+        ...env().client,
+        authenticate: vi.fn(async () =>
+          Promise.reject(new HttpError(401, 'unauthorized', 'missing or invalid token')),
+        ),
+      },
     })
-    await expect(boot(e)).resolves.toMatchObject({ ok: false, reason: 'unauthorized', message: 'invalid token' })
-    expect(e.stripHash).not.toHaveBeenCalled()
+    await expect(boot(e)).resolves.toMatchObject({
+      ok: false,
+      reason: 'unauthorized',
+      message: 'missing or invalid token',
+    })
+    // The token left the address bar as soon as it was read, so the tab
+    // asks for a fresh link rather than holding a fragment it cannot use.
+    expect(e.stripHash).toHaveBeenCalled()
+    expect(e.client.clearToken).toHaveBeenCalled()
+  })
+
+  it('reports an unreachable gateway when the exchange cannot reach it', async () => {
+    const e = env({
+      hash: '#t=abc123',
+      client: { ...env().client, authenticate: vi.fn(async () => Promise.reject(new Error('offline'))) },
+    })
+    await expect(boot(e)).resolves.toMatchObject({ ok: false, reason: 'unreachable', message: 'offline' })
+    expect(e.stripHash).toHaveBeenCalled()
+    expect(e.client.clearToken).not.toHaveBeenCalled()
   })
 
   it('reports an unreachable gateway without dropping the token', async () => {
@@ -65,6 +95,7 @@ describe('boot', () => {
       },
     })
     await expect(boot(e)).resolves.toMatchObject({ ok: false, reason: 'unauthorized' })
+    expect(e.stripHash).toHaveBeenCalled()
     expect(e.client.clearToken).toHaveBeenCalled()
   })
 

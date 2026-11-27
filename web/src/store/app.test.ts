@@ -401,4 +401,42 @@ describe('web_error frames', () => {
   it('has no error to show before one arrives', () => {
     expect(visibleError(createAppStore(memoryStorage()).get())).toBeNull()
   })
+
+  it('drops an error that names a session once the selection moves on', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(frame('web_error', { session_id: 's1', code: 'agent_busy', error: 'busy' }, 7))
+    expect(store.get().error).not.toBeNull()
+    store.selectSession('s2')
+    expect(store.get().error).toBeNull()
+  })
+
+  it('keeps an error for the session that is still selected', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(frame('web_error', { session_id: 's1', code: 'agent_busy', error: 'busy' }, 7))
+    store.selectSession('s1')
+    expect(visibleError(store.get())?.error).toBe('busy')
+  })
+
+  it('keeps a global error across a selection change', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(frame('web_error', { session_id: '', code: 'gateway', error: 'the gateway is busy' }, 7))
+    store.selectSession('s2')
+    expect(visibleError(store.get())?.error).toBe('the gateway is busy')
+  })
+
+  it('drops a per-session error when a bootstrap moves the selection', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(frame('web_error', { session_id: 's1', code: 'agent_busy', error: 'busy' }, 7))
+    store.applyBootstrap({
+      ...bootstrap,
+      current_session_id: 's2',
+      sessions: [bootstrap.sessions[1]],
+    })
+    expect(store.get().selectedSessionId).toBe('s2')
+    expect(store.get().error).toBeNull()
+  })
 })

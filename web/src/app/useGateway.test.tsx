@@ -28,6 +28,13 @@ class FakeSocket {
     this.readyState = 3
   }
 
+  // fail is the browser's view of a refused handshake: the gateway's 401 is
+  // hidden and the socket closes with code 1006 before it ever opens.
+  fail(code = 1006): void {
+    this.readyState = 3
+    this.onclose?.({ code })
+  }
+
   open(): void {
     this.onopen?.()
   }
@@ -96,6 +103,47 @@ describe('useGateway', () => {
     await waitFor(() => expect(result.current.state).toBe('unreachable'))
     expect(result.current.error).toBe('offline')
     expect(h.sockets).toHaveLength(0)
+    unmount()
+  })
+
+  it('shows the unauthorized screen when the handshake is refused', async () => {
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    h.client.get.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
+    act(() => h.socket.fail(1006))
+    await waitFor(() => expect(result.current.state).toBe('unauthorized'))
+    expect(h.client.clearToken).toHaveBeenCalled()
+    // The stream is stopped too: no backoff loop keeps offering a token the
+    // gateway has already refused.
+    expect(result.current.stream.state).toBe('closed')
+    unmount()
+  })
+
+  it('keeps reconnecting when the probe finds a live gateway', async () => {
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    h.client.get.mockResolvedValueOnce({ ok: true })
+    act(() => h.socket.fail(1006))
+    // The second health call is the probe the close triggered.
+    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    expect(result.current.state).toBe('ready')
+    expect(result.current.stream.state).toBe('reconnecting')
+    expect(h.client.clearToken).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('keeps reconnecting when the probe cannot reach the gateway', async () => {
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    h.client.get.mockRejectedValueOnce(new Error('offline'))
+    act(() => h.socket.fail(1006))
+    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    expect(result.current.state).toBe('ready')
+    expect(result.current.stream.state).toBe('reconnecting')
+    expect(h.client.clearToken).not.toHaveBeenCalled()
     unmount()
   })
 
@@ -190,8 +238,9 @@ describe('useGateway', () => {
     const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>
     const { result, unmount } = renderHook(() => useGateway(h.options), { wrapper })
     await waitFor(() => expect(result.current.state).toBe('ready'))
-    // One client, started once: the double effect must not open a second
-    // socket or leak the first.
+    // What this pins is the socket count: StrictMode mounts, unmounts and
+    // mounts again, and the double effect must not open a second socket.
+    // Listener and subscription cleanup is pinned by the unmount test above.
     expect(h.sockets).toHaveLength(1)
     expect(h.sockets.filter((socket) => !socket.closed)).toHaveLength(1)
     unmount()

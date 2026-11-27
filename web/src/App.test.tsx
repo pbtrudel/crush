@@ -49,5 +49,8 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByText('Crush is not answering')).toBeInTheDocument()
     expect(screen.getByText('fetch failed')).toBeInTheDocument()
+    // The launch token is gone from the address bar by now, so the only way
+    // back is a fresh link from the terminal.
+    expect(screen.getByText('/web')).toBeInTheDocument()
   })
 })
