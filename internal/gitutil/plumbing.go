@@ -51,16 +51,21 @@ func CommitAll(ctx context.Context, dir, message string, pathspecs []string) (bo
 		return false, fmt.Errorf("git add -A: %w", err)
 	}
 	// diff --quiet exits 1 when something is staged and 0 when nothing is.
-	// With pathspecs it looks at those paths only, and the commit that
-	// follows commits only them too, so a change another path already has
-	// staged stays out of the commit.
+	// Every step that takes the pathspecs does so literally: git commit --
+	// <pathspec> commits the working tree content of every tracked path a
+	// non-literal pathspec matches, so a scope like docs/star*.md would
+	// also commit a tracked docs/starX.md. The emptiness check and the
+	// commit see the same paths as the add, so a change another path
+	// already has staged stays out of the commit.
+	gitAt := func(args ...string) (string, error) { return gitOutput(ctx, dir, args...) }
 	diffArgs := []string{"diff", "--cached", "--quiet"}
 	commitArgs := []string{"commit", "-m", message}
 	if len(specs) > 0 {
+		gitAt = func(args ...string) (string, error) { return gitLiteral(ctx, dir, args...) }
 		diffArgs = append(append(diffArgs, "--"), specs...)
 		commitArgs = append(append(commitArgs, "--"), specs...)
 	}
-	err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, diffArgs...)...).Run()
+	_, err := gitAt(diffArgs...)
 	if err == nil {
 		return false, nil
 	}
@@ -68,7 +73,7 @@ func CommitAll(ctx context.Context, dir, message string, pathspecs []string) (bo
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		return false, fmt.Errorf("git diff --cached: %w", err)
 	}
-	if _, err := gitOutput(ctx, dir, commitArgs...); err != nil {
+	if _, err := gitAt(commitArgs...); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	return true, nil

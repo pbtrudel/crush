@@ -52,7 +52,9 @@ func TestCommitAll(t *testing.T) {
 // TestCommitAllStagesOnlyThePathspecs pins that a commit with pathspecs
 // leaves every change outside them in the work tree, that a pathspec is a
 // literal path and not a glob, and that a pathspec matching nothing is not
-// an error.
+// an error. A tracked file a non-literal pathspec would match stays out of
+// the commit as well: git commit -- <pathspec> commits the working tree
+// content of every tracked match.
 func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
 	t.Parallel()
 	repo := initPlumbingRepo(t)
@@ -62,6 +64,12 @@ func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "a.md"), []byte("docs\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "star*.md"), []byte("literal\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "starX.md"), []byte("glob\n"), 0o644))
+	// A tracked file the glob would match, modified after the commit that
+	// tracked it.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "starTracked.md"), []byte("tracked\n"), 0o644))
+	runGit(t, repo, "add", "docs/starTracked.md")
+	runGit(t, repo, "commit", "-m", "track a glob match")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "starTracked.md"), []byte("changed\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("stray\n"), 0o644))
 	// A change another path already staged stays out of the commit too.
 	runGit(t, repo, "add", "stray.txt")
@@ -76,6 +84,8 @@ func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
 	require.Contains(t, status, "M README.md", "a change outside the pathspecs stays uncommitted")
 	require.Contains(t, status, "A  stray.txt", "a staged change outside the pathspecs stays out of the commit")
 	require.Contains(t, status, "?? docs/starX.md")
+	require.Contains(t, status, "M docs/starTracked.md",
+		"a tracked file the glob would match stays out of the commit")
 
 	committed, err = CommitAll(ctx, repo, "Nothing named", []string{"docs/missing.md"})
 	require.NoError(t, err)

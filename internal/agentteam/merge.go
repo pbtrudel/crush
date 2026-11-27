@@ -37,6 +37,12 @@ func mergeRequestFor(task Task) mergeRequest {
 // whole-tree git lock, which a teammate's bash scope check takes too, so the
 // two never race on the index.
 func (s *Service) commitWork(ctx context.Context, task Task) error {
+	if task.Worktree == "" || len(task.WriteScopes) == 0 {
+		// A task with no write scopes that still holds a worktree, because
+		// the Lead cleared them, commits nothing: a whole-tree commit is
+		// what the worktree exists to prevent.
+		return nil
+	}
 	pathspecs := s.taskPathspecs(task)
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()

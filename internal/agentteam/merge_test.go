@@ -148,6 +148,35 @@ func TestCompleteCommitsOnlyInsideTheWriteScopes(t *testing.T) {
 	require.NoDirExists(t, view.Worktree)
 }
 
+// TestClearedScopesCommitNothing pins W21.2: a task that keeps its worktree
+// after its write scopes were cleared commits nothing, so an edit cannot
+// bring a whole-tree commit back through a task that still has a worktree.
+func TestClearedScopesCommitNothing(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	spawnMember(t, s, "rev")
+	view := scopedTask(t, s, "impl", "Docs", true)
+	writeTreeFile(t, view.Worktree, "docs/a.md", "docs\n")
+	writeTreeFile(t, view.Worktree, "stray.txt", "stray\n")
+
+	act(t, s, leadName, view.ID, "edit", func(r *UpdateTaskRequest) { r.WriteScopes = []string{} })
+	cleared := taskByID(t, s, view.ID)
+	require.Empty(t, cleared.WriteScopes)
+	require.Equal(t, view.Worktree, cleared.Worktree, "the task keeps its worktree")
+
+	act(t, s, "impl", view.ID, "complete", nil)
+	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status)
+	require.Equal(t, gitIn(t, repo, "rev-parse", "HEAD"), gitIn(t, view.Worktree, "rev-parse", "HEAD"),
+		"a task with no scopes commits nothing")
+
+	passCheck(t, s, "rev", view.ID)
+	require.Equal(t, TaskCompleted, taskByID(t, s, view.ID).Status)
+	require.NoFileExists(t, filepath.Join(repo, "docs", "a.md"))
+	require.NoFileExists(t, filepath.Join(repo, "stray.txt"))
+}
+
 // TestCompleteCommitsScopesUnderTheLeadSubdirectory pins that the pathspecs
 // are joined with the subdirectory the Lead works in, so a commit still finds
 // the task's files when the repository root is above the Lead's tree.
