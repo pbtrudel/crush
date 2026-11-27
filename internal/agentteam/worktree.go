@@ -329,10 +329,20 @@ type placedWorktree struct {
 // discardUnnamedWorktree removes a worktree this placement made when the
 // board does not name it. A worktree the task still records belongs to
 // whoever holds the task now, and a reused one was not made here, so neither
-// goes. A worktree opened from the Lead's HEAD takes its fresh branch with
-// it; a restored one keeps its branch and its commits.
+// goes. A worktree opened from the Lead's HEAD, or left by a task that was
+// deleted meanwhile, takes its branch with it; a restored one keeps its
+// branch and its commits for whoever holds the task.
 func (s *Service) discardUnnamedWorktree(ctx context.Context, claimed Task, placed placedWorktree) {
-	if !placed.made || s.recordsWorktreePath(claimed.ID, claimed.SessionID, placed.path) {
+	if !placed.made {
+		return
+	}
+	switch s.worktreeRecordFor(claimed.ID, claimed.SessionID, placed.path) {
+	case worktreeRecordNamed:
+		return
+	case worktreeRecordDeleted:
+		// The task is gone, so neither the worktree the restore recreated
+		// nor its branch belongs to anybody.
+		s.discardWorktree(ctx, placed.path, placed.branch)
 		return
 	}
 	if claimed.Worktree == "" {
@@ -342,17 +352,36 @@ func (s *Service) discardUnnamedWorktree(ctx context.Context, claimed Task, plac
 	s.discardRestoredWorktree(ctx, placed.path)
 }
 
-// recordsWorktreePath reports whether the board records path as the worktree
-// of the task, whoever owns it now. It holds s.mu only to read.
-func (s *Service) recordsWorktreePath(taskID, sessionID, path string) bool {
+// worktreeRecord says what the board holds for a worktree a placement made.
+type worktreeRecord int
+
+const (
+	// worktreeRecordUnnamed means no task of the board names the worktree.
+	worktreeRecordUnnamed worktreeRecord = iota
+	// worktreeRecordNamed means the task still records the worktree.
+	worktreeRecordNamed
+	// worktreeRecordDeleted means the task was deleted: it records nothing,
+	// and neither its worktree nor its branch stays.
+	worktreeRecordDeleted
+)
+
+// worktreeRecordFor reports what the board holds for path as the worktree of
+// the task, whoever owns the task now. It holds s.mu only to read.
+func (s *Service) worktreeRecordFor(taskID, sessionID, path string) worktreeRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, task := range s.state.Tasks {
-		if task.ID == taskID && task.SessionID == sessionID {
-			return task.Worktree == path
+		if task.ID != taskID || task.SessionID != sessionID {
+			continue
+		}
+		if task.Status == TaskDeleted {
+			return worktreeRecordDeleted
+		}
+		if task.Worktree == path {
+			return worktreeRecordNamed
 		}
 	}
-	return false
+	return worktreeRecordUnnamed
 }
 
 // removeUnusedWorktree removes a worktree no task names, and its branch when

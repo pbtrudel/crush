@@ -2858,10 +2858,13 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		next.Status = TaskDeleted
 		if current.Worktree != "" {
+			// The removal carries the path, so the deleted task keeps no
+			// record of the worktree or the branch it no longer holds.
 			removal = &worktreeRemoval{
 				taskID: current.ID, sessionID: current.SessionID,
 				path: current.Worktree, branch: current.Branch, forceBranch: true,
 			}
+			next.Worktree, next.Branch = "", ""
 		}
 	default:
 		return taskUpdate{}, newError(CodeInvalidArgument, "unsupported task action %q", req.Action)

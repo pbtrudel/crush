@@ -829,6 +829,46 @@ func TestDeleteDuringRestoreDoesNotStartTheMember(t *testing.T) {
 	require.Zero(t, claims)
 }
 
+// TestRestoreFinishingAfterADeleteLeavesNoOrphan pins W20.5: a delete clears
+// the task's worktree record, and a restore that finishes after it discards
+// the directory and the branch it recreated, so a deleted task leaves nothing
+// behind.
+func TestRestoreFinishingAfterADeleteLeavesNoOrphan(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", WriteScopes: []string{"docs"}})
+	view := act(t, s, "impl", task.ID, "claim", nil)
+	writeTreeFile(t, view.Worktree, "docs/a.md", "docs\n")
+	gitIn(t, view.Worktree, "add", ".")
+	gitIn(t, view.Worktree, "commit", "-m", "draft")
+	claimed := taskByID(t, s, task.ID)
+
+	act(t, s, "impl", task.ID, "delete", nil)
+	deleted := taskByID(t, s, task.ID)
+	require.Equal(t, TaskDeleted, deleted.Status)
+	require.Empty(t, deleted.Worktree, "a deleted task keeps no worktree record")
+	require.Empty(t, deleted.Branch, "a deleted task keeps no branch record")
+	require.NoDirExists(t, view.Worktree)
+	require.False(t, branchExists(repo, view.Branch))
+
+	// A restore that was under way when the delete landed recreates the
+	// worktree from a branch that no longer exists, and its claim is gone.
+	ctx, cancel := gitContext()
+	defer cancel()
+	placed, err := s.placeWorktree(ctx, claimed)
+	require.NoError(t, err)
+	require.Equal(t, view.Worktree, placed.path)
+	_, outcome := s.recordPlacedWorktree(claimed, placed.path, placed.branch)
+	require.Equal(t, placedLost, outcome, "the deleted task holds no claim")
+	require.DirExists(t, placed.path)
+
+	s.discardUnnamedWorktree(ctx, claimed, placed)
+	require.NoDirExists(t, placed.path, "a deleted task leaves no worktree")
+	require.False(t, branchExists(repo, placed.branch), "a deleted task leaves no branch")
+}
+
 // TestLostClaimKeepsTheWorktreeItDidNotMake pins P11: a claim whose record
 // misses must never remove a worktree the task still records, or the work
 // another member has not committed goes with it.
