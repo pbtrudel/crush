@@ -1,0 +1,12 @@
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.banner {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: center;
+}

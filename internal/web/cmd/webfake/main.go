@@ -209,7 +209,7 @@ func main() {
 		g.SetPlanReady(fake.CurrentSessionID())
 	}
 	fmt.Println(g.LaunchURL())
-	fmt.Fprintln(os.Stderr, "Dev server: the web UI is being rebuilt; this serves the placeholder page.")
+	fmt.Fprintln(os.Stderr, "Dev server: npm --prefix web run dev serves the UI from source on port 5173.")
 	// The terminal's signal and the browser's detach both end the fake;
 	// the cancellation releases the seeds before the shutdown closes
 	// their channels.

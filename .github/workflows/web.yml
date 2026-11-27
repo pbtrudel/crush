@@ -16,9 +16,8 @@ concurrency:
 jobs:
   frontend:
     runs-on: ubuntu-26.04
-    # The frontend is being rebuilt (M0 of the DSH rebuild). Until web/
-    # returns in M1 this job only runs the gateway tests; the npm steps and
-    # the dist freshness check come back with the new tree.
+    # Typecheck, unit tests, the bundle budget, the dist freshness check and
+    # the gateway tests take about 7 minutes on a hosted runner.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,6 +26,27 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run typecheck && npm test
+        working-directory: web
+      - run: npm run budget
+        working-directory: web
+      - name: Committed build is fresh
+        run: |
+          npm --prefix web run build
+          git diff --exit-code -- internal/web/dist
+          stray=$(git status --porcelain --untracked-files=all -- internal/web/dist)
+          if [ -n "$stray" ]; then
+            echo "$stray"
+            echo "internal/web/dist has files the commit does not carry"
+            exit 1
+          fi
       - run: go test ./internal/web/... ./internal/wire/...
 
   e2e:
