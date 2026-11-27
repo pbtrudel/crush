@@ -1297,16 +1297,14 @@ func (s *Service) watch(name string, run Run) {
 	}
 	if _, err := s.launch(context.WithoutCancel(context.Background()), runner, member, resumePrompt(pending)); err != nil {
 		if errors.Is(err, errShutdown) {
-			// Shutdown took the member after this turn drained its inbox.
-			// Hand the messages back so a later Service delivers them.
+			// Shutdown took the member after this turn drained its inbox
+			// and held its tasks for the resume. Hand both back in one
+			// write, so a later Service delivers the mail and the tasks do
+			// not stay in progress under a member nothing runs. Shutdown
+			// waits for this write: the watcher is counted.
 			_ = s.write(mustApply, func() (bool, error) {
-				for _, message := range pending {
-					for i := range s.state.Messages {
-						if s.state.Messages[i].ID == message.ID {
-							s.state.Messages[i].Delivered = false
-						}
-					}
-				}
+				s.requeueLocked(pending)
+				s.releaseHeldLocked(member.ID)
 				s.notifyLocked()
 				return true, nil
 			})
@@ -1324,8 +1322,14 @@ func (s *Service) watch(name string, run Run) {
 		// no longer run.
 		_ = s.write(mustApply, func() (bool, error) {
 			if s.closed {
+				// Shutdown began while the refused start ran. It is not
+				// this member's failure to record, but the mail and the
+				// held tasks must not be stranded.
 				closed = true
-				return false, nil
+				s.requeueLocked(pending)
+				s.releaseHeldLocked(member.ID)
+				s.notifyLocked()
+				return true, nil
 			}
 			for _, task := range s.state.Tasks {
 				if task.OwnerID == member.ID && task.Status == TaskInProgress {
@@ -1358,6 +1362,34 @@ func resumeFailedNotice(name string, err error, tasks []string, pending []Messag
 		text += fmt.Sprintf("\n\nTask(s) it left in progress: %s.", strings.Join(tasks, ", "))
 	}
 	return text + "\n\n" + resumePrompt(pending)
+}
+
+// releaseHeldLocked hands back the in-progress tasks memberID kept for a
+// resume that will not run, without charging an attempt: the turn that
+// would have finished them was stopped by shutdown, not by the work.
+// Callers must hold s.mu.
+func (s *Service) releaseHeldLocked(memberID string) {
+	for i := range s.state.Tasks {
+		task := &s.state.Tasks[i]
+		if task.OwnerID != memberID || task.Status != TaskInProgress {
+			continue
+		}
+		task.Status = TaskPending
+		task.OwnerID = ""
+		task.Revision++
+	}
+}
+
+// requeueLocked marks drained mail pending again, so a later Service
+// delivers it. Callers must hold s.mu.
+func (s *Service) requeueLocked(messages []Message) {
+	for _, message := range messages {
+		for i := range s.state.Messages {
+			if s.state.Messages[i].ID == message.ID {
+				s.state.Messages[i].Delivered = false
+			}
+		}
+	}
 }
 
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
