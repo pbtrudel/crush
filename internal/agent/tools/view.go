@@ -167,10 +167,12 @@ func newViewLikeTool(
 		name,
 		viewDescription(),
 		func(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			reader := view
+			reader.workingDir = WorkingDirFrom(ctx, view.workingDir)
 			if len(params.FilePaths) > 0 {
-				return view.readFiles(ctx, params, call)
+				return reader.readFiles(ctx, params, call)
 			}
-			return view.readFile(ctx, params, call)
+			return reader.readFile(ctx, params, call)
 		},
 	)
 }

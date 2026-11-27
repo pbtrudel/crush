@@ -88,8 +88,11 @@ func (g *scopeGatedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantas
 		return fantasy.NewTextErrorResponse(fmt.Sprintf(
 			"could not read the file paths of this %s call to check them against your write scopes: %s", name, err)), nil
 	}
+	// A teammate in a task worktree resolves its paths there, so its
+	// scopes are checked there too.
+	workingDir := tools.WorkingDirFrom(ctx, g.workingDir)
 	for _, path := range paths {
-		rel, inside := workspaceRelativePath(g.workingDir, path)
+		rel, inside := workspaceRelativePath(workingDir, path)
 		if inside && pathInScopes(rel, scopes) {
 			continue
 		}

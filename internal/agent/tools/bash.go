@@ -21,6 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -293,6 +294,7 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 		BashToolName,
 		string(bashDescription(attribution, blocked)),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
 			}
@@ -309,8 +311,11 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 				params.Command = strings.ReplaceAll(params.Command, modelIDPlaceholder, modelID)
 			}
 
-			// Determine working directory
-			execWorkingDir := cmp.Or(params.WorkingDir, workingDir)
+			// Determine working directory. A relative working_dir resolves
+			// inside this call's working directory, which is the task
+			// worktree when a teammate is in one; an absolute one is used
+			// as given.
+			execWorkingDir := filepathext.SmartJoin(workingDir, cmp.Or(params.WorkingDir, workingDir))
 
 			safeReadOnly := isSafeReadOnly(params.Command, userSafe)
 

@@ -1719,9 +1719,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	// A teammate's write tools are held to the write scopes of the task it
 	// claimed. The gate goes outside the hook wrapper, so a refused call
-	// runs no hook; the role gate SetTools adds goes outside both.
+	// runs no hook. The worktree wrapper goes outside the gate, so the gate
+	// sees the call's worktree; the role gate SetTools adds goes outside
+	// all of them.
 	if role == roleTeammate {
 		filteredTools = gateToolsForScopes(filteredTools, c.claimedScopes, c.cfg.WorkingDir())
+		filteredTools = placeToolsInWorktrees(filteredTools, c.memberWorkspace)
 	}
 
 	return filteredTools, nil

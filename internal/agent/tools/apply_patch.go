@@ -53,6 +53,7 @@ func NewApplyPatchTool(
 		ApplyPatchToolName,
 		applyPatchDescription,
 		func(ctx context.Context, params ApplyPatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if strings.TrimSpace(params.Patch) == "" {
 				return withErrorKind(fantasy.NewTextErrorResponse("patch is required"), ErrorKindInvalidArguments), nil
 			}
