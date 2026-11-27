@@ -613,7 +613,12 @@ func TestSubscribeSendsSnapshotBeforeLiveFrames(t *testing.T) {
 	}
 	// The subscription is reserved on the connection, so the frame the
 	// gateway publishes during the read must queue behind the snapshot.
+	// Waiting for the hub to sequence it is what pins it to the buffer:
+	// releasing the read earlier could publish it after the snapshot was
+	// built, and the test would pass for the wrong reason.
+	before := g.hub.head()
 	fake.Emit(msgEvent("m2", "s1", "mid-build"))
+	require.Eventually(t, func() bool { return g.hub.head() > before }, 2*time.Second, 5*time.Millisecond)
 	close(release)
 
 	f := readFrame(t, c)
@@ -691,6 +696,77 @@ func TestSessionStatusReachesEveryConnection(t *testing.T) {
 	f := nextFrameOfType(t.Context(), t, c, frameSessionStatus)
 	require.Equal(t, "", f.Session, "a status frame is global")
 	require.Contains(t, string(f.Payload), `"status":"running"`)
+}
+
+// TestTwoTabsOnDifferentSessions pins Review Focus 2 across two connections
+// at once: each tab receives only its own session's message, and the global
+// session_status reaches both. A later LSP event is the sentinel that proves
+// absence: the pump handles workspace events in order, so any frame a tab
+// should not have seen would arrive before it.
+func TestTwoTabsOnDifferentSessions(t *testing.T) {
+	t.Parallel()
+	// s2 exists before the gateway starts, so its seeded status is idle
+	// and the message below publishes no status frame for it: the one
+	// status change in this test is s1's.
+	fake := webtest.NewFake()
+	fake.AddSession(session.Session{ID: "s2", Title: "Other", UpdatedAt: 5})
+	g, err := Start(t.Context(), Options{
+		Workspace:          fake,
+		DockerMCPAvailable: func() bool { return false },
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	a := dialStream(t, g, "")
+	readFrame(t, a) // Bootstrap.
+	subscribeStream(t, a, "s1")
+	b := dialStream(t, g, "")
+	readFrame(t, b) // Bootstrap.
+	subscribeStream(t, b, "s2")
+
+	fake.SetSessionBusy("s1", true)
+	fake.Emit(msgEvent("m1", "s1", "for a"))
+	fake.Emit(msgEvent("m2", "s2", "for b"))
+	fake.Emit(pubsub.Event[workspace.LSPEvent]{Type: pubsub.UpdatedEvent, Payload: workspace.LSPEvent{
+		Name: "gopls", State: lsp.StateReady,
+	}})
+
+	messages, statuses := readUntilSentinel(t, a)
+	require.Len(t, messages, 1, "tab A gets only its session's message")
+	require.Equal(t, "s1", messages[0].Session)
+	require.Contains(t, string(messages[0].Payload), "for a")
+	require.Len(t, statuses, 1, "the status frame reaches tab A")
+	require.Equal(t, "", statuses[0].Session, "a status frame is global")
+	require.Contains(t, string(statuses[0].Payload), `"status":"running"`)
+
+	messages, statuses = readUntilSentinel(t, b)
+	require.Len(t, messages, 1, "tab B gets only its session's message")
+	require.Equal(t, "s2", messages[0].Session)
+	require.Contains(t, string(messages[0].Payload), "for b")
+	require.Len(t, statuses, 1, "the status frame reaches tab B")
+	require.Equal(t, "", statuses[0].Session, "a status frame is global")
+	require.Contains(t, string(statuses[0].Payload), `"status":"running"`)
+}
+
+// readUntilSentinel reads one tab's frames up to the global LSP sentinel,
+// returning the message and session_status frames it saw on the way.
+func readUntilSentinel(t *testing.T, c *websocket.Conn) (messages, statuses []testFrame) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.Read(ctx)
+		require.NoError(t, err)
+		var f testFrame
+		require.NoError(t, json.Unmarshal(data, &f))
+		switch f.Type {
+		case "message":
+			messages = append(messages, f)
+		case frameSessionStatus:
+			statuses = append(statuses, f)
+		case string(pubsub.PayloadTypeLSPEvent):
+			return messages, statuses
+		}
+	}
 }
 
 // TestUnsubscribeStopsFrames pins the other half of the subscription by
