@@ -216,7 +216,10 @@ completed), the team service starts a teammate on it. It reuses the
 earliest-created idle teammate of that role spawned by the same Lead session,
 or spawns one named `<role>-<n>` with the lowest free number, within the
 live-member limit. At the limit the task waits for a later pass. The teammate
-gets a short brief with the task, its write scopes and how to complete it.
+gets a short brief with the task, its write scopes and how to complete it,
+the worktree and branch of the task when it has one (see
+[Worktrees](#worktrees)), and the notes of the task's last failed
+verification, if any.
 
 A start that fails, or a turn that fails, puts the task back to pending and
 counts an attempt. After three attempts the task is escalated: the
@@ -263,8 +266,68 @@ A member cannot claim the verification task of work it owns, and cannot pass
 or fail that check: the service refuses it, so the verifier stays
 independent of the implementer.
 
-The verifier runs every check itself, but it shares the working directory
-with everyone else, so it sees whatever is on disk when it runs.
+The verifier runs every check itself. For a task with a worktree it runs in
+that worktree, whose work is committed on the task branch; otherwise it
+shares the working directory with everyone else and sees whatever is on disk
+when it runs. A failed verification's notes stay on the task, so the next
+implementer's brief carries them even when the owner could not be resumed.
+
+### Worktrees
+
+Inside a git repository, a task with write scopes gets its own git worktree
+when a teammate first takes it: the dispatcher, the teammate's own `claim`,
+or the Lead's `reassign`. The worktree starts at the Lead's `HEAD` at that
+moment, on branch `crush/team-<task id>`, normally in the sibling directory
+`.<repo>-worktrees/team-<task id>` next to the repository. The task view
+names both (`worktree`, `branch`). A task that already has a worktree keeps
+it: `release`, `reopen`, a failed verification and a re-dispatch leave it
+for the next implementer, who sees the earlier commits. A worktree directory
+deleted by hand is recreated on the next start, from its branch when the
+branch still exists and from the Lead's `HEAD` otherwise. A teammate holds
+one worktree at a time, so it cannot claim or be assigned a second scoped
+task while it holds one.
+
+The teammate's tools run in the worktree: relative paths resolve there, and
+`bash` starts there. When the Lead works in a subdirectory of the
+repository, the teammate starts in the same subdirectory of the worktree.
+The brief names the worktree and the branch; no tool definition and no system
+prompt changes, so the prompt cache stays shared with the Lead. LSP tools
+refuse in a worktree ("LSP tools are not available in a task worktree"),
+because the language servers index the Lead's tree. The verifier runs in the
+worktree of the work it checks. A teammate working on a scoped task cannot
+use subagents (`agent_dispatch`, `agent_send`, or `send_message` to a
+subagent) until the task is done; a task in review still holds its worktree.
+
+When the task completes, by `complete` or by its owner's turn ending, the
+service stops the owner's running background jobs, waiting for their scope
+checks, then commits everything in the worktree to the branch, with the task
+subject as the message and the repository's git config for author, signing
+and hooks. An empty change set makes no commit. A commit that fails refuses
+`complete` with git's output, and a turn whose work cannot be committed
+releases its task. On `pass`, on the Lead's `complete` of the task in
+review, and for a task with `verify` false as soon as it completes, the
+service merges the branch into the Lead's current branch with
+`git merge --no-ff` (message `Merge team task <id>: <subject>`), then
+removes the worktree and deletes the branch. Dependents become ready only
+after the merge.
+
+A merge that conflicts, that an uncommitted change in the Lead's tree
+blocks, that finds the Lead on a detached `HEAD`, or that finds a merge or
+rebase already in progress is aborted or never started: the Lead's tree is
+as git left it, the worktree and branch stay, and the task stays
+`in_review`, escalated, with a notice naming the branch and git's output.
+Merge the branch by hand and `complete` the task to accept it, or `reopen`
+it. A Lead `complete` removes the worktree with force, so anything written
+there after its last commit is discarded. Deleting a task stops a running
+owner first, then removes the worktree and branch with force, discarding
+work that was never committed; the owner is woken afterwards for mail that
+was waiting. If a removal fails, the Lead is told and the task change still
+applies. If a worktree cannot be created, the claim is released with no
+attempt counted, the Lead is told, and the dispatcher leaves the task until
+the Lead edits it.
+
+Outside a git repository, or for a task without write scopes, every member
+shares the Lead's working directory as before.
 
 ### Write scopes
 
@@ -273,10 +336,29 @@ A teammate's `edit`, `multiedit`, `write`, `download`, `apply_patch` and
 it owns in progress; a path outside them is refused with a tool error, before
 any hook or permission prompt. `lsp_rename` is refused while scopes apply,
 because the files it changes are not known in advance. A teammate with no
-scoped task is not restricted, and the Lead never is. `bash` is not covered:
-a command can write anywhere. Symlinks are not resolved: the checked path is
-the one in the call, made relative to the working directory and cleaned.
-Per-teammate worktrees are the planned fix.
+scoped task is not restricted, and the Lead never is. Symlinks are not
+resolved: the checked path is the one in the call, made relative to the
+working directory and cleaned.
+
+In a task worktree, `bash` is held to the scopes too. Before each call the
+service records the worktree's `git status` and a hash of every path it
+lists; after the call, each changed path outside the scopes is put back (a
+clean tracked path from `HEAD`, a path that was already changed from the
+content saved before the call, a new untracked path removed, a move restored
+with its moved-from path) and its index entry is restored, including a
+conflict's stages and an intent-to-add. The call returns an error that lists
+the restored paths, followed by the command's output. A background job is
+checked when it finishes, and its output starts with the same message; a job
+whose task or worktree moved on is skipped with a note. Saved content is
+capped at 1 MiB per file and 32 MiB per call: a changed path over the cap is
+reported, not restored ("could not be restored safely").
+
+Files git ignores and paths outside the worktree are not checked, and this
+is no sandbox: a `bash` call whose `working_dir` starts outside the worktree
+is refused, but a command that changes directory out of it during the call
+is not checked. A command that runs `git checkout <branch>` has its files
+restored but leaves the worktree on that branch. Without a worktree
+(outside a git repository) `bash` is not checked.
 
 ### Hooks
 
@@ -286,6 +368,10 @@ their own session id, like the Lead. A `PreToolUse` hook that returns
 for the Lead. Dispatched subagents still fire none of them. Teammates fire
 no turn hooks (`TurnStart`, `TurnEnd`, `Interrupt`, `StopFailure`), because
 their calls are non-interactive.
+
+A teammate in a task worktree fires its hooks with the Lead's working
+directory as `cwd`, like every hook; relative paths in its `tool_input`
+resolve against its worktree, which the task's view names.
 
 None of this changes a tool definition or a system prompt per agent: the
 brief, the verification task and every notice travel as messages.
@@ -297,12 +383,20 @@ State lives at `<data-directory>/agent-teams/team.json` (by default
 task board, and mailboxes. Writes are atomic, and a restarted process
 normalizes any stale `running` status to `inactive`.
 
+Tasks also record their `worktree` and `branch`, and the notes of their last
+failed verification (`last_failure`), which a pass and a Lead `edit` clear;
+members record the session summary their inherited fork context was last sent
+on (`context_summary`), so a fork teammate gets the Lead's context once more
+after its session is compacted, and not on the turn after. Every one of these
+is omitted when empty, so an older `team.json` loads unchanged.
+
 Task updates are compare-and-set: every row carries a `revision`, and an
 update based on an outdated copy is rejected with
 `TEAM_TASK_STALE_REVISION`. Readiness follows `blocked_by`: a blocker counts
 only once it is `completed`, so an `in_review` blocker keeps its dependents
 waiting. Write scopes produce overlap warnings for in-progress tasks and are
-enforced for teammates' file tools (see [Pipeline](#pipeline)).
+enforced for teammates' file tools, and for `bash` inside a task worktree
+(see [Pipeline](#pipeline)).
 
 ## Client UI
 
@@ -341,7 +435,8 @@ return to the main session without cancelling either agent.
   transcript prefix rather than a provider-level fork.
 - Inbox messages reach a running member through its next tool result,
   which is the closest equivalent to a step-boundary steer.
-- Teammates share the working directory; there is no worktree isolation.
+- Teammates work in one git worktree per scoped task inside a repository,
+  which DSH does not have; without one they share the working directory.
 - A shared task can name a role, and a ready one starts a teammate of that
   role on its own; DSH task readiness never starts an owner. Tasks without a
   role behave as in DSH.
