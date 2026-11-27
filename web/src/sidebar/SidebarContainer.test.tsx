@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -54,6 +54,21 @@ function rowOf(title: string): HTMLElement {
     throw new Error(`no session row for ${title}`)
   }
   return item
+}
+
+// stubClipboard replaces navigator.clipboard for one test. jsdom has no
+// clipboard and userEvent.setup installs its own stub, so the previous value
+// is whatever was there before the replacement.
+function stubClipboard(value: unknown): () => void {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value })
+  return () => {
+    if (original === undefined) {
+      Reflect.deleteProperty(navigator, 'clipboard')
+      return
+    }
+    Object.defineProperty(navigator, 'clipboard', original)
+  }
 }
 
 describe('SidebarContainer', () => {
@@ -137,6 +152,66 @@ describe('SidebarContainer', () => {
     await user.click(screen.getByLabelText('Delete session'))
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
     expect(store.get().sessions).toEqual([])
+  })
+
+  it('dismisses a refusal without retrying anything', async () => {
+    const user = userEvent.setup()
+    const { store } = setup({ sessions: [row()], selectedSessionId: 's1' }, async () => {
+      throw new HttpError(404, 'not_found', 'that session is gone')
+    })
+    await user.click(screen.getByLabelText('Delete session'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('that session is gone')
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(store.get().sessions).toHaveLength(1)
+  })
+
+  it('sends one delete while the first is in flight', async () => {
+    const user = userEvent.setup()
+    let finish: (value: unknown) => void = () => undefined
+    const { client, store } = setup(
+      { sessions: [row()], selectedSessionId: 's1' },
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const button = screen.getByLabelText('Delete session')
+    await user.click(button)
+    await user.click(button)
+    expect(client.send).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finish(undefined)
+    })
+    await waitFor(() => expect(store.get().sessions).toEqual([]))
+  })
+
+  it('shows an error when the browser has no clipboard', async () => {
+    const user = userEvent.setup()
+    const restore = stubClipboard(undefined)
+    try {
+      setup({ sessions: [row()], selectedSessionId: 's1' })
+      await user.click(screen.getByLabelText('Copy session ID'))
+      expect(await screen.findByRole('alert')).toHaveTextContent('copy the session ID')
+    } finally {
+      restore()
+    }
+  })
+
+  it('shows an error when the clipboard write is refused', async () => {
+    const user = userEvent.setup()
+    const restore = stubClipboard({
+      writeText: async () => {
+        throw new Error('denied by the browser')
+      },
+    })
+    try {
+      setup({ sessions: [row()], selectedSessionId: 's1' })
+      await user.click(screen.getByLabelText('Copy session ID'))
+      expect(await screen.findByRole('alert')).toHaveTextContent('copy the session ID')
+    } finally {
+      restore()
+    }
   })
 
   it('renames a session through the gateway', async () => {

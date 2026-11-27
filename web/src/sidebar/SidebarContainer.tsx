@@ -37,6 +37,8 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
 
   const workspaceName = workspace === '' ? 'Crush' : workspace.split('/').filter(Boolean).pop() ?? workspace
 
+  const dismissError = useCallback(() => setError(null), [])
+
   const select = useCallback(
     (id: string) => {
       // Selecting only records the choice. useGateway subscribes the new
@@ -49,11 +51,11 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
   const create = useCallback(() => {
     void actions
       .create()
-      .then((row) => {
+      .then((session) => {
         // The store accepts the subscription snapshot that carries the new
         // session entity, so selecting it before the row arrives is safe.
         setError(null)
-        select(row.id)
+        select(session.id)
       })
       .catch((cause: unknown) => setError(message(cause)))
   }, [actions, select])
@@ -68,23 +70,37 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
     [actions],
   )
 
+  // remove answers a promise the row waits on, so its delete button stays
+  // disabled until the gateway has answered. It never rejects: the refusal
+  // becomes the sidebar's error row.
   const remove = useCallback(
-    (id: string) => {
-      void actions
-        .remove(id)
-        .then(() => {
-          setError(null)
-          // The deleted row, its messages and a selection pointing at it go
-          // at once; the gateway's deleted frame would arrive later.
-          store.forgetSession(id)
-        })
-        .catch((cause: unknown) => setError(message(cause)))
+    async (id: string) => {
+      try {
+        await actions.remove(id)
+      } catch (cause: unknown) {
+        setError(message(cause))
+        return
+      }
+      setError(null)
+      // The deleted row, its messages and a selection pointing at it go at
+      // once; the gateway's deleted frame would arrive later.
+      store.forgetSession(id)
     },
     [actions, store],
   )
 
+  // copyId reports a refused or unavailable clipboard instead of dropping the
+  // promise: a silent click looks like a copied ID.
   const copyId = useCallback((id: string) => {
-    void navigator.clipboard?.writeText(id)
+    const clipboard: Clipboard | undefined = navigator.clipboard
+    if (clipboard === undefined) {
+      setError(clipboardError)
+      return
+    }
+    void clipboard.writeText(id).then(
+      () => setError(null),
+      () => setError(clipboardError),
+    )
   }, [])
 
   const openInTerminal = useCallback(
@@ -111,9 +127,14 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
       onDelete={remove}
       onCopyId={copyId}
       onOpenInTerminal={openInTerminal}
+      onDismissError={dismissError}
     />
   )
 }
+
+// clipboardError is the one sentence for every way a copy can fail, so a
+// browser without the API and one that refuses the write look the same.
+const clipboardError = 'This browser will not let the tab copy the session ID'
 
 // message is the gateway's own sentence for a refused request. The token and
 // the request never reach it.

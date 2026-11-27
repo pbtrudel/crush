@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import type { ApiClient } from '../api/http'
 import { sessionActions } from './actions'
@@ -25,6 +25,14 @@ describe('sessionActions', () => {
     const c = client()
     await sessionActions(c).remove('s2')
     expect(c.send).toHaveBeenCalledWith('DELETE', '/api/sessions/s2')
+  })
+
+  it('answers the created session, not a full row', async () => {
+    const created = await sessionActions(client()).create()
+    // Compile-time pin: the create route answers the session entity, and the
+    // caller only reads its ID, so the action must not pretend to return a
+    // SessionRow whose status it never received.
+    expectTypeOf(created).toEqualTypeOf<{ id: string }>()
   })
 
   it('asks the terminal to open a session', async () => {

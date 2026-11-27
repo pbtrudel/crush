@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -60,7 +60,7 @@ describe('SessionRow', () => {
     expect(onRename).toHaveBeenCalledWith('s-m1-run', 'Renamed')
   })
 
-  it('renames once, even when the field also blurs', async () => {
+  it('renames once when Enter commits the draft', async () => {
     const onRename = vi.fn()
     render(<SessionRow {...props({ onRename })} />)
     await userEvent.click(screen.getByLabelText('Rename session'))
@@ -79,6 +79,42 @@ describe('SessionRow', () => {
     await userEvent.type(input, 'Discarded{Escape}')
     expect(onRename).not.toHaveBeenCalled()
     expect(screen.getByText('Port the parser')).toBeInTheDocument()
+  })
+
+  it('opens the draft at the title the row has now', async () => {
+    const onRename = vi.fn()
+    const { rerender } = render(<SessionRow {...props({ onRename })} />)
+    // A rename from another tab or the terminal lands on the prop while the
+    // row is mounted; the draft must not resurrect the title it mounted with.
+    rerender(<SessionRow {...props({ onRename, row: { ...row, title: 'Renamed in another tab' } })} />)
+    await userEvent.click(screen.getByLabelText('Rename session'))
+    const input = screen.getByLabelText('Session title')
+    expect(input).toHaveValue('Renamed in another tab')
+    fireEvent.blur(input)
+    expect(onRename).not.toHaveBeenCalled()
+  })
+
+  it('caps the rename draft at 200 characters', async () => {
+    render(<SessionRow {...props()} />)
+    await userEvent.click(screen.getByLabelText('Rename session'))
+    expect(screen.getByLabelText('Session title')).toHaveAttribute('maxlength', '200')
+  })
+
+  it('disables delete while its request is in flight', async () => {
+    let finish: () => void = () => undefined
+    const onDelete = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    )
+    render(<SessionRow {...props({ onDelete })} />)
+    const button = screen.getByLabelText('Delete session')
+    await userEvent.click(button)
+    expect(onDelete).toHaveBeenCalledWith('s-m1-run')
+    expect(button).toBeDisabled()
+    finish()
+    await waitFor(() => expect(button).toBeEnabled())
   })
 
   it('offers delete, copy and open in terminal', async () => {

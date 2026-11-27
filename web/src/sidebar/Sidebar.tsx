@@ -12,9 +12,10 @@ export interface SidebarProps {
   onSelect(id: string): void
   onCreate(): void
   onRename(id: string, title: string): void
-  onDelete(id: string): void
+  onDelete(id: string): Promise<void>
   onCopyId(id: string): void
   onOpenInTerminal(id: string): void
+  onDismissError(): void
 }
 
 export default function Sidebar({
@@ -30,6 +31,7 @@ export default function Sidebar({
   onDelete,
   onCopyId,
   onOpenInTerminal,
+  onDismissError,
 }: SidebarProps) {
   return (
     <nav className={styles.sidebar} aria-label="Sessions">
@@ -42,7 +44,10 @@ export default function Sidebar({
       </button>
       {error ? (
         <p role="alert" className={styles.error}>
-          {error}
+          <span className={styles.errorText}>{error}</span>
+          <button type="button" className={styles.dismiss} onClick={onDismissError}>
+            Dismiss
+          </button>
         </p>
       ) : null}
       <ul className={styles.list}>

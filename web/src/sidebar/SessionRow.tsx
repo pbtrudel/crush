@@ -10,7 +10,7 @@ export interface SessionRowProps {
   unread: boolean
   onSelect(id: string): void
   onRename(id: string, title: string): void
-  onDelete(id: string): void
+  onDelete(id: string): Promise<void>
   onCopyId(id: string): void
   onOpenInTerminal(id: string): void
 }
@@ -27,6 +27,32 @@ export default function SessionRow({
 }: SessionRowProps) {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(row.title)
+  const [deleting, setDeleting] = useState(false)
+
+  // The draft starts from the title the row has now, not the one it mounted
+  // with: a rename from another tab or the terminal lands on the prop while
+  // this row is mounted, and the field must not resurrect the old title.
+  const startRenaming = () => {
+    setDraft(row.title)
+    setRenaming(true)
+  }
+
+  // A delete disables its own button while the request is in flight, so a
+  // second click cannot answer with a 404 for the session the first removed.
+  const remove = async () => {
+    if (deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      await onDelete(row.id)
+    } catch {
+      // The container turns the refusal into the sidebar's error row; the
+      // row only re-enables its button.
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   // commit sends the title that changed and nothing else: the row keeps its
   // ID, its status and its position until the gateway echoes the rename.
@@ -49,6 +75,7 @@ export default function SessionRow({
             autoFocus
             onChange={(event) => setDraft(event.target.value)}
             onBlur={commit}
+            maxLength={200}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 commit()
@@ -74,7 +101,7 @@ export default function SessionRow({
         </span>
       </div>
       <div className={styles.actions}>
-        <button type="button" aria-label="Rename session" onClick={() => setRenaming(true)}>
+        <button type="button" aria-label="Rename session" onClick={startRenaming}>
           Rename
         </button>
         <button type="button" aria-label="Copy session ID" onClick={() => onCopyId(row.id)}>
@@ -83,7 +110,7 @@ export default function SessionRow({
         <button type="button" aria-label="Open in terminal" onClick={() => onOpenInTerminal(row.id)}>
           Open in terminal
         </button>
-        <button type="button" aria-label="Delete session" onClick={() => onDelete(row.id)}>
+        <button type="button" aria-label="Delete session" onClick={remove} disabled={deleting}>
           Delete
         </button>
       </div>

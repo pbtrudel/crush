@@ -23,6 +23,7 @@ function props(overrides: Partial<SidebarProps> = {}): SidebarProps {
     onDelete: vi.fn(),
     onCopyId: vi.fn(),
     onOpenInTerminal: vi.fn(),
+    onDismissError: vi.fn(),
     ...overrides,
   }
 }
@@ -50,5 +51,12 @@ describe('Sidebar', () => {
   it('shows the refusal the gateway sent', () => {
     render(<Sidebar {...props({ error: 'The terminal is showing this session; switch it first' })} />)
     expect(screen.getByRole('alert')).toHaveTextContent('switch it first')
+  })
+
+  it('lets the refusal be dismissed', async () => {
+    const onDismissError = vi.fn()
+    render(<Sidebar {...props({ error: 'that session is gone', onDismissError })} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(onDismissError).toHaveBeenCalled()
   })
 })
