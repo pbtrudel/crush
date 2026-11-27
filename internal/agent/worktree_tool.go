@@ -1,0 +1,201 @@
+package agent
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"charm.land/fantasy"
+
+	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/shell"
+)
+
+// lspWorktreeRefusal is what an LSP tool returns to a teammate in a task
+// worktree. The language servers index the Lead's tree, so their answers
+// would describe files the teammate is not editing.
+const lspWorktreeRefusal = "LSP tools are not available in a task worktree: the language servers serve the Lead's tree only. Use view, grep and bash in your worktree instead."
+
+// scopedTeammateSubagentRefusal is what a teammate whose own edits are held
+// to a task gets when it starts, resumes or messages a dispatched subagent.
+// The subagent's tools are not held to the task: even a read subagent has
+// bash and download, which would write in the Lead's tree, outside the
+// worktree and outside the scope gate.
+const scopedTeammateSubagentRefusal = "a teammate working on a scoped task cannot use subagents; finish or release the task first"
+
+// worktreeToolRefusal is what a teammate in a task worktree gets when it
+// calls the worktree tool. The task already owns the worktree the teammate
+// runs in, and another worktree is not its to remove: a force removal would
+// destroy a sibling's uncommitted work.
+const worktreeToolRefusal = "the worktree tool is not available in a task worktree: your task already owns the worktree its tools run in. Release the task with team_task_update instead of managing worktrees by hand."
+
+// missingWorktreeRefusal is what a teammate gets when the worktree its task
+// records is gone. Its tools must not run in the Lead's tree instead, where
+// bash is unchecked; the team board tools stay available so it can release
+// the task.
+const missingWorktreeRefusal = "this task's worktree is missing; release the task or wait for it to be recreated. Only the team board tools are available until then."
+
+// worktreeTool runs a teammate's tool call in the git worktree of the task
+// it holds. The workspace is looked up on every call, because a teammate
+// can claim its task in the middle of a turn, and it reaches the tool on
+// the call's context. The tool keeps the Info, provider options and MCP
+// identity of the Lead's copy, so the tools block stays byte-identical and
+// the cache is shared.
+type worktreeTool struct {
+	inner     fantasy.AgentTool
+	workspace func(ctx context.Context) (agentteam.Workspace, bool)
+}
+
+// placeToolsInWorktrees wraps every tool in list.
+func placeToolsInWorktrees(list []fantasy.AgentTool, workspace func(context.Context) (agentteam.Workspace, bool)) []fantasy.AgentTool {
+	out := make([]fantasy.AgentTool, len(list))
+	for i, tool := range list {
+		out[i] = &worktreeTool{inner: tool, workspace: workspace}
+	}
+	return out
+}
+
+func (w *worktreeTool) Info() fantasy.ToolInfo { return w.inner.Info() }
+
+// MCP reports the MCP server of the wrapped tool, or "" for a built-in
+// tool, so MCP filtering sees through the wrapper.
+func (w *worktreeTool) MCP() string {
+	if mcpTool, ok := w.inner.(interface{ MCP() string }); ok {
+		return mcpTool.MCP()
+	}
+	return ""
+}
+
+func (w *worktreeTool) ProviderOptions() fantasy.ProviderOptions {
+	return w.inner.ProviderOptions()
+}
+
+func (w *worktreeTool) SetProviderOptions(opts fantasy.ProviderOptions) {
+	w.inner.SetProviderOptions(opts)
+}
+
+func (w *worktreeTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	ws, ok := w.workspace(ctx)
+	if !ok {
+		return w.inner.Run(ctx, call)
+	}
+	name := w.inner.Info().Name
+	if ws.Missing {
+		// The worktree went away mid-turn. Everything but the board
+		// tools is refused, because running in the Lead's tree instead
+		// would escape the worktree and the write scopes.
+		if strings.HasPrefix(name, "team_") {
+			return w.inner.Run(ctx, call)
+		}
+		return fantasy.NewTextErrorResponse(missingWorktreeRefusal), nil
+	}
+	if strings.HasPrefix(name, "lsp_") {
+		return fantasy.NewTextErrorResponse(lspWorktreeRefusal), nil
+	}
+	if name == tools.WorktreeToolName {
+		return fantasy.NewTextErrorResponse(worktreeToolRefusal), nil
+	}
+	if name == tools.BashToolName {
+		if refusal := refuseBashOutsideWorktree(ws, call.Input); refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal), nil
+		}
+	}
+	ctx = tools.WithWorkingDir(ctx, ws.Dir)
+	ctx = tools.WithTaskWorktree(ctx)
+	ctx = withWorkspace(ctx, ws)
+	return w.inner.Run(ctx, call)
+}
+
+// refuseBashOutsideWorktree reports a bash call whose working_dir would
+// start the shell outside the task worktree. bash resolves a relative
+// working_dir inside the call's working directory, the worktree, so the
+// same resolution here decides where the shell would start. A shell outside
+// the worktree would write where the write scopes are not checked.
+func refuseBashOutsideWorktree(ws agentteam.Workspace, input string) string {
+	var params tools.BashParams
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		// bash reports its own parse failure; nothing to check here.
+		return ""
+	}
+	dir := filepathext.SmartJoin(ws.Dir, cmp.Or(params.WorkingDir, ws.Dir))
+	rel, err := filepath.Rel(ws.Root, dir)
+	if err == nil && filepath.IsLocal(rel) {
+		return ""
+	}
+	return fmt.Sprintf("working_dir %q is outside the task worktree %s: a teammate's shell runs inside its worktree, where the write scopes are checked", dir, ws.Root)
+}
+
+type workspaceKey struct{}
+
+// withWorkspace puts the teammate's workspace on ctx for the scope gate,
+// which needs the worktree root as well as the working directory.
+func withWorkspace(ctx context.Context, ws agentteam.Workspace) context.Context {
+	return context.WithValue(ctx, workspaceKey{}, ws)
+}
+
+// workspaceFrom returns the workspace withWorkspace put on ctx.
+func workspaceFrom(ctx context.Context) (agentteam.Workspace, bool) {
+	ws, ok := ctx.Value(workspaceKey{}).(agentteam.Workspace)
+	return ws, ok && ws.Root != ""
+}
+
+// settleJobsTimeout bounds how long a settle waits for a member's stopped
+// bash jobs to finish their scope checks.
+const settleJobsTimeout = 30 * time.Second
+
+// settleMemberJobs stops the running background bash jobs of member and
+// waits for their scope checks, so the Team service cannot commit a worktree
+// while one of them is still restoring it. A member with no task worktree
+// keeps its jobs, exactly as before worktrees existed. It runs with no Team
+// lock held.
+func (c *coordinator) settleMemberJobs(ctx context.Context, member string) {
+	team := c.teamService()
+	if team == nil || member == "" {
+		return
+	}
+	if _, ok := team.MemberWorkspace(member); !ok {
+		return
+	}
+	sessionID := team.MemberSession(member)
+	if sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, settleJobsTimeout)
+	defer cancel()
+	shell.GetBackgroundShellManager().KillSession(ctx, sessionID)
+}
+
+// memberWorkspace returns the workspace of the teammate making the call.
+// The Lead and a member with no scoped task work in the Lead's tree.
+func (c *coordinator) memberWorkspace(ctx context.Context) (agentteam.Workspace, bool) {
+	team := c.teamService()
+	if team == nil {
+		return agentteam.Workspace{}, false
+	}
+	member := agentteam.MemberFromContext(ctx)
+	if member == agentteam.LeadName {
+		return agentteam.Workspace{}, false
+	}
+	return team.MemberWorkspace(member)
+}
+
+// refuseScopedTeammateSubagent reports whether the caller is a teammate
+// whose edits are held to a task: it holds a task worktree, or it has
+// claimed write scopes. Neither its own tools nor a subagent's are safe for
+// it to delegate with, so it may not use subagents at all. The Lead and a
+// teammate with neither are free to delegate.
+func (c *coordinator) refuseScopedTeammateSubagent(ctx context.Context) bool {
+	if agentteam.IsLead(ctx) {
+		return false
+	}
+	if _, ok := c.memberWorkspace(ctx); ok {
+		return true
+	}
+	return len(c.claimedScopes(ctx)) > 0
+}

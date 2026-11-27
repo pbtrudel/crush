@@ -39,7 +39,7 @@ type commandEnv interface {
 	PermissionDeny(perm permission.PermissionRequest) bool
 	PermissionSetSkipRequests(skip bool)
 	PermissionSkipRequests() bool
-	QuestionAnswer(responses []question.Answer) bool
+	QuestionAnswer(batchID string, responses []question.Answer) bool
 	Config() *config.Config
 	WorkingDir() string
 }
@@ -707,7 +707,7 @@ func (b *Bridge) commandAnswer(args string) string {
 	if err != nil {
 		return iconError + " " + err.Error()
 	}
-	if !b.env.QuestionAnswer([]question.Answer{answer}) {
+	if !b.env.QuestionAnswer(req.ID, []question.Answer{answer}) {
 		return "That question was already resolved."
 	}
 	return iconDone + " Answer sent."

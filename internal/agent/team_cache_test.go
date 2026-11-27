@@ -15,24 +15,36 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
 // newTeammateTestCoordinator builds the gate test coordinator with a live Team
 // service, so the palette under test includes the Team tools the Lead gets.
-// The Lead's tools are rebuilt afterwards because the gate coordinator builds
-// them before the service exists, which is not the production order.
+// It installs a hook runner with no hooks, as production always does, so the
+// Lead's tools are hook-wrapped like in a real session.
 func newTeammateTestCoordinator(t *testing.T) *coordinator {
+	t.Helper()
+	return newTeammateTestCoordinatorWithHooks(t, hooks.NewRunner(hooks.Static(nil), t.TempDir(), t.TempDir()))
+}
+
+// newTeammateTestCoordinatorWithHooks is newTeammateTestCoordinator with the
+// given hook runner. The Lead's tools are rebuilt afterwards because the gate
+// coordinator builds them before the service and the runner exist, which is
+// not the production order.
+func newTeammateTestCoordinatorWithHooks(t *testing.T, runner *hooks.Runner) *coordinator {
 	t.Helper()
 	coord := newGateTestCoordinator(t, true)
 	// The gate coordinator renders its prompt and tools in the background,
-	// and buildTools reads c.team. Let that finish before assigning the
-	// service, or the background read races with the write below.
+	// and buildTools reads the team service. Let that finish before
+	// assigning the service, or the background read races with the write
+	// below.
 	require.NoError(t, coord.readyWg.Wait())
+	coord.hookRunner = runner
 
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, newTeamFakeRunner())
 	require.NoError(t, err)
-	coord.team = service
+	coord.setTeam(service)
 
 	lead := coord.coderAgent()
 	require.NotNil(t, lead)
@@ -287,4 +299,135 @@ func TestTeammateInheritsLeadAdoptedToolOrder(t *testing.T) {
 	unseeded := toolNames(stableToolOrder(teammate.tools.Copy(), nil))
 	require.NotEqual(t, leadOrder, unseeded,
 		"without the Lead's adopted order the palettes differ, which is what the seed prevents")
+}
+
+// TestTeammateToolRunsBlockingHook pins fix D: a teammate's tool call runs
+// the user's PreToolUse hooks, so a blocking hook stops it.
+func TestTeammateToolRunsBlockingHook(t *testing.T) {
+	coord := newTeammateTestCoordinatorWithHooks(t, newRunner(t, `echo "blocked" >&2; exit 2`))
+	teammate := buildTeammateAgent(t, coord, agentteam.Member{Name: "rev", Role: agentteam.RoleTeammate})
+
+	view := toolByName(teammate.(*sessionAgent).tools.Copy(), tools.ViewToolName)
+	require.NotNil(t, view)
+	ctx := context.WithValue(agentteam.WithMember(t.Context(), "rev"), tools.SessionIDContextKey, "session-teammate")
+	resp, err := view.Run(ctx, fantasy.ToolCall{ID: "call-1", Name: tools.ViewToolName, Input: `{"file_path":"missing.go"}`})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "Tool call blocked by hook")
+}
+
+// TestHookWrapFollowsRole pins which agents fire tool hooks: the Lead and
+// teammates do, a dispatched subagent does not.
+func TestHookWrapFollowsRole(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	parent := func() Model { return coord.mainModels().Large }
+	agents := coord.cfg.Config().Agents
+
+	lead, err := coord.buildTools(t.Context(), agents[config.AgentCoder], roleLead, parent)
+	require.NoError(t, err)
+	for _, tool := range lead {
+		_, hooked := tool.(*hookedTool)
+		require.True(t, hooked, "Lead tool %q must be hook-wrapped", tool.Info().Name)
+	}
+	// A read tool: later write tools also carry the scope gate outside the
+	// hook wrapper (Task 9 pins that order).
+	teammate, err := coord.buildTools(agentteam.WithMember(t.Context(), "rev"), agents[config.AgentCoder], roleTeammate, parent)
+	require.NoError(t, err)
+	place, ok := toolByName(teammate, tools.ViewToolName).(*worktreeTool)
+	require.True(t, ok, "a teammate's tools run through the worktree wrapper")
+	_, hooked := place.inner.(*hookedTool)
+	require.True(t, hooked, "a teammate's tools must be hook-wrapped")
+
+	built, err := coord.buildTools(t.Context(), agents[config.AgentTask], roleSubAgent, parent)
+	require.NoError(t, err)
+	for _, tool := range built {
+		_, hooked := tool.(*hookedTool)
+		require.False(t, hooked, "subagent tool %q must not be hook-wrapped", tool.Info().Name)
+	}
+}
+
+// TestTeammateWrapperOrderKeepsLeadPrefix pins the wrapper order and the
+// cache rule together: for every role, a teammate's write tools are role
+// gate, then worktree wrapper, then scope gate, then hook wrapper, and its
+// tools block and system prompt still match the Lead's byte for byte.
+func TestTeammateWrapperOrderKeepsLeadPrefix(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+	lead := coord.coderAgent()
+	require.NotNil(t, lead)
+	leadTools := lead.(*sessionAgent).tools.Copy()
+	edit := toolByName(leadTools, tools.EditToolName)
+	_, hooked := edit.(*hookedTool)
+	require.True(t, hooked, "the Lead's tools are hook-wrapped, as in production")
+
+	plain, err := runner.teammateAgent(agentteam.WithMember(t.Context(), "plain"), agentteam.Member{Name: "plain", Role: agentteam.RoleTeammate})
+	require.NoError(t, err)
+	for _, role := range configuredRoles(coord.cfg.Config()) {
+		member := agentteam.Member{Name: "t-" + role.Name, Role: agentteam.RoleTeammate, RoleName: role.Name}
+		agent, err := runner.teammateAgent(agentteam.WithMember(t.Context(), member.Name), member)
+		require.NoError(t, err)
+		teammateTools := agent.(*sessionAgent).tools.Copy()
+		require.Equal(t, toolNames(leadTools), toolNames(teammateTools), role.Name)
+		for i, tool := range teammateTools {
+			want, err := json.Marshal(leadTools[i].Info())
+			require.NoError(t, err)
+			have, err := json.Marshal(tool.Info())
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(have), "%s: tool %q", role.Name, tool.Info().Name)
+		}
+		require.Equal(t, plain.SystemPrompt(), agent.SystemPrompt(), role.Name)
+
+		gate, ok := toolByName(teammateTools, tools.EditToolName).(*roleGatedTool)
+		require.True(t, ok, "%s: role gate is outermost", role.Name)
+		place, ok := gate.inner.(*worktreeTool)
+		require.True(t, ok, "%s: the worktree wrapper is next", role.Name)
+		scope, ok := place.inner.(*scopeGatedTool)
+		require.True(t, ok, "%s: scope gate is next", role.Name)
+		_, ok = scope.inner.(*hookedTool)
+		require.True(t, ok, "%s: hook wrapper is innermost", role.Name)
+	}
+}
+
+// TestTeammateScopesKeepLeadPrefix pins spec 7.5: a teammate that has claimed
+// an in-progress task with write scopes still sends the Lead's tools block
+// byte for byte, in the same order, and the gate that holds it to those scopes
+// is live on that same palette.
+func TestTeammateScopesKeepLeadPrefix(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	team := coord.teamService()
+	_, err := team.SpawnTeammate(t.Context(), agentteam.LeadName, agentteam.SpawnRequest{Name: "impl", Description: "d", Prompt: "p", ParentID: teamTestSessionID})
+	require.NoError(t, err)
+	task, err := team.CreateTask(agentteam.LeadName, teamTestSessionID, agentteam.CreateTaskRequest{Subject: "A", Description: "d", WriteScopes: []string{"internal/agent"}})
+	require.NoError(t, err)
+	_, err = team.UpdateTask("impl", agentteam.UpdateTaskRequest{TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"internal/agent"}, coord.claimedScopes(agentteam.WithMember(t.Context(), "impl")))
+
+	lead := coord.coderAgent()
+	require.NotNil(t, lead)
+	leadTools := lead.(*sessionAgent).tools.Copy()
+
+	runner := &teamRunner{c: coord}
+	member := agentteam.Member{Name: "impl", Role: agentteam.RoleTeammate}
+	agent, err := runner.teammateAgent(agentteam.WithMember(t.Context(), "impl"), member)
+	require.NoError(t, err)
+	teammateTools := agent.(*sessionAgent).tools.Copy()
+	require.Equal(t, toolNames(leadTools), toolNames(teammateTools))
+	for i, tool := range teammateTools {
+		want, err := json.Marshal(leadTools[i].Info())
+		require.NoError(t, err)
+		have, err := json.Marshal(tool.Info())
+		require.NoError(t, err)
+		require.Equal(t, string(want), string(have), "tool %q", tool.Info().Name)
+	}
+
+	// The same palette is scope-gated: a write outside the claimed scope is
+	// refused, so the byte parity above does not come from a missing gate.
+	resp, err := toolByName(teammateTools, tools.EditToolName).Run(
+		agentteam.WithMember(t.Context(), "impl"),
+		fantasy.ToolCall{ID: "call-1", Name: tools.EditToolName, Input: filePathInput("internal/ui/x.go")},
+	)
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "outside the write scopes of your claimed task")
 }

@@ -48,7 +48,7 @@ func (p *QuestionParams) UnmarshalJSON(data []byte) error {
 		if err2 := json.Unmarshal(aux.Questions, &s); err2 != nil {
 			return err
 		}
-		if err2 := json.Unmarshal([]byte(strings.TrimSpace(s)), &p.Questions); err2 != nil {
+		if err2 := json.Unmarshal([]byte(trimTrailingCommas(strings.TrimSpace(s))), &p.Questions); err2 != nil {
 			return fmt.Errorf("questions must be an array: %w", err2)
 		}
 	}
@@ -78,6 +78,13 @@ type QuestionChoice struct {
 	ID          string `json:"id" description:"Unique identifier for this choice"`
 	Label       string `json:"label" description:"Display text for this choice"`
 	Description string `json:"description,omitempty" description:"Optional description for this choice"`
+}
+
+// QuestionResponseMetadata carries the structured questions and answers so
+// the UI can render them without parsing the LLM-facing text.
+type QuestionResponseMetadata struct {
+	Questions []question.Question `json:"questions"`
+	Answers   []question.Answer   `json:"answers"`
 }
 
 // NewQuestionTool creates a new question tool.
@@ -165,7 +172,8 @@ func formatAnswers(answers []question.Answer, questions []question.Question) (fa
 		formatted, _ := formatAnswer(&answer, question.Type(""))
 		b.WriteString(formatted.Content)
 	}
-	return fantasy.NewTextResponse(b.String()), nil
+	meta := QuestionResponseMetadata{Questions: questions, Answers: answers}
+	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(b.String()), meta), nil
 }
 
 // formatAnswer formats a single answer for the LLM.
@@ -198,7 +206,7 @@ func formatAnswer(answer *question.Answer, _ question.Type) (fantasy.ToolRespons
 	if len(answer.Notes) > 0 {
 		b.WriteString("\n\nNotes:")
 		for key, note := range answer.Notes {
-			if key == "_question" {
+			if key == question.QuestionNoteKey {
 				fmt.Fprintf(&b, "\n- %s", note)
 			} else {
 				fmt.Fprintf(&b, "\n- [%s]: %s", key, note)

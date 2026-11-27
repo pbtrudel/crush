@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"embed"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
 )
 
 //go:embed templates/coder.md.tpl
@@ -49,22 +52,164 @@ func sideQuestionPrompt() string {
 	return string(sideQuestionPromptTmpl)
 }
 
+// coderPrompt builds the built-in coder prompt, with the lean profile
+// variant attached.
 func coderPrompt(opts ...prompt.Option) (*prompt.Prompt, error) {
-	opts = append([]prompt.Option{prompt.WithVariant(coderPromptVariant)}, opts...)
-	systemPrompt, err := prompt.NewPrompt("coder", string(coderPromptTmpl), opts...)
+	return prompt.NewPrompt("coder", string(coderPromptTmpl), withPromptVariant("coder", string(coderPromptTmpl), opts)...)
+}
+
+// withPromptVariant attaches the lean profile variant to the coder prompt
+// only while it is the built-in one: a prompt the user replaced through
+// options.prompts renders as written for every profile.
+func withPromptVariant(name, text string, opts []prompt.Option) []prompt.Option {
+	if name != "coder" || text != string(coderPromptTmpl) {
+		return opts
+	}
+	return append([]prompt.Option{prompt.WithVariant(coderPromptVariant)}, opts...)
+}
+
+//go:embed templates/title.md
+var titlePromptTmpl []byte
+
+//go:embed templates/summary.md
+var summaryPromptTmpl []byte
+
+// builtinPrompts holds every prompt a user may replace via options.prompts.
+// Its keys must cover config.PromptNames, which TestBuiltinPromptsCoverNames
+// enforces.
+var builtinPrompts = map[string][]byte{
+	"coder":      coderPromptTmpl,
+	"task":       taskPromptTmpl,
+	"plan":       planPromptTmpl,
+	"initialize": initializePromptTmpl,
+	"title":      titlePromptTmpl,
+	"summary":    summaryPromptTmpl,
+}
+
+// promptText returns a built-in prompt, or the file that replaces it.
+func promptText(store *config.ConfigStore, name string) (string, error) {
+	builtin, ok := builtinPrompts[name]
+	if !ok {
+		return "", fmt.Errorf("unknown prompt %q", name)
+	}
+	path := promptPath(store, name)
+	if path == "" {
+		return string(builtin), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading %s prompt: %w", name, err)
+	}
+	return string(data), nil
+}
+
+// promptPath returns the file replacing the named prompt, or "" for the
+// built-in. A --prompt flag beats options.prompts. Config loading already
+// anchors relative paths to the config file that set them; anything still
+// relative (a $VAR that expands to one) resolves against the workspace.
+func promptPath(store *config.ConfigStore, name string) string {
+	if path := store.Overrides().Prompts[name]; path != "" {
+		return path
+	}
+	opts := store.Config().Options
+	if opts == nil || opts.Prompts[name] == "" {
+		return ""
+	}
+	return filepathext.SmartJoin(store.WorkingDir(), prompt.ExpandPath(opts.Prompts[name], store))
+}
+
+// loadPromptTexts reads every prompt once, built-in or replaced, so a
+// missing file or a broken template fails at startup, and a file moved or
+// deleted mid-session cannot later break compaction, titles, or sub-agents.
+func loadPromptTexts(store *config.ConfigStore) (map[string]string, error) {
+	texts := make(map[string]string, len(config.PromptNames))
+	for _, name := range config.PromptNames {
+		text, err := promptText(store, name)
+		if err != nil {
+			return nil, err
+		}
+		if templatedPrompts[name] {
+			if _, err := prompt.NewPrompt(name, text); err != nil {
+				return nil, err
+			}
+		}
+		texts[name] = text
+	}
+	return texts, nil
+}
+
+// promptOrBuiltin returns the named prompt from texts, as loaded by
+// loadPromptTexts, or the built-in when texts lacks it, as it does for
+// agents built by hand in tests.
+func promptOrBuiltin(texts map[string]string, name string) string {
+	if text, ok := texts[name]; ok {
+		return text
+	}
+	return string(builtinPrompts[name])
+}
+
+// newPrompt builds a templated prompt from the text read at startup.
+func (c *coordinator) newPrompt(name string, opts ...prompt.Option) (*prompt.Prompt, error) {
+	text := promptOrBuiltin(c.promptTexts, name)
+	return prompt.NewPrompt(name, text, withPromptVariant(name, text, opts)...)
+}
+
+// templatedPrompts are the prompts rendered as Go templates. Title and
+// summary are sent verbatim, so a "{{" in them is just text.
+var templatedPrompts = map[string]bool{
+	"coder":      true,
+	"task":       true,
+	"plan":       true,
+	"initialize": true,
+}
+
+// loadPrompt builds a templated prompt by name, honoring options.prompts.
+func loadPrompt(store *config.ConfigStore, name string, opts ...prompt.Option) (*prompt.Prompt, error) {
+	text, err := promptText(store, name)
 	if err != nil {
 		return nil, err
 	}
-	return systemPrompt, nil
+	return prompt.NewPrompt(name, text, withPromptVariant(name, text, opts)...)
 }
 
 // coderPromptVariant renders the lean prompt profile. The full profile keeps
 // the base template, so its text stays exactly as it is.
 func coderPromptVariant(profile, provider, model string) (string, bool) {
-	if profile != config.PromptProfileLean {
+	if effectivePromptProfile(profile, provider, model) != config.PromptProfileLean {
 		return "", false
 	}
 	return string(leanPromptTmpl) + leanFamilyAddon(promptFamily(provider, model)), true
+}
+
+// effectivePromptProfile is the profile a coder session really renders. An
+// explicit full or lean is honored on every model, and any other name keeps
+// the full prompt: a typo must not silently shrink what a session is given.
+// An unset profile follows the measurement: DeepSeek gets the lean prompt,
+// since the batch that measured it solved as many tasks on 8.1% fewer tokens,
+// and every other model keeps full until its own measurement lands. The lean
+// add-on families are no evidence of that: the default family also catches
+// Kimi, GLM, Qwen and MiMo, and none of them was measured.
+func effectivePromptProfile(setting, provider, model string) string {
+	switch setting {
+	case config.PromptProfileFull:
+		return config.PromptProfileFull
+	case config.PromptProfileLean:
+		return config.PromptProfileLean
+	case "":
+		if deepSeekModel(model) {
+			return config.PromptProfileLean
+		}
+	}
+	return config.PromptProfileFull
+}
+
+// deepSeekModel reports whether DeepSeek serves the model, matched on the base
+// name of the model ID so a gateway that serves several vendors is classified
+// by the model it serves. A provider ID is no evidence: the production route
+// reports one openai-compatible provider for every vendor behind it. An ID the
+// rule does not match keeps the full prompt, which is the safe direction.
+func deepSeekModel(model string) bool {
+	return vendorFamily(model) == "deepseek"
 }
 
 // Prompt families group the models that need the same lean-profile add-on.
@@ -142,10 +287,10 @@ func planPrompt(opts ...prompt.Option) (*prompt.Prompt, error) {
 	return systemPrompt, nil
 }
 
-func InitializePrompt(cfg *config.ConfigStore) (string, error) {
-	systemPrompt, err := prompt.NewPrompt("initialize", string(initializePromptTmpl))
+func InitializePrompt(store *config.ConfigStore) (string, error) {
+	systemPrompt, err := loadPrompt(store, "initialize")
 	if err != nil {
 		return "", err
 	}
-	return systemPrompt.Build(context.Background(), "", "", cfg)
+	return systemPrompt.Build(context.Background(), "", "", store)
 }

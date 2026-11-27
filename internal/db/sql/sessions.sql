@@ -41,6 +41,9 @@ WHERE parent_session_id is NULL AND archived = 0
 ORDER BY updated_at DESC;
 
 -- name: UpdateSession :one
+-- channel is deliberately not written here: SetSessionChannel owns the
+-- binding, so a load-modify-Save cycle with a stale session cannot
+-- clobber the channel the coordinator just set.
 UPDATE sessions
 SET
     title = ?,
@@ -51,8 +54,7 @@ SET
     summary_message_id = ?,
     summary_cut_message_id = ?,
     cost = ?,
-    todos = ?,
-    channel = ?
+    todos = ?
 WHERE id = ?
 RETURNING *;
 
@@ -113,3 +115,9 @@ WHERE id = ?;
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
+
+-- name: ListChildSessions :many
+SELECT *
+FROM sessions
+WHERE parent_session_id = ?
+ORDER BY created_at ASC;

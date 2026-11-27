@@ -1,0 +1,125 @@
+/* The HUD instruments: the context gauge, rolling numerals with sparklines,
+   the activity chart and the server hexes. Hud.tsx publishes the strip
+   height as --hud-h, which shell.css uses to place the toasts. */
+.hud__id { display: grid; gap: 2px; min-inline-size: 0; }
+.hud__meta {
+  /* The model, its divider and the branch are one line at every width. A
+     narrow strip truncates the names instead of wrapping the branch into an
+     orphan line that grows the whole HUD. */
+  display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-4);
+  min-inline-size: 0;
+  margin: 2px 0 0; font: 500 var(--step--1)/1.2 var(--font-hud);
+  color: var(--text-muted);
+}
+/* The model name is a button that opens the selector. The reset keeps the
+   strip unchanged at rest; only hover or focus adds the cyan edge. */
+.hud__model {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; min-inline-size: 0;
+  margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: start; white-space: nowrap; cursor: pointer;
+}
+.hud__model-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud__model:hover,
+.hud__model:focus-visible {
+  color: var(--cyan);
+  text-shadow: var(--glow-text);
+}
+.hud__provider { fill: var(--violet); flex: none; }
+.hud__branch {
+  flex: 0 0 auto; max-inline-size: 50%; min-inline-size: 0;
+  color: var(--teal); padding-inline-start: calc(var(--space-4) - 2px); border-inline-start: 1px solid var(--edge);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hud__metric { display: grid; gap: var(--space-1); justify-items: start; }
+.hud__chart { display: grid; gap: var(--space-1); justify-items: start; }
+.hud__servers { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* Each server group is one button that opens the systems panel. The reset
+   keeps the strip unchanged at rest; hover or focus adds the cyan edge. */
+.hud__servers-btn {
+  margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: start; cursor: pointer;
+}
+.hud__servers-btn:hover,
+.hud__servers-btn:focus-visible {
+  color: var(--cyan);
+  text-shadow: var(--glow-text);
+  outline: 1px solid var(--cyan);
+  outline-offset: 2px;
+}
+/* A divider separates the LSP group from the MCP one, so an empty "none"
+   never reads as part of the next label. */
+.hud__servers .hexes + .hud-label { padding-inline-start: 8px; border-inline-start: 1px solid var(--edge); }
+
+.gauge { display: inline-grid; place-items: center; inline-size: 56px; block-size: 56px; }
+.gauge svg { display: block; }
+.gauge__track { fill: none; stroke: var(--edge); stroke-width: 4; }
+.gauge__value {
+  fill: none; stroke: var(--cyan); stroke-width: 4; stroke-linecap: round;
+  transform: rotate(-90deg); transform-box: fill-box; transform-origin: center;
+}
+.gauge__text { fill: var(--cyan); font: 600 var(--step--1) var(--font-hud); font-variant-numeric: tabular-nums; }
+.gauge[data-level='warn'] .gauge__value { stroke: var(--amber); }
+.gauge[data-level='warn'] .gauge__text { fill: var(--amber); }
+.gauge[data-level='critical'] .gauge__value { stroke: var(--magenta); }
+.gauge[data-level='critical'] .gauge__text { fill: var(--magenta); }
+/* base.css stops animations for reduced and off motion, so the pulse only
+   plays when the display setting is Full. */
+.gauge[data-level='critical'] { animation: gauge-pulse 1.4s ease-in-out infinite; }
+@keyframes gauge-pulse { 50% { opacity: 0.55; } }
+
+.numeral {
+  display: inline-flex; align-items: baseline;
+  font: 600 var(--step-1)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums; text-shadow: var(--glow-text);
+  color: var(--cyan);
+}
+.numeral__row { display: inline-flex; }
+.numeral__char { white-space: pre; }
+.roll { display: inline-block; block-size: 1em; overflow: hidden; }
+.roll__strip { display: flex; flex-direction: column; transition: transform 400ms var(--ease-out); }
+.roll__strip > span { block-size: 1em; line-height: 1; }
+.roll[data-d='0'] .roll__strip { transform: translateY(-0%); }
+.roll[data-d='1'] .roll__strip { transform: translateY(-10%); }
+.roll[data-d='2'] .roll__strip { transform: translateY(-20%); }
+.roll[data-d='3'] .roll__strip { transform: translateY(-30%); }
+.roll[data-d='4'] .roll__strip { transform: translateY(-40%); }
+.roll[data-d='5'] .roll__strip { transform: translateY(-50%); }
+.roll[data-d='6'] .roll__strip { transform: translateY(-60%); }
+.roll[data-d='7'] .roll__strip { transform: translateY(-70%); }
+.roll[data-d='8'] .roll__strip { transform: translateY(-80%); }
+.roll[data-d='9'] .roll__strip { transform: translateY(-90%); }
+
+.spark { display: inline-flex; }
+.spark svg { display: block; }
+.spark polyline { fill: none; stroke: var(--cyan-dim); stroke-width: 1.5; stroke-linejoin: round; }
+
+.chart { display: block; }
+.chart__base { stroke: var(--edge); stroke-width: 1; }
+.bar--read { fill: var(--cyan); }
+.bar--write { fill: var(--teal); }
+.bar--run { fill: var(--amber); }
+.bar--network { fill: var(--violet); }
+
+.hexes { display: inline-flex; align-items: center; gap: var(--space-1); }
+.hexes__none { color: var(--text-muted); opacity: 0.6; font: 500 var(--step--1)/1 var(--font-hud); }
+/* The count beside a collapsed group keeps the total visible when the HUD
+   carries one aggregate tile instead of one tile per server. */
+.hexes__count { color: var(--text-muted); font: 600 var(--step--1)/1 var(--font-hud); font-variant-numeric: tabular-nums; }
+.hex { display: block; }
+.hex polygon { fill: var(--cyan); }
+.hex[data-tone='dim'] polygon { fill: var(--text-muted); opacity: 0.4; }
+.hex[data-tone='error'] polygon { fill: var(--magenta); }
+.hex__bang { fill: var(--void-deep); font: 700 10px var(--font-hud); }
+/* The group is one control, so its ready tiles light up together on hover;
+   a stopped or failed tile keeps the tone that says so. */
+.hud__servers-btn:hover .hex[data-tone='lit'] polygon,
+.hud__servers-btn:focus-visible .hex[data-tone='lit'] polygon { fill: var(--cyan); opacity: 1; }
+
+/* Below 1024px the strips go, with the chart caption; the numbers and the
+   gauge stay. */
+@media (max-width: 1023px) {
+  .spark, .chart, .hud__chart .hud-label { display: none; }
+}

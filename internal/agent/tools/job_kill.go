@@ -57,17 +57,29 @@ func NewJobKillTool() fantasy.AgentTool {
 			}
 			bgShell.MarkKilledByModel()
 
-			err := bgManager.Kill(params.ShellID)
+			err := bgManager.Kill(ctx, params.ShellID)
 			if err != nil {
 				// The shell can be reaped between Get and Kill, so a
 				// missing ID here is the same harmless race as above.
 				if errors.Is(err, shell.ErrBackgroundShellNotFound) {
 					return alreadyGoneResponse(params.ShellID), nil
 				}
-				return fantasy.NewTextErrorResponse(err.Error()), nil
+				// A kill that stopped waiting early may still have run the
+				// check, so its note is reported with the error.
+				result := err.Error()
+				if note := bgShell.Note(); note != "" {
+					result = note + "\n\n" + result
+				}
+				return fantasy.NewTextErrorResponse(result), nil
 			}
 
 			result := fmt.Sprintf("Background shell %s terminated successfully", params.ShellID)
+			// Kill waits for the job's finisher, its scope check, before it
+			// returns, so a note here is the check's own report and the
+			// model does not need to read a job that is gone.
+			if note := bgShell.Note(); note != "" {
+				result = note + "\n\n" + result
+			}
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
 		},
 	)

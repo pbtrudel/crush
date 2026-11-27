@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -25,9 +26,30 @@ type MultiEditOperation struct {
 	ReplaceAll bool   `json:"replace_all,omitempty" description:"Replace all occurrences of old_string (default false)."`
 }
 
+// multiEditList is the edits array. Some models send it as a JSON string
+// holding the array; decoding that too saves a failed call and a retry.
+type multiEditList []MultiEditOperation
+
+func (l *multiEditList) UnmarshalJSON(data []byte) error {
+	var edits []MultiEditOperation
+	if err := json.Unmarshal(data, &edits); err == nil {
+		*l = edits
+		return nil
+	}
+	var encoded string
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return fmt.Errorf("edits must be an array of {old_string, new_string}: %w", err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(encoded)), &edits); err != nil {
+		return fmt.Errorf("edits must be an array of {old_string, new_string}: %w", err)
+	}
+	*l = edits
+	return nil
+}
+
 type MultiEditParams struct {
-	FilePath string               `json:"file_path" description:"The absolute path to the file to modify"`
-	Edits    []MultiEditOperation `json:"edits" description:"Array of edit operations to perform sequentially on the file"`
+	FilePath string        `json:"file_path" description:"The absolute path to the file to modify"`
+	Edits    multiEditList `json:"edits" description:"Array of edit operations to perform sequentially on the file"`
 }
 
 type MultiEditPermissionsParams struct {
@@ -71,6 +93,7 @@ func NewMultiEditTool(
 		MultiEditToolName,
 		multieditDescription,
 		func(ctx context.Context, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
@@ -95,6 +118,7 @@ func NewMultiEditTool(
 				files:       files,
 				filetracker: filetracker,
 				workingDir:  workingDir,
+				callID:      call.ID,
 				withoutRead: editWithoutRead,
 			}
 			// Handle file creation case (first edit has empty old_string)
@@ -124,11 +148,11 @@ func NewMultiEditTool(
 	)
 }
 
-func validateEdits(edits []MultiEditOperation) error {
+func validateEdits(edits multiEditList) error {
 	for i, edit := range edits {
 		// Only the first edit can have empty old_string (for file creation)
 		if i > 0 && edit.OldString == "" {
-			return fmt.Errorf("edit %d: only the first edit can have empty old_string (for file creation)", i+1)
+			return fmt.Errorf("edit %d: old_string is empty; every edit after the first must quote the exact text it replaces (only edit 1 may be empty, to create the file)", i+1)
 		}
 	}
 	return nil
@@ -248,7 +272,7 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		slog.Error("Error creating file history", "error", err)
 	}
 
-	_, err = edit.files.CreateVersion(edit.ctx, sessionID, params.FilePath, currentContent)
+	_, err = edit.files.CreateVersion(history.WithToolCallID(edit.ctx, edit.callID), sessionID, params.FilePath, currentContent)
 	if err != nil {
 		slog.Error("Error creating file history version", "error", err)
 	}
@@ -280,7 +304,7 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 }
 
 func processMultiEditExistingFile(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	file, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
+	file, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file", firstOldString(params.Edits))
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -303,7 +327,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		}
 		degraded, refused = edit.mayEditUnread(file.guard, replaceAll, whitespaceCorrected || len(failedEdits) > 0)
 		if refused {
-			return refusedBatch(file.guard, failedEdits), nil
+			return refusedBatch(edit, file.guard, params.FilePath, firstOldString(params.Edits), failedEdits), nil
 		}
 	}
 
@@ -411,8 +435,8 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 // sentence, and the edits of the batch that failed, so the model learns
 // which one did not match. When a match failure is why the batch was
 // refused, the refusal takes that failure's kind.
-func refusedBatch(guard readGuard, failed []FailedEdit) fantasy.ToolResponse {
-	resp := guard.refusal(true)
+func refusedBatch(edit editContext, guard readGuard, filePath, oldString string, failed []FailedEdit) fantasy.ToolResponse {
+	resp := edit.refuseWithContent(guard, filePath, oldString, true)
 	if text := failedEditsText(failed); text != "" {
 		resp.Content += "\n\n" + text
 	}
@@ -422,6 +446,17 @@ func refusedBatch(guard readGuard, failed []FailedEdit) fantasy.ToolResponse {
 		}
 	}
 	return resp
+}
+
+// firstOldString is the text the batch's first real edit replaces, which is
+// what a refusal centres its window on.
+func firstOldString(edits multiEditList) string {
+	for _, edit := range edits {
+		if edit.OldString != "" {
+			return edit.OldString
+		}
+	}
+	return ""
 }
 
 // applyEditToContent applies a single edit, reporting whether it only matched

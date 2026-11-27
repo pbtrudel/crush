@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 // teamTestSessionID is the Lead session every Team tool test runs as.
@@ -24,6 +25,9 @@ const teamTestSessionID = "session-team"
 type teamFakeRun struct {
 	done   chan struct{}
 	output string
+	// once guards done, because a cancel and a shutdown can both stop the
+	// same run.
+	once   sync.Once
 	cancel func()
 }
 
@@ -47,7 +51,7 @@ func (r *teamFakeRunner) Start(_ context.Context, member agentteam.Member, _ str
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	run := &teamFakeRun{done: make(chan struct{})}
-	run.cancel = func() { close(run.done) }
+	run.cancel = func() { run.once.Do(func() { close(run.done) }) }
 	r.runs[member.Name] = run
 	r.count++
 	return run, nil
@@ -72,7 +76,8 @@ func newTeamTestCoordinator(t *testing.T) (*coordinator, *teamFakeRunner) {
 	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "crush.json"), []byte(overrideTestConfig), 0o644))
 	cfg, err := config.Init(t.Context(), workingDir, "", false)
 	require.NoError(t, err)
-	c := &coordinator{cfg: cfg, team: service}
+	c := &coordinator{cfg: cfg}
+	c.setTeam(service)
 	require.NoError(t, c.rebuildModels(context.Background()))
 	return c, runner
 }
@@ -151,7 +156,7 @@ func TestTeamToolsSpawnListAndMessage(t *testing.T) {
 
 	runner.finish("reviewer")
 	require.Eventually(t, func() bool {
-		members, err := c.team.ListMembers("lead", teamTestSessionID)
+		members, err := c.teamService().ListMembers("lead", teamTestSessionID)
 		return err == nil && members[1].Status == agentteam.StatusInactive
 	}, time.Second, 10*time.Millisecond)
 
@@ -336,4 +341,194 @@ func TestTeamToolsAreScopedToTheCallingSession(t *testing.T) {
 
 	owned := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
 	require.Contains(t, owned, `"target":"reviewer"`, "the owning session still sees its teammate")
+}
+
+// TestTeamTaskErrorsCarryCurrentState pins that a refused task call carries
+// the state a retry needs, so the model does not have to call team_task_get
+// first.
+func TestTeamTaskErrorsCarryCurrentState(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+	createTool := toolByName(leadTools, TeamTaskCreateToolName)
+	updateTool := toolByName(leadTools, TeamTaskUpdateToolName)
+
+	runTeamTool(t, createTool, map[string]any{
+		"subject":     "Add rate limiting",
+		"description": "Implement the middleware.",
+	})
+	runTeamTool(t, updateTool, map[string]any{
+		"task_id":           "task-1",
+		"expected_revision": 1,
+		"action":            "claim",
+	})
+
+	stale := runTeamToolRaw(t, updateTool, map[string]any{
+		"task_id":           "task-1",
+		"expected_revision": 1,
+		"action":            "complete",
+	})
+	require.True(t, stale.IsError)
+	require.Contains(t, stale.Content, "stale team task")
+	require.Contains(t, stale.Content, "Current task:")
+	require.Contains(t, stale.Content, `"revision":2`)
+
+	runTeamTool(t, createTool, map[string]any{
+		"subject":     "Ship it",
+		"description": "Blocked on the first task.",
+		"blocked_by":  []string{"task-1"},
+	})
+	runTeamTool(t, updateTool, map[string]any{
+		"task_id":           "task-1",
+		"expected_revision": 2,
+		"action":            "complete",
+	})
+
+	dependent := runTeamToolRaw(t, updateTool, map[string]any{
+		"task_id":           "task-1",
+		"expected_revision": 3,
+		"action":            "delete",
+	})
+	require.True(t, dependent.IsError)
+	require.Contains(t, dependent.Content, `still blocks "task-2"`)
+
+	runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "reviewer",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+	})
+	teammateTools := testTeamTools(c, "reviewer")
+	runTeamTool(t, toolByName(teammateTools, TeamTaskUpdateToolName), map[string]any{
+		"task_id":           "task-2",
+		"expected_revision": 1,
+		"action":            "claim",
+	})
+
+	owned := runTeamToolRaw(t, updateTool, map[string]any{
+		"task_id":           "task-2",
+		"expected_revision": 2,
+		"action":            "claim",
+	})
+	require.True(t, owned.IsError)
+	require.Contains(t, owned.Content, "owned by another member")
+	require.Contains(t, owned.Content, `"ownerName":"reviewer"`)
+}
+
+// TestTeamTaskGetUnknownIDListsLiveTasks pins that an unknown id comes back
+// with the ids and subjects that do exist.
+func TestTeamTaskGetUnknownIDListsLiveTasks(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+	runTeamTool(t, toolByName(leadTools, TeamTaskCreateToolName), map[string]any{
+		"subject":     "Add rate limiting",
+		"description": "Implement the middleware.",
+	})
+
+	missing := runTeamToolRaw(t, toolByName(leadTools, TeamTaskGetToolName), map[string]any{
+		"task_id": "task-99",
+	})
+	require.True(t, missing.IsError)
+	require.Contains(t, missing.Content, `team task "task-99" not found`)
+	require.Contains(t, missing.Content, "Live tasks:")
+	require.Contains(t, missing.Content, "task-1")
+	require.Contains(t, missing.Content, "Add rate limiting")
+}
+
+// TestTeamTaskCreateRelativizesWorkspaceWriteScope pins that an absolute
+// scope inside the workspace is stored relative instead of refused.
+func TestTeamTaskCreateRelativizesWorkspaceWriteScope(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+
+	created := runTeamTool(t, toolByName(leadTools, TeamTaskCreateToolName), map[string]any{
+		"subject":      "Add rate limiting",
+		"description":  "Implement the middleware.",
+		"write_scopes": []string{filepath.Join(c.cfg.WorkingDir(), "internal/agent")},
+	})
+	require.Contains(t, created, `"writeScopes":["internal/agent"]`)
+	require.Contains(t, created, "rewritten")
+}
+
+// TestTeamTaskCreateRejectsScratchWriteScope pins that a scope outside the
+// workspace is still refused, now with the next step spelled out.
+func TestTeamTaskCreateRejectsScratchWriteScope(t *testing.T) {
+	t.Parallel()
+	c, _ := newTeamTestCoordinator(t)
+	leadTools := testTeamTools(c, "lead")
+
+	refused := runTeamToolRaw(t, toolByName(leadTools, TeamTaskCreateToolName), map[string]any{
+		"subject":      "Add rate limiting",
+		"description":  "Implement the middleware.",
+		"write_scopes": []string{"/mnt/data/crush/scratch/"},
+	})
+	require.True(t, refused.IsError)
+	require.Contains(t, refused.Content, "invalid workspace-relative write scope")
+	require.Contains(t, refused.Content, "write scopes must be inside the workspace; leave scratch paths out")
+}
+
+// addPinnedRole registers a role on the coordinator's config. The role tests
+// use it instead of role files so they can pin an exact model group.
+func addPinnedRole(t *testing.T, c *coordinator, role roles.Role) {
+	t.Helper()
+	cfg := c.cfg.Config()
+	cfg.Agents[role.Name] = config.Agent{
+		ID:   role.Name,
+		Name: role.Name,
+		Role: &role,
+	}
+}
+
+// TestTeamToolsSpawnReasoningOnlyIgnoresRoleModel pins the model group rule
+// at spawn time: an explicit reasoning replaces the role's model instead of
+// inheriting it, matching what the teammate turn resolves.
+func TestTeamToolsSpawnReasoningOnlyIgnoresRoleModel(t *testing.T) {
+	c, _ := newTeamTestCoordinator(t)
+	addPinnedRole(t, c, roles.Role{
+		Name: "pinned", Description: "Pins a model.",
+		Model: "other-model", Provider: "other",
+	})
+	leadTools := testTeamTools(c, "lead")
+
+	spawned := runTeamTool(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "rev",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"role":        "pinned",
+		"reasoning":   "high",
+	})
+	require.Contains(t, spawned, `"model":"mock-reasoner"`,
+		"an explicit reasoning takes the shared subagent model")
+	require.Contains(t, spawned, `"model_provider":"mock"`)
+	require.Contains(t, spawned, `"reasoning":"high"`)
+	require.NotContains(t, spawned, "other-model", "the role's model group must be replaced whole")
+}
+
+// TestSpawnTeammateRefusesUnservableRoleModel pins that a role whose pinned
+// model the config cannot serve fails before the roster gains a member.
+func TestSpawnTeammateRefusesUnservableRoleModel(t *testing.T) {
+	c, runner := newTeamTestCoordinator(t)
+	addPinnedRole(t, c, roles.Role{
+		Name: "pinned", Description: "Pins a model.",
+		Model: "gone-model", Provider: "mock",
+	})
+	leadTools := testTeamTools(c, "lead")
+
+	resp := runTeamToolRaw(t, toolByName(leadTools, SpawnTeammateToolName), map[string]any{
+		"name":        "rev",
+		"description": "Reviews the diff",
+		"prompt":      "Review the diff.",
+		"role":        "pinned",
+	})
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, `role "pinned": model "gone-model" is not available from provider "mock"`)
+
+	runner.mu.Lock()
+	started := runner.count
+	runner.mu.Unlock()
+	require.Zero(t, started, "a refused role model must not start a member")
+
+	listed := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
+	require.NotContains(t, listed, `"target":"rev"`, "a refused role model must leave no roster entry")
 }

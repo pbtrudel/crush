@@ -52,3 +52,69 @@ func TestStaleStatusTimerThroughUpdate(t *testing.T) {
 
 	require.Equal(t, "what the user is here to read", m.status.msg.Msg)
 }
+
+// TestStatusDefersUpdateBehindVisibleMessage checks that a version notice
+// arriving at startup waits behind the web link notice instead of wiping
+// it.
+func TestStatusDefersUpdateBehindVisibleMessage(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatus(common.DefaultCommon(&countingWorkspace{ready: true}), nil)
+	first := expire(t, s.Show(util.InfoMsg{
+		Type: util.InfoTypeInfo, Msg: "Opening browser", TTL: time.Millisecond,
+	})).(util.ClearStatusMsg)
+
+	require.Nil(t, s.Show(util.InfoMsg{
+		Type: util.InfoTypeUpdate, Msg: "older update", TTL: time.Millisecond,
+	}), "a deferred update must not start its timer")
+	require.Nil(t, s.Show(util.InfoMsg{
+		Type: util.InfoTypeUpdate, Msg: "newest update", TTL: time.Millisecond,
+	}), "a deferred update must not start its timer")
+	require.Equal(t, "Opening browser", s.msg.Msg, "an update must not replace a visible message")
+
+	pending := s.ClearInfoMsg(first.Seq)
+	require.NotNil(t, pending, "clearing must start the pending update's timer")
+	require.Equal(t, "newest update", s.msg.Msg, "only the latest pending update is kept")
+
+	last := expire(t, pending).(util.ClearStatusMsg)
+	s.ClearInfoMsg(last.Seq)
+	require.True(t, s.msg.IsEmpty())
+}
+
+// TestStatusShowsUpdateWhenIdle checks that an update with nothing on
+// screen is shown at once: only a message already on screen defers it.
+func TestStatusShowsUpdateWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatus(common.DefaultCommon(&countingWorkspace{ready: true}), nil)
+	cmd := s.Show(util.InfoMsg{Type: util.InfoTypeUpdate, Msg: "update", TTL: time.Minute})
+	require.NotNil(t, cmd)
+	require.Equal(t, "update", s.msg.Msg)
+}
+
+// TestStatusNonUpdateReplacesVisibleMessage checks that everything but an
+// update keeps the replace-now behaviour.
+func TestStatusNonUpdateReplacesVisibleMessage(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatus(common.DefaultCommon(&countingWorkspace{ready: true}), nil)
+	s.Show(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "old", TTL: time.Minute})
+	cmd := s.Show(util.InfoMsg{Type: util.InfoTypeWarn, Msg: "new", TTL: time.Minute})
+	require.NotNil(t, cmd)
+	require.Equal(t, "new", s.msg.Msg)
+}
+
+// TestDeferredUpdateShownThroughUpdate covers the path the UI takes: the
+// clear message handler shows the pending update and keeps its timer.
+func TestDeferredUpdateShownThroughUpdate(t *testing.T) {
+	pinTTLs(t)
+
+	m := newBusyUI(&countingWorkspace{ready: true})
+	m.Update(util.InfoMsg{Type: util.InfoTypeInfo, Msg: "Opening browser", TTL: time.Minute})
+	m.Update(util.InfoMsg{Type: util.InfoTypeUpdate, Msg: "development version", TTL: time.Minute})
+	require.Equal(t, "Opening browser", m.status.msg.Msg)
+
+	_, cmd := m.Update(util.ClearStatusMsg{Seq: m.status.msgSeq})
+	require.NotNil(t, cmd)
+	require.Equal(t, "development version", m.status.msg.Msg)
+}

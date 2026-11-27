@@ -90,6 +90,10 @@ type Service interface {
 	Get(ctx context.Context, id string) (Session, error)
 	GetLast(ctx context.Context) (Session, error)
 	List(ctx context.Context) ([]Session, error)
+	// ListChildren returns the sessions parentID spawned (subagent,
+	// teammate and helper sessions), oldest first. Archived children are
+	// included: archiving hides a session from pickers, not its edits.
+	ListChildren(ctx context.Context, parentID string) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	SetChannel(ctx context.Context, sessionID, channel string) (Session, error)
 	// SetArchived keeps a session out of the session lists without deleting
@@ -111,6 +115,9 @@ type Service interface {
 	MCPDisabledServers(ctx context.Context) ([]string, error)
 	SetMCPServerDisabled(ctx context.Context, name string, disabled bool) error
 	MCPServersEnabled(ctx context.Context) ([]string, error)
+	SkillsDisabled(ctx context.Context) ([]string, error)
+	SetSkillDisabled(ctx context.Context, name string, disabled, configDisabled bool) error
+	SkillsEnabled(ctx context.Context) ([]string, error)
 
 	// Agent tool session management
 	CreateAgentToolSessionID(messageID, toolCallID string) string
@@ -250,10 +257,6 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 		Todos: sql.NullString{
 			String: todosJSON,
 			Valid:  todosJSON != "",
-		},
-		Channel: sql.NullString{
-			String: session.Channel,
-			Valid:  session.Channel != "",
 		},
 	})
 	if err != nil {
@@ -429,6 +432,19 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 	return sessions, nil
 }
 
+func (s *service) ListChildren(ctx context.Context, parentID string) ([]Session, error) {
+	rows, err := s.q.ListChildSessions(ctx, sql.NullString{String: parentID, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Session, len(rows))
+	for i, row := range rows {
+		out[i] = s.fromDBItem(row)
+		s.applyEstimatedUsageState(&out[i])
+	}
+	return out, nil
+}
+
 // publishSessionUpdate re-fetches a session and publishes an UpdatedEvent so
 // that UI subscribers reflect title or usage changes.
 func (s *service) publishSessionUpdate(ctx context.Context, sessionID string) {
@@ -563,6 +579,39 @@ func HasMCPOverride(ctx context.Context, s Service, name string) (bool, error) {
 		return false, err
 	}
 	return slices.Contains(disabled, name) || slices.Contains(enabled, name), nil
+}
+
+// SkillsDisabled returns the skills disabled for this repository.
+// Same semantics as MCPDisabledServers: project-scoped, shared by every
+// session in the repository.
+func (s *service) SkillsDisabled(ctx context.Context) ([]string, error) {
+	return s.q.ListSkillsDisabled(ctx)
+}
+
+// SetSkillDisabled adds or removes a repository-scoped skill override.
+// Enabling a config-disabled skill records an enabled override so it
+// stays enabled across restarts. Enabling a skill the config does not
+// disable records none, so a later config disable still applies here.
+func (s *service) SetSkillDisabled(ctx context.Context, name string, disabled, configDisabled bool) error {
+	var err error
+	if disabled {
+		err = s.q.InsertSkillsDisabled(ctx, name)
+	} else {
+		err = s.q.DeleteSkillsDisabled(ctx, name)
+	}
+	if err != nil {
+		return err
+	}
+	if !disabled && configDisabled {
+		return s.q.InsertSkillsEnabled(ctx, name)
+	}
+	return s.q.DeleteSkillsEnabled(ctx, name)
+}
+
+// SkillsEnabled returns the skills with a repository-scoped enabled
+// override: config-disabled skills the user enabled for this repository.
+func (s *service) SkillsEnabled(ctx context.Context) ([]string, error) {
+	return s.q.ListSkillsEnabled(ctx)
 }
 
 func NewService(q *db.Queries, conn *sql.DB) Service {

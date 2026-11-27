@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRun_Echo(t *testing.T) {
@@ -360,5 +364,61 @@ func TestRun_DiscardsNilWriters(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+// TestCaptureResultReportsAnInterruptedRun pins how a stored run reads: a
+// command stopped by its context is interrupted and persists as the TUI's
+// SIGINT code, whatever exit status the interrupt left behind.
+func TestCaptureResultReportsAnInterruptedRun(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}()
+
+	res, err := RunAndCaptureStream(ctx, RunOptions{
+		Command: fmt.Sprintf("echo started; touch %q; sleep 30; echo done", marker),
+		Cwd:     dir,
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, res.Interrupted, "the run itself was stopped")
+	require.Equal(t, InterruptedExitCode, res.PersistedExitCode())
+	require.Contains(t, res.Output, "started")
+	require.NotContains(t, res.Output, "done")
+}
+
+// TestCaptureResultReportsAFinishedRun pins the other half: a run that
+// ends on its own is not interrupted, and keeps its own exit status.
+func TestCaptureResultReportsAFinishedRun(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cmd  string
+		code int
+	}{
+		{"success", "printf hi", 0},
+		{"failure", "false", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res, err := RunAndCapture(t.Context(), RunOptions{Command: tc.cmd, Cwd: t.TempDir()})
+			require.NoError(t, err)
+			require.False(t, res.Interrupted)
+			require.Equal(t, tc.code, res.PersistedExitCode())
+		})
 	}
 }

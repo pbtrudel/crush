@@ -230,7 +230,8 @@ func (a *sessionAgent) compactionStateText(ctx context.Context, sessionID string
 	if !a.isSubAgent && a.cfg != nil {
 		snapshot = prompt.SessionEnvSnapshot(ctx, a.cfg.WorkingDir(), a.now())
 	}
-	return renderCompactionState(todos, snapshot, a.compactionStateFiles(ctx, sessionID), skills)
+	state, listed := renderCompactionState(todos, snapshot, a.compactionStateFiles(ctx, sessionID), skills)
+	return withRoleBlock(a.role, state), listed
 }
 
 // createCompactionStateMessage stores the state block as a hidden user

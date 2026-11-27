@@ -129,18 +129,21 @@ func (m *UI) modelInfoKey() modelInfoKey {
 }
 
 func (m *UI) pillsCacheKey() pillsCacheKey {
+	queueItems := m.promptQueue.Items()
 	k := pillsCacheKey{
 		width:     m.layout.pills.Dx(),
 		session:   m.session,
-		queue:     m.promptQueue,
-		queueLen:  len(m.promptQueueItems),
+		queue:     m.promptQueue.Shown(),
+		queueLen:  len(queueItems),
 		expanded:  m.pillsExpanded,
 		spinning:  m.todoIsSpinning,
 		hasInline: m.activeInline != nil,
 		gap:       m.pillsAttachmentGap(),
 	}
-	if k.queueLen > 0 {
-		k.queuePtr = &m.promptQueueItems[0]
+	// The first fetched prompt's identity stands in for the queue's text: a
+	// fetch swaps the slice even when the count stays the same.
+	if len(m.promptQueue.fetched) > 0 {
+		k.queuePtr = &m.promptQueue.fetched[0]
 	}
 	if m.session != nil {
 		focused := m.effectiveFocusedSection()

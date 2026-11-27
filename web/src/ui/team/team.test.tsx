@@ -1,0 +1,95 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'preact';
+import { act } from 'preact/test-utils';
+import fixtures from '../../state/__fixtures__/events.json';
+import type { Frame } from '../../api/types';
+import { initialState, reduce } from '../../state/reducer';
+import { actions, state } from '../../state/store';
+import { TaskBoard } from './TaskBoard';
+import { TodoOrbit } from './TodoOrbit';
+
+const fx = fixtures as unknown as Record<string, Frame>;
+const root = document.createElement('div');
+afterEach(async () => {
+  await act(() => { render(null, root); });
+  vi.restoreAllMocks();
+});
+
+describe('TaskBoard', () => {
+  it('sorts the scoped tasks into three lanes', async () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    await act(() => { render(<TaskBoard />, root); });
+    const lane = (name: string) => [...root.querySelectorAll<HTMLElement>('.taskboard__lane')].find((l) => l.querySelector('h3')!.textContent!.startsWith(name))!;
+    expect(lane('In progress').textContent).toContain('Port the parser');
+    expect(lane('Pending').textContent).toContain('Write parser tests');
+    expect(lane('Pending').textContent).toContain('Blocked by task-1');
+    expect(lane('Completed').querySelectorAll('li')).toHaveLength(0);
+  });
+
+  it('links an owner chip to its agent', async () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    const inspect = vi.spyOn(actions, 'inspect').mockResolvedValue(undefined);
+    await act(() => { render(<TaskBoard />, root); });
+    const chip = root.querySelector<HTMLButtonElement>('.taskcard__owner')!;
+    expect(chip.getAttribute('aria-label')).toBe('Inspect alice');
+    await act(() => { chip.click(); });
+    expect(inspect).toHaveBeenCalledWith('team-m-1');
+  });
+
+  it('shows a task a run owns', async () => {
+    const seeded = reduce(initialState(), fx.snapshot);
+    state.value = {
+      ...seeded,
+      runs: [{
+        id: 'r1', kind: 'subagent', name: 'Map the parser', session_id: 'sub-1',
+        parent_session_id: 's1', status: 'running', started_at: '2026-11-22T12:00:00Z',
+      }],
+      team: {
+        ...seeded.team,
+        tasks: [...seeded.team.tasks, {
+          id: 'task-9', revision: 1, subject: 'Run-owned work', description: '',
+          status: 'pending', blocked_by: [], ready: true, session_id: 'sub-1',
+        }],
+      },
+    };
+    await act(() => { render(<TaskBoard />, root); });
+    expect(root.textContent).toContain('Run-owned work');
+  });
+
+  it('renders nothing without team tasks', async () => {
+    state.value = initialState();
+    await act(() => { render(<TaskBoard />, root); });
+    expect(root.innerHTML).toBe('');
+  });
+});
+
+describe('TodoOrbit', () => {
+  it('lists todos with their status in text and counts the done ones', async () => {
+    state.value = reduce(reduce(initialState(), fx.snapshot), fx.session);
+    await act(() => { render(<TodoOrbit />, root); });
+    expect(root.querySelector('h2')!.textContent).toContain('1/3');
+    const items = [...root.querySelectorAll('li')].map((li) => li.textContent);
+    expect(items[0]).toContain('Map the parser');
+    expect(items[0]).toContain('done');
+    expect(items[1]).toContain('Porting the parser');
+    expect(items[1]).toContain('in progress');
+  });
+
+  it('draws the done share on the ring and leaves the rest of the circle open', async () => {
+    state.value = reduce(reduce(initialState(), fx.snapshot), fx.session);
+    await act(() => { render(<TodoOrbit />, root); });
+    const fill = root.querySelector('.todo-orbit__fill')!;
+    // One of three todos is done, so the arc is a third of the circle and
+    // the stroke carries the measurement in user units.
+    const C = 2 * Math.PI * 20;
+    expect(fill.getAttribute('stroke-dasharray')).toBe(`${(C * 1) / 3} ${C}`);
+    expect(root.querySelector('.todo-orbit__track')).not.toBeNull();
+    expect(root.querySelector('.todo-orbit__ring')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('renders nothing without todos', async () => {
+    state.value = reduce(initialState(), fx.snapshot);
+    await act(() => { render(<TodoOrbit />, root); });
+    expect(root.innerHTML).toBe('');
+  });
+});

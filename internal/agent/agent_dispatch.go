@@ -17,7 +17,10 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/roles"
 )
 
 //go:embed templates/agent_dispatch_tool.md
@@ -39,12 +42,18 @@ const (
 // when Agent Teams is off at call time.
 const agentsOffRefusal = "Agents are turned off; enable Agent Teams to delegate work to another agent"
 
-// refuseAgentsOff reports the error a tool that creates agent work answers
-// with, and false when it may run. A turn that started while Agent Teams was
-// on holds a tool list that cannot be rebuilt under it, so the check happens
-// per call. Only the tools that create work refuse: agent_status, agent_stop,
-// wait_agent, team_task_list and team_task_get keep running, so work already
-// in flight can still be watched, waited on and stopped after the toggle.
+// refuseAgentsOff reports the tool error a call that needs Agent Teams
+// answers with, and false when it may run. A turn that started while Agent
+// Teams was on holds a tool list that cannot be rebuilt under it, so the
+// check happens per call, and every caller decides with this one rule:
+// a call that starts, steers or stops agent work is refused while the Team
+// is off. That is agent_dispatch, agent_send (including its teammate
+// delivery), the agent tool, spawn_teammate, send_message (which can wake a
+// teammate), interrupt_agent (including its teammate path) and
+// team_task_create. The calls that only observe keep working: agent_status,
+// agent_stop, list_agents, wait_agent, team_task_get, team_task_list and
+// team_task_update, so work already in flight can still be watched, waited
+// on and read while the toggle settles.
 func (c *coordinator) refuseAgentsOff() (fantasy.ToolResponse, bool) {
 	if !c.agentsOff() {
 		return fantasy.ToolResponse{}, false
@@ -62,6 +71,7 @@ type AgentDispatchParams struct {
 	Prompt string `json:"prompt" description:"The task for the subagent to perform"`
 	Label  string `json:"label" description:"A short label for this subagent's scope; the result returns the name to address it by"`
 	Access string `json:"access,omitempty" description:"\"read\" (default) for a subagent that can only inspect the codebase, or \"write\" for one that can also edit files"`
+	Role   string `json:"role,omitempty" description:"Optional role from the catalog below. It sets the subagent's tool allow-list, prompt and default model; access can only narrow it"`
 
 	// Model override. When none of these is given the subagent runs on the
 	// session's subagent model with its configured settings.
@@ -92,6 +102,10 @@ type AgentDispatchResponseMetadata struct {
 	Model     string `json:"model,omitempty"`
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
+	Role      string `json:"role,omitempty"`
+	// Access is the effective access a role dispatch ran on, so a resume
+	// and agent_status do not re-derive it from the raw request.
+	Access string `json:"access,omitempty"`
 	// RunModel is provider/model for display; rehydration ignores it.
 	RunModel string `json:"run_model,omitempty"`
 }
@@ -165,6 +179,10 @@ type dispatchedAgent struct {
 	SessionID       string
 	ParentSessionID string
 	Access          string
+	// Role names the role this subagent runs in, or "" for one without a
+	// role. A rebuild of its agent resolves the role again, so it never
+	// comes back ungated.
+	Role string
 	// agent is the SessionAgent instance actually running this subagent.
 	// Busy state and the message queue live on that instance, not on the
 	// coordinator's main agent, so a message meant for a subagent has to
@@ -191,6 +209,13 @@ type dispatchedAgent struct {
 	// the parent. Each run rolls up only what it spent since, since the
 	// child's own total is cumulative across every turn.
 	rolledUpCost atomic.Uint64
+
+	// cleanup removes what the subagent's runs own, such as the fetch
+	// folder a reopened run recreates. It runs after every run the entry
+	// performs, and cleanedGen names the run whose cleanup already ran so
+	// one run removes it once.
+	cleanup    func()
+	cleanedGen uint64
 }
 
 // runOutcome is what one run of a subagent returned.
@@ -201,10 +226,11 @@ type runOutcome struct {
 
 // newDispatchedAgent returns an entry for a subagent that is not running.
 // Callers start it with claim.
-func newDispatchedAgent(label, access, sessionID, parentSessionID string, agent SessionAgent) *dispatchedAgent {
+func newDispatchedAgent(label, access, role, sessionID, parentSessionID string, agent SessionAgent) *dispatchedAgent {
 	return &dispatchedAgent{
 		Label:           label,
 		Access:          access,
+		Role:            role,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		agent:           agent,
@@ -373,7 +399,7 @@ func (d *dispatchedAgent) awaitDeliverable(ctx context.Context) bool {
 		if !d.running() || d.stopping() {
 			return false
 		}
-		if d.runner().IsSessionBusy(d.SessionID) {
+		if d.runner().HasActiveTurn(d.SessionID) {
 			return true
 		}
 		select {
@@ -404,10 +430,17 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 
 	return fantasy.NewParallelAgentTool(
 		AgentDispatchToolName,
-		strings.TrimSpace(agentDispatchToolDescription),
+		strings.TrimSpace(agentDispatchToolDescription)+roleCatalog(c.cfg.Config()),
 		func(ctx context.Context, params AgentDispatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
+			}
+			// A subagent runs on its own tools, with neither the teammate's
+			// scope gate nor its worktree, and even the read variant can
+			// write through bash and download. A teammate whose edits are
+			// held to a task cannot start one, whatever its access.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
 			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
@@ -416,26 +449,51 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				return fantasy.NewTextErrorResponse("label is required"), nil
 			}
 
-			agent, refusal := resolveSubAgent(agents, params.Access, readOnly)
-			if refusal != "" {
-				return fantasy.NewTextErrorResponse(refusal), nil
+			access := accessOrRead(params.Access)
+			prompt := params.Prompt
+			var (
+				agent       SessionAgent
+				sel         config.SelectedModel
+				hasOverride bool
+				roleName    string
+			)
+			if strings.TrimSpace(params.Role) != "" {
+				role, refusal := resolveRole(c.cfg.Config(), params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				if refusal := planModeRoleRefusal(readOnly, role, params.Access); refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				agent, sel, hasOverride, refusal = c.roleTaskAgent(ctx, role, params.Access, params, parentModel())
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				access, _ = roleAccess(role, params.Access)
+				roleName = role.Name
+				prompt = roles.Block(*role) + params.Prompt
+			} else {
+				var refusal string
+				agent, refusal = resolveSubAgent(agents, params.Access, readOnly)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				// A model override swaps the shared subagent for a dedicated
+				// one running on the requested model. It is resolved before the
+				// label is taken, so a refused override leaves the label free
+				// and the call can be retried immediately.
+				overrideAgent, overrideSel, override, refusal := c.overrideDispatchAgent(ctx, access, params, parentModel())
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				if overrideAgent != nil {
+					agent = overrideAgent
+				}
+				sel, hasOverride = overrideSel, override
 			}
 			agentMessageID := tools.GetMessageFromContext(ctx)
 			if agentMessageID == "" {
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
-			}
-
-			// A model override swaps the shared subagent for a dedicated
-			// one running on the requested model. It is resolved before the
-			// label is taken, so a refused override leaves the label free
-			// and the call can be retried immediately.
-			access := accessOrRead(params.Access)
-			overrideAgent, sel, hasOverride, refusal := c.overrideDispatchAgent(ctx, access, params, parentModel())
-			if refusal != "" {
-				return fantasy.NewTextErrorResponse(refusal), nil
-			}
-			if overrideAgent != nil {
-				agent = overrideAgent
 			}
 
 			parentSessionID := tools.GetSessionFromContext(ctx)
@@ -462,6 +520,7 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			entry := newDispatchedAgent(
 				label,
 				access,
+				roleName,
 				c.sessions.CreateAgentToolSessionID(agentMessageID, toolCallID),
 				parentSessionID,
 				agent,
@@ -476,8 +535,10 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 					SessionID:      parentSessionID,
 					AgentMessageID: agentMessageID,
 					ToolCallID:     toolCallID,
-					Prompt:         params.Prompt,
+					Prompt:         prompt,
+					DisplayPrompt:  params.Prompt,
 					SessionTitle:   "Subagent: " + label,
+					Label:          label,
 					SkipCostRollup: true,
 				})
 			})
@@ -488,6 +549,12 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			}
 			if hasOverride {
 				meta.Model, meta.Provider, meta.Reasoning = overrideRecord(params, sel)
+			}
+			meta.Role = roleName
+			if roleName != "" {
+				// The transcript keeps the effective access, so a
+				// resume and agent_status never see the raw request.
+				meta.Access = access
 			}
 			return fantasy.WithResponseMetadata(
 				fantasy.NewTextResponse(fmt.Sprintf("Started subagent %q.", label)+reportArrivesOnItsOwn),
@@ -502,9 +569,14 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 func (c *coordinator) runDispatched(ctx context.Context, entry *dispatchedAgent, gen uint64, run func(context.Context) (fantasy.ToolResponse, error)) {
 	// Tracked from here, not from when the session starts, so the busy
 	// check never sees a claimed run as idle.
-	untrack := c.trackSubSession(entry.SessionID)
+	// The dispatched entry above already routes its own cancel, so the
+	// run needs no agent recorded here.
+	untrack := c.trackSubSession(entry.SessionID, nil)
 	go func() {
-		resp, err := run(ctx)
+		resp, err := func() (fantasy.ToolResponse, error) {
+			defer entry.runCleanup(gen)
+			return run(ctx)
+		}()
 		untrack()
 		c.rollUpDispatchCost(context.Background(), entry)
 		// Settle before reporting: the report starts a parent turn, and
@@ -531,6 +603,27 @@ func (c *coordinator) runDispatched(ctx context.Context, entry *dispatchedAgent,
 			})
 		}
 	}()
+}
+
+// setCleanup records what the entry's runs must remove when they return.
+func (d *dispatchedAgent) setCleanup(cleanup func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.cleanup = cleanup
+}
+
+// runCleanup runs the entry's cleanup once for gen, so the paths a run takes
+// out of the registry cannot remove the same resources twice.
+func (d *dispatchedAgent) runCleanup(gen uint64) {
+	d.mu.Lock()
+	cleanup := d.cleanup
+	if cleanup == nil || d.cleanedGen == gen {
+		d.mu.Unlock()
+		return
+	}
+	d.cleanedGen = gen
+	d.mu.Unlock()
+	cleanup()
 }
 
 // runner is the agent running this subagent; agent_send can swap it.
@@ -589,7 +682,7 @@ func (c *coordinator) reopen(entry *dispatchedAgent, prompt string, agent Sessio
 	c.runDispatched(runCtx, entry, gen, func(ctx context.Context) (fantasy.ToolResponse, error) {
 		result, err := agent.Run(ctx, agentCall)
 		if err != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("Subagent failed: %s", err)), nil
+			return subAgentRunError("Subagent failed", err), nil
 		}
 		return subAgentResponse(result), nil
 	})
@@ -725,63 +818,152 @@ func (c *coordinator) agentSendTool(parentModel func() Model) fantasy.AgentTool 
 				// the work, so rebuild the entry rather than refusing.
 				rebuilt, err := c.rehydrateDispatch(ctx, parentSessionID, label)
 				if err != nil {
+					// The name may belong to a Team teammate instead.
+					if resp, handled := c.deliverToTeammate(ctx, label, params.Message); handled {
+						return resp, nil
+					}
 					return fantasy.NewTextErrorResponse(fmt.Sprintf(
-						"no subagent %q; running: %s",
-						label, c.runningDispatchLabels(parentSessionID),
+						"no subagent or teammate %q; subagents: %s; teammates: %s",
+						label, c.runningDispatchLabels(parentSessionID), c.teammateNames(ctx),
 					)), nil
 				}
 				entry = rebuilt
+			}
+
+			// Resuming a subagent from a teammate whose edits are held to a
+			// task is refused like starting one: the resumed run's tools are
+			// not held to the task either.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
 			}
 
 			if params.switchesModel() {
 				return c.sendOnNewModel(ctx, entry, params, parentModel()), nil
 			}
 
-			// Each pass either folds the message into a running turn or
-			// reopens a finished subagent. Losing a race to another follow-up
-			// that reopened it first means its new run takes the message.
-			for range 3 {
-				if current, ok := c.dispatched.Get(key); ok {
-					entry = current
-				}
-				if entry.stopping() {
-					entry.awaitSettled(10 * time.Second)
-				}
-				if entry.awaitDeliverable(ctx) {
-					agent := entry.runner()
-					agentCall, _, err := c.subAgentCall(agent, entry.SessionID, params.Message, subAgentParams{})
-					if err != nil {
-						return fantasy.NewTextErrorResponse("Failed to deliver message: " + err.Error()), nil
-					}
-					agentCall.QueueOnly = true
-					_, err = agent.Run(context.WithoutCancel(ctx), agentCall)
-					if err == nil {
-						return fantasy.WithResponseMetadata(fantasy.NewTextResponse(fmt.Sprintf(
-							"Delivered to %q. It will answer in its report.",
-							label,
-						)+reportArrivesOnItsOwn), AgentSendResponseMetadata{Label: label}), nil
-					}
-					if !errors.Is(err, ErrSessionIdle) {
-						return fantasy.NewTextErrorResponse("Failed to deliver message: " + err.Error()), nil
-					}
-					entry.awaitSettled(10 * time.Second)
-				}
-				if c.reopen(entry, params.Message, nil) {
-					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(fmt.Sprintf(
-						"Delivered to %q, which had finished. It will answer in a new report.",
-						label,
-					)+reportArrivesOnItsOwn), AgentSendResponseMetadata{Label: label, Reopened: true}), nil
-				}
-			}
-			if ctx.Err() != nil {
-				return fantasy.ToolResponse{}, ctx.Err()
-			}
-			return fantasy.NewTextErrorResponse(fmt.Sprintf(
-				"subagent %q is still starting up and could not take the message yet; try again shortly",
-				label,
-			)), nil
+			return c.deliverDispatched(ctx, parentSessionID, entry, label, params.Message), nil
 		},
 	)
+}
+
+// deliverDispatched queues text on a dispatched subagent, reopening it when it
+// had finished. The caller reports failure in the response, not as an error.
+func (c *coordinator) deliverDispatched(ctx context.Context, parentSessionID string, entry *dispatchedAgent, label, text string) fantasy.ToolResponse {
+	key := dispatchKey(parentSessionID, label)
+	// Each pass either folds the message into a running turn or
+	// reopens a finished subagent. Losing a race to another follow-up
+	// that reopened it first means its new run takes the message.
+	for range 3 {
+		if current, ok := c.dispatched.Get(key); ok {
+			entry = current
+		}
+		if entry.stopping() {
+			entry.awaitSettled(10 * time.Second)
+		}
+		if entry.awaitDeliverable(ctx) {
+			agent := entry.runner()
+			agentCall, _, err := c.subAgentCall(agent, entry.SessionID, text, subAgentParams{})
+			if err != nil {
+				return fantasy.NewTextErrorResponse("Failed to deliver message: " + err.Error())
+			}
+			agentCall.QueueOnly = true
+			_, err = agent.Run(context.WithoutCancel(ctx), agentCall)
+			if err == nil {
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(fmt.Sprintf(
+					"Delivered to %q. It will answer in its report.",
+					label,
+				)+reportArrivesOnItsOwn), AgentSendResponseMetadata{Label: label})
+			}
+			if !errors.Is(err, ErrSessionIdle) {
+				return fantasy.NewTextErrorResponse("Failed to deliver message: " + err.Error())
+			}
+			entry.awaitSettled(10 * time.Second)
+		}
+		if c.reopen(entry, text, nil) {
+			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(fmt.Sprintf(
+				"Delivered to %q, which had finished. It will answer in a new report.",
+				label,
+			)+reportArrivesOnItsOwn), AgentSendResponseMetadata{Label: label, Reopened: true})
+		}
+	}
+	if ctx.Err() != nil {
+		return fantasy.NewTextErrorResponse(ctx.Err().Error())
+	}
+	return fantasy.NewTextErrorResponse(fmt.Sprintf(
+		"subagent %q is still starting up and could not take the message yet; try again shortly",
+		label,
+	))
+}
+
+// deliverToTeammate forwards a message to a Team teammate on a dispatch miss.
+// It reports whether this path handled the call, so a real send failure keeps
+// its own message.
+func (c *coordinator) deliverToTeammate(ctx context.Context, label, text string) (fantasy.ToolResponse, bool) {
+	if _, off := c.refuseAgentsOff(); off {
+		return fantasy.ToolResponse{}, false
+	}
+	team := c.teamService()
+	if team == nil {
+		return fantasy.ToolResponse{}, false
+	}
+	err := team.SendMessage(ctx, agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), agentteam.SendRequest{
+		Target:  label,
+		Message: text,
+	})
+	if err != nil {
+		if agentteam.ErrorCode(err) == agentteam.CodeMemberNotFound {
+			return fantasy.ToolResponse{}, false
+		}
+		return fantasy.NewTextErrorResponse(err.Error()), true
+	}
+	return fantasy.NewTextResponse(fmt.Sprintf("Delivered to teammate %q.", label)), true
+}
+
+// deliverToSubagent delivers a Team message to a dispatched subagent when the
+// name is not a teammate. It reports whether a subagent took the message. A
+// message resumes the subagent, whose tools are not held to the task, so a
+// teammate whose edits are held to a task is refused once a subagent is what
+// the name resolves to.
+func (c *coordinator) deliverToSubagent(ctx context.Context, label, text string) (fantasy.ToolResponse, bool) {
+	parentSessionID := tools.GetSessionFromContext(ctx)
+	if parentSessionID == "" || c.dispatched == nil {
+		return fantasy.ToolResponse{}, false
+	}
+	entry, ok := c.dispatched.Get(dispatchKey(parentSessionID, label))
+	if !ok {
+		// Not in the registry, which after a restart is every subagent.
+		rebuilt, err := c.rehydrateDispatch(ctx, parentSessionID, label)
+		if err != nil {
+			return fantasy.ToolResponse{}, false
+		}
+		entry = rebuilt
+	}
+	if c.refuseScopedTeammateSubagent(ctx) {
+		return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), true
+	}
+	return c.deliverDispatched(ctx, parentSessionID, entry, label, text), true
+}
+
+// interruptTeammate stops a teammate's current turn when the name is not a
+// running subagent of this session. It stays out of the Team entirely while
+// Agent Teams is turned off, the same rule interrupt_agent follows.
+func (c *coordinator) interruptTeammate(ctx context.Context, name string) (fantasy.ToolResponse, bool) {
+	if _, off := c.refuseAgentsOff(); off {
+		return fantasy.ToolResponse{}, false
+	}
+	team := c.teamService()
+	if team == nil {
+		return fantasy.ToolResponse{}, false
+	}
+	previous, err := team.Interrupt(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx), name)
+	if err != nil {
+		if agentteam.ErrorCode(err) == agentteam.CodeMemberNotFound {
+			return fantasy.ToolResponse{}, false
+		}
+		return fantasy.NewTextErrorResponse(err.Error()), true
+	}
+	return fantasy.NewTextResponse(fmt.Sprintf(
+		"Interrupted teammate %q (was %s). Its pending inbox is kept.", name, previous)), true
 }
 
 // agentStopTool stops a running detached subagent. Its session is kept, so a
@@ -802,9 +984,13 @@ func (c *coordinator) agentStopTool() fantasy.AgentTool {
 
 			entry, ok := c.dispatched.Get(dispatchKey(parentSessionID, label))
 			if !ok || !entry.running() {
+				// The name may belong to a Team teammate instead.
+				if resp, handled := c.interruptTeammate(ctx, label); handled {
+					return resp, nil
+				}
 				return fantasy.NewTextErrorResponse(fmt.Sprintf(
-					"subagent %q is not running; running: %s",
-					label, c.runningDispatchLabels(parentSessionID),
+					"subagent or teammate %q is not running; subagents: %s; teammates: %s",
+					label, c.runningDispatchLabels(parentSessionID), c.teammateNames(ctx),
 				)), nil
 			}
 			reason := strings.TrimSpace(params.Reason)
@@ -850,6 +1036,9 @@ func (c *coordinator) pruneDispatched() {
 
 // runningDispatchLabels lists the subagents still running for a session.
 func (c *coordinator) runningDispatchLabels(parentSessionID string) string {
+	if c.dispatched == nil {
+		return "none"
+	}
 	var labels []string
 	for _, entry := range c.dispatched.Seq2() {
 		if entry.ParentSessionID == parentSessionID && entry.running() {
@@ -901,6 +1090,24 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		return nil, fmt.Errorf("subagent %q was a search and cannot be resumed", label)
 	}
 
+	if record.Role != "" {
+		role, refusal := resolveRole(c.cfg.Config(), record.Role)
+		if refusal != "" {
+			return nil, fmt.Errorf("subagent %q cannot be resumed: role %q no longer exists", label, record.Role)
+		}
+		// The record keeps the effective access, so the entry, agent_send
+		// and agent_status all see the variant the role picks now.
+		if access, refusal := roleAccess(role, record.Access); refusal == "" {
+			record.Access = access
+		}
+		params := AgentDispatchParams{Model: record.Model, Provider: record.Provider, Reasoning: record.Reasoning}
+		agent, _, _, refusal := c.roleTaskAgent(ctx, role, record.Access, params, c.mainModel())
+		if refusal != "" {
+			return nil, fmt.Errorf("subagent %q cannot be resumed: %s", label, refusal)
+		}
+		return c.reopenDispatched(ctx, parentSessionID, label, record, agent)
+	}
+
 	// Rehydration replays the access level recorded in the transcript, so
 	// both variants have to be available to look it up. A read-only parent
 	// could never have recorded a write dispatch in the first place.
@@ -937,6 +1144,12 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		agent = overrideAgent
 	}
 
+	return c.reopenDispatched(ctx, parentSessionID, label, record, agent)
+}
+
+// reopenDispatched registers a rehydrated subagent under its label, seeded
+// with what its session has already cost.
+func (c *coordinator) reopenDispatched(ctx context.Context, parentSessionID, label string, record *dispatchRecord, agent SessionAgent) (*dispatchedAgent, error) {
 	sessionID := c.sessions.CreateAgentToolSessionID(record.MessageID, record.CallID)
 	child, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -945,7 +1158,7 @@ func (c *coordinator) rehydrateDispatch(ctx context.Context, parentSessionID, la
 		return nil, err
 	}
 
-	entry := newDispatchedAgent(label, record.Access, sessionID, parentSessionID, agent)
+	entry := newDispatchedAgent(label, record.Access, record.Role, sessionID, parentSessionID, agent)
 	// Seed the roll-up with what the child has already cost. The parent was
 	// billed for all of it during the original run, so starting from zero
 	// would bill the whole total a second time.
@@ -977,27 +1190,81 @@ func (c *coordinator) stopAllDispatched(reason string, timeout time.Duration) {
 	}
 }
 
+// subSessionRun is the in-flight state of one subagent session: the run
+// count the busy check reads, and the agent instance every run executes on
+// so a cancel by session id reaches it.
+type subSessionRun struct {
+	count  int
+	agents map[uint64]SessionAgent
+}
+
 // trackSubSession marks a subagent session as live until the returned func
 // is called. The coordinator's busy check consults this, so a reader settling
 // half-finished sessions never mistakes a working subagent for a dead one.
-func (c *coordinator) trackSubSession(sessionID string) func() {
+// The agent is recorded too, so cancelling the session reaches the instance
+// that runs it; pass nil when the run needs no such routing.
+func (c *coordinator) trackSubSession(sessionID string, agent SessionAgent) func() {
 	c.subSessionsMu.Lock()
 	if c.subSessions == nil {
-		c.subSessions = map[string]int{}
+		c.subSessions = map[string]*subSessionRun{}
 	}
-	c.subSessions[sessionID]++
+	run := c.subSessions[sessionID]
+	if run == nil {
+		run = &subSessionRun{}
+		c.subSessions[sessionID] = run
+	}
+	run.count++
+	var runID uint64
+	if agent != nil {
+		if run.agents == nil {
+			run.agents = map[uint64]SessionAgent{}
+		}
+		c.subSessionSeq++
+		runID = c.subSessionSeq
+		run.agents[runID] = agent
+	}
 	c.subSessionsMu.Unlock()
 	return func() {
 		c.subSessionsMu.Lock()
 		defer c.subSessionsMu.Unlock()
-		if c.subSessions[sessionID]--; c.subSessions[sessionID] <= 0 {
+		run, ok := c.subSessions[sessionID]
+		if !ok {
+			return
+		}
+		run.count--
+		delete(run.agents, runID)
+		if run.count <= 0 {
 			delete(c.subSessions, sessionID)
 		}
+	}
+}
+
+// errSubAgentCancelled is the cause a user cancel leaves on a subagent's
+// context.
+var errSubAgentCancelled = errors.New("cancelled by the user")
+
+// beginSubSession makes sessionID cancellable before its run is listed
+// running. The returned release drops the entry; call it when the run
+// ends however it ends.
+func (c *coordinator) beginSubSession(ctx context.Context, sessionID string) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	c.subSessionsMu.Lock()
+	if c.subCancels == nil {
+		c.subCancels = map[string]context.CancelCauseFunc{}
+	}
+	c.subCancels[sessionID] = cancel
+	c.subSessionsMu.Unlock()
+	return ctx, func() {
+		c.subSessionsMu.Lock()
+		delete(c.subCancels, sessionID)
+		c.subSessionsMu.Unlock()
+		cancel(nil)
 	}
 }
 
 func (c *coordinator) subSessionBusy(sessionID string) bool {
 	c.subSessionsMu.Lock()
 	defer c.subSessionsMu.Unlock()
-	return c.subSessions[sessionID] > 0
+	run := c.subSessions[sessionID]
+	return run != nil && run.count > 0
 }

@@ -191,20 +191,29 @@ event name is a config error.
 `^(edit|write)$`, `^mcp_`). Omit it to match every tool. It is only accepted on
 the events that carry a tool name; configuring one elsewhere is a config error.
 
-**Scope**: tool and turn events only fire for the **top-level agent**.
-Subagents (the task tool, `agentic_fetch`, and friends) fire none of them,
+**Scope**: tool events (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`)
+fire for the **top-level agent** and for Agent Teams teammates, each with its
+own session id. Turn events fire for the top-level agent only. Dispatched
+subagents (the task tool, `agentic_fetch`, and friends) fire none of them,
 so a notification hook on `TurnEnd` speaks once per prompt rather than once
 per delegated turn. A `TurnEnd` hook runs once for every ending the harness
 considers, so a prompt that continues runs it twice at the default cap; read
 `stop_hook_active` (see [TurnEnd and continuation](#turnend-and-continuation))
 to tell the second call apart. The outer subagent tool call itself _is_
-hooked.
+hooked. A teammate call refused by its write scopes runs no hook. Teammates
+fire no turn events, because their turns are non-interactive. A teammate
+working in a task worktree gets the same `cwd` (and `CRUSH_CWD`) as every
+hook, the Lead's working directory; relative paths in its `tool_input`
+resolve against the worktree, which `team_task_get` reports as the
+`worktree` of the task that owns it (the original task, for a verifier).
 
 **Permission events** fire only when a prompt is actually shown. Calls that a
 `PreToolUse` hook allowed, that are on the allow-list, or that run in YOLO
-mode never prompt and so fire neither. `PermissionResult` always follows its
-`PermissionRequest`, even when the turn is cancelled while the prompt is open;
-its `decision` field says which way it went.
+mode never prompt and so fire neither. A hook that returns `allow` also
+pre-approves a teammate's permission prompt, exactly as it does for the
+Lead. `PermissionResult` always follows its `PermissionRequest`, even when
+the turn is cancelled while the prompt is open; its `decision` field says
+which way it went.
 
 **SessionEnd** fires once, for the session you were last working in, after the
 running turn has been cancelled (so you will see `Interrupt` first). It has a

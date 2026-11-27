@@ -15,9 +15,9 @@ func TestJobOutputWaitReturnsOnSteering(t *testing.T) {
 	t.Parallel()
 
 	manager := shell.GetBackgroundShellManager()
-	bgShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 100", "", testMaxJobs)
+	bgShell, err := manager.Start(t.Context(), nil, t.TempDir(), nil, "sleep 100", "", testMaxJobs)
 	require.NoError(t, err)
-	defer manager.Kill(bgShell.ID)
+	defer manager.Kill(context.Background(), bgShell.ID)
 
 	steering := make(chan struct{})
 	close(steering)

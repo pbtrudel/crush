@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 )
@@ -25,13 +26,16 @@ const DiagnosticsToolName = "lsp_diagnostics"
 //go:embed diagnostics.md
 var diagnosticsDescription string
 
-func NewDiagnosticsTool(lspManager *lsp.Manager) fantasy.AgentTool {
+func NewDiagnosticsTool(cfg *config.ConfigStore, lspManager *lsp.Manager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		DiagnosticsToolName,
 		diagnosticsDescription,
 		func(ctx context.Context, params DiagnosticsParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			notifyLSPs(ctx, lspManager, params.FilePath)
-			output := getDiagnostics(params.FilePath, lspManager)
+			// The diagnostics a server reports are keyed by absolute path,
+			// so a relative file_path never matched its own file.
+			filePath := resolveToolPath(configWorkingDir(cfg), params.FilePath)
+			notifyLSPs(ctx, lspManager, filePath)
+			output := getDiagnostics(filePath, lspManager)
 			return fantasy.NewTextResponse(output), nil
 		},
 	)

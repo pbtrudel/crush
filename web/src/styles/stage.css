@@ -1,0 +1,19 @@
+.stage__inner { position: absolute; inset: 0; display: grid; }
+/* The svg fills the stage box rather than sizing itself from the viewBox
+   aspect ratio, so the default meet fit keeps the whole 2D scene inside. It
+   sits above the panels docked in the stage, as the 3D tags do, so a node
+   docked under one keeps its click; only the nodes take input anyway. */
+.constellation-svg { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; display: block; z-index: 1; }
+.constellation-svg { overflow: visible; }
+.cs-ring { fill: none; stroke: var(--cyan); stroke-opacity: 0.5; }
+.cs-ring--violet { stroke: var(--violet); }
+.cs-beam { fill: var(--cyan); opacity: 0.07; }
+/* The 2D fallback's context arc snaps to its new length: a dash transition
+   would animate a paint property (spec 3.9). */
+.cs-context { fill: none; stroke: var(--cyan); stroke-width: 4; stroke-linecap: round; }
+.cs-core { fill: none; stroke: var(--cyan); stroke-width: 2; transform-origin: 0 -20px; }
+.cs-core-glow { fill: var(--cyan); opacity: 0.4; }
+[data-busy='true'] .cs-core { animation: cs-spin 6s linear infinite; }
+[data-attention='true'] .cs-core, [data-attention='true'] .cs-core-glow { stroke: var(--magenta); fill: var(--magenta); fill-opacity: 0.15; }
+@keyframes cs-spin { to { transform: rotate(360deg); } }
+[data-motion='reduced'] .cs-core { animation: none; }

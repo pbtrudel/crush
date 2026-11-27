@@ -21,6 +21,11 @@ Layout:
 - `matrix.yaml`: the families and their route names, added by a later pull
   request.
 
+Every arm of an experiment names `prompt_profile` in its overlay, `full` or
+`lean`. DeepSeek models default to the lean prompt when the option is unset,
+so an arm that leaves it alone measures the lean prompt, and the baseline it
+writes records that measurement rather than the full prompt.
+
 Hidden tests are referenced by the blob sha of their contents, not copied, so
 no answer code lives in this directory. The suite version is the git tree hash
 of `tasks/` and `footer.md`; results of two batches compare only when it

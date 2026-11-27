@@ -90,3 +90,22 @@ func TestCheckStatus_TypesActionableStatuses(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckStatusMapsAgentNotInitialized(t *testing.T) {
+	t.Parallel()
+	rsp := &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(
+		`{"message":"agent coordinator not initialized","code":"agent_not_initialized"}`))}
+	require.ErrorIs(t, checkStatus(rsp), ErrAgentNotInitialized)
+}
+
+// TestCheckStatusMapsSessionNotFound pins the code split: a session the
+// workspace does not have is ErrSessionNotFound, not ErrNotFound, so the
+// workspace recovery paths never mistake one for the other.
+func TestCheckStatusMapsSessionNotFound(t *testing.T) {
+	t.Parallel()
+	err := checkStatus(&http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(
+		`{"message":"session not found","code":"session_not_found"}`))})
+	require.ErrorIs(t, err, ErrSessionNotFound)
+	require.NotErrorIs(t, err, ErrNotFound)
+	require.Contains(t, err.Error(), "session not found")
+}

@@ -12,7 +12,9 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 	return []apigen.Endpoint{
 		apigen.Get("/v1/health").
 			Summary("Health check").
+			Description("Answers 503 once the server has committed to shutting down.").
 			Tags("system").
+			Fails(503).
 			Handle(c.handleGetHealth),
 
 		apigen.Get("/v1/version").
@@ -159,7 +161,10 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 				"question prompts are scoped to the session the client currently "+
 				"views (see POST current-session): they are only delivered to clients "+
 				"viewing the session that raised them, and clients viewing no session "+
-				"receive none. All other events are workspace-wide.").
+				"receive none. All other events are workspace-wide. A client that "+
+				"falls so far behind that events are dropped for it has its stream "+
+				"closed; it should reconnect, re-report its current session, which "+
+				"re-delivers pending prompts, and re-read the state it shows.").
 			Tags("workspaces").
 			PathParam("id", "Workspace ID").
 			RequiredQueryParam("client_id", "Client ID (UUID)").
@@ -211,6 +216,17 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleDeleteWorkspaceSession),
 
+		apigen.Post("/v1/workspaces/{id}/sessions/{sid}/rename").
+			Summary("Rename session").
+			Description("Changes only the title, leaving the usage, cost and todos a concurrent run wrote intact.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Accepts(proto.SessionRename{}).
+			Responds(proto.Session{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceSessionRename),
+
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history").
 			Summary("Get session history").
 			Tags("sessions").
@@ -218,6 +234,35 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			PathParam("sid", "Session ID").
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSessionHistory),
+
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/history/meta").
+			Summary("List session history metadata").
+			Description("Lists every file version of a session without its content, with its size in bytes.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.FileMeta{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionHistoryMeta),
+
+		apigen.Get("/v1/workspaces/{id}/history/{fid}").
+			Summary("Get one file version").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("fid", "File version ID").
+			Responds(proto.File{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceHistoryFile),
+
+		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/children").
+			Summary("List child sessions").
+			Description("Lists the subagent, teammate and helper sessions a session spawned, oldest first.").
+			Tags("sessions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Responds([]proto.Session{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSessionChildren),
 
 		apigen.Get("/v1/workspaces/{id}/sessions/{sid}/messages").
 			Summary("Get session messages").
@@ -279,6 +324,14 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceLSPs),
 
+		apigen.Get("/v1/workspaces/{id}/lsps/diagnostics/by-file").
+			Summary("Get LSP diagnostic counts by file").
+			Tags("lsp").
+			PathParam("id", "Workspace ID").
+			Responds(proto.LSPFileDiagnostics{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceLSPDiagnosticsByFile),
+
 		apigen.Get("/v1/workspaces/{id}/lsps/{lsp}/diagnostics").
 			Summary("Get LSP diagnostics").
 			Tags("lsp").
@@ -319,6 +372,18 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspacePermissionsGrant),
 
+		apigen.Post("/v1/workspaces/{id}/sessions/{sid}/auto-approve").
+			Summary("Auto-approve a session's permissions").
+			Description("Grants every permission request the session raises from "+
+				"now on without prompting, as `crush run` does for its own session. "+
+				"Other sessions keep prompting. The approval lasts while the "+
+				"workspace is hosted.").
+			Tags("permissions").
+			PathParam("id", "Workspace ID").
+			PathParam("sid", "Session ID").
+			Fails(404, 500).
+			Handle(c.handlePostWorkspaceSessionAutoApprove),
+
 		apigen.Post("/v1/workspaces/{id}/questions/answer").
 			Summary("Answer question batch").
 			Tags("questions").
@@ -330,8 +395,12 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 
 		apigen.Post("/v1/workspaces/{id}/questions/cancel").
 			Summary("Cancel question batch").
+			Description("Cancels the batch the body names. Without a body "+
+				"it cancels the only pending batch, and nothing when "+
+				"several are pending.").
 			Tags("questions").
 			PathParam("id", "Workspace ID").
+			Accepts(proto.QuestionCancel{}).
 			Responds(proto.QuestionAnswerResponse{}).
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceQuestionsCancel),
@@ -490,6 +559,26 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceAgentSessionAsk),
 
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/message").
+			Summary("Message a teammate").
+			Description("Sends a message to a teammate as the Lead of the session's Agent Team.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamMessageRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberMessage),
+
+		apigen.Post("/v1/workspaces/{id}/team/members/{member}/interrupt").
+			Summary("Interrupt a teammate").
+			Description("Stops a teammate's current turn.").
+			Tags("agent").
+			PathParam("id", "Workspace ID").
+			PathParam("member", "Teammate name").
+			Accepts(proto.TeamInterruptRequest{}).
+			Fails(400, 404, 409, 500).
+			Handle(c.handlePostWorkspaceTeamMemberInterrupt),
+
 		apigen.Post("/v1/workspaces/{id}/agent/sessions/{sid}/shell").
 			Summary("Run shell command").
 			Description("Runs a shell command in the workspace on behalf of the session.").
@@ -611,6 +700,15 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Responds([]proto.SkillInfo{}).
 			Fails(404, 500).
 			Handle(c.handleGetWorkspaceSkills),
+
+		apigen.Get("/v1/workspaces/{id}/skills/all").
+			Summary("List every discovered skill").
+			Description("Includes the skills the config or the repository disabled.").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Responds([]proto.SkillInfo{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSkillsAll),
 
 		apigen.Post("/v1/workspaces/{id}/skills/read").
 			Summary("Read skill content").
@@ -770,5 +868,37 @@ func (c *controllerV1) endpoints() []apigen.Endpoint {
 			Accepts(proto.MCPNameRequest{}).
 			Fails(400, 404, 500).
 			Handle(c.handlePostWorkspaceMCPStartServer),
+
+		apigen.Get("/v1/workspaces/{id}/skills/disabled").
+			Summary("List disabled skills").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Responds([]string{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSkillsDisabled),
+
+		apigen.Post("/v1/workspaces/{id}/skills/disabled").
+			Summary("Toggle a skill for the repository").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Accepts(proto.SkillSetDisabledRequest{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceSetSkillDisabled),
+
+		apigen.Get("/v1/workspaces/{id}/skills/enabled").
+			Summary("List enabled-override skills").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Responds([]string{}).
+			Fails(404, 500).
+			Handle(c.handleGetWorkspaceSkillsEnabled),
+
+		apigen.Post("/v1/workspaces/{id}/skills/config-disabled").
+			Summary("Toggle a skill in the config").
+			Tags("skills").
+			PathParam("id", "Workspace ID").
+			Accepts(proto.SkillSetDisabledRequest{}).
+			Fails(400, 404, 500).
+			Handle(c.handlePostWorkspaceSetSkillConfigDisabled),
 	}
 }

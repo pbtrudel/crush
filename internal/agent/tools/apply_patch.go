@@ -53,6 +53,7 @@ func NewApplyPatchTool(
 		ApplyPatchToolName,
 		applyPatchDescription,
 		func(ctx context.Context, params ApplyPatchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if strings.TrimSpace(params.Patch) == "" {
 				return withErrorKind(fantasy.NewTextErrorResponse("patch is required"), ErrorKindInvalidArguments), nil
 			}
@@ -62,7 +63,7 @@ func NewApplyPatchTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for applying a patch")
 			}
 
-			edit := editContext{ctx: ctx, permissions: permissions, files: files, filetracker: filetracker, workingDir: workingDir}
+			edit := editContext{ctx: ctx, permissions: permissions, files: files, filetracker: filetracker, workingDir: workingDir, callID: call.ID}
 			resp, written, err := applyPatch(edit, sessionID, params.Patch, call)
 			if err != nil || resp.IsError {
 				return resp, err
@@ -252,7 +253,7 @@ func writePatchPlans(edit editContext, sessionID string, plans []patchPlan) (App
 			if _, err := edit.files.Create(edit.ctx, sessionID, plan.path, ""); err != nil {
 				return meta, written, fmt.Errorf("failed to record file history: %w", err)
 			}
-			if _, err := edit.files.CreateVersion(edit.ctx, sessionID, plan.path, plan.newContent); err != nil {
+			if _, err := edit.files.CreateVersion(history.WithToolCallID(edit.ctx, edit.callID), sessionID, plan.path, plan.newContent); err != nil {
 				return meta, written, fmt.Errorf("failed to record file history: %w", err)
 			}
 			edit.filetracker.RecordRead(edit.ctx, sessionID, plan.path)

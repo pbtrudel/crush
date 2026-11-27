@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -208,4 +209,20 @@ func TestSessionAgentRunsIncludesNestedRuns(t *testing.T) {
 	require.Len(t, filtered, 2)
 	require.Equal(t, []string{"run-1", "run-2"}, []string{filtered[0].ID, filtered[1].ID},
 		"a run started by a nested agent still belongs to the Lead's session")
+}
+
+func TestTeamInfoShowsReviewAndEscalation(t *testing.T) {
+	t.Parallel()
+	u := newTestUI()
+	u.com = common.DefaultCommon(stubConfigWorkspace{})
+	u.session = &session.Session{ID: "session-lead"}
+	u.teamState = agentteam.State{TeamID: "team-1", Tasks: []agentteam.Task{
+		{ID: "task-1", Subject: "Ready", Status: agentteam.TaskPending, SessionID: "session-lead"},
+		{ID: "task-2", Subject: "Build it", Status: agentteam.TaskInReview, SessionID: "session-lead"},
+		{ID: "task-3", Subject: "Verify it", Status: agentteam.TaskPending, Escalated: true, SessionID: "session-lead"},
+	}}
+	info := u.teamInfo(80)
+	require.Contains(t, info, "◇ task-2 Build it")
+	require.Contains(t, info, "task-3 Verify it · escalated")
+	require.Less(t, strings.Index(info, "task-2"), strings.Index(info, "task-1"), "review sorts before ready work")
 }

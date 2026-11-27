@@ -159,6 +159,7 @@ Flags:
       --extra-header key value      add an HTTP header (repeatable)
       --extra-body JSON             merge a JSON object into request bodies
       --provider-options JSON       merge a provider-specific JSON object
+      --request-compression list    compress request bodies (br,gzip; most preferred first)
 ```
 
 ```bash
@@ -173,6 +174,12 @@ The type describes the API format the provider speaks: `completions`
 (Anthropic messages). Local providers with a registered enricher (ollama,
 litellm, lmstudio, …) keep their own type. Legacy values (`openai`,
 `openai-compat`, `anthropic`, …) are migrated automatically at load.
+
+`--request-compression br,gzip` (`request_compression` in JSON) compresses
+the request bodies an OpenAI-compatible provider is sent, most preferred
+encoding first. A refused encoding falls back to the next one, then to plain
+JSON. Only set it for an endpoint that accepts compressed bodies. Hyper uses
+`br,gzip` when it is unset; Mistral ignores it.
 
 Headers whose value resolves to the empty string (an unset `$VAR`, a
 `$(...)` that prints nothing, or a literal `""`) are dropped from the
@@ -490,6 +497,11 @@ Boolean Keys:
                                  OpenAI Responses endpoint returned earlier
                                  in the turn back with the next request; on
                                  by default, pass false to turn it off
+  anthropic-tool-search          send deferred tools to Anthropic's
+                                 server-side tool search instead of Crush's
+                                 tool_search, so revealing a tool never
+                                 rewrites the cached tools block; needs
+                                 lazy-tools and an Anthropic-direct model
   metrics                        send anonymous usage metrics
   auto-summarize                 automatically compact long conversations
   provider-auto-update           update the provider catalog automatically
@@ -501,9 +513,18 @@ String Keys:
   initialize-as string             context filename created by crush init
   notifications string             notification style: auto, native, osc, bell,
                                    or disabled
-  prompt-profile string            coder system prompt: full (default) or
-                                   lean, a short base plus a model-family
-                                   add-on
+  prompt-profile string            coder system prompt: full, or lean, a
+                                   short base plus a model-family add-on;
+                                   unset uses lean for DeepSeek models,
+                                   measured on V4.1 Flash, and full for
+                                   every other model
+  prompt-cache-ttl string          prompt cache lifetime: 5m (default) or 1h;
+                                   the 1h lifetime keeps Anthropic prompt
+                                   caches for an hour, where cache writes cost
+                                   about 2x base input instead of 1.25x, so
+                                   it pays off when you pause more than 5
+                                   minutes between turns; it also asks OpenAI
+                                   for 24-hour prompt_cache_retention
   attribution-trailer-style string attribution trailer: none, co-authored-by,
                                    or assisted-by
 
@@ -557,6 +578,7 @@ option auto-compact-threshold 0.5
 option auto-compact-max-tokens 250000
 option compact-tail-tokens 16384
 option history-slim-idle-minutes 30
+option prompt-cache-ttl 1h
 ```
 
 #### `option reset`
@@ -575,6 +597,114 @@ Available Keys:
   disable-skill         clear disabled skill names
 ```
 
+#### `option prompt`
+
+Replace one of Crush's built-in prompts with your own file.
+
+```text
+Usage:
+  option prompt <name> <path>
+
+Available Names:
+  coder        the main agent's system prompt
+  task         the sub-agent's system prompt
+  plan         the planning agent's system prompt
+  summary      the instructions used to compact a long conversation
+  title        the instructions used to name a session
+  initialize   the instructions used by crush init
+```
+
+```bash
+option prompt coder ~/.config/crush/prompts/coder.md.tpl
+option prompt summary ~/.config/crush/prompts/summary.md
+```
+
+Paths go through the shell, so `~` and `$VARS` work. A relative path is
+resolved against the directory of the config file that sets it. So
+`option prompt coder .crush/coder.md.tpl` in a project's `crushrc` finds the
+project's file, and `option prompt summary prompts/summary.md` in your global
+`~/.config/crush/crushrc` finds `~/.config/crush/prompts/summary.md` from every
+project. Both hold when Crush starts with `--cwd` or runs on a server.
+
+Overrides layer like every other option: one in your global
+`~/.config/crush/crushrc` applies everywhere, and a project config replaces
+it name by name. Overriding `coder` in a project leaves a global `summary`
+override in place.
+
+In `crush.json`, the same settings live under `options.prompts`:
+
+```json
+{
+  "options": {
+    "prompts": {
+      "coder": "~/.config/crush/prompts/coder.md.tpl",
+      "summary": ".crush/summary.md"
+    }
+  }
+}
+```
+
+For a single run, pass `--prompt name=path`. It can be repeated, wins over
+any configured override, and resolves relative paths against the directory
+you ran the command from:
+
+```bash
+crush --prompt coder=./terse-coder.md.tpl
+crush run --prompt summary=./summary.md "tidy up the changelog"
+```
+
+When Crush runs through a server, every session in a directory shares one
+workspace, so `--prompt` only applies to the session that opens it. A later
+`--prompt` asking for different prompts fails rather than being ignored; close
+the other sessions in that directory first.
+
+Start from the prompt you are replacing rather than a blank file:
+[coder][coder], [task][task], [plan][plan], [summary][summary], [title][title],
+[initialize][initialize]. They all live in
+[`internal/agent/templates`](https://github.com/charmbracelet/crush/tree/main/internal/agent/templates).
+
+[coder]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/coder.md.tpl
+[task]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/task.md.tpl
+[plan]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/plan.md.tpl
+[summary]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/summary.md
+[title]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/title.md
+[initialize]: https://github.com/charmbracelet/crush/blob/main/internal/agent/templates/initialize.md.tpl
+
+The `coder`, `task`, `plan`, and `initialize` prompts are Go templates. Your file
+replaces the built-in one completely, so anything the built-in asked for is gone
+unless you ask for it too. That includes the pieces you probably want:
+
+```text
+{{.AvailSkillXML}}        available skills
+{{.WorkingDir}}           where Crush is running
+{{.Platform}}             the host OS
+{{.GitStatus}}            branch, status, and recent commits
+```
+
+Context files and language servers are lists rather than text, so pasting
+`{{.ContextFiles}}` or `{{.Config.LSP}}` as-is prints raw Go data. Use the
+blocks the built-in `coder` prompt uses instead. For AGENTS.md and friends from
+the project (use `.GlobalContextFiles` for the ones from your global config):
+
+```text
+{{range .ContextFiles}}
+<file path="{{.Path}}">
+{{.Content}}
+</file>
+{{end}}
+```
+
+And to mention LSP diagnostics only when a language server is configured:
+
+```text
+{{if .Config.LSP}}
+Diagnostics (lint/typecheck) are included in tool output.
+{{end}}
+```
+
+A name that is not on the list above, a file that cannot be read, and a
+template Crush cannot parse all fail at startup rather than mid-conversation.
+
 #### `option ui`
 
 Configure terminal UI presentation and completion-list limits.
@@ -591,6 +721,13 @@ Available Keys:
                                 selection, and scrolling in the TUI (default
                                 true); disable to let the terminal emulator
                                 or tmux handle text selection and copy/paste
+  nerd-fonts bool               override Nerd Font glyph detection: true
+                                forces glyphs on, false forces them off, and
+                                unset keeps automatic detection (the NERDFONT
+                                environment variable wins when both are set);
+                                detection checks fonts on this machine, so
+                                set it when running over SSH or when a Nerd
+                                Font is installed but not used by the terminal
   scrollbar string              control chat scrollbar visibility: default,
                                 always, or never
   exit-banner default|compact|none
@@ -606,6 +743,7 @@ option ui compact true
 option ui diff unified
 option ui transparent true
 option ui mouse false
+option ui nerd-fonts false
 option ui scrollbar always
 option ui exit-banner compact
 option ui completions-max-depth 4

@@ -44,6 +44,15 @@ type gateInput struct {
 	HeadTo   string
 	// Continuations counts the continuations this prompt already used.
 	Continuations int
+	// StaleTodo is the item the mid-turn reminders were about, and
+	// StaleTodoReminders how many of them went unanswered. Both are zero
+	// when no reminder went out.
+	StaleTodo          string
+	StaleTodoReminders int
+	// Todos is the session's list as the gate read it. It is nil when
+	// nothing had to read it, so a prompt without stale reminders costs no
+	// query.
+	Todos []session.Todo
 }
 
 // gateCheck is one source of continuation requests for an ending turn.
@@ -101,6 +110,25 @@ func gateNextCall(call SessionAgentCall, text string) *SessionAgentCall {
 	next.gateContinuations = call.gateContinuations + 1
 	next.gateContinued = true
 	return &next
+}
+
+// staleNoteOwed reports whether a finished turn still owes the stale list
+// note. A turn the gate asked about is owed it only when the list still shows
+// the item and the reply does not already say so: a reply that names the item
+// as unfinished is the report the note exists to make.
+func staleNoteOwed(item string, reminders int, todos []session.Todo, asked bool, reply string) bool {
+	if !staleTodoAtTurnEnd(item, reminders-1, todos) {
+		return false
+	}
+	return !asked || !strings.Contains(reply, item)
+}
+
+// gateTodoState is the todo list as the turn-end gate sees it: the item the
+// mid-turn reminders were about, and how many of them went unanswered. Both
+// are zero when no reminder went out.
+type gateTodoState struct {
+	item       string
+	unanswered int
 }
 
 // hasUserPrompt reports whether a queue holds a prompt the user typed. A
@@ -215,7 +243,7 @@ func (a *sessionAgent) hookGateReasons(ctx context.Context, call SessionAgentCal
 // check always sees a candidate ending even when its answer cannot be used.
 // A stop, an ending other than completed, a limit and a cancel all outrank a
 // request to continue: a guard, a halt or a budget is never overridden.
-func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, userQueued bool) *SessionAgentCall {
+func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, assistant *message.Message, end message.TurnEnd, userQueued bool, todo gateTodoState) *SessionAgentCall {
 	// The working tree is read once here, before any check runs, so every
 	// check and the hook payload see the same files. A failed snapshot
 	// leaves nothing to compare, so the turn falls back to its tool calls
@@ -232,13 +260,15 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 	}
 	changed, headFrom, headTo := turnChangedFiles(call, endState)
 	in := gateInput{
-		SessionID:     call.SessionID,
-		TurnEnd:       end,
-		Reply:         assistant.Content().String(),
-		ChangedFiles:  changed,
-		HeadFrom:      headFrom,
-		HeadTo:        headTo,
-		Continuations: call.gateContinuations,
+		SessionID:          call.SessionID,
+		TurnEnd:            end,
+		Reply:              assistant.Content().String(),
+		ChangedFiles:       changed,
+		HeadFrom:           headFrom,
+		HeadTo:             headTo,
+		Continuations:      call.gateContinuations,
+		StaleTodo:          todo.item,
+		StaleTodoReminders: todo.unanswered,
 	}
 	// The hooks run even when the user already has a prompt queued, so a
 	// TurnEnd hook keeps its once-per-prompt scope; only its answer is
@@ -251,9 +281,31 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		}
 		return nil
 	}
+	// The list is read only where a check can act on it: on the prompt's
+	// last run, after a completed turn, and after the queued prompt above
+	// returned. The model can update the list in the step that just ran, so
+	// the copy read at the prompt's start can be behind.
+	if in.StaleTodo != "" && staleTodoEscalated(in.StaleTodoReminders) &&
+		call.gateContinuations == 0 && end == message.TurnEndCompleted {
+		latest, getErr := a.sessions.Get(ctx, call.SessionID)
+		if getErr != nil {
+			slog.Warn("Turn-end gate: could not read the todo list",
+				"session_id", call.SessionID, "error", getErr)
+		} else {
+			in.Todos = latest.Todos
+		}
+	}
 	reasons := hookReasons
 	stopped := hookStop
+	// todoAsked records that the todo check spoke, so the reply does not
+	// repeat its question as a note once the continuation that carries it
+	// has run.
+	todoAsked := false
+	todoItem := ""
 	checks := slices.Clone(a.gateChecks)
+	if !a.isSubAgent {
+		checks = append(checks, todoGateCheck{})
+	}
 	if a.completionCheckOn() {
 		checks = append(checks, completionGateCheck{})
 	}
@@ -262,6 +314,10 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		stopped = stopped || verdict.Stop
 		if verdict.Reason == "" {
 			continue
+		}
+		if _, isTodo := check.(todoGateCheck); isTodo {
+			todoAsked = true
+			todoItem = in.StaleTodo
 		}
 		reasons = append(reasons, gateReason{
 			label: "check: " + check.Name(),
@@ -288,7 +344,13 @@ func (a *sessionAgent) runTurnGate(ctx context.Context, call SessionAgentCall, a
 		slog.Info("Turn-end gate: the run was cancelled",
 			"session_id", call.SessionID)
 	default:
-		return gateNextCall(call, gateMessage(reasons))
+		next := gateNextCall(call, gateMessage(reasons))
+		next.gateTodoAsked = call.gateTodoAsked || todoAsked
+		if todoItem == "" {
+			todoItem = call.gateTodoItem
+		}
+		next.gateTodoItem = todoItem
+		return next
 	}
 	return nil
 }
@@ -347,11 +409,16 @@ type gateFinish struct {
 // drops a continuation calls it too, so the two cannot drift.
 func (a *sessionAgent) finishWithoutGate(ctx context.Context, call SessionAgentCall, f gateFinish) {
 	// A turn that ends with the list still behind the work is reported to
-	// the user by Crush, not by the model. By the time execution reaches
-	// here the model has ignored repeated reminders about the same item,
-	// so a further reminder would not help; the note keeps the user from
-	// discovering the stale list only when they open it.
-	if f.finished && !a.isSubAgent && f.staleItem != "" {
+	// the user by Crush, not by the model. When the gate asked about the
+	// item, the note is owed only if the reply ignored it: a reply that
+	// says the item is unfinished already tells the user. A prompt the gate
+	// never asked, because no continuation was left or a queued prompt won,
+	// gets the note as it always did.
+	item, reminders := f.staleItem, f.staleN+1
+	if call.gateTodoAsked {
+		item, reminders = call.gateTodoItem, todoReminderEscalateAfter
+	}
+	if f.finished && !a.isSubAgent && item != "" {
 		// A compaction can outlast cleanupCtx, so the note gets its own
 		// short deadline, detached from the run like the other final
 		// writes.
@@ -359,8 +426,8 @@ func (a *sessionAgent) finishWithoutGate(ctx context.Context, call SessionAgentC
 		defer cancelNote()
 		if latest, getErr := a.sessions.Get(noteCtx, call.SessionID); getErr != nil {
 			slog.Warn("Failed to read todos for the stale list note", "session_id", call.SessionID, "error", getErr)
-		} else if staleTodoAtTurnEnd(f.staleItem, f.staleN, latest.Todos) {
-			f.assistant.AppendContent(staleTodoNote(f.staleItem, f.staleN+1))
+		} else if staleNoteOwed(item, reminders, latest.Todos, call.gateTodoAsked, f.assistant.Content().String()) {
+			f.assistant.AppendContent(staleTodoNote(item, reminders))
 			if updateErr := a.messages.Update(noteCtx, *f.assistant); updateErr != nil {
 				slog.Warn("Failed to append the stale list note", "session_id", call.SessionID, "error", updateErr)
 			}

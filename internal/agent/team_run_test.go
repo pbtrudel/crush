@@ -45,18 +45,19 @@ func TestTeammateSessionIDDoesNotCollideWithAnOlderTeam(t *testing.T) {
 	require.NoError(t, coord.readyWg.Wait())
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, nil)
 	require.NoError(t, err)
-	coord.team = service
+	coord.setTeam(service)
 
 	lead, err := coord.sessions.Create(t.Context(), "Lead")
 	require.NoError(t, err)
 	_, err = coord.sessions.CreateTaskSession(t.Context(), "team-member-1", lead.ID, "Old teammate")
 	require.NoError(t, err)
 
-	runner := &teamRunner{c: coord}
-	sess, err := runner.teammateSession(t.Context(), agentteam.Member{
+	runner := &teamRunner{c: coord, team: service}
+	sess, created, err := runner.teammateSession(t.Context(), agentteam.Member{
 		ID: "member-1", Name: "reviewer", ParentID: lead.ID,
 	})
 	require.NoError(t, err)
+	require.True(t, created, "the first turn creates the session")
 	require.NotEqual(t, "team-member-1", sess.ID, "a new team must not reuse an old teammate session id")
 }
 

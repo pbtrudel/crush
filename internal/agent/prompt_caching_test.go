@@ -76,7 +76,7 @@ func TestPreparePrompt_ReplayMatchesLiveUserMessage(t *testing.T) {
 
 	// Live form: the prompt string and the files passed to the provider.
 	// The prompt is built the way Run builds it.
-	livePrompt := message.PromptWithTextAttachments(strings.TrimSpace(call.Prompt), call.Attachments)
+	livePrompt := message.PromptWithTextAttachments(call.Prompt, call.Attachments)
 	_, liveFiles := agent.preparePrompt(msgs, true, false, call.Attachments...)
 	require.Len(t, liveFiles, 1, "only the image is sent as a file part")
 
@@ -211,14 +211,14 @@ func TestToolsForStep_AppendsAdditionsAndIgnoresRemovals(t *testing.T) {
 	})
 	turnTools := []fantasy.AgentTool{&recordingTool{name: "b"}, &recordingTool{name: "c"}}
 
-	adopted, changed := agent.toolsForStep(t.Context(), "sess", "", turnTools)
+	adopted, changed := agent.toolsForStep(t.Context(), "sess", "", turnTools, false)
 	require.True(t, changed)
 	require.Equal(t, []string{"b", "c", "a"}, toolNames(adopted),
 		"a tool registered after the turn began must be appended, not inserted at its sorted position")
 
 	// The registry loses "a": the turn's palette must keep it.
 	agent.SetTools([]fantasy.AgentTool{&recordingTool{name: "b"}})
-	kept, changed := agent.toolsForStep(t.Context(), "sess", "", adopted)
+	kept, changed := agent.toolsForStep(t.Context(), "sess", "", adopted, false)
 	require.False(t, changed)
 	require.Equal(t, []string{"b", "c", "a"}, toolNames(kept),
 		"a tool that disappears from the registry must not be dropped mid-turn")

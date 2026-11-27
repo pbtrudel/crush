@@ -131,9 +131,16 @@ type Workspace interface {
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
+	// SessionRename changes only the title, leaving the usage, cost and
+	// todos a concurrent run wrote intact, and returns the renamed
+	// session. It must not be a full-row Save.
+	SessionRename(ctx context.Context, sessionID, title string) (session.Session, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
+	// ListChildSessions returns the sessions parentID spawned, such as
+	// subagent and teammate sessions, oldest first.
+	ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error)
 	// SetCurrentSession reports the session this client is currently
 	// viewing. Empty sessionID clears the entry (e.g. landing screen).
 	// In single-client local mode this is a no-op. In client/server
@@ -179,6 +186,9 @@ type Workspace interface {
 	// AgentAsk answers a side question about the session without
 	// persisting the exchange or touching the workspace.
 	AgentAsk(ctx context.Context, sessionID, question string) (string, error)
+	// AgentAddNote keeps text for the session's next prompt. It starts
+	// no run and is not shown in the chat.
+	AgentAddNote(ctx context.Context, sessionID, text string) error
 	UpdateAgentModel(ctx context.Context) error
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error
@@ -205,11 +215,13 @@ type Workspace interface {
 
 	// Questions
 	//
-	// QuestionAnswer resolves the pending question with responses.
-	QuestionAnswer(responses []question.Answer) bool
+	// QuestionAnswer submits responses to the pending question batch
+	// with the given ID.
+	QuestionAnswer(batchID string, responses []question.Answer) bool
 
-	// QuestionCancel cancels the pending question.
-	QuestionCancel() bool
+	// QuestionCancel cancels the pending question batch with the
+	// given ID.
+	QuestionCancel(batchID string) bool
 
 	// Pinentry
 	//
@@ -235,11 +247,32 @@ type Workspace interface {
 	// History
 	ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error)
 
+	// ListSessionHistoryMeta lists every file version of a session
+	// without its content, with its size in bytes.
+	ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error)
+
+	// GetHistoryVersion returns one file version with its content. A
+	// missing version wraps sql.ErrNoRows in process and
+	// client.ErrNotFound in client mode.
+	GetHistoryVersion(ctx context.Context, id string) (history.File, error)
+
 	// LSP
 	LSPStart(ctx context.Context, path string)
 	LSPStopAll(ctx context.Context)
 	LSPGetStates() map[string]LSPClientInfo
 	LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts
+	// LSPDiagnosticsByFile returns the diagnostic counts every LSP server
+	// holds, summed per file and keyed by absolute path.
+	LSPDiagnosticsByFile(ctx context.Context) map[string]lsp.DiagnosticCounts
+
+	// Team
+	//
+	// TeamSendMessage sends text to member of sessionID's Agent Team as its
+	// Lead, starting the member when it is inactive. TeamInterrupt stops the
+	// member's current turn. Both fail with agent.ErrAgentTeamsDisabled when
+	// Agent Teams is off.
+	TeamSendMessage(ctx context.Context, sessionID, member, text string) error
+	TeamInterrupt(ctx context.Context, sessionID, member string) error
 
 	// Config (read-only data)
 	Config() *config.Config
@@ -262,6 +295,9 @@ type Workspace interface {
 	MarkProjectInitialized() error
 	InitializePrompt() (string, error)
 	ListSkills(ctx context.Context) ([]skills.CatalogEntry, error)
+	// ListAllSkills returns every discovered skill, including the ones the
+	// config or this repository disabled.
+	ListAllSkills(ctx context.Context) ([]skills.CatalogEntry, error)
 	ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error)
 	ReloadSkills(ctx context.Context) error
 	ReloadConfig(ctx context.Context) error
@@ -285,7 +321,21 @@ type Workspace interface {
 	MCPPendingAuth() []mcptools.PendingAuthServer
 	MCPAuthURL(name string) string
 
+	// Skills toggles
+	SkillsDisabled(ctx context.Context) ([]string, error)
+	SkillSetDisabled(ctx context.Context, name string, disabled bool) error
+	SkillsEnabled(ctx context.Context) ([]string, error)
+	SkillSetConfigDisabled(ctx context.Context, name string, disabled bool) error
+
 	// Events
+	// SubscribeEvents returns workspace events for a non-TUI consumer,
+	// such as the web gateway. Values are the same domain events the TUI
+	// receives. The channel closes when ctx is done or the workspace
+	// shuts down.
+	SubscribeEvents(ctx context.Context) <-chan any
+	// CurrentSessionID returns the session last reported through
+	// SetCurrentSession, or an empty string.
+	CurrentSessionID() string
 	Subscribe(program *tea.Program)
 	Shutdown()
 }

@@ -76,6 +76,7 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 		LSToolName,
 		lsDescription(),
 		func(ctx context.Context, params LSParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			searchPath, err := fsext.Expand(cmp.Or(params.Path, workingDir))
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error expanding path: %v", err)), nil

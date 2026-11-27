@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/invopop/jsonschema"
 )
 
@@ -134,6 +136,12 @@ type ProviderConfig struct {
 	ExtraBody map[string]any `json:"extra_body,omitempty" jsonschema:"description=Additional fields to include in request bodies\\, only works with openai-compatible providers; keys override the fields Crush sets for the request"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
+
+	// RequestCompression lists the encodings an OpenAI-compatible provider
+	// accepts for request bodies, most preferred first. A refused encoding
+	// falls back to the next one, then to plain JSON. Unset means plain
+	// JSON, except for Hyper, which takes br and gzip.
+	RequestCompression []string `json:"request_compression,omitempty" jsonschema:"description=Encodings to compress request bodies with\\, most preferred first; only works with openai-compatible providers,enum=br,enum=gzip,example=br,example=gzip"`
 
 	// Used to pass extra parameters to the provider.
 	ExtraParams map[string]string `json:"-"`
@@ -328,11 +336,12 @@ type LSPConfig struct {
 type TUIOptions struct {
 	CompactMode bool        `json:"compact_mode,omitempty" jsonschema:"description=Enable compact mode for the TUI interface,default=false"`
 	DiffMode    string      `json:"diff_mode,omitempty" jsonschema:"description=Diff mode for the TUI interface,enum=unified,enum=split"`
-	ActiveTheme string      `json:"active_theme,omitempty" jsonschema:"description=Name of the currently active theme,default=charmtone-panther,example=charmtone-panther,example=gruvbox-dark,example=keanu"`
+	ActiveTheme string      `json:"active_theme,omitempty" jsonschema:"description=Name of the currently active theme,default=charmtone-panther,example=charmtone-panther,example=gruvbox-dark,example=rose-pine,example=keanu,example=kitt"`
 	Completions Completions `json:"completions,omitzero" jsonschema:"description=Completions UI options"`
 	Transparent *bool       `json:"transparent,omitempty" jsonschema:"description=Enable transparent background for the TUI interface,default=false"`
 	Scrollbar   string      `json:"scrollbar,omitempty" jsonschema:"description=Chat scrollbar visibility,enum=default,enum=always,enum=never,default=default"`
 	Mouse       *bool       `json:"mouse,omitempty" jsonschema:"description=Enable terminal mouse capture for selection\\, clicks\\, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste,default=true"`
+	NerdFonts   *bool       `json:"nerd_fonts,omitempty" jsonschema:"description=Override Nerd Font glyph detection for the TUI: true forces glyphs on\\, false forces them off\\, and unset keeps automatic detection"`
 	ExitBanner  ExitBanner  `json:"exit_banner,omitempty" jsonschema:"description=Exit banner style after quitting Crush,enum=default,enum=compact,enum=none,default=default"`
 	Verbosity   string      `json:"verbosity,omitempty" jsonschema:"description=Transcript verbosity. low collapses each run of consecutive tool calls into one expandable activity row. high renders every tool call in place,enum=low,enum=high,default=high"`
 }
@@ -489,17 +498,31 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 	}
 }
 
+// WebDisplayOptions holds the web mode tab's display settings. The tab
+// writes them; they live in the config because browser storage is keyed
+// by the gateway's random port and would be lost on every run.
+type WebDisplayOptions struct {
+	Theme         string `json:"theme,omitempty" jsonschema:"description=Web mode theme,enum=holodeck,enum=solid,default=holodeck"`
+	Motion        string `json:"motion,omitempty" jsonschema:"description=Web mode motion; empty follows the browser's reduced motion setting,enum=full,enum=reduced,enum=off"`
+	LowPower      *bool  `json:"low_power,omitempty" jsonschema:"description=Web mode low power mode: 2D constellation and no bloom,default=false"`
+	CinematicHint *bool  `json:"cinematic_hint,omitempty" jsonschema:"description=Show the orbit hint in web mode's cinematic view,default=true"`
+}
+
 type Options struct {
-	ContextPaths         []string       `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
-	GlobalContextPaths   []string       `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
-	ContextMaxBytes      *int           `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
-	MaxImages            *int           `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
-	SkillsPaths          []string       `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
-	TUI                  *TUIOptions    `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
-	Models               *ModelsOptions `json:"models,omitempty" jsonschema:"description=Model picker options"`
-	Debug                bool           `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
-	DebugLSP             bool           `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
-	DisableAutoSummarize bool           `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	ContextPaths         []string           `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
+	GlobalContextPaths   []string           `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
+	ContextMaxBytes      *int               `json:"context_max_bytes,omitempty" jsonschema:"description=Byte budget for each context chain (project and global are budgeted separately). Broader files are omitted before the most specific file is truncated. 0 disables the budget.,default=65536,example=32768"`
+	MaxImages            *int               `json:"max_images,omitempty" jsonschema:"description=Maximum images sent in one request. Past the limit the oldest images are replaced with a text placeholder. 0 disables the budget.,default=100,example=50"`
+	ImageRetentionTurns  *int               `json:"image_retention_turns,omitempty" jsonschema:"description=Number of recent user turns whose images stay in the replayed context. Older images are replaced with a short note so the model stops referencing them and the context stays small. 0 drops an image as soon as a newer prompt arrives. A negative value keeps images indefinitely.,default=1,example=2"`
+	PromptCacheTTL       string             `json:"prompt_cache_ttl,omitempty" jsonschema:"description=Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x\\, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.,enum=5m,enum=1h,default=5m"`
+	SkillsPaths          []string           `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
+	TUI                  *TUIOptions        `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
+	Models               *ModelsOptions     `json:"models,omitempty" jsonschema:"description=Model picker options"`
+	WebDisplay           *WebDisplayOptions `json:"web_display,omitempty" jsonschema:"description=Display settings of the web mode tab"`
+	Debug                bool               `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
+	DebugLSP             bool               `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
+	DisableAutoSummarize bool               `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	Web                  bool               `json:"web,omitempty" jsonschema:"description=Open a browser tab that mirrors the session (web mode),default=false"`
 	// AutoCompactThreshold is the fraction of the model's context window
 	// at which a finished turn triggers automatic compaction.
 	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty" jsonschema:"description=Fraction of the context window at which auto-compaction triggers after a finished turn. Lower values compact earlier and leave more headroom; higher values keep more verbatim history. 0 disables automatic compaction.,default=0.5,example=0.85"`
@@ -556,15 +579,23 @@ type Options struct {
 	MaxConsecutiveWakes        *int         `json:"max_consecutive_wakes,omitempty" jsonschema:"description=Maximum consecutive turns a session may be woken by background completions without a user prompt. 0 means no cap.,default=10,example=5"`
 	BackgroundSubagents        *bool        `json:"background_subagents,omitempty" jsonschema:"description=Run delegated subagents in the background and deliver their result through a completion notice.,default=true"`
 	AgentTeams                 *bool        `json:"agent_teams,omitempty" jsonschema:"description=Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.,default=true"`
+	AgentTeamAutostart         *bool        `json:"agent_team_autostart,omitempty" jsonschema:"description=Start a teammate of the named role on its own when a shared task that names a role becomes ready. Tasks without a role stay manual.,default=true"`
 	RepeatToolReminders        *bool        `json:"repeat_tool_reminders,omitempty" jsonschema:"description=Inject advisory reminders when the model repeats the same tool call, before the hard loop stop.,default=true"`
 	RepetitionDetection        *bool        `json:"repetition_detection,omitempty" jsonschema:"description=Stop a stream that degenerates into a long run of the same character or a short repeated pattern.,default=true"`
 	// LazyTools sends only a small core tool palette on every request and
 	// holds the rest back until tool_search reveals them for the session.
 	LazyTools *bool `json:"lazy_tools,omitempty" jsonschema:"description=Send only a small core tool palette (read/view\\, edit\\, bash\\, grep\\, glob\\, ls\\, todos and the delegation tools) plus tool_search\\, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request\\, at the price of one extra tool call per deferred tool. Off by default.,default=false"`
+	// AnthropicToolSearch hands the deferred half of a lazy palette to
+	// Anthropic's server-side tool search instead of Crush's tool_search,
+	// so revealing a tool never rewrites the cached tools block. Only
+	// applies when LazyTools is on and the model is served by Anthropic
+	// directly.
+	AnthropicToolSearch *bool `json:"anthropic_tool_search,omitempty" jsonschema:"description=Send deferred tools to Anthropic's server-side tool search (defer_loading plus the tool_search_tool_bm25 server tool) instead of Crush's own tool_search, so a tool revealed mid-session never rewrites the cached tools block. Needs lazy_tools and an Anthropic-direct model; every other provider keeps the current behaviour. Off by default.,default=false"`
 	// PromptProfile selects the system prompt template set the coder agent
-	// renders. Full stays the default until an eval shows the lean profile
-	// solves as many tasks.
-	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills.,enum=full,enum=lean,default=full"`
+	// renders. Left unset, the measured default applies: DeepSeek models get
+	// the lean profile, and every other model keeps the full one until its
+	// own measurement lands.
+	PromptProfile string `json:"prompt_profile,omitempty" jsonschema:"description=System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family\\, and leaves tool guidance to the tool descriptions. Both keep the rules\\, environment\\, context files and skills. Left unset\\, DeepSeek models use lean\\, measured on DeepSeek V4.1 Flash\\, and every other model keeps full until its own measurement lands.,enum=full,enum=lean"`
 	// ApplyPatch offers GPT models the apply_patch tool in place of edit
 	// and multiedit. Those models are trained on the *** Begin Patch
 	// format, and exact-string matching is where their edits most often
@@ -587,8 +618,9 @@ type Options struct {
 	// Crush dialog (loopback pinentry) instead of handing the terminal
 	// over to an external pinentry program. No GPG or git configuration
 	// is modified: the redirect only applies to processes Crush spawns.
-	PinentryIntegrated   *bool `json:"pinentry_integrated,omitempty" jsonschema:"description=Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.,default=true"`
-	PinentryCacheTimeout *int  `json:"pinentry_cache_timeout,omitempty" jsonschema:"description=Seconds Crush keeps an entered GPG passphrase in memory so repeated signing operations do not re-prompt. 0 (the default) disables it; gpg-agent's own cache applies regardless.,default=0,example=300"`
+	PinentryIntegrated   *bool       `json:"pinentry_integrated,omitempty" jsonschema:"description=Render GPG passphrase prompts as a native Crush dialog instead of an external pinentry program. Works with file-based keys and security keys and never modifies GPG or git configuration.,default=true"`
+	PinentryCacheTimeout *int        `json:"pinentry_cache_timeout,omitempty" jsonschema:"description=Seconds Crush keeps an entered GPG passphrase in memory so repeated signing operations do not re-prompt. 0 (the default) disables it; gpg-agent's own cache applies regardless.,default=0,example=300"`
+	Prompts              PromptPaths `json:"prompts,omitempty" jsonschema:"description=Files that replace Crush's built-in prompts\\, keyed by prompt name. A replacement is used verbatim\\, so anything the built-in template injected (skills\\, context files\\, LSP status) is lost unless the replacement asks for it too."`
 }
 
 // ModelsOptions configures the model picker.
@@ -617,6 +649,13 @@ func (o *Options) GetLazyTools() bool {
 	return o != nil && o.LazyTools != nil && *o.LazyTools
 }
 
+// GetAnthropicToolSearch reports whether deferred tools may be sent to
+// Anthropic's server-side tool search. The nil receiver, the unset field and
+// an explicit false all keep the option off.
+func (o *Options) GetAnthropicToolSearch() bool {
+	return o != nil && o.AnthropicToolSearch != nil && *o.AnthropicToolSearch
+}
+
 // GetApplyPatch reports whether GPT models are offered apply_patch instead of
 // edit and multiedit. The nil receiver, the unset field and an explicit false
 // all mean the palette is the one it was before the option existed.
@@ -631,6 +670,13 @@ func (o *Options) GetMaxBackgroundJobs() int {
 	}
 	return *o.MaxBackgroundJobs
 }
+
+// PromptPaths maps a built-in prompt name to a file that replaces it.
+type PromptPaths map[string]string
+
+// PromptNames are the built-in prompts that options.prompts can replace. The
+// agent package owns the templates themselves and asserts it covers this list.
+var PromptNames = []string{"coder", "task", "plan", "summary", "title", "initialize"}
 
 // DefaultRequestTimeout bounds each LLM API request when the user has not
 // configured a timeout. Slow or unreachable providers fail after it instead
@@ -687,6 +733,18 @@ const DefaultContextMaxBytes = 64 * 1024
 // DefaultMaxImages bounds the images sent in one request when the user has
 // not configured a budget. The oldest images are replaced first.
 const DefaultMaxImages = 100
+
+// DefaultImageRetentionTurns is how many recent user turns keep their images in
+// the replayed context when the user has not configured retention.
+const DefaultImageRetentionTurns = 1
+
+// Prompt cache lifetimes accepted in prompt_cache_ttl. The extended lifetime
+// costs more per cache write, so it only pays off when pauses between turns
+// outlast the default five-minute window.
+const (
+	PromptCacheTTLDefault  = "5m"
+	PromptCacheTTLExtended = "1h"
+)
 
 // DefaultCompactionPruneChars is the per-tool-result character budget used
 // before a compaction request when the user has not configured one.
@@ -781,6 +839,48 @@ func (o *Options) GetMaxImages() int {
 	return max(0, *o.MaxImages)
 }
 
+// GetImageRetentionTurns returns how many recent user turns keep their images.
+// The nil receiver and the unset field both mean DefaultImageRetentionTurns. A
+// negative value disables expiry.
+func (o *Options) GetImageRetentionTurns() int {
+	if o == nil || o.ImageRetentionTurns == nil {
+		return DefaultImageRetentionTurns
+	}
+	return *o.ImageRetentionTurns
+}
+
+// GetPromptCacheTTL returns the prompt-cache lifetime as configured: the
+// extended one-hour lifetime, or the default five-minute lifetime for an
+// unset, empty, or unknown value. Only the extended lifetime rewrites
+// requests, so the default leaves every byte on the wire as it was.
+func (o *Options) GetPromptCacheTTL() string {
+	if o == nil {
+		return PromptCacheTTLDefault
+	}
+	if strings.EqualFold(strings.TrimSpace(o.PromptCacheTTL), PromptCacheTTLExtended) {
+		return PromptCacheTTLExtended
+	}
+	return PromptCacheTTLDefault
+}
+
+// warnUnknownPromptCacheTTL logs a warning when prompt_cache_ttl names a
+// lifetime Crush does not know. The getter already falls back to the default
+// lifetime, so the warning only explains why the setting has no effect.
+func (c *Config) warnUnknownPromptCacheTTL() {
+	if c == nil || c.Options == nil {
+		return
+	}
+	value := strings.TrimSpace(c.Options.PromptCacheTTL)
+	if value == "" || strings.EqualFold(value, PromptCacheTTLDefault) || strings.EqualFold(value, PromptCacheTTLExtended) {
+		return
+	}
+	slog.Warn(
+		"Ignoring unknown prompt_cache_ttl, using the default lifetime",
+		"value", c.Options.PromptCacheTTL,
+		"expected", PromptCacheTTLDefault+" or "+PromptCacheTTLExtended,
+	)
+}
+
 // GetCompactionPruneChars returns the per-tool-result character budget used
 // before compaction. The nil receiver and the unset field both mean
 // DefaultCompactionPruneChars; 0 or a negative value disables pruning.
@@ -839,6 +939,15 @@ func (o *Options) GetAgentTeams() bool {
 	return *o.AgentTeams
 }
 
+// GetAgentTeamAutostart reports whether a ready shared task that names a
+// role starts a teammate of that role on its own. It is on by default.
+func (o *Options) GetAgentTeamAutostart() bool {
+	if o == nil || o.AgentTeamAutostart == nil {
+		return true
+	}
+	return *o.AgentTeamAutostart
+}
+
 // Prompt profiles select which system prompt template set an agent renders.
 // The full profile is the complete prompt; the lean one is a short shared
 // base plus an add-on for the model's family.
@@ -847,14 +956,15 @@ const (
 	PromptProfileLean = "lean"
 )
 
-// GetPromptProfile returns the system prompt profile. The nil receiver, the
-// unset field and any unrecognised name all mean the full profile: a typo
-// must not silently shrink the prompt every session is given.
+// GetPromptProfile returns the system prompt profile as configured: full,
+// lean, or empty when the user did not choose one. What an unset or unknown
+// name renders is the agent's decision, because the effective default depends
+// on the model family the prompt is built for.
 func (o *Options) GetPromptProfile() string {
-	if o == nil || o.PromptProfile != PromptProfileLean {
-		return PromptProfileFull
+	if o == nil {
+		return ""
 	}
-	return PromptProfileLean
+	return o.PromptProfile
 }
 
 // GetRepeatToolReminders reports whether advisory repeat-tool reminders are
@@ -1192,6 +1302,10 @@ type Agent struct {
 
 	// Overrides the context paths for this agent
 	ContextPaths []string `json:"context_paths,omitempty"`
+
+	// Role is the role definition this agent was built from; nil for the
+	// coder, task and plan agents. It never enters the JSON config.
+	Role *roles.Role `json:"-"`
 }
 
 type Tools struct {
@@ -1261,6 +1375,13 @@ type Config struct {
 	Env map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set on startup"`
 
 	Agents map[string]Agent `json:"-"`
+
+	// RoleDirs are the directories role files load from, lowest priority
+	// first. setDefaults fills them; SetupAgents reads them.
+	RoleDirs []roles.Dir `json:"-"`
+	// RoleDiagnostics are the problems the last SetupAgents found in role
+	// files. crush_info lists them.
+	RoleDiagnostics []roles.Diagnostic `json:"-"`
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -1315,6 +1436,22 @@ func (c *Config) EnabledProviders() []ProviderConfig {
 // IsConfigured  return true if at least one provider is configured
 func (c *Config) IsConfigured() bool {
 	return len(c.EnabledProviders()) > 0
+}
+
+// ProviderListed reports whether the model picker lists provider id. A
+// configured provider is listed unless it is disabled; an unconfigured
+// one is listed only when includeUnconfigured is set (the picker's "show
+// all"). The model dialog and the shared model choices apply this same
+// rule.
+func (c *Config) ProviderListed(id string, includeUnconfigured bool) bool {
+	if c == nil || c.Providers == nil {
+		return false
+	}
+	providerConfig, configured := c.Providers.Get(id)
+	if configured && providerConfig.Disable {
+		return false
+	}
+	return configured || includeUnconfigured
 }
 
 func (c *Config) GetModel(provider, model string) *catwalk.Model {
@@ -1389,7 +1526,9 @@ func (c *Config) IsModelAvailable(provider, model string) bool {
 }
 
 // UsableModels returns the models the current credential can serve: a
-// ChatGPT or Grok login only reaches its subscription's models.
+// ChatGPT or Grok login only reaches its subscription's models. Unlike
+// SubscriptionCatalog it does not fall back to the API catalog while the
+// subscription list is still nil.
 func (p ProviderConfig) UsableModels() []catwalk.Model {
 	if models, ok := p.SubscriptionModels(); ok {
 		return models
@@ -1410,6 +1549,18 @@ func (p ProviderConfig) SubscriptionModels() ([]catwalk.Model, bool) {
 		return p.GrokModels, true
 	}
 	return nil, false
+}
+
+// SubscriptionCatalog returns the models a ChatGPT or Grok login grants,
+// and whether the provider is signed in with a subscription whose list has
+// been fetched. A signed-in provider whose list is still nil reports false,
+// so callers keep showing the API catalog until the fetch lands.
+func (p ProviderConfig) SubscriptionCatalog() ([]catwalk.Model, bool) {
+	models, ok := p.SubscriptionModels()
+	if !ok || models == nil {
+		return nil, false
+	}
+	return models, true
 }
 
 func (c *Config) GetProviderForModel(modelType SelectedModelType) *ProviderConfig {
@@ -1622,6 +1773,12 @@ func SubAgentExcludedTools() []string {
 	return slices.Clone(subAgentExcludedTools)
 }
 
+// SubAgentWriteTools returns the tools that change files. A role that
+// allows none of them runs on the read-only subagent variant.
+func SubAgentWriteTools() []string {
+	return slices.Clone(subAgentWriteTools)
+}
+
 // subAgentWriteTools are the tools that change files. Only the read-write
 // subagent variant gets them.
 var subAgentWriteTools = []string{
@@ -1690,6 +1847,21 @@ func (c *Config) SetupAgents() {
 			// NO MCPs or LSPs by default
 			AllowedMCP: map[string][]string{},
 		},
+	}
+
+	found, diagnostics := roles.Discover(c.RoleDirs, allToolNames())
+	c.RoleDiagnostics = diagnostics
+	for name, role := range found {
+		agents[name] = Agent{
+			ID:           name,
+			Name:         name,
+			Description:  role.Description,
+			Model:        SelectedModelTypeMain,
+			ContextPaths: c.Options.ContextPaths,
+			AllowedTools: allowedTools,
+			AllowedMCP:   coder.AllowedMCP,
+			Role:         &role,
+		}
 	}
 	c.Agents = agents
 }

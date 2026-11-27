@@ -63,6 +63,15 @@ func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (s
 	return w.app.Sessions.Save(ctx, sess)
 }
 
+// SessionRename updates the title in place: a Save of the whole row could
+// overwrite the usage, cost and todos a busy run just wrote.
+func (w *AppWorkspace) SessionRename(ctx context.Context, sessionID, title string) (session.Session, error) {
+	if err := w.app.Sessions.Rename(ctx, sessionID, title); err != nil {
+		return session.Session{}, err
+	}
+	return w.app.Sessions.Get(ctx, sessionID)
+}
+
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.app.Sessions.Delete(ctx, sessionID)
 }
@@ -73,6 +82,10 @@ func (w *AppWorkspace) CreateAgentToolSessionID(messageID, toolCallID string) st
 
 func (w *AppWorkspace) ParseAgentToolSessionID(sessionID string) (string, string, bool) {
 	return w.app.Sessions.ParseAgentToolSessionID(sessionID)
+}
+
+func (w *AppWorkspace) ListChildSessions(ctx context.Context, parentID string) ([]session.Session, error) {
+	return w.app.Sessions.ListChildren(ctx, parentID)
 }
 
 // SetCurrentSession reports the active session to herdr so the pane
@@ -91,8 +104,8 @@ func (w *AppWorkspace) RoutesChannelEvents() bool { return false }
 // -- Messages --
 
 func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	if w.app.AgentCoordinator != nil {
-		return w.app.AgentCoordinator.ListSettledMessages(ctx, sessionID)
+	if coord := w.app.Agent(); coord != nil {
+		return coord.ListSettledMessages(ctx, sessionID)
 	}
 	if err := w.app.Messages.FlushAll(ctx); err != nil {
 		return nil, err
@@ -111,39 +124,56 @@ func (w *AppWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Messa
 // -- Agent --
 
 func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
-	if w.app.AgentCoordinator == nil {
-		return errors.New("agent coordinator not initialized")
+	if w.app.Agent() == nil {
+		return ErrAgentNotInitialized
 	}
-	_, err := w.app.AgentCoordinator.Run(ctx, sessionID, prompt, attachments...)
+	_, err := w.app.Agent().Run(ctx, sessionID, prompt, attachments...)
 	return err
 }
 
 func (w *AppWorkspace) AgentRunChannel(ctx context.Context, channel, sessionID, prompt string, attachments ...message.Attachment) error {
-	if w.app.AgentCoordinator == nil {
-		return errors.New("agent coordinator not initialized")
+	if w.app.Agent() == nil {
+		return ErrAgentNotInitialized
 	}
-	_, err := w.app.AgentCoordinator.Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
+	_, err := w.app.Agent().Run(agent.WithChannel(ctx, channel), sessionID, prompt, attachments...)
 	return err
 }
 
 // AgentAsk answers a side question about the session without persisting
 // the exchange or touching the workspace.
 func (w *AppWorkspace) AgentAsk(ctx context.Context, sessionID, question string) (string, error) {
-	if w.app.AgentCoordinator == nil {
-		return "", errors.New("agent coordinator not initialized")
+	coord := w.app.Agent()
+	if coord == nil {
+		return "", ErrAgentNotInitialized
 	}
-	asker, ok := w.app.AgentCoordinator.(agent.SideQuestioner)
+	asker, ok := coord.(agent.SideQuestioner)
 	if !ok {
 		return "", errors.New("side questions are not supported by this coordinator")
 	}
 	return asker.Ask(ctx, sessionID, question)
 }
 
+// AgentAddNote keeps text for the session's next prompt. It starts no
+// run and is not shown in the chat.
+func (w *AppWorkspace) AgentAddNote(_ context.Context, sessionID, text string) error {
+	coord := w.app.Agent()
+	if coord == nil {
+		return ErrAgentNotInitialized
+	}
+	coord.AddNote(sessionID, text)
+	return nil
+}
+
 func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, command string, termWidth int, onProgress func(string), isFirstMessage bool) (proto.ShellCommandResponse, error) {
 	var persist shell.PersistFunc
 	if sessionID != "" {
+		// The output is saved even when the run is cancelled: a run the
+		// user interrupted is stored with the TUI's SIGINT code (see
+		// CaptureResult.PersistedExitCode), so the transcript keeps the
+		// partial output and the same code instead of losing the run.
+		persistCtx := context.WithoutCancel(ctx)
 		persist = func(cmd, output string, exitCode int) error {
-			return shell.PersistOutput(ctx, w.app.Messages, sessionID, cmd, output, exitCode, w.store.Config().Options.DataDirectory)
+			return shell.PersistOutput(persistCtx, w.app.Messages, sessionID, cmd, output, exitCode, w.store.Config().Options.DataDirectory)
 		}
 	}
 
@@ -168,15 +198,15 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 
 	// Persist if we used the streaming path (persist wasn't called by RunAndPersist).
 	if onProgress != nil && persist != nil {
-		if persistErr := persist(command, result.Output, result.ExitCode); persistErr != nil {
+		if persistErr := persist(command, result.Output, result.PersistedExitCode()); persistErr != nil {
 			slog.Error("Failed to persist shell command output", "error", persistErr, "command", command)
 		}
 	}
 
 	// Generate a title from the shell command if it was the first message.
-	if isFirstMessage && w.app.AgentCoordinator != nil {
+	if isFirstMessage && w.app.Agent() != nil {
 		titleCtx := context.WithoutCancel(ctx)
-		w.app.AgentCoordinator.GenerateTitle(titleCtx, sessionID, "$ "+command)
+		w.app.Agent().GenerateTitle(titleCtx, sessionID, "$ "+command)
 	}
 
 	return proto.ShellCommandResponse{
@@ -186,30 +216,30 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 }
 
 func (w *AppWorkspace) AgentCancel(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.Cancel(sessionID)
+	if w.app.Agent() != nil {
+		w.app.Agent().Cancel(sessionID)
 	}
 }
 
 func (w *AppWorkspace) AgentIsBusy() bool {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsBusy()
+	return w.app.Agent().IsBusy()
 }
 
 func (w *AppWorkspace) AgentIsSessionBusy(sessionID string) bool {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsSessionBusy(sessionID)
+	return w.app.Agent().IsSessionBusy(sessionID)
 }
 
 func (w *AppWorkspace) AgentModel() AgentModel {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return AgentModel{}
 	}
-	m := w.app.AgentCoordinator.Model()
+	m := w.app.Agent().Model()
 	return AgentModel{
 		CatwalkCfg: m.CatwalkCfg,
 		ModelCfg:   m.ModelCfg,
@@ -217,48 +247,48 @@ func (w *AppWorkspace) AgentModel() AgentModel {
 }
 
 func (w *AppWorkspace) AgentIsReady() bool {
-	return w.app.AgentCoordinator != nil
+	return w.app.Agent() != nil
 }
 
 func (w *AppWorkspace) AgentReadyErr() error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return ErrAgentNotInitialized
 	}
 	return nil
 }
 
 func (w *AppWorkspace) AgentQueuedPrompts(sessionID string) int {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return 0
 	}
-	return w.app.AgentCoordinator.QueuedPrompts(sessionID)
+	return w.app.Agent().QueuedPrompts(sessionID)
 }
 
 func (w *AppWorkspace) AgentQueuedPromptsList(sessionID string) []string {
-	if w.app.AgentCoordinator == nil {
+	if w.app.Agent() == nil {
 		return nil
 	}
-	return w.app.AgentCoordinator.QueuedPromptsList(sessionID)
+	return w.app.Agent().QueuedPromptsList(sessionID)
 }
 
 func (w *AppWorkspace) AgentClearQueue(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.ClearQueue(sessionID)
+	if w.app.Agent() != nil {
+		w.app.Agent().ClearQueue(sessionID)
 	}
 }
 
 func (w *AppWorkspace) AgentSetMain(agentID string) error {
-	if w.app.AgentCoordinator == nil {
-		return errors.New("agent coordinator not initialized")
+	if w.app.Agent() == nil {
+		return ErrAgentNotInitialized
 	}
-	return w.app.AgentCoordinator.SetMainAgent(agentID)
+	return w.app.Agent().SetMainAgent(agentID)
 }
 
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
-	if w.app.AgentCoordinator == nil {
-		return errors.New("agent coordinator not initialized")
+	if w.app.Agent() == nil {
+		return ErrAgentNotInitialized
 	}
-	return w.app.AgentCoordinator.Summarize(ctx, sessionID)
+	return w.app.Agent().Summarize(ctx, sessionID)
 }
 
 func (w *AppWorkspace) UpdateAgentModel(ctx context.Context) error {
@@ -319,20 +349,21 @@ func (w *AppWorkspace) PermissionSkipRequests() bool {
 // -- Host context --
 
 func (w *AppWorkspace) HostContext(_ context.Context) (proto.HostContext, error) {
-	if w.app.AgentCoordinator == nil {
+	coord := w.app.Agent()
+	if coord == nil {
 		return proto.HostContext{}, nil
 	}
-	return w.app.AgentCoordinator.HostContext(), nil
+	return coord.HostContext(), nil
 }
 
 // -- Questions --
 
-func (w *AppWorkspace) QuestionAnswer(responses []question.Answer) bool {
-	return w.app.Questions.Answer(responses)
+func (w *AppWorkspace) QuestionAnswer(batchID string, responses []question.Answer) bool {
+	return w.app.Questions.Answer(batchID, responses)
 }
 
-func (w *AppWorkspace) QuestionCancel() bool {
-	return w.app.Questions.Cancel()
+func (w *AppWorkspace) QuestionCancel(batchID string) bool {
+	return w.app.Questions.Cancel(batchID)
 }
 
 // -- Pinentry --
@@ -375,6 +406,14 @@ func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string)
 	return w.app.History.ListBySession(ctx, sessionID)
 }
 
+func (w *AppWorkspace) ListSessionHistoryMeta(ctx context.Context, sessionID string) ([]history.FileMeta, error) {
+	return w.app.History.ListMetaBySession(ctx, sessionID)
+}
+
+func (w *AppWorkspace) GetHistoryVersion(ctx context.Context, id string) (history.File, error) {
+	return w.app.History.Get(ctx, id)
+}
+
 // -- LSP --
 
 func (w *AppWorkspace) LSPStart(ctx context.Context, path string) {
@@ -406,6 +445,47 @@ func (w *AppWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts 
 		return lsp.DiagnosticCounts{}
 	}
 	return state.Client.GetDiagnosticCounts()
+}
+
+func (w *AppWorkspace) LSPDiagnosticsByFile(context.Context) map[string]lsp.DiagnosticCounts {
+	out := map[string]lsp.DiagnosticCounts{}
+	for _, state := range app.GetLSPStates() {
+		if state.Client != nil {
+			lsp.CountByFile(out, state.Client.GetDiagnostics())
+		}
+	}
+	return out
+}
+
+// -- Team --
+
+func (w *AppWorkspace) TeamSendMessage(ctx context.Context, sessionID, member, text string) error {
+	tc, err := w.teamController()
+	if err != nil {
+		return err
+	}
+	return tc.TeamSendMessage(ctx, sessionID, member, text)
+}
+
+func (w *AppWorkspace) TeamInterrupt(ctx context.Context, sessionID, member string) error {
+	tc, err := w.teamController()
+	if err != nil {
+		return err
+	}
+	return tc.TeamInterrupt(ctx, sessionID, member)
+}
+
+// teamController returns the coordinator as a TeamController, or the
+// reason it cannot steer a team.
+func (w *AppWorkspace) teamController() (agent.TeamController, error) {
+	if w.app.AgentCoordinator == nil {
+		return nil, ErrAgentNotInitialized
+	}
+	tc, ok := w.app.AgentCoordinator.(agent.TeamController)
+	if !ok {
+		return nil, agent.ErrAgentTeamsDisabled
+	}
+	return tc, nil
 }
 
 // -- Config (read-only) --
@@ -481,6 +561,14 @@ func (w *AppWorkspace) InitializePrompt() (string, error) {
 func (w *AppWorkspace) ListSkills(_ context.Context) ([]skills.CatalogEntry, error) {
 	mgr := w.app.Skills
 	return skills.Catalog(mgr.ActiveSkills(), mgr.ResolvedPaths(), mgr.WorkingDir()), nil
+}
+
+// ListAllSkills returns every discovered skill, including the ones the
+// config or this repository disabled, so a frontend can still offer to
+// turn them back on.
+func (w *AppWorkspace) ListAllSkills(_ context.Context) ([]skills.CatalogEntry, error) {
+	mgr := w.app.Skills
+	return skills.Catalog(mgr.AllSkills(), mgr.ResolvedPaths(), mgr.WorkingDir()), nil
 }
 
 func (w *AppWorkspace) ReadSkill(_ context.Context, skillID string) ([]byte, skills.SkillReadResult, error) {
@@ -609,6 +697,28 @@ func (w *AppWorkspace) MCPStartServer(ctx context.Context, name string) error {
 	return mcptools.InitializeSingleForced(ctx, name, w.store)
 }
 
+// SkillsDisabled returns the skills disabled for this repository.
+func (w *AppWorkspace) SkillsDisabled(ctx context.Context) ([]string, error) {
+	return w.app.Sessions.SkillsDisabled(ctx)
+}
+
+// SkillsEnabled returns the skills with a repository-scoped enabled
+// override (config-disabled skills re-enabled here).
+func (w *AppWorkspace) SkillsEnabled(ctx context.Context) ([]string, error) {
+	return w.app.Sessions.SkillsEnabled(ctx)
+}
+
+// SkillSetDisabled adds or removes a repository-scoped skill override.
+func (w *AppWorkspace) SkillSetDisabled(ctx context.Context, name string, disabled bool) error {
+	return w.app.Sessions.SetSkillDisabled(ctx, name, disabled, w.store.SkillConfigDisabled(name))
+}
+
+// SkillSetConfigDisabled toggles a skill's disabled flag in the global
+// config's options.disabled_skills list.
+func (w *AppWorkspace) SkillSetConfigDisabled(ctx context.Context, name string, disabled bool) error {
+	return w.store.SetSkillDisabledConfig(config.ScopeGlobal, name, disabled)
+}
+
 func (w *AppWorkspace) MCPAuthenticate(ctx context.Context, name string) error {
 	return mcptools.AuthenticateMCP(ctx, w.store, name)
 }
@@ -625,6 +735,31 @@ func (w *AppWorkspace) MCPAuthURL(name string) string {
 
 func (w *AppWorkspace) Subscribe(program *tea.Program) {
 	w.app.Subscribe(program)
+}
+
+// SubscribeEvents returns the app's events for a non-TUI consumer such as
+// the web gateway. A stalled consumer blocks only this bridge; the broker
+// keeps buffering and drops for this subscriber once its buffer is full.
+// The channel closes when ctx is done or the app shuts down.
+func (w *AppWorkspace) SubscribeEvents(ctx context.Context) <-chan any {
+	in := w.app.Events(ctx)
+	out := make(chan any, 256)
+	go func() {
+		defer close(out)
+		for ev := range in {
+			select {
+			case out <- ev.Payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// CurrentSessionID returns the session the TUI last reported.
+func (w *AppWorkspace) CurrentSessionID() string {
+	return w.app.CurrentSessionID()
 }
 
 func (w *AppWorkspace) Shutdown() {

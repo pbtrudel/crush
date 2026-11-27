@@ -37,11 +37,13 @@ func syncTestToolResult(id, text string) fantasy.Message {
 	}
 }
 
+// syncTestMediaMessage returns the message the agent lowers a tool result's
+// media into.
 func syncTestMediaMessage(mediaType string) fantasy.Message {
 	return fantasy.Message{
 		Role: fantasy.MessageRoleUser,
 		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: "Attached media from tool result:"},
+			fantasy.TextPart{Text: ToolMediaMessageText},
 			fantasy.FilePart{MediaType: mediaType, Data: []byte("png")},
 		},
 	}
@@ -256,6 +258,92 @@ func TestDecide(t *testing.T) {
 			require.Equal(t, test.want, Decide(test.prompt, test.record))
 		})
 	}
+}
+
+// syncTestMediaResult returns the tool result a tool leaves behind when it
+// returns an image, lowered the way internal/agent lowers it for providers
+// that cannot carry media in a tool result.
+func syncTestMediaResult(callID string) fantasy.Message {
+	return fantasy.Message{
+		Role: fantasy.MessageRoleTool,
+		Content: []fantasy.MessagePart{fantasy.ToolResultPart{
+			ToolCallID: callID,
+			Output: fantasy.ToolResultOutputContentText{
+				Text: "[Image/media content loaded - see attached file]",
+			},
+		}},
+	}
+}
+
+// syncTestMediaTurn is a turn whose tool result carried an image: the lowered
+// tool result, the separate user message the agent lowers the media into, and
+// nothing else. A cancelled or reasoning-only reply leaves no visible
+// assistant message, so the media message is the turn's last prompt message.
+func syncTestMediaTurn() fantasy.Prompt {
+	return fantasy.Prompt{
+		syncTestText(fantasy.MessageRoleUser, "show me shot.png"),
+		syncTestToolCall("t1", "view", `{"path":"shot.png"}`),
+		syncTestMediaResult("t1"),
+		syncTestMediaMessage("image/png"),
+	}
+}
+
+// TestDecideMediaToolResult checks that a conversation holding an image tool
+// result keeps the saved session. A restarted session re-sends the whole
+// conversation, images included, so the sync fingerprint has to treat the
+// lowered media message as part of the tool group for good.
+func TestDecideMediaToolResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("absorbs the media message even when a user message follows", func(t *testing.T) {
+		t.Parallel()
+
+		prompt := append(syncTestMediaTurn(), syncTestText(fantasy.MessageRoleUser, "now the other page"))
+		groups := Groups(prompt, nil)
+		require.Len(t, groups, 4)
+		require.Equal(t, fantasy.MessageRoleTool, groups[2].Role)
+		require.Equal(t, 2, groups[2].Start)
+		require.Equal(t, 4, groups[2].End, "the media message belongs to the tool group")
+	})
+
+	t.Run("continues after a turn that ends on an image tool result", func(t *testing.T) {
+		t.Parallel()
+
+		prompt := syncTestMediaTurn()
+		record := &Record{
+			ClaudeSessionID: "claude-session",
+			History:         BuildCheckpoints(prompt, nil, "user-1", nil, "", nil),
+		}
+		next := append(slices.Clone(prompt), syncTestText(fantasy.MessageRoleUser, "now the other page"))
+
+		decision := Decide(next, record)
+		require.Equal(t, Decision{Kind: DecisionContinue, Start: 4}, decision)
+		require.Equal(t, []ContentBlock{
+			{Type: "text", Text: "now the other page"},
+		}, CatchUpContent(next, decision.Start), "only the new user message is sent again")
+	})
+
+	t.Run("continues after a completed turn", func(t *testing.T) {
+		t.Parallel()
+
+		prompt := syncTestMediaTurn()
+		record := &Record{
+			ClaudeSessionID: "claude-session",
+			History: BuildCheckpoints(prompt, nil, "user-1", []ReplyPart{
+				{Text: "it is a cat"},
+			}, "reply-1", nil),
+		}
+		next := append(slices.Clone(prompt),
+			syncTestText(fantasy.MessageRoleAssistant, "it is a cat"),
+			syncTestText(fantasy.MessageRoleUser, "now the other page"),
+		)
+
+		decision := Decide(next, record)
+		require.Equal(t, DecisionContinue, decision.Kind)
+		require.Equal(t, []ContentBlock{
+			{Type: "text", Text: "now the other page"},
+		}, CatchUpContent(next, decision.Start), "only the new user message is sent again")
+	})
 }
 
 func TestCatchUpContent(t *testing.T) {

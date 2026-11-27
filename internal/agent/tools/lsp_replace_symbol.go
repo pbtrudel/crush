@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -44,6 +45,7 @@ type ReplaceSymbolPermissionsParams struct {
 }
 
 func NewReplaceSymbolTool(
+	cfg *config.ConfigStore,
 	lspManager *lsp.Manager,
 	permissions permission.Service,
 	files history.Service,
@@ -59,6 +61,9 @@ func NewReplaceSymbolTool(
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
+			// Every later use (the LSP lookup, the read, the permission
+			// request, the write) needs the same resolved path.
+			params.FilePath = resolveToolPath(configWorkingDir(cfg), params.FilePath)
 
 			action := params.Action
 			if action == "" {
@@ -77,7 +82,8 @@ func NewReplaceSymbolTool(
 
 			client := findLSPClient(lspManager, params.FilePath)
 			if client == nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("no LSP client handles file: %s", params.FilePath)), nil
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"no LSP client handles file %s: %s", params.FilePath, lspMissReason(cfg, params.FilePath))), nil
 			}
 
 			symbols, err := client.DocumentSymbols(ctx, params.FilePath)

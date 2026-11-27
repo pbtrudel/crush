@@ -172,7 +172,7 @@ func (m *UI) autoExpandPillsIfReasonable() tea.Cmd {
 	if m.height < pillsHeightReasonableTerminalHeight {
 		return nil
 	}
-	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue > 0
+	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue.Shown() > 0
 	if !hasPills {
 		return nil
 	}
@@ -201,7 +201,7 @@ func (m *UI) togglePillsExpanded() tea.Cmd {
 	if !m.hasSession() {
 		return nil
 	}
-	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue > 0
+	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue.Shown() > 0
 	if !hasPills {
 		return nil
 	}
@@ -231,7 +231,7 @@ func (m *UI) switchPillSection(dir int) tea.Cmd {
 		return nil
 	}
 	hasIncompleteTodos := hasIncompleteTodos(m.session.Todos)
-	hasQueue := m.promptQueue > 0
+	hasQueue := m.promptQueue.Shown() > 0
 
 	if dir < 0 && m.focusedPillSection == pillSectionQueue && hasIncompleteTodos {
 		m.focusedPillSection = pillSectionTodos
@@ -253,7 +253,7 @@ func (m *UI) switchPillSection(dir int) tea.Cmd {
 // to whichever section still has content so the expanded list stays populated.
 func (m *UI) effectiveFocusedSection() pillSection {
 	hasIncomplete := hasIncompleteTodos(m.session.Todos)
-	hasQueue := m.promptQueue > 0
+	hasQueue := m.promptQueue.Shown() > 0
 	switch m.focusedPillSection {
 	case pillSectionQueue:
 		if hasQueue {
@@ -306,7 +306,7 @@ func (m *UI) pillsAreaHeight() int {
 		return 0
 	}
 	hasIncomplete := hasIncompleteTodos(m.session.Todos)
-	hasQueue := m.promptQueue > 0
+	hasQueue := m.promptQueue.Shown() > 0
 	hasPills := hasIncomplete || hasQueue
 	if !hasPills {
 		return 0
@@ -321,7 +321,7 @@ func (m *UI) pillsAreaHeight() int {
 			}
 		case pillSectionQueue:
 			if hasQueue {
-				pillsAreaHeight += m.promptQueue
+				pillsAreaHeight += m.promptQueue.Shown()
 			}
 		}
 		if m.pillsAttachmentGap() {
@@ -363,7 +363,7 @@ func (m *UI) renderPills() {
 	contentWidth := max(width-paddingLeft, 0)
 
 	hasIncomplete := hasIncompleteTodos(m.session.Todos)
-	hasQueue := m.promptQueue > 0
+	hasQueue := m.promptQueue.Shown() > 0
 
 	if !hasIncomplete && !hasQueue {
 		return
@@ -384,7 +384,7 @@ func (m *UI) renderPills() {
 		pills = append(pills, todoPill(m.session.Todos, inProgressIcon, m.pillsExpanded, t))
 	}
 	if hasQueue {
-		pills = append(pills, queuePill(m.promptQueue, t))
+		pills = append(pills, queuePill(m.promptQueue.Shown(), t))
 	}
 
 	var expandedList string
@@ -395,8 +395,8 @@ func (m *UI) renderPills() {
 			// Render from the memoized queue (fetched off-thread, see
 			// workspace_cache.go): renderPills runs on the Update/View
 			// path and must never block on a workspace round-trip.
-			if len(m.promptQueueItems) > 0 {
-				expandedList = queueList(m.promptQueueItems, t)
+			if items := m.promptQueue.Items(); len(items) > 0 {
+				expandedList = queueList(items, t)
 			}
 		}
 	}

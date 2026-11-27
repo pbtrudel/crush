@@ -11,7 +11,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -37,6 +36,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
 	"charm.land/lipgloss/v2"
+	"charm.land/tone"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/prompt"
@@ -52,11 +52,11 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/exp/charmtone"
 )
 
 const (
@@ -112,15 +112,6 @@ var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version
 // ends the response on its own terms (fantasy's error/other finish
 // reasons) instead of completing it. Details are filled in per turn.
 const providerStoppedTurnMessage = "Provider stopped the response"
-
-//go:embed templates/title.md
-var titlePrompt []byte
-
-// compactionPrompt is the body of the trailing instruction sent to the
-// model when a session is compacted.
-//
-//go:embed templates/summary.md
-var compactionPrompt []byte
 
 // Used to remove <think> tags from generated titles.
 var (
@@ -229,6 +220,13 @@ type SessionAgentCall struct {
 	// gateContinued marks a call the turn-end gate started, so its run
 	// does not fire TurnStart again.
 	gateContinued bool
+	// gateTodoAsked marks a call whose gate asked the model about a todo
+	// item that stayed open, so the end of that continuation does not
+	// repeat the question as a note in the reply.
+	gateTodoAsked bool
+	// gateTodoItem is the item the gate asked about, so the end of that
+	// continuation can report the item if the reply ignored it.
+	gateTodoItem string
 	// gateBaseline is the working tree at the prompt's start, so the gate
 	// can see a change no tool call made. Nil when nothing reads it, or
 	// when it could not be taken.
@@ -295,14 +293,9 @@ type SessionAgent interface {
 	// CancelBackgroundCompaction stops the summary written ahead of the
 	// auto-compaction limit without touching the session's runs.
 	CancelBackgroundCompaction(sessionID string)
-	IsSessionBusy(sessionID string) bool
+	HasActiveTurn(sessionID string) bool
+	HasPendingWork(sessionID string) bool
 	IsBusy() bool
-	// ListSettledMessages reads a session's transcript, first settling any
-	// tool calls a dead process left without a reply. live reports whether
-	// a run this instance cannot see, such as a dispatched subagent on an
-	// agent of its own, is working on the session; nil means this instance
-	// answers for the session alone.
-	ListSettledMessages(ctx context.Context, sessionID string, live func(sessionID string) bool) ([]message.Message, error)
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)
@@ -353,6 +346,9 @@ type sessionAgent struct {
 	// keeps the Lead's system message as an exact cacheable prefix.
 	systemPromptSuffix string
 	tools              *csync.Slice[fantasy.AgentTool]
+	// role restricts the tools this agent may call and is re-attached
+	// after compaction. Nil for agents without a role.
+	role *roles.Role
 
 	// modelSwitchMu guards the last model pair retired by SetModels. The
 	// next run uses it to compact with the previous model before adopting a
@@ -385,6 +381,9 @@ type sessionAgent struct {
 	// process would exit before the summary is used.
 	nonInteractive bool
 	isYolo         bool
+	// prompts is every prompt's text as read at startup; summarize and
+	// generateTitle take theirs from it. Nil falls back to the built-ins.
+	prompts map[string]string
 	// permissions answers whether the user is being asked about tool
 	// calls at all. Nil in tests and anywhere that never needs to know.
 	permissions permission.Service
@@ -516,9 +515,12 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Permissions          permission.Service
 	Cfg                  *config.ConfigStore
-	Tools                []fantasy.AgentTool
-	Notify               pubsub.Publisher[notify.Notification]
-	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// Prompts is every prompt's text, read once at startup. Nil uses the
+	// built-ins.
+	Prompts     map[string]string
+	Tools       []fantasy.AgentTool
+	Notify      pubsub.Publisher[notify.Notification]
+	RunComplete pubsub.Publisher[notify.RunComplete]
 	// History is optional: it supplies the changed-file list the
 	// post-compaction state block repeats. Nil leaves the list out.
 	History history.Service
@@ -540,6 +542,9 @@ type SessionAgentOptions struct {
 	// when no coordinator owns the agent (tests, the agentic-fetch subagent),
 	// and returning nil means the full palette is sent.
 	LazyTools func() *tools.LazyRegistry
+	// Role restricts the tools this agent may call and is re-attached
+	// after compaction. Nil for agents without a role.
+	Role *roles.Role
 }
 
 func NewSessionAgent(
@@ -560,11 +565,13 @@ func NewSessionAgent(
 		messages:               opts.Messages,
 		history:                opts.History,
 		cfg:                    opts.Cfg,
+		prompts:                opts.Prompts,
 		disableAutoSummarize:   opts.DisableAutoSummarize,
 		nonInteractive:         opts.NonInteractive,
 		isYolo:                 opts.IsYolo,
 		permissions:            opts.Permissions,
-		tools:                  csync.NewSliceFrom(opts.Tools),
+		tools:                  csync.NewSliceFrom(gateToolsForRole(opts.Role, opts.Tools)),
+		role:                   opts.Role,
 		notify:                 opts.Notify,
 		runComplete:            opts.RunComplete,
 		hooks:                  opts.Hooks,
@@ -859,6 +866,27 @@ func canceledFinishTitle(deadlinePassed bool) string {
 	return "User canceled request"
 }
 
+// providerDeadlineDetails is the finish text of a deadline the provider
+// raised itself. It never names a budget Crush set, because the provider's
+// own timeout is what ran out.
+const providerDeadlineDetails = "The provider reported a deadline for this request, not a Crush timeout. Retry, and check the provider's status if it repeats."
+
+// providerDeadlineError reports a deadline a provider raised as a bare
+// context error, which skips the request guard. It embeds the guard's error
+// type so the turn ends as the timeout it is, and its text never claims a
+// budget Crush imposed.
+type providerDeadlineError struct {
+	requestTimeoutError
+}
+
+func (e *providerDeadlineError) Error() string {
+	return fmt.Sprintf("LLM provider reported a request deadline: %v", e.cause)
+}
+
+// Unwrap exposes the embedded timeout error, so errors.As finds the type the
+// turn-end and finish rules key on.
+func (e *providerDeadlineError) Unwrap() error { return &e.requestTimeoutError }
+
 // persistCanceledTurn writes the user/assistant records for a turn that
 // was canceled before (or just as) streaming would have produced them.
 // It creates the user message only when it was not already created by an
@@ -876,10 +904,11 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 	}
 	largeModel := a.models().Large
 	assistant, err := a.messages.Create(writeCtx, call.SessionID, message.CreateMessageParams{
-		Role:     message.Assistant,
-		Parts:    []message.ContentPart{},
-		Model:    largeModel.ModelCfg.Model,
-		Provider: largeModel.ModelCfg.Provider,
+		Role:      message.Assistant,
+		Parts:     []message.ContentPart{},
+		Model:     largeModel.ModelCfg.Model,
+		ModelName: a.modelDisplayName(largeModel.ModelCfg),
+		Provider:  largeModel.ModelCfg.Provider,
 	})
 	if err != nil {
 		return err
@@ -917,7 +946,7 @@ func (a *sessionAgent) publishRunComplete(ctx context.Context, call SessionAgent
 // (e.g. backend.SendMessage) can apply the same checks and keep the error
 // contract consistent.
 func ValidateCall(call SessionAgentCall) error {
-	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+	if strings.TrimSpace(call.Prompt) == "" && !message.ContainsTextAttachment(call.Attachments) {
 		return ErrEmptyPrompt
 	}
 	if call.SessionID == "" {
@@ -948,7 +977,7 @@ func (a *sessionAgent) runEphemeral(ctx context.Context, call SessionAgentCall) 
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
@@ -1166,7 +1195,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, nil
 	}
 
-	if a.IsSessionBusy(call.SessionID) {
+	if a.HasActiveTurn(call.SessionID) {
 		// Busy: an earlier prompt is active. Queue this call so it is
 		// folded into (or sequenced after) the active turn, and release any
 		// accept reservation. A Cancel arriving after this point sees the
@@ -1198,6 +1227,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the lock so a Cancel that arrives between here and assistant creation
 	// is not lost.
 	runCtx := context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
+	runCtx = withRefusalRetries(runCtx, refusalRetriesPerTurn)
 	genCtx, cancel = context.WithCancel(runCtx)
 	ac := &activeCancel{cancel: cancel}
 	a.activeRequests.Set(call.SessionID, ac)
@@ -1296,7 +1326,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// server cannot drop them from the palette either. Tools the session
 	// adopted mid-turn stay at the end of the list, in adoption order.
 	agentTools := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()))
-	agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
+	serverToolSearch := a.anthropicToolSearchForModel(largeModel)
+	if serverToolSearch {
+		// The server searches the deferred half, so this request carries
+		// the whole palette and never changes when one is revealed.
+		agentTools = anthropicToolSearchPalette(agentTools)
+	} else {
+		agentTools = a.lazyToolsForSession(call.SessionID, agentTools)
+	}
 	agentTools = stableToolOrder(agentTools, a.adoptedToolOrder(call.SessionID))
 	agentTools = a.boundToolOutputs(agentTools)
 	systemPrompt := a.systemPromptForSession(call.SessionID)
@@ -1458,7 +1495,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// The prompt just stored is what marks the end of any idle gap: a
 	// session picked up after a long pause has no warm cache to lose.
 	a.slimHistory(largeModel, msgs, userMsg.CreatedAt)
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
+	history, files := a.preparePromptFor(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, call.Attachments...)
 
 	// The gate compares the working tree at the prompt's start with the
 	// tree at its end, so a change made by a shell command or by a
@@ -1503,6 +1540,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// Written from OnToolCall and read from OnToolResult, which fantasy
 	// invokes concurrently for parallel tool calls.
 	sanitizedToolCalls := csync.NewMap[string, bool]()
+	// reads decides whether the step streaming now may run its read-only
+	// calls at once. See parallel_reads.go.
+	reads := &readGate{}
 	// Full names of tool calls that completed without error this turn.
 	// Written from OnToolResult, which runs concurrently for parallel
 	// tool calls, and read after Stream returns, where sendChannelReply
@@ -1539,7 +1579,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	todoStaleItem := ""
 	todoReminderUnanswered := 0
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
-		Prompt:           modelContext + message.PromptWithTextAttachments(strings.TrimSpace(call.Prompt), call.Attachments),
+		Prompt:           modelContext + message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
 		Messages:         history,
 		Headers:          sessionHeaders(call.SessionID),
@@ -1550,8 +1590,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		PresencePenalty:  call.PresencePenalty,
 		TopK:             call.TopK,
 		FrequencyPenalty: call.FrequencyPenalty,
+		RepairToolCall:   repairToolCall,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			modelSteps++
+			// Each step decides its own parallelism from the calls it
+			// streams, so the gate starts empty.
+			reads.reset()
 			call.limits.takeStep()
 			base := options.Messages
 			for i := range base {
@@ -1564,13 +1608,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// server that finished connecting). Rebuilding the list from
 			// scratch per step, or letting a flaky server shrink it, would
 			// move the tools block and its cache breakpoint.
-			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools)
+			stepTools, adopted := a.toolsForStep(callContext, call.SessionID, call.Channel, agentTools, serverToolSearch)
 			if adopted {
 				a.applyToolCacheBreakpoint(stepTools, policy)
 			}
-			prepared.Tools = stepTools
 			a.stepTools.Set(call.SessionID, slices.Clone(stepTools))
 			toolsChanged = a.recordToolsFingerprint(call.SessionID, stepTools)
+			// The request carries the gate wrapper, not the stored list: the
+			// compaction turn replays the stored one, and it must not inherit
+			// the verdict of the step this turn ended on.
+			prepared.Tools = parallelReadTools(stepTools, reads)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1624,6 +1671,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			prepared.Messages = applyImageBudget(prepared.Messages, a.maxRequestImages())
 
 			a.applyCacheBreakpoints(prepared.Messages, policy)
+			if serverToolSearch {
+				callContext = withAnthropicToolSearch(callContext)
+			}
 
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
@@ -1638,10 +1688,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 			var assistantMsg message.Message
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
-				Role:     message.Assistant,
-				Parts:    []message.ContentPart{},
-				Model:    largeModel.ModelCfg.Model,
-				Provider: largeModel.ModelCfg.Provider,
+				Role:      message.Assistant,
+				Parts:     []message.ContentPart{},
+				Model:     largeModel.ModelCfg.Model,
+				ModelName: a.modelDisplayName(largeModel.ModelCfg),
+				Provider:  largeModel.ModelCfg.Provider,
 			})
 			if err != nil {
 				return callContext, prepared, err
@@ -1734,6 +1785,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnToolInputStart: func(id string, toolName string) error {
+			reads.announce(id, toolName)
 			toolCall := message.ToolCall{
 				ID:               id,
 				Name:             toolName,
@@ -1747,6 +1799,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnRetry: func(err *fantasy.ProviderError, delay time.Duration) {
 			slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
+			// A retry streams the step again, so the calls the failed
+			// attempt announced are gone.
+			reads.reset()
 			// Reset streamed content so the retried response doesn't
 			// concatenate with partial content from the failed attempt.
 			// On the final attempt (no more retries), any partial content
@@ -1764,6 +1819,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.currentBuildOf(largeModel)
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			reads.observe(tc.ToolCallID)
 			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
 			if wasSanitized {
 				sanitizedToolCalls.Set(tc.ToolCallID, true)
@@ -1772,7 +1828,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				ID:               tc.ToolCallID,
 				Name:             tc.ToolName,
 				Input:            input,
-				ProviderExecuted: false,
+				ProviderExecuted: tc.ProviderExecuted,
 				Finished:         true,
 			}
 			currentAssistant.AddToolCall(toolCall)
@@ -1786,11 +1842,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				toolResult.Content = sanitizedToolCallResult
 				toolResult.IsError = true
 				toolResult.Metadata = tools.SetErrorKind(toolResult.Metadata, tools.ErrorKindInvalidArguments)
+			} else if toolResult.IsError && genCtx.Err() != nil {
+				// The turn was cancelled out from under the tool.
+				toolResult.Content = interruptedToolCallResult
+				toolResult.Metadata = tools.SetErrorKind(toolResult.Metadata, tools.ErrorKindInterrupted)
 			}
 			toolResult = stampLibraryErrorKind(toolResult)
 			if !toolResult.IsError && toolResult.Name != "" {
 				completedToolCalls.Set(toolResult.Name, struct{}{})
 			}
+			toolResult.FinishedAtMs = time.Now().UnixMilli()
 			// Use parent ctx instead of genCtx to ensure the message is created
 			// even if the request is canceled mid-stream
 			_, createMsgErr := a.messages.Create(ctx, currentAssistant.SessionID, message.CreateMessageParams{
@@ -1986,6 +2047,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 	if err != nil {
+		// A provider that surfaces its own request deadline as a raw context
+		// error skips the request guard, so label it as the timeout it is
+		// rather than as a provider fault. Only a deadline no context of this
+		// run caused qualifies: an ended genCtx or a passed tree deadline is a
+		// cancel, and naming it a timeout would hide what actually happened.
+		if errors.Is(err, context.DeadlineExceeded) && genCtx.Err() == nil && !call.limits.deadlinePassed() {
+			err = &providerDeadlineError{requestTimeoutError: requestTimeoutError{cause: err}}
+		}
 		isCancelErr := errors.Is(err, context.Canceled)
 		slog.Info("Agent stream returned error",
 			"error", err.Error(),
@@ -2030,7 +2099,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			var providerErr *fantasy.ProviderError
 			var requestTimedOutErr *requestTimeoutError
 			const defaultTitle = "Provider Error"
-			linkStyle := lipgloss.NewStyle().Foreground(charmtone.Guac).Underline(true)
+			linkStyle := lipgloss.NewStyle().Foreground(tone.Guac).Underline(true)
 			if errors.Is(err, errRepetitionDetected) {
 				currentAssistant.AddFinish(
 					message.FinishReasonError,
@@ -2039,10 +2108,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				)
 			} else if isCancelErr {
 				currentAssistant.AddFinish(message.FinishReasonCanceled, canceledFinishTitle(call.limits.deadlinePassed()), "")
+			} else if errors.Is(err, errRefused) {
+				// Every retry was refused; keep the refusal banner rather than
+				// reporting a generic provider error.
+				currentAssistant.AddFinish(message.FinishReasonContentFilter, "", "")
 			} else if errors.As(err, &requestTimedOutErr) {
 				// Checked before the provider branches so a deadline our own
 				// request timeout imposed is never reported as a provider error.
-				currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", requestTimedOutErr.userMessage())
+				details := requestTimedOutErr.userMessage()
+				var deadlineErr *providerDeadlineError
+				if errors.As(err, &deadlineErr) {
+					details = providerDeadlineDetails
+				}
+				currentAssistant.AddFinish(message.FinishReasonError, "Request timed out", details)
 			} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 				currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "crush auth" to re-authenticate.`)
 			} else if largeModel.OAuth && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
@@ -2133,7 +2211,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if !overflowRecovery && !shouldSummarize && currentAssistant != nil &&
 		!call.NonInteractive && !call.Ephemeral {
 		gateRan = true
-		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID))
+		gateNext = a.runTurnGate(genCtx, call, currentAssistant, turnEnd, a.userPromptQueued(call.SessionID),
+			gateTodoState{item: todoStaleItem, unanswered: todoReminderUnanswered})
 	}
 	// Compact when the mid-turn overflow guard tripped, when a provider
 	// context overflow is being recovered, or when the finished turn left
@@ -2476,7 +2555,7 @@ type compactionRequest struct {
 func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*compactionOutcome, error) {
 	sessionID, largeModel, opts, onAuthRefresh := req.sessionID, req.largeModel, req.opts, req.onAuthRefresh
 	trigger, active, pinned := req.trigger, req.active, req.pinned
-	if !active && a.IsSessionBusy(sessionID) {
+	if !active && a.HasPendingWork(sessionID) {
 		return nil, ErrSessionBusy
 	}
 	systemPromptPrefix := a.systemPromptPrefix.Get()
@@ -2532,6 +2611,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 	// rewrite the cached prefix for the whole conversation. Re-send the list
 	// that step sent. Only a compaction with no live step behind it, such as
 	// a manual /compact in a fresh process, has to build one.
+	serverToolSearch := a.anthropicToolSearchForModel(largeModel)
 	compactionTools, ok := a.stepTools.Get(sessionID)
 	if ok {
 		// The list may name a tool the registry has dropped since. That is
@@ -2540,11 +2620,15 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		compactionTools = slices.Clone(compactionTools)
 	} else {
 		compactionTools = a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), currentSession.Channel, mcp.GetStates()))
-		// Lazy mode filters here too: a compaction that has to rebuild the
-		// tools block must send the list the next step would send, or this
-		// one request carries every deferred schema and rewrites the cached
-		// prefix for nothing.
-		compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
+		if serverToolSearch {
+			compactionTools = anthropicToolSearchPalette(compactionTools)
+		} else {
+			// Lazy mode filters here too: a compaction that has to rebuild
+			// the tools block must send the list the next step would send,
+			// or this one request carries every deferred schema and
+			// rewrites the cached prefix for nothing.
+			compactionTools = a.lazyToolsForSession(sessionID, compactionTools)
+		}
 		compactionTools = stableToolOrder(compactionTools, a.adoptedToolOrder(sessionID))
 	}
 	// Both wrappers apply: the guard refuses to execute, and the bound
@@ -2624,7 +2708,10 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		return nil, fmt.Errorf("%w: %s", ErrCompactionBlocked, pre.Reason)
 	}
 
-	aiMsgs, _ := a.preparePrompt(msgs, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio)
+	// Compaction reuses the live step's retention cut (computed before the
+	// just-finished turn) so it extends the live prefix byte-for-byte instead
+	// of advancing the window and rewriting the images the live step kept.
+	aiMsgs, _ := a.preparePromptForCut(msgs, largeModel.ModelCfg.Provider, largeModel.ModelCfg.Model, largeModel.CatwalkCfg.Capabilities.Vision, largeModel.CatwalkCfg.Capabilities.Audio, compactionRetentionCut(msgs, a.imageRetentionTurns()))
 
 	genCtx, cancel := context.WithCancel(ctx)
 	if !active {
@@ -2658,6 +2745,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
 		Model:            largeModel.ModelCfg.Model,
+		ModelName:        a.modelDisplayName(largeModel.ModelCfg),
 		Provider:         largeModel.ModelCfg.Provider,
 		IsSummaryMessage: true,
 	})
@@ -2671,7 +2759,7 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 		toolsChanged     bool
 		promptMessages   int
 	)
-	instruction := buildCompactionPrompt(currentSession, len(msgs)-cutIndex, len(msgs))
+	instruction := buildCompactionPrompt(promptOrBuiltin(a.prompts, "summary"), currentSession, len(msgs)-cutIndex, len(msgs))
 
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:          instruction,
@@ -2703,6 +2791,9 @@ func (a *sessionAgent) summarize(ctx context.Context, req compactionRequest) (*c
 			// the live turn, so a provider with explicit caching serves
 			// the conversation from cache instead of rewriting it.
 			a.applyCacheBreakpoints(prepared.Messages, policy)
+			if serverToolSearch {
+				callContext = withAnthropicToolSearch(callContext)
+			}
 			if systemPromptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
 			}
@@ -2990,7 +3081,7 @@ func (a *sessionAgent) fusionPromptEstimate(model Model, msgs []message.Message,
 	for _, msg := range msgs {
 		estimate += messageTokens(msg)
 	}
-	history, files := a.preparePrompt(msgs, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
+	history, files := a.preparePromptFor(msgs, model.ModelCfg.Provider, model.ModelCfg.Model, model.CatwalkCfg.Capabilities.Vision, model.CatwalkCfg.Capabilities.Audio, attachments...)
 	assembled := estimateMessageTokens(history) + approxTokenCount(systemPrompt) + approxTokenCount(userPrompt)
 	for _, file := range files {
 		assembled += estimateMessagePartTokens(file)
@@ -3234,7 +3325,7 @@ func selectCompactionTail(msgs []message.Message, budget int64) int {
 		pending[i] = count
 		switch msgs[i].Role {
 		case message.Assistant:
-			count += len(msgs[i].ToolCalls())
+			count += clientToolCallCount(msgs[i])
 		case message.Tool:
 			count -= len(msgs[i].ToolResults())
 			if count < 0 {
@@ -3511,12 +3602,20 @@ func (a *sessionAgent) applyToolCacheBreakpoint(tools []fantasy.AgentTool, polic
 // re-serializing the block from the first adopted tool. The second return
 // value reports whether anything was adopted, so the caller knows the tool
 // cache breakpoint has to move.
-func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool) ([]fantasy.AgentTool, bool) {
+func (a *sessionAgent) toolsForStep(ctx context.Context, sessionID, channel string, turnTools []fantasy.AgentTool, serverToolSearch bool) ([]fantasy.AgentTool, bool) {
 	current := a.filterDisabledMCPTools(ctx, filterToolsForChannel(a.tools.Copy(), channel, mcp.GetStates()))
-	// A tool this session revealed with tool_search during the last step
-	// passes the lazy filter now, so the adoption below is what adds it to
-	// the palette; a still-unrevealed one stays out of the request.
-	current = a.lazyToolsForSession(sessionID, current)
+	if serverToolSearch {
+		// Nothing is hidden in this mode: the deferred tools ride along and
+		// the transport marks them, so a server that connects mid-turn only
+		// extends the deferred tail.
+		current = anthropicToolSearchPalette(current)
+	} else {
+		// A tool this session revealed with tool_search during the last
+		// step passes the lazy filter now, so the adoption below is what
+		// adds it to the palette; a still-unrevealed one stays out of the
+		// request.
+		current = a.lazyToolsForSession(sessionID, current)
+	}
 	known := make(map[string]struct{}, len(turnTools))
 	for _, tool := range turnTools {
 		known[tool.Info().Name] = struct{}{}
@@ -3711,10 +3810,10 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 			Parts: []message.ContentPart{*call.Report},
 		})
 	}
-	// Run sends the trimmed prompt, so the stored text has to be trimmed
-	// too, or the next turn replays different bytes than this turn sent
-	// and misses the provider's prefix cache.
-	parts := []message.ContentPart{message.TextContent{Text: strings.TrimSpace(call.Prompt), Hidden: call.HiddenUserMessage, Context: modelContext}}
+	// Run sends the prompt untrimmed, so the stored text is untrimmed too,
+	// or the next turn replays different bytes than this turn sent and
+	// misses the provider's prefix cache.
+	parts := []message.ContentPart{message.TextContent{Text: call.Prompt, Hidden: call.HiddenUserMessage, Context: modelContext}}
 	var attachmentParts []message.ContentPart
 	for _, attachment := range call.Attachments {
 		attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.Ref(), MIMEType: attachment.MimeType, Data: attachment.Content})
@@ -3730,7 +3829,31 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return msg, nil
 }
 
+// preparePrompt replays a session for a caller that does not name a target
+// model, leaving every signature alone. Estimates and tests use it; a real
+// request calls preparePromptFor so reasoning written by another model
+// cannot sink the turn.
 func (a *sessionAgent) preparePrompt(msgs []message.Message, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptFor(msgs, "", "", supportsImages, supportsAudio, attachments...)
+}
+
+// preparePromptFor replays a session for a request targeting requestProvider
+// and requestModel, dropping the provider-specific reasoning data of
+// messages another model wrote.
+func (a *sessionAgent) preparePromptFor(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptForRetention(msgs, requestProvider, requestModel, supportsImages, supportsAudio, a.imageRetentionTurns(), attachments...)
+}
+
+// preparePromptForRetention is preparePromptFor with an explicit image
+// retention window, used by live, ephemeral, and estimate callers.
+func (a *sessionAgent) preparePromptForRetention(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, retain int, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+	return a.preparePromptForCut(msgs, requestProvider, requestModel, supportsImages, supportsAudio, imageRetentionCut(msgs, retain), attachments...)
+}
+
+// preparePromptForCut is the replay core with an explicit retention cut: image
+// parts in messages before the cut are expired. Compaction supplies the live
+// step's cut so it extends the live prefix instead of advancing the window.
+func (a *sessionAgent) preparePromptForCut(msgs []message.Message, requestProvider, requestModel string, supportsImages, supportsAudio bool, retentionCut int, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	if !a.isSubAgent {
 		history = append(history, fantasy.NewUserMessage(
@@ -3761,7 +3884,7 @@ Again do not mention this message to the user.`,
 			knownToolCallIDs[tc.ID] = struct{}{}
 		}
 	}
-	toolResultsByCall := make(map[string][]fantasy.MessagePart)
+	toolResultsByCall := make(map[string]fantasy.ToolResultPart)
 	for _, m := range msgs {
 		if m.Role != message.Tool {
 			continue
@@ -3785,12 +3908,22 @@ Again do not mention this message to the user.`,
 					)
 					continue
 				}
-				toolResultsByCall[tr.ToolCallID] = append(toolResultsByCall[tr.ToolCallID], part)
+				// One result per call: a real result beats an error, since the
+				// usual duplicate is a premature "interrupted" then the output.
+				if kept, seen := toolResultsByCall[tr.ToolCallID]; seen {
+					_, keptIsError := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentError](kept.Output)
+					slog.Warn("Dropping duplicate tool result", "session_id", m.SessionID,
+						"tool_call_id", tr.ToolCallID, "kept_later", keptIsError)
+					if !keptIsError {
+						continue
+					}
+				}
+				toolResultsByCall[tr.ToolCallID] = tr
 			}
 		}
 	}
 
-	for _, m := range msgs {
+	for i, m := range msgs {
 		if len(m.Parts) == 0 {
 			continue
 		}
@@ -3803,17 +3936,43 @@ Again do not mention this message to the user.`,
 			continue
 		}
 		aiMsgs := m.ToAIMessage()
+		if m.Role == message.Assistant && foreignReasoning(m.Provider, m.Model, requestProvider, requestModel) {
+			if stripped := stripReasoningReplayData(aiMsgs); stripped > 0 {
+				slog.Debug(
+					"Dropped reasoning replay data written by another model",
+					"session_id", m.SessionID,
+					"message_id", m.ID,
+					"message_provider", m.Provider,
+					"message_model", m.Model,
+					"request_provider", requestProvider,
+					"request_model", requestModel,
+					"parts", stripped,
+				)
+			}
+		}
 		if !supportsImages {
-			for i := range aiMsgs {
-				if aiMsgs[i].Role == fantasy.MessageRoleUser {
-					aiMsgs[i].Content = filterFileParts(aiMsgs[i].Content)
+			for k := range aiMsgs {
+				if aiMsgs[k].Role == fantasy.MessageRoleUser {
+					aiMsgs[k].Content = filterFileParts(aiMsgs[k].Content)
 				}
+			}
+		}
+		if i < retentionCut {
+			for k := range aiMsgs {
+				aiMsgs[k] = omitImagesInMessage(aiMsgs[k], imageExpiredText)
 			}
 		}
 		history = append(history, aiMsgs...)
 
 		if m.Role == message.Assistant && len(m.ToolCalls()) > 0 {
-			history = append(history, toolResultsForCalls(m, toolResultsByCall))
+			// A message whose calls were all provider-executed has no
+			// replies to replay, and an empty tool message is invalid.
+			if results := toolResultsForCalls(m, toolResultsByCall); len(results.Content) > 0 {
+				if i < retentionCut {
+					results = omitImagesInMessage(results, imageExpiredText)
+				}
+				history = append(history, results)
+			}
 		}
 	}
 
@@ -3898,9 +4057,15 @@ func (a *sessionAgent) filterDisabledMCPTools(ctx context.Context, toolList []fa
 	for _, name := range disabledServers {
 		disabled[name] = struct{}{}
 	}
-	filtered := make([]fantasy.AgentTool, 0, len(toolList))
-	for _, t := range toolList {
-		if mcpTool, ok := t.(*tools.Tool); ok {
+	return dropDisabledMCPTools(toolList, disabled)
+}
+
+// dropDisabledMCPTools removes every tool whose MCP server is in disabled.
+// A tool from a built-in reports no server and is always kept.
+func dropDisabledMCPTools(list []fantasy.AgentTool, disabled map[string]struct{}) []fantasy.AgentTool {
+	filtered := make([]fantasy.AgentTool, 0, len(list))
+	for _, t := range list {
+		if mcpTool, ok := t.(interface{ MCP() string }); ok {
 			if _, off := disabled[mcpTool.MCP()]; off {
 				continue
 			}
@@ -4120,11 +4285,12 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	models := a.models()
 	smallModel, largeModel := models.Small, models.Large
 	systemPromptPrefix := a.systemPromptPrefix.Get()
+	titlePrompt := promptOrBuiltin(a.prompts, "title")
 
-	newAgent := func(m fantasy.LanguageModel, p []byte, tok int64) fantasy.Agent {
+	newAgent := func(m fantasy.LanguageModel, p string, tok int64) fantasy.Agent {
 		return fantasy.NewAgent(
 			m,
-			fantasy.WithSystemPrompt(string(p)+"\n /no_think"),
+			fantasy.WithSystemPrompt(p+"\n /no_think"),
 			fantasy.WithMaxOutputTokens(tok),
 			fantasy.WithUserAgent(userAgent),
 		)
@@ -4294,6 +4460,22 @@ func extractPrismModel(metadata fantasy.ProviderMetadata) (modelID, modelName st
 	_ = pm.ExtraField(hyper.PrismModelIDField, &modelID)
 	_ = pm.ExtraField(hyper.PrismModelNameField, &modelName)
 	return modelID, modelName
+}
+
+// modelDisplayName resolves the display name of a model from the
+// current config, falling back to the model ID when no entry exists or
+// the entry has no name. The result is persisted on assistant messages
+// so the UI keeps showing a meaningful name after the model is renamed
+// or removed from the config.
+func (a *sessionAgent) modelDisplayName(model config.SelectedModel) string {
+	if a.cfg != nil {
+		if cfg := a.cfg.Config(); cfg != nil && cfg.Providers != nil {
+			if m := cfg.GetModel(model.Provider, model.Model); m != nil && m.Name != "" {
+				return m.Name
+			}
+		}
+	}
+	return model.Model
 }
 
 func (a *sessionAgent) modelForStepCost(model Model, metadata fantasy.ProviderMetadata) Model {
@@ -4597,6 +4779,9 @@ func (a *sessionAgent) CancelAll() {
 		for key := range a.activeRequests.Seq2() {
 			a.Cancel(key) // key is sessionID
 		}
+		for key := range a.acceptedRuns.Seq2() {
+			a.Cancel(key)
+		}
 		for a.IsBusy() {
 			if time.Now().After(deadline) {
 				slog.Warn("Gave up waiting for agent runs to cancel; their final state may not be recorded")
@@ -4615,20 +4800,29 @@ func (a *sessionAgent) CancelAll() {
 	}
 }
 
+// IsBusy reports whether any session has an active or accepted run.
 func (a *sessionAgent) IsBusy() bool {
-	var busy bool
 	for ac := range a.activeRequests.Seq() {
 		if ac != nil {
-			busy = true
-			break
+			return true
 		}
 	}
+	return a.acceptedRuns.Len() > 0
+}
+
+// HasActiveTurn ignores accepts so Run, holding its own, doesn't queue behind itself.
+func (a *sessionAgent) HasActiveTurn(sessionID string) bool {
+	_, busy := a.activeRequests.Get(sessionID)
 	return busy
 }
 
-func (a *sessionAgent) IsSessionBusy(sessionID string) bool {
-	_, busy := a.activeRequests.Get(sessionID)
-	return busy
+// HasPendingWork reports whether sessionID has an active or accepted run.
+func (a *sessionAgent) HasPendingWork(sessionID string) bool {
+	if a.HasActiveTurn(sessionID) {
+		return true
+	}
+	accepted, _ := a.acceptedRuns.Get(sessionID)
+	return accepted > 0
 }
 
 func (a *sessionAgent) QueuedPrompts(sessionID string) int {
@@ -4639,14 +4833,19 @@ func (a *sessionAgent) QueuedPrompts(sessionID string) int {
 	return len(l)
 }
 
+// QueuedPromptsList returns the queued prompts a user sees. Hidden
+// continuations are left out, as they are in the transcript, though
+// QueuedPrompts still counts them.
 func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	l, ok := a.messageQueue.Get(sessionID)
 	if !ok {
 		return nil
 	}
-	prompts := make([]string, len(l))
-	for i, call := range l {
-		prompts[i] = call.Prompt
+	prompts := make([]string, 0, len(l))
+	for _, call := range l {
+		if !call.HiddenUserMessage {
+			prompts = append(prompts, call.Prompt)
+		}
 	}
 	return prompts
 }
@@ -4682,7 +4881,9 @@ func (a *sessionAgent) SetModels(large Model, small Model) {
 }
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(tools)
+	// Every path that replaces the palette goes through here, so the role
+	// gate cannot be skipped by a rebuild after an MCP or model refresh.
+	a.tools.SetSlice(gateToolsForRole(a.role, tools))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
@@ -4804,6 +5005,19 @@ func (a *sessionAgent) maxRequestImages() int {
 	return cfg.Options.GetMaxImages()
 }
 
+// imageRetentionTurns returns how many recent user turns keep their images in the
+// replayed context. Negative disables expiry.
+func (a *sessionAgent) imageRetentionTurns() int {
+	if a.cfg == nil {
+		return config.DefaultImageRetentionTurns
+	}
+	cfg := a.cfg.Config()
+	if cfg == nil {
+		return config.DefaultImageRetentionTurns
+	}
+	return cfg.Options.GetImageRetentionTurns()
+}
+
 // workaroundProviderMediaLimitations converts media content in tool results to
 // user messages for providers that don't natively support images in tool results.
 //
@@ -4902,7 +5116,7 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 
 		if len(mediaFiles) > 0 {
 			convertedMessages = append(convertedMessages, fantasy.NewUserMessage(
-				"Here is the media content from the tool result:",
+				claudeagent.ToolMediaMessageText,
 				mediaFiles...,
 			))
 		}
@@ -4916,9 +5130,9 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 // the request's system prompt, tools, and message prefix stay
 // byte-identical to the live turn, letting providers with prefix caching
 // serve the conversation from cache.
-func buildCompactionPrompt(sess session.Session, keptMessages, totalMessages int) string {
+func buildCompactionPrompt(body string, sess session.Session, keptMessages, totalMessages int) string {
 	var sb strings.Builder
-	sb.WriteString(string(compactionPrompt))
+	sb.WriteString(body)
 	if sess.SummaryMessageID != "" {
 		sb.WriteString("\n\n## Previous Summary\n\n")
 		sb.WriteString("The first message in the conversation above is a summary written at an earlier compaction. ")

@@ -581,6 +581,23 @@
             50
           ]
         },
+        "image_retention_turns": {
+          "type": "integer",
+          "description": "Number of recent user turns whose images stay in the replayed context. Older images are replaced with a short note so the model stops referencing them and the context stays small. 0 drops an image as soon as a newer prompt arrives. A negative value keeps images indefinitely.",
+          "default": 1,
+          "examples": [
+            2
+          ]
+        },
+        "prompt_cache_ttl": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h"
+          ],
+          "description": "Prompt cache lifetime: 5m (default) or 1h. The 1h value keeps Anthropic prompt caches for an hour; cache writes then cost about 2x base input instead of 1.25x, so it pays off when you pause more than 5 minutes between turns. It also asks OpenAI for 24-hour prompt_cache_retention.",
+          "default": "5m"
+        },
         "skills_paths": {
           "items": {
             "type": "string",
@@ -600,6 +617,10 @@
           "$ref": "#/$defs/ModelsOptions",
           "description": "Model picker options"
         },
+        "web_display": {
+          "$ref": "#/$defs/WebDisplayOptions",
+          "description": "Display settings of the web mode tab"
+        },
         "debug": {
           "type": "boolean",
           "description": "Enable debug logging",
@@ -613,6 +634,11 @@
         "disable_auto_summarize": {
           "type": "boolean",
           "description": "Disable automatic conversation summarization",
+          "default": false
+        },
+        "web": {
+          "type": "boolean",
+          "description": "Open a browser tab that mirrors the session (web mode)",
           "default": false
         },
         "auto_compact_threshold": {
@@ -804,6 +830,11 @@
           "description": "Enable Agent Teams. Named teammates with direct messages and a shared task board. The Lead decides whether to work alone or dispatch teammates.",
           "default": true
         },
+        "agent_team_autostart": {
+          "type": "boolean",
+          "description": "Start a teammate of the named role on its own when a shared task that names a role becomes ready. Tasks without a role stay manual.",
+          "default": true
+        },
         "repeat_tool_reminders": {
           "type": "boolean",
           "description": "Inject advisory reminders when the model repeats the same tool call",
@@ -819,14 +850,18 @@
           "description": "Send only a small core tool palette (read/view, edit, bash, grep, glob, ls, todos and the delegation tools) plus tool_search, and hold the rest back until the model reveals them. Saves the schema cost of every deferred tool on every request, at the price of one extra tool call per deferred tool. Off by default.",
           "default": false
         },
+        "anthropic_tool_search": {
+          "type": "boolean",
+          "description": "Send deferred tools to Anthropic's server-side tool search (defer_loading plus the tool_search_tool_bm25 server tool) instead of Crush's own tool_search",
+          "default": false
+        },
         "prompt_profile": {
           "type": "string",
           "enum": [
             "full",
             "lean"
           ],
-          "description": "System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family, and leaves tool guidance to the tool descriptions. Both keep the rules, environment, context files and skills.",
-          "default": "full"
+          "description": "System prompt template set for the coder agent. full is the complete prompt; lean is a short shared base plus an add-on chosen for the model family, and leaves tool guidance to the tool descriptions. Both keep the rules, environment, context files and skills. Left unset, DeepSeek models use lean, measured on DeepSeek V4.1 Flash, and every other model keeps full until its own measurement lands."
         },
         "apply_patch": {
           "type": "boolean",
@@ -863,6 +898,10 @@
           "examples": [
             300
           ]
+        },
+        "prompts": {
+          "$ref": "#/$defs/PromptPaths",
+          "description": "Files that replace Crush's built-in prompts, keyed by prompt name. A replacement is used verbatim, so anything the built-in template injected (skills, context files, LSP status) is lost unless the replacement asks for it too."
         }
       },
       "additionalProperties": false,
@@ -945,6 +984,12 @@
         "output"
       ]
     },
+    "PromptPaths": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
     "ProviderConfig": {
       "properties": {
         "id": {
@@ -1019,6 +1064,21 @@
         "provider_options": {
           "type": "object",
           "description": "Additional provider-specific options for this provider"
+        },
+        "request_compression": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "br",
+              "gzip"
+            ],
+            "examples": [
+              "br",
+              "gzip"
+            ]
+          },
+          "type": "array",
+          "description": "Encodings to compress request bodies with, most preferred first; only works with openai-compatible providers"
         },
         "aws_auth_refresh": {
           "type": "string",
@@ -1166,7 +1226,9 @@
           "examples": [
             "charmtone-panther",
             "gruvbox-dark",
-            "keanu"
+            "rose-pine",
+            "keanu",
+            "kitt"
           ]
         },
         "completions": {
@@ -1192,6 +1254,10 @@
           "type": "boolean",
           "description": "Enable terminal mouse capture for selection, clicks, and scrolling in the TUI. Disable to let the terminal emulator or tmux handle text selection and copy/paste",
           "default": true
+        },
+        "nerd_fonts": {
+          "type": "boolean",
+          "description": "Override Nerd Font glyph detection for the TUI: true forces glyphs on, false forces them off, and unset keeps automatic detection"
         },
         "exit_banner": {
           "type": "string",
@@ -1300,6 +1366,40 @@
         },
         "glob": {
           "$ref": "#/$defs/ToolGlob"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "WebDisplayOptions": {
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": [
+            "holodeck",
+            "solid"
+          ],
+          "description": "Web mode theme",
+          "default": "holodeck"
+        },
+        "motion": {
+          "type": "string",
+          "enum": [
+            "full",
+            "reduced",
+            "off"
+          ],
+          "description": "Web mode motion; empty follows the browser's reduced motion setting"
+        },
+        "low_power": {
+          "type": "boolean",
+          "description": "Web mode low power mode: 2D constellation and no bloom",
+          "default": false
+        },
+        "cinematic_hint": {
+          "type": "boolean",
+          "description": "Show the orbit hint in web mode's cinematic view",
+          "default": true
         }
       },
       "additionalProperties": false,

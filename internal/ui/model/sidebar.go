@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
@@ -101,6 +102,7 @@ func (m *UI) updateSidebarScrollState() {
 	}
 	m.sidebarKey, m.sidebarKeyValid = key, true
 	m.sidebarBuilds++
+	m.sidebarAgentHits = make(map[int]dialog.AgentDescriptor)
 
 	const logoHeightBreakpoint = 30
 
@@ -111,7 +113,7 @@ func (m *UI) updateSidebarScrollState() {
 	contentWidth := max(width-2, 1)
 
 	title := t.Sidebar.SessionTitle.Width(contentWidth).MaxHeight(2).Render(m.session.Title)
-	cwd := common.PrettyPathWithBranch(t, m.com.Workspace.WorkingDir(), m.gitBranch, contentWidth)
+	cwd := common.PrettyPathWithBranch(t, m.com.Workspace.WorkingDir(), m.gitBranchLabel(), contentWidth)
 	sidebarLogo := m.sidebarLogo
 	if height < logoHeightBreakpoint {
 		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, logo.SmallRender(m.com.Styles, contentWidth, logo.Opts{
@@ -131,9 +133,12 @@ func (m *UI) updateSidebarScrollState() {
 	lspSection := m.lspInfo(contentWidth, len(m.lspStates), true)
 	mcpSection := m.mcpInfo(contentWidth, mcpCount(m.com.Config().MCP.Sorted(), m.mcpStates), true)
 	skillsSection := m.skillsInfo(contentWidth, len(m.skillStatusItems()), true)
+	channels := m.channelStatusItems()
 	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), contentWidth, fileChangeCount(m.sessionFiles), true)
 
-	// Build the scrollable content.
+	// Build the scrollable content. The subagent section renders empty
+	// until something is dispatched, so it takes no space in a session
+	// that never uses them.
 	sections := []string{
 		title,
 		"",
@@ -144,13 +149,32 @@ func (m *UI) updateSidebarScrollState() {
 	if teamSection := m.teamInfo(contentWidth); teamSection != "" {
 		sections = append(sections, "", teamSection)
 	}
-	if agentsSection := m.agentsInfo(contentWidth); agentsSection != "" {
+	agentsSection, agentHits := m.agentsInfo(contentWidth)
+	if agentsSection != "" {
+		// The section starts after everything already appended plus the
+		// blank separator line; offset each row hit to an absolute content
+		// line so a click maps to the right agent.
+		start := lipgloss.Height("")
+		for _, s := range sections {
+			start += lipgloss.Height(s)
+		}
+		for _, hit := range agentHits {
+			m.sidebarAgentHits[start+hit.line] = hit.descriptor
+		}
 		sections = append(sections, "", agentsSection)
 	}
-	// The subagent section renders empty until something is dispatched, so
-	// it takes no space in a session that never uses them.
 	subAgents := m.subAgentStatuses()
-	if subAgentSection := m.subAgentsInfo(subAgents, contentWidth, len(subAgents), true); subAgentSection != "" {
+	subAgentSection, subAgentHits := m.subAgentsInfo(subAgents, contentWidth, len(subAgents), true)
+	if subAgentSection != "" {
+		// Offset each subagent row hit to an absolute content line, exactly
+		// like the Agents section above.
+		start := lipgloss.Height("")
+		for _, s := range sections {
+			start += lipgloss.Height(s)
+		}
+		for _, hit := range subAgentHits {
+			m.sidebarAgentHits[start+hit.line] = hit.descriptor
+		}
 		sections = append(sections, "", subAgentSection)
 	}
 	sections = append(
@@ -164,6 +188,11 @@ func (m *UI) updateSidebarScrollState() {
 		"",
 		skillsSection,
 	)
+	// Channels are experimental and opt-in: only give them a section once
+	// at least one server is opted in.
+	if len(channels) > 0 {
+		sections = append(sections, "", m.channelsInfo(channels, contentWidth, len(channels), true))
+	}
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	totalLines := strings.Count(content, "\n") + 1

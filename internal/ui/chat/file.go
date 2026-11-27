@@ -38,7 +38,7 @@ type ViewToolRenderContext struct{}
 // RenderTool implements the [ToolRenderer] interface.
 func (v *ViewToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
-	if opts.IsPending() {
+	if opts.IsStreamingInput() {
 		return pendingTool(sty, "View", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
@@ -140,7 +140,7 @@ type WriteToolRenderContext struct{}
 // RenderTool implements the [ToolRenderer] interface.
 func (w *WriteToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
-	if opts.IsPending() {
+	if opts.IsStreamingInput() {
 		return pendingTool(sty, "Write", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
@@ -209,7 +209,7 @@ type EditToolRenderContext struct{}
 // RenderTool implements the [ToolRenderer] interface.
 func (e *EditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	// Edit tool uses full width for diffs.
-	if opts.IsPending() {
+	if opts.IsStreamingInput() {
 		return pendingTool(sty, "Edit", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
@@ -284,7 +284,7 @@ type MultiEditToolRenderContext struct{}
 // RenderTool implements the [ToolRenderer] interface.
 func (m *MultiEditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	// MultiEdit tool uses full width for diffs.
-	if opts.IsPending() {
+	if opts.IsStreamingInput() {
 		return pendingTool(sty, "Multi-Edit", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 
@@ -365,7 +365,7 @@ type DownloadToolRenderContext struct{}
 // RenderTool implements the [ToolRenderer] interface.
 func (d *DownloadToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
-	if opts.IsPending() {
+	if opts.IsStreamingInput() {
 		return pendingTool(sty, "Download", opts.Anim, opts.Compact, pendingParam(fsext.PrettyPath(partialStringField(opts.ToolCall.Input, "file_path"))))
 	}
 

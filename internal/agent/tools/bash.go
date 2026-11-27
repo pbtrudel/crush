@@ -5,26 +5,31 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
 type BashParams struct {
-	Description         string `json:"description" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
+	Description         string `json:"description,omitempty" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
 	Command             string `json:"command" description:"The command to execute"`
 	WorkingDir          string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
 	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use job_output to read the output later."`
@@ -60,7 +65,23 @@ const (
 	DefaultAutoBackgroundAfter = 60 // Commands taking longer automatically become background jobs
 	MaxOutputLength            = 30000
 	BashNoOutput               = "no output"
+	// cancelledJobWait bounds how long a cancelled call waits for its job to
+	// end, so a write a detached child makes after the kill still lands
+	// before the scope check that follows.
+	cancelledJobWait = 10 * time.Second
 )
+
+// cancelledKillContext is the context a cancelled call kills its job with.
+// A call in a task worktree gets a fresh bounded context, because the
+// cancelled one would let Kill return before a descendant it did not reach
+// has written, and the scope check that follows the call must see that
+// write. Every other call kills with its own cancelled context.
+func cancelledKillContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if !InTaskWorktree(ctx) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), cancelledJobWait)
+}
 
 //go:embed bash.md.tpl
 var bashDescriptionTmpl []byte
@@ -216,6 +237,18 @@ func resolveBlockedCommands(perms *config.Permissions) []string {
 	return deduped
 }
 
+// describeCommand derives a short label from the command for calls that
+// leave description out. The label is only shown in the UI and the job
+// list; permission prompts already show the command itself.
+func describeCommand(command string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(command), "\n")
+	line = strings.TrimSpace(line)
+	if utf8.RuneCountInString(line) <= 60 {
+		return line
+	}
+	return string([]rune(line)[:57]) + "..."
+}
+
 func bashDescription(attribution *config.Attribution, blocked []string) string {
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
@@ -267,15 +300,25 @@ func blockFuncs(blocked []string) []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions) fantasy.AgentTool {
+// NewBashTool returns the bash tool. Every shell it starts is tagged with
+// shellOwner, so the owner can stop them with
+// [shell.BackgroundShellManager.KillOwned].
+func NewBashTool(permissions permission.Service, workingDir, spillDir string, attribution *config.Attribution, modelID string, maxBackgroundJobs int, perms *config.Permissions, shellOwner any, tracker filetracker.Service) fantasy.AgentTool {
 	blocked := resolveBlockedCommands(perms)
 	userSafe := userSafeCommands(perms)
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription(attribution, blocked)),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
+			}
+
+			// The field is optional: a model that leaves it out still gets
+			// a label for the UI and the job list.
+			if strings.TrimSpace(params.Description) == "" {
+				params.Description = describeCommand(params.Command)
 			}
 
 			// Expand the attribution token with the model that is running
@@ -284,8 +327,11 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 				params.Command = strings.ReplaceAll(params.Command, modelIDPlaceholder, modelID)
 			}
 
-			// Determine working directory
-			execWorkingDir := cmp.Or(params.WorkingDir, workingDir)
+			// Determine working directory. A relative working_dir resolves
+			// inside this call's working directory, which is the task
+			// worktree when a teammate is in one; an absolute one is used
+			// as given.
+			execWorkingDir := filepathext.SmartJoin(workingDir, cmp.Or(params.WorkingDir, workingDir))
 
 			safeReadOnly := isSafeReadOnly(params.Command, userSafe)
 
@@ -296,8 +342,21 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 			// Check whether the command is dangerous so we can surface a
 			// warning in the permission dialog.
 			var check shell.CommandCheck
+			var adminBlocks []shell.BlockFunc
+			mode := permissions.PermissionMode()
 			if !safeReadOnly {
 				check = shell.CheckCommand(params.Command, blockFuncs(blocked))
+
+				if check.Matched && mode.RefusesDangerous() {
+					adminBlocks = adminBlockFuncs(blocked)
+					if inner := shell.CheckCommand(params.Command, adminBlocks); inner.Matched {
+						name := inner.Reason
+						if slices.Contains(adminCommands, name) {
+							name = "the command " + name + " runs"
+						}
+						return fantasy.NewTextErrorResponse(yoloBlockedMessage(name)), nil
+					}
+				}
 
 				p, err := permissions.Request(
 					ctx,
@@ -326,39 +385,243 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 				}
 			}
 
-			// Re-blocking a command that was already approved would override
-			// the answer that was given, whether the user gave it at a prompt
-			// or yolo mode gave it on their behalf. That only applies when the
-			// check actually recognised a command by name, though: a warning
-			// that merely says "this could not be analysed" names nothing the
-			// user could have judged, so approving it is not approval of
-			// anything in particular and the block list stays on. Otherwise a
-			// stray $(date) anywhere on the line would waive the run-time
-			// checks for every command beside it.
-			//
-			// What the block list can see is narrow: commands this interpreter
-			// dispatches itself, including names that only resolve after a
-			// glob or variable expands. A command that runs inside a child
-			// process is invisible to it.
-			//
-			// Sysadmin mode is the deliberate exception: it asks for nothing
-			// and blocks nothing.
+			// A named match reaching here was approved at a prompt; keep the block list for everything else.
 			var blocksToUse []shell.BlockFunc
-			if !check.Matched && permissions.PermissionMode() != permission.PermissionModeSysadmin {
+			switch {
+			case adminBlocks != nil:
+				blocksToUse = adminBlocks
+			case !check.Matched && mode != permission.PermissionModeSysadmin:
 				blocksToUse = blockFuncs(blocked)
 			}
-			return executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs)
+			before := snapshotReadFiles(ctx, tracker, sessionID, params, workingDir)
+			resp, err := executeBashCommand(ctx, params, execWorkingDir, spillDir, blocksToUse, sessionID, maxBackgroundJobs, shellOwner)
+			recordShellReads(ctx, tracker, sessionID, params, execWorkingDir, resp, err)
+			noteChangedReads(&resp, err, before)
+			return resp, err
 		},
 	)
 }
 
-func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, spillDir string, blockFuncsToUse []shell.BlockFunc, sessionID string, maxBackgroundJobs int) (fantasy.ToolResponse, error) {
+// readFileState is one file the session read earlier: the path the note
+// names, the absolute path the snapshot resolved once, and the modification
+// time at the moment the command started.
+type readFileState struct {
+	path    string
+	full    string
+	modTime time.Time
+}
+
+// maxSnapshottedReads bounds how many read files one command watches: a
+// session that read thousands of files would otherwise stat all of them
+// around every command it runs, twice. The cap keeps a command's cost
+// proportional to the size of the session, not to the command.
+const maxSnapshottedReads = 200
+
+// snapshotReadFiles records the modification times of the files the session
+// read earlier, so the command's effect on them can be named afterwards. A
+// command that runs in the background, or a session with no tracker, has
+// nothing to compare.
+func snapshotReadFiles(ctx context.Context, tracker filetracker.Service, sessionID string, params BashParams, workingDir string) []readFileState {
+	if tracker == nil || sessionID == "" || params.RunInBackground {
+		return nil
+	}
+	paths, err := tracker.ListReadFiles(ctx, sessionID)
+	if err != nil || len(paths) == 0 {
+		return nil
+	}
+	if len(paths) > maxSnapshottedReads {
+		paths = paths[:maxSnapshottedReads]
+	}
+	states := make([]readFileState, 0, len(paths))
+	for _, path := range paths {
+		full := path
+		if !filepath.IsAbs(full) {
+			full = filepath.Join(workingDir, full)
+		}
+		info, err := os.Stat(full)
+		if err != nil {
+			continue
+		}
+		states = append(states, readFileState{path: path, full: full, modTime: info.ModTime()})
+	}
+	return states
+}
+
+// maxNamedChangedReads bounds how many paths the note names, so a formatter
+// run over a large tree does not bury the command's own output.
+const maxNamedChangedReads = 10
+
+// noteChangedReads tells the model which of the files it read earlier changed
+// while the command ran, so it views them before editing them instead of
+// learning the same thing from a refusal. It records no read: the command may
+// have rewritten the file to something the model has not seen.
+func noteChangedReads(resp *fantasy.ToolResponse, err error, before []readFileState) {
+	if len(before) == 0 || err != nil || resp.IsError {
+		return
+	}
+	var changed []string
+	for _, state := range before {
+		if len(changed) == maxNamedChangedReads {
+			break
+		}
+		// Re-stat the path the snapshot resolved, not the same relative
+		// name under the command's directory: with a working_dir of a
+		// subdirectory the two differ, and a miss there would name a file
+		// that did not change.
+		info, statErr := os.Stat(state.full)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil || !info.ModTime().Equal(state.modTime) {
+			changed = append(changed, state.path)
+		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	note := fmt.Sprintf("Files you read earlier changed during this command: %s. View them before editing.", humanList(changed))
+	if resp.Content == "" {
+		resp.Content = note
+		return
+	}
+	resp.Content += "\n\n" + note
+}
+
+// recordShellReads counts the files a finished foreground command only read
+// as reads, the way view does, so an edit to a file the model inspected
+// through bash is not refused. A command that was moved to the background, or
+// that failed, says nothing about the file as it stands.
+func recordShellReads(ctx context.Context, tracker filetracker.Service, sessionID string, params BashParams, workingDir string, resp fantasy.ToolResponse, err error) {
+	if tracker == nil || sessionID == "" || err != nil || resp.IsError || params.RunInBackground {
+		return
+	}
+	var meta BashResponseMetadata
+	if len(resp.Metadata) > 0 {
+		if jsonErr := json.Unmarshal([]byte(resp.Metadata), &meta); jsonErr != nil {
+			return
+		}
+	}
+	if meta.Background || meta.Interrupted || meta.ExitCode == nil || *meta.ExitCode != 0 {
+		return
+	}
+	for _, path := range shellReadPaths(params.Command, workingDir) {
+		tracker.RecordRead(ctx, sessionID, path)
+	}
+}
+
+// adminCommands still run in yolo mode. They ask for the user's own
+// credentials (a password, Touch ID) when they run, so yolo answering the
+// permission prompt does not let them act unseen. What they run is still
+// checked against the block list.
+var adminCommands = []string{"doas", "sudo"}
+
+// adminValueFlags are the flags of each admin command that take a separate
+// value, so the value is not mistaken for the command being run.
+var adminValueFlags = map[string][]string{
+	"doas": {"-a", "-C", "-u"},
+	"sudo": {
+		"-C", "--close-from", "-D", "--chdir", "-g", "--group", "-h", "--host",
+		"-p", "--prompt", "-R", "--chroot", "-r", "--role", "-T", "--command-timeout",
+		"-t", "--type", "-U", "--other-user", "-u", "--user",
+	},
+}
+
+// adminInner returns the command an admin command runs, and false when args
+// is not an admin command. An admin command with nothing after its flags
+// (sudo -v) runs nothing, so it resolves to an empty command.
+func adminInner(args []string) ([]string, bool) {
+	args = shell.ResolveArgv(args)
+	if len(args) == 0 {
+		return nil, false
+	}
+	name := shell.NormalizeCommandName(args[0])
+	if !slices.Contains(adminCommands, name) {
+		return nil, false
+	}
+	valueFlags := adminValueFlags[name]
+	rest := args[1:]
+options:
+	for len(rest) > 0 {
+		tok := rest[0]
+		switch {
+		case tok == "--":
+			rest = rest[1:]
+			break options
+		case !strings.HasPrefix(tok, "-") || tok == "-":
+			break options
+		case strings.HasPrefix(tok, "--"):
+			// --user=root is one word; --user root is two.
+			words := 1
+			if slices.Contains(valueFlags, tok) {
+				words = 2
+			}
+			rest = rest[min(words, len(rest)):]
+		default:
+			rest = rest[min(shortFlagWords(tok, valueFlags), len(rest)):]
+		}
+	}
+	// sudo sets leading NAME=VALUE words in the command's environment, so
+	// the command is the first word after them.
+	if name == "sudo" {
+		for len(rest) > 0 && strings.Index(rest[0], "=") > 0 {
+			rest = rest[1:]
+		}
+	}
+	if len(rest) == 0 {
+		return nil, true
+	}
+	return rest, true
+}
+
+// shortFlagWords is how many words a cluster of short flags such as -Eu
+// takes. The first letter that takes a value ends the cluster: the rest of
+// the word is its value (-uroot), or the next word is when nothing is left
+// (-Eu root).
+func shortFlagWords(cluster string, valueFlags []string) int {
+	for i := 1; i < len(cluster); i++ {
+		if slices.Contains(valueFlags, "-"+cluster[i:i+1]) {
+			if i == len(cluster)-1 {
+				return 2
+			}
+			return 1
+		}
+	}
+	return 1
+}
+
+// adminBlockFuncs is the block list with the admin commands taken off it,
+// plus a rule that applies the list to whatever an admin command runs, so
+// `sudo true` runs in yolo mode while `sudo curl` stays blocked.
+func adminBlockFuncs(blocked []string) []shell.BlockFunc {
+	inner := blockFuncs(slices.DeleteFunc(slices.Clone(blocked), func(cmd string) bool {
+		return slices.Contains(adminCommands, shell.NormalizeCommandName(cmd))
+	}))
+	var wrapped shell.BlockFunc
+	wrapped = func(args []string) bool {
+		cmd, ok := adminInner(args)
+		if !ok || len(cmd) == 0 {
+			return false
+		}
+		if wrapped(cmd) {
+			return true
+		}
+		return slices.ContainsFunc(inner, func(block shell.BlockFunc) bool { return block(cmd) })
+	}
+	return append(inner, wrapped)
+}
+
+// yoloBlockedMessage names the way out so the model doesn't retry variations.
+func yoloBlockedMessage(command string) string {
+	return fmt.Sprintf("blocked: %s is a dangerous command, and yolo mode blocks dangerous commands without asking. Tell the user: they can switch to normal mode to be asked about it, use sysadmin mode to allow it, or mark it safe with `permissions safe`.", command)
+}
+
+func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, spillDir string, blockFuncsToUse []shell.BlockFunc, sessionID string, maxBackgroundJobs int, shellOwner any) (fantasy.ToolResponse, error) {
 	// If explicitly requested as background, start immediately with detached context
 	if params.RunInBackground {
 		startTime := time.Now()
 		bgManager := shell.GetBackgroundShellManager()
 		// Use background context so it continues after tool returns
-		bgShell, err := bgManager.StartWithSession(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, sessionID, maxBackgroundJobs)
+		bgShell, err := bgManager.StartWithSession(context.Background(), shellOwner, execWorkingDir, blockFuncsToUse, params.Command, params.Description, sessionID, maxBackgroundJobs)
 		if err != nil {
 			return fantasy.NewTextErrorResponse("Failed to start background shell: " + err.Error()), nil
 		}
@@ -419,7 +682,7 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	// answered inline, so announcing it as a background completion would
 	// send the model after output it already has.
 	bgManager := shell.GetBackgroundShellManager()
-	bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncsToUse, params.Command, params.Description, maxBackgroundJobs)
+	bgShell, err := bgManager.Start(context.Background(), shellOwner, execWorkingDir, blockFuncsToUse, params.Command, params.Description, maxBackgroundJobs)
 	if err != nil {
 		return fantasy.NewTextErrorResponse("Failed to start shell: " + err.Error()), nil
 	}
@@ -434,12 +697,13 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-bgShell.Done():
 	case <-timer.C:
 	case <-ctx.Done():
-		// Incoming context was cancelled before we moved to background
-		// Kill the shell and return error
-		if err := bgManager.Kill(bgShell.ID); err != nil {
-			slog.Warn("Failed to kill interrupted shell",
-				"shell_id", bgShell.ID, "error", err)
-		}
+		// Incoming context was cancelled before we moved to background.
+		// Kill the shell with the context the cancelledKillContext gives it;
+		// Kill's "may still be exiting" error is expected here and not
+		// worth reporting.
+		killCtx, killCancel := cancelledKillContext(ctx)
+		_ = bgManager.Kill(killCtx, bgShell.ID)
+		killCancel()
 		// The result is still stored, from this metadata and the error,
 		// so the stamp says the command was aborted.
 		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{

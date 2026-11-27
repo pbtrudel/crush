@@ -1,0 +1,19 @@
+/* The handoff ends the log as a card, not a dialog: the magenta edge names
+   the decision a ready plan asks for without covering the transcript. */
+.plan-handoff { padding: 12px var(--space-4); display: grid; gap: var(--space-1); }
+.plan-handoff__title { margin: 0; font: 600 var(--step-1) var(--font-hud); color: var(--text); }
+.plan-handoff__question { margin: 0; color: var(--text-muted); }
+.plan-handoff__choices { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.plan-handoff__choices .btn[aria-disabled='true'] { opacity: 0.6; }
+.plan-handoff__hint { margin: 0; color: var(--text-muted); }
+.plan-handoff__revise { display: grid; gap: 8px; }
+.plan-handoff textarea {
+  inline-size: 100%; min-block-size: 4rem; max-block-size: 12rem; resize: vertical;
+  background: var(--void-deep); color: var(--text); border: 1px solid var(--edge);
+  border-radius: var(--radius); padding: 8px 10px; font: 400 1rem/1.5 var(--font-prose);
+}
+.plan-handoff__actions { display: flex; gap: 8px; justify-content: end; }
+.plan-handoff__failure { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.plan-handoff__error { margin: 0; color: var(--magenta); font-size: var(--step--1); }
+/* A starting agent is a state to wait out, never an error. */
+.plan-handoff__error[data-tone='starting'] { color: var(--amber); }

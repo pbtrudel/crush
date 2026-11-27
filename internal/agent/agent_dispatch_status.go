@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/message"
 )
 
@@ -42,6 +43,7 @@ type dispatchRecord struct {
 	Model     string
 	Provider  string
 	Reasoning string
+	Role      string
 	// Open is true while the latest dispatch or follow-up has no report.
 	Open       bool
 	LastReport *message.SubAgentReport
@@ -109,7 +111,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 			}
 			record := &dispatchRecord{
 				Label:     label,
-				Access:    accessOrRead(params.Access),
+				Access:    recordAccess(params),
 				Task:      params.Prompt,
 				MessageID: msg.ID,
 				CallID:    call.ID,
@@ -117,6 +119,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 				Model:     strings.TrimSpace(params.Model),
 				Provider:  strings.TrimSpace(params.Provider),
 				Reasoning: strings.TrimSpace(params.Reasoning),
+				Role:      strings.TrimSpace(params.Role),
 				Open:      true,
 			}
 			// Filed under the label asked for until the result names it.
@@ -144,6 +147,12 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 					record.Model = meta.Model
 					record.Provider = meta.Provider
 					record.Reasoning = meta.Reasoning
+				}
+				if meta.Role != "" {
+					record.Role = meta.Role
+				}
+				if meta.Access != "" {
+					record.Access = meta.Access
 				}
 				if name := strings.TrimSpace(meta.Label); name != "" && name != record.Label {
 					records.unlink(record)
@@ -179,6 +188,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 					MessageID: bgCallMsg[result.ToolCallID],
 					CallID:    result.ToolCallID,
 					Tool:      result.Name,
+					Role:      strings.TrimSpace(meta.Role),
 					Open:      true,
 				}, label)
 			}
@@ -201,7 +211,7 @@ func dispatchHistory(msgs []message.Message) dispatchRecords {
 // It runs once per session per process, only while the session is idle, so
 // the report lands between turns rather than in the middle of one.
 func (c *coordinator) reconcileDispatches(ctx context.Context, agent SessionAgent, sessionID string) {
-	if _, done := c.reconciled.Load(sessionID); done || agent.IsSessionBusy(sessionID) {
+	if _, done := c.reconciled.Load(sessionID); done || agent.HasActiveTurn(sessionID) {
 		return
 	}
 	msgs, err := c.messages.List(ctx, sessionID)
@@ -246,9 +256,16 @@ func (c *coordinator) agentStatusTool() fantasy.AgentTool {
 			if label := strings.TrimSpace(params.Label); label != "" {
 				record, ok := records.byLabel[label]
 				if !ok {
+					// The name may belong to a Team teammate instead,
+					// which answers from the roster.
+					if member, found := c.teamMemberView(ctx, label); found {
+						if data, marshalErr := json.Marshal(member); marshalErr == nil {
+							return fantasy.NewTextResponse(string(data)), nil
+						}
+					}
 					return fantasy.NewTextErrorResponse(fmt.Sprintf(
-						"no subagent %q; known: %s",
-						label, knownLabels(records),
+						"no subagent or teammate %q; subagents: %s; teammates: %s",
+						label, knownLabels(records), c.teammateNames(ctx),
 					)), nil
 				}
 				text, sum := c.describeDispatch(ctx, parentSessionID, record, true)
@@ -327,7 +344,7 @@ func (c *coordinator) summarizeDispatch(parentSessionID string, record *dispatch
 	sum := AgentStatusSummary{
 		Label:     record.Label,
 		State:     SubagentFinished,
-		Access:    record.Access,
+		Access:    c.recordEffectiveAccess(record),
 		ToolCalls: activity.toolCalls,
 		Cost:      activity.cost,
 	}
@@ -341,6 +358,9 @@ func (c *coordinator) summarizeDispatch(parentSessionID string, record *dispatch
 			sum.State, sum.Detail = SubagentInterrupted, "Crush exited"
 		}
 		return sum
+	}
+	if entry.Access != "" {
+		sum.Access = entry.Access
 	}
 	snap := entry.snapshot()
 	sum.State = snap.State.reported()
@@ -508,4 +528,66 @@ func LatestDispatches(msgs []*message.Message) map[string]DispatchState {
 		states[label] = DispatchState{CallID: record.CallID, Open: record.Open}
 	}
 	return states
+}
+
+// teamMemberView looks a name up in the caller's Team roster, so the dispatch
+// tools can answer for a teammate the same way list_agents does.
+func (c *coordinator) teamMemberView(ctx context.Context, name string) (agentteam.MemberView, bool) {
+	team := c.teamService()
+	if team == nil {
+		return agentteam.MemberView{}, false
+	}
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	if err != nil {
+		return agentteam.MemberView{}, false
+	}
+	for _, member := range members {
+		if member.Target == name {
+			return member, true
+		}
+	}
+	return agentteam.MemberView{}, false
+}
+
+// teammateNames lists the roster names for an error that also lists subagents.
+func (c *coordinator) teammateNames(ctx context.Context) string {
+	team := c.teamService()
+	if team == nil {
+		return "none"
+	}
+	members, err := team.ListMembers(agentteam.MemberFromContext(ctx), tools.GetSessionFromContext(ctx))
+	if err != nil || len(members) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(members))
+	for _, member := range members {
+		names = append(names, member.Target)
+	}
+	return strings.Join(names, ", ")
+}
+
+// recordAccess keeps a role dispatch's access as asked, so a resume lets
+// the role pick its variant again instead of forcing read.
+func recordAccess(params AgentDispatchParams) string {
+	if strings.TrimSpace(params.Role) != "" {
+		return params.Access
+	}
+	return accessOrRead(params.Access)
+}
+
+// recordEffectiveAccess resolves what a record's access means now. A role
+// dispatch runs on the variant its role picks, so a record that still holds
+// the raw request, or no access at all, reports the effective one.
+func (c *coordinator) recordEffectiveAccess(record *dispatchRecord) string {
+	if record.Role == "" {
+		return record.Access
+	}
+	role, refusal := resolveRole(c.cfg.Config(), record.Role)
+	if refusal != "" {
+		return record.Access
+	}
+	if access, refusal := roleAccess(role, record.Access); refusal == "" {
+		return access
+	}
+	return record.Access
 }

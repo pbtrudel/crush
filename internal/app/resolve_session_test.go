@@ -56,6 +56,10 @@ func (m *mockSessionService) List(context.Context) ([]session.Session, error) {
 	return m.sessions, nil
 }
 
+func (m *mockSessionService) ListChildren(context.Context, string) ([]session.Session, error) {
+	return nil, nil
+}
+
 func (m *mockSessionService) Save(_ context.Context, s session.Session) (session.Session, error) {
 	return s, nil
 }
@@ -101,6 +105,18 @@ func (m *mockSessionService) SetMCPServerDisabled(context.Context, string, bool)
 }
 
 func (m *mockSessionService) MCPServersEnabled(context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockSessionService) SkillsDisabled(context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockSessionService) SetSkillDisabled(context.Context, string, bool, bool) error {
+	return nil
+}
+
+func (m *mockSessionService) SkillsEnabled(context.Context) ([]string, error) {
 	return nil, nil
 }
 

@@ -13,15 +13,22 @@ import (
 )
 
 type noticeRun struct {
-	sessionID string
-	done      chan struct{}
+	sessionID  string
+	done       chan struct{}
+	finishOnce sync.Once
 }
 
 func (r *noticeRun) SessionID() string     { return r.sessionID }
 func (r *noticeRun) Done() <-chan struct{} { return r.done }
 func (r *noticeRun) Output() string        { return "" }
 func (r *noticeRun) Err() error            { return nil }
-func (r *noticeRun) Cancel()               {}
+
+// finish settles the run once, whether the test or a Service shutdown ends it.
+func (r *noticeRun) finish() {
+	r.finishOnce.Do(func() { close(r.done) })
+}
+
+func (r *noticeRun) Cancel() { r.finish() }
 
 // noticeRunner stands in for the teammate runner, which runs a turn on the
 // teammate's own model.
@@ -63,13 +70,17 @@ func TestBackgroundNoticeWakesTeammateOnItsOwnRun(t *testing.T) {
 	runner := &noticeRunner{sessionID: sess.ID}
 	service, err := agentteam.New(filepath.Join(t.TempDir(), "team.json"), agentteam.Config{}, runner)
 	require.NoError(t, err)
-	coord.team = service
+	// Shutdown joins the goroutines that settle runs. It is registered after
+	// the TempDir, so it runs before the directory holding the state file is
+	// removed.
+	t.Cleanup(service.Shutdown)
+	coord.setTeam(service)
 
 	_, err = service.SpawnTeammate(t.Context(), "lead", agentteam.SpawnRequest{
 		Name: "reviewer", Description: "d", Prompt: "p", ParentID: lead.ID,
 	})
 	require.NoError(t, err)
-	close(runner.runs[0].done)
+	runner.runs[0].finish()
 	require.Eventually(t, func() bool {
 		members, err := service.ListMembers("lead", lead.ID)
 		return err == nil && len(members) == 2 && members[1].Status == agentteam.StatusInactive
@@ -80,10 +91,10 @@ func TestBackgroundNoticeWakesTeammateOnItsOwnRun(t *testing.T) {
 	prompts := runner.snapshot()
 	require.Len(t, prompts, 2, "the teammate must be woken on its own run")
 	require.Contains(t, prompts[1], "job 1 finished")
-	require.False(t, coord.currentAgent().IsSessionBusy(sess.ID), "the Lead's agent must not run a teammate session")
+	require.False(t, coord.currentAgent().HasActiveTurn(sess.ID), "the Lead's agent must not run a teammate session")
 	require.Never(t, func() bool {
 		msgs, err := coord.messages.List(context.Background(), sess.ID)
 		return err == nil && len(msgs) > 0
 	}, 300*time.Millisecond, 20*time.Millisecond, "the Lead's agent wrote a turn into the teammate session")
-	close(runner.runs[1].done)
+	runner.runs[1].finish()
 }

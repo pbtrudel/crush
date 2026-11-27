@@ -226,6 +226,13 @@ func wcagLuminance(c color.Color) float64 {
 func quickStyle(o quickStyleOpts) Styles {
 	o.deriveDiffColors()
 
+	// destructive_subtle is optional: only Charmtone names a softer hue, and
+	// a theme that leaves it unset should still get a banner body instead of
+	// a nil fill that renders as an empty line.
+	if o.destructiveSubtle == nil {
+		o.destructiveSubtle = o.destructive
+	}
+
 	var (
 		base   = lipgloss.NewStyle().Foreground(o.fgBase)
 		muted  = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
@@ -254,6 +261,11 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Chrome.MeterEmpty = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Chrome.MatrixRain = lipgloss.NewStyle().Foreground(o.bgMostVisible)
 	s.Chrome.MatrixRainHead = lipgloss.NewStyle().Foreground(o.successMostSubtle).Bold(true)
+
+	// The terminal's background is restored before the banner is printed.
+	// Keep text on its default foreground so it stays readable after exit.
+	s.ExitBanner.Text = lipgloss.NewStyle()
+	s.ExitBanner.Label = lipgloss.NewStyle().Bold(true)
 
 	// Populate color fields
 	s.WorkingGradFromColor = o.primary
@@ -1164,6 +1176,12 @@ func quickStyle(o quickStyleOpts) Styles {
 		BorderForeground(o.plan).
 		Padding(1, 2)
 
+	// Channel message metadata styles.
+	s.Messages.ChannelInfoIcon = subtle
+	s.Messages.ChannelInfoSender = muted
+	s.Messages.ChannelInfoProvider = subtle
+	s.Messages.ChannelInfoTimestamp = subtle
+
 	// Thinking section styles
 	s.Messages.ThinkingBox = subtle.Background(o.bgLeastVisible)
 	s.Messages.ThinkingTruncationHint = muted
@@ -1300,6 +1318,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Status.ModeBadgePlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.primary).Padding(0, 1).Bold(true).SetString("PLAN MODE")
 	s.Status.ModeBadgeYolo = lipgloss.NewStyle().Foreground(badgeInk(o.busy, o.bgBase, o.fgBase)).Background(o.busy).Padding(0, 1).Bold(true).SetString("YOLO MODE")
 	s.Status.ModeBadgeSysadmin = lipgloss.NewStyle().Foreground(badgeInk(o.destructive, o.bgBase, o.fgBase)).Background(o.destructive).Padding(0, 1).Bold(true).SetString("SYSADMIN MODE")
+	s.Status.WebBadge = lipgloss.NewStyle().Foreground(badgeInk(o.secondary, o.bgBase, o.fgBase)).Background(o.secondary).Padding(0, 1).Bold(true).SetString("WEB")
 	s.Status.ModeBannerPlanBadge = s.Status.ModeBadgePlan
 	s.Status.ModeBannerPlan = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.planMoreSubtle).Padding(0, 1)
 	s.Status.ModeBannerYoloBadge = s.Status.ModeBadgeYolo

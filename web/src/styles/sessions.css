@@ -1,0 +1,95 @@
+/* The sessions switcher hangs under the HUD as a modal glass sheet, like the
+   palette, and covers the page so a click cannot reach the deck behind it.
+   The HUD title is its opener: the h1 keeps the title text, the button is
+   reset so the strip looks unchanged at rest and only hover or focus adds
+   the cyan edge. */
+.hud__title-btn {
+  display: inline;
+  margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: start; overflow-wrap: inherit; cursor: pointer;
+}
+.hud__title-btn:hover,
+.hud__title-btn:focus-visible {
+  color: var(--cyan);
+  text-shadow: var(--glow-text);
+}
+
+.sessions-layer {
+  position: fixed; inset: 0; z-index: 30;
+  display: grid; justify-items: center; align-items: start;
+  padding-block-start: calc(var(--hud-h, 96px) + var(--space-4));
+  padding-inline: var(--space-4);
+  background: oklch(0.09 0.04 275 / 0.42);
+}
+.sessions {
+  inline-size: min(40rem, calc(100vw - 32px));
+  max-block-size: calc(100dvh - var(--hud-h, 96px) - var(--space-4) * 2);
+  display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px;
+  padding: var(--space-4);
+}
+.sessions__input {
+  inline-size: 100%; min-block-size: 44px; padding: 8px 12px;
+  background: var(--void-deep); color: var(--text);
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  font: 400 1rem var(--font-prose);
+}
+.sessions__list {
+  margin: 0; padding: 0; list-style: none;
+  max-block-size: 50vh; overflow-y: auto;
+  display: grid; gap: 2px;
+}
+.sessions__row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  padding: 6px 10px;
+  border-inline-start: 2px solid transparent; border-radius: var(--radius);
+}
+.sessions__row[data-current='true'] {
+  border-inline-start-color: var(--cyan);
+  background: var(--cyan-dim);
+}
+.sessions__title {
+  flex: 1 1 12rem; min-inline-size: 0;
+  padding: 6px 0; border: 0; background: none;
+  color: var(--text); font: inherit; text-align: start;
+  overflow-wrap: anywhere;
+}
+.sessions__title:hover { color: var(--cyan); }
+.sessions__tag { color: var(--cyan); }
+.sessions__action {
+  padding: 4px 10px; min-block-size: 32px;
+  background: none; color: var(--text-muted);
+  border: 1px solid var(--edge); border-radius: 999px;
+  font: 500 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.sessions__action:hover { color: var(--cyan); border-color: var(--cyan); }
+.sessions__action:disabled { opacity: 0.45; cursor: not-allowed; }
+.sessions__action:disabled:hover { color: var(--text-muted); border-color: var(--edge); }
+.sessions__action--danger { color: var(--magenta); border-color: var(--magenta-dim); }
+.sessions__action--danger:hover { color: var(--magenta); border-color: var(--magenta); }
+.sessions__reason {
+  flex-basis: 100%;
+  color: var(--text-muted); font-size: var(--step--1);
+}
+.sessions__confirm {
+  flex-basis: 100%;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px; margin-block-start: 4px;
+  border: 1px solid var(--magenta); border-radius: var(--radius);
+}
+.sessions__confirm-text { color: var(--text); }
+.sessions__rename {
+  flex: 1 1 12rem; min-block-size: 36px; padding: 4px 10px;
+  background: var(--void-deep); color: var(--text);
+  border: 1px solid var(--cyan); border-radius: var(--radius);
+  font: inherit;
+}
+.sessions__empty { padding: 12px 10px; color: var(--text-muted); }
+.sessions__status {
+  display: flex; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--edge); border-radius: var(--radius);
+  font-size: var(--step--1);
+}
+.sessions__status[data-tone='starting'] { color: var(--amber); border-color: var(--amber); }
+.sessions__status[data-tone='error'] { color: var(--magenta); border-color: var(--magenta); }

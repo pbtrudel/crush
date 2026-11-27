@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"charm.land/fantasy"
 
@@ -25,23 +26,24 @@ const (
 )
 
 // toolResultsForCalls builds the tool message that must immediately follow
-// an assistant message with tool calls. Results are taken from
-// toolResultsByCall and consumed, so a result stored alongside results for
+// an assistant message with tool calls. toolResultsByCall holds one result
+// per call and is consumed, so a result stored alongside results for
 // other assistants is emitted once, next to the call that asked for it. A
 // call with no stored result gets a synthetic one; settling should have made
 // that impossible, so it is logged as a warning.
-func toolResultsForCalls(m message.Message, toolResultsByCall map[string][]fantasy.MessagePart) fantasy.Message {
+func toolResultsForCalls(m message.Message, toolResultsByCall map[string]fantasy.ToolResultPart) fantasy.Message {
 	content := make([]fantasy.MessagePart, 0, len(m.ToolCalls()))
 	for _, tc := range m.ToolCalls() {
-		parts := toolResultsByCall[tc.ID]
-		delete(toolResultsByCall, tc.ID)
-		if n := len(parts); n > 1 {
-			// One call gets one answer. A repair can leave a synthetic
-			// result behind a real one; the newest is the real one.
-			parts = parts[n-1:]
+		if tc.ProviderExecuted {
+			// The provider ran the call itself and answers it in the
+			// response, so a tool_result here would be a second reply to a
+			// call it already paired.
+			continue
 		}
-		if len(parts) > 0 {
-			content = append(content, parts...)
+		result, ok := toolResultsByCall[tc.ID]
+		delete(toolResultsByCall, tc.ID)
+		if ok {
+			content = append(content, result)
 			continue
 		}
 		slog.Warn(
@@ -68,6 +70,8 @@ func turnEndReason(assistant *message.Message, runErr error) string {
 	switch {
 	case errors.Is(runErr, context.Canceled):
 		return canceledToolCallResult
+	case errors.Is(runErr, errRefused):
+		return refusedToolCallResult
 	case runErr != nil:
 		return failedToolCallResult
 	}
@@ -91,6 +95,11 @@ func turnEndReason(assistant *message.Message, runErr error) string {
 func (a *sessionAgent) settleTurn(ctx context.Context, assistant *message.Message, answered func(toolCallID string) bool, runErr error) error {
 	var open []message.ToolCall
 	for _, tc := range assistant.ToolCalls() {
+		if tc.ProviderExecuted {
+			// Nothing to settle: the provider executed the call inside the
+			// response and a synthetic reply would break the replay.
+			continue
+		}
 		if !answered(tc.ID) {
 			open = append(open, tc)
 		}
@@ -126,11 +135,12 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 		created, err := messages.Create(ctx, assistant.SessionID, message.CreateMessageParams{
 			Role: message.Tool,
 			Parts: []message.ContentPart{message.ToolResult{
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-				Content:    reason,
-				Metadata:   tools.SetErrorKind("", tools.ErrorKindInterrupted),
-				IsError:    true,
+				ToolCallID:   tc.ID,
+				Name:         tc.Name,
+				Content:      reason,
+				Metadata:     tools.SetErrorKind("", tools.ErrorKindInterrupted),
+				IsError:      true,
+				FinishedAtMs: time.Now().UnixMilli(),
 			}},
 		})
 		if err != nil {
@@ -142,8 +152,8 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 }
 
 // repairInterruptedToolCalls settles calls a dead process left without a
-// reply and returns msgs with the repair applied. The caller must hold the
-// session so that no run can still answer them.
+// reply and returns msgs with the repair applied. The caller must have
+// checked that nothing is running the session.
 func repairInterruptedToolCalls(ctx context.Context, messages message.Service, msgs []message.Message) ([]message.Message, error) {
 	resolved := make(map[string]struct{})
 	for _, msg := range msgs {
@@ -160,6 +170,9 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 		}
 		var orphans []message.ToolCall
 		for _, tc := range msg.ToolCalls() {
+			if tc.ProviderExecuted {
+				continue
+			}
 			if _, ok := resolved[tc.ID]; !ok {
 				orphans = append(orphans, tc)
 			}
@@ -182,29 +195,27 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 }
 
 // ListSettledMessages returns a session's transcript with calls a dead
-// process left dangling already settled. It holds the session's dispatch
-// lock throughout, so a run cannot start between the busy check and the
-// repair. A dispatched subagent runs on an agent instance of its own, so
-// live, when given, is what tells this instance the session is not dead.
-func (a *sessionAgent) ListSettledMessages(ctx context.Context, sessionID string, live func(sessionID string) bool) ([]message.Message, error) {
-	mu := a.sessionMu(sessionID)
-	mu.Lock()
-	defer mu.Unlock()
+// process left dangling already settled. Readers are serialized so two
+// cannot settle the same call twice. Busy is sampled on both sides of the
+// read, since a run that ends mid-read left a snapshot missing its results.
+func (c *coordinator) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
+	c.settleMu.Lock()
+	defer c.settleMu.Unlock()
 
-	if err := a.messages.FlushAll(ctx); err != nil {
+	if err := c.messages.FlushAll(ctx); err != nil {
 		return nil, err
 	}
-	msgs, err := a.messages.List(ctx, sessionID)
-	busy := a.IsSessionBusy(sessionID) || (live != nil && live(sessionID))
-	if err != nil || busy {
+	busy := c.IsSessionBusy(sessionID)
+	msgs, err := c.messages.List(ctx, sessionID)
+	if err != nil || busy || c.IsSessionBusy(sessionID) {
 		return msgs, err
 	}
-	settled, err := repairInterruptedToolCalls(ctx, a.messages, msgs)
+	settled, err := repairInterruptedToolCalls(ctx, c.messages, msgs)
 	if err != nil {
 		// The repair may have stopped halfway, so reread what was stored.
 		slog.Warn("Failed to settle interrupted tool calls",
 			"session_id", sessionID, "error", err)
-		return a.messages.List(ctx, sessionID)
+		return c.messages.List(ctx, sessionID)
 	}
 	return settled, nil
 }

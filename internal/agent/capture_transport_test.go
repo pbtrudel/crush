@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/catwalk/v3/pkg/catwalk"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
@@ -448,6 +450,44 @@ func TestCaptureStacksUnderMistralVibeTransport(t *testing.T) {
 
 	require.Contains(t, base.body, "vibe_code")
 	require.Equal(t, base.body, readCapture(t, dir).RequestBody)
+}
+
+// TestCaptureStacksUnderAnthropicTransports pins that the recorder sits under
+// the transports the Anthropic provider installs above it: the cache ttl and
+// tool search both rewrite the request, and the capture must show the bytes
+// the API receives after both rewrites rather than the body fantasy sent.
+func TestCaptureStacksUnderAnthropicTransports(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(captureDirEnv, dir)
+
+	coord := newTestCoordinator(t, testEnv(t), "anthropic", config.ProviderConfig{ID: "anthropic"})
+	coord.cfg.Config().Options.PromptCacheTTL = config.PromptCacheTTLExtended
+
+	client := coord.anthropicHTTPClient(string(catwalk.InferenceProviderAnthropic), "")
+	require.NotNil(t, client)
+	require.IsType(t, &promptCacheTTLTransport{}, client.Transport, "the ttl transport must sit above the recorder")
+
+	// Nest the outer transports the way buildAnthropicProvider does. The
+	// recorder is already at the bottom of the ttl client, over the network.
+	srv, received := promptCacheRecorder(t, http.StatusOK, `{"ok":true}`)
+	client = &http.Client{Transport: newAnthropicToolSearchTransport(client.Transport)}
+	client = withThinkingSignatureRetry(client)
+
+	req, err := http.NewRequestWithContext(withAnthropicToolSearch(t.Context()), http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(toolSearchTestBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	bodies, _ := received()
+	require.Len(t, bodies, 1)
+	require.Contains(t, bodies[0], `"defer_loading":true`, "tool search must rewrite the tools block")
+	require.Contains(t, bodies[0], `"ttl":"1h"`, "the ttl transport must label the breakpoint tool search moved")
+	require.Equal(t, bodies[0], readCapture(t, dir).RequestBody, "the capture must show the request the provider receives")
 }
 
 // hookedBody calls onRead once, on the first read.

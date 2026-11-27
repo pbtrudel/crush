@@ -67,8 +67,8 @@ func (w *Workspace) reloadConfig(ctx context.Context) error {
 	if err := w.Cfg.ReloadFromDisk(ctx); err != nil {
 		return err
 	}
-	if w.App != nil && w.AgentCoordinator != nil {
-		if err := w.UpdateAgentModel(ctx); err != nil {
+	if coord := w.Coordinator(); coord != nil {
+		if err := coord.UpdateModels(ctx); err != nil {
 			return err
 		}
 	}
@@ -251,7 +251,22 @@ func (b *Backend) ListSkills(workspaceID string) ([]proto.SkillInfo, error) {
 		return nil, err
 	}
 	mgr := ws.Skills
-	entries := skills.Catalog(mgr.ActiveSkills(), mgr.ResolvedPaths(), mgr.WorkingDir())
+	return skillInfos(skills.Catalog(mgr.ActiveSkills(), mgr.ResolvedPaths(), mgr.WorkingDir())), nil
+}
+
+// ListAllSkills returns every discovered skill, including the ones the
+// config or this repository disabled.
+func (b *Backend) ListAllSkills(workspaceID string) ([]proto.SkillInfo, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	mgr := ws.Skills
+	return skillInfos(skills.Catalog(mgr.AllSkills(), mgr.ResolvedPaths(), mgr.WorkingDir())), nil
+}
+
+// skillInfos projects a skill catalog for the wire.
+func skillInfos(entries []skills.CatalogEntry) []proto.SkillInfo {
 	result := make([]proto.SkillInfo, len(entries))
 	for i, entry := range entries {
 		result[i] = proto.SkillInfo{
@@ -263,7 +278,7 @@ func (b *Backend) ListSkills(workspaceID string) ([]proto.SkillInfo, error) {
 			UserInvocable: entry.UserInvocable,
 		}
 	}
-	return result, nil
+	return result
 }
 
 // ReloadSkills re-discovers skills for a workspace and refreshes the

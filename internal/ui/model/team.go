@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agentrun"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 )
 
@@ -95,7 +96,7 @@ func teamSignature(state agentteam.State) string {
 	var sb strings.Builder
 	sb.WriteString(state.TeamID)
 	for _, member := range state.Members {
-		fmt.Fprintf(&sb, "|m:%s:%s:%s", member.Name, member.Status, strings.Join(member.Diagnostics, ","))
+		fmt.Fprintf(&sb, "|m:%s:%s:%s:%s", member.Name, member.RoleName, member.Status, strings.Join(member.Diagnostics, ","))
 	}
 	for _, task := range state.Tasks {
 		fmt.Fprintf(&sb, "|t:%s:%d:%s:%s:%s", task.ID, task.Revision, task.Status, task.OwnerID, task.Subject)
@@ -141,7 +142,7 @@ func (m *UI) teamInfo(width int) string {
 	}
 	lines := []string{teamMemberLine(t, "lead", agentteam.StatusRunning, busy["lead"], width)}
 	for _, member := range members {
-		lines = append(lines, teamMemberLine(t, member.Name, member.Status, busy[member.Name], width))
+		lines = append(lines, teamMemberLine(t, teamMemberLabel(member), member.Status, busy[member.Name], width))
 	}
 	for _, task := range active {
 		lines = append(lines, teamTaskLine(t, task, width))
@@ -234,25 +235,53 @@ func sessionTree(sessionID string, links [][2]string) map[string]bool {
 	}
 }
 
+// sidebarAgentHit ties a line of the Agents section (relative to the section
+// start) to the agent whose row is drawn there.
+type sidebarAgentHit struct {
+	line       int
+	descriptor dialog.AgentDescriptor
+}
+
 // agentsInfo renders the live agent section for the current session. It
-// stays empty when this session has no running agent.
-func (m *UI) agentsInfo(width int) string {
+// stays empty when this session has no running agent. The returned hits map
+// each run's row to its content line so a click can open that agent.
+func (m *UI) agentsInfo(width int) (string, []sidebarAgentHit) {
 	if m.com == nil {
-		return ""
+		return "", nil
 	}
 	sessionID := m.currentSessionID()
 	runs := sessionAgentRuns(m.agentRuns, sessionID)
 	if len(runs) == 0 {
-		return ""
+		return "", nil
 	}
 	t := m.com.Styles
 	title := common.Section(t, t.Resource.Heading.Render("▮ Agents"), width)
 	lines := make([]string, 0, len(runs))
+	hits := make([]sidebarAgentHit, 0, len(runs))
+	// The section is the title, a blank line, then one row per run. Track
+	// the running line so a row maps to its content line even if it wraps.
+	rowLine := lipgloss.Height(title) + 1
 	for _, run := range runs {
-		lines = append(lines, agentRunLine(t, run, width))
+		line := agentRunLine(t, run, width)
+		lines = append(lines, line)
+		if run.SessionID != "" {
+			hits = append(hits, sidebarAgentHit{
+				line: rowLine,
+				descriptor: dialog.AgentDescriptor{
+					SessionID:       run.SessionID,
+					ParentSessionID: run.ParentSessionID,
+					Name:            run.Name,
+					Kind:            run.Kind,
+					Status:          run.Status,
+					StartedAt:       run.StartedAt,
+					FinishedAt:      run.FinishedAt,
+				},
+			})
+		}
+		rowLine += lipgloss.Height(line)
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body))
+	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, body)), hits
 }
 
 func agentRunLine(t *styles.Styles, run agentrun.Run, width int) string {
@@ -294,17 +323,27 @@ func teamTaskBuckets(state agentteam.State, sessions map[string]bool) (active []
 	return active, completed
 }
 
-// teamTaskRank orders live tasks: work in flight first, then ready work,
-// then everything still blocked.
+// teamTaskRank orders live tasks: work in flight first, then work waiting
+// for its verifier, then ready work, then everything still blocked.
 func teamTaskRank(task agentteam.TaskView) int {
 	switch {
 	case task.Status == agentteam.TaskInProgress:
 		return 0
-	case task.Ready:
+	case task.Status == agentteam.TaskInReview:
 		return 1
-	default:
+	case task.Ready:
 		return 2
+	default:
+		return 3
 	}
+}
+
+// teamMemberLabel names a member with its role, as in "rev (reviewer)".
+func teamMemberLabel(member agentteam.Member) string {
+	if member.RoleName == "" {
+		return member.Name
+	}
+	return member.Name + " (" + member.RoleName + ")"
 }
 
 func teamMemberLine(t *styles.Styles, name string, status agentteam.Status, hasActiveTask bool, width int) string {
@@ -319,6 +358,9 @@ func teamTaskLine(t *styles.Styles, task agentteam.TaskView, width int) string {
 	line := fmt.Sprintf("  %s %s %s", teamTaskGlyph(task), task.ID, task.Subject)
 	if task.OwnerName != "" {
 		line += " · " + task.OwnerName
+	}
+	if task.Escalated {
+		line += " · escalated"
 	}
 	return t.Resource.AdditionalText.Render(ansi.Truncate(line, width, "…"))
 }
@@ -343,6 +385,8 @@ func teamTaskGlyph(task agentteam.TaskView) string {
 		return "✓"
 	case task.Status == agentteam.TaskInProgress:
 		return "◐"
+	case task.Status == agentteam.TaskInReview:
+		return "◇"
 	case task.Ready:
 		return "○"
 	default:

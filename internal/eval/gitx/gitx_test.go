@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/eval/evaltest"
 	"github.com/charmbracelet/crush/internal/eval/gitx"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +41,7 @@ func TestCommandsIgnoreRepositoryHooks(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker")
 	script := filepath.Join(dir, "fsmonitor.sh")
-	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nenv >> "+marker+"\n"), 0o700))
+	evaltest.WriteExecutable(t, script, []byte("#!/bin/sh\nenv >> "+marker+"\n"))
 
 	repo := filepath.Join(dir, "repo")
 	plain(t, dir, "git", "init", "-q", "-b", "main", repo)

@@ -16,13 +16,47 @@ const (
 )
 
 type File struct {
-	ID        string
-	SessionID string
-	Path      string
-	Content   string
-	Version   int64
-	CreatedAt int64
-	UpdatedAt int64
+	ID         string
+	SessionID  string
+	Path       string
+	Content    string
+	Version    int64
+	CreatedAt  int64
+	UpdatedAt  int64
+	ToolCallID string
+}
+
+// FileMeta is one file version without its content. Size is the number
+// of bytes in the version's content.
+type FileMeta struct {
+	ID         string
+	SessionID  string
+	Path       string
+	Version    int64
+	CreatedAt  int64
+	UpdatedAt  int64
+	Size       int64
+	ToolCallID string
+}
+
+// toolCallIDKey is the context key that carries the tool call writing a
+// version. It is unexported so only WithToolCallID can set it.
+type toolCallIDKey struct{}
+
+// WithToolCallID returns a context that records id as the tool call
+// behind a version written with it. An empty id leaves ctx unchanged.
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// toolCallIDFromContext returns the tool call tagged by WithToolCallID,
+// or "" when no call was recorded.
+func toolCallIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return id
 }
 
 // Service manages file versions and history for sessions.
@@ -36,6 +70,11 @@ type Service interface {
 	Get(ctx context.Context, id string) (File, error)
 	GetByPathAndSession(ctx context.Context, path, sessionID string) (File, error)
 	ListBySession(ctx context.Context, sessionID string) ([]File, error)
+
+	// ListMetaBySession lists every version of every file in the
+	// session without loading its content, with the byte size of each
+	// version.
+	ListMetaBySession(ctx context.Context, sessionID string) ([]FileMeta, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
@@ -100,11 +139,12 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 
 		// Try to create the file within the transaction
 		dbFile, txErr := qtx.CreateFile(ctx, db.CreateFileParams{
-			ID:        uuid.New().String(),
-			SessionID: sessionID,
-			Path:      path,
-			Content:   content,
-			Version:   version,
+			ID:         uuid.New().String(),
+			SessionID:  sessionID,
+			Path:       path,
+			Content:    content,
+			Version:    version,
+			ToolCallID: toolCallIDFromContext(ctx),
 		})
 		if txErr != nil {
 			// Rollback the transaction
@@ -165,6 +205,27 @@ func (s *service) ListBySession(ctx context.Context, sessionID string) ([]File, 
 	return files, nil
 }
 
+func (s *service) ListMetaBySession(ctx context.Context, sessionID string) ([]FileMeta, error) {
+	rows, err := s.q.ListFileVersionsBySession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	metas := make([]FileMeta, len(rows))
+	for i, row := range rows {
+		metas[i] = FileMeta{
+			ID:         row.ID,
+			SessionID:  row.SessionID,
+			Path:       row.Path,
+			Version:    row.Version,
+			CreatedAt:  row.CreatedAt,
+			UpdatedAt:  row.UpdatedAt,
+			Size:       row.Size,
+			ToolCallID: row.ToolCallID,
+		}
+	}
+	return metas, nil
+}
+
 func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error) {
 	dbFiles, err := s.q.ListLatestSessionFiles(ctx, sessionID)
 	if err != nil {
@@ -206,12 +267,13 @@ func (s *service) DeleteSessionFiles(ctx context.Context, sessionID string) erro
 
 func (s *service) fromDBItem(item db.File) File {
 	return File{
-		ID:        item.ID,
-		SessionID: item.SessionID,
-		Path:      item.Path,
-		Content:   item.Content,
-		Version:   item.Version,
-		CreatedAt: item.CreatedAt,
-		UpdatedAt: item.UpdatedAt,
+		ID:         item.ID,
+		SessionID:  item.SessionID,
+		Path:       item.Path,
+		Content:    item.Content,
+		Version:    item.Version,
+		CreatedAt:  item.CreatedAt,
+		UpdatedAt:  item.UpdatedAt,
+		ToolCallID: item.ToolCallID,
 	}
 }

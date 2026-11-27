@@ -205,6 +205,13 @@ type (
 	mcpStateChangedMsg struct {
 		states map[string]mcp.ClientInfo
 	}
+	// skillsOverridesLoadedMsg carries the repository-scoped skill toggle
+	// sets after a workspace fetch so the sidebar and the toggles dialog
+	// can filter without blocking on workspace calls during render.
+	skillsOverridesLoadedMsg struct {
+		disabled map[string]bool
+		enabled  map[string]bool
+	}
 	// sendMessageMsg is sent to send a message.
 	// currently only used for mcp prompts.
 	sendMessageMsg struct {
@@ -291,6 +298,7 @@ type UI struct {
 	liveTPSTokens      int64
 	sessionTPSOutput   int64
 	sessionTPSDuration time.Duration
+	sessionTPSModel    tpsModel
 
 	// The width and height of the terminal in cells.
 	width  int
@@ -344,6 +352,10 @@ type UI struct {
 	focus uiFocusState
 	state uiState
 	mode  uiInputMode
+	// webModeSeq orders the mode reports the gateway receives. It only
+	// changes on the update goroutine; commands may still run out of
+	// order.
+	webModeSeq uint64
 
 	// Frame memoization (see framecache.go). scrollOnlyUpdate is set by
 	// handlers that change nothing but the chat scroll position; frameDirty
@@ -510,6 +522,12 @@ type UI struct {
 	// skillsVer bumps when skillStates is replaced, so the sidebar memo
 	// (render_memo.go) rebuilds.
 	skillsVer uint64
+	// skillsDisabledOverrides mirrors the repository-scoped disabled set
+	// so the sidebar can filter without blocking on workspace calls.
+	skillsDisabledOverrides map[string]bool
+	// skillsEnabledOverrides mirrors the repository-scoped enabled set
+	// (config-disabled skills re-enabled for this repository).
+	skillsEnabledOverrides map[string]bool
 
 	// sidebarLogo keeps a cached version of the sidebar sidebarLogo.
 	sidebarLogo string
@@ -522,6 +540,10 @@ type UI struct {
 	sidebarMaxOffsetVal     int    // max scroll offset, computed in updateSidebarScrollState
 	sidebarContent          string // cached rendered sidebar content
 	sidebarTotalLines       int    // total lines in sidebarContent
+	// sidebarAgentHits maps a content line index to the agent whose row is
+	// drawn there, so a click opens that agent's session. Rebuilt with the
+	// memoized sidebar content.
+	sidebarAgentHits map[int]dialog.AgentDescriptor
 
 	// sidebarKey/pillsKey memoize the per-frame sidebar and pills
 	// rebuilds; sidebarBuilds/pillsBuilds count rebuilds so tests can
@@ -557,12 +579,10 @@ type UI struct {
 	pillsExpanded      bool
 	pillsAutoExpanded  bool
 	focusedPillSection pillSection
-	// promptQueue / promptQueueItems mirror the session's queued prompts.
-	// They are event-driven with a TTL backstop, fetched off-thread by
-	// dispatchPromptQueueRefresh (see workspace_cache.go); promptQueue is
-	// always len(promptQueueItems).
-	promptQueue          int
-	promptQueueItems     []string
+	// promptQueue is what the queue pill shows. Its server side is
+	// event-driven with a TTL backstop, fetched off-thread by
+	// dispatchPromptQueueRefresh (see workspace_cache.go).
+	promptQueue          promptQueue
 	promptQueueCheckedAt time.Time
 	promptQueueInFlight  bool
 	// promptQueueGen is bumped by every queue state transition; an
@@ -574,6 +594,14 @@ type UI struct {
 	// coordinator can swap tools and prompts again, and stays set until a
 	// reload lands.
 	pendingConfigReload bool
+	// pendingModelSelect holds the model selection made while the agent was
+	// busy. The next idle probe replays it, so the turn after the current
+	// one runs on the chosen model.
+	pendingModelSelect *dialog.ActionSelectModel
+	// pendingReasoningEffort holds the reasoning effort selected while the
+	// agent was busy. The next idle probe replays it after any queued model
+	// switch, so the effort applies to the model that will run.
+	pendingReasoningEffort *dialog.ActionSelectReasoningEffort
 
 	// agentBusyCache / permModeCache memoize the workspace busy and
 	// permission-mode probes (synchronous HTTP round-trips in client/server
@@ -638,6 +666,9 @@ type UI struct {
 	// rather than once per frame.
 	subAgentsRunning int
 
+	// animClock drives every spinner, in the transcript and the chrome.
+	animClock animClock
+
 	// hyperCredits is the remaining Hyper credits as last fetched from
 	// the /v1/credits endpoint. It is nil when no fetch has reported a
 	// balance yet, or when the team has hypercredit display disabled, and
@@ -654,6 +685,9 @@ type UI struct {
 	// locally and a request in client/server mode, so renders take it from
 	// here rather than asking the workspace per frame.
 	gitBranch string
+
+	// nerdFonts reports whether the terminal renders Nerd Font glyphs.
+	nerdFonts bool
 
 	// Prompt history for up/down navigation through previous messages.
 	promptHistory struct {
@@ -859,6 +893,7 @@ func (m *UI) Init() tea.Cmd {
 	// The branch is shown from the first frame on, so read it now and keep
 	// polling for checkouts made outside Crush.
 	cmds = append(cmds, m.fetchGitBranch(), m.gitBranchTicker())
+	cmds = append(cmds, detectNerdFonts(m.com.Config().Options.TUI))
 	cmds = append(cmds, m.hyperCreditsTicker())
 	// Prime the memoized MCP state off-thread. There is deliberately no
 	// wait for server-side MCP initialization: the init gate is
@@ -1184,6 +1219,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case agentRunSubmittedMsg:
+		// The fetch below shows the prompt if it was queued.
+		m.promptQueue.Settle(msg.pendingID)
 		if msg.err != nil {
 			// The run never started, so no terminal event is coming to
 			// retire its spinner.
@@ -1207,6 +1244,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.dialog.OpenDialog(dialog.NewSideAnswer(m.com, msg.question, msg.answer))
+	case WebStartedMsg:
+		cmds = append(cmds, m.webStarted(msg))
+	case WebSessionCreatedMsg:
+		cmds = append(cmds, m.selectSession(msg.ID)...)
+	case WebInputModeMsg:
+		cmds = append(cmds, m.webInputMode(msg))
+	case WebPlanHandoffMsg:
+		cmds = append(cmds, m.webPlanHandoff(msg))
+	case WebStoppedMsg:
+		cmds = append(cmds, util.ReportInfo("Web mode stopped from the browser. Run /web to start it again."))
 	case remoteControlStartedMsg:
 		m.rcStarting = false
 		if msg.err != nil {
@@ -1223,10 +1270,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discord.ModeChangedMsg:
 		// Remote control already switched the agent; mirror the local mode
 		// so the badge and editor prompt track it.
+		changed := (m.mode == uiInputModePlan) != msg.Plan
 		if msg.Plan {
 			m.mode = uiInputModePlan
 		} else {
 			m.mode = uiInputModeCode
+		}
+		if changed {
+			if cmd := m.reportWebInputMode(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		m.setEditorPrompt(m.permModeCached())
 		m.invalidateBusyCaches()
@@ -1334,8 +1387,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// session instead of a stale one.
 		m.invalidateBusyCaches()
 		m.invalidatePromptQueue()
-		m.promptQueue = 0
-		m.promptQueueItems = nil
+		m.promptQueue.Reset()
 		m.promptQueueCheckedAt = time.Time{}
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1409,6 +1461,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if channels, ok := m.dialog.Dialog(dialog.ChannelsID).(*dialog.Channels); ok {
+			channels.SetStates(msg.states)
+		}
 		cmds = append(cmds, m.applyMCPStates(msg)...)
 	case mcpStartingRetryMsg:
 		// A server was still connecting when the last fetch landed; re-probe
@@ -1416,6 +1471,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// events (which can be missed in client/server mode).
 		if cmd := m.requestMCPRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+	case skillsOverridesLoadedMsg:
+		m.skillsDisabledOverrides = msg.disabled
+		m.skillsEnabledOverrides = msg.enabled
+		if dia := m.dialog.Dialog(dialog.SkillsTogglesID); dia != nil {
+			if toggles, ok := dia.(*dialog.SkillToggles); ok {
+				toggles.SetItems(m.skillsTogglesList())
+			}
 		}
 	case mcpPromptsLoadedMsg:
 		m.mcpPrompts = msg.Prompts
@@ -1577,7 +1640,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pubsub.Event[pinentry.Notification]:
 		m.handlePinentryNotification(msg.Payload)
 	case pubsub.Event[question.Request]:
-		m.openBatchFormDialog(msg.Payload)
+		// CRUSH_QUESTIONS_PIPED=1: another client (an editor Crush runs in)
+		// shows the questions and answers them, so this UI doesn't ask twice.
+		// Skip the scroll and notification too: the server re-sends a pending
+		// batch whenever a client reports its session, so both would repeat.
+		if piped, _ := strconv.ParseBool(os.Getenv("CRUSH_QUESTIONS_PIPED")); piped {
+			break
+		}
+		if !m.openBatchFormDialog(msg.Payload) {
+			break // a replay of the batch the form already shows
+		}
 		m.chat.ScrollToBottom()
 		if cmd := m.sendNotification(notification.Notification{
 			Title:   "Crush is waiting...",
@@ -1703,6 +1775,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, cmd)
 					}
 				}
+			} else if cmd := m.handleSidebarAgentClick(msg); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 
@@ -1902,9 +1976,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case frameGCMsg:
 		m.handleFrameGC()
 	case animTickMsg:
-		if cmd := m.handleAnimTick(msg); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+		m.handleAnimTick(msg)
 	case scrollbarHideMsg:
 		if m.state == uiChat {
 			m.activeChat().HideScrollbar(msg.seq)
@@ -1968,7 +2040,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if item := m.chat.MessageItem(msg.PendingID); item != nil {
 			if shellItem, ok := item.(*chat.ShellItem); ok {
 				shellItem.AppendOutput(msg.Chunk)
-				m.chat.ScrollToBottom()
+				if m.chat.Follow() {
+					m.chat.ScrollToBottom()
+				}
 			}
 		}
 		// Continue draining the stream channel.
@@ -1995,7 +2069,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if item := m.chat.MessageItem(msg.PendingID); item != nil {
 				if shellItem, ok := item.(*chat.ShellItem); ok {
 					shellItem.Complete(msg.Output, msg.ExitCode)
-					m.chat.ScrollToBottom()
+					if m.chat.Follow() {
+						m.chat.ScrollToBottom()
+					}
 					completed = true
 				}
 			}
@@ -2003,7 +2079,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !completed {
 			item := chat.NewShellItem(m.com.Styles, msg.Command, msg.Output, msg.ExitCode)
 			m.chat.AppendMessages(item)
-			m.chat.ScrollToBottom()
+			if m.chat.Follow() {
+				m.chat.ScrollToBottom()
+			}
 		}
 		cmds = append(cmds, m.loadPromptHistory())
 	case hyperRefreshDoneMsg:
@@ -2027,6 +2105,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.hyperCreditsTicker())
 	case gitBranchUpdatedMsg:
 		m.gitBranch = msg.branch
+	case nerdFontsMsg:
+		m.nerdFonts = bool(msg)
 	case gitBranchPollMsg:
 		cmds = append(cmds, m.fetchGitBranch(), m.gitBranchTicker())
 	case util.InfoMsg:
@@ -2074,7 +2154,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, util.ReportInfo("Transparent background "+status))
 	case util.ClearStatusMsg:
-		m.status.ClearInfoMsg(msg.Seq)
+		cmds = append(cmds, m.status.ClearInfoMsg(msg.Seq))
 	case completions.CompletionItemsLoadedMsg:
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
@@ -2174,12 +2254,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// scroll, session load); make sure the clock is running. This is the
 	// sole place the clock is armed so a tick never sits inside a caller's
 	// tea.Sequence.
-	// The header spins while subagents work, and they work out of sight:
-	// that is the whole reason the header says anything about them. So the
-	// clock cannot be left to the transcript alone, which only arms it for
-	// an item currently on screen. Without this the spinner sat still and
-	// then jumped several frames whenever an unrelated message happened to
-	// force a repaint.
 	m.subAgentsRunning = m.runningSubAgents()
 	if m.state == uiChat || m.agentViewer != nil {
 		activeChat := m.activeChat()
@@ -2189,7 +2263,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.chat.SetExternalAnimation(m.subAgentsRunning > 0)
 		}
-		if cmd := activeChat.EnsureAnimating(); cmd != nil {
+		if cmd := m.ensureAnimating(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		// Same for the chat scrollbar's auto-hide: a scroll may be applied
@@ -2210,39 +2284,66 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// ensureAnimating arms the shared clock while a visible transcript item is
+// spinning or a subagent is running, whose spinners live in the chrome. Only
+// the chat on screen is consulted: the hidden one must not keep the clock
+// alive behind the agent viewer.
+func (m *UI) ensureAnimating() tea.Cmd {
+	var cmd tea.Cmd
+	if m.agentViewer != nil {
+		// The ghost-spinner freeze describes the main transcript, which the
+		// viewer covers; the viewer gates its own animations.
+		frozen := m.animClock.frozen
+		m.animClock.frozen = false
+		cmd = m.animClock.ensure(m.agentViewer.chat.wantsAnimation)
+		m.animClock.frozen = frozen
+	} else {
+		cmd = m.animClock.ensure(func() bool {
+			return m.subAgentsRunning > 0 || m.chat.wantsAnimation()
+		})
+	}
+	m.syncChatClocks()
+	return cmd
+}
+
+// syncChatClocks mirrors the shared clock onto both transcripts' animation
+// state. Both carry the same generation so one incoming tick retires the
+// hidden clock, and only the chat on screen reports itself as running.
+func (m *UI) syncChatClocks() {
+	m.chat.animGen = m.animClock.gen
+	m.chat.animRunning = false
+	if m.agentViewer != nil {
+		m.agentViewer.chat.animGen = m.animClock.gen
+		m.agentViewer.chat.animRunning = m.animClock.running
+		return
+	}
+	m.chat.animRunning = m.animClock.running
+}
+
 // handleAnimTick advances every visible spinner by one frame. A tick that
 // changed nothing visible is scroll-only so the frame cache survives; one
 // that did keeps the view pinned to the bottom while following, since
-// animated items can change height.
-func (m *UI) handleAnimTick(msg animTickMsg) tea.Cmd {
-	if m.agentViewer != nil {
-		m.chat.stopAnimating(msg)
-		changed, cmd := m.agentViewer.chat.Tick(msg)
-		if !changed {
-			m.markScrollOnly()
-		}
-		if m.agentViewer.chat.Follow() {
-			m.agentViewer.chat.ScrollToBottom()
-		}
-		return cmd
-	}
-	if m.state != uiChat {
-		m.chat.stopAnimating(msg)
+// animated items can change height. The Update tail re-arms the clock.
+func (m *UI) handleAnimTick(msg animTickMsg) {
+	if !m.animClock.accept(msg) {
 		m.markScrollOnly()
-		return nil
+		return
 	}
-	changed, cmd := m.chat.Tick(msg)
-	if !changed && m.subAgentsRunning == 0 {
+	activeChat := m.activeChat()
+	if m.state != uiChat && m.agentViewer == nil {
+		m.markScrollOnly()
+		return
+	}
+	if !activeChat.advanceVisible() && (m.agentViewer != nil || m.subAgentsRunning == 0) {
 		// Nothing moved on screen, so the frame can be reused. It cannot be
 		// when the header is spinning: that spinner is outside the list and
 		// reusing the frame would freeze it.
 		m.markScrollOnly()
-		return cmd
+		return
 	}
-	if m.chat.Follow() {
-		m.chat.ScrollToBottom()
+	if activeChat.Follow() {
+		activeChat.ScrollToBottom()
 	}
-	return cmd
 }
 
 // setSessionMessages sets the messages for the current session in the chat
@@ -2276,7 +2377,7 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	// leave a ghost "working" spinner (and a second one alongside any tool
 	// spinner) after the session is reloaded. Messages arriving for the
 	// session re-enable the clock.
-	m.chat.SetAnimationsAllowed(m.isAgentBusy())
+	m.animClock.frozen = !m.isAgentBusy()
 
 	if cmd := m.chat.SetMessages(items...); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -2286,7 +2387,7 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	// waiting on one, so switching away and back does not lose the
 	// spinner for the rest of the turn.
 	if m.syncPendingItem() {
-		m.chat.SetAnimationsAllowed(true)
+		m.animClock.frozen = false
 	}
 	m.chat.SelectLast()
 	return tea.Sequence(cmds...)
@@ -2432,7 +2533,11 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		}
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
 		m.chat.AppendMessages(items...)
-		m.chat.ScrollToBottom()
+		// Reports and teammate messages land here unprompted; jumping to
+		// the bottom regardless would pull a reader out of the history.
+		if m.chat.Follow() {
+			m.chat.ScrollToBottom()
+		}
 	case message.Assistant:
 		m.beginLiveTPS(msg)
 		items := chat.ExtractMessageItems(m.com.Styles, &msg, nil, m.com.Workspace.WorkingDir())
@@ -2541,7 +2646,7 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 	m.updateLiveTPS(msg)
 	// A message update means work is active; the animation clock may have
 	// been frozen by a non-busy session reload (ghost-spinner guard).
-	m.chat.SetAnimationsAllowed(true)
+	m.animClock.frozen = false
 	var cmds []tea.Cmd
 	existingItem := m.chat.MessageItem(msg.ID)
 
@@ -2576,6 +2681,8 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 	} else if infoItem != nil {
 		m.chat.RemoveMessage(chat.AssistantInfoID(msg.ID))
 	}
+
+	m.chat.RemoveStaleToolCalls(msg.ID, msg.ToolCalls())
 
 	var items []chat.MessageItem
 	for _, tc := range msg.ToolCalls() {
@@ -2619,7 +2726,7 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 	}
 	// Nested tool activity means the agent is running; the animation clock
 	// may have been frozen by a non-busy session reload.
-	m.chat.SetAnimationsAllowed(true)
+	m.animClock.frozen = false
 
 	// Find the parent agent tool item. A nested tool's ID also maps to its
 	// parent, so the ID check keeps this to the item that owns the session.
@@ -2738,7 +2845,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		cmds = append(cmds, m.closeAgentViewerForSession(msg.Session.ID), m.loadSession(msg.Session.ID))
+		cmds = append(cmds, m.selectSession(msg.Session.ID)...)
 	case dialog.ActionSelectAgent:
 		// Remember the search and the selection, so Esc can put the list
 		// back the way the user left it.
@@ -2798,6 +2905,12 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionOpenWeb:
+		cmds = append(cmds, m.openWeb())
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionStopWeb:
+		cmds = append(cmds, m.stopWeb())
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSummarize:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))
@@ -2813,18 +2926,8 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionExportSession:
 		cmds = append(cmds, func() tea.Msg {
-			ctx := context.Background()
-			sess, err := m.com.Workspace.GetSession(ctx, msg.SessionID)
+			path, err := sessionexport.WriteFile(context.Background(), m.com.Workspace, msg.SessionID)
 			if err != nil {
-				return util.ReportError(err)()
-			}
-			msgs, err := m.com.Workspace.ListMessages(ctx, msg.SessionID)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			name := fmt.Sprintf("crush-session-%s.md", filepath.Base(msg.SessionID))
-			path := filepath.Join(m.com.Workspace.WorkingDir(), name)
-			if err := os.WriteFile(path, []byte(sessionexport.Markdown(sess, msgs)), 0o644); err != nil {
 				return util.ReportError(err)()
 			}
 			return util.ReportInfo("Session exported to " + path)()
@@ -2935,16 +3038,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 				return util.ReportError(errors.New("agent configuration not found"))()
 			}
 
-			currentModel := cfg.Models[agentCfg.Model]
-			currentModel.Think = !currentModel.Think
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
-				return util.ReportError(err)()
-			}
+			on := !cfg.Models[agentCfg.Model].Think
 			ctx, cancel := common.WorkspaceOpContext()
 			defer cancel()
-			m.com.Workspace.UpdateAgentModel(ctx)
+			if err := workspace.ApplyThinking(ctx, m.com.Workspace, on); err != nil {
+				return util.ReportError(err)()
+			}
 			status := "disabled"
-			if currentModel.Think {
+			if on {
 				status = "enabled"
 			}
 			return util.NewInfoMsg("Thinking mode " + status)
@@ -2987,15 +3088,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.userThemeSelected = true
 		m.dialog.CloseDialog(dialog.ThemeID)
 	case dialog.ActionPreviewTheme:
-		newStyles, err := styles.LoadTheme(msg.Theme)
-		if err != nil {
-			break
+		if newStyles, err := styles.LoadTheme(msg.Theme); err == nil {
+			m.previewTheme(newStyles)
 		}
-		if m.preThemeStyles == nil {
-			saved := m.com.Styles.Clone()
-			m.preThemeStyles = &saved
-		}
-		m.previewTheme(newStyles)
 	case dialog.ActionRevertThemePreview:
 		if m.preThemeStyles != nil {
 			m.applyTheme(*m.preThemeStyles)
@@ -3003,15 +3098,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 		m.dialog.CloseDialog(dialog.ThemeID)
 	case dialog.ActionPreviewThemePalette:
-		newStyles, err := styles.LoadPaletteTheme(msg.Base, msg.Palette)
-		if err != nil {
-			break
+		if newStyles, err := styles.LoadPaletteTheme(msg.Base, msg.Palette); err == nil {
+			m.previewTheme(newStyles)
 		}
-		if m.preThemeStyles == nil {
-			saved := m.com.Styles.Clone()
-			m.preThemeStyles = &saved
-		}
-		m.previewTheme(newStyles)
 	case dialog.ActionSaveThemePalette:
 		// The theme is stored under its own name; Base only identifies the
 		// built-in palette its colors are derived from.
@@ -3227,6 +3316,11 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		cmds = append(cmds, m.setAgentTeams(!m.com.Config().Options.GetAgentTeams()))
 	case dialog.ActionToggleMCP:
 		cmds = append(cmds, m.applyMCPToggle(msg))
+	case dialog.ActionToggleSkill:
+		// Sequence apply then refresh: the refresh must read the
+		// overrides after the toggle commits, or the dialog shows stale
+		// state.
+		cmds = append(cmds, tea.Sequence(m.applySkillToggle(msg), m.refreshSkillOverrides()))
 	case dialog.ActionInitializeProject:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))
@@ -3240,37 +3334,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 	case dialog.ActionSelectReasoningEffort:
-		if m.isAgentBusy() {
-			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
-			break
+		if cmd := m.handleSelectReasoningEffort(msg); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-
-		cfg := m.com.Config()
-		if cfg == nil {
-			cmds = append(cmds, util.ReportError(errors.New("configuration not found")))
-			break
-		}
-
-		agentCfg, ok := cfg.Agents[config.AgentCoder]
-		if !ok {
-			cmds = append(cmds, util.ReportError(errors.New("agent configuration not found")))
-			break
-		}
-
-		currentModel := cfg.Models[agentCfg.Model]
-		currentModel.ReasoningEffort = msg.Effort
-		if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
-		}
-
-		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			ctx, cancel := common.WorkspaceOpContext()
-			defer cancel()
-			m.com.Workspace.UpdateAgentModel(ctx)
-			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
-		}))
-		m.dialog.CloseDialog(dialog.ReasoningID)
 	case dialog.ActionPermissionResponse:
 		m.dialog.CloseDialog(dialog.PermissionsID)
 		switch msg.Action {
@@ -3321,15 +3387,8 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			m.dialog.OpenDialog(argsDialog)
 			break
 		}
-		content := msg.Content
-		if msg.Args != nil {
-			content = substituteArgs(content, msg.Args)
-		}
-		// If this is a skill command, format it using the skill's FormatInvocation method
-		if msg.Skill != nil {
-			content = msg.Skill.FormatInvocation()
-		}
-		cmds = append(cmds, m.sendMessage(content))
+		cmd := commands.CustomCommand{Content: msg.Content, Skill: msg.Skill}
+		cmds = append(cmds, m.sendMessage(cmd.PromptText(msg.Args)))
 		m.dialog.CloseFrontDialog()
 	case dialog.ActionAttachSkill:
 		m.dialog.CloseFrontDialog()
@@ -3354,15 +3413,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
-}
-
-// substituteArgs replaces $ARG_NAME placeholders in content with actual values.
-func substituteArgs(content string, args map[string]string) string {
-	for name, value := range args {
-		placeholder := "$" + name
-		content = strings.ReplaceAll(content, placeholder, value)
-	}
-	return content
 }
 
 // refreshHyperAndRetrySelect returns a command that silently refreshes
@@ -3551,7 +3601,7 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
 		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
-			return util.ReportError(err)
+			return util.ReportError(err)()
 		}
 		slog.Info("Restored model from session",
 			"provider", lastAssistant.Provider,
@@ -3567,7 +3617,23 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 
 	// we ignore dialogs with the oauth id as they need to be able to be dismissed
 	if m.isAgentBusy() && !m.dialog.ContainsDialog(dialog.OAuthID) {
-		return util.ReportWarn("Agent is busy, please wait...")
+		// Queue the choice instead of refusing it. The coordinator can only
+		// swap models while idle, so the next idle probe applies it and the
+		// turn after this one runs on the new model.
+		queued := msg
+		m.pendingModelSelect = &queued
+		m.dialog.CloseDialog(dialog.ModelsID)
+
+		modelName := msg.Model.Model
+		if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
+			if catwalkModel := cfg.GetModel(msg.Model.Provider, msg.Model.Model); catwalkModel != nil && catwalkModel.Name != "" {
+				modelName = catwalkModel.Name
+			}
+		}
+		return util.ReportInfo(fmt.Sprintf(
+			"%s model will change to %s when the current turn ends",
+			stringext.Capitalize(string(msg.ModelType)), modelName,
+		))
 	}
 
 	cfg := m.com.Config()
@@ -3653,7 +3719,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}
 
 	previousModel := cfg.Models[msg.ModelType]
-	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
+	if err := workspace.ApplyPreferredModel(m.com.Workspace, msg.ModelType, msg.Model); err != nil {
 		cmds = append(cmds, util.ReportError(err))
 	} else {
 		if msg.ModelType == config.SelectedModelTypeMain {
@@ -3672,7 +3738,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
 			// Ensure small model is set is unset.
 			smallModel := m.com.Workspace.GetDefaultSmallModel(providerID)
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel); err != nil {
+			if err := workspace.ApplyPreferredModel(m.com.Workspace, config.SelectedModelTypeSmall, smallModel); err != nil {
 				cmds = append(cmds, util.ReportError(err))
 			}
 		}
@@ -3681,8 +3747,8 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
 		ctx, cancel := common.WorkspaceOpContext()
 		defer cancel()
-		if err := m.com.Workspace.UpdateAgentModel(ctx); err != nil {
-			return util.ReportError(err)
+		if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
+			return util.ReportError(err)()
 		}
 
 		var (
@@ -3725,6 +3791,54 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// handleSelectReasoningEffort applies a reasoning effort choice to the coder
+// model. A choice made while the agent is busy is queued instead, and the
+// next idle probe applies it.
+func (m *UI) handleSelectReasoningEffort(msg dialog.ActionSelectReasoningEffort) tea.Cmd {
+	if m.isAgentBusy() {
+		queued := msg
+		m.pendingReasoningEffort = &queued
+		m.dialog.CloseDialog(dialog.ReasoningID)
+		return util.ReportInfo("Reasoning effort will be set to " + msg.Effort + " when the current turn ends")
+	}
+
+	cfg := m.com.Config()
+	if cfg == nil {
+		return util.ReportError(errors.New("configuration not found"))
+	}
+
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return util.ReportError(errors.New("agent configuration not found"))
+	}
+
+	currentModel := cfg.Models[agentCfg.Model]
+	// A model switch queued alongside the effort lands first, so the effort
+	// has to be one the model it ends up on actually offers.
+	var catwalkModel *catwalk.Model
+	if cfg.Providers != nil {
+		catwalkModel = cfg.GetModel(currentModel.Provider, currentModel.Model)
+	}
+	if catwalkModel != nil && !slices.Contains(catwalkModel.ReasoningEffortLevels(), msg.Effort) {
+		return util.ReportError(fmt.Errorf("the model does not offer reasoning effort %q", msg.Effort))
+	}
+
+	currentModel.ReasoningEffort = msg.Effort
+	if err := workspace.ApplyPreferredModel(m.com.Workspace, agentCfg.Model, currentModel); err != nil {
+		return util.ReportError(err)
+	}
+
+	m.dialog.CloseDialog(dialog.ReasoningID)
+	return m.updateAgentModelCmd(func() tea.Msg {
+		ctx, cancel := common.WorkspaceOpContext()
+		defer cancel()
+		if err := workspace.ReloadAgentModel(ctx, m.com.Workspace); err != nil {
+			return util.ReportError(err)()
+		}
+		return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
+	})
+}
+
 func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.SelectedModel, modelType config.SelectedModelType) tea.Cmd {
 	var (
 		dlg dialog.Dialog
@@ -3733,41 +3847,37 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		isOnboarding = m.state == uiOnboarding
 	)
 
+	var (
+		providerCfg config.ProviderConfig
+		hasAPIKey   bool
+	)
+	// Only the OpenAI and xAI choice reads the credential: resolving a key
+	// template for any other provider would run a $(...) the dialog never
+	// needed.
 	switch provider.ID {
-	case "hyper":
-		dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
-	case catwalk.InferenceProviderCopilot:
-		dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
-	case catwalk.InferenceProviderOpenAI:
-		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
-		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
-		switch {
-		case model.Model == "" || providerCfg.OAuthToken != nil:
-			// The sign-in placeholder, or a re-authentication while the
-			// ChatGPT login is the credential in force.
+	case catwalk.InferenceProviderOpenAI, catwalk.InferenceProviderXAI:
+		if cfg := m.com.Config(); cfg != nil && cfg.Providers != nil {
+			providerCfg, _ = cfg.Providers.Get(string(provider.ID))
+			hasAPIKey = providerCfg.HasAPIKey(m.com.Workspace.Resolver())
+		}
+	}
+
+	switch workspace.DefaultAuthChoice(string(provider.ID), providerCfg, hasAPIKey, model.Model == "") {
+	case workspace.AuthChoiceOAuth:
+		switch provider.ID {
+		case "hyper":
+			dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
+		case catwalk.InferenceProviderCopilot:
+			dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
+		case catwalk.InferenceProviderOpenAI:
 			dlg, cmd = dialog.NewOAuthOpenAI(m.com, isOnboarding, provider, model, modelType)
-		case !hasAPIKey:
-			// No credential at all: let the user pick the method.
-			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
-		default:
-			// An API key is the credential in force: edit it.
-			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
-		}
-	case catwalk.InferenceProviderXAI:
-		providerCfg, _ := m.com.Config().Providers.Get(string(provider.ID))
-		hasAPIKey := providerCfg.HasAPIKey(m.com.Workspace.Resolver())
-		switch {
-		case model.Model == "" || providerCfg.OAuthToken != nil:
-			// The sign-in flow's hand-off, or a re-authentication while
-			// the Grok login is the credential in force.
+		case catwalk.InferenceProviderXAI:
 			dlg, cmd = dialog.NewOAuthGrok(m.com, isOnboarding, provider, model, modelType)
-		case !hasAPIKey:
-			// No credential at all: let the user pick the method.
-			dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
 		default:
-			// An API key is the credential in force: edit it.
 			dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 		}
+	case workspace.AuthChoicePick:
+		dlg = dialog.NewAuthMethod(m.com, isOnboarding, provider, model, modelType)
 	default:
 		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 	}
@@ -4082,6 +4192,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 			case key.Matches(msg, m.keyMap.Editor.AddImage):
 				if !m.currentModelSupportsImages() {
+					cmds = append(cmds, util.ReportWarn("The current model does not support image attachments"))
 					break
 				}
 				if cmd := m.openFilesDialog(); cmd != nil {
@@ -4089,9 +4200,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 			case key.Matches(msg, m.keyMap.Editor.PasteImage):
-				if !m.currentModelSupportsImages() {
-					break
-				}
+				// No vision guard here: pasteImageFromClipboard reports it
+				// itself, so a model without vision says so instead of the
+				// keystroke doing nothing.
 				cmds = append(cmds, m.pasteImageFromClipboard)
 			case key.Matches(msg, m.keyMap.Editor.PasteText):
 				cmds = append(cmds, m.pasteTextFromClipboard)
@@ -4450,6 +4561,7 @@ func (m *UI) drawHeader(scr uv.Screen, area uv.Rectangle) {
 		m.lspErrorCount(),
 		m.hyperCredits,
 		m.gitBranch,
+		m.gitBranchLabel(),
 		m.isAgentBusy(),
 		m.animPhase(),
 		m.headerModelName(),
@@ -4785,7 +4897,7 @@ func (m *UI) ShortHelp() []key.Binding {
 			cancelBinding := k.Chat.Cancel
 			if m.isCanceling {
 				cancelBinding.SetHelp("esc", "press again to cancel")
-			} else if m.promptQueue > 0 {
+			} else if m.promptQueue.ServerQueued() {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
 			binds = append(binds, cancelBinding)
@@ -4832,7 +4944,7 @@ func (m *UI) ShortHelp() []key.Binding {
 				k.Chat.PageDown,
 				k.Chat.Copy,
 			)
-			if m.pillsExpanded && hasIncompleteTodos(m.session.Todos) && m.promptQueue > 0 {
+			if m.pillsExpanded && hasIncompleteTodos(m.session.Todos) && m.promptQueue.Shown() > 0 {
 				binds = append(binds, k.Chat.PillLeft)
 			}
 		}
@@ -4905,7 +5017,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			cancelBinding := k.Chat.Cancel
 			if m.isCanceling {
 				cancelBinding.SetHelp("esc", "press again to cancel")
-			} else if m.promptQueue > 0 {
+			} else if m.promptQueue.ServerQueued() {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
 			binds = append(binds, []key.Binding{cancelBinding})
@@ -5002,7 +5114,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 					k.Chat.ClearHighlight,
 				},
 			)
-			if m.pillsExpanded && hasIncompleteTodos(m.session.Todos) && m.promptQueue > 0 {
+			if m.pillsExpanded && hasIncompleteTodos(m.session.Todos) && m.promptQueue.Shown() > 0 {
 				binds = append(binds, []key.Binding{k.Chat.PillLeft})
 			}
 		}
@@ -5759,11 +5871,8 @@ func (m *UI) bangPromptFunc(info textarea.PromptInfo) string {
 	return t.Editor.PromptBangDotsBlurred.Render()
 }
 
-// toggleInputMode advances the Shift+Tab cycle by one position. The cycle is
-// a ring of four positions read straight off the current state — code ->
-// plan -> YOLO -> sysadmin -> code. Nothing is remembered between presses,
-// so the next position is always the one the badge implies, whether the
-// permission mode came from this cycle or from Ctrl+Y.
+// toggleInputMode advances the Shift+Tab cycle (code -> plan -> YOLO -> code),
+// reading the position off the current state. Sysadmin is palette-only.
 func (m *UI) toggleInputMode() tea.Cmd {
 	if m.isAgentBusy() || m.modeSwitching {
 		return util.ReportWarn("Agent is busy, please wait before switching input mode...")
@@ -5777,14 +5886,7 @@ func (m *UI) toggleInputMode() tea.Cmd {
 		return m.setInputMode(uiInputModeCode)
 	}
 	if m.yoloActive() {
-		if m.permModeCached() == permission.PermissionModeYolo {
-			// Third step: YOLO -> sysadmin. The banner spells out what was
-			// just given up, since this is the most permissive state the
-			// program has and it is now one keystroke away.
-			m.setPermissionMode(permission.PermissionModeSysadmin)
-			return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeSysadmin, Msg: sysadminModeBannerMsg})
-		}
-		// Fourth step: sysadmin -> normal, closing the cycle.
+		// Third step: YOLO, or a palette-chosen sysadmin, back to code.
 		m.setYolo(false)
 		return util.ReportInfo("input mode: code")
 	}
@@ -5857,6 +5959,7 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 	if msg.err != nil {
 		return []tea.Cmd{util.ReportError(msg.err)}
 	}
+	changed := m.mode != msg.mode
 	m.mode = msg.mode
 	m.setEditorPrompt(m.permModeCached())
 	if m.rc != nil {
@@ -5865,6 +5968,11 @@ func (m *UI) applyModeSwitch(msg modeSwitchedMsg) []tea.Cmd {
 		m.rc.SetMode(msg.mode == uiInputModePlan)
 	}
 	var cmds []tea.Cmd
+	if changed {
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if msg.continueSessionID != "" && m.session != nil && m.session.ID == msg.continueSessionID {
 		cmds = append(cmds, m.sendMessageInternal("Implement the plan.", true))
 	}
@@ -6187,24 +6295,27 @@ func (m *UI) applyTheme(s styles.Styles) {
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
-	m.chat.InvalidateRenderCaches()
+	m.chat.Restyle()
 	if m.agentViewer != nil {
 		m.agentViewer.themeGeneration = m.themeGeneration
 		m.agentViewer.InvalidateRenderCaches()
 	}
 }
 
-// previewTheme applies the given styles for live preview inside an open
-// theme dialog. The whole interface updates, but only the chat messages
-// currently on screen re-render; the rest of the transcript keeps its
-// cached output so browsing themes stays fast in large sessions. Off-screen
-// messages follow along when the theme is actually applied.
+// previewTheme shows a theme from an open theme dialog, saving the theme in
+// effect beforehand so closing the dialog can restore it. Only the items on
+// screen re-render: a preview follows the highlighted row and must stay
+// cheap for a long transcript.
 func (m *UI) previewTheme(s styles.Styles) {
+	if m.preThemeStyles == nil {
+		saved := m.com.Styles.Clone()
+		m.preThemeStyles = &saved
+	}
 	m.themeGeneration++
 	*m.com.Styles = s
 	common.InvalidateStyleCaches()
 	m.refreshStyles()
-	m.chat.InvalidateVisibleRenderCaches()
+	m.chat.Restyle()
 	if m.agentViewer != nil {
 		m.agentViewer.themeGeneration = m.themeGeneration
 		m.agentViewer.InvalidateVisibleRenderCaches()
@@ -6382,6 +6493,8 @@ func (m *UI) slashCommand(value string) (tea.Cmd, bool) {
 	switch {
 	case value == "/reload":
 		return m.reloadConfig(false), true
+	case value == "/web":
+		return m.openWeb(), true
 	case value == "/goal" || strings.HasPrefix(value, "/goal "):
 		return m.handleGoalCommand(strings.TrimSpace(strings.TrimPrefix(value, "/goal"))), true
 	case value == "/loop" || strings.HasPrefix(value, "/loop "):
@@ -6406,35 +6519,16 @@ func (m *UI) reloadConfig(retryWhenIdle bool) tea.Cmd {
 }
 
 // setAgentTeams persists the Agent Teams toggle and applies it in place. The
-// coordinator creates or tears down the Team service during the reload. A
-// workspace config that sets the option outranks the global file, so the
-// toggle is written there too. The workspace file's contents decide that, not
-// the merged config: a busy agent refuses the reload, which would leave the
-// merged value stale. The reload is refused as busy rather than failed, and
-// runs again once the agent is idle.
+// coordinator creates or tears down the Team service during the reload. The
+// reload is refused as busy rather than failed, and runs again once the agent
+// is idle.
 func (m *UI) setAgentTeams(enabled bool) tea.Cmd {
 	return func() tea.Msg {
-		scopes := []config.Scope{config.ScopeGlobal}
-		if m.workspaceSetsAgentTeams() {
-			scopes = append(scopes, config.ScopeWorkspace)
-		}
-		for _, scope := range scopes {
-			if err := m.com.Workspace.SetConfigField(scope, "options.agent_teams", enabled); err != nil {
-				return configReloadedMsg{err: err}
-			}
+		if err := workspace.WriteAgentTeams(m.com.Workspace, enabled); err != nil {
+			return configReloadedMsg{err: err}
 		}
 		return m.reloadConfig(true)()
 	}
-}
-
-// workspaceSetsAgentTeams reports whether the workspace config file sets the
-// Agent Teams option, which is what makes a global write lose to it.
-func (m *UI) workspaceSetsAgentTeams() bool {
-	cfg := m.com.Config()
-	if cfg == nil || cfg.Options == nil {
-		return false
-	}
-	return config.WorkspaceConfigSets(cfg.Options.DataDirectory, "options.agent_teams")
 }
 
 // sendMessage sends a message with the given content and attachments.
@@ -6449,12 +6543,18 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 	}
 
 	// Any new prompt supersedes a pending, unconfirmed plan.
-	m.setPlanReadyPending("")
+	reportCmd := m.setPlanReadyPending("")
 	m.turnOutcome = ""
 
 	var cmds []tea.Cmd
+	if reportCmd != nil {
+		cmds = append(cmds, reportCmd)
+	}
 	loadCmd, err := m.ensureSession()
 	if err != nil {
+		if reportCmd != nil {
+			return tea.Batch(reportCmd, util.ReportError(err))
+		}
 		return util.ReportError(err)
 	}
 	if loadCmd != nil {
@@ -6466,7 +6566,7 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 	sessionID := m.currentSessionID()
 	queued := m.turnInFlight(sessionID)
 	// Loading an idle session freezes ghost spinners; sending unfreezes.
-	m.chat.SetAnimationsAllowed(true)
+	m.animClock.frozen = false
 	if !queued {
 		common.StartTurn(sessionID)
 		echo := content
@@ -6499,6 +6599,14 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 	m.agentBusyCache.set(true)
 	m.busyFetchGen++
 	m.invalidatePromptQueue()
+	// A prompt sent behind a busy turn shows in the queue pill right away
+	// rather than once the agent has built its run and enqueued it. Hidden
+	// prompts never show, matching the server's list.
+	var pendingID uint64
+	if queued && !hidden {
+		pendingID = m.promptQueue.Add(content)
+		m.updateLayoutAndSize()
+	}
 	cmds = append(cmds, func() tea.Msg {
 		// AgentRun is fire-and-forget: it returns once the prompt has
 		// been accepted (HTTP 202) or synchronously with a validation
@@ -6512,7 +6620,7 @@ func (m *UI) sendMessageInternal(content string, hidden bool, attachments ...mes
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}
-		return agentRunSubmittedMsg{sessionID: sessionID, err: err}
+		return agentRunSubmittedMsg{sessionID: sessionID, pendingID: pendingID, err: err}
 	})
 	return tea.Batch(cmds...)
 }
@@ -6601,7 +6709,7 @@ func (m *UI) runShellCommandInternal(command string, isFirstMessage bool) tea.Cm
 	pendingItem := chat.NewPendingShellItem(m.com.Styles, command)
 	// Bang mode runs without the agent, so re-enable the animation clock
 	// that a non-busy session reload may have frozen.
-	m.chat.SetAnimationsAllowed(true)
+	m.animClock.frozen = false
 	m.chat.AppendMessages(pendingItem)
 	m.chat.ScrollToBottom()
 
@@ -6702,11 +6810,18 @@ func (m *UI) cancelAgent() tea.Cmd {
 		return m.dispatchBusyRefresh()
 	}
 
-	// Queued prompts pending: esc clears the queue. Decide from the cached
-	// count (event-driven) instead of a synchronous workspace probe.
-	if m.promptQueue > 0 {
+	// Queued prompts pending: esc clears the queue, decided from the cached
+	// queue rather than a synchronous workspace probe. The queued prompts
+	// go back to the editor first, so clearing never costs the user text
+	// they already wrote.
+	if m.promptQueue.ServerQueued() {
 		m.restoreQueuedPromptsToInput()
 		m.com.Workspace.AgentClearQueue(m.session.ID)
+		m.promptQueue.ClearServer()
+		m.promptQueueCheckedAt = time.Now()
+		// Bump the queue generation so a fetch started before this clear
+		// cannot land and repopulate the pill we just emptied.
+		m.invalidatePromptQueue()
 		m.updateLayoutAndSize()
 		return nil
 	}
@@ -6724,10 +6839,11 @@ func (m *UI) cancelAgent() tea.Cmd {
 // a workspace probe because escape runs on the Update goroutine, which never
 // makes synchronous workspace calls.
 func (m *UI) restoreQueuedPromptsToInput() {
-	if len(m.promptQueueItems) == 0 {
+	items := m.promptQueue.Items()
+	if len(items) == 0 {
 		return
 	}
-	text := strings.Join(m.promptQueueItems, "\n\n")
+	text := strings.Join(items, "\n\n")
 	if draft := m.textarea.Value(); draft != "" {
 		text = text + "\n\n" + draft
 	}
@@ -6738,8 +6854,7 @@ func (m *UI) restoreQueuedPromptsToInput() {
 	m.historyReset()
 	// The queue is about to be discarded; drop the mirror now so the pill
 	// does not keep claiming prompts that are back in the editor.
-	m.promptQueue = 0
-	m.promptQueueItems = nil
+	m.promptQueue.Reset()
 	m.promptQueueCheckedAt = time.Now()
 	m.invalidatePromptQueue()
 }
@@ -6776,6 +6891,10 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openMCPTogglesDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.SkillsTogglesID:
+		if cmd := m.openSkillsTogglesDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.FilePickerID:
 		if cmd := m.openFilesDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -6786,6 +6905,8 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		m.openThemeNewDialog()
 	case dialog.ThemeEditorID:
 		m.openThemeEditorDialog("")
+	case dialog.ChannelsID:
+		m.openChannelsDialog()
 	case dialog.QuitID:
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -6843,7 +6964,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 		sessionID = m.session.ID
 	}
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
-	hasQueue := m.promptQueue > 0
+	hasQueue := m.promptQueue.Shown() > 0
 
 	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.chat.RevealSecrets(), m.isTransparent, m.customCommands, m.mcpPrompts)
 	if err != nil {
@@ -6881,6 +7002,16 @@ func (m *UI) openNotificationsDialog() tea.Cmd {
 	notificationsDialog := dialog.NewNotifications(m.com)
 	m.dialog.OpenDialog(notificationsDialog)
 	return nil
+}
+
+// openChannelsDialog opens the channels management dialog.
+func (m *UI) openChannelsDialog() {
+	if m.dialog.ContainsDialog(dialog.ChannelsID) {
+		m.dialog.BringToFront(dialog.ChannelsID)
+		return
+	}
+	channelsDialog := dialog.NewChannels(m.com, m.mcpStates)
+	m.dialog.OpenDialog(channelsDialog)
 }
 
 // openSessionsDialog opens the sessions dialog. If the dialog is already open,
@@ -6931,6 +7062,28 @@ func (m *UI) reopenAgentsList(saved *agentsListState) {
 	agents := dialog.NewAgents(m.com, m.agentDescriptors())
 	agents.Restore(saved.filter, saved.sessionID)
 	m.dialog.OpenDialog(agents)
+}
+
+// handleSidebarAgentClick opens the agent whose sidebar row was clicked. A
+// single left click opens the transcript; clicks on non-agent lines, the logo,
+// or the scrollbar do nothing.
+func (m *UI) handleSidebarAgentClick(msg tea.MouseClickMsg) tea.Cmd {
+	if msg.Button != uv.MouseLeft || m.session == nil || len(m.sidebarAgentHits) == 0 {
+		return nil
+	}
+	contentMinY := m.layout.sidebar.Min.Y + lipgloss.Height(m.sidebarDrawLogo)
+	if msg.Y < contentMinY || msg.Y >= contentMinY+m.sidebarContentHeight {
+		return nil
+	}
+	if msg.X < m.layout.sidebar.Min.X || msg.X >= m.layout.sidebar.Min.X+m.sidebarContentWidth {
+		return nil
+	}
+	line := m.sidebarOffset + (msg.Y - contentMinY)
+	descriptor, ok := m.sidebarAgentHits[line]
+	if !ok {
+		return nil
+	}
+	return m.openAgentViewer(descriptor)
 }
 
 // openAgentViewer opens an independent transcript without changing the main
@@ -7040,24 +7193,33 @@ func (m *UI) openPermissionsDialog(perm permission.PermissionRequest) tea.Cmd {
 
 // openBatchFormDialog activates a tabbed multi-question form in
 // the editor area. Single questions render without tabs or confirm.
-func (m *UI) openBatchFormDialog(batch question.Request) {
+// It reports whether it opened a form, which it doesn't for a batch
+// the open form already shows.
+func (m *UI) openBatchFormDialog(batch question.Request) bool {
 	// Close any existing question form first to prevent stacking.
 	if qf, ok := m.activeInline.(*dialog.QuestionForm); ok && qf != nil {
+		// The server re-sends a pending batch whenever a client reports
+		// its session; keep the form already showing it so the answers
+		// typed so far survive.
+		if qf.BatchID == batch.ID {
+			return false
+		}
 		m.activeInline = nil
 	}
 
 	form := dialog.NewQuestionForm(m.com.Styles, batch)
 	form.OnAnswer = func(responses []question.Answer) {
-		m.com.Workspace.QuestionAnswer(responses)
+		m.com.Workspace.QuestionAnswer(batch.ID, responses)
 	}
 	form.OnCancel = func() {
-		m.com.Workspace.QuestionCancel()
+		m.com.Workspace.QuestionCancel(batch.ID)
 	}
 	m.activeInline = form
 	m.textarea.Blur()
 	m.focus = uiFocusEditor
 	m.activeInline.SetFocused(true)
 	m.updateLayoutAndSize()
+	return true
 }
 
 // handleQuestionNotification dismisses an open question form when
@@ -7140,40 +7302,67 @@ func (m *UI) handlePlanHandoff(rc notify.RunComplete) tea.Cmd {
 		slog.Debug("Plan run completed without ready marker", "session_id", rc.SessionID)
 		return nil
 	}
-	m.setPlanReadyPending(rc.SessionID)
+	reportCmd := m.setPlanReadyPending(rc.SessionID)
 	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
-		return nil
+		return reportCmd
 	}
 	m.openPlanHandoff()
-	return nil
+	return reportCmd
 }
 
 // resetPlanModeState drops any pending plan handoff and, when plan mode is
 // active, switches back to code mode. Used when the UI moves to a different
 // session, since plan mode is scoped to the session it was enabled in.
 func (m *UI) resetPlanModeState() tea.Cmd {
-	m.setPlanReadyPending("")
+	reportCmd := m.setPlanReadyPending("")
 	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
 		m.activeInline = nil
 		m.textarea.Focus()
 	}
 	if m.mode != uiInputModePlan {
-		return nil
+		return reportCmd
 	}
 	// The backend rejects agent switches while a run is active (409). When
 	// one is, keep the mode as-is: the server's active agent still matches
 	// what the editor shows, and the next Shift+Tab lands back in code mode
 	// once the run finishes.
 	if m.isAgentBusy() {
-		return nil
+		return reportCmd
 	}
-	return m.setInputMode(uiInputModeCode)
+	cmd := m.setInputMode(uiInputModeCode)
+	if reportCmd == nil {
+		return cmd
+	}
+	return tea.Batch(reportCmd, cmd)
+}
+
+// planReadyReporter is the optional launcher surface that reports the
+// session with an unconfirmed ready plan. It is asserted at the call site so
+// WebLauncher stays small and a launcher without it, such as a test double,
+// simply reports nothing.
+type planReadyReporter interface {
+	SetPlanReady(sessionID string, seq uint64)
 }
 
 // setPlanReadyPending records (or clears, with an empty ID) the session that
-// has an unconfirmed ready plan.
-func (m *UI) setPlanReadyPending(sessionID string) {
+// has an unconfirmed ready plan and returns the command that tells the
+// gateway. The command runs off the update loop like the other reports, and
+// carries a sequence so a late report cannot undo a newer one.
+func (m *UI) setPlanReadyPending(sessionID string) tea.Cmd {
+	changed := m.planReadySessionID != sessionID
 	m.planReadySessionID = sessionID
+	if !changed || m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	reporter, ok := m.com.Web.(planReadyReporter)
+	if !ok {
+		return nil
+	}
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		reporter.SetPlanReady(sessionID, seq)
+		return nil
+	}
 }
 
 // openPlanHandoff replaces the textarea with the inline "switch to code"
@@ -7181,24 +7370,7 @@ func (m *UI) setPlanReadyPending(sessionID string) {
 // by pressing enter on an empty editor while still in plan mode.
 func (m *UI) openPlanHandoff() {
 	inline := dialog.NewPlanHandoffInline(m.com)
-	inline.OnConfirm = func(yolo bool) tea.Cmd {
-		// The handoff asks a yes/no question about YOLO, so answer it
-		// literally: declining drops the session back to normal.
-		if m.yoloActive() != yolo {
-			m.setYolo(yolo)
-		}
-		m.setPlanReadyPending("")
-		sessionID := m.session.ID
-		cmd := m.setInputMode(uiInputModeCode)
-		return func() tea.Msg {
-			result := cmd()
-			if switched, ok := result.(modeSwitchedMsg); ok {
-				switched.continueSessionID = sessionID
-				return switched
-			}
-			return result
-		}
-	}
+	inline.OnConfirm = m.confirmPlanHandoff
 	inline.OnRequestChanges = func(feedback string) tea.Cmd {
 		return m.sendMessage(feedback)
 	}
@@ -7209,6 +7381,30 @@ func (m *UI) openPlanHandoff() {
 	if m.status != nil {
 		m.updateLayoutAndSize()
 	}
+}
+
+// confirmPlanHandoff applies the answer to the plan handoff, from the inline
+// prompt or the browser: YOLO follows the answer literally, the pending plan
+// clears, and the switch to code mode continues with the implement prompt.
+func (m *UI) confirmPlanHandoff(yolo bool) tea.Cmd {
+	if m.yoloActive() != yolo {
+		m.setYolo(yolo)
+	}
+	reportCmd := m.setPlanReadyPending("")
+	sessionID := m.session.ID
+	cmd := m.setInputMode(uiInputModeCode)
+	continued := func() tea.Msg {
+		result := cmd()
+		if switched, ok := result.(modeSwitchedMsg); ok {
+			switched.continueSessionID = sessionID
+			return switched
+		}
+		return result
+	}
+	if reportCmd == nil {
+		return continued
+	}
+	return tea.Batch(reportCmd, continued)
 }
 
 // handleAgentNotification translates domain agent events into desktop
@@ -7318,6 +7514,204 @@ func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
 	return nil
 }
 
+// WebStartedMsg announces that the web gateway is up. The update loop
+// copies the link and opens the browser off the render path, so a slow
+// opener cannot freeze the TUI or hide the link.
+type WebStartedMsg struct {
+	URL string
+}
+
+// WebSessionCreatedMsg announces that the browser started a session. The
+// update loop opens it so the terminal and the tab show the same
+// conversation.
+type WebSessionCreatedMsg struct {
+	ID string
+}
+
+// WebInputModeMsg asks the terminal to switch input mode on behalf of the
+// browser. The terminal still owns the busy check and the agent switch.
+type WebInputModeMsg struct {
+	Plan bool
+}
+
+// webInputModeBusy is the refusal the browser shows when the terminal
+// cannot switch modes yet.
+const webInputModeBusy = "Can't switch while Crush is busy"
+
+// webInputMode routes a browser switch through the regular agent switch.
+// Asking for the mode already active is a no-op; a busy or switching agent
+// gets the same warning as Shift+Tab and a notice in the browser.
+func (m *UI) webInputMode(msg WebInputModeMsg) tea.Cmd {
+	target := uiInputModeCode
+	if msg.Plan {
+		target = uiInputModePlan
+	}
+	if target == m.mode {
+		return nil
+	}
+	if m.isAgentBusy() || m.modeSwitching {
+		return tea.Batch(
+			util.ReportWarn("Agent is busy, please wait before switching input mode..."),
+			m.reportWebInputModeRefused(webInputModeBusy),
+		)
+	}
+	return m.setInputMode(target)
+}
+
+// WebPlanHandoffMsg asks the terminal to confirm a ready plan on behalf of
+// the browser, the same yes/no the inline prompt asks.
+type WebPlanHandoffMsg struct {
+	SessionID string
+	Yolo      bool
+}
+
+// WebStoppedMsg announces that web mode stopped from the browser. The
+// gateway is gone, so the status bar drops its web indicator and /web
+// starts a new one.
+type WebStoppedMsg struct {
+	Reason string
+}
+
+// webPlanHandoff confirms a ready plan for the browser. The terminal keeps
+// ownership of the switch, so only the plan it still holds can be confirmed,
+// and a busy or switching agent is refused like a browser mode switch.
+func (m *UI) webPlanHandoff(msg WebPlanHandoffMsg) tea.Cmd {
+	if m.mode != uiInputModePlan || !m.hasSession() {
+		return nil
+	}
+	if msg.SessionID == "" || msg.SessionID != m.planReadySessionID || m.planReadySessionID != m.session.ID {
+		return nil
+	}
+	if m.isAgentBusy() || m.modeSwitching {
+		return tea.Batch(
+			util.ReportWarn("Agent is busy, please wait before switching input mode..."),
+			m.reportWebInputModeRefused(webInputModeBusy),
+		)
+	}
+	if _, ok := m.activeInline.(*dialog.PlanHandoffInline); ok {
+		m.activeInline = nil
+		m.textarea.Focus()
+	}
+	return m.confirmPlanHandoff(msg.Yolo)
+}
+
+// webStatusTTL keeps the web link on screen long enough to read and copy,
+// including when a startup notice would otherwise replace it.
+const webStatusTTL = 30 * time.Second
+
+// webStarted shows the launch link at once, then copies it and opens a
+// browser tab in the background. The notice comes first so a slow clipboard
+// or opener cannot hide the link; the copy and the opener then run
+// concurrently so the clipboard cannot delay the browser. The link is never
+// lost: the copy failure and the opener failure both carry it.
+func (m *UI) webStarted(msg WebStartedMsg) tea.Cmd {
+	if msg.URL == "" {
+		return nil
+	}
+	notice := util.ReportInfoWithTTL("Opening browser: "+msg.URL, webStatusTTL)
+	cmds := []tea.Cmd{
+		copyWebLinkToClipboard(
+			msg.URL,
+			"Opening browser. Web link copied: "+msg.URL,
+			"Failed to copy the web link to the clipboard. Open "+msg.URL,
+			webStatusTTL,
+		),
+	}
+	if m.com != nil && m.com.Web != nil {
+		web := m.com.Web
+		// --web starts the gateway before the program exists, so report
+		// the terminal's mode once the update loop sees the link. The
+		// command runs off the update loop like the other reports.
+		if cmd := m.reportWebInputMode(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, func() tea.Msg {
+			if err := web.OpenBrowser(); err != nil {
+				return util.InfoMsg{
+					Type: util.InfoTypeWarn,
+					Msg:  "Web mode is running. Open " + msg.URL,
+					TTL:  webStatusTTL,
+				}
+			}
+			return nil
+		})
+	}
+	return tea.Sequence(notice, tea.Batch(cmds...))
+}
+
+// openWeb starts web mode if needed and hands the launch link to the
+// update loop, which copies it and opens the browser without blocking.
+func (m *UI) openWeb() tea.Cmd {
+	if m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		// Seed a gateway that starts later with the mode already on
+		// screen, so its first snapshot is correct.
+		web.SetInputMode(plan, seq)
+		u, err := web.Start(context.Background())
+		if err != nil {
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		}
+		return WebStartedMsg{URL: u}
+	}
+}
+
+// stopWeb stops the running gateway off the update loop and reports the
+// result. The status bar reads the launcher's running state on every draw,
+// so the web badge disappears with the update that reports the stop.
+func (m *UI) stopWeb() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return util.ReportWarn("Web mode is not available here")
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		if err := web.Stop(context.Background()); err != nil {
+			return util.ReportError(fmt.Errorf("web mode: %w", err))()
+		}
+		return util.ReportInfo("Web mode stopped. Run /web to start it again.")()
+	}
+}
+
+// nextWebModeSeq returns the sequence for the next mode report. Commands run
+// in their own goroutines, so the sequence, not their arrival order, decides
+// which report is newest.
+func (m *UI) nextWebModeSeq() uint64 {
+	m.webModeSeq++
+	return m.webModeSeq
+}
+
+// reportWebInputMode tells the gateway the settled input mode. It runs off
+// the update loop like the other gateway reports.
+func (m *UI) reportWebInputMode() tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	plan := m.mode == uiInputModePlan
+	seq := m.nextWebModeSeq()
+	return func() tea.Msg {
+		web.SetInputMode(plan, seq)
+		return nil
+	}
+}
+
+// reportWebInputModeRefused tells the browser why the terminal kept its
+// mode. It runs off the update loop and reuses the error toast.
+func (m *UI) reportWebInputModeRefused(reason string) tea.Cmd {
+	if m.com == nil || m.com.Web == nil {
+		return nil
+	}
+	web := m.com.Web
+	return func() tea.Msg {
+		web.ReportInputModeRefused(reason)
+		return nil
+	}
+}
+
 // newSession clears the current session state and prepares for a new session.
 // The actual session creation happens when the user sends their first message.
 // Returns a command to reload prompt history.
@@ -7339,8 +7733,7 @@ func (m *UI) newSession() tea.Cmd {
 	m.chat.ClearMessages()
 	m.pillsExpanded = false
 	m.pillsAutoExpanded = false
-	m.promptQueue = 0
-	m.promptQueueItems = nil
+	m.promptQueue.Reset()
 	m.promptQueueCheckedAt = time.Now()
 	m.invalidateBusyCaches()
 	m.invalidatePromptQueue()
@@ -7535,13 +7928,13 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	textData, textErr := clipboard.Read(clipboard.FormatText)
 	if textErr != nil || len(textData) == 0 {
-		return nil // Clipboard is empty or does not contain an image
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	path := strings.TrimSpace(string(textData))
 	path = strings.ReplaceAll(path, "\\ ", " ")
 	if _, statErr := os.Stat(path); statErr != nil {
-		return nil // Clipboard does not contain an image or valid file path
+		return util.NewInfoMsg("Clipboard does not contain an image")
 	}
 
 	if !common.IsImagePath(path) {
@@ -7640,7 +8033,8 @@ func (m *UI) drawSessionDetails(scr uv.Screen, area uv.Rectangle) {
 	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), sectionWidth, maxItemsPerSection, false)
 	sections := lipgloss.JoinHorizontal(lipgloss.Top, filesSection, " ", lspSection, " ", mcpSection, " ", skillsSection)
 	if len(subAgents) > 0 {
-		sections = lipgloss.JoinHorizontal(lipgloss.Top, m.subAgentsInfo(subAgents, sectionWidth, maxItemsPerSection, false), " ", sections)
+		subAgentSection, _ := m.subAgentsInfo(subAgents, sectionWidth, maxItemsPerSection, false)
+		sections = lipgloss.JoinHorizontal(lipgloss.Top, subAgentSection, " ", sections)
 	}
 	sections = lipgloss.NewStyle().MaxWidth(width).MaxHeight(max(0, remainingHeight)).Render(sections)
 	uv.NewStyledString(
@@ -7730,6 +8124,10 @@ func handleMCPResourcesEvent(ws workspace.Workspace, name string) tea.Cmd {
 
 var copyChatHighlightToClipboard = common.CopyToClipboardWithCallback
 
+// copyWebLinkToClipboard writes the web launch link to the clipboard.
+// Tests replace it so they never touch the real clipboard.
+var copyWebLinkToClipboard = common.CopyToClipboardWithFailureTTL
+
 func (m *UI) copyChatHighlight(chat *Chat) tea.Cmd {
 	if chat == nil {
 		chat = m.activeChat()
@@ -7806,7 +8204,7 @@ func (m *UI) markDispatchRunning(label string) {
 			break
 		}
 	}
-	m.chat.SetAnimationsAllowed(true)
+	m.animClock.frozen = false
 }
 
 // markDispatchReported stops the spinner on the agent_dispatch item that

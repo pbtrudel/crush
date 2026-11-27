@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/stretchr/testify/require"
 )
 
@@ -197,4 +199,40 @@ func TestHookedTool_PostToolUse(t *testing.T) {
 		require.True(t, resp.IsError)
 		require.Equal(t, "boom\nseen failure", resp.Content)
 	})
+}
+
+// TestHookedToolKeepsMCPIdentity pins bug A: the Lead's tools are always
+// hook-wrapped, so the wrapper must report its MCP server or both MCP filters
+// treat the Lead's MCP tools as built-ins and its palette drifts from its
+// teammates'.
+func TestHookedToolKeepsMCPIdentity(t *testing.T) {
+	t.Parallel()
+	runner := newRunner(t, `exit 0`)
+	list := []fantasy.AgentTool{
+		&roleMCPTool{name: "mcp_off_send", server: "off"},
+		&roleMCPTool{name: "mcp_signal_send", server: "signal"},
+		&roleMCPTool{name: "mcp_switchboard_send", server: "switchboard"},
+		&fakeTool{name: "view"},
+	}
+	lead := wrapToolsWithHooks(list, runner, false)
+	teammate := gateToolsForRole(&roles.Role{Name: "researcher"}, list)
+
+	mcpTool, ok := lead[0].(interface{ MCP() string })
+	require.True(t, ok)
+	require.Equal(t, "off", mcpTool.MCP())
+	builtin, ok := lead[3].(interface{ MCP() string })
+	require.True(t, ok)
+	require.Empty(t, builtin.MCP(), "a hooked built-in reports no MCP server")
+
+	disabled := map[string]struct{}{"off": {}}
+	require.Equal(t, []string{"mcp_signal_send", "mcp_switchboard_send", "view"},
+		toolNames(dropDisabledMCPTools(lead, disabled)))
+	require.Equal(t, toolNames(dropDisabledMCPTools(teammate, disabled)),
+		toolNames(dropDisabledMCPTools(lead, disabled)), "Lead and teammate drop the same tools")
+
+	states := map[string]mcp.ClientInfo{"signal": {Channel: true}, "switchboard": {Channel: true}}
+	require.Equal(t, []string{"mcp_off_send", "mcp_switchboard_send", "view"},
+		toolNames(filterToolsForChannel(lead, "switchboard", states)))
+	require.Equal(t, toolNames(filterToolsForChannel(teammate, "switchboard", states)),
+		toolNames(filterToolsForChannel(lead, "switchboard", states)), "Lead and teammate keep the same channel tools")
 }

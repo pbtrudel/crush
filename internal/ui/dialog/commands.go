@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"image"
 	"os"
 	"strings"
 
@@ -85,6 +86,8 @@ type Commands struct {
 	list  *list.FilterableList
 
 	windowWidth int
+
+	listArea image.Rectangle
 
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
@@ -261,8 +264,43 @@ func (c *Commands) HandleMsg(msg tea.Msg) Action {
 			}
 			return ActionCmd{cmd}
 		}
+	case common.CoalescedWheelMsg:
+		if image.Pt(msg.Mouse.X, msg.Mouse.Y).In(c.commandListArea()) {
+			c.list.ScrollBy(int(msg.DeltaY))
+		}
+	case tea.MouseClickMsg:
+		return c.handleMouseClick(msg)
 	}
 	return nil
+}
+
+func (c *Commands) handleMouseClick(msg tea.MouseClickMsg) Action {
+	if msg.Button != tea.MouseLeft {
+		return nil
+	}
+	area := c.commandListArea()
+	area.Max.X = min(area.Max.X, area.Min.X+c.list.Width())
+	point := image.Pt(msg.X, msg.Y)
+	if !point.In(area) {
+		return nil
+	}
+	index, _ := c.list.ItemIndexAtPosition(point.X-area.Min.X, point.Y-area.Min.Y)
+	if index < 0 {
+		return nil
+	}
+	item, ok := c.list.ItemAt(index).(*CommandItem)
+	if !ok || item == nil {
+		return nil
+	}
+	// A click chooses the command the way a menu item does: select it and
+	// run it at once, so every entry answers one click instead of waiting
+	// for a double-click the terminal may never deliver.
+	c.list.SetSelected(index)
+	return item.Action()
+}
+
+func (c *Commands) commandListArea() image.Rectangle {
+	return c.listArea
 }
 
 func checkDockerMCPAvailabilityCmd() tea.Cmd {
@@ -321,6 +359,7 @@ func commandsTabsView(sty *styles.Styles, selected CommandType, hasUserCmds bool
 // Draw implements [Dialog].
 func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := c.com.Styles
+	c.listArea = image.Rectangle{}
 	width := max(0, min(defaultDialogMaxWidth, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
 	// The palette adds a rule, a preview, and a second rule around the
 	// list, so it needs three more rows than a standard dialog.
@@ -374,12 +413,13 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	listView := t.Dialog.List.Height(c.list.Height()).Render(c.list.Render())
 	rc.AddPart(listView)
 
-	rc.AddPart(styles.ApplyForegroundGrad(
+	bottomRule := styles.ApplyForegroundGrad(
 		t.Dialog.Palette.Rule,
 		strings.Repeat("─", innerWidth),
 		t.Dialog.Palette.RuleToColor,
 		t.Dialog.Palette.RuleFromColor,
-	))
+	)
+	rc.AddPart(bottomRule)
 	rc.Help = renderDialogHelp(t, &c.help, c, innerWidth)
 
 	if c.loading {
@@ -387,10 +427,56 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	view := rc.Render()
+	c.updateCommandListArea(area, view, listView, bottomRule, rc.Help, rc.ViewStyle, t.Dialog.List, innerWidth, c.list.Height())
 
 	cur := c.Cursor()
 	DrawCenterCursor(scr, area, view, cur)
 	return cur
+}
+
+// updateCommandListArea records the absolute rect of the command list so mouse
+// clicks can be hit-tested against it. It mirrors the sessions dialog, working
+// up from the bottom of the centered view past the help and the rule below the
+// list.
+func (c *Commands) updateCommandListArea(
+	area uv.Rectangle,
+	view string,
+	listView string,
+	bottomRule string,
+	helpView string,
+	viewStyle lipgloss.Style,
+	bodyStyle lipgloss.Style,
+	bodyWidth int,
+	bodyHeight int,
+) {
+	viewWidth, viewHeight := lipgloss.Size(view)
+	dialogArea := common.CenterRect(area, min(viewWidth, area.Dx()), min(viewHeight, area.Dy()))
+	bodyViewTop := dialogArea.Max.Y -
+		viewStyle.GetMarginBottom() -
+		viewStyle.GetBorderBottomSize() -
+		viewStyle.GetPaddingBottom() -
+		lipgloss.Height(helpView) -
+		lipgloss.Height(bottomRule) -
+		lipgloss.Height(listView)
+	bodyMin := image.Pt(
+		dialogArea.Min.X+
+			viewStyle.GetMarginLeft()+
+			viewStyle.GetBorderLeftSize()+
+			viewStyle.GetPaddingLeft()+
+			bodyStyle.GetMarginLeft()+
+			bodyStyle.GetBorderLeftSize()+
+			bodyStyle.GetPaddingLeft(),
+		bodyViewTop+
+			bodyStyle.GetMarginTop()+
+			bodyStyle.GetBorderTopSize()+
+			bodyStyle.GetPaddingTop(),
+	)
+	c.listArea = image.Rect(
+		bodyMin.X,
+		bodyMin.Y,
+		bodyMin.X+bodyWidth,
+		bodyMin.Y+bodyHeight,
+	).Intersect(dialogArea).Intersect(area)
 }
 
 // ShortHelp implements [help.KeyMap].
@@ -509,8 +595,14 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear").WithIcon("✦"),
-		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"),
+		NewCommandItem(c.com.Styles, "open_web", "Open Web Mode", "", ActionOpenWeb{}).WithAliases("web").WithIcon("◈"),
 	}
+	if c.com.Web != nil && c.com.Web.Running() {
+		// Stop sits next to Open: both act on the same gateway, and a
+		// user who opened web mode may want it gone without the tab.
+		commands = append(commands, NewCommandItem(c.com.Styles, "stop_web", "Stop Web Mode", "", ActionStopWeb{}).WithAliases("web stop", "stop web").WithIcon("◈"))
+	}
+	commands = append(commands, NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}).WithIcon("▤"))
 	if c.hasSession && c.com.Config().Options.GetAgentTeams() {
 		commands = append(commands, NewCommandItem(c.com.Styles, "view_agents", "View Agents", "", ActionOpenDialog{AgentsID}).WithAliases("agents", "subagents", "teammates").WithIcon("⧉"))
 	}
@@ -619,6 +711,13 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		}))
 	}
 
+	// Toggle skills for this repository when any are configured.
+	if cfg.Options != nil && len(cfg.Options.SkillsPaths) > 0 {
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_skills", "Toggle Skills", "", ActionOpenDialog{
+			DialogID: SkillsTogglesID,
+		}))
+	}
+
 	if c.hasTodos || c.hasQueue {
 		var label string
 		switch {
@@ -664,6 +763,9 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		mouseLabel = "Enable Mouse"
 	}
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_mouse", mouseLabel, "", ActionToggleMouseSupport{}))
+
+	// Add Channels command — opens the channels management dialog.
+	commands = append(commands, NewCommandItem(c.com.Styles, "channels", "Channels", "", ActionOpenDialog{DialogID: ChannelsID}))
 
 	commands = append(
 		commands,

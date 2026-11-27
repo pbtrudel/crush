@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/roles"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
@@ -52,44 +53,114 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 	return fmt.Sprintf("You are teammate %q.\n\n%s", member.Name, task)
 }
 
-// teammatePrompt is the message a teammate turn starts from: the inherited
-// context a fork member gets, then its name, then the task.
+// teammatePrompt is teammatePromptFor with the summary the member last got
+// its fork prefix on, which never re-sends it.
+func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string, first bool) string {
+	prompt, _ := r.teammatePromptFor(ctx, member, task, first, member.ContextSummary)
+	return prompt
+}
+
+// teammatePromptFor is the message a teammate turn starts from. On the
+// member's first turn only, it carries its role block; every turn carries
+// its name, then the task. A fork member also gets the inherited context on
+// its first turn and on the first turn after its session was compacted:
+// summary is the session's summary message id, and one that differs from
+// the member's recorded value means the summary replaced the copy in its
+// history. It reports whether the inherited context was sent.
 //
 // The inherited context goes first because it is the same bytes for every fork
-// sibling of one Lead: the per-sibling name in front of it would end the shared
-// prefix at the first line and cost each sibling the whole block.
-func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string) string {
+// sibling of one Lead. The role block follows because it is the same bytes for
+// every sibling with that role; the per-sibling name comes after both, so the
+// shared prefix runs through the whole role block.
+func (r *teamRunner) teammatePromptFor(ctx context.Context, member agentteam.Member, task string, first bool, summary string) (string, bool) {
 	task = teammateTaskMessage(member, task)
-	if member.Context == agentteam.ContextFork {
-		return r.forkPrefix(ctx, member) + task
+	if first && member.RoleName != "" {
+		if role, refusal := resolveRole(r.c.cfg.Config(), member.RoleName); refusal == "" {
+			task = roles.Block(*role) + task
+		}
 	}
-	return task
+	if member.Context == agentteam.ContextFork && (first || summary != member.ContextSummary) {
+		return r.forkPrefix(ctx, member) + task, true
+	}
+	return task, false
+}
+
+// teammateFirstTurn reports whether this turn is the member's first, the
+// only one that carries its role block. A session with no messages counts
+// even when it was not created now: a run can save the session id and end
+// before its first message lands, and the retry must still reach the model
+// with its role.
+func teammateFirstTurn(created bool, sess session.Session) bool {
+	return created || sess.MessageCount == 0
 }
 
 // teamRunner runs teammate turns with the coordinator's agent machinery.
 type teamRunner struct {
 	c *coordinator
+	// team is the service this runner was created for. The coordinator's
+	// pointer can be retired by a reload while a turn is in flight, and
+	// the session ids the turn hands out must keep the team that owns
+	// them.
+	team *agentteam.Service
+}
+
+// teamService returns the live Team service, or nil when Agent Teams is off.
+// Callers load it once and use only that value, so a config reload cannot
+// swap the service out from under them.
+func (c *coordinator) teamService() *agentteam.Service {
+	return c.team.Load()
+}
+
+// setTeam publishes the live Team service; nil retires it.
+func (c *coordinator) setTeam(s *agentteam.Service) {
+	c.team.Store(s)
 }
 
 // syncAgentTeams creates or tears down the Team service to match the
 // persisted option. It runs at startup and on every config reload.
 func (c *coordinator) syncAgentTeams() error {
 	enabled := c.cfg.Config().Options.GetAgentTeams()
+	c.teamSyncMu.Lock()
+	defer c.teamSyncMu.Unlock()
+	team := c.teamService()
 	switch {
-	case enabled && c.team == nil:
+	case enabled && team == nil:
 		teamPath := filepath.Join(c.cfg.Config().Options.DataDirectory, "agent-teams", "team.json")
-		teamService, err := agentteam.New(teamPath, agentteam.Config{}, nil)
+		teamService, err := agentteam.New(teamPath, agentteam.Config{
+			Autostart:        c.teamAutostart,
+			RoleExists:       c.teamRoleExists,
+			WorkingDir:       c.cfg.WorkingDir(),
+			SettleMemberJobs: c.settleMemberJobs,
+		}, nil)
 		if err != nil {
 			return fmt.Errorf("initialize Agent Teams: %w", err)
 		}
-		teamService.SetRunner(&teamRunner{c: c})
+		teamService.SetRunner(&teamRunner{c: c, team: teamService})
 		teamService.SetTaskCompletedHook(c.completeMatchingTodo)
-		c.team = teamService
-	case !enabled && c.team != nil:
-		c.team.Shutdown()
-		c.team = nil
+		teamService.SetLeadNotifyHook(c.wakeLeadForTeamMessage)
+		c.setTeam(teamService)
+	case !enabled && team != nil:
+		// Retire the service before shutting it down, so the next reader
+		// sees Agent Teams as off. A reader that loaded it just before
+		// still holds a valid service and gets its normal shut-down error.
+		c.setTeam(nil)
+		team.Shutdown()
 	}
 	return nil
+}
+
+// teamAutostart reports whether the Team service may start teammates for
+// ready tasks that name a role. The service calls it on every pass, so a
+// config reload applies without a restart.
+func (c *coordinator) teamAutostart() bool {
+	opts := c.cfg.Config().Options
+	return opts.GetAgentTeams() && opts.GetAgentTeamAutostart()
+}
+
+// teamRoleExists reports whether a task's role still resolves.
+func (c *coordinator) teamRoleExists(name string) bool {
+	_, refusal := resolveRole(c.cfg.Config(), name)
+	return refusal == ""
 }
 
 // completeMatchingTodo closes the session todo that matches a completed team
@@ -141,6 +212,10 @@ type teamRun struct {
 	output    string
 	err       error
 	cancel    context.CancelFunc
+	// contextSummary is the session's summary id when the turn started;
+	// forkSent says the turn's message carried the fork prefix.
+	contextSummary string
+	forkSent       bool
 }
 
 func (r *teamRun) SessionID() string     { return r.sessionID }
@@ -149,23 +224,31 @@ func (r *teamRun) Output() string        { return r.output }
 func (r *teamRun) Err() error            { return r.err }
 func (r *teamRun) Cancel()               { r.cancel() }
 
-// Start creates or reuses the teammate session and runs one turn.
+// ContextSummary reports the summary the turn's fork prefix was sent on.
+func (r *teamRun) ContextSummary() (string, bool) { return r.contextSummary, r.forkSent }
+
+// Start builds the teammate's agent, then creates or reuses its session and
+// runs one turn.
 func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptText string) (agentteam.Run, error) {
 	// The member identity has to reach tool.Run: the agent and question
 	// tools stay in the palette for cache parity but refuse outside the
 	// Lead. WithoutCancel keeps the value across the turn's timeout.
 	memberCtx := agentteam.WithMember(ctx, member.Name)
 
-	sess, err := r.teammateSession(memberCtx, member)
-	if err != nil {
-		return nil, err
-	}
-	r.c.approveForHeadlessRun(sess.ID, member.ParentID)
-
+	// Build the agent before the session. A build can fail on a role or a
+	// model the config no longer serves, and a session created for a turn
+	// that never ran would hold the member's deterministic session id, so
+	// the retry could never create it again.
 	agent, err := r.teammateAgent(memberCtx, member)
 	if err != nil {
 		return nil, err
 	}
+
+	sess, created, err := r.teammateSession(memberCtx, member)
+	if err != nil {
+		return nil, err
+	}
+	r.c.approveForHeadlessRun(sess.ID, member.ParentID)
 
 	// The Lead's session decides how the teammate's request is filtered and
 	// routed: its channel keeps channel-scoped MCP tools in the palette, and
@@ -182,13 +265,15 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		}
 	}
 
-	promptText = r.teammatePrompt(memberCtx, member, promptText)
+	promptText, forkSent := r.teammatePromptFor(memberCtx, member, promptText, teammateFirstTurn(created, sess), sess.SummaryMessageID)
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
-		sessionID: sess.ID,
-		done:      make(chan struct{}),
-		cancel:    cancel,
+		sessionID:      sess.ID,
+		done:           make(chan struct{}),
+		cancel:         cancel,
+		contextSummary: sess.SummaryMessageID,
+		forkSent:       forkSent,
 	}
 	r.c.startTeammateRun(sess, member)
 	go func() {
@@ -263,7 +348,17 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 		return nil, errors.New("coder agent not configured")
 	}
 
-	models, err := r.teammateModels(member, lead.Model())
+	var role *roles.Role
+	if member.RoleName != "" {
+		resolved, refusal := resolveRole(r.c.cfg.Config(), member.RoleName)
+		if refusal != "" {
+			return nil, fmt.Errorf("teammate %q: role %q no longer exists", member.Name, member.RoleName)
+		}
+		role = resolved
+		agentCfg.Role = role
+	}
+
+	models, err := r.teammateModels(member, role, lead.Model())
 	if err != nil {
 		return nil, err
 	}
@@ -291,15 +386,21 @@ func (r *teamRunner) teammateAgent(ctx context.Context, member agentteam.Member)
 // the shared subagent set. A member with an override is re-resolved against
 // the current config on every build, so a provider or model that went away
 // is an error rather than a silent fallback to the default model.
-func (r *teamRunner) teammateModels(member agentteam.Member, parent Model) (func() ModelSet, error) {
-	if strings.TrimSpace(member.Model) == "" {
-		return nil, nil
-	}
-	sel, ok, refusal := r.c.resolveModelOverride(AgentDispatchParams{
+func (r *teamRunner) teammateModels(member agentteam.Member, role *roles.Role, parent Model) (func() ModelSet, error) {
+	params := AgentDispatchParams{
 		Model:     member.Model,
 		Provider:  member.ModelProvider,
 		Reasoning: member.Reasoning,
-	}, parent)
+	}
+	// One field of the member's group replaces the role's group whole,
+	// exactly as an overlay and a dispatch override do.
+	if !explicitModelOverride(params) {
+		if role == nil || !role.PinsModel() {
+			return nil, nil
+		}
+		params = roleModelParams(role)
+	}
+	sel, ok, refusal := r.c.resolveModelOverride(params, parent)
 	if refusal != "" {
 		return nil, fmt.Errorf("teammate %q: %s", member.Name, refusal)
 	}
@@ -316,24 +417,29 @@ func (r *teamRunner) teammateModels(member agentteam.Member, parent Model) (func
 }
 
 // teammateSession reuses the member's session, or creates it on first run.
-func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Member) (session.Session, error) {
+// The bool is true when the session was created, which is what makes the
+// member's first turn the only one that carries its role block.
+func (r *teamRunner) teammateSession(ctx context.Context, member agentteam.Member) (session.Session, bool, error) {
 	if member.SessionID != "" {
 		existing, err := r.c.sessions.Get(ctx, member.SessionID)
 		if err == nil {
-			return existing, nil
+			return existing, false, nil
 		}
 	}
-	return r.c.sessions.CreateTaskSession(ctx, r.teammateSessionID(member), member.ParentID, "Teammate "+member.Name)
+	created, err := r.c.sessions.CreateTaskSession(ctx, r.teammateSessionID(member), member.ParentID, "Teammate "+member.Name)
+	return created, err == nil, err
 }
 
 // teammateSessionID names a teammate session. Member ids restart with every
 // new Team, so the Team id keeps a fresh team from colliding with the sessions
-// an earlier team left in the same workspace database.
+// an earlier team left in the same workspace database. The runner's own
+// service supplies it, so a reload that retires the coordinator's pointer
+// mid-turn cannot drop the team id.
 func (r *teamRunner) teammateSessionID(member agentteam.Member) string {
-	if r.c.team == nil {
+	if r.team == nil {
 		return "team-" + member.ID
 	}
-	teamID := strings.TrimPrefix(r.c.team.TeamID(), "team-")
+	teamID := strings.TrimPrefix(r.team.TeamID(), "team-")
 	if teamID == "" {
 		return "team-" + member.ID
 	}

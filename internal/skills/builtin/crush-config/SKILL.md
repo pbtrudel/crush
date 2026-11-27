@@ -1,16 +1,16 @@
 ---
 name: crush-config
-description: Use when the user needs help configuring Crush — writing crushrc (the Bash config format) or crush.json, setting up providers, models, LSPs, MCP servers, hooks, skills, permissions, or changing Crush behavior.
+description: Use when the user needs help configuring Crush, including crushrc (the Bash config format) or crush.json, providers, models, LSPs, MCP servers, hooks, skills, roles, permissions, or changing Crush behavior.
 ---
 
 # Crush Configuration
 
 Crush supports two config formats:
 
-- **`crushrc`** — a Bash script that builds config by calling Crush builtins.
+- **`crushrc`**: a Bash script that builds config by calling Crush builtins.
   **Preferred.** Because it is real Bash you get includes, secrets,
   conditionals, and variables for free.
-- **`crush.json`** — static JSON. Fully supported; see
+- **`crush.json`**: static JSON. Fully supported; see
   [Legacy JSON format](#legacy-json-format).
 
 Both are discovered together and deep-merged. Priority (highest to lowest):
@@ -50,7 +50,7 @@ option skill-path ./skills
 permissions allow view ls grep edit
 ```
 
-Values are ordinary Bash — quote and expand normally (`"$VAR"`, `$(cmd)`,
+Values are ordinary Bash: quote and expand normally (`"$VAR"`, `$(cmd)`,
 `${VAR:?required}`). A failing `$(command)` aborts the load.
 
 `CRUSH_VERSION` is exported into the script so you can feature-detect the
@@ -69,7 +69,7 @@ accept `true/false/1/0/yes/no`, case-insensitive.
 
 ```bash
 provider add <id> [flags]    # define/update; repeated calls merge
-provider remove <id>         # alias: rm — removes the provider and its models
+provider remove <id>         # alias: rm; removes the provider and its models
 ```
 
 Flags: `--name`, `--type` (`completions`, `responses`, `messages`, or a local
@@ -77,7 +77,9 @@ type like `ollama`, `lmstudio`, `llamacpp`; legacy values `openai`, `openai-comp
 `anthropic` are migrated automatically), `--api-key`, `--base-url`,
 `--disable BOOL`, `--flat-rate BOOL`, `--discover-models BOOL`,
 `--system-prompt-prefix TEXT`, `--extra-header KEY VALUE` (repeatable),
-`--extra-body JSON`, `--provider-options JSON`.
+`--extra-body JSON`, `--provider-options JSON`, `--request-compression br,gzip`
+(compress OpenAI-compatible request bodies, most preferred first; only for
+endpoints that accept it; Hyper defaults to `br,gzip`, Mistral ignores it).
 
 ```bash
 provider add deepseek \
@@ -123,7 +125,9 @@ Flags: `--command CMD`, `--args ARG` (repeatable), `--env KEY VALUE`
 (repeatable), `--url URL`, `--header KEY VALUE` (repeatable), `--timeout N`,
 `--disabled BOOL`, `--disabled-tools TOOL` (repeatable), `--enabled-tools TOOL`
 (repeatable), `--oauth BOOL`, `--oauth-client-id ID`, `--oauth-client-secret SECRET`,
-`--oauth-callback-port PORT`.
+`--oauth-callback-port PORT`, `--channel BOOL` (opt the server in as a
+channel, like `--channels` on the CLI), `--channel-reply JSON` (the
+`channel_reply` routing object).
 
 ```bash
 mcp add github --type http \
@@ -156,7 +160,7 @@ hook add <event> --command CMD [--name NAME] [--matcher REGEX] [--timeout N]
 hook remove <event> [--name NAME]    # alias: rm; without --name clears the event
 ```
 
-Only named hooks can be removed individually — give a hook `--name` if you
+Only named hooks can be removed individually: give a hook `--name` if you
 intend to remove it later. See [Hooks runtime](#hooks-runtime) for how hooks
 execute (stdin payload, env vars, decisions).
 
@@ -182,7 +186,8 @@ option reset <list-key>    # clear a list option back to empty
 ```
 
 - **Boolean keys** (value optional, defaults `true`): `debug`, `debug-lsp`,
-  `auto-lsp`, `progress`.
+  `auto-lsp`, `progress`, `agent-teams`, `agent-team-autostart` (start a
+  teammate on its own when a ready shared task names a role; default `true`).
 - **Boolean keys phrased positively** (stored as the negated field): `metrics`,
   `auto-summarize`, `provider-auto-update`,
   `default-providers`. Example: `option metrics false` disables metrics.
@@ -209,6 +214,14 @@ option reset <list-key>    # clear a list option back to empty
   scrolling), `option ui scrollbar default|always|never`,
   `option ui exit-banner default|compact|none`,
   `option ui completions-max-depth N`, `option ui completions-max-items N`.
+- **Prompt overrides**: `option prompt <name> <path>` replaces a built-in
+  prompt (`coder`, `task`, `plan`, `summary`, `title`, `initialize`) with a
+  file. Relative paths resolve against the directory of the config file
+  that sets them. The file replaces the built-in whole, so a `coder`
+  replacement must include `{{.AvailSkillXML}}` and a
+  `{{range .ContextFiles}}<file path="{{.Path}}">{{.Content}}</file>{{end}}`
+  loop (copy the blocks from the built-in `coder.md.tpl`) to keep them. For
+  one run, use `crush --prompt coder=./file.md.tpl` instead.
 - **List keys** (singular, one value per call, repeatable): `context-path`,
   `global-context-path`, `skill-path`, `disable-skill`. Use `option reset <key>`
   to wipe inherited values (e.g. after `source`).
@@ -228,6 +241,55 @@ option ui exit-banner compact
 > `skill-path`: `.agents/skills`, `.crush/skills`, `.claude/skills`,
 > `.cursor/skills`.
 
+## Agent roles
+
+Agent roles are markdown files, not `crushrc` builtins. A role gives a
+teammate or subagent a prompt, a tool allow-list, and an optional model;
+`spawn_teammate`, `agent_dispatch`, and `agent` take one as `role`.
+
+Files are named `<role>.md` and read lowest priority first: the built-in roles
+embedded in the binary, `$CRUSH_AGENTS_DIR` (or `~/.config/crush/agents` when
+it is unset), `<git root>/.crush/agents`, then `<working dir>/.crush/agents`.
+
+```markdown
+---
+name: reviewer
+description: Reviews a change for bugs, risks and missed edge cases.
+tools: view, read, ls, glob, grep, bash
+model: claude-opus-5-5
+provider: claude-agent
+reasoning: high
+---
+The role prompt, at most 8 KiB.
+```
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `name` | yes | lower-kebab-case, equal to the file name without `.md`; `coder`, `task`, and `plan` are reserved |
+| `description` | yes, unless overlay | one line, at most 200 bytes |
+| `tools` | no | comma string or YAML list; exact names, or a prefix ending in `*`; omitted means every tool, an empty list is an error |
+| `model`, `provider`, `reasoning` | no | one group, with the same rules as the `agent_dispatch` overrides |
+| body | no | at most 8 KiB; no body makes the file an overlay |
+
+A file with a body replaces the role of that name; a file with no body is an
+overlay that inherits every field it leaves out, and that is how a model is
+pinned on a built-in without copying its prompt. Overlays must still repeat
+`name`, and `name` must match the file name. A `.crush/agents/reviewer.md`
+that is only this pins `reviewer` to another model:
+
+```markdown
+---
+name: reviewer
+model: claude-opus-5-5
+provider: claude-agent
+---
+```
+
+`crush_info` lists the loaded roles and any file it skipped under `[roles]`.
+See
+[docs/agent-teams.md](https://github.com/charmbracelet/crush/blob/main/docs/agent-teams.md#roles)
+for the full rules on overlays, `access`, model precedence, and caching.
+
 ## Hooks runtime
 
 Hooks are user-defined shell commands that fire on agent events. Crush supports
@@ -241,7 +303,7 @@ is the same however the hook is defined (`hook add` or JSON).
 
 1. When a tool is about to be called, all `PreToolUse` hooks with a matching
    `matcher` (or no matcher) run in parallel.
-2. Duplicate commands are deduplicated — each unique command runs at most once.
+2. Duplicate commands are deduplicated: each unique command runs at most once.
 3. The hook receives JSON on **stdin** and hook-specific **environment
    variables**.
 
@@ -283,7 +345,7 @@ StopFailure), `last_assistant_message` (TurnEnd), `decision`
 
 ### Hook output
 
-**Exit code 0** — hook succeeded. Stdout is parsed as JSON:
+**Exit code 0**: hook succeeded. Stdout is parsed as JSON:
 
 ```json
 { "decision": "allow", "context": "optional context appended to tool result" }
@@ -297,17 +359,17 @@ StopFailure), `last_assistant_message` (TurnEnd), `decision`
 - `updated_output`: on PostToolUse, a string that replaces the tool output.
 - `halt`: `true` ends the turn (blocks compaction on PreCompact).
 
-**Exit code 2** — the tool call is blocked; stderr is the deny reason.
+**Exit code 2**: the tool call is blocked; stderr is the deny reason.
 
-**Exit code 49** — the whole turn is halted; stderr is the reason.
+**Exit code 49**: the whole turn is halted; stderr is the reason.
 
-**Any other exit code** — non-blocking error; the tool call proceeds, unless
+**Any other exit code**: non-blocking error; the tool call proceeds, unless
 stdout holds a JSON object, which is applied anyway.
 
 ### Decision aggregation
 
-- **Deny wins over allow** — any deny blocks the call.
-- **Allow wins over none** — a lone allow lets it proceed.
+- **Deny wins over allow**: any deny blocks the call.
+- **Allow wins over none**: a lone allow lets it proceed.
 - Deny reasons and context strings are concatenated (newline-separated).
 - `updated_input` patches shallow-merge in config order on PreToolUse;
   `updated_output` on PostToolUse is last-one-wins.
@@ -348,11 +410,13 @@ user-invocable: true
 
 ## Environment variables
 
-- `CRUSH_VERSION` — exported into `crushrc` at load; the running version (or
+- `CRUSH_VERSION`: exported into `crushrc` at load; the running version (or
   `devel` for local builds).
-- `CRUSH_GLOBAL_CONFIG` — override global config location.
-- `CRUSH_GLOBAL_DATA` — override data directory location.
-- `CRUSH_SKILLS_DIR` — override default skills directory.
+- `CRUSH_GLOBAL_CONFIG`: override global config location.
+- `CRUSH_GLOBAL_DATA`: override data directory location.
+- `CRUSH_SKILLS_DIR`: override default skills directory.
+- `CRUSH_AGENTS_DIR`: override the global agents directory role files load
+  from.
 
 ## Legacy JSON format
 
@@ -390,6 +454,8 @@ The `$schema` property enables IDE autocomplete but is optional.
 | `option metrics false`               | `options.disable_metrics = true`                       |
 | `option request-timeout 300`          | `options.request_timeout = 300`                        |
 | `option max-background-jobs 200`     | `options.max_background_jobs = 200`                    |
+| `option agent-team-autostart false`  | `options.agent_team_autostart = false`                 |
+| `option prompt coder ./coder.md.tpl` | `options.prompts.coder = "./coder.md.tpl"`             |
 | `option attribution-trailer-style none` | `options.attribution.trailer_style = "none"`        |
 | `option attribution-generated-with false` | `options.attribution.generated_with = false`       |
 

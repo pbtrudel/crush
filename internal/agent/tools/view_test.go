@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"slices"
@@ -473,9 +475,13 @@ func (m *mockViewPermissionService) AutoApproveSession(sessionID string) {}
 
 func (m *mockViewPermissionService) IsSessionAutoApproved(sessionID string) bool { return false }
 
-func (m *mockViewPermissionService) ActiveRequest() (permission.PermissionRequest, bool) {
-	return permission.PermissionRequest{}, false
+func (m *mockViewPermissionService) InheritAutoApproval(parentSessionID, childSessionID string) {}
+
+func (m *mockViewPermissionService) ActiveRequests() []permission.PermissionRequest {
+	return nil
 }
+
+func (m *mockViewPermissionService) SetSessionScope(scope permission.SessionScope) {}
 
 func (m *mockViewPermissionService) SetSkipRequests(skip bool) {}
 
@@ -671,4 +677,92 @@ func TestSniffImageMimeType(t *testing.T) {
 			require.Equal(t, tc.want, sniffImageMimeType(tc.data, tc.fallback))
 		})
 	}
+}
+
+// A path deleted along with its parent folder used to report only "File not
+// found". Pointing at the nearest folder that still exists, and listing what
+// it holds, is what lets the next try land.
+func TestViewNotFoundSuggestsNearestFolder(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "kept.go"), nil, 0o644))
+
+	tool := newViewToolForTest(root)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: filepath.Join(root, "deleted", "sub", "file.go"),
+	})
+
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, root)
+	require.Contains(t, resp.Content, "kept.go")
+}
+
+// An oversized screenshot is shrunk to fit instead of refused, and the model
+// is told what happened.
+func TestViewToolShrinksOversizedImage(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	filePath := filepath.Join(workingDir, "large.png")
+	var buf bytes.Buffer
+	// Small enough for the hard cap, large enough to need the shrink.
+	require.NoError(t, png.Encode(&buf, noisyImage(1600, 1200)))
+	require.NoError(t, os.WriteFile(filePath, buf.Bytes(), 0o644))
+	require.Greater(t, buf.Len(), MaxViewSize)
+	require.Less(t, buf.Len(), maxImageFileSize)
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	ctx = context.WithValue(ctx, SupportsImagesContextKey, true)
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: filePath,
+	})
+
+	require.False(t, resp.IsError, resp.Content)
+	require.Equal(t, "image", resp.Type)
+	require.Equal(t, "image/jpeg", resp.MediaType)
+	require.LessOrEqual(t, len(resp.Data), MaxViewSize)
+	require.Contains(t, resp.Content, "Image shrunk from 1600x1200 to ")
+}
+
+// An image file past the hard cap is refused from its size alone: reading
+// hundreds of megabytes to discover it is an image would stall the turn.
+func TestViewToolRefusesImageAboveHardLimit(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	filePath := filepath.Join(workingDir, "huge.png")
+	require.NoError(t, os.WriteFile(filePath, bytes.Repeat([]byte{0xff}, maxImageFileSize+1), 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	ctx = context.WithValue(ctx, SupportsImagesContextKey, true)
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: filePath,
+	})
+
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "Image file is too large")
+	require.Contains(t, resp.Content, "26214400", "the message names the hard cap")
+	require.NotContains(t, resp.Content, "could not be shrunk", "the file must be refused before it is read")
+}
+
+// The nearest-folder hint lists names only inside the working directory: a
+// read granted for one outside file is not a grant to list its ancestors.
+func TestViewNotFoundListsNothingAboveWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	outsideRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outsideRoot, "private.txt"), nil, 0o644))
+
+	tool := newViewToolForTest(t.TempDir())
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp := runViewTool(t, tool, ctx, ViewParams{
+		FilePath: filepath.Join(outsideRoot, "deleted", "sub", "file.go"),
+	})
+
+	require.True(t, resp.IsError)
+	require.NotContains(t, resp.Content, "private.txt")
 }

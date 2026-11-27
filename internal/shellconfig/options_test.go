@@ -67,6 +67,23 @@ option notifications osc`
 	require.Equal(t, "osc", opts["notifications"])
 }
 
+func TestOption_PromptCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option prompt-cache-ttl 1h`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, "1h", opts["prompt_cache_ttl"])
+}
+
 func TestOption_List(t *testing.T) {
 	t.Parallel()
 
@@ -180,6 +197,24 @@ func TestOption_UIExitBanner(t *testing.T) {
 	require.Contains(t, err.Error(), "expects default, compact, or none")
 }
 
+func TestOption_UINerdFonts(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option ui nerd-fonts true`))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	ui := result["options"].(map[string]any)["tui"].(map[string]any)
+	require.Equal(t, true, ui["nerd_fonts"])
+
+	_, err = LoadShellConfig(t.Context(), path, []byte(`option ui nerd-fonts auto`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "nerd-fonts expects true/false")
+}
+
 func TestOption_BoolShorthand(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +298,24 @@ func TestOption_MaxBackgroundJobs(t *testing.T) {
 	require.Equal(t, float64(200), opts["max_background_jobs"])
 }
 
+func TestOption_ImageRetentionTurns(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option image-retention-turns 2
+option image-retention-turns -1`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, float64(-1), opts["image_retention_turns"], "negative must pass through as disabled")
+}
+
 func TestOption_RequestTimeoutInvalid(t *testing.T) {
 	t.Parallel()
 
@@ -317,6 +370,20 @@ func TestOption_CompactTailTokensInvalid(t *testing.T) {
 	require.Contains(t, err.Error(), "expects an integer")
 }
 
+func TestOption_Web(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte("option web"))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+	opts := result["options"].(map[string]any)
+	require.Equal(t, true, opts["web"])
+}
+
 func TestOption_UIVerbosity(t *testing.T) {
 	t.Parallel()
 
@@ -362,4 +429,71 @@ func TestOption_EditWithoutRead(t *testing.T) {
 			require.Equal(t, tt.want, opts["edit_without_read"])
 		})
 	}
+}
+
+func TestOption_Prompt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option prompt coder /etc/crush/coder.md.tpl
+option prompt summary /etc/crush/summary.md`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	prompts := result["options"].(map[string]any)["prompts"].(map[string]any)
+	require.Equal(t, "/etc/crush/coder.md.tpl", prompts["coder"])
+	require.Equal(t, "/etc/crush/summary.md", prompts["summary"])
+}
+
+// The config is a shell script, so bash expands ~ before the builtin runs.
+func TestOption_PromptExpandsTilde(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `HOME=/home/someone
+option prompt coder ~/coder.md.tpl`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	prompts := result["options"].(map[string]any)["prompts"].(map[string]any)
+	require.Equal(t, "/home/someone/coder.md.tpl", prompts["coder"])
+}
+
+func TestOption_PromptMissingPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option prompt coder`
+	path := filepath.Join(dir, "crushrc")
+
+	_, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "usage: option prompt")
+}
+
+func TestOption_AnthropicToolSearch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := `option anthropic-tool-search true`
+	path := filepath.Join(dir, "crushrc")
+
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(script))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	opts := result["options"].(map[string]any)
+	require.Equal(t, true, opts["anthropic_tool_search"])
 }

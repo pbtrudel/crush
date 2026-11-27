@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"charm.land/catwalk/v3/pkg/catwalk"
@@ -16,7 +17,6 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/discover"
-	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,16 +24,22 @@ import (
 
 // mockSessionAgent is a minimal mock for the SessionAgent interface.
 type mockSessionAgent struct {
-	model     Model
-	runFunc   func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
-	cancelled []string
+	model   Model
+	runFunc func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
+	// cancelledMu guards cancelled: Cancel can run on another goroutine
+	// while a test reads the recorded ids.
+	cancelledMu sync.Mutex
+	cancelled   []string
+	// onCancel, when set, runs after Cancel records the session, letting a
+	// test model an agent that stops its own run.
+	onCancel func(sessionID string)
 	// tools records the most recent SetTools call, if any.
 	tools []fantasy.AgentTool
 	// systemPrompt records the most recent SetSystemPrompt call, if any.
 	systemPrompt string
 	// notices records EnqueueNotice calls.
 	notices []string
-	// busy controls IsSessionBusy.
+	// busy controls HasActiveTurn and HasPendingWork.
 	busy bool
 	// summarizeOpts records the provider options of the most recent
 	// Summarize call.
@@ -63,11 +69,24 @@ func (m *mockSessionAgent) AdoptedToolOrder(string) []string {
 }
 func (m *mockSessionAgent) SetAdoptedToolOrder(string, []string) {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
+	m.cancelledMu.Lock()
 	m.cancelled = append(m.cancelled, sessionID)
+	m.cancelledMu.Unlock()
+	if m.onCancel != nil {
+		m.onCancel(sessionID)
+	}
+}
+
+// cancelledIDs returns the session ids Cancel has recorded so far.
+func (m *mockSessionAgent) cancelledIDs() []string {
+	m.cancelledMu.Lock()
+	defer m.cancelledMu.Unlock()
+	return append([]string(nil), m.cancelled...)
 }
 func (m *mockSessionAgent) CancelAll()                                  {}
 func (m *mockSessionAgent) CancelBackgroundCompaction(string)           {}
-func (m *mockSessionAgent) IsSessionBusy(sessionID string) bool         { return m.busy }
+func (m *mockSessionAgent) HasActiveTurn(sessionID string) bool         { return m.busy }
+func (m *mockSessionAgent) HasPendingWork(sessionID string) bool        { return m.busy }
 func (m *mockSessionAgent) IsBusy() bool                                { return false }
 func (m *mockSessionAgent) QueuedPrompts(sessionID string) int          { return 0 }
 func (m *mockSessionAgent) QueuedPromptsList(sessionID string) []string { return nil }
@@ -79,9 +98,6 @@ func (m *mockSessionAgent) Summarize(_ context.Context, _ string, opts fantasy.P
 	return nil
 }
 func (m *mockSessionAgent) GenerateTitle(context.Context, string, string) {}
-func (m *mockSessionAgent) ListSettledMessages(context.Context, string, func(string) bool) ([]message.Message, error) {
-	return nil, nil
-}
 
 // newTestCoordinator creates a minimal coordinator for unit testing runSubAgent.
 func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCfg config.ProviderConfig) *coordinator {
@@ -89,9 +105,10 @@ func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCf
 	require.NoError(t, err)
 	cfg.Config().Providers.Set(providerID, providerCfg)
 	return &coordinator{
-		cfg:      cfg,
-		sessions: env.sessions,
-		messages: env.messages,
+		cfg:         cfg,
+		sessions:    env.sessions,
+		messages:    env.messages,
+		permissions: env.permissions,
 	}
 }
 

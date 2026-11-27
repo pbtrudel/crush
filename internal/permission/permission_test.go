@@ -3,6 +3,7 @@ package permission
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -139,6 +140,10 @@ func TestPermissionService_SkipMode(t *testing.T) {
 		service := NewPermissionService("/tmp", []string{}, nil)
 		service.SetPermissionMode(PermissionModeNormal)
 
+		// Subscribe before the request starts: the broker drops events that
+		// are published with no subscriber, which hung this test in CI.
+		events := service.Subscribe(t.Context())
+
 		done := make(chan struct{})
 		go func() {
 			result, err := service.Request(t.Context(), CreatePermissionRequest{
@@ -156,7 +161,6 @@ func TestPermissionService_SkipMode(t *testing.T) {
 		}()
 
 		// Wait for permission request to be published.
-		events := service.Subscribe(t.Context())
 		event := <-events
 		assert.Equal(t, "bash", event.Payload.ToolName)
 		assert.Equal(t, "sudo", event.Payload.Danger)
@@ -697,15 +701,14 @@ func TestPermissionService_ResolveIdempotency(t *testing.T) {
 	})
 }
 
-func TestActiveRequest(t *testing.T) {
+func TestActiveRequests(t *testing.T) {
 	t.Parallel()
 
 	t.Run("reports the pending request only while resolvable", func(t *testing.T) {
 		t.Parallel()
 		service := NewPermissionService("/tmp", nil, nil)
 
-		_, ok := service.ActiveRequest()
-		assert.False(t, ok, "no request pending yet")
+		assert.Empty(t, service.ActiveRequests(), "no request pending yet")
 
 		events := service.Subscribe(t.Context())
 		done := make(chan bool, 1)
@@ -722,16 +725,15 @@ func TestActiveRequest(t *testing.T) {
 		}()
 
 		event := <-events
-		active, ok := service.ActiveRequest()
-		require.True(t, ok, "request must be active while awaiting a decision")
-		assert.Equal(t, event.Payload.ID, active.ID)
-		assert.Equal(t, "s1", active.SessionID)
+		active := service.ActiveRequests()
+		require.Len(t, active, 1, "request must be active while awaiting a decision")
+		assert.Equal(t, event.Payload.ID, active[0].ID)
+		assert.Equal(t, "s1", active[0].SessionID)
 
-		assert.True(t, service.Grant(active))
+		assert.True(t, service.Grant(active[0]))
 		assert.True(t, <-done)
 
-		_, ok = service.ActiveRequest()
-		assert.False(t, ok, "resolved request must no longer be active")
+		assert.Empty(t, service.ActiveRequests(), "resolved request must no longer be active")
 	})
 
 	t.Run("does not report a request whose waiter was cancelled", func(t *testing.T) {
@@ -754,15 +756,59 @@ func TestActiveRequest(t *testing.T) {
 		}()
 
 		<-events
-		_, ok := service.ActiveRequest()
-		require.True(t, ok, "request must be active before cancellation")
+		require.Len(t, service.ActiveRequests(), 1, "request must be active before cancellation")
 
 		cancel()
 		<-done
 
-		_, ok = service.ActiveRequest()
-		assert.False(t, ok, "cancelled request cannot be resolved and must not be reported")
+		assert.Empty(t, service.ActiveRequests(), "cancelled request cannot be resolved and must not be reported")
 	})
+}
+
+// TestRequestScopes guards that a pending prompt only holds back later
+// requests in its own session scope, not every other session's.
+func TestRequestScopes(t *testing.T) {
+	t.Parallel()
+	service := NewPermissionService("/tmp", nil, nil)
+	service.SetSessionScope(func(_ context.Context, sessionID string) string {
+		root, _, _ := strings.Cut(sessionID, "/")
+		return root
+	})
+	events := service.Subscribe(t.Context())
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	request := func(sessionID string) {
+		wg.Go(func() {
+			_, _ = service.Request(t.Context(), CreatePermissionRequest{
+				SessionID:  sessionID,
+				ToolCallID: "call-" + sessionID,
+				ToolName:   "bash",
+				Action:     "execute",
+				Path:       "/tmp",
+			})
+		})
+	}
+	next := func() PermissionRequest {
+		select {
+		case ev := <-events:
+			return ev.Payload
+		case <-time.After(2 * time.Second):
+			t.Fatal("permission request was never published")
+			return PermissionRequest{}
+		}
+	}
+
+	request("s1")
+	first := next()
+	request("s1/child")
+	request("s2")
+	second := next()
+	require.Equal(t, "s2", second.SessionID, "another scope's request must not wait")
+	require.True(t, service.Grant(second))
+	require.True(t, service.Grant(first))
+	child := next()
+	require.Equal(t, "s1/child", child.SessionID)
+	require.True(t, service.Grant(child))
 }
 
 func TestNotificationsCarrySessionID(t *testing.T) {
@@ -953,6 +999,53 @@ func TestPermissionService_AutoReview(t *testing.T) {
 		require.True(t, granted)
 		require.False(t, called)
 	})
+
+	// The user's own grants come before the reviewer: a denying reviewer
+	// must not override "allow for session", nor cost a model call on it.
+	countingDenier := func(calls *atomic.Int32) Reviewer {
+		return func(context.Context, PermissionRequest) (ReviewDecision, error) {
+			calls.Add(1)
+			return ReviewDeny, nil
+		}
+	}
+
+	t.Run("session grant skips the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.sessionPermissions.Set(permissionKeyFor(PermissionRequest{
+			SessionID: req.SessionID, ToolName: req.ToolName, Action: req.Action, Path: req.Path,
+		}), true)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+		require.Zero(t, calls.Load())
+	})
+
+	t.Run("inherited auto-approval skips the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.AutoApproveSession("lead")
+		svc.InheritAutoApproval("lead", req.SessionID)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, granted)
+		require.Zero(t, calls.Load())
+	})
+
+	t.Run("a grant for another session still consults the reviewer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		svc := newService(t, countingDenier(&calls))
+		svc.sessionPermissions.Set(permissionKeyFor(PermissionRequest{
+			SessionID: "other", ToolName: req.ToolName, Action: req.Action, Path: req.Path,
+		}), true)
+		granted, err := svc.Request(t.Context(), req)
+		require.NoError(t, err)
+		require.False(t, granted)
+		require.Equal(t, int32(1), calls.Load())
+	})
 }
 
 // A teammate inherits the approval of its Lead, so the service has to report
@@ -965,4 +1058,49 @@ func TestPermissionService_IsSessionAutoApproved(t *testing.T) {
 	service.AutoApproveSession("session-a")
 	require.True(t, service.IsSessionAutoApproved("session-a"))
 	require.False(t, service.IsSessionAutoApproved("session-b"))
+}
+
+func TestPermissionService_InheritAutoApproval(t *testing.T) {
+	t.Parallel()
+
+	request := func(service Service, ctx context.Context) (bool, error) {
+		return service.Request(ctx, CreatePermissionRequest{
+			SessionID: "child", ToolCallID: "c1", ToolName: "view", Action: "read", Path: "/tmp",
+		})
+	}
+
+	t.Run("child of an auto-approved session is not asked", func(t *testing.T) {
+		t.Parallel()
+		service := NewPermissionService("/tmp", nil, nil)
+		service.AutoApproveSession("parent")
+		service.InheritAutoApproval("parent", "child")
+
+		// A prompt would wait for an answer that never comes, so bound it.
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		granted, err := request(service, ctx)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("child of any other session is still asked", func(t *testing.T) {
+		t.Parallel()
+		service := NewPermissionService("/tmp", nil, nil)
+		service.InheritAutoApproval("parent", "child")
+		requests := service.Subscribe(t.Context())
+
+		done := make(chan bool, 1)
+		go func() {
+			granted, _ := request(service, t.Context())
+			done <- granted
+		}()
+		select {
+		case event := <-requests:
+			require.Equal(t, "child", event.Payload.SessionID)
+			require.True(t, service.Deny(event.Payload))
+			require.False(t, <-done)
+		case granted := <-done:
+			t.Fatalf("answered without asking: granted=%v", granted)
+		}
+	})
 }

@@ -128,6 +128,8 @@ type promptQueueMsg struct {
 // rejected prompt gets no RunComplete, so err must end its turn.
 type agentRunSubmittedMsg struct {
 	sessionID string
+	// pendingID is the optimistic queue entry for the prompt, or zero.
+	pendingID uint64
 	err       error
 }
 
@@ -242,13 +244,32 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 		m.pendingConfigReload = false
 		cmds = append(cmds, m.reloadConfig(true))
 	}
+	// Selections made while busy replay on the same idle probe, model
+	// first: a queued effort belongs to the model the user picked with it.
+	// Clearing each one before its handler runs keeps a later probe from
+	// applying it twice, and the handler now sees an idle cache, so it takes
+	// its normal write-and-rebuild path.
+	if !busy && m.pendingModelSelect != nil {
+		queued := *m.pendingModelSelect
+		m.pendingModelSelect = nil
+		if cmd := m.handleSelectModel(queued); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if !busy && m.pendingReasoningEffort != nil {
+		queued := *m.pendingReasoningEffort
+		m.pendingReasoningEffort = nil
+		if cmd := m.handleSelectReasoningEffort(queued); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if busy {
 		// A session reload that raced an unpopulated busy cache (the
 		// zero-value read at boot) froze the animation clock even though
 		// the agent is working. The authoritative probe re-enables it so
 		// freshly rendered spinners tick. When the probe reports idle the
 		// reload gate stands, keeping ghost spinners still.
-		m.chat.SetAnimationsAllowed(true)
+		m.animClock.frozen = false
 	}
 	if m.hasSession() && hasInProgressTodo(m.session.Todos) && busy && !m.todoIsSpinning {
 		m.todoIsSpinning = true
@@ -274,14 +295,14 @@ func (m *UI) dispatchPromptQueueRefresh() tea.Cmd {
 		return nil
 	}
 	if !m.hasSession() {
-		m.promptQueueItems = nil
 		m.promptQueueCheckedAt = time.Now()
 		// Bump the generation so any in-flight fetch scoped to the
 		// now-departed session is discarded rather than repopulating the
 		// queue.
 		m.invalidatePromptQueue()
-		if m.promptQueue != 0 {
-			m.promptQueue = 0
+		prev := m.promptQueue.Shown()
+		m.promptQueue.Reset()
+		if prev != 0 {
 			m.updateLayoutAndSize()
 		}
 		return nil
@@ -314,10 +335,10 @@ func (m *UI) applyPromptQueue(msg promptQueueMsg) []tea.Cmd {
 		return nil
 	}
 	m.promptQueueCheckedAt = time.Now()
-	itemsChanged := !slices.Equal(m.promptQueueItems, msg.prompts)
-	countChanged := len(msg.prompts) != m.promptQueue
-	m.promptQueueItems = msg.prompts
-	m.promptQueue = len(msg.prompts)
+	prevItems := m.promptQueue.Items()
+	m.promptQueue.SetFetched(msg.prompts)
+	itemsChanged := !slices.Equal(prevItems, m.promptQueue.Items())
+	countChanged := len(prevItems) != m.promptQueue.Shown()
 	// A report waits in the queue until the model reads it, but its
 	// subagent is already done.
 	for _, prompt := range msg.prompts {

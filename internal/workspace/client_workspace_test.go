@@ -1,11 +1,15 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,17 +17,40 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/client"
 	"github.com/charmbracelet/crush/internal/commands"
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/logtest"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/ui/util"
+	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/stretchr/testify/require"
 )
+
+// newTestClientWorkspace returns a ClientWorkspace for workspace ws-1
+// backed by an SDK client pointed at srv.
+func newTestClientWorkspace(t *testing.T, srv *httptest.Server) *ClientWorkspace {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	return NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+}
 
 // TestProtoToMessageToolResult ensures that ToolResult metadata,
 // data, and MIME type survive the conversion from proto on the
@@ -158,6 +185,7 @@ func TestClientWorkspace_PermissionGrantMapping(t *testing.T) {
 				Description: "do thing",
 				Action:      "act",
 				Path:        "/tmp/p",
+				Params:      `{"repo":"charmbracelet/crush"}`,
 			}
 			tc.call(ws, perm)
 
@@ -168,6 +196,8 @@ func TestClientWorkspace_PermissionGrantMapping(t *testing.T) {
 			require.Equal(t, "tool", got.Permission.ToolName)
 			require.Equal(t, "act", got.Permission.Action)
 			require.Equal(t, "/tmp/p", got.Permission.Path)
+			// Older servers reject an MCP tool's string params.
+			require.Nil(t, got.Permission.Params)
 		})
 	}
 }
@@ -296,6 +326,19 @@ func TestTranslateEvent_HostTheme(t *testing.T) {
 	got, ok = out.(HostThemeEvent)
 	require.True(t, ok, "expected HostThemeEvent, got %T", out)
 	require.Nil(t, got.Theme)
+}
+
+func TestTranslateReauthenticateEvent(t *testing.T) {
+	t.Parallel()
+
+	event := pubsub.Event[proto.AgentEvent]{
+		Type:    pubsub.CreatedEvent,
+		Payload: proto.AgentEvent{Type: proto.AgentEventType(notify.TypeReAuthenticate), ProviderID: "example"},
+	}
+	w := NewClientWorkspace(nil, proto.Workspace{})
+	out := w.translateEvent(event).(pubsub.Event[notify.Notification])
+	require.Equal(t, notify.TypeReAuthenticate, out.Payload.Type)
+	require.Equal(t, "example", out.Payload.ProviderID)
 }
 
 // TestTranslateEvent_UpdateAvailable verifies that an incoming
@@ -583,22 +626,43 @@ type recoveryServer struct {
 	// abortStreams kills each event stream mid-response, as a server
 	// that dies does, instead of ending it cleanly.
 	abortStreams bool
+	// config is the config creates report; a configured one makes
+	// recovery initialize the agent.
+	config *config.Config
 
 	creates      int
+	createReqs   []proto.Workspace
 	streams      int
 	sessionPosts []string
 	retired      []string
 	deleted      []string
+	// agentCalls logs agent calls as "<call> <id> [<agent>]".
+	agentCalls []string
 }
 
 func (s *recoveryServer) start(t *testing.T) *client.Client {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(s.handler(t))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	return c
+}
+
+// handler serves the scripted API, so a test can put it on any listener.
+func (s *recoveryServer) handler(t *testing.T) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
 			s.creates++
+			var req proto.Workspace
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			s.createReqs = append(s.createReqs, req)
 			if s.createErr != nil {
 				http.Error(w, "no", s.createErr())
 				return
@@ -617,7 +681,7 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 			}
 			s.liveID = s.nextID
 			require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{
-				ID: s.liveID, Path: "/tmp/recover",
+				ID: s.liveID, Path: "/tmp/recover", Config: s.config,
 			}))
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/clients/"):
 			s.retired = append(s.retired, strings.TrimPrefix(r.URL.Path, "/v1/clients/"))
@@ -642,6 +706,15 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 			require.NoError(t, json.NewEncoder(w).Encode(proto.HostThemeState{
 				WorkspaceID: id, Theme: s.hostTheme,
 			}))
+		case strings.Contains(r.URL.Path, "/agent/"):
+			id, call, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/")
+			if id != s.liveID {
+				http.Error(w, "workspace not found", http.StatusNotFound)
+				return
+			}
+			var req proto.AgentSetMainRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			s.agentCalls = append(s.agentCalls, strings.TrimSpace(call+" "+id+" "+req.AgentID))
 		case strings.HasSuffix(r.URL.Path, "/events"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/events")
 			if id != s.liveID {
@@ -661,14 +734,7 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
-	}))
-	t.Cleanup(srv.Close)
-
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
-	return c
+	})
 }
 
 func (s *recoveryServer) snapshot(f func(*recoveryServer)) {
@@ -947,6 +1013,71 @@ func TestClientWorkspace_EscalatesUnrecoverableConnection(t *testing.T) {
 	}
 }
 
+// runSubscriptionUntilStreams runs the subscription loop until srv has
+// served n event streams, then shuts the workspace down.
+func runSubscriptionUntilStreams(t *testing.T, ws *ClientWorkspace, srv *recoveryServer, n int, send func(tea.Msg)) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		ws.runSubscription(send)
+		close(done)
+	}()
+	require.Eventually(t, func() bool {
+		var streams int
+		srv.snapshot(func(s *recoveryServer) { streams = s.streams })
+		return streams >= n
+	}, 3*time.Second, 5*time.Millisecond)
+	ws.Shutdown()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runSubscription did not return after Shutdown")
+	}
+}
+
+// TestClientWorkspace_RespawnsDeadServer guards against the reconnect loop
+// retrying a dead server's address forever instead of respawning it.
+func TestClientWorkspace_RespawnsDeadServer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows servers listen on named pipes; see the npipe twin")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	testRespawnsDeadServer(t, "tcp", addr, func() (net.Listener, error) {
+		return net.Listen("tcp", addr) //nolint:noctx
+	})
+}
+
+// testRespawnsDeadServer points a client at an address nothing listens on
+// and expects the respawn hook to bring up a server there, on which the
+// workspace is re-registered.
+func testRespawnsDeadServer(t *testing.T, network, addr string, listen func() (net.Listener, error)) {
+	t.Helper()
+	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+	c, err := client.NewClient(t.TempDir(), network, addr)
+	require.NoError(t, err)
+
+	next := &recoveryServer{nextID: "ws-2"}
+	var respawns atomic.Int32
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1", Path: "/tmp/respawn"},
+		WithServerRespawn(func(context.Context) error {
+			ln, err := listen()
+			if err != nil {
+				return err
+			}
+			hs := &http.Server{Handler: next.handler(t)}
+			go func() { _ = hs.Serve(ln) }()
+			t.Cleanup(func() { _ = hs.Close() })
+			respawns.Add(1)
+			return nil
+		}))
+	runSubscriptionUntilStreams(t, ws, next, 1, func(tea.Msg) {})
+	require.Equal(t, "ws-2", ws.workspaceID())
+	require.EqualValues(t, 1, respawns.Load())
+}
+
 // TestClientWorkspace_ShutdownRetiresAfterLostCreateResponse is the
 // quit-during-recovery case, in its nastiest form: the client asks for a
 // replacement workspace and the connection dies before it can read the
@@ -1023,6 +1154,77 @@ func TestClientWorkspace_ShutdownFallsBackForLegacyServer(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"ws-1"}, deleted)
+}
+
+// TestClientWorkspace_ShutdownIsBounded checks quitting cannot hang on a
+// server that accepts the goodbye and never answers it, such as one stopped
+// in a debugger or suspended with Ctrl+Z. The client SDK sets no request
+// timeout of its own, and by the time Shutdown runs the TUI is gone and the
+// root signal handler swallows Ctrl+C, so nothing else can end the wait.
+func TestClientWorkspace_ShutdownIsBounded(t *testing.T) {
+	// Shrink the bound so the test does not wait out the production window,
+	// keeping enough of it for the goodbye to reach the server on a loaded
+	// machine. Not parallel: other tests read the bound through Shutdown.
+	orig := shutdownRetireTimeout
+	shutdownRetireTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { shutdownRetireTimeout = orig })
+
+	for _, tc := range []struct {
+		name string
+		// wedged is the path of the goodbye request that never answers.
+		// Every other request gets a 404, which is how a server that
+		// predates client retirement answers the retire.
+		wedged string
+	}{
+		{name: "retire", wedged: "/v1/clients/"},
+		{name: "legacy server", wedged: "/v1/workspaces/ws-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reached := make(chan struct{})
+			var once sync.Once
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete || !strings.HasPrefix(r.URL.Path, tc.wedged) {
+					http.NotFound(w, r)
+					return
+				}
+				once.Do(func() { close(reached) })
+				// Accept the request and never answer it.
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			// Unwedge the handler first: closing the server waits on it.
+			t.Cleanup(func() {
+				close(release)
+				srv.Close()
+			})
+
+			u, err := url.Parse(srv.URL)
+			require.NoError(t, err)
+			c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+			require.NoError(t, err)
+			ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+			done := make(chan struct{})
+			go func() {
+				ws.Shutdown()
+				close(done)
+			}()
+
+			select {
+			case <-reached:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Shutdown never said goodbye to the server")
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Shutdown blocked on an unresponsive server")
+			}
+		})
+	}
 }
 
 // TestClientWorkspace_AgentReadyErr_WorkspaceGone checks the status the
@@ -1170,6 +1372,61 @@ func TestClientWorkspace_RecoveryCreateIsBounded(t *testing.T) {
 	}
 }
 
+// TestClientWorkspace_RecoveryRestoresMainAgent guards against a
+// re-created workspace dropping plan mode.
+func TestClientWorkspace_RecoveryRestoresMainAgent(t *testing.T) {
+	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+
+	srv := &recoveryServer{
+		liveID: "ws-1",
+		nextID: "ws-2",
+		config: &config.Config{
+			Options: &config.Options{},
+			Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
+				"fake": {ID: "fake"},
+			}),
+		},
+	}
+	ws := NewClientWorkspace(srv.start(t), proto.Workspace{ID: "ws-1", Path: "/tmp/recover"})
+	require.NoError(t, ws.AgentSetMain(config.AgentPlan))
+
+	srv.snapshot(func(s *recoveryServer) { s.liveID = "" })
+	runSubscriptionUntilStreams(t, ws, srv, 1, func(tea.Msg) {})
+
+	srv.snapshot(func(s *recoveryServer) {
+		require.Len(t, s.createReqs, 1)
+		require.Equal(t, []string{"agent/main ws-1 plan", "agent/init ws-2", "agent/main ws-2 plan"}, s.agentCalls)
+	})
+}
+
+// TestClientWorkspace_WarnsAboutServerVersionMismatch guards that the user
+// is warned, once, when the workspace's server runs another Crush version.
+func TestClientWorkspace_WarnsAboutServerVersionMismatch(t *testing.T) {
+	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+
+	otherVersion := "not-" + version.Version
+	srv := &recoveryServer{liveID: "ws-1"}
+	ws := NewClientWorkspace(srv.start(t), proto.Workspace{
+		ID: "ws-1", Path: "/tmp/version", Version: otherVersion,
+	})
+
+	var mu sync.Mutex
+	var msgs []util.InfoMsg
+	runSubscriptionUntilStreams(t, ws, srv, 3, func(msg tea.Msg) {
+		if info, ok := msg.(util.InfoMsg); ok {
+			mu.Lock()
+			msgs = append(msgs, info)
+			mu.Unlock()
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, msgs, 1)
+	require.Equal(t, util.InfoTypeWarn, msgs[0].Type)
+	require.Contains(t, msgs[0].Msg, strconv.Quote(otherVersion))
+}
+
 // TestTranslateEvent_PermissionNotification verifies that the
 // notification's session ID survives the proto-to-domain translation,
 // keeping it available for session-scoped consumers.
@@ -1263,4 +1520,491 @@ func TestTranslateEvent_ConfigStale(t *testing.T) {
 	require.True(t, ok, "expected app.ConfigStaleMsg, got %T", out)
 	require.Equal(t, ev.Payload.Changed, got.Changed)
 	require.Equal(t, ev.Payload.Missing, got.Missing)
+}
+
+func TestClientWorkspaceListChildSessions(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/workspaces/ws-1/sessions/s1/children", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode([]proto.Session{
+			{ID: "sub-1", ParentSessionID: "s1", Title: "Subagent"},
+		}))
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	got, err := ws.ListChildSessions(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "sub-1", got[0].ID)
+	require.Equal(t, "s1", got[0].ParentSessionID)
+}
+
+// TestClientWorkspaceDiagnosticsByFileIsOneCall pins the batch route:
+// one request answers every server's per-file counts.
+func TestClientWorkspaceDiagnosticsByFileIsOneCall(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path != "/v1/workspaces/ws-1/lsps/diagnostics/by-file" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(proto.LSPFileDiagnostics{
+			"/repo/a.go": {Error: 2, Warning: 1},
+		})
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 2, Warning: 1}, got["/repo/a.go"])
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"/v1/workspaces/ws-1/lsps/diagnostics/by-file"}, calls)
+}
+
+// TestClientWorkspaceDiagnosticsByFileFallsBack pins the older-server
+// path: a 404 from the batch route falls back to asking each server.
+func TestClientWorkspaceDiagnosticsByFileFallsBack(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/lsps":
+			_ = json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{"gopls": {Name: "gopls"}})
+		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 1}, got["/repo/a.go"], "an older server without the batch route still answers")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/gopls/diagnostics", "the fallback really asks each server")
+}
+
+// TestClientWorkspaceDiagnosticsByFileFallsBackOnServerError pins that
+// a transient batch failure still counts every server, as the old
+// per-server loop did, instead of dropping all counts.
+func TestClientWorkspaceDiagnosticsByFileFallsBackOnServerError(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/lsps/diagnostics/by-file":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/v1/workspaces/ws-1/lsps":
+			_ = json.NewEncoder(w).Encode(map[string]proto.LSPClientInfo{
+				"gopls": {Name: "gopls"},
+				"tsls":  {Name: "tsls"},
+			})
+		case "/v1/workspaces/ws-1/lsps/gopls/diagnostics":
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityError}},
+			})
+		case "/v1/workspaces/ws-1/lsps/tsls/diagnostics":
+			_ = json.NewEncoder(w).Encode(map[protocol.DocumentURI][]protocol.Diagnostic{
+				protocol.URIFromPath("/repo/a.go"): {{Severity: protocol.SeverityHint}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Equal(t, lsp.DiagnosticCounts{Error: 1, Hint: 1}, got["/repo/a.go"], "a transient batch failure still counts every server")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/gopls/diagnostics")
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/tsls/diagnostics")
+}
+
+func TestClientWorkspaceTeamActions(t *testing.T) {
+	t.Parallel()
+	type call struct{ path, body string }
+	calls := make(chan call, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		calls <- call{r.URL.Path, string(data)}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	require.NoError(t, ws.TeamSendMessage(t.Context(), "s1", "alice", "rebase first"))
+	got := <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/message", got.path)
+	require.JSONEq(t, `{"session_id":"s1","text":"rebase first"}`, got.body)
+
+	require.NoError(t, ws.TeamInterrupt(t.Context(), "s1", "alice"))
+	got = <-calls
+	require.Equal(t, "/v1/workspaces/ws-1/team/members/alice/interrupt", got.path)
+	require.JSONEq(t, `{"session_id":"s1"}`, got.body)
+}
+
+// TestClientWorkspaceTeamErrorsKeepIdentity pins ruling I1: a team
+// failure keeps its identity across client/server mode, so the gateway
+// can branch on the disabled sentinel and the original Team code.
+func TestClientWorkspaceTeamErrorsKeepIdentity(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(proto.Error{
+				Message: "agent teams are not enabled",
+				Code:    proto.TeamCodeDisabled,
+			})
+		case strings.HasSuffix(r.URL.Path, "/interrupt"):
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(proto.Error{
+				Message: `Team member "alice" not found`,
+				Code:    agentteam.CodeMemberNotFound,
+			})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	err = ws.TeamSendMessage(t.Context(), "s1", "alice", "hi")
+	require.ErrorIs(t, err, agent.ErrAgentTeamsDisabled)
+	require.EqualError(t, err, agent.ErrAgentTeamsDisabled.Error())
+
+	err = ws.TeamInterrupt(t.Context(), "s1", "alice")
+	require.Equal(t, agentteam.CodeMemberNotFound, agentteam.ErrorCode(err))
+	require.EqualError(t, err, `Team member "alice" not found`)
+}
+
+// TestAppWorkspaceTeamWithoutCoordinator keeps local and client/server
+// mode reporting the same error for the same state: a workspace with no
+// coordinator is not initialized, not a disabled team.
+func TestAppWorkspaceTeamWithoutCoordinator(t *testing.T) {
+	t.Parallel()
+	w := NewAppWorkspace(&app.App{}, nil)
+	require.ErrorIs(t, w.TeamSendMessage(t.Context(), "s1", "alice", "hi"), ErrAgentNotInitialized)
+	require.ErrorIs(t, w.TeamInterrupt(t.Context(), "s1", "alice"), ErrAgentNotInitialized)
+}
+
+// TestAppWorkspaceAddNoteWithoutCoordinator keeps local and client/server
+// mode reporting the same error for the same state: a note needs an agent
+// to keep it.
+func TestAppWorkspaceAddNoteWithoutCoordinator(t *testing.T) {
+	t.Parallel()
+	w := NewAppWorkspace(&app.App{}, nil)
+	require.ErrorIs(t, w.AgentAddNote(t.Context(), "s1", "prefer the small model"), ErrAgentNotInitialized)
+}
+
+// TestClientWorkspaceSaveSessionSendsTodos pins the wire converter the
+// SDK uses to save a session: the todos must reach the server.
+func TestClientWorkspaceSaveSessionSendsTodos(t *testing.T) {
+	t.Parallel()
+	sent := make(chan proto.Session, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got proto.Session
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sent <- got
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(got)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+	_, err := ws.SaveSession(t.Context(), session.Session{ID: "s1", Todos: []session.Todo{
+		{Content: "ship", Status: session.TodoStatusInProgress, ActiveForm: "Shipping"},
+	}})
+	require.NoError(t, err)
+	got := <-sent
+	require.Equal(t, []proto.Todo{{Content: "ship", Status: "in_progress", ActiveForm: "Shipping"}}, got.Todos)
+}
+
+// TestClientWorkspaceHistoryMeta pins the two history calls the gateway
+// makes: metadata without content, one full version by id, and a 404
+// mapping to client.ErrNotFound.
+func TestClientWorkspaceHistoryMeta(t *testing.T) {
+	t.Parallel()
+
+	// The handler records the paths it answered and asserts nothing: a
+	// require that fails here would abort the handler goroutine mid-response
+	// and turn one real failure into a confusing client-side error.
+	var (
+		mu    sync.Mutex
+		paths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/sessions/s1/history/meta":
+			_ = json.NewEncoder(w).Encode([]proto.FileMeta{
+				{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
+				{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5, ToolCallID: "tc-9"},
+			})
+		case "/v1/workspaces/ws-1/history/h2":
+			_ = json.NewEncoder(w).Encode(proto.File{
+				ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13, ToolCallID: "tc-9",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(proto.Error{Message: "file version not found"})
+		}
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
+
+	metas, err := ws.ListSessionHistoryMeta(t.Context(), "s1")
+	require.NoError(t, err)
+	require.Equal(t, []history.FileMeta{
+		{ID: "h1", SessionID: "s1", Path: "/a", Version: 0, CreatedAt: 10, UpdatedAt: 11, Size: 3},
+		{ID: "h2", SessionID: "s1", Path: "/a", Version: 1, CreatedAt: 12, UpdatedAt: 13, Size: 5, ToolCallID: "tc-9"},
+	}, metas)
+
+	got, err := ws.GetHistoryVersion(t.Context(), "h2")
+	require.NoError(t, err)
+	require.Equal(t, history.File{
+		ID: "h2", SessionID: "s1", Path: "/a", Content: "hello", Version: 1, CreatedAt: 12, UpdatedAt: 13, ToolCallID: "tc-9",
+	}, got)
+
+	_, err = ws.GetHistoryVersion(t.Context(), "nope")
+	require.ErrorIs(t, err, client.ErrNotFound)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"/v1/workspaces/ws-1/sessions/s1/history/meta",
+		"/v1/workspaces/ws-1/history/h2",
+		"/v1/workspaces/ws-1/history/nope",
+	}, paths, "every request reaches its own route")
+}
+
+// TestClientWorkspaceMapsAgentNotInitialized pins that an agent which is
+// not configured fails the same way in client/server mode as it does in
+// process: the server's machine code becomes the workspace sentinel.
+func TestClientWorkspaceMapsAgentNotInitialized(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(proto.Error{
+			Message: "agent coordinator not initialized",
+			Code:    proto.ErrorCodeAgentNotInitialized,
+		})
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	require.ErrorIs(t, ws.AgentRun(t.Context(), "s1", "hi"), ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.AgentSummarize(t.Context(), "s1"), ErrAgentNotInitialized)
+	_, err := ws.AgentAsk(t.Context(), "s1", "why?")
+	require.ErrorIs(t, err, ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.UpdateAgentModel(t.Context()), ErrAgentNotInitialized)
+	require.ErrorIs(t, ws.AgentAddNote(t.Context(), "s1", "prefer the small model"), ErrAgentNotInitialized)
+}
+
+// TestClientWorkspaceAddNotePostsTheNote pins the notes call: the SDK
+// posts the note text to the session's notes route.
+func TestClientWorkspaceAddNotePostsTheNote(t *testing.T) {
+	t.Parallel()
+	var (
+		mu     sync.Mutex
+		path   string
+		method string
+		note   proto.SessionNote
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspaces/ws-1/agent/sessions/s1/notes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body proto.SessionNote
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "failed to decode note", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		path, method, note = r.URL.Path, r.Method, body
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	require.NoError(t, ws.AgentAddNote(t.Context(), "s1", "prefer the small model"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "/v1/workspaces/ws-1/agent/sessions/s1/notes", path)
+	require.Equal(t, http.MethodPost, method)
+	require.Equal(t, "prefer the small model", note.Text)
+}
+
+// TestClientWorkspaceSessionRename pins the SDK call the rename route
+// needs: a targeted POST to the session's rename subresource, carrying
+// only the title, and a session_not_found 404 mapped to its own sentinel
+// so a workspace-gone 404 keeps meaning recovery.
+func TestClientWorkspaceSessionRename(t *testing.T) {
+	t.Parallel()
+	type renameCall struct {
+		path   string
+		method string
+		title  string
+	}
+	var (
+		mu    sync.Mutex
+		calls []renameCall
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws-1/sessions/s1/rename":
+			var rename proto.SessionRename
+			if err := json.NewDecoder(r.Body).Decode(&rename); err != nil {
+				http.Error(w, "failed to decode rename", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			calls = append(calls, renameCall{path: r.URL.Path, method: r.Method, title: rename.Title})
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(proto.Session{ID: "s1", Title: rename.Title})
+		case "/v1/workspaces/ws-1/sessions/nope/rename":
+			mu.Lock()
+			calls = append(calls, renameCall{path: r.URL.Path, method: r.Method})
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(proto.Error{Message: "session not found", Code: proto.ErrorCodeSessionNotFound})
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got, err := ws.SessionRename(t.Context(), "s1", "Parser work")
+	require.NoError(t, err)
+	require.Equal(t, "Parser work", got.Title)
+
+	_, err = ws.SessionRename(t.Context(), "nope", "Gone")
+	require.ErrorIs(t, err, client.ErrSessionNotFound)
+	require.NotErrorIs(t, err, client.ErrNotFound)
+
+	mu.Lock()
+	gotCalls := append([]renameCall(nil), calls...)
+	mu.Unlock()
+	require.Len(t, gotCalls, 2)
+	require.Equal(t, "/v1/workspaces/ws-1/sessions/s1/rename", gotCalls[0].path)
+	require.Equal(t, http.MethodPost, gotCalls[0].method)
+	require.Equal(t, "Parser work", gotCalls[0].title)
+	require.Equal(t, "/v1/workspaces/ws-1/sessions/nope/rename", gotCalls[1].path)
+	require.Equal(t, http.MethodPost, gotCalls[1].method)
+}
+
+func TestClientWorkspacePinentryRespondNeverLogsSecret(t *testing.T) {
+	logs := logtest.Capture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+	require.False(t, ws.PinentryRespond("p1", "correct horse battery staple"))
+	require.False(t, ws.SSHRespond("s1", "correct horse battery staple"))
+	require.NotContains(t, logs.String(), "correct horse battery staple")
+	require.Contains(t, logs.String(), "Failed to answer pinentry prompt", "the failure is still logged, without the secret")
+}
+
+// TestClientWorkspaceReloadConfigBusy pins that a server-side busy refusal
+// reaches the frontend as the same app error the in-process workspace
+// returns, so the gateway's 409 and the TUI's busy message work in both
+// modes.
+func TestClientWorkspaceReloadConfigBusy(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, err := w.Write([]byte(`{"message":"cannot reload the configuration while an agent is running","code":"config_reload_busy"}`))
+		require.NoError(t, err)
+	}))
+	defer srv.Close()
+
+	w := newTestClientWorkspace(t, srv)
+	err := w.ReloadConfig(t.Context())
+	require.ErrorIs(t, err, app.ErrConfigReloadBusy)
+	require.ErrorIs(t, err, client.ErrConfigReloadBusy)
+}
+
+// TestClientWorkspaceDiagnosticsByFileWithoutTheServer pins the last resort:
+// when the batch route fails and the server will not even list its LSPs,
+// the counts are empty rather than guessed from a half-answer.
+func TestClientWorkspaceDiagnosticsByFileWithoutTheServer(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	ws := newTestClientWorkspace(t, srv)
+
+	got := ws.LSPDiagnosticsByFile(t.Context())
+	require.Empty(t, got)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps/diagnostics/by-file")
+	require.Contains(t, calls, "/v1/workspaces/ws-1/lsps", "the fallback still asks for the server list")
 }

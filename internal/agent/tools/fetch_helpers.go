@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -41,7 +42,17 @@ func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("request failed with status code: %d", resp.StatusCode)
+		// DuckDuckGo answers its own result pages with a challenge once the
+		// machine is blocked, so those answers mean the same block the search
+		// backend reports. A missing page or a broken server does not.
+		if ddgHost(url) && ddgBlockStatus(resp.StatusCode) {
+			markSearchBlocked()
+			return "", errSearchRateLimited
+		}
+		return "", &FetchStatusError{
+			Status:     resp.StatusCode,
+			RetryAfter: resp.Header.Get("Retry-After"),
+		}
 	}
 
 	maxSize := int64(5 * 1024 * 1024) // 5MB
@@ -66,12 +77,7 @@ func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (s
 		}
 		content = cleanupMarkdown(markdown)
 	} else if strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/json") {
-		// Format JSON for better readability.
-		formatted, err := FormatJSON(content)
-		if err == nil {
-			content = formatted
-		}
-		// If formatting fails, keep original content.
+		content = formatJSON(content)
 	}
 
 	return content, nil
@@ -177,19 +183,71 @@ func ConvertHTMLToMarkdown(htmlContent string) (string, error) {
 	return markdown, nil
 }
 
-// FormatJSON formats JSON content with proper indentation.
-func FormatJSON(content string) (string, error) {
-	var data any
-	if err := json.Unmarshal([]byte(content), &data); err != nil {
-		return "", err
-	}
-
+// formatJSON indents content when it is JSON and returns it unchanged
+// otherwise. Source bytes are kept, so numbers and key order survive.
+func formatJSON(content string) string {
 	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(data); err != nil {
-		return "", err
+	if json.Indent(&buf, bytes.TrimSpace([]byte(content)), "", "  ") != nil {
+		return content
 	}
+	return buf.String()
+}
 
-	return buf.String(), nil
+// FetchStatusError is a non-200 answer from a fetch. It carries the status so
+// a caller can decide what to do next, and its message says what the model
+// should try instead of asking for the same URL again.
+type FetchStatusError struct {
+	Status     int
+	RetryAfter string
+}
+
+// Error renders the status with the next step for that class of answer.
+func (e *FetchStatusError) Error() string {
+	return fmt.Sprintf("request failed with status code: %d%s", e.Status, fetchStatusHint(e.Status, e.RetryAfter))
+}
+
+// fetchStatusHint renders the next step for a failed status, or an empty
+// string for a status the model cannot act on.
+func fetchStatusHint(status int, retryAfter string) string {
+	switch status {
+	case http.StatusNotFound, http.StatusGone:
+		return " does not exist; the address was probably guessed. Open the site's index or search instead of guessing another path"
+	case http.StatusTooManyRequests:
+		if retryAfter != "" {
+			return fmt.Sprintf(" rate-limited (retry after %ss); do not retry right away", retryAfter)
+		}
+		return " rate-limited; do not retry right away"
+	case http.StatusServiceUnavailable:
+		return " temporarily unavailable; do not retry right away"
+	case http.StatusForbidden:
+		return " refused access"
+	default:
+		return ""
+	}
+}
+
+// ddgHost reports whether a URL belongs to DuckDuckGo, whose search pages
+// answer with a bot challenge instead of content once blocked. It is a var so
+// a test can stand in a local server.
+var ddgHost = isDuckDuckGoHost
+
+// isDuckDuckGoHost reports whether a URL belongs to DuckDuckGo.
+func isDuckDuckGoHost(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com")
+}
+
+// ddgBlockStatus reports the DuckDuckGo answers that mean the machine is
+// blocked, rather than that the page is missing or the server failed.
+func ddgBlockStatus(status int) bool {
+	switch status {
+	case http.StatusAccepted, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
 }

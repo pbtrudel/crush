@@ -1,0 +1,32 @@
+/* The display settings dialog: plain glass with cyan edges (the user opened
+   it), centered like the other HUD panels. */
+.settings-layer {
+  position: fixed; inset: 0; z-index: 30;
+  display: grid; place-items: center;
+  padding: var(--space-4);
+  background: oklch(0.09 0.04 275 / 0.42);
+}
+.settings {
+  inline-size: min(32rem, calc(100vw - 32px));
+  max-block-size: calc(100dvh - 32px);
+  overflow-y: auto;
+  display: grid; gap: 12px;
+  padding: var(--space-4);
+}
+.settings__head { display: grid; gap: 2px; }
+.settings__title { margin: 0; color: var(--text); font: 600 var(--step-1)/1.2 var(--font-hud); }
+.settings__note { margin: 0; color: var(--text-muted); font-size: var(--step--1); }
+.settings__group { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.settings__choice {
+  display: flex; gap: 8px; align-items: center;
+  min-block-size: 32px; color: var(--text); cursor: pointer;
+}
+.settings__choice input { accent-color: var(--cyan); }
+.settings__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings__stop {
+  display: grid; gap: 8px;
+  padding-block-start: 10px; border-block-start: 1px solid var(--edge);
+}
+.settings__stop h3 { margin: 0; }
+.settings__confirm { display: grid; gap: 8px; }
+.settings__error { margin: 0; color: var(--magenta); font-size: var(--step--1); }

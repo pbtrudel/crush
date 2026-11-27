@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -291,4 +292,65 @@ func TestTurnEnd_NeverReachesTheProvider(t *testing.T) {
 	stamped, _ := sa.preparePrompt(transcript(message.TurnEndContextGuard), false, false)
 	plain, _ := sa.preparePrompt(transcript(""), false, false)
 	require.Equal(t, plain, stamped)
+}
+
+// TestTurnEnd_ProviderDeadlineIsATimeout pins that a provider returning a raw
+// deadline error while the run context is still alive ends the turn as the
+// timeout it is, with the configured budget named, instead of a provider
+// error the user cannot tell from a fault.
+func TestTurnEnd_ProviderDeadlineIsATimeout(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	agent := newCompactionAgent(env, &scriptedModel{script: []scriptedCall{
+		failWith(fmt.Errorf("stream: %w", context.DeadlineExceeded)),
+	}}, nil, false, &recordingTool{name: "alpha"})
+	sess, err := env.sessions.Create(t.Context(), "provider deadline")
+	require.NoError(t, err)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.Error(t, err)
+
+	require.Equal(t, []message.TurnEnd{message.TurnEndRequestTimeout}, turnEnds(t, env, sess.ID))
+
+	finish := lastAssistantFinish(t, env, sess.ID)
+	require.Equal(t, "Request timed out", finish.Message)
+	require.Contains(t, finish.Details, "The provider reported a deadline")
+}
+
+// cancelingModel cancels the run's own context and then reports a deadline,
+// which is what a caller's deadline looks like when the provider echoes it.
+type cancelingModel struct {
+	finishStreamModel
+	cancel context.CancelFunc
+}
+
+func (m *cancelingModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if len(call.Tools) == 0 {
+		return replayStreamParts(fusionTextParts("Title")), nil
+	}
+	m.cancel()
+	return nil, fmt.Errorf("stream: %w", context.DeadlineExceeded)
+}
+
+// TestTurnEnd_ProviderDeadlineDuringCancelIsNotATimeout pins that a deadline
+// error arriving after the run's own context ended stays a cancel: Crush
+// cannot tell a caller's deadline from a provider's, so it claims neither.
+func TestTurnEnd_ProviderDeadlineDuringCancelIsNotATimeout(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	agent := newCompactionAgent(env, &cancelingModel{cancel: cancel}, nil, false, &recordingTool{name: "alpha"})
+	sess, err := env.sessions.Create(t.Context(), "canceled deadline")
+	require.NoError(t, err)
+
+	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "go"})
+	require.Error(t, err)
+
+	require.Equal(t, []message.TurnEnd{message.TurnEndCanceled}, turnEnds(t, env, sess.ID))
+
+	finish := lastAssistantFinish(t, env, sess.ID)
+	require.Equal(t, "Provider Error", finish.Message)
+	require.NotContains(t, finish.Details, "request deadline")
 }

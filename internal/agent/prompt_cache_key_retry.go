@@ -46,23 +46,22 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 	if req.Method != http.MethodPost || req.Body == nil || req.Body == http.NoBody {
 		return t.base.RoundTrip(req)
 	}
-	body, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
+	body, encoding, err := readRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("reading prompt cache key request body: %w", err)
 	}
 	if !bytes.Contains(body, []byte(promptCacheKeyField)) {
 		// The body was consumed to inspect it, so every request is rebuilt
 		// from the bytes held here.
-		return t.base.RoundTrip(requestWithBody(req, body))
+		return t.base.RoundTrip(requestWithBody(req, body, encoding))
 	}
 	model := responsesModel(body)
 	scope := responsesEndpoint(req) + "\x00" + model
 	if _, rejected := promptCacheKeyRejections.Load(scope); rejected {
-		return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body)))
+		return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body), encoding))
 	}
 
-	resp, err := t.base.RoundTrip(requestWithBody(req, body))
+	resp, err := t.base.RoundTrip(requestWithBody(req, body, encoding))
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +93,7 @@ func (t *promptCacheKeyTransport) RoundTrip(req *http.Request) (*http.Response, 
 			"body", logBody(rejection),
 		)
 	}
-	return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body)))
+	return t.base.RoundTrip(requestWithBody(req, stripPromptCacheKey(body), encoding))
 }
 
 // bufferedBody replays the bytes already read from a response body, then the

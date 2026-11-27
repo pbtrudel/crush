@@ -79,6 +79,48 @@ func CreateWorktreeFrom(ctx context.Context, repoDir, name, base string) (path, 
 	return path, branch, nil
 }
 
+// RestoreWorktree recreates a worktree the caller still records but whose
+// directory went away. It prunes a stale registration of path first,
+// checks out branch when the branch still exists, and otherwise creates
+// branch at base. When something else already uses path, a numbered sibling
+// name is taken instead. It returns the path it used.
+func RestoreWorktree(ctx context.Context, repoDir, path, branch, base string) (string, error) {
+	root, err := RepoRoot(ctx, repoDir)
+	if err != nil {
+		return "", err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return "", errors.New("branch is required")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := gitOutput(ctx, root, "worktree", "prune"); err != nil {
+		return "", fmt.Errorf("git worktree prune: %w", err)
+	}
+	target := abs
+	for i := 2; pathExists(target); i++ {
+		target = fmt.Sprintf("%s-%d", abs, i)
+	}
+	args := []string{"worktree", "add"}
+	if branchExists(ctx, root, branch) {
+		base = branch
+	} else {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			base = "HEAD"
+		}
+		args = append(args, "-b", branch)
+	}
+	args = append(args, "--end-of-options", target, base)
+	if _, err := gitOutput(ctx, root, args...); err != nil {
+		return "", fmt.Errorf("git worktree add: %w", err)
+	}
+	return target, nil
+}
+
 // CurrentWorktree reports the worktree containing dir and whether it is a
 // linked worktree rather than the repository's main checkout.
 func CurrentWorktree(ctx context.Context, dir string) (Worktree, bool, error) {

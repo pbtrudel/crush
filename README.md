@@ -20,6 +20,7 @@
 - **Session-Based:** maintain multiple work sessions and contexts per project
 - **LSP-Enhanced:** Crush uses LSPs for additional context, just like you do
 - **Extensible:** add capabilities via MCPs (`http`, `stdio`, and `sse`)
+- **Channel-Ready:** MCP servers can push real-time events into your session via [Claude Channels](https://code.claude.com/docs/en/channels-reference) — CI failures, webhooks, and more, acting on them without you typing a thing
 - **Works Everywhere:** first-class support in every terminal on macOS, Linux, Windows (PowerShell and WSL), Android, FreeBSD, OpenBSD, and NetBSD
 - **Industrial Grade:** built on the Charm ecosystem, powering 25k+ applications, from leading open source projects to business-critical infrastructure
 
@@ -38,7 +39,7 @@ Local patches and improvements over [upstream Crush](https://github.com/charmbra
 - **Background job completion notices:** when a background shell finishes, the owning session receives an in-session notice with a small output preview (busy turns get it on their next step; idle sessions are woken). `job_output` continues to serve full output, and `option background-job-notifications false` disables the notices.
 - **Named subagents:** the `agent` tool blocks and hands a long call to the background after a minute, while `agent_dispatch` starts a detached subagent that reports back later; `agent_status`, `agent_send`, and `agent_stop` follow up on one by name, and a subagent can be given its own model and reasoning effort. `option background-subagents false` keeps blocking calls in the foreground.
 - **Agent Teams:** the Lead can spawn named, durable teammates, message them, wait for them, interrupt them, and coordinate through a shared task board with compare-and-set revisions, dependency readiness, and advisory write-scope warnings. Teammates report progress automatically when their turn settles, `wait_agent` returns the current roster and live task board, tasks a teammate leaves in progress are completed on success or released on failure, and a completed team task marks the matching session todo completed. The sidebar is scoped to the current session and shows live member and task status, the command palette toggles the feature on or off (`/team on` and `/team off` also work), and `crush team` / `crush team watch` / `crush team session <name>` expose the same view from the terminal. See [docs/agent-teams.md](docs/agent-teams.md).
-- **Worktrees by default:** the agent creates one isolated Git worktree per task, does all edits, commands, and tests inside it, pushes the branch, and removes the worktree and branch after the merge so the next task starts from a fresh one. The `worktree` tool supports `create`, `list`, and `remove` (refusing dirty worktrees unless forced), and `crush --worktree <name>` still starts a session directly in a new worktree.
+- **Worktrees by default:** the agent creates one isolated Git worktree per task, does all edits, commands, and tests inside it, pushes the branch, and removes the worktree and branch after the merge so the next task starts from a fresh one. The `worktree` tool supports `create`, `list`, and `remove` (refusing dirty worktrees unless forced), and `crush --worktree <name>` still starts a session directly in a new worktree. Those sessions share the original checkout's data directory, so they stay listed and resumable with the project's other sessions; `--data-dir`, `CRUSH_DATA_DIR` or `data_directory` still take precedence.
 - **Loop and repetition guards:** advisory reminders fire when the model repeats the same tool call (3/5/8 consecutive repeats) before the hard stop, and a streaming detector stops a response that degenerates into the same character or a short repeated pattern. Both are configurable with `option repeat-tool-reminders` and `option repetition-detection`.
 - **Bounded context and tool output:** project and global context chains are budgeted separately (`option context-max-bytes`, default 64 KiB), every tool result has an estimated token budget with head/tail retention and a spill file (`option tool-output-max-tokens`, default 12,500), and oversized tool results are pruned in memory before compaction (`option compaction-prune-chars`, default 8,192).
 - **Model-switch compaction:** switching to a model with a smaller context window compacts the session with the previous model first, and aborts the switch if that compaction fails, instead of letting the new model overflow on history it cannot hold.
@@ -404,6 +405,7 @@ considered deprecated. See: [the config docs](./docs/config/) for details.
 >
 > - `CRUSH_GLOBAL_CONFIG`
 > - `CRUSH_GLOBAL_DATA`
+> - `CRUSH_DATA_DIR` (overrides the per-project `.crush` directory)
 
 As an additional note, Crush also stores ephemeral data, such as application
 state, in one additional location. This is state and should not be edited by
@@ -495,6 +497,10 @@ dialog.
 | Charmtone Pantera | `charmtone-panther` (default) |
 | Gruvbox Dark      | `gruvbox-dark`                |
 | Keanu             | `keanu`                       |
+| Rosé Pine         | `rose-pine`                   |
+| Rosé Pine Moon    | `rose-pine-moon`              |
+| Rosé Pine Dawn    | `rose-pine-dawn`              |
+| KITT              | `kitt`                        |
 
 ### LSPs
 
@@ -614,6 +620,170 @@ For other sessionless servers, mark them explicitly with
 tradeoff is that a sessionless server won't push live
 tool/prompt/resource list-changed notifications.
 
+#### Channels (experimental)
+
+An MCP server can also act as a **channel**: instead of only exposing tools it
+calls, it *pushes* events straight into your session so Crush reacts to things
+happening outside the terminal — a webhook, a CI failure, a chat message. See
+the [channels reference](https://code.claude.com/docs/en/channels-reference)
+for the protocol.
+
+A server becomes a channel by declaring the `claude/channel` capability in its
+`initialize` result (`capabilities.experimental["claude/channel"] = {}`) and
+emitting `notifications/claude/channel` events with a `content` body and an
+optional `meta` map. Crush injects each event into the active session as a
+`<channel>` element:
+
+```text
+<channel source="webhook" severity="high" run_id="1234">
+build failed on main: https://ci.example.com/run/1234
+</channel>
+```
+
+Listing a channel server in `mcp` is **not** enough to enable it — pushing is
+gated behind an explicit opt-in, so a server present in config stays silent
+until you ask for it. Opt in per launch with the `--channels` flag:
+
+```bash
+# Enable one or more configured MCP servers as channels for this session.
+crush --channels server:webhook
+crush --channels server:webhook --channels server:signal
+```
+
+Or persistently, with `channel_enabled` on the server's `mcp` entry — no CLI
+flag needed on each launch:
+
+```json
+{
+  "mcp": {
+    "webhook": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "channel_enabled": true
+    },
+    "signal": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/signal-mcp",
+        "python",
+        "signal_mcp/main.py",
+        "--user-id",
+        "+15551234567",
+        "--channel"
+      ]
+    }
+  }
+}
+```
+
+In `crushrc`, use `--channel true`:
+
+```bash
+mcp add webhook --type http --url "https://example.com/mcp" --channel true
+```
+
+Once a server is opted in, a **Channels** section on the landing page and in
+the sidebar shows its state, and the **Channels** command lists every opted-in
+server along with channel-capable servers that are not enabled yet.
+
+The `source` attribute is always the (trusted) server name. Payloads are
+untrusted, server-initiated input: Crush validates their structure, caps the
+body and attribute sizes, restricts `meta` keys to identifiers
+(`[A-Za-z0-9_]`), escapes all content so a payload cannot break out of the
+`<channel>` element or forge attributes, and drops malformed payloads. A
+server that has not been opted in via `--channels` or `channel_enabled`, or
+that never declared the capability, cannot inject anything.
+
+Channel delivery works in the default in-process `crush` and against a shared
+`crush serve` backend. In-process, an event routes into the session you have
+open, or starts one if none is open, so it is never dropped. Against a
+`crush serve` backend the server routes each event exactly once — into the
+session an attached client is viewing (the most recently updated one when
+clients are viewing different sessions), otherwise into the workspace's most
+recent session, creating one only when none exists. That holds even with no
+clients connected, so a headless server still processes channel pushes;
+attached clients see the injected turn arrive through the normal event
+stream. Servers that are live channels are marked `channel` in the MCP list
+so you can confirm the opt-in took effect.
+
+**Two-way channels.** A channel can also be interactive. Because a channel is a
+regular MCP server, any tool it exposes (a `reply` tool, say) is available to
+the agent through the normal MCP tool path — nothing channel-specific is
+required. Declare `tools` in the server's capabilities, register the tool, and
+use the server's `instructions` string (injected into the system prompt) to
+tell Crush when to call it and which `<channel>` attribute to pass back (like a
+`chat_id`).
+
+For example, [Signal MCP](https://github.com/joestump/signal-mcp) lets Crush
+send and receive Signal messages through a
+[signal-cli](https://github.com/AsamK/signal-cli) daemon:
+
+1. **Start the daemon:** `signal-cli -a +15551234567 daemon --tcp 127.0.0.1:7583 --receive-mode on-start --no-receive-stdout`
+2. **Add to `crush.json`:** Use the example in the [MCPs](#mcps) section above.
+3. **Launch with channel:** `crush --channels server:signal`
+
+Incoming messages arrive as `<channel>` tags; use the `send_message_to_user` tool to reply.
+
+#### Channel reply routing
+
+By default a channel-originated turn only produces terminal output, so a
+person messaging you on Signal never sees the answer unless the model decides
+to call a send tool itself. Adding a `channel_reply` block to a channel
+server's MCP config makes the routing deterministic: when a turn that
+originated from that channel finishes without the model having replied through
+the channel, Crush sends the final assistant response back through the
+configured tool — to the sender for direct messages, or to the group for group
+messages.
+
+```json
+{
+  "mcp": {
+    "signal": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "signal_mcp/main.py", "--operator", "+15551234567", "--channel"],
+      "channel_reply": {
+        "user": { "tool": "send_message_to_user", "target_param": "user_id" },
+        "group": { "tool": "send_message_to_group", "target_param": "group_id" },
+        "suppress_tools": ["send"]
+      }
+    }
+  }
+}
+```
+
+In `crushrc`, pass the same object to `--channel-reply`:
+
+```bash
+mcp add signal --command uv \
+  --args run --args signal_mcp/main.py --args --operator --args +15551234567 --args --channel \
+  --channel true \
+  --channel-reply '{
+    "user": {"tool": "send_message_to_user", "target_param": "user_id"},
+    "group": {"tool": "send_message_to_group", "target_param": "group_id"},
+    "suppress_tools": ["send"]
+  }'
+```
+
+How it routes:
+
+- **Group pushes** (meta carries `group`) go through the `group` route;
+  **direct pushes** (meta carries `sender`) go through the `user` route.
+  `target_meta` overrides which meta attribute supplies the target;
+  `message_param` (default `message`) names the tool argument that receives
+  the reply text.
+- If the model already called a route tool — or any tool listed in
+  `suppress_tools` — during the turn, the automatic reply is skipped, so
+  richer model-driven replies aren't duplicated.
+- Local (non-channel) turns and channels without a `channel_reply` block are
+  unaffected.
+
+The same shape works for any messaging channel (Discord, Slack, …): point the
+routes at that server's send tools and the matching meta attributes.
+
 ### Hooks
 
 Crush has preliminary support for hooks. For details, see
@@ -721,6 +891,21 @@ open against it. When the last stream disconnects, the workspace is torn
 down. There is a short grace window right after `POST /v1/workspaces` so a
 client that has created the workspace but not yet opened its event stream
 does not get reaped before it can attach.
+
+### Web mode
+
+`crush --web` starts the session with a browser tab that mirrors the
+terminal: same chat, same prompts, same permission requests, same files. The
+TUI keeps working next to it, and either side can drive the session. In a
+running session, `/web` copies the link and opens another tab in the
+background, and shows the link in a notification so a slow or missing browser
+never hides it. To turn it on by default, use `option web true` in your
+`crushrc`, or `"options": {"web": true}` in `crush.json`.
+
+The gateway is loopback only, with a per-run token sent as a header, and a
+private launch file for the browser opener. See
+[docs/web-mode.md](docs/web-mode.md) for sign-in, prompts, client/server mode
+and troubleshooting.
 
 ### Global context files
 

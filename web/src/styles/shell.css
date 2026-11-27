@@ -1,0 +1,256 @@
+.holodeck {
+  /* The stacking context the fixed scene canvas's z-index -1 lives in. */
+  position: relative;
+  z-index: 1;
+  /* The closed drawer waits 105% past the grid's right edge; clipping it
+     keeps that off the page's horizontal scroll. Fixed layers (the scene,
+     the boot overlay, toasts) are viewport-positioned, so they escape. */
+  overflow-x: clip;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  /* A minmax(0, 1fr) column cannot outgrow the window: the chronoline's
+     hundreds of calls scroll inside the deck, and any other child wider than
+     the shell is clipped instead of widening the page and carrying every
+     right-aligned instrument off the edge. */
+  grid-template-columns: minmax(0, 1fr);
+  height: 100dvh;
+  padding: var(--space-4);
+  gap: var(--space-4);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left));
+}
+/* Every instrument keeps its own column, so the strip stays on one row at
+   1440px; the identity block takes the slack. The z-index lifts the HUD's
+   Display menu over the panels below, which the scan-line isolation would
+   otherwise paint on top; toasts and the interrupt layer stay above it. */
+.hud {
+  position: relative;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) auto auto auto auto auto auto;
+  align-items: center;
+  gap: var(--space-4) calc(var(--space-4) * 1.5);
+  padding: var(--space-4) calc(var(--space-4) * 1.5);
+}
+.hud__title { margin: 2px 0 0; font: 600 var(--step-2)/1.15 var(--font-hud); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+/* From 1280px up the seven columns share one row, so the identity track
+   can be narrower than the session title. The title ellipsizes with its
+   full text in the tooltip instead of wrapping onto a second line, which
+   grew the whole strip by 27.5px at 1280 and again at 1440 where the wide
+   gutter leaves the track at its 9rem floor. */
+@media (min-width: 1280px) {
+  /* The heading is a grid item, so its automatic minimum is the one-line
+     title's width; zero it out or the identity column outgrows its track
+     and the title runs under the gauge instead of ellipsizing. */
+  .hud__id .hud__title { min-inline-size: 0; overflow: hidden; }
+  .hud__id .hud__title-btn {
+    display: inline-block;
+    max-inline-size: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+/* The servers and the controls keep columns 6 and 7 explicitly: the pin
+   shares column 6 with the servers, and an explicitly placed item makes the
+   auto-placement cursor skip its cell, which would otherwise push the
+   servers and the controls onto a second row. */
+.hud__servers { grid-column: 6; grid-row: 1; }
+.hud__controls { grid-column: 7; grid-row: 1; display: flex; align-items: center; gap: var(--space-4); }
+/* The pin names the session the tab follows on the strip's one row: it
+   shares the servers column and takes the empty band under the instruments,
+   so the strip keeps its height at 1280, 1366 and 1440 and the identity
+   block keeps its width. With one root session it renders nothing. */
+.hud__pin-slot {
+  grid-column: 6; grid-row: 1; align-self: end; justify-self: start;
+  display: inline-flex; flex-wrap: nowrap; align-items: center;
+  gap: var(--space-1); min-inline-size: 0;
+}
+.hud__pin-btn {
+  min-block-size: 24px; padding: 2px 6px;
+  background: transparent; color: var(--text-muted); border: 1px solid var(--edge);
+  border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__pin-btn:hover, .hud__pin-btn:focus-visible { color: var(--cyan); border-color: var(--cyan); }
+.hud__pin-btn[aria-pressed='false'] { border-color: var(--cyan); color: var(--cyan); }
+.hud__select {
+  appearance: none; color: var(--text); background-color: var(--glass-solid);
+  /* The chevron is two 45 degree strokes side by side, so no data URI. */
+  background-image:
+    linear-gradient(45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, var(--cyan) 45% 55%, transparent 55%);
+  background-size: 7px 7px;
+  background-position: calc(100% - 17px) 50%, calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 6px 28px 6px 10px; font: 500 var(--step--1) var(--font-hud); min-block-size: 36px;
+}
+.hud__select option { background: var(--void-deep); color: var(--text); }
+.hud__select[data-mode='yolo'] { border-color: var(--amber); color: var(--amber); }
+.hud__select[data-mode='sysadmin'] { border-color: var(--magenta); color: var(--magenta); }
+.hud__mode { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+.hud__mode[data-mode='plan'] { border-color: var(--amber); }
+.hud__mode-btn {
+  background: transparent; color: var(--text-muted); border: 0; padding: 6px 10px;
+  min-block-size: 36px; font: 500 var(--step--1) var(--font-hud); cursor: pointer;
+}
+.hud__mode-btn[data-active='true'] { background: var(--cyan-dim); color: var(--cyan); }
+.hud__mode[data-mode='plan'] .hud__mode-btn[data-active='true'] { background: var(--void-deep); color: var(--amber); }
+.hud__link { display: inline-flex; gap: 6px; align-items: center; font: 500 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.12em; }
+.hud__link svg { fill: var(--teal); }
+.hud__link[data-conn='reconnecting'] svg { fill: var(--amber); animation: blink 1s steps(2) infinite; }
+.hud__link[data-conn='ended'] svg { fill: var(--magenta); }
+/* The Display control keeps the box and the glyphs the details summary had:
+   the same padding and no chrome. base.css already resets a button's font,
+   colour and cursor, so .hud-label keeps its own look here. */
+.hud__display { padding: 8px; background: none; border: 0; }
+/* The banner is absent while linked, so the grid and deck are placed on
+   explicit rows; auto-placement would move them up and stretch the deck. */
+.holodeck__grid {
+  position: relative;
+  display: grid;
+  /* The 34rem log maxima set agents.css's 1311px breakpoint. */
+  grid-template-columns: minmax(22rem, 34rem) 1fr;
+  grid-template-areas: 'log stage';
+  grid-row: 3;
+  gap: var(--space-4);
+  min-block-size: 0;
+}
+/* The drawer takes the third column. Its maxima keep the stage wide enough
+   at 1440px for the agent list, the tags and the task board; closing it
+   removes the column and the panel slides off the right edge (drawer.css). */
+.holodeck__grid[data-drawer='open'] {
+  /* The 24rem log and 28rem drawer maxima set agents.css's 1631px
+     breakpoint; change either and the bands there need re-deriving. */
+  grid-template-columns: minmax(20rem, 24rem) minmax(14rem, 1fr) minmax(20rem, 28rem);
+  grid-template-areas: 'log stage drawer';
+}
+.panel--drawer { grid-area: drawer; }
+/* Between 1024px and 1279px a third column leaves the stage 224px wide,
+   too little for the agent list beside the handle. There the drawer slides
+   over the log column and the stage keeps its closed-layout width. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .holodeck__grid[data-drawer='open'] {
+    /* The closed pair, so agents.css needs no third band for the overlay. */
+    grid-template-columns: minmax(22rem, 34rem) 1fr;
+    grid-template-areas: 'log stage';
+  }
+  .holodeck__grid[data-drawer='open'] .panel--drawer {
+    position: absolute; inset-block: 0; inset-inline-start: 0; z-index: 3;
+    inline-size: min(34rem, 100%);
+    /* Over the log, the 0.70 glass lets the text underneath read through,
+       so the overlay takes the solid token and keeps the two-tone edge. */
+    background-image: linear-gradient(var(--surface-solid), var(--surface-solid)),
+      linear-gradient(135deg, var(--cyan), var(--violet));
+  }
+  /* The closed drawer keeps the open one's anchor: opening then only changes
+     transform and opacity, instead of jumping across the grid first. While
+     it waits off the edge it is transparent, inert and click-through. */
+  .holodeck__grid[data-drawer='closed'] .panel--drawer {
+    inset-inline-start: 0; inset-inline-end: auto; inline-size: min(34rem, 100%);
+  }
+}
+/* The tabs only exist in the narrow single-slot layout. */
+.panel-tabs { display: none; }
+.holodeck__deck { grid-row: 4; }
+.panel { min-block-size: 0; }
+/* The curve is drawn on the panel itself: a perspective on an ancestor
+   would make it the containing block of the fixed scene canvas. */
+.panel--log { grid-area: log; transform: perspective(1400px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; }
+/* The inspector shares the stage's grid area and sits at the end of the
+   column, so the constellation keeps the space beside it. */
+.panel--inspector { grid-area: stage; align-self: stretch; justify-self: end; inline-size: min(30rem, 100%); z-index: 2; display: flex; flex-direction: column; min-block-size: 0; overflow: hidden; }
+.panel--inspector[hidden] { display: none; }
+/* The scene shows through the stage; only the agent list and the nodes take input. */
+.stage { grid-area: stage; position: relative; min-block-size: 0; pointer-events: none; }
+.banner { padding: 10px var(--space-4); border-radius: var(--radius); font: 500 var(--step--1) var(--font-hud); letter-spacing: 0.06em; }
+.banner--warn { border: 1px solid var(--amber); color: var(--amber); background: color-mix(in oklch, var(--amber) 8%, transparent); }
+.banner--ended { border: 1px solid var(--magenta); color: var(--text); background: var(--magenta-dim); }
+/* The loading overlay is a hologram label over the live scene rather than a
+   cover, so the scene's own power-up shows through. `holo` supplies the
+   translucent veil and the corner brackets. */
+.boot {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; gap: var(--space-9);
+  justify-items: center; background: none; transition: opacity var(--dur-out) var(--ease-out), visibility 0s linear var(--dur-out);
+}
+/* `.holo` sets position: relative for its brackets and panels.css loads
+   last, so the fixed placement is restated with a two-class selector. */
+.boot.holo { position: fixed; }
+.boot[data-done='true'] { opacity: 0; visibility: hidden; }
+/* A 2D view has no scene to draw the boot, so it keeps the CSS rings. */
+.boot__rings { position: relative; inline-size: 160px; block-size: 160px; }
+.boot__rings span { position: absolute; inset: 0; border: 1px solid var(--cyan); border-radius: 50%; animation: boot-ring 1.6s var(--ease-out) infinite; }
+.boot__rings span:nth-child(2) { animation-delay: 0.27s; border-color: var(--violet); }
+.boot__rings span:nth-child(3) { animation-delay: 0.53s; }
+@keyframes boot-ring { from { transform: scale(0.2); opacity: 1; } to { transform: scale(1); opacity: 0; } }
+/* Toasts sit top right, below the HUD strip. --hud-h is the height the HUD
+   publishes; the 80px fallback keeps the old 112px offset until it
+   reports. */
+.toasts { position: fixed; inset-block-start: calc(var(--hud-h, 80px) + var(--space-4) * 2); inset-inline-end: var(--space-4); display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; z-index: 40; }
+.toast {
+  display: flex; gap: 10px; align-items: center; padding: 10px 12px; min-inline-size: 18rem; max-inline-size: 26rem;
+  border-radius: var(--radius);
+}
+/* A toast is a hologram: the tone colors its corner brackets, not a fill. */
+.toast[data-tone='error'] { --bracket: var(--magenta); }
+.toast[data-tone='warn'] { --bracket: var(--amber); }
+.toast__close { margin-inline-start: auto; background: none; border: 0; min-inline-size: 32px; min-block-size: 32px; }
+.unauthorized { max-inline-size: 40rem; margin: 20vh auto; padding: var(--space-9); text-align: center; }
+/* From 1280px up the seven columns share one row: the strip keeps its
+   height by giving up gutter and gap instead of wrapping the controls. */
+@media (max-width: 1439px) {
+  .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  .hud__controls { gap: var(--space-1); }
+}
+/* From 1280px to 1439px the tight gutter leaves the identity track below a
+   typical title. The column gaps drop to their 8px minimum and the
+   permissions label goes screen-reader-only, which gives the track about
+   17rem at 1280 and leaves every instrument on the controls. */
+@media (min-width: 1280px) and (max-width: 1439px) {
+  .hud { gap: var(--space-1) 8px; }
+  .hud__perm-label { clip-path: inset(50%); white-space: nowrap; inline-size: 1px; block-size: 1px; position: absolute; overflow: hidden; }
+}
+/* The wide gutter leaves the identity at 146px at 1440, too little for a
+   typical session title, so every HUD takes the tight gutter until the
+   wide layout has room. The 14px margin keeps the wide 24px gap before the
+   controls. */
+@media (min-width: 1440px) and (max-width: 1463px) {
+  .hud { gap: var(--space-1) 10px; padding: var(--space-4) 12px; }
+  .hud .hud__controls { gap: var(--space-1); margin-inline-start: 14px; }
+}
+@media (max-width: 1279px) {
+  /* The one-row grid, captions and empty-server placeholders included,
+     needs about 1280px of content, so the instruments wrap below it and
+     take back the wide gutter the tightened layout gave up. */
+  .hud { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) calc(var(--space-4) * 1.5); padding: var(--space-4) calc(var(--space-4) * 1.5); }
+  .hud__id { flex: 1 1 12rem; }
+  .hud__controls { flex: 1 1 100%; flex-wrap: wrap; gap: var(--space-4); }
+  /* The wrapped strip has no room for another row: the AWS card above the
+     deck needs the height, and the session title still opens the switcher,
+     where Browse here sits. The named HUD layouts (1280 and up) keep the
+     toggle. */
+  .hud__pin-slot { display: none; }
+  /* The wrapped HUD is taller, so until the HUD reports its height the
+     fallback keeps the old 216px offset. */
+  .toasts { inset-block-start: calc(var(--hud-h, 184px) + var(--space-4) * 2); }
+}
+@media (max-width: 1023px) {
+  /* Below 1024px the stage keeps a 220px row and the log, the inspector and
+     the drawer share one slot under it; the tabs pick which one shows. */
+  .holodeck__grid, .holodeck__grid[data-drawer='open'] {
+    grid-template-columns: 1fr; grid-template-rows: 220px 1fr; grid-template-areas: 'stage' 'panel';
+  }
+  .panel--log, .panel--inspector, .panel--drawer { grid-area: panel; transform: none; inline-size: auto; }
+  .panel-tabs { display: flex; gap: var(--space-1); }
+  .holodeck__grid:not([data-panel-tab='log']) .panel--log,
+  .holodeck__grid:not([data-panel-tab='agent']) .panel--inspector,
+  .holodeck__grid:not([data-panel-tab='files']) .panel--drawer { display: none; }
+  /* The files tab needs a real diff box in the 120px slot: the drawer
+     scrolls as a whole and the diff keeps a 240px floor. */
+  .holodeck__grid[data-panel-tab='files'] .panel--drawer { overflow-y: auto; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__list { flex: 0 0 auto; max-block-size: none; }
+  .holodeck__grid[data-panel-tab='files'] .drawer__diff { flex: 0 0 auto; min-block-size: 240px; }
+}
+/* Below 768px everything stacks and the constellation collapses to a strip. */
+@media (max-width: 767px) {
+  .holodeck__grid { grid-template-rows: 96px 1fr; }
+}

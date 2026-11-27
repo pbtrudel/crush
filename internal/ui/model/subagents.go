@@ -6,8 +6,11 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/agentrun"
+	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/dialog"
 )
 
 // subAgentSpinnerFrames animates the running marker. The sidebar is rebuilt
@@ -15,9 +18,10 @@ import (
 // frame from the clock is enough to make it move without its own ticker.
 var subAgentSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// subAgentSpinner returns the frame for the current moment.
+// subAgentSpinner returns the frame for the given moment. The glyph period
+// is a whole number of animation frames so every glyph holds equally long.
 func subAgentSpinner(now time.Time) string {
-	const frameEvery = 80 * time.Millisecond
+	frameEvery := 2 * anim.FrameInterval()
 	i := (now.UnixNano() / int64(frameEvery)) % int64(len(subAgentSpinnerFrames))
 	return subAgentSpinnerFrames[i]
 }
@@ -81,14 +85,15 @@ func (m *UI) runningSubAgents() int {
 // it works; once finished, the icon's color alone says so.
 func (m *UI) subAgentRow(status chat.DispatchStatus, width int) string {
 	t := m.com.Styles
+	now := time.Now()
 
-	icon := t.Resource.WorkingIcon.Render(subAgentSpinner(time.Now()))
+	icon := t.Resource.WorkingIcon.Render(subAgentSpinner(now))
 	state := "starting"
 	switch {
 	case !status.Running:
 		icon, state = t.Resource.OfflineIcon.String(), ""
 	case !status.Started.IsZero():
-		state = time.Since(status.Started).Round(time.Second).String()
+		state = common.FormatDuration(common.ElapsedSince(status.Started, now))
 	}
 	var extra string
 	if state != "" {
@@ -102,19 +107,21 @@ func (m *UI) subAgentRow(status chat.DispatchStatus, width int) string {
 		title, label = t.Tool.AgentLabel.Render(label), ""
 	}
 	return common.Status(t, common.StatusOpts{
-		Icon:         icon,
-		Title:        title,
-		Description:  label,
-		ExtraContent: extra,
+		Icon:             icon,
+		Title:            title,
+		Description:      label,
+		DescriptionColor: t.Resource.DefaultTitleFg,
+		ExtraContent:     extra,
 	}, width)
 }
 
 // subAgentsInfo renders the dispatched subagent section. It renders empty
 // when nothing has been dispatched, so it costs no sidebar space until it has
-// something to say.
-func (m *UI) subAgentsInfo(statuses []chat.DispatchStatus, width, maxItems int, isSection bool) string {
+// something to say. The returned hits map each rendered row to its content
+// line so a click can open that subagent; the truncation hint is never mapped.
+func (m *UI) subAgentsInfo(statuses []chat.DispatchStatus, width, maxItems int, isSection bool) (string, []sidebarAgentHit) {
 	if len(statuses) == 0 {
-		return ""
+		return "", nil
 	}
 
 	t := m.com.Styles
@@ -125,11 +132,55 @@ func (m *UI) subAgentsInfo(statuses []chat.DispatchStatus, width, maxItems int, 
 
 	rows := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		rows = append(rows, m.subAgentRow(status, width))
+		// Wrap each row to the section width up front so its measured height
+		// matches the lines it occupies once rendered, including wrapped rows.
+		rows = append(rows, lipgloss.NewStyle().Width(width).Render(m.subAgentRow(status, width)))
 	}
+
+	// truncateRows keeps the first maxItems-1 rows plus a hint when they
+	// overflow, and nothing when maxItems is non-positive. Only the kept
+	// status rows are clickable, never the hint.
+	kept := len(statuses)
+	switch {
+	case maxItems <= 0:
+		kept = 0
+	case len(statuses) > maxItems:
+		kept = maxItems - 1
+	}
+	var hits []sidebarAgentHit
+	if m.com.Workspace != nil {
+		rootID := m.currentSessionID()
+		rowLine := lipgloss.Height(title) + 1
+		for i := 0; i < kept; i++ {
+			status := statuses[i]
+			height := lipgloss.Height(rows[i])
+			if status.MessageID != "" && status.ToolCallID != "" {
+				if sessionID := m.com.Workspace.CreateAgentToolSessionID(status.MessageID, status.ToolCallID); sessionID != "" {
+					descriptor := dialog.AgentDescriptor{
+						SessionID:       sessionID,
+						ParentSessionID: rootID,
+						Name:            status.Label,
+						Kind:            agentrun.KindSubagent,
+						Status:          agentRunStatusFromDispatch(status),
+						Model:           status.Model,
+						ModelProvider:   status.ModelProvider,
+						StartedAt:       status.Started,
+						FinishedAt:      status.Finished,
+					}
+					// A row may span several lines; map each so a click
+					// anywhere on it opens the subagent.
+					for l := rowLine; l < rowLine+height; l++ {
+						hits = append(hits, sidebarAgentHit{line: l, descriptor: descriptor})
+					}
+				}
+			}
+			rowLine += height
+		}
+	}
+
 	rows = truncateRows(rows, maxItems, t.Resource.AdditionalText)
 
 	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf(
 		"%s\n\n%s", title, lipgloss.JoinVertical(lipgloss.Left, rows...),
-	))
+	)), hits
 }

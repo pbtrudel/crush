@@ -50,7 +50,7 @@ func TestSubAgentInheritsTheApprovalOfAHeadlessLead(t *testing.T) {
 				approvals.AutoApproveSession(lead.ID)
 			}
 
-			sess, err := coord.createSubAgentSession(t.Context(), subAgentSessionParams(lead.ID))
+			sess, err := coord.createSubAgentSession(t.Context(), coord.sessions.CreateAgentToolSessionID("msg-1", "call-1"), subAgentSessionParams(lead.ID))
 			require.NoError(t, err)
 			require.Equal(t, coord.sessions.CreateAgentToolSessionID("msg-1", "call-1"), sess.ID)
 
@@ -81,7 +81,7 @@ func TestSubAgentPermissionIsAnsweredInAHeadlessRun(t *testing.T) {
 	require.NoError(t, err)
 	coord.permissions.AutoApproveSession(lead.ID)
 
-	sess, err := coord.createSubAgentSession(t.Context(), subAgentSessionParams(lead.ID))
+	sess, err := coord.createSubAgentSession(t.Context(), coord.sessions.CreateAgentToolSessionID("msg-1", "call-1"), subAgentSessionParams(lead.ID))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)

@@ -36,6 +36,7 @@ func TestTurnEndForError(t *testing.T) {
 		{name: "own request timeout", err: &requestTimeoutError{timeout: time.Second, cause: context.DeadlineExceeded}, want: message.TurnEndRequestTimeout},
 		{name: "context overflow", err: &fantasy.ProviderError{StatusCode: 400, ContextTooLargeErr: true}, want: message.TurnEndContextOverflow},
 		{name: "provider failure", err: &fantasy.ProviderError{StatusCode: 500, Message: "boom"}, want: message.TurnEndProviderError},
+		{name: "refused after its retries", err: refusedError(false), want: message.TurnEndContentFilter},
 		{name: "sign-in failure", err: &fantasy.ProviderError{StatusCode: 401, Message: "unauthorized"}, want: message.TurnEndProviderError},
 		{name: "fantasy error", err: &fantasy.Error{Title: "bad response", Message: "cut short"}, want: message.TurnEndProviderError},
 		{name: "network failure after retries", err: &fantasy.RetryError{Errors: []error{errors.New("connection reset")}}, want: message.TurnEndProviderError},

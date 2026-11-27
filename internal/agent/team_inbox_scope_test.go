@@ -31,9 +31,9 @@ func TestTeamToolsDoNotDeliverAnotherSessionsMail(t *testing.T) {
 	other := context.WithValue(t.Context(), tools.SessionIDContextKey, "session-other")
 	listed := runTeamToolIn(t, other, toolByName(leadTools, ListAgentsToolName), map[string]any{})
 	require.NotContains(t, listed.Content, "Found a bug.", "another session's Lead read this session's mail")
-	require.Equal(t, 1, c.team.Tree(teamTestSessionID).UnreadByLead, "the report still waits for its Lead")
+	require.Equal(t, 1, c.teamService().Tree(teamTestSessionID).UnreadByLead, "the report still waits for its Lead")
 
 	owned := runTeamTool(t, toolByName(leadTools, ListAgentsToolName), map[string]any{})
 	require.Contains(t, owned, "Message from reviewer: Found a bug.")
-	require.Zero(t, c.team.Tree(teamTestSessionID).UnreadByLead, "the Lead read the report")
+	require.Zero(t, c.teamService().Tree(teamTestSessionID).UnreadByLead, "the Lead read the report")
 }

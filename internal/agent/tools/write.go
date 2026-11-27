@@ -55,6 +55,7 @@ func NewWriteTool(
 		WriteToolName,
 		writeDescription,
 		func(ctx context.Context, params WriteParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
@@ -74,6 +75,7 @@ func NewWriteTool(
 
 				modTime := fileInfo.ModTime().Truncate(time.Second)
 				lastRead := filetracker.LastReadTime(ctx, sessionID, filePath)
+				guardCtx := editContext{ctx: ctx, filetracker: filetracker, workingDir: workingDir}
 				if modTime.After(lastRead) {
 					// A file never read in this session was not modified
 					// since a read, and comparing against the zero time
@@ -81,10 +83,12 @@ func NewWriteTool(
 					// stay apart either way, so the session log and the
 					// stats report still classify the two cases.
 					if lastRead.IsZero() {
-						return withErrorKind(fantasy.NewTextErrorResponse(fmt.Sprintf("File %s exists but has not been read in this session. Read it with view before overwriting it.", filePath)), ErrorKindNotRead), nil
+						guard := readGuard{kind: ErrorKindNotRead, text: fmt.Sprintf("File %s exists but has not been read in this session. Read it with view before overwriting it.", filePath)}
+						return guardCtx.refuseOverwrite(guard, filePath), nil
 					}
-					return withErrorKind(fantasy.NewTextErrorResponse(fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
-						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), ErrorKindChangedSinceRead), nil
+					guard := readGuard{kind: ErrorKindChangedSinceRead, text: fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
+						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))}
+					return guardCtx.refuseOverwrite(guard, filePath), nil
 				}
 
 				oldContent, readErr := os.ReadFile(filePath)
@@ -156,7 +160,7 @@ func NewWriteTool(
 				}
 			}
 			// Store the new version
-			_, err = files.CreateVersion(ctx, sessionID, filePath, params.Content)
+			_, err = files.CreateVersion(history.WithToolCallID(ctx, call.ID), sessionID, filePath, params.Content)
 			if err != nil {
 				slog.Error("Error creating file history version", "error", err)
 			}

@@ -8,7 +8,7 @@ Common shell builtins and core utils available on Windows.
 
 <execution_steps>
 1. Directory Verification: If creating directories/files, use LS tool to verify parent exists
-2. Security Check: Dangerous commands ({{ .BannedCommands }}) require explicit user approval with a warning popup in normal mode; YOLO and Sysadmin modes approve them without asking. Safe read-only commands always execute without prompts
+2. Security Check: Dangerous commands ({{ .BannedCommands }}) require explicit user approval with a warning popup in normal mode; YOLO mode blocks them without asking; Sysadmin mode approves them without asking. Safe read-only commands always execute without prompts
 3. Command Execution: Execute with proper quoting, capture output
 4. Auto-Background: Commands exceeding 1 minute (default, configurable via `auto_background_after`) automatically move to background and return shell ID
 5. Output Processing: Truncate if exceeds {{ .MaxOutputLength }} characters. The truncation marker names a file holding the complete output - read it with the view tool when the omitted middle matters
@@ -16,11 +16,12 @@ Common shell builtins and core utils available on Windows.
 </execution_steps>
 
 <usage_notes>
-- Command required, working_dir optional (defaults to current directory)
+- command is required; description (a label under 30 characters) is recommended; working_dir is optional
 - IMPORTANT: Use Grep/Glob/Agent tools instead of 'find'/'grep'. Use View/LS tools instead of 'cat'/'head'/'tail'/'ls'
 - Chain with ';' or '&&', avoid newlines except in quoted strings
 - Each command runs in independent shell (no state persistence between calls)
 - Prefer absolute paths over 'cd' (use 'cd' only if user explicitly requests)
+- Run privileged commands with plain `sudo`, never `sudo -n`: the user can approve with Touch ID or another PAM method, and without one sudo fails at once ("a terminal is required") instead of hanging. Each command authenticates separately
 {{- if .RgAvailable }}
 - Ripgrep (`rg`) is available; prefer it over `grep` for faster, more intuitive searching
 {{- end }}

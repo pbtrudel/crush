@@ -17,19 +17,21 @@ INSERT INTO files (
     content,
     version,
     created_at,
-    updated_at
+    updated_at,
+    tool_call_id
 ) VALUES (
-    ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), ?
 )
-RETURNING id, session_id, path, content, version, created_at, updated_at
+RETURNING id, session_id, path, content, version, created_at, updated_at, tool_call_id
 `
 
 type CreateFileParams struct {
-	ID        string `json:"id"`
-	SessionID string `json:"session_id"`
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Version   int64  `json:"version"`
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	Version    int64  `json:"version"`
+	ToolCallID string `json:"tool_call_id"`
 }
 
 func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
@@ -39,6 +41,7 @@ func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, e
 		arg.Path,
 		arg.Content,
 		arg.Version,
+		arg.ToolCallID,
 	)
 	var i File
 	err := row.Scan(
@@ -49,6 +52,7 @@ func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, e
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ToolCallID,
 	)
 	return i, err
 }
@@ -74,7 +78,7 @@ func (q *Queries) DeleteSessionFiles(ctx context.Context, sessionID string) erro
 }
 
 const getFile = `-- name: GetFile :one
-SELECT id, session_id, path, content, version, created_at, updated_at
+SELECT id, session_id, path, content, version, created_at, updated_at, tool_call_id
 FROM files
 WHERE id = ? LIMIT 1
 `
@@ -90,12 +94,13 @@ func (q *Queries) GetFile(ctx context.Context, id string) (File, error) {
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ToolCallID,
 	)
 	return i, err
 }
 
 const getFileByPathAndSession = `-- name: GetFileByPathAndSession :one
-SELECT id, session_id, path, content, version, created_at, updated_at
+SELECT id, session_id, path, content, version, created_at, updated_at, tool_call_id
 FROM files
 WHERE path = ? AND session_id = ?
 ORDER BY version DESC, created_at DESC
@@ -118,12 +123,64 @@ func (q *Queries) GetFileByPathAndSession(ctx context.Context, arg GetFileByPath
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ToolCallID,
 	)
 	return i, err
 }
 
+const listFileVersionsBySession = `-- name: ListFileVersionsBySession :many
+SELECT id, session_id, path, version, created_at, updated_at, tool_call_id,
+       CAST(octet_length(content) AS INTEGER) AS size
+FROM files
+WHERE session_id = ?
+ORDER BY version ASC, created_at ASC
+`
+
+type ListFileVersionsBySessionRow struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	Path       string `json:"path"`
+	Version    int64  `json:"version"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
+	ToolCallID string `json:"tool_call_id"`
+	Size       int64  `json:"size"`
+}
+
+func (q *Queries) ListFileVersionsBySession(ctx context.Context, sessionID string) ([]ListFileVersionsBySessionRow, error) {
+	rows, err := q.query(ctx, q.listFileVersionsBySessionStmt, listFileVersionsBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFileVersionsBySessionRow{}
+	for rows.Next() {
+		var i ListFileVersionsBySessionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Path,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ToolCallID,
+			&i.Size,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFilesByPath = `-- name: ListFilesByPath :many
-SELECT id, session_id, path, content, version, created_at, updated_at
+SELECT id, session_id, path, content, version, created_at, updated_at, tool_call_id
 FROM files
 WHERE path = ?
 ORDER BY version DESC, created_at DESC
@@ -146,6 +203,7 @@ func (q *Queries) ListFilesByPath(ctx context.Context, path string) ([]File, err
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ToolCallID,
 		); err != nil {
 			return nil, err
 		}
@@ -161,7 +219,7 @@ func (q *Queries) ListFilesByPath(ctx context.Context, path string) ([]File, err
 }
 
 const listFilesBySession = `-- name: ListFilesBySession :many
-SELECT id, session_id, path, content, version, created_at, updated_at
+SELECT id, session_id, path, content, version, created_at, updated_at, tool_call_id
 FROM files
 WHERE session_id = ?
 ORDER BY version ASC, created_at ASC
@@ -184,6 +242,7 @@ func (q *Queries) ListFilesBySession(ctx context.Context, sessionID string) ([]F
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ToolCallID,
 		); err != nil {
 			return nil, err
 		}
@@ -199,7 +258,7 @@ func (q *Queries) ListFilesBySession(ctx context.Context, sessionID string) ([]F
 }
 
 const listLatestSessionFiles = `-- name: ListLatestSessionFiles :many
-SELECT f.id, f.session_id, f.path, f.content, f.version, f.created_at, f.updated_at
+SELECT f.id, f.session_id, f.path, f.content, f.version, f.created_at, f.updated_at, f.tool_call_id
 FROM files f
 INNER JOIN (
     SELECT path, MAX(version) as max_version, MAX(created_at) as max_created_at
@@ -227,6 +286,7 @@ func (q *Queries) ListLatestSessionFiles(ctx context.Context, sessionID string) 
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ToolCallID,
 		); err != nil {
 			return nil, err
 		}
@@ -242,7 +302,7 @@ func (q *Queries) ListLatestSessionFiles(ctx context.Context, sessionID string) 
 }
 
 const listNewFiles = `-- name: ListNewFiles :many
-SELECT id, session_id, path, content, version, created_at, updated_at
+SELECT id, session_id, path, content, version, created_at, updated_at, tool_call_id
 FROM files
 WHERE is_new = 1
 ORDER BY version DESC, created_at DESC
@@ -265,6 +325,7 @@ func (q *Queries) ListNewFiles(ctx context.Context) ([]File, error) {
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ToolCallID,
 		); err != nil {
 			return nil, err
 		}

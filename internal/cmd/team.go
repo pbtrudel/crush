@@ -142,7 +142,7 @@ func renderTeam(state agentteam.State) string {
 	sb.WriteString("  ◐ lead                  running       Team Lead\n")
 	for _, member := range state.Members {
 		fmt.Fprintf(&sb, "  %s %-20s %-13s %s\n",
-			statusGlyph(member.Status), member.Name, member.Status, member.Description)
+			statusGlyph(member.Status), memberLabel(member), member.Status, member.Description)
 		for _, diagnostic := range member.Diagnostics {
 			fmt.Fprintf(&sb, "      ! %s\n", diagnostic)
 		}
@@ -169,6 +169,15 @@ func renderTeam(state agentteam.State) string {
 		if task.OwnerName != "" {
 			fmt.Fprintf(&sb, "      owner %s\n", task.OwnerName)
 		}
+		if task.Role != "" {
+			fmt.Fprintf(&sb, "      role %s\n", task.Role)
+		}
+		if task.Verifies != "" {
+			fmt.Fprintf(&sb, "      verifies %s\n", task.Verifies)
+		}
+		if task.Escalated {
+			fmt.Fprintf(&sb, "      ! escalated after %d attempts\n", task.Attempts)
+		}
 		if len(task.BlockedBy) > 0 {
 			fmt.Fprintf(&sb, "      blocked by %s\n", strings.Join(task.BlockedBy, ", "))
 		}
@@ -180,6 +189,14 @@ func renderTeam(state agentteam.State) string {
 		}
 	}
 	return sb.String()
+}
+
+// memberLabel names a member with its role, as in "rev (reviewer)".
+func memberLabel(member agentteam.Member) string {
+	if member.RoleName == "" {
+		return member.Name
+	}
+	return member.Name + " (" + member.RoleName + ")"
 }
 
 func statusGlyph(status agentteam.Status) string {
@@ -199,6 +216,8 @@ func taskGlyph(task agentteam.TaskView) string {
 		return "✓"
 	case task.Status == agentteam.TaskInProgress:
 		return "◐"
+	case task.Status == agentteam.TaskInReview:
+		return "◇"
 	case task.Ready:
 		return "○"
 	default:

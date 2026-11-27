@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ type spawnTeammateParams struct {
 	Description string `json:"description" description:"Short description of the delegated responsibility."`
 	Prompt      string `json:"prompt" description:"Complete initial task for the teammate."`
 	Context     string `json:"context,omitempty" description:"fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh."`
+	Role        string `json:"role,omitempty" description:"Optional role from the catalog in this tool's description. It sets the teammate's tool allow-list, role prompt and default model."`
 
 	// Model override. When none of these is given the teammate runs on
 	// the subagent model with its configured settings.
@@ -60,6 +62,8 @@ type teamTaskCreateParams struct {
 	Description string   `json:"description" description:"Complete task details and acceptance criteria."`
 	BlockedBy   []string `json:"blocked_by,omitempty" description:"Task ids that must complete first."`
 	WriteScopes []string `json:"write_scopes,omitempty" description:"Advisory workspace-relative file or directory prefixes this task expects to modify."`
+	Role        string   `json:"role,omitempty" description:"Optional role from the spawn_teammate catalog. A ready task that names a role starts a teammate of that role on its own; without one the task stays manual."`
+	Verify      *bool    `json:"verify,omitempty" description:"Whether a verifier checks the finished work before dependent tasks start. Defaults to true for role implementer, false otherwise."`
 }
 
 type teamTaskListParams struct {
@@ -83,6 +87,9 @@ type teamTaskUpdateParams struct {
 	BlockedBy        []string `json:"blocked_by,omitempty" description:"Complete blocker list for set_dependencies."`
 	WriteScopes      []string `json:"write_scopes,omitempty" description:"Replacement advisory write scopes for edit."`
 	Owner            *string  `json:"owner,omitempty" description:"Member target from spawn_teammate or list_agents for Lead-only reassign; omit to unassign."`
+	Role             *string  `json:"role,omitempty" description:"Replacement role for edit; an empty string clears it."`
+	Verify           *bool    `json:"verify,omitempty" description:"Replacement verify setting for edit."`
+	Notes            *string  `json:"notes,omitempty" description:"What failed, required for the fail verdict on a verification task."`
 }
 
 // teamTools returns the nine Team-scoped tools bound to one caller. The
@@ -105,16 +112,19 @@ func (c *coordinator) teamTools(caller string, parentModel func() Model) []fanta
 // teamResponse renders a compact JSON result and appends pending peer
 // messages, which is how Team inbox delivery reaches the model. The inbox
 // is the caller's own: its session says which team the mail belongs to.
-func (c *coordinator) teamResponse(ctx context.Context, caller string, value any) fantasy.ToolResponse {
+// The service is the one the call ran on, not a fresh read of the
+// coordinator's pointer: a reload that retires the Team mid-turn must not
+// lose or switch the mailbox the answer belongs to.
+func (c *coordinator) teamResponse(ctx context.Context, team *agentteam.Service, caller string, value any) fantasy.ToolResponse {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error())
 	}
 	text := string(data)
-	if c.team == nil {
+	if team == nil {
 		return fantasy.NewTextResponse(text)
 	}
-	pending := c.team.DrainInbox(caller, tools.GetSessionFromContext(ctx))
+	pending := team.DrainInbox(caller, tools.GetSessionFromContext(ctx))
 	if len(pending) == 0 {
 		return fantasy.NewTextResponse(text)
 	}
@@ -130,14 +140,113 @@ func (c *coordinator) teamError(err error) fantasy.ToolResponse {
 	return fantasy.NewTextErrorResponse(err.Error())
 }
 
+// teamErrorWithState returns a refused task call with the state a retry
+// needs: the current task when it still exists, otherwise the live tasks the
+// model can pick from. A failure the state cannot help with falls back to the
+// bare message.
+func (c *coordinator) teamErrorWithState(ctx context.Context, caller string, err error, taskID string) fantasy.ToolResponse {
+	text := err.Error()
+	if agentteam.ErrorCode(err) == agentteam.CodeInvalidWriteScope {
+		text += "\n\nwrite scopes must be inside the workspace; leave scratch paths out"
+	}
+	team := c.teamService()
+	if team == nil {
+		return fantasy.NewTextErrorResponse(text)
+	}
+	sessionID := tools.GetSessionFromContext(ctx)
+	if taskID != "" {
+		if view, getErr := team.GetTask(caller, sessionID, taskID); getErr == nil {
+			if data, marshalErr := json.Marshal(view); marshalErr == nil {
+				return fantasy.NewTextErrorResponse(text + "\n\nCurrent task:\n" + string(data))
+			}
+		}
+	}
+	list, listErr := team.ListTasks(caller, sessionID, agentteam.TaskFilter{Limit: 10})
+	if listErr != nil || len(list.Tasks) == 0 {
+		return fantasy.NewTextErrorResponse(text)
+	}
+	var sb strings.Builder
+	sb.WriteString(text)
+	sb.WriteString("\n\nLive tasks:")
+	for _, task := range list.Tasks {
+		fmt.Fprintf(&sb, "\n- %s: %s", task.ID, task.Subject)
+	}
+	return fantasy.NewTextErrorResponse(sb.String())
+}
+
+// taskRole resolves a task's role the way spawn_teammate does. An empty
+// name is no role; the string is a refusal for the model.
+func (c *coordinator) taskRole(name string) (string, string) {
+	if strings.TrimSpace(name) == "" {
+		return "", ""
+	}
+	if c.cfg == nil {
+		return "", fmt.Sprintf("unknown role %q", name)
+	}
+	role, refusal := resolveRole(c.cfg.Config(), name)
+	if refusal != "" {
+		return "", refusal
+	}
+	return role.Name, ""
+}
+
+// relativizeWriteScopes rewrites absolute write scopes that sit inside the
+// workspace to their relative form, which is the only form the validator
+// accepts. It reports each rewrite so the response can name it.
+func (c *coordinator) relativizeWriteScopes(scopes []string) ([]string, []string) {
+	if len(scopes) == 0 || c.cfg == nil {
+		return scopes, nil
+	}
+	workspace := c.cfg.WorkingDir()
+	if workspace == "" {
+		return scopes, nil
+	}
+	rewritten := make([]string, len(scopes))
+	var changed []string
+	for i, scope := range scopes {
+		relative, ok := workspaceRelativeScope(workspace, scope)
+		rewritten[i] = scope
+		if !ok {
+			continue
+		}
+		rewritten[i] = relative
+		changed = append(changed, fmt.Sprintf("%s -> %s", scope, relative))
+	}
+	return rewritten, changed
+}
+
+// workspaceRelativeScope returns the relative form of an absolute scope that
+// lies inside the workspace.
+func workspaceRelativeScope(workspace, scope string) (string, bool) {
+	if !filepath.IsAbs(scope) {
+		return "", false
+	}
+	relative, err := filepath.Rel(workspace, scope)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(relative), true
+}
+
 func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model) fantasy.AgentTool {
+	description := "Create one named, durable teammate. Only the Team Lead may call this tool." +
+		" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve."
+	// A coordinator built without config still yields a usable tool, which
+	// is what lets the handlers answer with the disabled error.
+	if c.cfg != nil {
+		description += roleCatalog(c.cfg.Config())
+	}
 	return fantasy.NewAgentTool(
 		SpawnTeammateToolName,
-		"Create one named, durable teammate. Only the Team Lead may call this tool."+
-			" `model`, `provider` and `reasoning` work as in agent_dispatch; the [models] section of crush_info lists what each provider can serve.",
+		description,
 		func(ctx context.Context, params spawnTeammateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
+			}
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
 			}
 			mode := agentteam.ContextMode(params.Context)
 			if mode == "" {
@@ -151,13 +260,28 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				Provider:    "crush",
 				ParentID:    tools.GetSessionFromContext(ctx),
 			}
-			// Resolve the override first, so a refused model leaves no
-			// roster entry behind and the call can be retried.
-			sel, hasOverride, refusal := c.resolveModelOverride(AgentDispatchParams{
+			override := AgentDispatchParams{
 				Model:     params.Model,
 				Provider:  params.Provider,
 				Reasoning: params.Reasoning,
-			}, parentModel())
+			}
+			if strings.TrimSpace(params.Role) != "" {
+				role, refusal := resolveRole(c.cfg.Config(), params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				request.RoleName = role.Name
+				// A role's own model is checked now, so a model the config
+				// cannot serve fails the spawn instead of the first turn.
+				if !explicitModelOverride(override) && role.PinsModel() {
+					if _, _, refusal := c.resolveModelOverride(roleModelParams(role), parentModel()); refusal != "" {
+						return fantasy.NewTextErrorResponse(fmt.Sprintf("role %q: %s", role.Name, refusal)), nil
+					}
+				}
+			}
+			// Resolve the override first, so a refused model leaves no
+			// roster entry behind and the call can be retried.
+			sel, hasOverride, refusal := c.resolveModelOverride(override, parentModel())
 			if refusal != "" {
 				return fantasy.NewTextErrorResponse(refusal), nil
 			}
@@ -166,11 +290,11 @@ func (c *coordinator) spawnTeammateTool(caller string, parentModel func() Model)
 				request.ModelProvider = sel.Provider
 				request.Reasoning = strings.TrimSpace(params.Reasoning)
 			}
-			view, err := c.team.SpawnTeammate(ctx, caller, request)
+			view, err := team.SpawnTeammate(ctx, caller, request)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]any{"member": view}), nil
+			return c.teamResponse(ctx, team, caller, map[string]any{"member": view}), nil
 		},
 	)
 }
@@ -183,14 +307,29 @@ func (c *coordinator) sendMessageTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			err := c.team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			err := team.SendMessage(ctx, caller, tools.GetSessionFromContext(ctx), agentteam.SendRequest{
 				Target:  params.Target,
 				Message: params.Message,
 			})
 			if err != nil {
+				// The name may belong to a dispatched subagent instead.
+				if agentteam.ErrorCode(err) == agentteam.CodeMemberNotFound {
+					if resp, handled := c.deliverToSubagent(ctx, params.Target, params.Message); handled {
+						return resp, nil
+					}
+					return fantasy.NewTextErrorResponse(fmt.Sprintf(
+						"no teammate or subagent %q; teammates: %s; subagents: %s",
+						params.Target, c.teammateNames(ctx),
+						c.runningDispatchLabels(tools.GetSessionFromContext(ctx)),
+					)), nil
+				}
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]bool{"sent": true}), nil
+			return c.teamResponse(ctx, team, caller, map[string]bool{"sent": true}), nil
 		},
 	)
 }
@@ -200,11 +339,15 @@ func (c *coordinator) listAgentsTool(caller string) fantasy.AgentTool {
 		ListAgentsToolName,
 		"List the Lead and every durable teammate with an addressable target and current availability. inactive means no turn is executing, not a task result. provisioning and failed describe member creation.",
 		func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			members, err := c.team.ListMembers(caller, tools.GetSessionFromContext(ctx))
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			members, err := team.ListMembers(caller, tools.GetSessionFromContext(ctx))
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, members), nil
+			return c.teamResponse(ctx, team, caller, members), nil
 		},
 	)
 }
@@ -214,6 +357,10 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 		WaitAgentToolName,
 		"Wait for the next teammate status, message, or shared-task change after this call starts. Returns the current roster and live task board with every result. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning.",
 		func(ctx context.Context, params waitAgentParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
 			timeout := 30 * time.Second
 			if params.TimeoutMS != nil {
 				ms := *params.TimeoutMS
@@ -222,21 +369,21 @@ func (c *coordinator) waitAgentTool(caller string) fantasy.AgentTool {
 				}
 				timeout = time.Duration(ms) * time.Millisecond
 			}
-			if !c.team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
-				return c.teamResponse(ctx, caller, map[string]any{
+			if !team.HasActivePeer(caller, tools.GetSessionFromContext(ctx)) {
+				return c.teamResponse(ctx, team, caller, map[string]any{
 					"timedOut": false,
 					"noProgress": map[string]string{
 						"reason":  "no-active-peer",
 						"message": noActivePeerMessage,
 					},
-					"progress": c.team.Progress(caller, tools.GetSessionFromContext(ctx)),
+					"progress": team.Progress(caller, tools.GetSessionFromContext(ctx)),
 				}), nil
 			}
-			result, err := c.team.WaitForChange(ctx, caller, tools.GetSessionFromContext(ctx), timeout)
+			result, err := team.WaitForChange(ctx, caller, tools.GetSessionFromContext(ctx), timeout)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, result), nil
+			return c.teamResponse(ctx, team, caller, result), nil
 		},
 	)
 }
@@ -249,11 +396,15 @@ func (c *coordinator) interruptAgentTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			previous, err := c.team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			previous, err := team.Interrupt(caller, tools.GetSessionFromContext(ctx), params.Target)
 			if err != nil {
 				return c.teamError(err), nil
 			}
-			return c.teamResponse(ctx, caller, map[string]string{"previousStatus": string(previous)}), nil
+			return c.teamResponse(ctx, team, caller, map[string]string{"previousStatus": string(previous)}), nil
 		},
 	)
 }
@@ -266,16 +417,31 @@ func (c *coordinator) teamTaskCreateTool(caller string) fantasy.AgentTool {
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
-			view, err := c.team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			role, refusal := c.taskRole(params.Role)
+			if refusal != "" {
+				return fantasy.NewTextErrorResponse(refusal), nil
+			}
+			scopes, rewritten := c.relativizeWriteScopes(params.WriteScopes)
+			view, err := team.CreateTask(caller, tools.GetSessionFromContext(ctx), agentteam.CreateTaskRequest{
 				Subject:     params.Subject,
 				Description: params.Description,
 				BlockedBy:   params.BlockedBy,
-				WriteScopes: params.WriteScopes,
+				WriteScopes: scopes,
+				Role:        role,
+				Verify:      params.Verify,
 			})
 			if err != nil {
-				return c.teamError(err), nil
+				return c.teamErrorWithState(ctx, caller, err, ""), nil
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			response := c.teamResponse(ctx, team, caller, view)
+			if len(rewritten) > 0 {
+				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
+			}
+			return response, nil
 		},
 	)
 }
@@ -285,6 +451,10 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 		TeamTaskListToolName,
 		"List shared tasks, including readiness, owner, revision, blockers, and write-scope warnings.",
 		func(ctx context.Context, params teamTaskListParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
 			filter := agentteam.TaskFilter{Ready: params.Ready}
 			if params.Status != nil {
 				status := agentteam.TaskStatus(*params.Status)
@@ -299,7 +469,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if params.Limit != nil {
 				filter.Limit = *params.Limit
 			}
-			list, err := c.team.ListTasks(caller, tools.GetSessionFromContext(ctx), filter)
+			list, err := team.ListTasks(caller, tools.GetSessionFromContext(ctx), filter)
 			if err != nil {
 				return c.teamError(err), nil
 			}
@@ -307,7 +477,7 @@ func (c *coordinator) teamTaskListTool(caller string) fantasy.AgentTool {
 			if list.NextCursor > 0 {
 				result["nextCursor"] = list.NextCursor
 			}
-			return c.teamResponse(ctx, caller, result), nil
+			return c.teamResponse(ctx, team, caller, result), nil
 		},
 	)
 }
@@ -317,11 +487,15 @@ func (c *coordinator) teamTaskGetTool(caller string) fantasy.AgentTool {
 		TeamTaskGetToolName,
 		"Read the complete latest value of one shared task before changing or executing it.",
 		func(ctx context.Context, params teamTaskGetParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			view, err := c.team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
-			if err != nil {
-				return c.teamError(err), nil
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			view, err := team.GetTask(caller, tools.GetSessionFromContext(ctx), params.TaskID)
+			if err != nil {
+				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
+			}
+			return c.teamResponse(ctx, team, caller, view), nil
 		},
 	)
 }
@@ -331,12 +505,17 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 		TeamTaskUpdateToolName,
 		"Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list.",
 		func(ctx context.Context, params teamTaskUpdateParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			team := c.teamService()
+			if team == nil {
+				return c.teamError(ErrAgentTeamsDisabled), nil
+			}
+			scopes, rewritten := c.relativizeWriteScopes(params.WriteScopes)
 			request := agentteam.UpdateTaskRequest{
 				TaskID:           params.TaskID,
 				ExpectedRevision: params.ExpectedRevision,
 				Action:           params.Action,
 				BlockedBy:        params.BlockedBy,
-				WriteScopes:      params.WriteScopes,
+				WriteScopes:      scopes,
 				SessionID:        tools.GetSessionFromContext(ctx),
 			}
 			if params.Subject != nil {
@@ -348,11 +527,26 @@ func (c *coordinator) teamTaskUpdateTool(caller string) fantasy.AgentTool {
 			if params.Owner != nil {
 				request.Owner = *params.Owner
 			}
-			view, err := c.team.UpdateTask(caller, request)
-			if err != nil {
-				return c.teamError(err), nil
+			if params.Role != nil {
+				role, refusal := c.taskRole(*params.Role)
+				if refusal != "" {
+					return fantasy.NewTextErrorResponse(refusal), nil
+				}
+				request.Role = &role
 			}
-			return c.teamResponse(ctx, caller, view), nil
+			request.Verify = params.Verify
+			if params.Notes != nil {
+				request.Notes = *params.Notes
+			}
+			view, err := team.UpdateTask(caller, request)
+			if err != nil {
+				return c.teamErrorWithState(ctx, caller, err, params.TaskID), nil
+			}
+			response := c.teamResponse(ctx, team, caller, view)
+			if len(rewritten) > 0 {
+				response.Content += "\n\nWrite scopes were rewritten relative to the workspace: " + strings.Join(rewritten, ", ")
+			}
+			return response, nil
 		},
 	)
 }

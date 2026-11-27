@@ -85,7 +85,7 @@ func TestTimeLimitOutranksTheCancel(t *testing.T) {
 		done <- runErr
 	}()
 	require.Eventually(t, tree.deadlinePassed, 5*time.Second, 10*time.Millisecond)
-	require.Eventually(t, func() bool { return agent.IsSessionBusy(sess.ID) }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return agent.HasActiveTurn(sess.ID) }, 5*time.Second, 10*time.Millisecond)
 	agent.Cancel(sess.ID)
 	select {
 	case runErr := <-done:

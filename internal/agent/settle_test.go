@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"testing"
 
 	"charm.land/fantasy"
@@ -9,11 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A settle-on-read repair can answer a call that the run owning it answers
-// again when the tool finally returns, leaving two stored results for one
-// call. The request must still carry one answer per call, and the newest is
-// the real one: a repair only settles calls with no result, so a duplicate
-// can only be created afterwards.
+// The request must carry one answer per call. preparePrompt already picks
+// the one result a call keeps when the transcript holds two (see
+// TestPreparePrompt_DuplicateResultsKeepTheRealOne); toolResultsForCalls
+// emits it once and consumes it, so a later assistant cannot repeat it.
 func TestToolResultsForCalls_OneResultPerCall(t *testing.T) {
 	t.Parallel()
 
@@ -24,18 +22,10 @@ func TestToolResultsForCalls_OneResultPerCall(t *testing.T) {
 			message.ToolCall{ID: "call_1", Name: "bash", Input: `{"command":"ls"}`, Finished: true},
 		},
 	}
-	// preparePrompt fills this in transcript order, so the last part stored
-	// for a call is the newest.
-	byCall := map[string][]fantasy.MessagePart{
+	byCall := map[string]fantasy.ToolResultPart{
 		"call_1": {
-			fantasy.ToolResultPart{
-				ToolCallID: "call_1",
-				Output:     fantasy.ToolResultOutputContentError{Error: errors.New(interruptedToolCallResult)},
-			},
-			fantasy.ToolResultPart{
-				ToolCallID: "call_1",
-				Output:     fantasy.ToolResultOutputContentText{Text: "ok"},
-			},
+			ToolCallID: "call_1",
+			Output:     fantasy.ToolResultOutputContentText{Text: "ok"},
 		},
 	}
 
@@ -44,6 +34,6 @@ func TestToolResultsForCalls_OneResultPerCall(t *testing.T) {
 	require.Len(t, got.Content, 1, "one call gets exactly one answer")
 	result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](got.Content[0])
 	require.True(t, ok)
-	require.Equal(t, fantasy.ToolResultOutputContentText{Text: "ok"}, result.Output,
-		"the newest of the two results is the one sent")
+	require.Equal(t, fantasy.ToolResultOutputContentText{Text: "ok"}, result.Output)
+	require.Empty(t, byCall, "the emitted result is consumed")
 }

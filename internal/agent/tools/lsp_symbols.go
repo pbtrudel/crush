@@ -4,9 +4,12 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 )
@@ -20,7 +23,7 @@ const SymbolsToolName = "lsp_symbols"
 //go:embed lsp_symbols.md
 var symbolsDescription string
 
-func NewSymbolsTool(lspManager *lsp.Manager) fantasy.AgentTool {
+func NewSymbolsTool(cfg *config.ConfigStore, lspManager *lsp.Manager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		SymbolsToolName,
 		symbolsDescription,
@@ -28,11 +31,13 @@ func NewSymbolsTool(lspManager *lsp.Manager) fantasy.AgentTool {
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
+			params.FilePath = resolveToolPath(configWorkingDir(cfg), params.FilePath)
 			lspManager.Start(ctx, params.FilePath)
 
 			client := findLSPClient(lspManager, params.FilePath)
 			if client == nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("no LSP client handles file: %s", params.FilePath)), nil
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"no LSP client handles file %s: %s", params.FilePath, lspMissReason(cfg, params.FilePath))), nil
 			}
 
 			symbols, err := client.DocumentSymbols(ctx, params.FilePath)
@@ -120,4 +125,52 @@ var symbolKindNames = map[protocol.SymbolKind]string{
 	protocol.Event:         "Event",
 	protocol.Operator:      "Operator",
 	protocol.TypeParameter: "TypeParameter",
+}
+
+// lspMissReason explains why no client handled a file, so the model does not
+// retry a path the LSP tools cannot serve. It names the workspace for a path
+// outside it, and the extension when no configured server handles it.
+func lspMissReason(cfg *config.ConfigStore, filePath string) string {
+	abs := filePath
+	if resolved, err := filepath.Abs(filePath); err == nil {
+		abs = resolved
+	}
+	workspace := ""
+	if cfg != nil {
+		workspace = cfg.WorkingDir()
+	}
+	if workspace != "" {
+		relative, err := filepath.Rel(workspace, abs)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Sprintf(
+				"it is outside the workspace %s; LSP tools only work on workspace files, use view and edit instead",
+				workspace)
+		}
+	}
+	ext := filepath.Ext(abs)
+	if ext == "" {
+		return "no language server is configured for files without an extension; use view and edit instead"
+	}
+	if cfg != nil && lspConfiguredForExtension(cfg.Config().LSP, ext) {
+		return fmt.Sprintf(
+			"the language server for %s files is not running; check the [lsp] section of crush_info, or use view and edit instead",
+			ext)
+	}
+	return fmt.Sprintf(
+		"no language server is configured for %s files; use view and edit instead", ext)
+}
+
+// lspConfiguredForExtension reports whether an enabled LSP server lists ext,
+// with or without its leading dot.
+func lspConfiguredForExtension(servers map[string]config.LSPConfig, ext string) bool {
+	trimmed := strings.TrimPrefix(ext, ".")
+	for _, server := range servers {
+		if server.Disabled {
+			continue
+		}
+		if slices.Contains(server.FileTypes, trimmed) || slices.Contains(server.FileTypes, ext) {
+			return true
+		}
+	}
+	return false
 }

@@ -1,15 +1,21 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
+	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/backend"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/wire"
 	"github.com/google/uuid"
 )
 
@@ -18,8 +24,14 @@ type controllerV1 struct {
 	server  *Server
 }
 
-// handleGetHealth checks server health.
+// handleGetHealth checks server health. A server that has committed to
+// shutting down answers 503: it takes no new workspaces, so a readiness
+// probe must not mistake it for a live server.
 func (c *controllerV1) handleGetHealth(w http.ResponseWriter, _ *http.Request) {
+	if c.backend.Closing() {
+		jsonError(w, http.StatusServiceUnavailable, backend.ErrServerShuttingDown.Error())
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -252,18 +264,44 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 		case <-r.Context().Done():
 			c.server.logDebug(r, "Stopping event stream")
 			return
+		case <-sub.overflowed():
+			// The client stopped keeping up (a suspended or wedged
+			// terminal) and events were dropped for it, possibly a
+			// permission request or a run's completion. End the stream
+			// rather than leave a silent gap. A client with a reconnect
+			// loop (the TUI) re-reports its session, which re-delivers
+			// pending permission and question prompts, and reloads what
+			// it shows. Nothing re-delivers a dropped RunComplete:
+			// `crush run` has no reconnect loop and treats the closed
+			// stream as a failed run.
+			slog.Warn("Closing event stream of a client that fell behind",
+				"workspace", id, "client_id", clientID)
+			return
+		case <-sub.closed:
+			c.server.logDebug(r, "Stopping event stream; workspace events ended")
+			return
 		case <-sub.wait():
 			// Drain until empty, flushing once per batch: a client that
 			// falls behind sends fewer, larger frames instead of one
 			// syscall per event, and a frame that lands mid-drain is
 			// caught by the next pass instead of riding a consumed
-			// signal into the backlog.
+			// signal into the backlog. A batch stops at one backlog's
+			// worth of frames, with the signal re-armed for the rest:
+			// against a steady producer, draining until empty would grow
+			// buf without bound and never reach the write that tells a
+			// stalled client apart from a fast one.
 			var buf []byte
+			drained := 0
 			for {
+				if drained >= sinkBacklog {
+					sub.rearm()
+					break
+				}
 				frames := sub.drain()
 				if len(frames) == 0 {
 					break
 				}
+				drained += len(frames)
 				for _, f := range frames {
 					if !c.deliverToClient(r.Context(), id, clientID, f.payload) {
 						continue
@@ -294,7 +332,7 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 // writeEvent wraps a workspace event in its SSE envelope and writes it to
 // the stream. Events with no wire form are skipped.
 func (c *controllerV1) writeEvent(w http.ResponseWriter, r *http.Request, flusher *http.ResponseController, ev any) {
-	wrapped := wrapEvent(ev)
+	wrapped := wire.Wrap(ev)
 	if wrapped == nil {
 		return
 	}
@@ -340,6 +378,18 @@ func (c *controllerV1) handleGetWorkspaceLSPDiagnostics(w http.ResponseWriter, r
 	jsonEncode(w, diagnostics)
 }
 
+// handleGetWorkspaceLSPDiagnosticsByFile returns the per-file
+// diagnostic counts of every LSP client in one answer.
+func (c *controllerV1) handleGetWorkspaceLSPDiagnosticsByFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	counts, err := c.backend.LSPDiagnosticsByFile(id)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, wire.LSPFileDiagnosticsToProto(counts))
+}
+
 // handleGetWorkspaceSessions lists sessions for a workspace.
 func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -351,7 +401,7 @@ func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http
 	ws, _ := c.backend.GetWorkspace(id)
 	result := make([]proto.Session, len(sessions))
 	for i, s := range sessions {
-		result[i] = sessionToProto(s)
+		result[i] = wire.SessionToProto(s)
 		result[i].IsBusy = isSessionBusy(ws, s.ID)
 		result[i].AttachedClients = attachedClients(ws, s.ID)
 	}
@@ -375,7 +425,7 @@ func (c *controllerV1) handlePostWorkspaceSessions(w http.ResponseWriter, r *htt
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(sess)
+	out := wire.SessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
 	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
@@ -387,11 +437,11 @@ func (c *controllerV1) handleGetWorkspaceSession(w http.ResponseWriter, r *http.
 	sid := r.PathValue("sid")
 	sess, err := c.backend.GetSession(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(sess)
+	out := wire.SessionToProto(sess)
 	out.IsBusy = isSessionBusy(ws, sess.ID)
 	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
@@ -403,10 +453,55 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	sid := r.PathValue("sid")
 	history, err := c.backend.ListSessionHistory(r.Context(), id, sid)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleHistoryError(w, r, "the file history could not be read", err)
 		return
 	}
 	jsonEncode(w, history)
+}
+
+// handleGetWorkspaceSessionHistoryMeta returns the file version
+// metadata for a session, without content.
+func (c *controllerV1) handleGetWorkspaceSessionHistoryMeta(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	metas, err := c.backend.ListSessionHistoryMeta(r.Context(), id, sid)
+	if err != nil {
+		c.handleHistoryError(w, r, "the file history could not be read", err)
+		return
+	}
+	jsonEncode(w, wire.FileMetasToProto(metas))
+}
+
+// handleGetWorkspaceHistoryFile returns one file version with content.
+func (c *controllerV1) handleGetWorkspaceHistoryFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	fid := r.PathValue("fid")
+	file, err := c.backend.GetHistoryFile(r.Context(), id, fid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, http.StatusNotFound, "file version not found")
+			return
+		}
+		c.handleHistoryError(w, r, "the file version could not be read", err)
+		return
+	}
+	jsonEncode(w, wire.FileToProto(file))
+}
+
+// handleGetWorkspaceSessionChildren returns the sessions a session spawned.
+func (c *controllerV1) handleGetWorkspaceSessionChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	children, err := c.backend.ListChildSessions(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result := make([]proto.Session, len(children))
+	for i, s := range children {
+		result[i] = wire.SessionToProto(s)
+	}
+	jsonEncode(w, result)
 }
 
 // handleGetWorkspaceSessionMessages returns all messages for a session.
@@ -418,7 +513,7 @@ func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, 
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handlePutWorkspaceSession updates a session.
@@ -434,13 +529,38 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 
 	saved, err := c.backend.SaveSession(r.Context(), id, sess)
 	if err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	ws, _ := c.backend.GetWorkspace(id)
-	out := sessionToProto(saved)
+	out := wire.SessionToProto(saved)
 	out.IsBusy = isSessionBusy(ws, saved.ID)
 	out.AttachedClients = attachedClients(ws, saved.ID)
+	jsonEncode(w, out)
+}
+
+// handlePostWorkspaceSessionRename changes only a session's title, so the
+// usage, cost and todos a concurrent run just wrote survive the rename.
+func (c *controllerV1) handlePostWorkspaceSessionRename(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+
+	var rename proto.SessionRename
+	if err := json.NewDecoder(r.Body).Decode(&rename); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	sess, err := c.backend.RenameSession(r.Context(), id, sid, rename.Title)
+	if err != nil {
+		c.handleSessionError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := wire.SessionToProto(sess)
+	out.IsBusy = isSessionBusy(ws, sess.ID)
+	out.AttachedClients = attachedClients(ws, sess.ID)
 	jsonEncode(w, out)
 }
 
@@ -449,7 +569,7 @@ func (c *controllerV1) handleDeleteWorkspaceSession(w http.ResponseWriter, r *ht
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
 	if err := c.backend.DeleteSession(r.Context(), id, sid); err != nil {
-		c.handleError(w, r, err)
+		c.handleSessionError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -464,7 +584,7 @@ func (c *controllerV1) handleGetWorkspaceSessionUserMessages(w http.ResponseWrit
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handleGetWorkspaceAllUserMessages returns all user messages across sessions.
@@ -475,7 +595,7 @@ func (c *controllerV1) handleGetWorkspaceAllUserMessages(w http.ResponseWriter, 
 		c.handleError(w, r, err)
 		return
 	}
-	jsonEncode(w, messagesToProto(messages))
+	jsonEncode(w, wire.MessagesToProto(messages))
 }
 
 // handleGetWorkspaceSessionFileTrackerFiles lists files read in a session.
@@ -728,6 +848,36 @@ func (c *controllerV1) handlePostWorkspaceAgentSessionAsk(w http.ResponseWriter,
 	jsonEncode(w, proto.AgentAskResponse{Answer: answer})
 }
 
+// handlePostWorkspaceTeamMemberMessage sends a message to a teammate.
+func (c *controllerV1) handlePostWorkspaceTeamMemberMessage(w http.ResponseWriter, r *http.Request) {
+	var req proto.TeamMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.TeamSendMessage(r.Context(), r.PathValue("id"), req.SessionID, r.PathValue("member"), req.Text); err != nil {
+		c.writeTeamError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handlePostWorkspaceTeamMemberInterrupt stops a teammate's current turn.
+func (c *controllerV1) handlePostWorkspaceTeamMemberInterrupt(w http.ResponseWriter, r *http.Request) {
+	var req proto.TeamInterruptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.TeamInterrupt(r.Context(), r.PathValue("id"), req.SessionID, r.PathValue("member")); err != nil {
+		c.writeTeamError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceAgentSessionShell runs a shell command in the workspace.
 func (c *controllerV1) handlePostWorkspaceAgentSessionShell(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -792,6 +942,18 @@ func (c *controllerV1) handlePostWorkspacePermissionsGrant(w http.ResponseWriter
 	jsonEncode(w, proto.PermissionGrantResponse{Resolved: resolved})
 }
 
+// handlePostWorkspaceSessionAutoApprove auto-approves every permission
+// request a session raises.
+func (c *controllerV1) handlePostWorkspaceSessionAutoApprove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	if err := c.backend.AutoApproveSession(id, sid); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handlePostWorkspaceQuestionsAnswer submits answers for a batch question.
 func (c *controllerV1) handlePostWorkspaceQuestionsAnswer(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -811,12 +973,20 @@ func (c *controllerV1) handlePostWorkspaceQuestionsAnswer(w http.ResponseWriter,
 	jsonEncode(w, proto.QuestionAnswerResponse{Resolved: resolved})
 }
 
-// handlePostWorkspaceQuestionsCancel cancels the pending question
-// batch for a workspace.
+// handlePostWorkspaceQuestionsCancel cancels a pending question batch
+// for a workspace.
 func (c *controllerV1) handlePostWorkspaceQuestionsCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	cancelled, err := c.backend.CancelQuestion(id)
+	// Clients that predate batch IDs send no body.
+	var req proto.QuestionCancel
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	cancelled, err := c.backend.CancelQuestion(id, req.BatchRequestID)
 	if err != nil {
 		c.handleError(w, r, err)
 		return
@@ -843,6 +1013,38 @@ func (c *controllerV1) handlePostWorkspacePermissionsMode(w http.ResponseWriter,
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleHistoryError answers a failed file-history read. Only
+// backend.ErrWorkspaceNotFound keeps its usual mapping (a 404, so a client
+// recovers); every other failure is a store error whose text can name a
+// database path, so the body carries a fixed message and the log keeps the
+// detail.
+func (c *controllerV1) handleHistoryError(w http.ResponseWriter, r *http.Request, message string, err error) {
+	if errors.Is(err, backend.ErrWorkspaceNotFound) {
+		c.handleError(w, r, err)
+		return
+	}
+	c.server.logError(r, err.Error())
+	jsonError(w, http.StatusInternalServerError, message)
+}
+
+// handleSessionError answers a failed session call. A session the
+// workspace does not have is a 404 with its own code, distinct from the
+// bare 404 that means the server no longer knows the workspace; everything
+// else falls back to the shared mapping.
+func (c *controllerV1) handleSessionError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusNotFound, "session not found", proto.ErrorCodeSessionNotFound)
+		return
+	}
+	c.handleError(w, r, err)
+}
+
+// configReloadBusyCode is the wire code the reload route answers when an
+// agent run is in flight. internal/client matches it to restore its own
+// busy error.
+const configReloadBusyCode = "config_reload_busy"
+
 // handleError maps backend errors to HTTP status codes and writes the
 // JSON error response.
 //
@@ -861,7 +1063,12 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 	case errors.Is(err, backend.ErrLSPClientNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, backend.ErrAgentNotInitialized):
-		status = http.StatusBadRequest
+		// Keep the status: callers that only read it keep working, and
+		// the code lets newer clients tell "wait for the agent" apart
+		// from a bad request.
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), proto.ErrorCodeAgentNotInitialized)
+		return
 	case errors.Is(err, backend.ErrAgentBusy):
 		// Switching the main agent mid-run could strand the run's
 		// queued prompts on the previous agent; mirror the TUI's
@@ -887,8 +1094,16 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusConflict
 	case errors.Is(err, backend.ErrWorkspaceClosing),
 		errors.Is(err, backend.ErrServerNotIdle),
-		errors.Is(err, backend.ErrClientRetired):
+		errors.Is(err, backend.ErrClientRetired),
+		errors.Is(err, backend.ErrPromptOverrideMismatch):
 		status = http.StatusConflict
+	case errors.Is(err, app.ErrConfigReloadBusy):
+		// A reload swaps models and tools under a live run, so it is a
+		// state the caller can wait out. The code lets a client restore
+		// its own busy error instead of guessing from the status.
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusConflict, err.Error(), configReloadBusyCode)
+		return
 	case errors.Is(err, backend.ErrServerShuttingDown):
 		// 503, not 409: the request is not wrong, this process is just
 		// leaving. Clients retry against its replacement.
@@ -898,13 +1113,36 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 	jsonError(w, status, err.Error())
 }
 
+// writeTeamError answers a Team action failure. A Team failure carries
+// its machine code so a client can restore the original error identity;
+// everything else falls back to the generic mapper.
+func (c *controllerV1) writeTeamError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, agent.ErrAgentTeamsDisabled) {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusConflict, err.Error(), proto.TeamCodeDisabled)
+		return
+	}
+	if code := agentteam.ErrorCode(err); code != "" {
+		c.server.logError(r, err.Error())
+		jsonErrorCode(w, http.StatusBadRequest, err.Error(), code)
+		return
+	}
+	c.handleError(w, r, err)
+}
+
 func jsonEncode(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 func jsonError(w http.ResponseWriter, status int, message string) {
+	jsonErrorCode(w, status, message, "")
+}
+
+// jsonErrorCode writes a JSON error response with an optional
+// machine-readable code.
+func jsonErrorCode(w http.ResponseWriter, status int, message, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(proto.Error{Message: message})
+	_ = json.NewEncoder(w).Encode(proto.Error{Message: message, Code: code})
 }

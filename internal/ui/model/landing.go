@@ -27,7 +27,7 @@ func (m *UI) selectedLargeModel() *workspace.AgentModel {
 func (m *UI) landingView() string {
 	t := m.com.Styles
 	width := m.layout.main.Dx()
-	cwd := common.PrettyPathInline(t, m.com.Workspace.WorkingDir(), m.gitBranch, width)
+	cwd := common.PrettyPathInline(t, m.com.Workspace.WorkingDir(), m.gitBranchLabel(), width)
 
 	hint := t.Chrome.TopRuleEdge.Render(">") + " " +
 		t.Header.Charm.Render("READY") + " " +
@@ -58,15 +58,26 @@ func (m *UI) landingView() string {
 			Render(headerBlock)
 	}
 
-	// Three borderless HUD columns, separated by whitespace.
-	colWidth := max(6, min(30, (width-4)/3))
+	// Channels are experimental and opt-in, so their column only appears
+	// once a server is opted in; otherwise the other columns keep their
+	// full width.
+	channels := m.channelStatusItems()
+	columns := 3
+	if len(channels) > 0 {
+		columns = 4
+	}
+	colWidth := max(6, min(30, (width-(columns-1))/columns))
 	maxItems := max(1, remainingHeightArea.Dy()-2)
 
 	lspSection := m.lspInfo(colWidth, maxItems, false)
 	mcpSection := m.mcpInfo(colWidth, maxItems, false)
 	skillsSection := m.skillsInfo(colWidth, maxItems, false)
+	sections := []string{lspSection, " ", mcpSection, " ", skillsSection}
+	if len(channels) > 0 {
+		sections = append(sections, " ", m.channelsInfo(channels, colWidth, maxItems, false))
+	}
 
-	content := lipgloss.JoinHorizontal(lipgloss.Left, lspSection, "  ", mcpSection, "  ", skillsSection)
+	content := lipgloss.JoinHorizontal(lipgloss.Left, sections...)
 
 	return lipgloss.NewStyle().
 		Width(width).

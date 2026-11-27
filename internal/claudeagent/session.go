@@ -253,7 +253,13 @@ func (s *session) prepare(ctx context.Context, req turnRequest, cfg launchConfig
 			s.pending.reset()
 			prep := &prepared{continuation: results, start: end}
 			if end < len(req.Prompt) {
-				prep.steer = ConvertPrompt(req.Prompt[end:])
+				harness, user := trailingInjections(req.Prompt[end:])
+				// A reminder added after the results belongs with them:
+				// steering it would label it as the user's.
+				attachToLastResult(prep.continuation, harness)
+				if len(user) > 0 {
+					prep.steer = ConvertPrompt(user)
+				}
 			}
 			return prep, nil
 		}

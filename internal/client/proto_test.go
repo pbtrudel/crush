@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -134,22 +135,28 @@ func TestSendMessageAcceptsStatusAccepted(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "", "hello"))
+	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "hello"))
 }
 
-func TestSendMessageIncludesChannelOrigin(t *testing.T) {
+func TestSendMessageDropsClientSuppliedChannel(t *testing.T) {
 	t.Parallel()
 
-	var got proto.AgentMessage
+	// A client must not be able to mark its own turn as
+	// channel-originated: the wire type has no channel field, so a
+	// body that sends one is silently ignored by JSON decoding and
+	// the run dispatches without a channel binding.
+	var body []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		var err error
+		body, err = io.ReadAll(r.Body)
+		require.NoError(t, err)
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "signal", "hello"))
-	require.Equal(t, "signal", got.Channel)
+	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "hello"))
+	require.NotContains(t, string(body), "channel")
 }
 
 func TestSendMessageAcceptsStatusOK(t *testing.T) {
@@ -161,7 +168,7 @@ func TestSendMessageAcceptsStatusOK(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "", "hello"))
+	require.NoError(t, c.SendMessage(context.Background(), "ws1", "sess1", "", "hello"))
 }
 
 func TestSendMessageDecodesErrorBody(t *testing.T) {
@@ -174,7 +181,7 @@ func TestSendMessageDecodesErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	err := c.SendMessage(context.Background(), "ws1", "", "", "", "hello")
+	err := c.SendMessage(context.Background(), "ws1", "", "", "hello")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "status code 400")
 	require.Contains(t, err.Error(), "session id is required")
@@ -190,7 +197,7 @@ func TestSendMessageFallsBackOnMalformedErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	err := c.SendMessage(context.Background(), "ws1", "sess1", "", "", "hello")
+	err := c.SendMessage(context.Background(), "ws1", "sess1", "", "hello")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "status code 500")
 	require.NotContains(t, err.Error(), "not json")
@@ -205,7 +212,7 @@ func TestSendMessageFallsBackOnEmptyErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	err := c.SendMessage(context.Background(), "ws1", "sess1", "", "", "hello")
+	err := c.SendMessage(context.Background(), "ws1", "sess1", "", "hello")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "status code 500")
 }
@@ -275,8 +282,61 @@ func TestSendHiddenContinuation(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := captureClient(t, srv)
-	require.NoError(t, c.SendMessage(message.WithHiddenUserMessage(t.Context()), "ws1", "sess1", "", "", "Implement the plan."))
+	require.NoError(t, c.SendMessage(message.WithHiddenUserMessage(t.Context()), "ws1", "sess1", "", "Implement the plan."))
 	msg := <-requests
 	require.True(t, msg.HiddenUserMessage)
 	require.Equal(t, "Implement the plan.", msg.Prompt)
+}
+
+func TestListChildSessionsMapsNotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(proto.Error{Message: "workspace not found"})
+	}))
+	defer srv.Close()
+	c := captureClient(t, srv)
+
+	_, err := c.ListChildSessions(t.Context(), "ws1", "s1")
+	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorContains(t, err, "workspace not found")
+}
+
+// TestDeleteSessionMapsErrorBodies pins that a delete decodes the error
+// body like its siblings: a workspace the server no longer knows is the
+// SDK's workspace-gone error, which triggers recovery, while a session the
+// workspace does not have stays a distinct refusal.
+func TestDeleteSessionMapsErrorBodies(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   proto.Error
+		want   error
+		not    error
+	}{
+		{"workspace gone", http.StatusNotFound, proto.Error{Message: "workspace not found"}, ErrNotFound, ErrSessionNotFound},
+		{"session missing", http.StatusNotFound, proto.Error{
+			Message: "session not found", Code: proto.ErrorCodeSessionNotFound,
+		}, ErrSessionNotFound, ErrNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			defer srv.Close()
+			c := captureClient(t, srv)
+
+			err := c.DeleteSession(t.Context(), "ws1", "s1")
+			require.ErrorIs(t, err, tc.want)
+			require.NotErrorIs(t, err, tc.not)
+			require.Contains(t, err.Error(), tc.body.Message)
+		})
+	}
 }

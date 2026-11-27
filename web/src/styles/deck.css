@@ -1,0 +1,38 @@
+.deck {
+  position: relative; display: grid; gap: 8px; padding: var(--space-4);
+}
+.deck[data-busy='true'] { box-shadow: 0 0 0 1px var(--edge-strong), 0 0 32px color-mix(in oklch, var(--cyan) 28%, transparent); }
+.deck__row { display: grid; grid-template-columns: 1fr auto; gap: var(--space-4); align-items: end; }
+.deck textarea {
+  inline-size: 100%; min-block-size: 56px; max-block-size: 40vh; resize: vertical;
+  background: var(--void-deep); color: var(--text); border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 10px 12px; font: 400 1rem/1.5 var(--font-prose);
+}
+.deck__actions { display: flex; gap: 8px; }
+.deck__queue, .deck__files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; padding: 0; list-style: none; }
+.deck__suggest {
+  position: absolute; inset-block-end: calc(100% + 6px); inset-inline-start: var(--space-4); z-index: 20;
+  margin: 0; padding: 4px; list-style: none; min-inline-size: 24rem; max-block-size: 40vh; overflow-y: auto;
+  background: var(--surface-solid); border: 1px solid var(--edge-strong); border-radius: var(--radius);
+}
+.deck__suggest li { padding: 8px 10px; font: 400 var(--step--1) var(--font-code); border-radius: 4px; cursor: pointer; }
+.deck__suggest li[aria-selected='true'] { background: var(--cyan-dim); }
+.deck__help { margin: 0; font-size: var(--step--1); color: var(--text-muted); }
+.deck__badges { display: flex; flex-wrap: wrap; gap: 8px; justify-self: start; }
+.deck__plan-badge {
+  margin: 0; justify-self: start; padding: 4px 10px; border: 1px solid var(--amber);
+  border-radius: var(--radius); color: var(--amber); font: 600 var(--step--1) var(--font-hud);
+  text-transform: uppercase; letter-spacing: 0.12em;
+}
+.deck__mode-badge {
+  margin: 0; padding: 4px 10px; border-radius: var(--radius);
+  font: 600 var(--step--1) var(--font-hud); text-transform: uppercase; letter-spacing: 0.12em;
+}
+.deck__mode-badge[data-mode='shell'] { border: 1px solid var(--amber); color: var(--amber); }
+.deck__mode-badge[data-mode='note'] { border: 1px solid var(--violet); color: var(--violet); }
+.deck__error { margin: 0; color: var(--magenta); min-block-size: 1em; font-size: var(--step--1); }
+/* A starting agent is a state to wait out, never an error. */
+.deck__starting { margin: 0; color: var(--amber); font-size: var(--step--1); }
+.deck__error[data-tone='starting'] { color: var(--amber); }
+.deck__retry { margin-inline-start: 8px; }
+@media (max-width: 640px) { .deck__row { grid-template-columns: 1fr; } .deck__actions { justify-content: end; } }

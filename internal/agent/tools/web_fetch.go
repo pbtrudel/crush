@@ -52,6 +52,12 @@ func NewWebFetchTool(workingDir string, client *http.Client) fantasy.AgentTool {
 			var result strings.Builder
 
 			if hasLargeContent {
+				// The folder belongs to a fetch subagent and may have been
+				// cleaned up after its first run; recreate it so a follow-up
+				// message can still save pages.
+				if err := os.MkdirAll(workingDir, 0o700); err != nil {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to create temporary file: %s", err)), nil
+				}
 				tempFile, err := os.CreateTemp(workingDir, "page-*.md")
 				if err != nil {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to create temporary file: %s", err)), nil

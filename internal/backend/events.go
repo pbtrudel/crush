@@ -10,6 +10,7 @@ import (
 	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -35,6 +36,20 @@ func (b *Backend) SubscribeEvents(ctx context.Context, workspaceID string) (<-ch
 	}
 
 	return ws.Events(ctx), nil
+}
+
+// SubscribeEventsWithOverflow is like [Backend.SubscribeEvents], but also
+// returns a channel that is closed the first time an event is dropped for
+// this caller because it fell behind. Client event streams use it to end
+// the stream rather than leave a gap.
+func (b *Backend) SubscribeEventsWithOverflow(ctx context.Context, workspaceID string) (<-chan pubsub.Event[tea.Msg], <-chan struct{}, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	events, overflow := ws.EventsWithOverflow(ctx)
+	return events, overflow, nil
 }
 
 // maxSessionAncestryDepth bounds how far [Backend.RootSessionID] walks
@@ -87,9 +102,27 @@ func rootSessionID(ctx context.Context, ws *Workspace, sessionID string) (string
 	return id, nil
 }
 
+// scopePermissionPrompts makes the workspace's permission requests wait
+// only for earlier requests of the same top-level session, instead of
+// every earlier request in the workspace. A prompt only reaches the
+// clients viewing its top-level session, so one that nobody answers
+// would otherwise hold back every other session's prompts, unseen by
+// the clients waiting on them. Sub-agent prompts still wait for their
+// top-level session's, since the same viewers answer them one at a
+// time.
+func scopePermissionPrompts(ws *Workspace) {
+	if ws.App == nil || ws.Permissions == nil {
+		return
+	}
+	ws.Permissions.SetSessionScope(func(ctx context.Context, sessionID string) string {
+		root, _ := rootSessionID(ctx, ws, sessionID)
+		return root
+	})
+}
+
 // republishPendingPrompts re-publishes the workspace's pending
-// permission request and question batch when their session matches the
-// one a client just switched to. Without this, a prompt raised while
+// permission requests and question batches when their session matches
+// the one a client just switched to. Without this, a prompt raised while
 // nobody viewed the session would remain invisible — and therefore
 // unanswerable — until the run was cancelled. Delivery is still scoped
 // by the per-client SSE filter, so only the session's viewers (re)see
@@ -101,19 +134,23 @@ func (b *Backend) republishPendingPrompts(ctx context.Context, ws *Workspace, se
 	// The individual services are nil on workspaces with a stubbed app
 	// (tests); treat those as having no pending prompts.
 	if ws.Permissions != nil {
-		if req, ok := ws.Permissions.ActiveRequest(); ok && b.sessionMatches(ctx, ws, req.SessionID, sessionID) {
-			ws.SendEvent(pubsub.Event[permission.PermissionRequest]{
-				Type:    pubsub.CreatedEvent,
-				Payload: req,
-			})
+		for _, req := range ws.Permissions.ActiveRequests() {
+			if b.sessionMatches(ctx, ws, req.SessionID, sessionID) {
+				ws.SendEvent(pubsub.Event[permission.PermissionRequest]{
+					Type:    pubsub.CreatedEvent,
+					Payload: req,
+				})
+			}
 		}
 	}
 	if ws.Questions != nil {
-		if req, ok := ws.Questions.Pending(); ok && b.sessionMatches(ctx, ws, req.SessionID, sessionID) {
-			ws.SendEvent(pubsub.Event[question.Request]{
-				Type:    pubsub.CreatedEvent,
-				Payload: req,
-			})
+		for _, req := range ws.Questions.Pending() {
+			if b.sessionMatches(ctx, ws, req.SessionID, sessionID) {
+				ws.SendEvent(pubsub.Event[question.Request]{
+					Type:    pubsub.CreatedEvent,
+					Payload: req,
+				})
+			}
 		}
 	}
 }
@@ -167,6 +204,22 @@ func (b *Backend) GetLSPDiagnostics(workspaceID, lspName string) (any, error) {
 	}
 
 	return nil, ErrLSPClientNotFound
+}
+
+// LSPDiagnosticsByFile returns the diagnostic counts of every LSP
+// client of the workspace, keyed by file path. Several servers may
+// report on the same file; their counts add up.
+func (b *Backend) LSPDiagnosticsByFile(workspaceID string) (map[string]lsp.DiagnosticCounts, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]lsp.DiagnosticCounts{}
+	for _, client := range ws.LSPManager.Clients().Seq2() {
+		lsp.CountByFile(out, client.GetDiagnostics())
+	}
+	return out, nil
 }
 
 // GetWorkspaceConfig returns the workspace-level configuration.

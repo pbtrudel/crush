@@ -55,8 +55,9 @@ func TestTreeReportsTheSessionsTeam(t *testing.T) {
 
 // A teammate with messages waiting is started again when its turn ends. It
 // must read as active from the moment its inbox is taken, or a wait for the
-// tree could end while it is being resumed. The completed-task hook runs in
-// exactly that moment: after the inbox is drained, before the next turn.
+// tree could end while it is being resumed. The Lead notify hook runs in
+// exactly that moment: after the inbox is drained, before the next turn. The
+// task stays in progress for the resumed turn, so no completion hook fires.
 func TestTreeCountsATeammateBeingResumed(t *testing.T) {
 	t.Parallel()
 	service, runner := newTestService(t)
@@ -76,8 +77,11 @@ func TestTreeCountsATeammateBeingResumed(t *testing.T) {
 	require.Equal(t, 1, service.Tree("session-a").UnreadByTeammates)
 
 	seen := make(chan TreeStatus, 1)
-	service.SetTaskCompletedHook(func(string, string) {
-		seen <- service.Tree("session-a")
+	service.SetLeadNotifyHook(func(string) {
+		select {
+		case seen <- service.Tree("session-a"):
+		default:
+		}
 	})
 
 	runner.finish("reviewer")
@@ -86,7 +90,7 @@ func TestTreeCountsATeammateBeingResumed(t *testing.T) {
 		require.Equal(t, 1, tree.Active, "a teammate being resumed is not idle")
 		require.Zero(t, tree.UnreadByTeammates)
 	case <-time.After(time.Second):
-		t.Fatal("task completed hook was not called")
+		t.Fatal("the Lead notify hook was not called")
 	}
 	require.Eventually(t, func() bool {
 		return runner.promptCount() == 2

@@ -4,8 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -62,4 +64,70 @@ func initRunTestRepo(t *testing.T) string {
 		require.NoError(t, err, string(out))
 	}
 	return dir
+}
+
+// A run in a new worktree keeps the original checkout's data directory, so
+// its sessions land in the same database as every other run of the
+// project. An explicit data directory still wins.
+func TestWorktreeSharesTheCheckoutDataDir(t *testing.T) {
+	newCmd := func(t *testing.T, dataDir string) *cobra.Command {
+		t.Helper()
+		cmd := &cobra.Command{}
+		cmd.Flags().String("worktree", "", "")
+		cmd.Flags().String("data-dir", "", "")
+		cmd.Flags().Bool("debug", false, "")
+		cmd.SetContext(t.Context())
+		require.NoError(t, cmd.Flags().Set("worktree", "shared-data"))
+		if dataDir != "" {
+			require.NoError(t, cmd.Flags().Set("data-dir", dataDir))
+		}
+		return cmd
+	}
+	isolate := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		t.Setenv("XDG_DATA_HOME", t.TempDir())
+		t.Setenv("CRUSH_GLOBAL_CONFIG", t.TempDir())
+		t.Setenv("CRUSH_GLOBAL_DATA", t.TempDir())
+		t.Setenv("CRUSH_DATA_DIR", "")
+	}
+
+	t.Run("nothing set uses the checkout's data dir", func(t *testing.T) {
+		isolate(t)
+		repo := initRunTestRepo(t)
+		store, dir, worktree, err := initLocalConfig(newCmd(t, ""), repo, config.WithoutProviderUpdate())
+		require.NoError(t, err)
+		require.Equal(t, worktree, dir)
+		require.Equal(t, filepath.Join(repo, ".crush"), store.Config().Options.DataDirectory)
+	})
+
+	t.Run("--data-dir wins", func(t *testing.T) {
+		isolate(t)
+		repo := initRunTestRepo(t)
+		explicit := t.TempDir()
+		store, _, _, err := initLocalConfig(newCmd(t, explicit), repo, config.WithoutProviderUpdate())
+		require.NoError(t, err)
+		require.Equal(t, explicit, store.Config().Options.DataDirectory)
+	})
+
+	t.Run("CRUSH_DATA_DIR wins", func(t *testing.T) {
+		isolate(t)
+		repo := initRunTestRepo(t)
+		explicit := t.TempDir()
+		t.Setenv("CRUSH_DATA_DIR", explicit)
+		store, _, _, err := initLocalConfig(newCmd(t, ""), repo, config.WithoutProviderUpdate())
+		require.NoError(t, err)
+		require.Equal(t, explicit, store.Config().Options.DataDirectory)
+	})
+
+	t.Run("a configured data_directory wins", func(t *testing.T) {
+		isolate(t)
+		repo := initRunTestRepo(t)
+		explicit := t.TempDir()
+		cfg := []byte(`{"options":{"data_directory":` + strconv.Quote(explicit) + `}}`)
+		require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("CRUSH_GLOBAL_CONFIG"), "crush.json"), cfg, 0o644))
+		store, _, _, err := initLocalConfig(newCmd(t, ""), repo, config.WithoutProviderUpdate())
+		require.NoError(t, err)
+		require.Equal(t, explicit, store.Config().Options.DataDirectory)
+	})
 }
