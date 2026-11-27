@@ -46,30 +46,42 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     sessionData: {},
     lastSeen: readSeen(storage),
   })
+  // persistSeen writes lastSeen through after an action. Only a new reference
+  // is durable: markSeen and pruneSeen hand back their input when they
+  // changed nothing, so an action that moved no seen mark writes nothing.
+  const persistSeen = (before: Record<string, number>) => {
+    const after = store.get().lastSeen
+    if (after !== before) {
+      writeSeen(after, storage)
+    }
+  }
   return Object.assign(store, {
-    applyBootstrap: (payload: Bootstrap) => store.set((state) => reduceBootstrap(state, payload)),
-    applyFrame: (frame: ParsedFrame) => store.set((state) => reduceFrame(state, frame)),
+    applyBootstrap: (payload: Bootstrap) => {
+      const before = store.get().lastSeen
+      store.set((state) => reduceBootstrap(state, payload))
+      persistSeen(before)
+    },
+    applyFrame: (frame: ParsedFrame) => {
+      const before = store.get().lastSeen
+      store.set((state) => reduceFrame(state, frame))
+      persistSeen(before)
+    },
     setConnection: (connection: ConnectionState) => store.set({ connection }),
     selectSession: (sessionID: string) => {
+      const before = store.get().lastSeen
       store.set((state) => ({
         selectedSessionId: sessionID,
         lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
       }))
-      writeSeen(store.get().lastSeen, storage)
+      persistSeen(before)
     },
     // forgetSession drops a deleted session at once, without waiting for the
-    // gateway's deleted frame: the row, its messages and a selection pointing
-    // at it all go.
+    // gateway's deleted frame: the row, its messages, a selection pointing at
+    // it and its seen mark all go.
     forgetSession: (sessionID: string) => {
-      store.set((state) => {
-        const sessionData = { ...state.sessionData }
-        delete sessionData[sessionID]
-        return {
-          sessions: state.sessions.filter((row) => row.id !== sessionID),
-          sessionData,
-          selectedSessionId: state.selectedSessionId === sessionID ? null : state.selectedSessionId,
-        }
-      })
+      const before = store.get().lastSeen
+      store.set((state) => dropSession(state, sessionID))
+      persistSeen(before)
     },
   })
 }
@@ -83,13 +95,24 @@ export interface AppStore {
 }
 
 export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
+  // A selection the gateway no longer lists is gone: keeping it would leave
+  // the tab pointed at a session that cannot be subscribed to or rendered.
+  const current = state.selectedSessionId
+  const stillListed = current !== null && payload.sessions.some((row) => row.id === current)
+  // || and not ??: current_session_id is "" when no terminal is attached,
+  // and an empty string must fall through to the first row.
+  const selectedSessionId = stillListed ? current : payload.current_session_id || payload.sessions[0]?.id || null
+  const pruned = pruneSeen(state.lastSeen, payload.sessions)
   return {
     ...state,
     bootstrap: payload,
     sessions: payload.sessions,
-    // || and not ??: current_session_id is "" when no terminal is attached,
-    // and an empty string must fall through to the first row.
-    selectedSessionId: state.selectedSessionId || payload.current_session_id || payload.sessions[0]?.id || null,
+    selectedSessionId,
+    // The session a bootstrap opens was on screen before it was selected, so
+    // it starts seen instead of unread. Without this, switching away from it
+    // would show a marker for a session the person has been reading.
+    lastSeen:
+      selectedSessionId === null ? pruned : markSeen(pruned, selectedSessionId, updatedAtIn(payload.sessions, selectedSessionId)),
   }
 }
 
@@ -105,6 +128,11 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         files: { path: string }[]
       }
       const id = snapshot.session_id
+      // A snapshot for a session the bootstrap does not list would leave an
+      // orphan entry the session list never renders or forgets.
+      if (!hasSession(state, id)) {
+        return state
+      }
       return {
         ...state,
         sessionData: {
@@ -131,12 +159,18 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       // leaves the list. The selected session is marked seen at the
       // updated_at the entity carries, which is how a tab that is open on a
       // session never shows it unread.
-      const sessions = mergeSessionEvent(state.sessions, frame.payload)
       const id = sessionIDOf(frame.payload)
+      if (id === null) {
+        return state
+      }
+      // A session deleted in another tab leaves this one the same way a
+      // local delete does: row, messages, selection and seen mark all go.
+      if (isDeletedEnvelope(frame.payload)) {
+        return dropSession(state, id)
+      }
+      const sessions = mergeSessionEvent(state.sessions, frame.payload)
       const lastSeen =
-        id !== null && id === state.selectedSessionId
-          ? markSeen(state.lastSeen, id, updatedAtIn(sessions, id))
-          : state.lastSeen
+        id === state.selectedSessionId ? markSeen(state.lastSeen, id, updatedAtIn(sessions, id)) : state.lastSeen
       return { ...state, sessions, lastSeen }
     }
     case 'message': {
@@ -144,6 +178,9 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       // upserted by id, which is idempotent for a frame a snapshot echoed.
       const envelope = frame.payload as { type: string; payload: WireMessage }
       const id = envelope.payload.session_id
+      if (!hasSession(state, id)) {
+        return state
+      }
       const current = state.sessionData[id] ?? emptySessionData
       const messages =
         envelope.type === 'deleted'
@@ -157,6 +194,9 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     case 'run_complete': {
       const payload = frame.payload as { type: string; payload: { session_id: string } }
       const id = payload.payload.session_id
+      if (!hasSession(state, id)) {
+        return state
+      }
       const current = state.sessionData[id] ?? emptySessionData
       return {
         ...state,
@@ -180,14 +220,10 @@ function upsertMessage(messages: WireMessage[], next: WireMessage): WireMessage[
 }
 
 function mergeSessionEvent(rows: SessionRow[], payload: unknown): SessionRow[] {
-  const envelope = payload as { type: string; payload?: Record<string, unknown> }
-  const entity = envelope.payload
+  const entity = (payload as { payload?: Record<string, unknown> }).payload
   const id = typeof entity?.id === 'string' ? entity.id : ''
   if (!id) {
     return rows
-  }
-  if (envelope.type === 'deleted') {
-    return rows.filter((row) => row.id !== id)
   }
   const existing = rows.find((row) => row.id === id)
   const fallback: SessionRow = existing ?? {
@@ -203,6 +239,62 @@ function mergeSessionEvent(rows: SessionRow[], payload: unknown): SessionRow[] {
   // Newest updated first, the ID breaking ties, the gateway's order.
   next.sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id))
   return next
+}
+
+// dropSession is the one cleanup for a session that is gone, whether the
+// tab deleted it or another tab did: the row, its messages, a selection
+// pointing at it and its seen mark. The guards in reduceFrame then ignore a
+// later snapshot, message or run end for it, so no orphan data comes back.
+function dropSession(state: AppState, sessionID: string): AppState {
+  const sessionData = { ...state.sessionData }
+  delete sessionData[sessionID]
+  return {
+    ...state,
+    sessions: state.sessions.filter((row) => row.id !== sessionID),
+    sessionData,
+    selectedSessionId: state.selectedSessionId === sessionID ? null : state.selectedSessionId,
+    lastSeen: withoutKey(state.lastSeen, sessionID),
+  }
+}
+
+// withoutKey drops one entry, keeping the input when the key was absent so a
+// caller can tell "changed" from "already gone" by the reference.
+function withoutKey(seen: Record<string, number>, sessionID: string): Record<string, number> {
+  if (!(sessionID in seen)) {
+    return seen
+  }
+  const next: Record<string, number> = {}
+  for (const [id, value] of Object.entries(seen)) {
+    if (id !== sessionID) {
+      next[id] = value
+    }
+  }
+  return next
+}
+
+// pruneSeen drops seen marks for sessions the bootstrap no longer lists. The
+// map otherwise grows with every session the workspace ever had.
+function pruneSeen(seen: Record<string, number>, rows: SessionRow[]): Record<string, number> {
+  const ids = new Set(rows.map((row) => row.id))
+  const stale = Object.keys(seen).filter((id) => !ids.has(id))
+  if (stale.length === 0) {
+    return seen
+  }
+  const next: Record<string, number> = {}
+  for (const [id, value] of Object.entries(seen)) {
+    if (ids.has(id)) {
+      next[id] = value
+    }
+  }
+  return next
+}
+
+function hasSession(state: AppState, sessionID: string): boolean {
+  return state.sessions.some((row) => row.id === sessionID)
+}
+
+function isDeletedEnvelope(payload: unknown): boolean {
+  return (payload as { type?: string }).type === 'deleted'
 }
 
 // markSeen records the updated_at the person has seen for a session.
@@ -240,10 +332,11 @@ export function isUnread(state: AppState, sessionID: string): boolean {
 // maxSubscriptions mirrors the gateway's per-connection cap.
 export const maxSubscriptions = 32
 
-// wantedSubscriptions is the set a tab follows: the selected session plus
-// every session that is not idle, newest first, capped like the gateway does.
-// The status comes from the global frames, so this needs no extra traffic to
-// compute and only controls which session streams the tab receives.
+// wantedSubscriptions is the set a tab follows: the selected session first,
+// then every session that is not idle in session-list order, capped at the
+// gateway's limit. The status comes from the global frames, so this needs no
+// extra traffic to compute and only controls which session streams the tab
+// receives.
 export function wantedSubscriptions(state: AppState): string[] {
   const wanted = new Set<string>()
   if (state.selectedSessionId !== null) {

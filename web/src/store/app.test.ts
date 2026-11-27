@@ -191,6 +191,129 @@ describe('AppStore.forgetSession', () => {
   })
 })
 
+const threeSessions: Bootstrap = {
+  ...bootstrap,
+  sessions: [
+    ...bootstrap.sessions,
+    { id: 's3', parent_session_id: '', title: 'Docs', message_count: 0, updated_at: 10, status: 'idle' },
+  ],
+}
+
+describe('unread persistence', () => {
+  it('does not mark the session the bootstrap opened unread after switching away', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    expect(isUnread(store.get(), 's1')).toBe(false)
+  })
+
+  it('remembers a turn watched on a selected session across a reload', () => {
+    const storage = memoryStorage()
+    const first = createAppStore(storage)
+    first.applyBootstrap(threeSessions)
+    first.selectSession('s3')
+    first.applyFrame(
+      frame('session', { type: 'updated', payload: { id: 's3', title: 'Docs', message_count: 1, updated_at: 30 } }, 7),
+    )
+    expect(first.get().lastSeen.s3).toBe(30)
+
+    const reloaded: Bootstrap = {
+      ...threeSessions,
+      current_session_id: 's1',
+      sessions: threeSessions.sessions.map((row) => (row.id === 's3' ? { ...row, updated_at: 30 } : row)),
+    }
+    const second = createAppStore(storage)
+    second.applyBootstrap(reloaded)
+    expect(second.get().selectedSessionId).toBe('s1')
+    expect(isUnread(second.get(), 's3')).toBe(false)
+  })
+
+  it('writes crush.seen only when a seen mark moves', () => {
+    const storage = memoryStorage()
+    const store = createAppStore(storage)
+    store.applyBootstrap(bootstrap)
+    const afterBootstrap = storage.getItem('crush.seen')
+    store.applyFrame(
+      frame('message', { type: 'created', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 2, 's1'),
+    )
+    store.applyFrame(
+      frame('session', { type: 'updated', payload: { id: 's2', title: 'Tests', message_count: 3, updated_at: 40 } }, 3),
+    )
+    expect(storage.getItem('crush.seen')).toBe(afterBootstrap)
+  })
+})
+
+describe('a session deleted by another tab', () => {
+  it('forgets its messages, selection and seen mark', () => {
+    const storage = memoryStorage()
+    const store = createAppStore(storage)
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(
+      frame('session_snapshot', {
+        session_id: 's2',
+        messages: [{ id: 'm2', role: 'user', session_id: 's2', parts: [], created_at: 1, updated_at: 1 }],
+        has_more: false,
+        files: [],
+        busy: false,
+        queued: [],
+      }, 2, 's2'),
+    )
+    store.selectSession('s2')
+    store.applyFrame(frame('session', { type: 'deleted', payload: { id: 's2' } }, 3))
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+    expect(store.get().selectedSessionId).toBeNull()
+    expect(store.get().sessionData.s2).toBeUndefined()
+    expect(store.get().lastSeen.s2).toBeUndefined()
+    expect(storage.getItem('crush.seen')).not.toContain('s2')
+  })
+
+  it('keeps a selection the next bootstrap still lists', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    store.applyBootstrap(bootstrap)
+    expect(store.get().selectedSessionId).toBe('s2')
+  })
+
+  it('moves a selection the next bootstrap no longer lists to a live one', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    store.applyBootstrap({ ...bootstrap, current_session_id: '', sessions: [bootstrap.sessions[0]] })
+    expect(store.get().selectedSessionId).toBe('s1')
+  })
+})
+
+describe('frames for a session the bootstrap does not list', () => {
+  it('leaves no orphan session data', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const snapshot = reduceFrame(
+      start,
+      frame('session_snapshot', { session_id: 'gone', messages: [], has_more: false, files: [], busy: true, queued: [] }, 2, 'gone'),
+    )
+    expect(snapshot.sessionData.gone).toBeUndefined()
+    const message = reduceFrame(
+      start,
+      frame('message', { type: 'created', payload: { id: 'm9', role: 'user', session_id: 'gone', parts: [], created_at: 1, updated_at: 1 } }, 3, 'gone'),
+    )
+    expect(message.sessionData.gone).toBeUndefined()
+    const done = reduceFrame(start, frame('run_complete', { type: 'complete', payload: { session_id: 'gone', message_id: 'm9' } }, 4))
+    expect(done.sessionData.gone).toBeUndefined()
+    expect(done).toBe(start)
+  })
+})
+
+describe('seen pruning', () => {
+  it('drops seen entries for sessions a bootstrap no longer lists', () => {
+    const storage = memoryStorage({ 'crush.seen': JSON.stringify({ s1: 20, gone: 99 }) })
+    const store = createAppStore(storage)
+    store.applyBootstrap(bootstrap)
+    expect(store.get().lastSeen.gone).toBeUndefined()
+    expect(store.get().lastSeen.s1).toBe(20)
+    expect(storage.getItem('crush.seen')).not.toContain('gone')
+  })
+})
+
 describe('wantedSubscriptions', () => {
   it('follows the open session and every non-idle session', () => {
     const state = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
