@@ -10,22 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// helper to check if git is available.
-func gitAvailable() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
-// helper to run git commands in a directory.
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	gitArgs := append([]string{"-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"}, args...)
-	cmd := exec.CommandContext(context.Background(), "git", gitArgs...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "git %v failed: %s", args, string(output))
-}
-
 func TestCurrentBranch(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git is not available")
