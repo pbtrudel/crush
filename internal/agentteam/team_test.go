@@ -20,11 +20,20 @@ type fakeRun struct {
 	output string
 	err    error
 	cancel func()
+	// session is the Crush session behind the run. Empty is the default
+	// "session-fake", so tests that do not care share one id.
+	session string
 	// cancelled records that the service asked the run to stop.
 	cancelled atomic.Bool
 }
 
-func (r *fakeRun) SessionID() string { return "session-fake" }
+func (r *fakeRun) SessionID() string {
+	if r.session == "" {
+		return "session-fake"
+	}
+	return r.session
+}
+
 func (r *fakeRun) Done() <-chan struct{} {
 	return r.done
 }
@@ -40,6 +49,8 @@ type fakeRunner struct {
 	prompts []string
 	members []string
 	runs    map[string]*fakeRun
+	// session, when set, is the session every run of this runner reports.
+	session string
 	// turn, when set, is the work of every run: Cancel cancels the turn's
 	// context and done closes only when the turn function returns, like a
 	// real turn that has to return before it settles. Without it, Cancel
@@ -49,6 +60,13 @@ type fakeRunner struct {
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{runs: make(map[string]*fakeRun)}
+}
+
+// newFakeRunnerInSession is newFakeRunner with every run in a session of its
+// own, so a test that settles a session's background jobs cannot reach a job
+// another test started.
+func newFakeRunnerInSession(session string) *fakeRunner {
+	return &fakeRunner{runs: make(map[string]*fakeRun), session: session}
 }
 
 // setTurn makes every run a realistic turn the context cancels and only the
@@ -70,7 +88,7 @@ func (r *fakeRunner) turnCancelled(name string) bool {
 func (r *fakeRunner) Start(_ context.Context, member Member, prompt string) (Run, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	run := &fakeRun{done: make(chan struct{})}
+	run := &fakeRun{done: make(chan struct{}), session: r.session}
 	if r.turn != nil {
 		// The realistic mode: Cancel cancels the context, and the run
 		// settles only once the turn returns.

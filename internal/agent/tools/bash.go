@@ -65,6 +65,10 @@ const (
 	DefaultAutoBackgroundAfter = 60 // Commands taking longer automatically become background jobs
 	MaxOutputLength            = 30000
 	BashNoOutput               = "no output"
+	// cancelledJobWait bounds how long a cancelled call waits for its job to
+	// end, so a write a detached child makes after the kill still lands
+	// before the scope check that follows.
+	cancelledJobWait = 10 * time.Second
 )
 
 //go:embed bash.md.tpl
@@ -681,11 +685,16 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-bgShell.Done():
 	case <-timer.C:
 	case <-ctx.Done():
-		// Incoming context was cancelled before we moved to background
-		// Kill the shell and return error
-		// Kill returns at once with ctx already done, so its "may still be
-		// exiting" error is expected here and not worth reporting.
-		_ = bgManager.Kill(ctx, bgShell.ID)
+		// Incoming context was cancelled before we moved to background.
+		// Kill the shell and wait, bounded, for it to end: a descendant the
+		// kill does not reach can still write, and the scope check that
+		// follows the call must see that write. The cancelled context would
+		// let Kill return at once, so it gets a fresh bounded one. Kill's
+		// "may still be exiting" error is expected here and not worth
+		// reporting.
+		killCtx, killCancel := context.WithTimeout(context.WithoutCancel(ctx), cancelledJobWait)
+		_ = bgManager.Kill(killCtx, bgShell.ID)
+		killCancel()
 		// The result is still stored, from this metadata and the error,
 		// so the stamp says the command was aborted.
 		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{

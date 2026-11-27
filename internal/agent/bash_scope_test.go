@@ -15,14 +15,16 @@ import (
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
+	"github.com/charmbracelet/crush/internal/gitutil"
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
 // shellTool stands in for bash: running it runs fn, the "command", and
-// returns resp.
+// returns resp and err.
 type shellTool struct {
 	fn   func()
 	resp fantasy.ToolResponse
+	err  error
 }
 
 func (s *shellTool) Info() fantasy.ToolInfo { return fantasy.ToolInfo{Name: tools.BashToolName} }
@@ -31,7 +33,7 @@ func (s *shellTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse
 	if s.fn != nil {
 		s.fn()
 	}
-	return s.resp, nil
+	return s.resp, s.err
 }
 
 func (s *shellTool) ProviderOptions() fantasy.ProviderOptions     { return nil }
@@ -407,4 +409,120 @@ func TestBashScopeCheckRefusesWithoutARecord(t *testing.T) {
 	require.Contains(t, resp.Content, "bash is refused")
 	require.Contains(t, resp.Content, "could not record your task worktree")
 	require.False(t, called, "a command that cannot be recorded does not run")
+}
+
+// TestBashScopeCheckReportsTheRestoreWithTheError pins M1: when the call
+// itself fails, the restore still reaches the model, appended to the error.
+func TestBashScopeCheckReportsTheRestoreWithTheError(t *testing.T) {
+	t.Parallel()
+	repo := initTeamGitRepo(t)
+	inner := &shellTool{
+		fn:  func() { writeIn(t, repo, "README.md", "changed\n") },
+		err: context.Canceled,
+	}
+	resp, err := gatedShell(inner, "docs").Run(inWorktree(t, repo), fantasy.ToolCall{ID: "b1", Name: tools.BashToolName, Input: `{"command":"x"}`})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Contains(t, err.Error(), "Restored: README.md.")
+	require.False(t, resp.IsError)
+	require.Equal(t, "hello\n", readIn(t, repo, "README.md"))
+}
+
+// TestBashScopeCheckWaitsForAWorktreeCommit pins the shared lock: while a
+// commit holds the worktree, the check waits rather than running its git
+// work beside it.
+func TestBashScopeCheckWaitsForAWorktreeCommit(t *testing.T) {
+	t.Parallel()
+	repo := initTeamGitRepo(t)
+	unlock := gitutil.LockWorktree(repo)
+	tool := gatedShell(&shellTool{fn: func() { writeIn(t, repo, "README.md", "changed\n") }, resp: fantasy.NewTextResponse("ran")}, "docs")
+	type result struct {
+		resp fantasy.ToolResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := tool.Run(inWorktree(t, repo), fantasy.ToolCall{ID: "b1", Name: tools.BashToolName, Input: `{"command":"x"}`})
+		done <- result{resp, err}
+	}()
+	select {
+	case <-done:
+		t.Fatal("the check ran while a commit held the worktree")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.True(t, got.resp.IsError)
+		require.Equal(t, "hello\n", readIn(t, repo, "README.md"))
+	case <-time.After(10 * time.Second):
+		t.Fatal("the check never ran once the commit released the worktree")
+	}
+}
+
+// TestSettleMemberJobsStopsTheMembersJobs pins the coordinator half of W17:
+// the jobs of the member are stopped, their checks have run when it returns,
+// and another member's job keeps running.
+func TestSettleMemberJobsStopsTheMembersJobs(t *testing.T) {
+	// Not parallel: the fake runner gives every member the same session, so
+	// two of these tests would kill each other's jobs in the one manager.
+	coord, _ := newWorktreeTestCoordinator(t)
+	claimInWorktree(t, coord, "impl", "docs")
+	team := coord.teamService()
+	session := team.MemberSession("impl")
+	require.Equal(t, "session-fake", session, "the spawned run records its session")
+
+	checked := make(chan struct{})
+	job, err := shell.GetBackgroundShellManager().StartWithSession(t.Context(), nil, t.TempDir(), nil, "sleep 30", "bg", session, 10)
+	require.NoError(t, err)
+	job.SetFinisher(func() string {
+		time.Sleep(50 * time.Millisecond)
+		close(checked)
+		return "checked"
+	})
+	other, err := shell.GetBackgroundShellManager().StartWithSession(t.Context(), nil, t.TempDir(), nil, "sleep 30", "bg", "session-other-member", 10)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = shell.GetBackgroundShellManager().Kill(ctx, other.ID)
+		_ = shell.GetBackgroundShellManager().Kill(ctx, job.ID)
+	})
+
+	coord.settleMemberJobs(context.Background(), "impl")
+	select {
+	case <-checked:
+	default:
+		t.Fatal("settleMemberJobs returned before the job's scope check ran")
+	}
+	require.True(t, job.IsDone())
+	_, tracked := shell.GetBackgroundShellManager().Get(job.ID)
+	require.False(t, tracked, "a stopped job leaves the manager")
+	_, otherTracked := shell.GetBackgroundShellManager().Get(other.ID)
+	require.True(t, otherTracked, "another member's job keeps running")
+}
+
+// TestSettleMemberJobsLeavesALoneMemberAlone pins the constraint: a member
+// with no task worktree keeps today's background jobs.
+func TestSettleMemberJobsLeavesALoneMemberAlone(t *testing.T) {
+	// Not parallel: see TestSettleMemberJobsStopsTheMembersJobs.
+	coord := newTeammateTestCoordinator(t)
+	team := coord.teamService()
+	_, err := team.SpawnTeammate(t.Context(), agentteam.LeadName, agentteam.SpawnRequest{Name: "impl", Description: "d", Prompt: "p", ParentID: teamTestSessionID})
+	require.NoError(t, err)
+	session := team.MemberSession("impl")
+	require.Equal(t, "session-fake", session)
+
+	job, err := shell.GetBackgroundShellManager().StartWithSession(t.Context(), nil, t.TempDir(), nil, "sleep 30", "bg", session, 10)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = shell.GetBackgroundShellManager().Kill(ctx, job.ID)
+	})
+
+	coord.settleMemberJobs(context.Background(), "impl")
+	_, tracked := shell.GetBackgroundShellManager().Get(job.ID)
+	require.True(t, tracked, "a member without a worktree keeps its jobs")
+	require.False(t, job.IsDone())
 }

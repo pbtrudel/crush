@@ -127,9 +127,10 @@ func (c *coordinator) syncAgentTeams() error {
 	case enabled && team == nil:
 		teamPath := filepath.Join(c.cfg.Config().Options.DataDirectory, "agent-teams", "team.json")
 		teamService, err := agentteam.New(teamPath, agentteam.Config{
-			Autostart:  c.teamAutostart,
-			RoleExists: c.teamRoleExists,
-			WorkingDir: c.cfg.WorkingDir(),
+			Autostart:        c.teamAutostart,
+			RoleExists:       c.teamRoleExists,
+			WorkingDir:       c.cfg.WorkingDir(),
+			SettleMemberJobs: c.settleMemberJobs,
 		}, nil)
 		if err != nil {
 			return fmt.Errorf("initialize Agent Teams: %w", err)

@@ -130,11 +130,13 @@ func (bs *BackgroundShell) setNote(note string) {
 }
 
 // runFinisher marks the command finished and runs the finisher, if one was
-// set, in the job's own goroutine.
+// set, in the job's own goroutine. The finisher is dropped once it runs, so
+// the snapshot it holds is released with it.
 func (bs *BackgroundShell) runFinisher() {
 	bs.finishMu.Lock()
 	bs.finished = true
 	fn := bs.finisher
+	bs.finisher = nil
 	bs.finishMu.Unlock()
 	if fn != nil {
 		bs.setNote(fn())
@@ -410,6 +412,28 @@ func (m *BackgroundShellManager) KillOwned(ctx context.Context, owner any) {
 	shells := map[string]*BackgroundShell{}
 	for id, shell := range m.shells {
 		if shell.owner == owner {
+			shells[id] = shell
+			delete(m.shells, id)
+		}
+	}
+	m.mu.Unlock()
+
+	killShells(ctx, shells)
+}
+
+// KillSession terminates the background shells started by one session and
+// waits for each to report done, so a job's finisher, its scope check, has
+// run when it returns. It leaves every other session's shells running, and
+// a session ID of "" matches nothing. The provided context bounds how long
+// it waits for each shell to exit.
+func (m *BackgroundShellManager) KillSession(ctx context.Context, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	shells := map[string]*BackgroundShell{}
+	for id, shell := range m.shells {
+		if shell.session() == sessionID {
 			shells[id] = shell
 			delete(m.shells, id)
 		}

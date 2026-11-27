@@ -91,6 +91,14 @@ func (s *Service) MemberWorkspace(member string) (Workspace, bool) {
 	return ws, true
 }
 
+// MemberSession returns the Crush session backing member's current run, or
+// "" when it has none.
+func (s *Service) MemberSession(member string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stateMemberLocked(member).SessionID
+}
+
 // holdsWorktree reports whether task keeps a worktree for its owner: it is
 // in progress or in review and has one. Work in review keeps its worktree
 // until the verdict, so a running teammate never moves mid-run.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 
@@ -188,6 +189,10 @@ func (c *coordinator) claimedScopes(ctx context.Context) []string {
 // changed file over a cap is reported, not restored.
 var bashSnapshotCaps = gitutil.SnapshotCaps{PerFile: 1 << 20, Total: 32 << 20}
 
+// bashCheckTimeout bounds the git work of one bash scope check, so a wedged
+// git cannot hang a finished job or a settle that waits for it.
+const bashCheckTimeout = 30 * time.Second
+
 // runBash runs a teammate's bash call with its write scopes held by git.
 // The worktree's changed files are recorded before the call and compared
 // after it, and a change outside the scopes is undone and reported ahead of
@@ -199,7 +204,7 @@ func (g *scopeGatedTool) runBash(ctx context.Context, call fantasy.ToolCall, sco
 	if !ok {
 		return g.inner.Run(ctx, call)
 	}
-	before, err := gitutil.SnapshotFiles(ctx, ws.Root, bashSnapshotCaps)
+	before, err := snapshotBashWorktree(ctx, ws.Root)
 	if err != nil {
 		slog.Warn("Could not record a task worktree before a bash call", "dir", ws.Root, "error", err)
 		return fantasy.NewTextErrorResponse(fmt.Sprintf(
@@ -217,9 +222,17 @@ func (g *scopeGatedTool) runBash(ctx context.Context, call fantasy.ToolCall, sco
 		if deferred {
 			return resp, runErr
 		}
-		return withScopeNote(resp, note), runErr
+		return withScopeErr(resp, runErr, note)
 	}
-	return withScopeNote(resp, checkBashScopes(finishCtx, ws, scopes, before)), runErr
+	return withScopeErr(resp, runErr, checkBashScopes(finishCtx, ws, scopes, before))
+}
+
+// snapshotBashWorktree records the worktree for a bash call, under the lock
+// a commit of the same worktree takes.
+func snapshotBashWorktree(ctx context.Context, root string) (gitutil.FileSnapshot, error) {
+	unlock := gitutil.LockWorktree(root)
+	defer unlock()
+	return gitutil.SnapshotFiles(ctx, root, bashSnapshotCaps)
 }
 
 // finishBashJob is the finisher a background job runs when it ends. It
@@ -292,6 +305,12 @@ func runningJob(resp fantasy.ToolResponse) (*shell.BackgroundShell, bool) {
 // paths outside scopes, and returns the note for the model, or "" when the
 // command stayed inside them.
 func checkBashScopes(ctx context.Context, ws agentteam.Workspace, scopes []string, before gitutil.FileSnapshot) string {
+	ctx, cancel := context.WithTimeout(ctx, bashCheckTimeout)
+	defer cancel()
+	// A commit of this worktree takes the same lock, so a check never
+	// runs its snapshots and restore beside one.
+	unlock := gitutil.LockWorktree(ws.Root)
+	defer unlock()
 	listed := strings.Join(scopes, ", ")
 	after, err := gitutil.SnapshotFiles(ctx, ws.Root, gitutil.SnapshotCaps{})
 	if err == nil {
@@ -336,6 +355,19 @@ func restoreOutOfScope(ctx context.Context, ws agentteam.Workspace, scopes []str
 	}
 	sb.WriteString(" Change only files inside your scopes. The command's output follows.")
 	return sb.String()
+}
+
+// withScopeErr reports note with resp: on success it leads the content as an
+// error result, and on a failed call it extends the error, so the model
+// still learns what was restored.
+func withScopeErr(resp fantasy.ToolResponse, runErr error, note string) (fantasy.ToolResponse, error) {
+	if note == "" {
+		return resp, runErr
+	}
+	if runErr != nil {
+		return resp, fmt.Errorf("%w. %s", runErr, note)
+	}
+	return withScopeNote(resp, note), nil
 }
 
 // withScopeNote marks resp as an error led by note, keeping its metadata

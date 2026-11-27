@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/shell"
 )
 
 // lspWorktreeRefusal is what an LSP tool returns to a teammate in a task
@@ -116,6 +118,32 @@ func withWorkspace(ctx context.Context, ws agentteam.Workspace) context.Context 
 func workspaceFrom(ctx context.Context) (agentteam.Workspace, bool) {
 	ws, ok := ctx.Value(workspaceKey{}).(agentteam.Workspace)
 	return ws, ok && ws.Root != ""
+}
+
+// settleJobsTimeout bounds how long a settle waits for a member's stopped
+// bash jobs to finish their scope checks.
+const settleJobsTimeout = 30 * time.Second
+
+// settleMemberJobs stops the running background bash jobs of member and
+// waits for their scope checks, so the Team service cannot commit a worktree
+// while one of them is still restoring it. A member with no task worktree
+// keeps its jobs, exactly as before worktrees existed. It runs with no Team
+// lock held.
+func (c *coordinator) settleMemberJobs(ctx context.Context, member string) {
+	team := c.teamService()
+	if team == nil || member == "" {
+		return
+	}
+	if _, ok := team.MemberWorkspace(member); !ok {
+		return
+	}
+	sessionID := team.MemberSession(member)
+	if sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, settleJobsTimeout)
+	defer cancel()
+	shell.GetBackgroundShellManager().KillSession(ctx, sessionID)
 }
 
 // memberWorkspace returns the workspace of the teammate making the call.

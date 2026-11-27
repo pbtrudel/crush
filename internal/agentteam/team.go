@@ -436,6 +436,11 @@ type Config struct {
 	// a scoped task given to a teammate gets its own worktree; empty, or
 	// outside a repository, every member shares this tree.
 	WorkingDir string
+	// SettleMemberJobs, when set, stops a member's running background shell
+	// jobs and returns once their scope checks have run. The service calls
+	// it before it commits that member's worktree, with no lock held, so a
+	// commit cannot capture a change a check is about to restore.
+	SettleMemberJobs func(ctx context.Context, member string)
 }
 
 func (c Config) autostart() bool { return c.Autostart == nil || c.Autostart() }
@@ -1275,6 +1280,12 @@ func (s *Service) watch(name string, run Run) {
 	}
 
 	runErr := run.Err()
+	// A turn that ended can still have a background job writing in its
+	// worktree. Stop it and let its scope check finish before the commit
+	// below, so no out-of-scope change lands on the branch.
+	settleCtx, settleCancel := gitContext()
+	s.settleJobs(settleCtx, name)
+	settleCancel()
 	// Commit what the turn left in its worktrees before the settle decides
 	// where that work goes; git runs with no lock held.
 	uncommitted := s.commitHeldWork(name)
