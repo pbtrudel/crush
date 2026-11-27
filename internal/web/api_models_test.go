@@ -169,7 +169,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 
-	snap := snapshotOf(t, g, "")
+	snap := bootstrapOf(t, g)
 	require.Equal(t, "m1", snap.Model.ID)
 	require.True(t, snap.Model.CanReason)
 	require.Equal(t, []string{"low", "high"}, snap.Model.EffortLevels)
@@ -181,7 +181,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 
 	// A starting agent says so in both places, from one check.
 	fake.SetReadyErr(workspace.ErrAgentNotInitialized)
-	snap = snapshotOf(t, g, "")
+	snap = bootstrapOf(t, g)
 	require.False(t, snap.Model.AgentReady)
 	require.False(t, snap.AgentReady)
 }
@@ -433,7 +433,7 @@ func TestModelWatchReportsReadiness(t *testing.T) {
 
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c) // Snapshot, taken while the agent starts.
-	var loaded Snapshot
+	var loaded Bootstrap
 	require.NoError(t, json.Unmarshal(snap.Payload, &loaded))
 	require.False(t, loaded.AgentReady)
 	require.False(t, loaded.Model.AgentReady)

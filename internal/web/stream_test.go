@@ -63,13 +63,13 @@ func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
 
 func webtestFake() *webtest.Fake { return webtest.NewFake() }
 
-func TestStreamStartsWithSnapshotThenLive(t *testing.T) {
+func TestStreamStartsWithBootstrapThenLive(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c)
-	require.Equal(t, "snapshot", snap.Type)
-	var s Snapshot
+	require.Equal(t, frameBootstrap, snap.Type)
+	var s Bootstrap
 	require.NoError(t, json.Unmarshal(snap.Payload, &s))
 	require.Equal(t, "s1", s.CurrentSessionID)
 	require.Equal(t, "/tmp/project", s.WorkingDir)
@@ -100,7 +100,7 @@ func TestStreamSinceReplays(t *testing.T) {
 	require.Contains(t, string(f.Payload), `"two"`)
 }
 
-func TestStreamSinceTooOldGetsSnapshot(t *testing.T) {
+func TestStreamSinceTooOldGetsBootstrap(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	for i := range ringSize + 10 {
@@ -108,7 +108,7 @@ func TestStreamSinceTooOldGetsSnapshot(t *testing.T) {
 	}
 	require.Eventually(t, func() bool { return g.hub.head() >= ringSize+10 }, 5*time.Second, 10*time.Millisecond)
 	c := dialStream(t, g, "?since=1")
-	require.Equal(t, "snapshot", readFrame(t, c).Type)
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
 }
 
 func TestSnapshotIncludesLSPAndMCP(t *testing.T) {
@@ -120,7 +120,7 @@ func TestSnapshotIncludesLSPAndMCP(t *testing.T) {
 	fake.MCP = map[string]mcp.ClientInfo{
 		"fs": {Name: "fs", State: mcp.StateConnected, Counts: mcp.Counts{Tools: 3}},
 	}
-	s := g.buildSnapshot(t.Context(), "s1")
+	s := g.buildBootstrap(t.Context())
 	require.Equal(t, ServerInfo{State: strconv.Itoa(int(lsp.StateReady)), DiagnosticCount: 2}, s.LSP["gopls"])
 	require.Equal(t, ServerInfo{State: "connected", ToolCount: 3}, s.MCP["fs"])
 }
@@ -263,12 +263,12 @@ func TestRingBoundaryReplay(t *testing.T) {
 	require.Equal(t, uint64(ringSize+1), replay[len(replay)-1].Seq)
 }
 
-func TestSinceAheadOfHeadOrMalformedGetsSnapshot(t *testing.T) {
+func TestSinceAheadOfHeadOrMalformedGetsBootstrap(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	for _, q := range []string{"?since=999", "?since=abc", "?since=-4"} {
 		c := dialStream(t, g, q)
-		require.Equal(t, "snapshot", readFrame(t, c).Type, q)
+		require.Equal(t, frameBootstrap, readFrame(t, c).Type, q)
 	}
 }
 
@@ -363,7 +363,7 @@ func TestSnapshotShowsReportedInputMode(t *testing.T) {
 	t.Parallel()
 	g, _ := startTest(t)
 	g.SetInputMode(true)
-	require.Equal(t, "plan", g.buildSnapshot(t.Context(), "s1").InputMode)
+	require.Equal(t, "plan", g.buildBootstrap(t.Context()).InputMode)
 }
 
 func TestShutdownSendsClosing(t *testing.T) {

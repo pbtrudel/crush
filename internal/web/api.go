@@ -33,6 +33,7 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 	g.route(api, "GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	g.route(api, "GET /api/bootstrap", g.handleBootstrap)
 	g.route(api, "GET /api/stream", g.handleStream)
 	g.route(api, "GET /api/sessions", g.handleListSessions)
 	g.route(api, "POST /api/sessions", g.handleCreateSession)

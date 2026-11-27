@@ -19,7 +19,7 @@ const (
 	idleTimeout        = 45 * time.Second
 	writeTimeout       = 5 * time.Second
 	closeResync        = websocket.StatusCode(4001)
-	frameSnapshot      = "snapshot"
+	frameBootstrap     = "bootstrap"
 	frameFollow        = "session_follow"
 	frameInputMode     = "input_mode_changed"
 	frameTeamState     = "team_state"
@@ -113,7 +113,7 @@ func (h *hub) publishJSON(typ string, v any) {
 	h.publish(typ, raw)
 }
 
-// attach registers a connection. since < 0 asks for a snapshot. Replay and
+// attach registers a connection. since < 0 asks for a bootstrap. Replay and
 // registration happen under one lock so no frame is lost or duplicated.
 func (h *hub) attach(since int64) (*conn, []frame, bool, uint64) {
 	h.mu.Lock()
@@ -196,17 +196,17 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	c, replay, needSnapshot, head := g.hub.attach(since)
+	c, replay, needBootstrap, head := g.hub.attach(since)
 	defer g.hub.detach(c)
 
 	go g.readLoop(ctx, cancel, ws)
 
-	if needSnapshot {
-		raw, err := json.Marshal(g.buildSnapshot(ctx, g.ws.CurrentSessionID()))
+	if needBootstrap {
+		raw, err := json.Marshal(g.buildBootstrap(ctx))
 		if err != nil {
 			return
 		}
-		if !writeFrame(ctx, ws, frame{Seq: head, Type: frameSnapshot, Payload: raw}) {
+		if !writeFrame(ctx, ws, frame{Seq: head, Type: frameBootstrap, Payload: raw}) {
 			return
 		}
 	}

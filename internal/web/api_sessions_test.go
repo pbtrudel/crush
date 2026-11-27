@@ -23,7 +23,7 @@ func TestRenameSessionPublishes(t *testing.T) {
 	g, f := startTest(t)
 	f.AddSession(session.Session{ID: "s1", Title: "Old"})
 	c := dialStream(t, g, "")
-	require.Equal(t, frameSnapshot, readFrame(t, c).Type)
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPut, g.URL()+"/api/sessions/s1", `{"title":"  Parser work  "}`)
 	rsp.Body.Close()

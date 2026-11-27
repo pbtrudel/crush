@@ -35,7 +35,7 @@ func TestSecurePromptFrameAndSnapshot(t *testing.T) {
 	fr := nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[{"source":"pinentry","id":"p1","kind":"passphrase","title":"GPG passphrase",
 		"message":"Unlock the signing key","details":["Key: ABCDEF0123456789","Holder: Dev <dev@example.com>"]}]}`, string(fr.Payload))
-	snap := g.buildSnapshot(t.Context(), "")
+	snap := g.buildBootstrap(t.Context())
 	require.Len(t, snap.SecurePrompts, 1)
 }
 
@@ -46,7 +46,7 @@ func TestSnapshotRestoresSecurePrompt(t *testing.T) {
 	require.Eventually(t, func() bool { return len(g.pending.securePrompts()) == 1 }, time.Second, 10*time.Millisecond)
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c)
-	require.Equal(t, frameSnapshot, snap.Type)
+	require.Equal(t, frameBootstrap, snap.Type)
 	require.Contains(t, string(snap.Payload), `"secure_prompts":[{"source":"ssh","id":"s1","kind":"password"`)
 }
 
@@ -267,7 +267,7 @@ func TestSnapshotCarriesAWSSSO(t *testing.T) {
 	require.Eventually(t, func() bool { return g.pending.awsSSO() != nil }, time.Second, 10*time.Millisecond)
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c)
-	require.Equal(t, frameSnapshot, snap.Type)
+	require.Equal(t, frameBootstrap, snap.Type)
 	require.Contains(t, string(snap.Payload), `"aws_sso":{"command":"aws sso login --profile dev"}`)
 }
 
@@ -284,7 +284,7 @@ func TestSnapshotDropsFailedAWSSSO(t *testing.T) {
 	require.Eventually(t, func() bool { return g.pending.awsSSO() == nil }, time.Second, 10*time.Millisecond)
 	c := dialStream(t, g, "")
 	snap := readFrame(t, c)
-	require.Equal(t, frameSnapshot, snap.Type)
+	require.Equal(t, frameBootstrap, snap.Type)
 	require.NotContains(t, string(snap.Payload), "aws_sso", "a failed refresh leaves no command in the snapshot")
 	require.NotContains(t, string(snap.Payload), "aws sso login --profile dev")
 }
@@ -328,7 +328,7 @@ func TestSecureAnswerRefusedForgetsThePrompt(t *testing.T) {
 	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
 	require.Empty(t, g.pending.securePrompts())
-	require.NotContains(t, snapshotJSON(t, g, ""), `"id":"p1"`, "a reload does not restore a ghost prompt")
+	require.NotContains(t, bootstrapJSON(t, g), `"id":"p1"`, "a reload does not restore a ghost prompt")
 }
 
 // TestSecureCancelRefusedForgetsThePrompt is the cancel side of the same
@@ -349,7 +349,7 @@ func TestSecureCancelRefusedForgetsThePrompt(t *testing.T) {
 	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
 	require.Empty(t, g.pending.securePrompts())
-	require.NotContains(t, snapshotJSON(t, g, ""), `"id":"s6"`, "a reload does not restore a ghost prompt")
+	require.NotContains(t, bootstrapJSON(t, g), `"id":"s6"`, "a reload does not restore a ghost prompt")
 }
 
 // TestOversizeSecretBodyIsRefused pins the shared secret body decoder: a
