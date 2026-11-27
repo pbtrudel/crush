@@ -14,7 +14,7 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
   return {
     state: 'ready',
     error: null,
-    client: { send: vi.fn() } as unknown as ApiClient,
+    client: { send: vi.fn(), get: vi.fn() } as unknown as ApiClient,
     stream: {} as StreamClient,
     store: createAppStore(memoryStorage()),
     ...overrides,
@@ -35,6 +35,13 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByRole('navigation', { name: 'Sessions' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+  })
+
+  it('asks for a session in the conversation slot', () => {
+    render(<App />)
+    // The conversation is the frame's other child: with no selection it asks
+    // for one instead of rendering an empty log.
+    expect(screen.getByText('Select a session')).toBeInTheDocument()
   })
 
   it('shows the connecting line while the tab authenticates', () => {
