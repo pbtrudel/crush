@@ -2005,7 +2005,9 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 	// Transports nest outermost first: the signature retry resends a whole
 	// request, tool search rewrites the tools block and moves its
 	// breakpoint, and the cache ttl is applied last so it also covers the
-	// breakpoint tool search moved.
+	// breakpoint tool search moved. The recorder that anthropicHTTPClient
+	// installs sits under all of them, directly above the network, so a
+	// capture shows the bytes the provider receives.
 	httpClient := c.anthropicHTTPClient(providerID, baseURL)
 	if c.cfg.Config().Options.GetAnthropicToolSearch() {
 		// The transport passes every unmarked request through untouched,
@@ -2022,6 +2024,26 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 	// survives even when the history could not be classified.
 	opts = append(opts, anthropic.WithHTTPClient(withThinkingSignatureRetry(httpClient)))
 	return anthropic.New(opts...)
+}
+
+// openaiOAuthClient returns client with the Codex transport installed for a
+// ChatGPT OAuth token. The recorder sits directly above the network, under
+// the Codex transport, so the capture shows the request the backend receives
+// after that transport added the account headers and dropped the fields it
+// rejects. The caller's client is copied, never changed in place.
+func openaiOAuthClient(client *http.Client, token *oauth.Token) *http.Client {
+	out := &http.Client{}
+	var base http.RoundTripper
+	if client != nil {
+		copied := *client
+		out = &copied
+		base = copied.Transport
+	}
+	out.Transport = &openaioauth.Transport{
+		Base:  captureTransportIfEnabled(base),
+		Token: token,
+	}
+	return out
 }
 
 func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, token *oauth.Token, wireType catwalk.Type, providerID string) (fantasy.Provider, error) {
@@ -2042,14 +2064,12 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 		// ChatGPT OAuth: requests go through the Codex backend, which
 		// expects account headers and rejects some request fields, so
 		// they pass through the Codex transport.
-		if httpClient == nil {
-			httpClient = &http.Client{}
-		}
-		httpClient.Transport = &openaioauth.Transport{
-			Base:  httpClient.Transport,
-			Token: token,
-		}
+		httpClient = openaiOAuthClient(httpClient, token)
+	} else {
+		httpClient = captureClient(httpClient)
 	}
+	// The replay transport sits above the recorder, so a capture shows the
+	// body the backend receives after the reasoning items were replayed.
 	httpClient = c.withResponsesReasoningReplay(httpClient)
 	httpClient = c.withOpenAIPromptCacheRetention(httpClient, providerID)
 	if httpClient != nil {
@@ -2077,8 +2097,11 @@ func (c *coordinator) buildOpenrouterProvider(_, apiKey string, headers map[stri
 	opts := []openrouter.Option{
 		openrouter.WithAPIKey(apiKey),
 	}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, openrouter.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -2091,8 +2114,11 @@ func (c *coordinator) buildVercelProvider(_, apiKey string, headers map[string]s
 	opts := []vercel.Option{
 		vercel.WithAPIKey(apiKey),
 	}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, vercel.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -2196,8 +2222,11 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 		if httpClient != nil && httpClient.Transport != nil {
 			baseTransport = httpClient.Transport
 		}
-		httpClient = &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(baseTransport))}
+		httpClient = mistralVibeClient(baseTransport)
 	} else {
+		// The recorder goes on first so the retry transport sits above it
+		// and a capture shows the body the endpoint receives.
+		httpClient = captureClient(httpClient)
 		// The prompt cache key these requests carry is optional: an endpoint
 		// that does not know the field drops it after one retry instead of
 		// failing the turn. Mistral keeps its own transport and behaviour.
@@ -2221,6 +2250,14 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	return openaicompat.New(opts...)
 }
 
+// mistralVibeClient returns a client whose transport chain signs and rewrites
+// the request on the way out. The recorder sits above base and below both
+// transports, so the capture shows the signed request that reaches the
+// network rather than the body before it was rewritten.
+func mistralVibeClient(base http.RoundTripper) *http.Client {
+	return &http.Client{Transport: newMistralVibeTransport(newMistralContentBlockTransport(captureTransportIfEnabled(base)))}
+}
+
 func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string) (fantasy.Provider, error) {
 	opts := []azure.Option{
 		azure.WithBaseURL(baseURL),
@@ -2231,6 +2268,7 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 	if c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()
 	}
+	httpClient = captureClient(httpClient)
 	httpClient = c.withResponsesReasoningReplay(httpClient)
 	if httpClient != nil {
 		opts = append(opts, azure.WithHTTPClient(httpClient))
@@ -2250,8 +2288,11 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 
 func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []bedrock.Option
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, bedrock.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -2282,8 +2323,11 @@ func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[st
 		google.WithBaseURL(baseURL),
 		google.WithGeminiAPIKey(apiKey),
 	}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, google.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {
@@ -2294,8 +2338,11 @@ func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[st
 
 func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, options map[string]string) (fantasy.Provider, error) {
 	opts := []google.Option{}
+	var httpClient *http.Client
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
+		httpClient = log.NewHTTPClient()
+	}
+	if httpClient = captureClient(httpClient); httpClient != nil {
 		opts = append(opts, google.WithHTTPClient(httpClient))
 	}
 	if len(headers) > 0 {

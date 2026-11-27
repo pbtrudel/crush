@@ -42,14 +42,14 @@ type recordedRequest struct {
 	header http.Header
 }
 
-// captureTransport records every request and answers with a canned response.
-type captureTransport struct {
+// recordingTransport records every request and answers with a canned response.
+type recordingTransport struct {
 	mu        sync.Mutex
 	requests  []recordedRequest
 	responder func(*http.Request) *http.Response
 }
 
-func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (c *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body []byte
 	if req.Body != nil {
 		body, _ = io.ReadAll(req.Body)
@@ -64,7 +64,7 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return jsonResponse(req, `{}`), nil
 }
 
-func (c *captureTransport) last(t *testing.T) recordedRequest {
+func (c *recordingTransport) last(t *testing.T) recordedRequest {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -154,7 +154,7 @@ func toolNamesOf(tools []decodedTool) []string {
 func TestAnthropicToolSearchOffKeepsRequestBytes(t *testing.T) {
 	t.Parallel()
 
-	base := &captureTransport{}
+	base := &recordingTransport{}
 	transport := newAnthropicToolSearchTransport(base)
 
 	resp, err := transport.RoundTrip(messagesRequest(t, t.Context(), toolSearchTestBody))
@@ -173,7 +173,7 @@ func TestAnthropicToolSearchOffKeepsRequestBytes(t *testing.T) {
 func TestAnthropicToolSearchActiveRequest(t *testing.T) {
 	t.Parallel()
 
-	base := &captureTransport{}
+	base := &recordingTransport{}
 	transport := newAnthropicToolSearchTransport(base)
 	ctx := withAnthropicToolSearch(t.Context())
 
@@ -328,7 +328,7 @@ func TestToolsForStepServerToolSearch(t *testing.T) {
 func TestAnthropicToolSearchCapturesAndReplaysResult(t *testing.T) {
 	t.Parallel()
 
-	base := &captureTransport{responder: func(req *http.Request) *http.Response {
+	base := &recordingTransport{responder: func(req *http.Request) *http.Response {
 		return sseResponse(req, toolSearchStream)
 	}}
 	transport := newAnthropicToolSearchTransport(base)
@@ -381,7 +381,7 @@ func TestAnthropicToolSearchCapturesAndReplaysResult(t *testing.T) {
 func TestAnthropicToolSearchDropsOrphanedServerToolUse(t *testing.T) {
 	t.Parallel()
 
-	base := &captureTransport{}
+	base := &recordingTransport{}
 	transport := newAnthropicToolSearchTransport(base)
 	ctx := withAnthropicToolSearch(t.Context())
 

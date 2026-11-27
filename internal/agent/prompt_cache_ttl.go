@@ -340,12 +340,20 @@ func withPromptCacheRetention(client *http.Client) *http.Client {
 // requests with, or nil when the SDK's default client is enough. Debug
 // logging needs a client of its own, and so does the extended prompt cache
 // lifetime, but only for Anthropic itself: every other Messages-wire provider
-// may reject the ttl field and the beta header it needs.
+// may reject the ttl field and the beta header it needs. Request capture
+// needs one too, whatever the provider.
+//
+// The recorder goes on before the cache ttl transport, so it sits directly
+// above the network and under every transport that rewrites the request: a
+// capture shows the ttl-labelled body the provider receives, not the one
+// before the rewrite. With capturing off the client is returned untouched and
+// stays nil when the SDK default is enough.
 func (c *coordinator) anthropicHTTPClient(providerID, baseURL string) *http.Client {
 	var client *http.Client
 	if c.cfg.Config().Options.Debug {
 		client = log.NewHTTPClient()
 	}
+	client = captureClient(client)
 	if !isAnthropicEndpoint(providerID, baseURL) {
 		return client
 	}
