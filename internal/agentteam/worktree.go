@@ -175,31 +175,74 @@ func (s *Service) createWorktree(ctx context.Context, taskID string) (path, bran
 	return gitutil.CreateWorktreeFrom(ctx, s.cfg.WorkingDir, "team-"+taskID, "HEAD")
 }
 
+// placementResult says what recording a placed worktree found.
+type placementResult int
+
+const (
+	// placedRecorded means the task now records the worktree just placed.
+	placedRecorded placementResult = iota
+	// placedAdopted means the task already recorded its own worktree, so
+	// the one just placed belongs to nobody.
+	placedAdopted
+	// placedLost means the claim moved on, so no task names the worktree.
+	placedLost
+)
+
+// worktreeAction is what a store does with a task whose claim it matches.
+type worktreeAction int
+
+const (
+	// worktreeStore writes the placed path and branch onto the task.
+	worktreeStore worktreeAction = iota
+	// worktreeAdopt keeps the worktree the task already records.
+	worktreeAdopt
+)
+
 // recordWorktree stores a new worktree on its task in a compare-and-set
 // write against the claim it was made for: same task, session and owner,
-// still in progress, with no worktree yet. The revision is not part of the
+// still in progress. A task that already recorded a worktree was placed by
+// another claim first, so it is adopted. The revision is not part of the
 // check, because an edit that lands while git worktree add runs must not
-// strand the claim; the worktree is bookkeeping, not a new revision. It
-// returns the stored task and whether it stored.
-func (s *Service) recordWorktree(taskID, sessionID, ownerID, path, branch string) (Task, bool) {
-	return s.storeWorktree(taskID, sessionID, ownerID, path, branch, func(task Task) bool {
-		return task.Worktree == ""
+// strand the claim; the worktree is bookkeeping, not a new revision.
+func (s *Service) recordWorktree(taskID, sessionID, ownerID, path, branch string) (Task, placementResult) {
+	return s.storeWorktree(taskID, sessionID, ownerID, path, branch, func(task Task) worktreeAction {
+		if task.Worktree == "" {
+			return worktreeStore
+		}
+		return worktreeAdopt
 	})
 }
 
 // repointWorktree moves a task's record to the path a restore just wrote,
 // under the same claim check, when the path it recorded could not be used.
-func (s *Service) repointWorktree(taskID, sessionID, ownerID, oldPath, path, branch string) (Task, bool) {
-	return s.storeWorktree(taskID, sessionID, ownerID, path, branch, func(task Task) bool {
-		return task.Worktree == oldPath
+func (s *Service) repointWorktree(taskID, sessionID, ownerID, oldPath, path, branch string) (Task, placementResult) {
+	return s.storeWorktree(taskID, sessionID, ownerID, path, branch, func(task Task) worktreeAction {
+		if task.Worktree == oldPath {
+			return worktreeStore
+		}
+		return worktreeAdopt
 	})
 }
 
-// storeWorktree writes path and branch onto the task's record when keep
-// accepts the worktree that record holds. Callers must hold no lock.
-func (s *Service) storeWorktree(taskID, sessionID, ownerID, path, branch string, keep func(Task) bool) (Task, bool) {
-	var stored Task
-	storedNow := false
+// adoptWorktree records nothing and only checks that the claim still holds,
+// so a restore whose path did not change still learns when the board moved
+// the task on.
+func (s *Service) adoptWorktree(taskID, sessionID, ownerID, path, branch string) (Task, placementResult) {
+	return s.storeWorktree(taskID, sessionID, ownerID, path, branch, func(task Task) worktreeAction {
+		return worktreeAdopt
+	})
+}
+
+// storeWorktree points the task's record at path and branch when decide asks
+// for it, and otherwise adopts the worktree the record already holds. It
+// returns the task as the record now holds it, and whether the placement was
+// stored, adopted, or lost to a claim the board moved on. Callers must hold
+// no lock.
+func (s *Service) storeWorktree(taskID, sessionID, ownerID, path, branch string, decide func(Task) worktreeAction) (Task, placementResult) {
+	var (
+		stored  Task
+		outcome = placedLost
+	)
 	_ = s.write(mustApply, func() (bool, error) {
 		if s.closed {
 			return false, nil
@@ -210,17 +253,18 @@ func (s *Service) storeWorktree(taskID, sessionID, ownerID, path, branch string,
 				task.OwnerID != ownerID || task.Status != TaskInProgress {
 				continue
 			}
-			if !keep(*task) {
+			if decide(*task) == worktreeAdopt {
+				stored, outcome = *task, placedAdopted
 				return false, nil
 			}
 			task.Worktree, task.Branch = path, branch
-			stored, storedNow = *task, true
+			stored, outcome = *task, placedRecorded
 			s.notifyLocked()
 			return true, nil
 		}
 		return false, nil
 	})
-	return stored, storedNow
+	return stored, outcome
 }
 
 // discardWorktree removes a worktree no task names, with its branch. It is
@@ -332,14 +376,20 @@ func (s *Service) placeStart(start dispatchStart) (dispatchStart, bool) {
 	if path == "" {
 		return start, true
 	}
-	task, ok := s.recordPlacedWorktree(start.task, path, branch)
-	if !ok {
+	task, outcome := s.recordPlacedWorktree(start.task, path, branch)
+	switch outcome {
+	case placedLost:
 		s.discardPlacedWorktree(ctx, start.task, path, branch)
 		s.worktreeFailed(start, errWorktreeClaimMoved)
 		return start, false
+	case placedAdopted:
+		if path != task.Worktree || branch != task.Branch {
+			// Another claim placed this task's worktree first, so the one
+			// made here belongs to nobody.
+			s.discardPlacedWorktree(ctx, start.task, path, branch)
+		}
 	}
 	start.task, start.revision = task, task.Revision
-	start.task.Worktree, start.task.Branch = path, branch
 	start.prompt = taskBrief(start.task)
 	return start, true
 }
@@ -370,17 +420,17 @@ func (s *Service) placeWorktree(ctx context.Context, claimed Task) (path, branch
 }
 
 // recordPlacedWorktree stores the worktree a claim just got against that
-// claim, and returns the task as the write left it. A task that already
-// records the same path needs no write. It reports false when the claim
-// moved on while git ran, so no task names the worktree.
-func (s *Service) recordPlacedWorktree(claimed Task, path, branch string) (Task, bool) {
+// claim, and returns the task as the write left it. A restore whose path did
+// not change still checks the claim, so a task the board deleted meanwhile
+// is not launched. A task that already records another worktree adopts it.
+func (s *Service) recordPlacedWorktree(claimed Task, path, branch string) (Task, placementResult) {
 	switch {
 	case claimed.Worktree == "":
 		return s.recordWorktree(claimed.ID, claimed.SessionID, claimed.OwnerID, path, branch)
 	case path != claimed.Worktree || branch != claimed.Branch:
 		return s.repointWorktree(claimed.ID, claimed.SessionID, claimed.OwnerID, claimed.Worktree, path, branch)
 	default:
-		return claimed, true
+		return s.adoptWorktree(claimed.ID, claimed.SessionID, claimed.OwnerID, path, branch)
 	}
 }
 
@@ -404,35 +454,38 @@ type worktreeRelease struct {
 	taskID    string
 	sessionID string
 	ownerID   string
-	revision  int
+	// revision matches this process's recorded claim, not the task: the
+	// task is released by its owner, so an edit cannot strand it.
+	revision int
 }
 
 // releaseWorktreeClaim hands back a claim whose worktree could not be
 // created, in one write that also frees the member it was planned for. No
 // attempt is charged, since the work never started. The Lead is told once,
 // because the task is remembered as refused at its new revision until the
-// Lead changes it. It reports whether the claim was released.
-func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) bool {
-	var (
-		leadHook func(sessionID string)
-		released bool
-	)
+// Lead changes it. It reports whether the claim was released, and whether
+// the Team was shutting down instead of releasing it.
+func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) (released, closed bool) {
+	var leadHook func(sessionID string)
 	_ = s.write(mustApply, func() (bool, error) {
 		if r.member != "" {
 			delete(s.starting, r.member)
 		}
 		if s.closed {
 			// Shutdown hands a recorded claim back itself.
+			closed = true
 			return false, nil
 		}
 		if r.member != "" {
+			// The claim map is this process's own bookkeeping, so it is
+			// matched on the revision it recorded; the task itself is not.
 			if claim, ok := s.claims[r.member]; ok &&
 				claim.taskID == r.taskID && claim.revision == r.revision {
 				delete(s.claims, r.member)
 			}
 			s.idleProvisionedLocked(r.member)
 		}
-		released = s.releaseForWorktreeLocked(r.taskID, r.sessionID, r.ownerID, r.revision, err)
+		released = s.releaseForWorktreeLocked(r.taskID, r.sessionID, r.ownerID, err)
 		if !released {
 			return false, nil
 		}
@@ -443,7 +496,7 @@ func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) bool {
 	if released {
 		wakeLeads(leadHook, []string{r.sessionID})
 	}
-	return released
+	return released, closed
 }
 
 // worktreeFailed hands back a dispatcher claim whose worktree could not be
@@ -451,7 +504,7 @@ func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) bool {
 // member is free again. The Lead is told once: the dispatcher leaves the
 // task until the Lead changes it, instead of failing again on every pass.
 func (s *Service) worktreeFailed(start dispatchStart, err error) {
-	s.releaseWorktreeClaim(worktreeRelease{
+	_, _ = s.releaseWorktreeClaim(worktreeRelease{
 		member:    start.member.Name,
 		taskID:    start.taskID,
 		sessionID: start.sessionID,
@@ -462,15 +515,17 @@ func (s *Service) worktreeFailed(start dispatchStart, err error) {
 
 // releaseForWorktreeLocked puts a claimed task whose worktree failed back
 // to pending, uncharged, remembers it as refused at its new revision, and
-// tells the Lead. It reports false when the claim moved on and nothing was
+// tells the Lead. The claim is matched on its owner, not its revision, so an
+// edit that lands while git runs does not leave the task in progress with
+// nobody to run it. It reports false when the claim moved on and nothing was
 // released. Callers must hold s.mu.
-func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID string, revision int, err error) bool {
+func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID string, err error) bool {
 	for i := range s.state.Tasks {
 		task := &s.state.Tasks[i]
 		if task.ID != taskID || task.SessionID != sessionID {
 			continue
 		}
-		if task.OwnerID != ownerID || task.Status != TaskInProgress || task.Revision != revision {
+		if task.OwnerID != ownerID || task.Status != TaskInProgress {
 			return false
 		}
 		task.Status = TaskPending
@@ -501,25 +556,46 @@ func (s *Service) placeClaim(view TaskView) (TaskView, error) {
 	defer cancel()
 	path, branch, err := s.placeWorktree(ctx, claimed)
 	if err != nil {
-		s.releaseUnplaced(view, err)
-		return TaskView{}, newError(CodeTaskGit,
-			"could not create the git worktree for task %s: %v. The claim was released and the task is pending again", view.ID, err)
+		released, closed := s.releaseUnplaced(view, err)
+		return TaskView{}, newError(CodeTaskGit, "could not create the git worktree of task %s: %v. %s",
+			view.ID, err, worktreeReleaseNote(released, closed))
 	}
 	if path == "" {
 		return view, nil
 	}
-	if _, ok := s.recordPlacedWorktree(claimed, path, branch); !ok {
+	task, outcome := s.recordPlacedWorktree(claimed, path, branch)
+	switch outcome {
+	case placedLost:
 		// The board moved the claim on between its write and this one, so
 		// the worktree belongs to nobody.
 		s.discardPlacedWorktree(ctx, claimed, path, branch)
-		s.releaseUnplaced(view, errWorktreeClaimMoved)
-		return TaskView{}, newError(CodeTaskGit,
-			"could not record the git worktree of task %s: %v. The claim was released and the task is pending again",
-			view.ID, errWorktreeClaimMoved)
+		released, closed := s.releaseUnplaced(view, errWorktreeClaimMoved)
+		return TaskView{}, newError(CodeTaskGit, "could not record the git worktree of task %s: %v. %s",
+			view.ID, errWorktreeClaimMoved, worktreeReleaseNote(released, closed))
+	case placedAdopted:
+		if path != task.Worktree || branch != task.Branch {
+			// Another claim placed this task's worktree first, so the one
+			// made here belongs to nobody.
+			s.discardPlacedWorktree(ctx, claimed, path, branch)
+		}
 	}
 	// The board, not this call, is the truth: an edit that landed while git
-	// ran is reported with its revision.
+	// ran is reported with its revision, and an adopted worktree is the one
+	// the task records.
 	return s.taskViewNow(view.ID, view.SessionID, view), nil
+}
+
+// worktreeReleaseNote says what happened to a claim whose worktree failed,
+// so a refusal never claims a release that did not happen.
+func worktreeReleaseNote(released, closed bool) string {
+	switch {
+	case released:
+		return "The claim was released and the task is pending again"
+	case closed:
+		return "The Team is shutting down"
+	default:
+		return "The claim had already moved on, so the task is left as the board holds it"
+	}
 }
 
 // taskViewNow returns the board's current view of a task, or fallback when
@@ -536,8 +612,8 @@ func (s *Service) taskViewNow(taskID, sessionID string, fallback TaskView) TaskV
 }
 
 // releaseUnplaced hands back a claim whose worktree failed.
-func (s *Service) releaseUnplaced(view TaskView, err error) {
-	s.releaseWorktreeClaim(worktreeRelease{
+func (s *Service) releaseUnplaced(view TaskView, err error) (released, closed bool) {
+	return s.releaseWorktreeClaim(worktreeRelease{
 		taskID:    view.ID,
 		sessionID: view.SessionID,
 		ownerID:   view.OwnerID,

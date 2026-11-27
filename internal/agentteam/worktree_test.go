@@ -351,12 +351,28 @@ type blockingGit struct {
 // git worktree add until the test releases it.
 func blockWorktreeCreation(t *testing.T, repo string) *blockingGit {
 	t.Helper()
+	return newBlockingGit(t, repo, false)
+}
+
+// blockWorktreeCreationUntilFailure is blockWorktreeCreation for a git
+// worktree add that fails once the test releases it.
+func blockWorktreeCreationUntilFailure(t *testing.T, repo string) *blockingGit {
+	t.Helper()
+	return newBlockingGit(t, repo, true)
+}
+
+func newBlockingGit(t *testing.T, repo string, fail bool) *blockingGit {
+	t.Helper()
 	dir := t.TempDir()
 	b := &blockingGit{started: filepath.Join(dir, "started"), release: filepath.Join(dir, "go")}
 	hooks := filepath.Join(dir, "hooks")
 	require.NoError(t, os.MkdirAll(hooks, 0o755))
-	script := fmt.Sprintf("#!/bin/sh\n: > %q\ni=0\nwhile [ ! -f %q ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i+1)); done\n",
-		b.started, b.release)
+	tail := ""
+	if fail {
+		tail = "exit 1\n"
+	}
+	script := fmt.Sprintf("#!/bin/sh\n: > %q\ni=0\nwhile [ ! -f %q ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i+1)); done\n%s",
+		b.started, b.release, tail)
 	require.NoError(t, os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(script), 0o755))
 	gitIn(t, repo, "config", "core.hooksPath", hooks)
 	t.Cleanup(func() { b.releaseGit() })
@@ -385,6 +401,18 @@ func waitDone(t *testing.T, done <-chan struct{}) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the git work did not finish")
 	}
+}
+
+// taskStatus returns a task's status without failing the test.
+func taskStatus(s *Service, id string) TaskStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, task := range s.state.Tasks {
+		if task.ID == id {
+			return task.Status
+		}
+	}
+	return ""
 }
 
 // newGatedWorktreeService opens a worktree service whose dispatch passes run
@@ -635,6 +663,166 @@ func TestDispatchRestoresAMissingWorktree(t *testing.T) {
 	require.FileExists(t, filepath.Join(got.Worktree, "docs", "draft.md"), "the branch keeps its commits")
 	require.Equal(t, []string{"implementer-1", "implementer-2"}, runner.memberNames())
 	require.Contains(t, runner.lastPrompt(), "Worktree: "+got.Worktree)
+}
+
+// TestReassignToTheSameMemberKeepsOneWorktree pins P7: a Lead assignment to
+// the member the dispatcher already claimed for adopts the worktree that
+// claim placed, instead of releasing the task the member runs on.
+func TestReassignToTheSameMemberKeepsOneWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	held := blockWorktreeCreation(t, repo)
+	s, runner, autostart, _ := newGatedWorktreeService(t, repo)
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", Role: "implementer", WriteScopes: []string{"docs"}})
+
+	autostart.Store(true)
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		s.dispatch(context.Background(), pipelineSession)
+	}()
+	held.wait(t)
+	type assignResult struct {
+		view TaskView
+		err  error
+	}
+	assigned := make(chan assignResult, 1)
+	go func() {
+		view, err := s.UpdateTask(leadName, updateRequest(s, task.ID, "reassign", func(r *UpdateTaskRequest) { r.Owner = "implementer-1" }))
+		assigned <- assignResult{view: view, err: err}
+	}()
+	held.releaseGit()
+	waitDone(t, dispatched)
+	var result assignResult
+	select {
+	case result = <-assigned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the assignment did not finish")
+	}
+	require.NoError(t, result.err)
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskInProgress, got.Status, "the running task keeps its owner")
+	require.Equal(t, memberID(t, s, "implementer-1"), got.OwnerID)
+	require.NotEmpty(t, got.Worktree)
+	requireSamePath(t, got.Worktree, result.view.Worktree)
+	worktrees, err := gitutil.ListWorktrees(context.Background(), repo)
+	require.NoError(t, err)
+	require.Len(t, worktrees, 2, "the Lead's tree and the one task worktree")
+	require.Equal(t, []string{"implementer-1"}, runner.memberNames())
+	require.Contains(t, runner.lastPrompt(), "Worktree: "+got.Worktree)
+	require.Empty(t, leadNotices(t, s, pipelineSession))
+}
+
+// TestFailedCreationReleasesAfterALeadEdit pins N1 on the dispatcher path: a
+// worktree that fails while the Lead edits the task still hands the claim
+// back, pending and uncharged.
+func TestFailedCreationReleasesAfterALeadEdit(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	held := blockWorktreeCreationUntilFailure(t, repo)
+	s, runner, autostart, _ := newGatedWorktreeService(t, repo)
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", Role: "implementer", WriteScopes: []string{"docs"}})
+
+	autostart.Store(true)
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		s.dispatch(context.Background(), pipelineSession)
+	}()
+	held.wait(t)
+	act(t, s, leadName, task.ID, "edit", func(r *UpdateTaskRequest) { r.Description = "Write the docs." })
+	held.releaseGit()
+	waitDone(t, dispatched)
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskPending, got.Status)
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts, "the work never started, so nothing is charged")
+	require.Empty(t, got.Worktree)
+	require.Empty(t, runner.memberNames(), "nothing starts without its worktree")
+	require.Equal(t, StatusInactive, memberStatus(s, "implementer-1"))
+	notices := leadNotices(t, s, pipelineSession)
+	require.Len(t, notices, 1)
+	require.Contains(t, notices[0], "could not get its git worktree")
+}
+
+// TestFailedClaimReleasesAfterALeadEdit is the same pin for a claim a
+// teammate made itself, and its error says the claim was released.
+func TestFailedClaimReleasesAfterALeadEdit(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	held := blockWorktreeCreationUntilFailure(t, repo)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", WriteScopes: []string{"docs"}})
+
+	type claimResult struct {
+		view TaskView
+		err  error
+	}
+	result := make(chan claimResult, 1)
+	go func() {
+		view, err := s.UpdateTask("impl", updateRequest(s, task.ID, "claim", nil))
+		result <- claimResult{view: view, err: err}
+	}()
+	held.wait(t)
+	act(t, s, leadName, task.ID, "edit", func(r *UpdateTaskRequest) { r.Description = "Write the docs." })
+	held.releaseGit()
+	var claimed claimResult
+	select {
+	case claimed = <-result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the claim did not finish")
+	}
+	require.Equal(t, CodeTaskGit, ErrorCode(claimed.err))
+	require.Contains(t, claimed.err.Error(), "claim was released")
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskPending, got.Status)
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts, "the work never started, so nothing is charged")
+	require.Empty(t, got.Worktree)
+	notices := leadNotices(t, s, pipelineSession)
+	require.Len(t, notices, 1)
+	require.Contains(t, notices[0], "could not get its git worktree")
+}
+
+// TestDeleteDuringRestoreDoesNotStartTheMember pins P8: a restore whose
+// claim moves on is not launched.
+func TestDeleteDuringRestoreDoesNotStartTheMember(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, runner := newWorktreeService(t, repo, true)
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", Role: "implementer", WriteScopes: []string{"docs"}})
+	first := taskByID(t, s, task.ID)
+	require.DirExists(t, first.Worktree)
+	require.NoError(t, os.RemoveAll(first.Worktree))
+
+	held := blockWorktreeCreation(t, repo)
+	handedBack := make(chan struct{})
+	go func() {
+		defer close(handedBack)
+		_, _ = s.UpdateTask(leadName, updateRequest(s, task.ID, "reassign", func(r *UpdateTaskRequest) { r.Owner = "" }))
+	}()
+	held.wait(t)
+	deleted := make(chan struct{})
+	go func() {
+		defer close(deleted)
+		_, _ = s.UpdateTask(leadName, updateRequest(s, task.ID, "delete", nil))
+	}()
+	require.Eventually(t, func() bool { return taskStatus(s, task.ID) == TaskDeleted },
+		10*time.Second, 5*time.Millisecond, "the delete must land before git finishes")
+	held.releaseGit()
+	waitDone(t, handedBack)
+	waitDone(t, deleted)
+
+	require.Equal(t, TaskDeleted, taskByID(t, s, task.ID).Status)
+	require.Equal(t, []string{"implementer-1"}, runner.memberNames(), "no member starts for a claim that moved on")
+	s.mu.Lock()
+	claims := len(s.claims)
+	s.mu.Unlock()
+	require.Zero(t, claims)
 }
 
 func TestWorktreeFieldsAreOmittedWhenEmpty(t *testing.T) {
