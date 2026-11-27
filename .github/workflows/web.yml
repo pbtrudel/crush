@@ -16,10 +16,9 @@ concurrency:
 jobs:
   frontend:
     runs-on: ubuntu-26.04
-    # Typecheck, unit tests, the dist freshness check and the Go tests take
-    # about 7 minutes on a hosted runner. The browser suite moved to the e2e
-    # job, so 20 minutes leaves room for setup and a slow package install
-    # without waiting on a stuck job.
+    # The frontend is being rebuilt (M0 of the DSH rebuild). Until web/
+    # returns in M1 this job only runs the gateway tests; the npm steps and
+    # the dist freshness check come back with the new tree.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,37 +27,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: web/.nvmrc
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-        working-directory: web
-      - run: npm run typecheck && npm test
-        working-directory: web
-      - name: Committed build is fresh
-        run: |
-          npm --prefix web run build
-          git diff --exit-code -- internal/web/dist
-          stray=$(git status --porcelain --untracked-files=all -- internal/web/dist)
-          if [ -n "$stray" ]; then
-            echo "$stray"
-            echo "internal/web/dist has files the commit does not carry"
-            exit 1
-          fi
       - run: go test ./internal/web/... ./internal/wire/...
 
   e2e:
     runs-on: ubuntu-26.04
-    # The whole suite runs on one worker and took about 16 minutes on a
-    # hosted runner. fullyParallel is off, so a shard is a third of the spec
-    # files and takes about 6 minutes; 25 covers setup, the webfake build,
-    # the browser install and a slow test with margin.
+    # The shard matrix stays so the web / e2e (1), (2) and (3) checks keep
+    # reporting while the suite is gone.
     timeout-minutes: 25
     strategy:
-      # One failing shard must not cancel the others: their artifacts are how
-      # a screenshot or trace failure gets diagnosed.
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
@@ -66,30 +42,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: web/.nvmrc
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-        working-directory: web
-      - run: npx playwright install --with-deps chromium
-        working-directory: web
-      - run: npx playwright test --shard=${{ matrix.shard }}/3
-        working-directory: web
-      # The screenshot comparison is a diff against a baseline, so a failure
-      # without the actual/expected/diff images tells nobody why. Upload what
-      # Playwright wrote: traces and screenshots land in test-results, and the
-      # HTML report when the reporter writes one. Each shard uploads its own
-      # artifact.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: playwright-results-${{ matrix.shard }}
-          path: |
-            web/test-results
-            web/playwright-report
-          if-no-files-found: ignore
+      - name: Playwright suite returns with the new frontend
+        run: echo "web/e2e was deleted with the old frontend; M1 restores this job."

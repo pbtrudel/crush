@@ -203,29 +203,23 @@ tasks:
 
   web:install:
     desc: Install web mode frontend dependencies
-    dir: web
     cmds:
-      - npm ci
+      - echo "The web frontend is being rebuilt; web/ returns in M1 of the DSH rebuild."
 
   web:build:
     desc: Build the web mode frontend into internal/web/dist
-    dir: web
     cmds:
-      - npm ci
-      - npm run build
+      - echo "The web frontend is being rebuilt; internal/web/dist carries a placeholder page."
 
   web:test:
     desc: Typecheck and unit test the web mode frontend
-    dir: web
     cmds:
-      - npm run typecheck
-      - npm test
+      - echo "The web frontend is being rebuilt; its unit tests return in M1."
 
   web:e2e:
     desc: Run Playwright smoke tests against the fake gateway
-    dir: web
     cmds:
-      - npm run e2e
+      - echo "The web frontend is being rebuilt; the Playwright suite returns in M1."
 
   web:check:
     desc: Fail when the committed web mode build is stale
