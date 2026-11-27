@@ -23,6 +23,11 @@ export interface StreamHandlers {
   onBootstrap(payload: unknown): void
   onFrame(frame: ParsedFrame): void
   onState(state: ConnectionState): void
+  // onClose reports every close with the code the browser gave and whether
+  // the socket ever opened. A refused handshake is the one close the state
+  // cannot describe: the browser hides the gateway's 401 behind code 1006,
+  // and the move to 'reconnecting' happens only once per streak.
+  onClose?(code: number, opened: boolean): void
 }
 
 export interface StreamOptions {
@@ -142,10 +147,14 @@ export class StreamClient {
       this.options.protocols(),
     )
     this.socket = socket
+    // opened is the socket's own history, not the client's state: a stale
+    // socket must never look like a handshake that succeeded.
+    let opened = false
     socket.onopen = () => {
       if (this.socket !== socket) {
         return
       }
+      opened = true
       this.attempt = 0
       this.setState('open')
       this.startPing()
@@ -166,11 +175,11 @@ export class StreamClient {
       if (this.socket !== socket) {
         return
       }
-      this.handleClose(event.code)
+      this.handleClose(event.code, opened)
     }
   }
 
-  private handleClose(code: number): void {
+  private handleClose(code: number, opened: boolean): void {
     this.stopPing()
     this.socket = null
     if (this.stopped) {
@@ -182,6 +191,14 @@ export class StreamClient {
     const delay = code === resyncCode ? 0 : backoffDelay(this.attempt, this.options.random)
     this.attempt += 1
     this.setState('reconnecting')
+    // The close handler runs after the state move, so a listener sees a
+    // consistent client, and before the retry is scheduled, so a listener
+    // that stops the client cancels the next attempt.
+    this.deliverClose(code, opened)
+    if (this.stopped) {
+      this.setState('closed')
+      return
+    }
     this.clearReconnect()
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
@@ -232,6 +249,20 @@ export class StreamClient {
     } catch {
       console.warn('web: dropping a frame the handler rejected')
       return false
+    }
+  }
+
+  // deliverClose runs the optional close handler and contains it: a listener
+  // that throws must not stop the reconnect.
+  private deliverClose(code: number, opened: boolean): void {
+    const handler = this.options.handlers.onClose
+    if (handler === undefined) {
+      return
+    }
+    try {
+      handler(code, opened)
+    } catch {
+      console.warn('web: dropping a close the handler rejected')
     }
   }
 

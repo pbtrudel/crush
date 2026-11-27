@@ -35,11 +35,11 @@ class FakeSocket {
   }
 }
 
-function client(onFrame = vi.fn(), onState = vi.fn()) {
+function client(onFrame = vi.fn(), onState = vi.fn(), onClose?: (code: number, opened: boolean) => void) {
   return new StreamClient({
     url: () => 'ws://127.0.0.1:1234/api/stream',
     protocols: () => ['crush.v2', 'crush.auth.token'],
-    handlers: { onFrame, onState, onBootstrap: vi.fn() },
+    handlers: { onFrame, onState, onBootstrap: vi.fn(), onClose },
     createSocket: (url, protocols) => new FakeSocket(url, protocols) as unknown as WebSocket,
     random: () => 1,
   })
@@ -130,6 +130,47 @@ describe('StreamClient', () => {
     const second = FakeSocket.opened[1]
     second.open()
     expect(second.sent).toContain(subscribeFrame('s1'))
+    s.stop()
+  })
+
+  it('reports every close with whether its socket ever opened', () => {
+    const onClose = vi.fn()
+    const s = client(vi.fn(), vi.fn(), onClose)
+    s.start()
+    // A handshake the gateway refuses closes before it opens.
+    FakeSocket.opened[0].drop(1006)
+    expect(onClose).toHaveBeenLastCalledWith(1006, false)
+
+    vi.advanceTimersByTime(500)
+    const second = FakeSocket.opened[1]
+    second.open()
+    second.drop(1001)
+    expect(onClose).toHaveBeenLastCalledWith(1001, true)
+    s.stop()
+  })
+
+  it('does not report a close the tab caused itself', () => {
+    const onClose = vi.fn()
+    const s = client(vi.fn(), vi.fn(), onClose)
+    s.start()
+    const socket = FakeSocket.opened[0]
+    socket.open()
+    s.stop()
+    // The browser's late close event for a socket the tab closed is not a
+    // refused handshake.
+    socket.drop(1000)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('keeps reconnecting when the close handler throws', () => {
+    const s = client(vi.fn(), vi.fn(), () => {
+      throw new Error('handler failure')
+    })
+    s.start()
+    FakeSocket.opened[0].drop(1006)
+    expect(s.state).toBe('reconnecting')
+    vi.advanceTimersByTime(500)
+    expect(FakeSocket.opened).toHaveLength(2)
     s.stop()
   })
 

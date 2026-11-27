@@ -57,15 +57,24 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
   const streamRef = useRef<StreamClient | null>(null)
   const alive = useRef(true)
   const probing = useRef(false)
+  const stopped = useRef(false)
+
+  // stopStream marks the ref before stopping, so a probe that starts from now
+  // on finds a connection the tab has already given up on.
+  const stopStream = useCallback(() => {
+    stopped.current = true
+    streamRef.current?.stop()
+  }, [])
 
   // probeRefusedHandshake asks the REST API why the socket dropped. A refused
   // handshake reaches the browser as close code 1006 with the gateway's 401
   // hidden, so a socket that never opened is the only hint of a stale token,
-  // and /api/health is where the status is visible. One probe per
-  // reconnection streak: the stream reports the move to 'reconnecting' once,
-  // and the flag keeps an overlapping probe out.
+  // and /api/health is where the status is visible. It runs on every such
+  // close — a probe that found the gateway down must not silence the one that
+  // would see a restarted gateway refuse the old token — while the flag keeps
+  // two probes from overlapping.
   const probeRefusedHandshake = useCallback(async () => {
-    if (probing.current) {
+    if (probing.current || stopped.current) {
       return
     }
     probing.current = true
@@ -80,14 +89,14 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
       // The gateway answers and the token is refused: forget the token, stop
       // the backoff loop and ask for a fresh link.
       client.clearToken()
-      streamRef.current?.stop()
+      stopStream()
       if (alive.current) {
         setState('unauthorized')
       }
     } finally {
       probing.current = false
     }
-  }, [client])
+  }, [client, stopStream])
 
   const stream = useMemo(() => {
     const created = new StreamClient({
@@ -100,7 +109,12 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
         onFrame: (frame) => store.applyFrame(frame),
         onState: (next) => {
           store.setConnection(next)
-          if (next === 'reconnecting') {
+        },
+        onClose: (_code, opened) => {
+          // The state can only say 'reconnecting' once per streak, so the
+          // close itself is what the tab reacts to. A handshake that never
+          // opened is the one that can hide a refused token.
+          if (!opened) {
             void probeRefusedHandshake()
           }
         },
@@ -122,10 +136,12 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
     [options.stripHash],
   )
 
-  // A probe can resolve after the tab is gone; the ref keeps it from setting
-  // state on an unmounted hook. StrictMode's second mount sets it back.
+  // A probe can resolve after the tab is gone, and one can start after the
+  // stream was stopped; the refs keep it from setting state on an unmounted
+  // hook. StrictMode's second mount sets them back.
   useEffect(() => {
     alive.current = true
+    stopped.current = false
     return () => {
       alive.current = false
     }
@@ -149,9 +165,9 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
       // StrictMode runs an effect twice: the first start is stopped here
       // before the second one runs, so the tab never holds two sockets.
       mounted = false
-      stream.stop()
+      stopStream()
     }
-  }, [client, stream, hash, stripHash])
+  }, [client, stream, hash, stripHash, stopStream])
 
   // The subscriptions follow the store: the selected session plus every
   // session that is not idle. Diffing against what is already subscribed

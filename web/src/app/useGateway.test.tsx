@@ -134,6 +134,29 @@ describe('useGateway', () => {
     unmount()
   })
 
+  it('probes again on a later refused handshake after an outage', async () => {
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    // The gateway is down: the first refused close probes and learns nothing.
+    h.client.get.mockRejectedValueOnce(new Error('offline'))
+    act(() => h.socket.fail(1006))
+    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    expect(result.current.state).toBe('ready')
+    expect(result.current.stream.state).toBe('reconnecting')
+
+    // A new gateway answers on the same port with a new token: the next
+    // attempt is refused again, and this probe sees the 401.
+    h.client.get.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
+    await waitFor(() => expect(h.sockets).toHaveLength(2))
+    act(() => h.sockets[1].fail(1006))
+    await waitFor(() => expect(result.current.state).toBe('unauthorized'))
+    expect(h.client.get).toHaveBeenCalledTimes(3)
+    expect(h.client.clearToken).toHaveBeenCalled()
+    expect(result.current.stream.state).toBe('closed')
+    unmount()
+  })
+
   it('keeps reconnecting when the probe cannot reach the gateway', async () => {
     const h = harness('#t=abc123', false)
     const { result, unmount } = renderHook(() => useGateway(h.options))
