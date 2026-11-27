@@ -77,7 +77,7 @@ less, merged to `main`.
 |---|---|---|
 | M0 | Removal | Delete `web/` (source, e2e specs, baselines), the old frontend build in `internal/web/dist`, and endpoints the new design does not need. `--web` and `/web` serve a placeholder page. The gateway security core and its tests stay. |
 | M1 | Shell | React/Vite scaffold, DSH theme tokens (light/dark/system) with the MIT notice, three-column frame, auth and reconnect, left sidebar with workspace and sessions (running, pending, unread markers), read-only chat. `--web` now serves the new UI, with a "preview, incomplete" banner, instead of the placeholder. |
-| M2 | Chat | Markdown (micromark + Shiki + KaTeX), streamed assistant replies, reasoning, nested tool-call trees with a view per tool type (bash, view, edit/diff, grep/glob, fetch, todos, agent/subagent, MCP), usage footer. |
+| M2 | Chat | Markdown (micromark + Shiki + KaTeX), streamed assistant replies, reasoning, nested tool-call trees with a view per tool type (bash, view, edit/diff, grep/glob, fetch, todos, agent/subagent, MCP), usage footer, and the virtualized message list (`@tanstack/react-virtual`) that M1 defers. |
 | M3 | Composer | Lexical editor with a draft per session; `/` menu (commands, skills, MCP prompts, and Crush actions: compact, export, goal/loop, note, side question); `@` mentions; attachments; queue and stop; model and reasoning picker; permission picker; plan mode and plan handoff. |
 | M4 | Interactions | Approval card, question card, GPG/SSH secure prompts, provider sign-in (API key, OAuth device code and loopback, AWS SSO). |
 | M5 | Right sidebar | Dockable tabs (lightweight dock system), file tree with search, review and diff tabs, previews for Markdown, code and images. |
@@ -113,10 +113,17 @@ REST/JSON for actions. One WebSocket at `GET /api/stream`, new subprotocol
 
 Global frames, sent to every connection:
 
-- `sessions`: created, renamed, deleted, and status (`running`, `queued`,
-  `pending_interaction`).
-- Permission and question requests and notifications, tagged with
-  `session_id`.
+- `session`: created, renamed and deleted, one entity per frame.
+- `session_status`: `{"session_id","status"}`, published only when a
+  session's status changes. The statuses are `idle`, `running`, `queued` and
+  `pending_interaction`; a session waiting for the person outranks one that
+  is running, which outranks one with a queued prompt.
+- Permission and question requests and notifications:
+  `permission_request`, `permission_notification`,
+  `permission_mode_changed`, `question_batch_request` and
+  `question_batch_notification`. These are global frames, and the session
+  they belong to travels in the payload's `session_id` field, not in a frame
+  header.
 - `model_changed`, `config_changed`, `lsp_event`, `mcp_event`, `team_state`,
   `agent_runs`, `skills_event`, `update_available`, `gateway_closing`,
   `web_error`, `secure_prompt`, `signin`.
@@ -127,15 +134,22 @@ Per-session frames, sent only to connections subscribed to that session:
   `{"type":"unsubscribe","session_id":"…"}`.
 - On subscribe the server sends `session_snapshot`: the latest page of
   messages, edited files, queue, busy state.
-- Then live updates `message`, `file`, `shell_output`, `run_complete`, each
-  tagged with `session_id` and the global sequence number.
-- A connection may hold several subscriptions at once (the open session plus
-  any running in the background).
+- Then live updates `message`, `file`, `shell_output` and `run_complete`.
+  These four, and only these four, carry `session_id` at the top level of
+  the frame beside the global sequence number; every other frame is global.
+- A connection may hold several subscriptions at once: the open session plus
+  any session that is not idle, at most 32. A background session that
+  returns to `idle` and is not the open one is dropped.
+- The subscription is reserved before the session's snapshot is read, and
+  the frames published while it is read are buffered and flushed after the
+  snapshot, so the snapshot is always the first thing a tab reads for a
+  session.
 
 Replay: the global ring stays, with `?since=<seq>` replay and resync on
-overflow (close code 4001). After a resync the client re-sends its
-subscriptions and receives fresh snapshots. Per-session frames in the ring
-are filtered against the connection's subscriptions on replay.
+overflow (close code 4001). Only global frames are replayed: a connecting
+tab holds no subscriptions yet, so per-session frames in the ring are never
+sent, and the client re-sends its subscriptions and receives fresh snapshots
+after a reconnect or a resync.
 
 The browser does not follow the TUI. It has its own selected session.
 "Open in terminal" calls `POST /api/follow` explicitly.
@@ -187,9 +201,16 @@ Removed:
 
 ### Browser-side state
 
-Unread markers (last seen sequence per session), theme, font sizes,
-right-sidebar layout per session, and composer drafts live in
-`localStorage`. No database migration.
+Unread markers, theme, font sizes, right-sidebar layout per session, and
+composer drafts live in `localStorage`. No database migration.
+
+An unread marker compares the session row's `updated_at` (from
+`GET /api/sessions`, the bootstrap and the global `session` frames) with a
+per-session last-seen `updated_at` kept under `crush.seen`. The comparison
+survives a Crush restart because the workspace owns the timestamps, and it
+needs no subscription: a session is marked seen when it is selected or
+receives an update while selected. A title-only update can fire a marker;
+that is accepted.
 
 ## Frontend structure
 

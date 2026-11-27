@@ -233,6 +233,19 @@ type Gateway struct {
 	modelMu   sync.Mutex
 	lastModel ModelInfo
 	modelGen  uint64
+
+	// statusMu guards statuses, the last status published per session, so a
+	// refresh announces a value only when it really changed.
+	statusMu sync.Mutex
+	statuses map[string]string
+	// settleMu guards settles, the one re-check timer pending per session,
+	// and settleSeq, which tells a live timer from one a newer run end
+	// replaced. settleClosed refuses a timer armed during shutdown, so no
+	// re-check publishes after the hub closes.
+	settleMu     sync.Mutex
+	settles      map[string]*statusSettle
+	settleSeq    uint64
+	settleClosed bool
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -316,11 +329,14 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		onAutomation:         opts.OnAutomation,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
+		statuses:             make(map[string]string),
+		settles:              make(map[string]*statusSettle),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	g.seedSessionStatuses(ctx)
 	// Seed the team watcher without publishing, so the first snapshot
 	// already carries the roster and a fresh hub still starts at seq 0.
 	g.team.poll()
@@ -528,6 +544,16 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.launchMu.Lock()
 	g.launchClosed = true
 	g.launchMu.Unlock()
+	// The status re-checks are timer goroutines that publish, so they stop
+	// here, before the hub closes. A re-check that already passed the
+	// closed check only publishes into a hub with no readers.
+	g.settleMu.Lock()
+	g.settleClosed = true
+	for id, entry := range g.settles {
+		entry.timer.Stop()
+		delete(g.settles, id)
+	}
+	g.settleMu.Unlock()
 	// Cancel every running shell and MCP OAuth flow, then wait for them
 	// before the hub closes, so no final frame is published into a closed
 	// hub. The wait honours the caller's deadline: work that ignores
@@ -620,6 +646,16 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			}
 			if g.pending.observe(ev) {
 				g.publishSecurePrompts()
+			}
+			if sessionID := statusSessionID(ev); sessionID != "" {
+				status := g.refreshSessionStatus(sessionID)
+				// The agent clears its busy flag after it publishes
+				// run_complete, so a run end can still read running.
+				// The value comes from the refresh, so a busy flag that
+				// clears right after it cannot skip the re-checks.
+				if runEnded(ev) && status == statusRunning {
+					g.settleSessionStatus(sessionID)
+				}
 			}
 			if typ, raw, ok := encode(ev); ok {
 				g.hub.publish(typ, raw)

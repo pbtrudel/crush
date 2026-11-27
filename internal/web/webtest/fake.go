@@ -1109,6 +1109,19 @@ func (f *Fake) SetSessionBusy(id string, busy bool) {
 	f.mu.Unlock()
 }
 
+// SetSessionQueued makes AgentQueuedPromptsList report prompts for id, as a
+// tab that queued a second prompt behind a running turn would. An empty
+// slice clears the queue.
+func (f *Fake) SetSessionQueued(id string, prompts []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(prompts) == 0 {
+		delete(f.queued, id)
+		return
+	}
+	f.queued[id] = append([]string(nil), prompts...)
+}
+
 func (f *Fake) ListMessages(_ context.Context, id string) ([]message.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
