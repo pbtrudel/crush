@@ -804,7 +804,7 @@ func TestPromptFailurePublishesSafeError(t *testing.T) {
 				return tc.err
 			}
 			c := dialStream(t, g, "")
-			readFrame(t, c) // Snapshot.
+			readFrame(t, c) // Bootstrap.
 
 			var buf bytes.Buffer
 			mw := multipart.NewWriter(&buf)

@@ -515,7 +515,7 @@ func TestControllerStopClosesTabsWithTheDetachNotice(t *testing.T) {
 	require.NoError(t, err)
 	gw := c.gw
 	conn := dialStream(t, gw, "")
-	readFrame(t, conn) // Snapshot.
+	readFrame(t, conn) // Bootstrap.
 
 	require.NoError(t, c.Stop(t.Context()))
 	fr := nextFrameOfType(t.Context(), t, conn, frameClosing)

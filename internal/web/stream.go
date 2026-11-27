@@ -104,18 +104,50 @@ func (h *hub) publish(typ string, raw json.RawMessage) frame {
 	defer h.mu.Unlock()
 	h.seq++
 	f := frame{Seq: h.seq, Type: typ, Payload: raw}
-	// A head index instead of a shift: publishing stays O(1) under the
-	// lock however full the ring is.
-	if len(h.ring) < ringSize {
-		h.ring = append(h.ring, f)
-	} else {
-		h.ring[h.start] = f
-		h.start = (h.start + 1) % ringSize
-	}
+	h.appendLocked(f)
 	for c := range h.subs {
 		h.sendLocked(c, f)
 	}
 	return f
+}
+
+// appendLocked records a frame in the replay ring. The caller holds h.mu.
+func (h *hub) appendLocked(f frame) {
+	// A head index instead of a shift: publishing stays O(1) under the
+	// lock however full the ring is.
+	if len(h.ring) < ringSize {
+		h.ring = append(h.ring, f)
+		return
+	}
+	h.ring[h.start] = f
+	h.start = (h.start + 1) % ringSize
+}
+
+// publishSession tags a frame with its session, records it in the ring and
+// delivers it to every connection that tracks the session, which includes one
+// whose snapshot is still being built.
+func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seq++
+	f := frame{Seq: h.seq, Type: typ, Session: sessionID, Payload: raw}
+	h.appendLocked(f)
+	for c := range h.subs {
+		if !c.tracks(sessionID) {
+			continue
+		}
+		h.deliverLocked(c, f)
+	}
+	return f
+}
+
+func (h *hub) publishSessionJSON(sessionID, typ string, v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("Failed to marshal web frame", "type", typ, "error", err)
+		return
+	}
+	h.publishSession(sessionID, typ, raw)
 }
 
 // sendLocked queues one frame for a connection, marking it for resync when
@@ -338,6 +370,12 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, f := range replay {
+		// Per-session frames are never replayed. A connecting tab holds no
+		// subscriptions yet, and replaying another tab's session traffic
+		// would be worse than the snapshot it re-subscribes for.
+		if f.Session != "" {
+			continue
+		}
 		if !writeFrame(ctx, ws, f) {
 			return
 		}

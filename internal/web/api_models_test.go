@@ -103,7 +103,7 @@ func TestSelectModelSwitchesAndPublishes(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
 		`{"type":"main","provider":"p1","model":"m2"}`)
@@ -142,7 +142,7 @@ func TestSelectSmallModelSwitches(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/models/select",
 		`{"type":"small","provider":"p1","model":"m1"}`)
@@ -394,7 +394,7 @@ func TestModelWatchPublishesTerminalChanges(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	// The terminal switches models, out of the gateway's sight.
 	fake.SetAgentModel(workspace.AgentModel{
@@ -455,7 +455,7 @@ func TestModelWatchSkipsUnreachableWorkspace(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	fake.SetReadyErr(fmt.Errorf("get agent info: %w", workspace.ErrServerUnreachable))
 	fake.SetAgentModel(workspace.AgentModel{})
@@ -490,7 +490,7 @@ func TestStaleModelWatchCannotOverwriteASelect(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
 
 	entered := make(chan struct{})
 	release := make(chan struct{})

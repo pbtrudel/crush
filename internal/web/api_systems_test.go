@@ -393,7 +393,7 @@ func TestMCPAuthFailurePublishesWebError(t *testing.T) {
 	fake.SetMCPAuthErr(errors.New("token endpoint returned 500"))
 	g := startAuthTest(t, fake)
 	s := dialStream(t, g, "")
-	readFrame(t, s) // Snapshot.
+	readFrame(t, s) // Bootstrap.
 
 	rsp, body := doJSON(t, authedClient(t, g), http.MethodPost, g.URL()+"/api/mcp/srv/auth", "")
 	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))

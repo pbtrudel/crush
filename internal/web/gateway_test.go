@@ -85,7 +85,9 @@ func TestModelWatchStallDoesNotBlockEvents(t *testing.T) {
 	t.Cleanup(func() { close(fake.release) })
 
 	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
+	readFrame(t, c) // Bootstrap.
+	// A message frame is per-session, so the tab follows the session.
+	subscribeStream(t, c, "s1")
 
 	fake.blocked.Store(true)
 	select {

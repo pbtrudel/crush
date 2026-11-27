@@ -30,7 +30,7 @@ func TestSecurePromptFrameAndSnapshot(t *testing.T) {
 	t.Parallel()
 	g, f := startTest(t)
 	c := dialStream(t, g, "")
-	_ = readFrame(t, c) // Snapshot.
+	_ = readFrame(t, c) // Bootstrap.
 	f.AddPinentryPrompt(pinentryReq("p1"))
 	fr := nextFrameOfType(t.Context(), t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[{"source":"pinentry","id":"p1","kind":"passphrase","title":"GPG passphrase",

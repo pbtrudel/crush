@@ -658,7 +658,11 @@ func (g *Gateway) pump(events <-chan any, last string) {
 				}
 			}
 			if typ, raw, ok := encode(ev); ok {
-				g.hub.publish(typ, raw)
+				if sid := eventSessionID(ev); sid != "" {
+					g.hub.publishSession(sid, typ, raw)
+				} else {
+					g.hub.publish(typ, raw)
+				}
 			}
 		case <-ticker.C:
 			if cur := g.ws.CurrentSessionID(); cur != last {

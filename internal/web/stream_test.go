@@ -77,29 +77,15 @@ func TestStreamStartsWithBootstrapThenLive(t *testing.T) {
 	require.Equal(t, "/tmp/project", s.WorkingDir)
 	require.Equal(t, "code", s.InputMode)
 
+	// A message frame is per-session, so the tab asks for the session
+	// after consuming the bootstrap.
+	subscribeStream(t, c, "s1")
 	fake.Emit(msgEvent("m1", "s1", "hello"))
-	f := readFrame(t, c)
+	f := nextFrameOfType(t.Context(), t, c, "message")
 	require.Equal(t, "message", f.Type)
+	require.Equal(t, "s1", f.Session)
 	require.Equal(t, snap.Seq+1, f.Seq)
 	require.Contains(t, string(f.Payload), `"hello"`)
-}
-
-func TestStreamSinceReplays(t *testing.T) {
-	t.Parallel()
-	g, fake := startTest(t)
-	c := dialStream(t, g, "")
-	readFrame(t, c) // Snapshot.
-	fake.Emit(msgEvent("m1", "s1", "one"))
-	fake.Emit(msgEvent("m2", "s1", "two"))
-	first := readFrame(t, c)
-	readFrame(t, c)
-	c.Close(websocket.StatusNormalClosure, "")
-
-	c2 := dialStream(t, g, "?since="+itoa(first.Seq))
-	f := readFrame(t, c2)
-	require.Equal(t, "message", f.Type)
-	require.Equal(t, first.Seq+1, f.Seq)
-	require.Contains(t, string(f.Payload), `"two"`)
 }
 
 func TestStreamSinceTooOldGetsBootstrap(t *testing.T) {
@@ -577,32 +563,33 @@ func TestSubscribeBuffersFramesPublishedDuringTheSnapshot(t *testing.T) {
 	deliverTo(h, c, frame{Type: "message", Session: "s1", Payload: json.RawMessage(`{"id":"m2"}`)})
 	h.flushSubscription(c, "s1", frame{Type: frameSessionSnapshot, Payload: json.RawMessage(`{"session_id":"s1"}`)})
 
-	first := <-c.ch
+	first := readConnFrame(t, c)
 	require.Equal(t, frameSessionSnapshot, first.Type)
-	second := <-c.ch
+	second := readConnFrame(t, c)
 	require.Equal(t, "message", second.Type)
 	require.Equal(t, "s1", second.Session)
 }
 
+// readConnFrame reads one frame from a connection's queue. The timeout keeps
+// a regression a failure instead of a hung test.
+func readConnFrame(t *testing.T, c *conn) frame {
+	t.Helper()
+	select {
+	case f := <-c.ch:
+		return f
+	case <-time.After(time.Second):
+		t.Fatal("no frame reached the connection")
+		return frame{}
+	}
+}
+
 // deliverTo runs one per-session frame through the hub's delivery path for
-// one connection, the way Task 5's publishSession does for every connection
-// that tracks the session. Nothing tags a frame with its session yet, so
-// these tests hand the frame to the delivery path directly.
+// one connection. These hub-level tests hand the frame to the delivery path
+// directly, with no timing.
 func deliverTo(h *hub, c *conn, f frame) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.deliverLocked(c, f)
-}
-
-// deliverSessionToEvery queues a per-session frame on every attached
-// connection, which is what Task 5's publishSession will do once the
-// gateway tags its frames.
-func deliverSessionToEvery(h *hub, f frame) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for c := range h.subs {
-		h.deliverLocked(c, f)
-	}
 }
 
 // TestSubscribeSendsSnapshotBeforeLiveFrames pins the same ordering through
@@ -624,10 +611,9 @@ func TestSubscribeSendsSnapshotBeforeLiveFrames(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the snapshot never read the messages")
 	}
-	deliverSessionToEvery(g.hub, frame{
-		Type: "message", Session: "s1",
-		Payload: json.RawMessage(`{"payload":{"id":"m2","parts":["mid-build"]}}`),
-	})
+	// The subscription is reserved on the connection, so the frame the
+	// gateway publishes during the read must queue behind the snapshot.
+	fake.Emit(msgEvent("m2", "s1", "mid-build"))
 	close(release)
 
 	f := readFrame(t, c)
@@ -658,4 +644,189 @@ func TestEnqueueAfterDetachIsDropped(t *testing.T) {
 	require.NotPanics(t, func() {
 		h.enqueue(c, frame{Type: frameError, Payload: json.RawMessage(`{}`)})
 	}, "a detached connection must not be sent to")
+}
+
+// tracksForTest reports whether any attached connection still wants the
+// session, subscribed or reserved. The test sees the socket, not the hub's
+// connection, so it asks the hub about the session instead.
+func (h *hub) tracksForTest(sessionID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.subs {
+		if c.tracks(sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPerSessionFramesReachOnlySubscribers pins the routing: a tab follows
+// two sessions at once and never receives a third session's traffic.
+func TestPerSessionFramesReachOnlySubscribers(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "s2", Title: "Other", UpdatedAt: 5})
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+
+	fake.Emit(msgEvent("m2", "s2", "not mine"))
+	fake.Emit(msgEvent("m1", "s1", "mine"))
+	f := nextFrameOfType(t.Context(), t, c, "message")
+	require.Contains(t, string(f.Payload), "mine")
+	require.Equal(t, "s1", f.Session, "the frame carries its session")
+	require.NotContains(t, string(f.Payload), "not mine")
+}
+
+// TestSessionStatusReachesEveryConnection pins what stays global. The busy
+// flag alone publishes nothing, so a message for the session gives the pump
+// the event that recomputes its status.
+func TestSessionStatusReachesEveryConnection(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	fake.SetSessionBusy("s1", true)
+	fake.Emit(msgEvent("m1", "s1", "starts the turn"))
+	f := nextFrameOfType(t.Context(), t, c, frameSessionStatus)
+	require.Equal(t, "", f.Session, "a status frame is global")
+	require.Contains(t, string(f.Payload), `"status":"running"`)
+}
+
+// TestUnsubscribeStopsFrames pins the other half of the subscription by
+// observing absence: the unsubscribed session's message is published before a
+// global sentinel the pump emits later, so any message frame before the
+// sentinel would be the leak. The sentinel is an LSP event, which the pump
+// handles in order after the message and publishes to every tab.
+func TestUnsubscribeStopsFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	writeClient(t, c, `{"type":"unsubscribe","session_id":"s1"}`)
+	require.Eventually(t, func() bool { return !g.hub.tracksForTest("s1") }, time.Second, 10*time.Millisecond)
+
+	fake.Emit(msgEvent("m1", "s1", "after"))
+	// The LSP event that follows is published by the one loop that reads
+	// workspace events, after the message, so it is the sentinel this test
+	// reads.
+	fake.Emit(pubsub.Event[workspace.LSPEvent]{Type: pubsub.UpdatedEvent, Payload: workspace.LSPEvent{
+		Name: "gopls", State: lsp.StateReady,
+	}})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.Read(ctx)
+		require.NoError(t, err)
+		var f testFrame
+		require.NoError(t, json.Unmarshal(data, &f))
+		require.NotEqual(t, "message", f.Type, "an unsubscribed session still delivered")
+		if f.Type == string(pubsub.PayloadTypeLSPEvent) {
+			return
+		}
+	}
+}
+
+// TestSubscribeWithoutASessionAnswersMissingSession pins the error reply a
+// tab gets when it subscribes to nothing.
+func TestSubscribeWithoutASessionAnswersMissingSession(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	writeClient(t, c, `{"type":"subscribe"}`)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
+	require.Contains(t, string(f.Payload), "missing_session")
+}
+
+// TestTwoSessionsOnOneConnection pins spec C4: one tab follows two sessions
+// at once and receives both streams, each tagged with its session.
+func TestTwoSessionsOnOneConnection(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "s2", Title: "Other", UpdatedAt: 5})
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	subscribeStream(t, c, "s2")
+
+	fake.Emit(msgEvent("m1", "s1", "one"))
+	fake.Emit(msgEvent("m2", "s2", "two"))
+	first := nextFrameOfType(t.Context(), t, c, "message")
+	second := nextFrameOfType(t.Context(), t, c, "message")
+	require.Equal(t, "s1", first.Session)
+	require.Contains(t, string(first.Payload), "one")
+	require.Equal(t, "s2", second.Session)
+	require.Contains(t, string(second.Payload), "two")
+}
+
+// TestReplayDropsPerSessionFrames pins the resync contract: the ring's
+// per-session frames never reach a reconnecting tab, which rebuilds every
+// session from a fresh snapshot instead.
+func TestReplayDropsPerSessionFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "kept"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	fake.Emit(msgEvent("m2", "s1", "live only"))
+	msg := nextFrameOfType(t.Context(), t, c, "message")
+	c.Close(websocket.StatusNormalClosure, "")
+
+	// Reconnect inside the ring: attach replays global frames only, so the
+	// live message cannot come back, and the resubscribe answers a snapshot
+	// carrying what the workspace stored.
+	c2 := dialStream(t, g, "?since="+itoa(msg.Seq-1))
+	writeClient(t, c2, `{"type":"subscribe","session_id":"s1"}`)
+	snap := readSnapshotAfterReplay(t, c2)
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(snap.Payload, &s))
+	require.Len(t, s.Messages, 1, "the snapshot carries the stored message")
+	require.Contains(t, string(snap.Payload), "kept")
+}
+
+// readSnapshotAfterReplay reads past global replayed frames to the session
+// snapshot, failing if any per-session frame arrives before it. The snapshot
+// is the one per-session frame expected here: the tab just asked for it.
+func readSnapshotAfterReplay(t *testing.T, c *websocket.Conn) testFrame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.Read(ctx)
+		require.NoError(t, err)
+		var f testFrame
+		require.NoError(t, json.Unmarshal(data, &f))
+		if f.Type == frameSessionSnapshot {
+			return f
+		}
+		require.Empty(t, f.Session, "a per-session frame reached the replay")
+	}
+}
+
+// TestResyncRebuildsSessions pins spec C2: a tab that held a subscription,
+// loses the ring and reconnects gets a bootstrap and then a fresh snapshot
+// for the session it re-subscribes to.
+func TestResyncRebuildsSessions(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "kept"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	for i := range ringSize + 1 {
+		fake.Emit(msgEvent("m"+itoa(uint64(i)), "s1", "x"))
+	}
+	require.Eventually(t, func() bool { return g.hub.head() >= ringSize+1 }, 30*time.Second, 10*time.Millisecond)
+	c.Close(websocket.StatusNormalClosure, "")
+
+	// Frame 1 has fallen off the ring, so the reconnect asks for a resync.
+	c2 := dialStream(t, g, "?since=0")
+	require.Equal(t, frameBootstrap, readFrame(t, c2).Type, "an expired ring answers a bootstrap")
+	snap := subscribeStream(t, c2, "s1")
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(snap.Payload, &s))
+	require.Len(t, s.Messages, 1)
 }
