@@ -3,7 +3,15 @@ package web
 import (
 	"encoding/json"
 	"flag"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,8 +57,9 @@ func TestFrameGolden(t *testing.T) {
 // by that type, plus the gateway-originated frames. The key of an event frame
 // is its type and not the fixture name, because two fixtures for one type
 // would make the file depend on map iteration order; the require below fails
-// loudly if that ever happens again. A frame type with two shapes (a shell
-// chunk and its end) is keyed "type" and "type_done".
+// loudly if that ever happens again. A frame type with several shapes (a shell
+// chunk, its end and its failure) is keyed "type" plus a suffix from
+// shellGoldenKeys.
 func goldenFrames(t *testing.T) map[string]frame {
 	t.Helper()
 	out := make(map[string]frame)
@@ -66,52 +75,160 @@ func goldenFrames(t *testing.T) map[string]frame {
 	return out
 }
 
-// TestGoldenCoversEveryFrameType keeps the contract complete: a frame type the
-// gateway can put on the wire without an example in the golden file fails
-// here, which is what stops the frontend's zod boundary from meeting an
-// unknown type at runtime.
+// TestGoldenCoversEveryFrameType keeps the contract complete and exact. The
+// frame types are read from the source, not from a hand-written list, so a new
+// frame constant or a new forwarded payload type without a golden example
+// fails here, which is what stops the frontend's zod boundary from meeting an
+// unknown type at runtime. A fixture keyed to no frame type fails here too,
+// and TestFrameGolden pins the file to these frames, so the file's keys are
+// exactly this set: a stale or misspelled key in the file fails there.
 func TestGoldenCoversEveryFrameType(t *testing.T) {
 	t.Parallel()
 	frames := goldenFrames(t)
-	for _, typ := range frameTypes() {
-		require.Contains(t, frames, typ)
+	want := goldenFrameKeys(t)
+	for _, typ := range want {
+		require.Contains(t, frames, typ, "the gateway can publish %q with no golden example", typ)
+	}
+	known := make(map[string]struct{}, len(want))
+	for _, typ := range want {
+		known[typ] = struct{}{}
+	}
+	for typ := range frames {
+		require.Contains(t, known, typ, "the golden has a key no frame type explains")
 	}
 }
 
-// frameTypes is every frame type this package can publish, gateway-originated
-// or forwarded from the workspace wire.
-func frameTypes() []string {
-	return []string{
-		frameBootstrap,
-		frameSessionSnapshot,
-		frameSessionStatus,
-		frameFollow,
-		frameInputMode,
-		framePlanReady,
-		frameTeamState,
-		frameAgentRuns,
-		frameModelChanged,
-		frameClosing,
-		frameError,
-		frameSecurePrompt,
-		frameSignIn,
-		frameShellOutput,
-		pubsub.PayloadTypeMessage,
-		pubsub.PayloadTypeFile,
-		pubsub.PayloadTypeSession,
-		pubsub.PayloadTypePermissionRequest,
-		pubsub.PayloadTypePermissionNotification,
-		pubsub.PayloadTypePermissionModeChanged,
-		pubsub.PayloadTypeQuestionRequest,
-		pubsub.PayloadTypeQuestionNotification,
-		pubsub.PayloadTypeRunComplete,
-		pubsub.PayloadTypeAgentEvent,
-		pubsub.PayloadTypeLSPEvent,
-		pubsub.PayloadTypeMCPEvent,
-		pubsub.PayloadTypeConfigStale,
-		pubsub.PayloadTypeConfigChanged,
-		pubsub.PayloadTypeUpdateAvailable,
+// goldenFrameKeys is the exact set of keys the golden carries: every frame
+// type the source declares, plus the extra keys for a frame type with more
+// than one payload shape.
+func goldenFrameKeys(t *testing.T) []string {
+	t.Helper()
+	keys := append(sourceFrameTypes(t), shellGoldenKeys...)
+	slices.Sort(keys)
+	return keys
+}
+
+// shellGoldenKeys are the extra golden keys for a frame type with more than
+// one payload shape. They build on the frame constant, so renaming the type
+// renames them too.
+var shellGoldenKeys = []string{
+	frameShellOutput + "_done",
+	frameShellOutput + "_failed",
+}
+
+// excludedFrameTypes are the forwarded payload types this package never puts
+// on the wire, so the golden has no example for them. Every exclusion names a
+// reason: an unexplained exclusion would let a frame type leave the contract
+// silently.
+var excludedFrameTypes = map[string]string{
+	// Forwarded by the workspace wire, but constructed outside internal/web;
+	// the systems page adds it in M6.
+	pubsub.PayloadTypeSkillsEvent: "constructed outside internal/web; M6 adds it",
+	// The terminal's theme handover, a client/server concern the browser
+	// reads from its own theme state; M6 adds it.
+	pubsub.PayloadTypeHostTheme: "client/server theme handover; M6 adds it",
+	// Bookkeeping for the client/server workspace link, which web mode does
+	// not run.
+	pubsub.PayloadTypeClientSession: "client/server link bookkeeping; web mode never publishes it",
+	// encode drops the pinentry and sshaskpass events on purpose: the browser
+	// answers them through secure_prompt.
+	pubsub.PayloadTypePinentryPromptRequest: "encode drops it; the browser answers through secure_prompt",
+	pubsub.PayloadTypePinentryNotification:  "encode drops it; the browser answers through secure_prompt",
+	pubsub.PayloadTypeSSHPromptRequest:      "encode drops it; the browser answers through secure_prompt",
+	pubsub.PayloadTypeSSHNotification:       "encode drops it; the browser answers through secure_prompt",
+}
+
+// sourceFrameTypes derives every frame type the gateway can publish from the
+// source: the "frame…" string constants this package declares, plus the pubsub
+// payload types it forwards, less excludedFrameTypes.
+func sourceFrameTypes(t *testing.T) []string {
+	t.Helper()
+	dir := sourceDir(t)
+
+	var out []string
+	for _, file := range parseGoFiles(t, dir, func(name string) bool {
+		return !strings.HasSuffix(name, "_test.go")
+	}) {
+		out = append(out, stringConsts(t, file, "frame")...)
 	}
+
+	forwarded := stringConsts(t, parseGoFile(t, filepath.Join(dir, "..", "pubsub", "events.go")), "PayloadType")
+	declared := make(map[string]struct{}, len(forwarded))
+	for _, typ := range forwarded {
+		declared[typ] = struct{}{}
+		if _, excluded := excludedFrameTypes[typ]; !excluded {
+			out = append(out, typ)
+		}
+	}
+	// A renamed payload type would strand its exclusion and slip out of the
+	// contract, so every exclusion must still name a declared type.
+	for typ, reason := range excludedFrameTypes {
+		require.Contains(t, declared, typ, "excluded %q (%s) is no longer a pubsub payload type", typ, reason)
+	}
+	return out
+}
+
+// sourceDir is this package's directory, so the parser reads the files the
+// test was compiled from however the test binary was started.
+func sourceDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	return filepath.Dir(file)
+}
+
+// parseGoFiles parses the Go files in dir that keep reports true.
+func parseGoFiles(t *testing.T, dir string, keep func(name string) bool) []*ast.File {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var files []*ast.File
+	for _, entry := range entries {
+		if entry.IsDir() || !keep(entry.Name()) {
+			continue
+		}
+		files = append(files, parseGoFile(t, filepath.Join(dir, entry.Name())))
+	}
+	require.NotEmpty(t, files)
+	return files
+}
+
+// parseGoFile parses one Go file.
+func parseGoFile(t *testing.T, path string) *ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	require.NoError(t, err)
+	return file
+}
+
+// stringConsts returns the values of the string constants in file whose names
+// start with prefix. An inherited constant expression has no literal to read,
+// so it is skipped: every frame type is spelled out.
+func stringConsts(t *testing.T, file *ast.File, prefix string) []string {
+	t.Helper()
+	var out []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			values := spec.(*ast.ValueSpec)
+			for i, name := range values.Names {
+				if !strings.HasPrefix(name.Name, prefix) || i >= len(values.Values) {
+					continue
+				}
+				lit, ok := values.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				val, err := strconv.Unquote(lit.Value)
+				require.NoError(t, err)
+				out = append(out, val)
+			}
+		}
+	}
+	return out
 }
 
 // fixtureEvents is one example of every workspace event the gateway
@@ -230,6 +347,11 @@ func gatewayFrames(t *testing.T) map[string]frame {
 		// accept either shape.
 		frameShellOutput + "_done": mkSession(frameShellOutput, "s1", shellDonePayload{
 			RunID: "run-1", SessionID: "s1", Done: true, ExitCode: 0,
+		}),
+		// And the failure shape handleShell publishes: the fixed sentence
+		// shellFailedText, never the workspace error.
+		frameShellOutput + "_failed": mkSession(frameShellOutput, "s1", shellDonePayload{
+			RunID: "run-2", SessionID: "s1", Done: true, ExitCode: 1, Error: shellFailedText,
 		}),
 	}
 }

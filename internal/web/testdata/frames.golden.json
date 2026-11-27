@@ -531,6 +531,18 @@
       "exit_code": 0
     }
   },
+  "shell_output_failed": {
+    "seq": 1,
+    "type": "shell_output",
+    "session_id": "s1",
+    "payload": {
+      "run_id": "run-2",
+      "session_id": "s1",
+      "done": true,
+      "exit_code": 1,
+      "error": "The command could not run. The terminal log has the details."
+    }
+  },
   "signin": {
     "seq": 1,
     "type": "signin",
