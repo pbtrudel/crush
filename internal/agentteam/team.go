@@ -255,6 +255,10 @@ type Task struct {
 	// RoleReported records that the Lead was told the task's role no
 	// longer exists, so it is told once.
 	RoleReported bool `json:"role_reported,omitempty"`
+	// LastFailure holds the notes of the latest failed verification, so the
+	// next implementer's brief carries them even when the mail that took
+	// them to the owner is gone. A pass and a Lead edit clear it.
+	LastFailure string `json:"last_failure,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -2451,6 +2455,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		if req.Verify != nil {
 			next.Verify = new(*req.Verify)
+		}
+		if lead {
+			// The Lead rewrote the task, so the old verdict no longer
+			// describes it.
+			next.LastFailure = ""
 		}
 	case "set_dependencies":
 		if err := authorizeOwner(); err != nil {

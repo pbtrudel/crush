@@ -2,6 +2,7 @@ package agentteam
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -916,4 +917,76 @@ func TestDispatchSkipsACheckOfATaskThatLeftReview(t *testing.T) {
 	s.dispatch(context.Background(), pipelineSession)
 	require.Empty(t, runner.memberNames(), "a stale check starts nobody")
 	require.Equal(t, TaskPending, taskByID(t, s, check.ID).Status)
+}
+
+// TestFailVerdictKeepsItsNotesOnTheTask pins that a fail verdict's notes are
+// stored on the original, capped, and cleared by a pass and by a Lead edit.
+func TestFailVerdictKeepsItsNotesOnTheTask(t *testing.T) {
+	t.Parallel()
+	s, _ := newPipelineService(t, Config{Autostart: func() bool { return false }})
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	act(t, s, leadName, task.ID, "claim", nil)
+	act(t, s, leadName, task.ID, "complete", nil)
+	check := verificationTaskFor(t, s, task.ID)
+	act(t, s, leadName, check.ID, "claim", nil)
+	act(t, s, leadName, check.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = "TestX fails" })
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, "TestX fails", got.LastFailure)
+	require.Contains(t, taskBrief(got), "\n\nThe last verification failed:\n\nTestX fails")
+
+	act(t, s, leadName, task.ID, "complete", nil)
+	check = verificationTaskFor(t, s, task.ID)
+	act(t, s, leadName, check.ID, "claim", nil)
+	act(t, s, leadName, check.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = strings.Repeat("x", 9000) })
+	require.Len(t, taskByID(t, s, task.ID).LastFailure, maxFailureNotes, "the notes are capped at 8 KiB")
+
+	act(t, s, leadName, task.ID, "edit", func(r *UpdateTaskRequest) { r.Description = "Build it right." })
+	require.Empty(t, taskByID(t, s, task.ID).LastFailure, "a Lead edit clears the notes")
+
+	act(t, s, leadName, task.ID, "complete", nil)
+	check = verificationTaskFor(t, s, task.ID)
+	act(t, s, leadName, check.ID, "claim", nil)
+	act(t, s, leadName, check.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = "Still failing" })
+	act(t, s, leadName, task.ID, "complete", nil)
+	check = verificationTaskFor(t, s, task.ID)
+	act(t, s, leadName, check.ID, "claim", nil)
+	act(t, s, leadName, check.ID, "pass", nil)
+	got = taskByID(t, s, task.ID)
+	require.Equal(t, TaskCompleted, got.Status)
+	require.Empty(t, got.LastFailure, "a pass clears the notes")
+	require.NotContains(t, taskBrief(got), "The last verification failed")
+}
+
+// TestFailureNotesReachTheNextImplementer pins the follow-up: the owner gets
+// the notes as mail, and when its resume fails the mail is gone with it, so
+// the implementer the dispatcher starts next must read them in its brief.
+func TestFailureNotesReachTheNextImplementer(t *testing.T) {
+	t.Parallel()
+	runner := &refusingStartRunner{fakeRunner: newFakeRunner()}
+	s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, runner)
+	require.NoError(t, err)
+	t.Cleanup(s.Shutdown)
+
+	task := createTask(t, s, CreateTaskRequest{Subject: "Build", Description: "d", Role: "implementer"})
+	require.Eventually(t, func() bool { return runRecorded(s, "implementer-1") }, time.Second, 10*time.Millisecond)
+	act(t, s, "implementer-1", task.ID, "complete", nil)
+	check := verificationTaskFor(t, s, task.ID)
+	act(t, s, ownerName(t, s, check.ID), check.ID, "fail", func(r *UpdateTaskRequest) { r.Notes = "TestX fails" })
+
+	runner.failFor("implementer-1")
+	runner.finish("implementer-1")
+	require.Eventually(t, func() bool {
+		got := taskByID(t, s, task.ID)
+		return got.OwnerID != "" && got.OwnerID == memberIDOrEmpty(s, "implementer-2") && runRecorded(s, "implementer-2")
+	}, time.Second, 10*time.Millisecond, "the released task reaches a fresh implementer")
+	require.Contains(t, runner.lastPrompt(), "The last verification failed:\n\nTestX fails")
+}
+
+// TestLastFailureIsOmittedWhenEmpty pins that an old team.json and a task
+// that never failed serialize the same as before.
+func TestLastFailureIsOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(Task{ID: "task-1"})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "last_failure")
 }

@@ -2,6 +2,9 @@ package agentteam
 
 import "fmt"
 
+// maxFailureNotes caps the failure notes a task keeps for its next brief.
+const maxFailureNotes = 8 << 10
+
 // newVerificationTaskLocked builds the task that checks original, which just
 // entered review, and takes its id. The caller appends it in the same write.
 // Callers must hold s.mu.
@@ -46,10 +49,12 @@ func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier
 	}
 	original.Revision++
 	if verdict == "pass" {
+		original.LastFailure = ""
 		original.Status = TaskCompleted
 		s.state.Tasks[index] = original
 		return original.Subject, nil, nil, ""
 	}
+	original.LastFailure = truncateText(notes, maxFailureNotes)
 	original.Attempts++
 	if original.Attempts >= maxTaskAttempts {
 		original.Escalated = true

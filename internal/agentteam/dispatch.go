@@ -288,8 +288,12 @@ func taskBrief(task Task) string {
 	if task.Verifies != "" {
 		last = `Record your verdict with team_task_update, action "pass", or action "fail" with notes describing what failed.`
 	}
-	return fmt.Sprintf("Task %s on the shared board was claimed for you: %s\n\n%s\n\nWrite scopes: %s\n%s",
+	brief := fmt.Sprintf("Task %s on the shared board was claimed for you: %s\n\n%s\n\nWrite scopes: %s\n%s",
 		task.ID, task.Subject, task.Description, scopesText(task), last)
+	if task.LastFailure != "" {
+		brief += "\n\nThe last verification failed:\n\n" + task.LastFailure
+	}
+	return brief
 }
 
 // scopesText renders a task's write scopes for a message.
