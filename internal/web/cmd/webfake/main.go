@@ -81,6 +81,16 @@ func main() {
 	if os.Getenv("WEBFAKE_LONG_PATH") == "1" {
 		webtest.SeedLogLayout(fake, clock)
 	}
+	// The m1 scenario carries the four sessions the M1 browser specs drive:
+	// one running, one queued, one that starts waiting for the person and
+	// one idle.
+	m1 := os.Getenv("WEBFAKE_SCENARIO") == "m1"
+	if m1 {
+		if err := webtest.SeedM1(fake, clock); err != nil {
+			fmt.Fprintln(os.Stderr, "webfake:", err)
+			os.Exit(1)
+		}
+	}
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
@@ -165,6 +175,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "webfake:", err)
 		os.RemoveAll(teamDir)
 		os.Exit(1)
+	}
+	if m1 {
+		// The permission arrives a moment after the page loads, so the
+		// waiting marker appears without a reload; that live change is what
+		// the multi-session browser spec watches.
+		time.AfterFunc(time.Second, func() { webtest.SeedM1Pending(fake) })
 	}
 	go func() {
 		for plan := range modeRequests {
