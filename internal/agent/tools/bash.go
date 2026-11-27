@@ -21,6 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
@@ -64,7 +65,23 @@ const (
 	DefaultAutoBackgroundAfter = 60 // Commands taking longer automatically become background jobs
 	MaxOutputLength            = 30000
 	BashNoOutput               = "no output"
+	// cancelledJobWait bounds how long a cancelled call waits for its job to
+	// end, so a write a detached child makes after the kill still lands
+	// before the scope check that follows.
+	cancelledJobWait = 10 * time.Second
 )
+
+// cancelledKillContext is the context a cancelled call kills its job with.
+// A call in a task worktree gets a fresh bounded context, because the
+// cancelled one would let Kill return before a descendant it did not reach
+// has written, and the scope check that follows the call must see that
+// write. Every other call kills with its own cancelled context.
+func cancelledKillContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if !InTaskWorktree(ctx) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), cancelledJobWait)
+}
 
 //go:embed bash.md.tpl
 var bashDescriptionTmpl []byte
@@ -293,6 +310,7 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 		BashToolName,
 		string(bashDescription(attribution, blocked)),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
 			}
@@ -309,8 +327,11 @@ func NewBashTool(permissions permission.Service, workingDir, spillDir string, at
 				params.Command = strings.ReplaceAll(params.Command, modelIDPlaceholder, modelID)
 			}
 
-			// Determine working directory
-			execWorkingDir := cmp.Or(params.WorkingDir, workingDir)
+			// Determine working directory. A relative working_dir resolves
+			// inside this call's working directory, which is the task
+			// worktree when a teammate is in one; an absolute one is used
+			// as given.
+			execWorkingDir := filepathext.SmartJoin(workingDir, cmp.Or(params.WorkingDir, workingDir))
 
 			safeReadOnly := isSafeReadOnly(params.Command, userSafe)
 
@@ -676,11 +697,13 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-bgShell.Done():
 	case <-timer.C:
 	case <-ctx.Done():
-		// Incoming context was cancelled before we moved to background
-		// Kill the shell and return error
-		// Kill returns at once with ctx already done, so its "may still be
-		// exiting" error is expected here and not worth reporting.
-		_ = bgManager.Kill(ctx, bgShell.ID)
+		// Incoming context was cancelled before we moved to background.
+		// Kill the shell with the context the cancelledKillContext gives it;
+		// Kill's "may still be exiting" error is expected here and not
+		// worth reporting.
+		killCtx, killCancel := cancelledKillContext(ctx)
+		_ = bgManager.Kill(killCtx, bgShell.ID)
+		killCancel()
 		// The result is still stored, from this metadata and the error,
 		// so the stamp says the command was aborted.
 		return fantasy.WithResponseMetadata(fantasy.ToolResponse{}, BashResponseMetadata{

@@ -103,6 +103,53 @@ func TestCurrentWorktree(t *testing.T) {
 	require.Equal(t, branch, current.Branch)
 }
 
+func TestRestoreWorktree(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing branch", func(t *testing.T) {
+		t.Parallel()
+		repo := initPlumbingRepo(t)
+		path, branch, err := CreateWorktree(context.Background(), repo, "team-task-1")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(path, "work.txt"), []byte("keep\n"), 0o644))
+		runGit(t, path, "add", ".")
+		runGit(t, path, "commit", "-m", "work")
+		require.NoError(t, os.RemoveAll(path))
+
+		restored, err := RestoreWorktree(context.Background(), repo, path, branch, "HEAD")
+		require.NoError(t, err)
+		require.Equal(t, path, restored)
+		require.FileExists(t, filepath.Join(restored, "work.txt"))
+		require.Equal(t, branch, CurrentBranch(restored))
+	})
+
+	t.Run("missing branch", func(t *testing.T) {
+		t.Parallel()
+		repo := initPlumbingRepo(t)
+		path := filepath.Join(filepath.Dir(repo), ".worktrees", "team-task-2")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+
+		restored, err := RestoreWorktree(context.Background(), repo, path, "crush/team-task-2", "HEAD")
+		require.NoError(t, err)
+		require.Equal(t, path, restored)
+		require.FileExists(t, filepath.Join(restored, "README.md"))
+		require.Equal(t, "crush/team-task-2", CurrentBranch(restored))
+	})
+
+	t.Run("occupied path", func(t *testing.T) {
+		t.Parallel()
+		repo := initPlumbingRepo(t)
+		path := filepath.Join(filepath.Dir(repo), ".worktrees", "team-task-3")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("not a directory"), 0o644))
+
+		restored, err := RestoreWorktree(context.Background(), repo, path, "crush/team-task-3", "HEAD")
+		require.NoError(t, err)
+		require.Equal(t, path+"-2", restored)
+		require.FileExists(t, filepath.Join(restored, "README.md"))
+	})
+}
+
 func TestRemoveWorktree(t *testing.T) {
 	t.Parallel()
 

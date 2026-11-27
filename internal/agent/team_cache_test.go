@@ -333,7 +333,9 @@ func TestHookWrapFollowsRole(t *testing.T) {
 	// hook wrapper (Task 9 pins that order).
 	teammate, err := coord.buildTools(agentteam.WithMember(t.Context(), "rev"), agents[config.AgentCoder], roleTeammate, parent)
 	require.NoError(t, err)
-	_, hooked := toolByName(teammate, tools.ViewToolName).(*hookedTool)
+	place, ok := toolByName(teammate, tools.ViewToolName).(*worktreeTool)
+	require.True(t, ok, "a teammate's tools run through the worktree wrapper")
+	_, hooked := place.inner.(*hookedTool)
 	require.True(t, hooked, "a teammate's tools must be hook-wrapped")
 
 	built, err := coord.buildTools(t.Context(), agents[config.AgentTask], roleSubAgent, parent)
@@ -346,8 +348,8 @@ func TestHookWrapFollowsRole(t *testing.T) {
 
 // TestTeammateWrapperOrderKeepsLeadPrefix pins the wrapper order and the
 // cache rule together: for every role, a teammate's write tools are role
-// gate, then scope gate, then hook wrapper, and its tools block and system
-// prompt still match the Lead's byte for byte.
+// gate, then worktree wrapper, then scope gate, then hook wrapper, and its
+// tools block and system prompt still match the Lead's byte for byte.
 func TestTeammateWrapperOrderKeepsLeadPrefix(t *testing.T) {
 	coord := newTeammateTestCoordinator(t)
 	runner := &teamRunner{c: coord}
@@ -377,7 +379,9 @@ func TestTeammateWrapperOrderKeepsLeadPrefix(t *testing.T) {
 
 		gate, ok := toolByName(teammateTools, tools.EditToolName).(*roleGatedTool)
 		require.True(t, ok, "%s: role gate is outermost", role.Name)
-		scope, ok := gate.inner.(*scopeGatedTool)
+		place, ok := gate.inner.(*worktreeTool)
+		require.True(t, ok, "%s: the worktree wrapper is next", role.Name)
+		scope, ok := place.inner.(*scopeGatedTool)
 		require.True(t, ok, "%s: scope gate is next", role.Name)
 		_, ok = scope.inner.(*hookedTool)
 		require.True(t, ok, "%s: hook wrapper is innermost", role.Name)

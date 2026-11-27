@@ -59,11 +59,12 @@ func NewGlobTool(workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
 		GlobToolName,
 		globDescription(),
 		func(ctx context.Context, params GlobParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			workingDir := WorkingDirFrom(ctx, workingDir)
 			if params.Pattern == "" {
 				return fantasy.NewTextErrorResponse("pattern is required"), nil
 			}
 
-			searchPath := home.Long(cmp.Or(params.Path, workingDir))
+			searchPath := filepathext.SmartJoin(workingDir, home.Long(cmp.Or(params.Path, workingDir)))
 
 			// A root that does not exist is not a failure: nothing can match
 			// under it, so the answer is that no files were found.

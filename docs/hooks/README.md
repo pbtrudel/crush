@@ -201,7 +201,11 @@ considers, so a prompt that continues runs it twice at the default cap; read
 `stop_hook_active` (see [TurnEnd and continuation](#turnend-and-continuation))
 to tell the second call apart. The outer subagent tool call itself _is_
 hooked. A teammate call refused by its write scopes runs no hook. Teammates
-fire no turn events, because their turns are non-interactive.
+fire no turn events, because their turns are non-interactive. A teammate
+working in a task worktree gets the same `cwd` (and `CRUSH_CWD`) as every
+hook, the Lead's working directory; relative paths in its `tool_input`
+resolve against the worktree, which `team_task_get` reports as the
+`worktree` of the task that owns it (the original task, for a verifier).
 
 **Permission events** fire only when a prompt is actually shown. Calls that a
 `PreToolUse` hook allowed, that are on the allow-list, or that run in YOLO

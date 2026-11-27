@@ -34,6 +34,9 @@ type dispatchStart struct {
 	sessionID string
 	revision  int
 	prompt    string
+	// task is the claimed task as the claim left it; a scoped one gets its
+	// worktree before the start.
+	task Task
 }
 
 // dispatch starts teammates for the ready tasks of root's team that name a
@@ -90,6 +93,10 @@ func (s *Service) dispatchPass(ctx context.Context, root string, retry bool) {
 	}
 	wakeLeads(leadHook, leads)
 	for _, start := range starts {
+		start, ok := s.placeStart(start)
+		if !ok {
+			continue
+		}
 		if _, err := s.launch(ctx, runner, start.member, start.prompt); err != nil {
 			s.dispatchFailed(start, err)
 		}
@@ -133,6 +140,9 @@ func (s *Service) planDispatchLocked(root string) (starts []dispatchStart, leads
 		if !scope[task.SessionID] || !dispatchable(s.state, task) {
 			continue
 		}
+		if s.worktreeRefusedLocked(task) {
+			continue
+		}
 		if !s.cfg.roleExists(task.Role) {
 			if !task.RoleReported {
 				s.state.Tasks[i].RoleReported = true
@@ -165,7 +175,8 @@ func (s *Service) planDispatchLocked(root string) (starts []dispatchStart, leads
 			taskID:    claimed.ID,
 			sessionID: claimed.SessionID,
 			revision:  claimed.Revision,
-			prompt:    taskBrief(*claimed),
+			prompt:    taskBrief(s.briefTaskLocked(*claimed)),
+			task:      *claimed,
 		})
 		changed = true
 	}
@@ -198,6 +209,9 @@ func (s *Service) hasDispatchableLocked(root string) bool {
 	scope := s.scopeLocked(leadName, root)
 	for _, task := range s.state.Tasks {
 		if !scope[task.SessionID] || !dispatchable(s.state, task) {
+			continue
+		}
+		if s.worktreeRefusedLocked(task) {
 			continue
 		}
 		if !task.RoleReported || s.cfg.roleExists(task.Role) {
@@ -288,8 +302,36 @@ func taskBrief(task Task) string {
 	if task.Verifies != "" {
 		last = `Record your verdict with team_task_update, action "pass", or action "fail" with notes describing what failed.`
 	}
-	return fmt.Sprintf("Task %s on the shared board was claimed for you: %s\n\n%s\n\nWrite scopes: %s\n%s",
+	brief := fmt.Sprintf("Task %s on the shared board was claimed for you: %s\n\n%s\n\nWrite scopes: %s\n%s",
 		task.ID, task.Subject, task.Description, scopesText(task), last)
+	if task.Worktree != "" {
+		brief += "\n" + worktreeBrief(task)
+	}
+	if task.LastFailure != "" {
+		brief += "\n\nThe last verification failed:\n\n" + task.LastFailure
+	}
+	return brief
+}
+
+// worktreeBrief tells a dispatched member where its tools run.
+func worktreeBrief(task Task) string {
+	if task.Verifies != "" {
+		return fmt.Sprintf("Worktree: %s (branch %s). Your tools run there, and the change under review is committed on that branch.",
+			task.Worktree, task.Branch)
+	}
+	return fmt.Sprintf("Worktree: %s (branch %s). Your tools run there: relative paths resolve inside it, and the service commits and merges the branch when the task is done.",
+		task.Worktree, task.Branch)
+}
+
+// briefTaskLocked returns task as its brief describes it: a verification
+// task names the worktree of the work it checks. Callers must hold s.mu.
+func (s *Service) briefTaskLocked(task Task) Task {
+	if task.Verifies != "" {
+		if original, ok := findTask(s.state, task.Verifies); ok {
+			task.Worktree, task.Branch = original.Worktree, original.Branch
+		}
+	}
+	return task
 }
 
 // scopesText renders a task's write scopes for a message.

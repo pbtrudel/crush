@@ -435,6 +435,13 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
+			// A subagent runs on its own tools, with neither the teammate's
+			// scope gate nor its worktree, and even the read variant can
+			// write through bash and download. A teammate whose edits are
+			// held to a task cannot start one, whatever its access.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
+			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
 			}
@@ -823,6 +830,13 @@ func (c *coordinator) agentSendTool(parentModel func() Model) fantasy.AgentTool 
 				entry = rebuilt
 			}
 
+			// Resuming a subagent from a teammate whose edits are held to a
+			// task is refused like starting one: the resumed run's tools are
+			// not held to the task either.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
+			}
+
 			if params.switchesModel() {
 				return c.sendOnNewModel(ctx, entry, params, parentModel()), nil
 			}
@@ -906,7 +920,10 @@ func (c *coordinator) deliverToTeammate(ctx context.Context, label, text string)
 }
 
 // deliverToSubagent delivers a Team message to a dispatched subagent when the
-// name is not a teammate. It reports whether a subagent took the message.
+// name is not a teammate. It reports whether a subagent took the message. A
+// message resumes the subagent, whose tools are not held to the task, so a
+// teammate whose edits are held to a task is refused once a subagent is what
+// the name resolves to.
 func (c *coordinator) deliverToSubagent(ctx context.Context, label, text string) (fantasy.ToolResponse, bool) {
 	parentSessionID := tools.GetSessionFromContext(ctx)
 	if parentSessionID == "" || c.dispatched == nil {
@@ -920,6 +937,9 @@ func (c *coordinator) deliverToSubagent(ctx context.Context, label, text string)
 			return fantasy.ToolResponse{}, false
 		}
 		entry = rebuilt
+	}
+	if c.refuseScopedTeammateSubagent(ctx) {
+		return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), true
 	}
 	return c.deliverDispatched(ctx, parentSessionID, entry, label, text), true
 }

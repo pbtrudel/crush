@@ -1642,7 +1642,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	if len(c.cfg.Config().LSP) > 0 || c.cfg.Config().Options.AutoLSP == nil || *c.cfg.Config().Options.AutoLSP {
 		allTools = append(
 			allTools,
-			tools.NewDiagnosticsTool(c.lspManager),
+			tools.NewDiagnosticsTool(c.cfg, c.lspManager),
 			tools.NewReferencesTool(c.lspManager),
 			tools.NewLSPRestartTool(c.lspManager),
 			tools.NewSymbolsTool(c.cfg, c.lspManager),
@@ -1719,9 +1719,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 
 	// A teammate's write tools are held to the write scopes of the task it
 	// claimed. The gate goes outside the hook wrapper, so a refused call
-	// runs no hook; the role gate SetTools adds goes outside both.
+	// runs no hook. The worktree wrapper goes outside the gate, so the gate
+	// sees the call's worktree; the role gate SetTools adds goes outside
+	// all of them.
 	if role == roleTeammate {
-		filteredTools = gateToolsForScopes(filteredTools, c.claimedScopes, c.cfg.WorkingDir())
+		filteredTools = gateToolsForScopes(filteredTools, c.claimedScopes, c.memberWorkspace, c.cfg.WorkingDir())
+		filteredTools = placeToolsInWorktrees(filteredTools, c.memberWorkspace)
 	}
 
 	return filteredTools, nil

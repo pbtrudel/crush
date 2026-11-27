@@ -2,6 +2,9 @@ package agentteam
 
 import "fmt"
 
+// maxFailureNotes caps the failure notes a task keeps for its next brief.
+const maxFailureNotes = 8 << 10
+
 // newVerificationTaskLocked builds the task that checks original, which just
 // entered review, and takes its id. The caller appends it in the same write.
 // Callers must hold s.mu.
@@ -21,8 +24,8 @@ func (s *Service) newVerificationTaskLocked(original Task) Task {
 		Revision: 1,
 		Subject:  truncateRunes("Verify: "+original.Subject, maxTaskSubject),
 		Description: fmt.Sprintf("Verify task %s: %s\n\nAcceptance criteria and description of the original task:\n%s\n\n"+
-			"Implemented by: %s\nWrite scopes: %s\nThe change is in the shared working directory; inspect it with git status and git diff.",
-			original.ID, original.Subject, original.Description, implementer, scopesText(original)),
+			"Implemented by: %s\nWrite scopes: %s\n%s",
+			original.ID, original.Subject, original.Description, implementer, scopesText(original), changeLocation(original)),
 		Status:      TaskPending,
 		BlockedBy:   []string{},
 		WriteScopes: []string{},
@@ -33,23 +36,49 @@ func (s *Service) newVerificationTaskLocked(original Task) Task {
 	}
 }
 
+// changeLocation tells a verifier where the work it checks is.
+func changeLocation(original Task) string {
+	if original.Worktree == "" {
+		return "The change is in the shared working directory; inspect it with git status and git diff."
+	}
+	return fmt.Sprintf("The change is committed on branch %s in the task worktree %s, where your tools run; inspect it with git log and git diff.",
+		original.Branch, original.Worktree)
+}
+
+// verdictResult is what a verdict leaves for the caller once its write
+// lands.
+type verdictResult struct {
+	completedSubject string
+	wake, leads      []string
+	wakeTask         string
+	// merge is set when a pass leaves the original's branch to merge: the
+	// original stays in review until the merge succeeds.
+	merge *mergeRequest
+}
+
 // applyVerdictLocked applies a verifier's verdict to the task check verifies.
 // An original that already left review (reopened, deleted) is left alone, so
-// a late verdict never rewrites work the board has moved on from. It returns
-// the completed subject for the todo hook, the members to wake, the Lead
-// sessions a notice was written for, and the task a wake delivers back to
-// its owner. Callers must hold s.mu.
-func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier Member, verdict, notes string) (completedSubject string, wake, leads []string, wakeTask string) {
+// a late verdict never rewrites work the board has moved on from. A pass of
+// work with a worktree leaves the original in review for its merge. Callers
+// must hold s.mu.
+func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier Member, verdict, notes string) verdictResult {
 	index, original, ok := s.taskIndexLocked(scope, check.Verifies)
 	if !ok || original.Status != TaskInReview {
-		return "", nil, nil, ""
+		return verdictResult{}
 	}
 	original.Revision++
 	if verdict == "pass" {
+		original.LastFailure = ""
+		if original.Worktree != "" {
+			s.state.Tasks[index] = original
+			m := mergeRequestFor(original)
+			return verdictResult{merge: &m}
+		}
 		original.Status = TaskCompleted
 		s.state.Tasks[index] = original
-		return original.Subject, nil, nil, ""
+		return verdictResult{completedSubject: original.Subject}
 	}
+	original.LastFailure = truncateText(notes, maxFailureNotes)
 	original.Attempts++
 	if original.Attempts >= maxTaskAttempts {
 		original.Escalated = true
@@ -57,22 +86,22 @@ func (s *Service) applyVerdictLocked(scope map[string]bool, check Task, verifier
 		s.noteLeadLocked(original.SessionID, fmt.Sprintf(
 			"Task %s (%s) failed verification %d times and stays in review, escalated. To recover, %s. Last notes:\n\n%s",
 			original.ID, original.Subject, original.Attempts, taskRecoveryActions(original.Status), notes))
-		return "", nil, []string{original.SessionID}, ""
+		return verdictResult{leads: []string{original.SessionID}}
 	}
 	original.Status = TaskInProgress
 	s.state.Tasks[index] = original
 	text := fmt.Sprintf("Verification of task %s failed:\n\n%s\n\nFix it and complete the task again.", original.ID, notes)
 	if original.OwnerID == leadName {
 		s.noteLeadLocked(original.SessionID, text)
-		return "", nil, []string{original.SessionID}, ""
+		return verdictResult{leads: []string{original.SessionID}}
 	}
 	for _, member := range s.state.Members {
 		if member.ID == original.OwnerID {
 			s.appendMessageLocked(verifier.Name, member.Name, text)
-			return "", []string{member.Name}, nil, original.ID
+			return verdictResult{wake: []string{member.Name}, wakeTask: original.ID}
 		}
 	}
-	return "", nil, nil, ""
+	return verdictResult{}
 }
 
 // startReviewLocked sends task to review with a fresh check. Any older check

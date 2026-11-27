@@ -880,3 +880,27 @@ func TestBashChangedNoteResolvesReadFilesTheSameWayItSnapshottedThem(t *testing.
 	require.NotContains(t, resp.Content, "Files you read earlier changed during this command",
 		"a file the command only read must not be reported as changed")
 }
+
+// TestCancelledKillWaitsOnlyInATaskWorktree pins W20.4: only a call in a task
+// worktree kills its job with a fresh bounded context, so the scope check
+// that follows the call sees a write from a descendant the kill did not
+// reach. Every other call kills with its own cancelled context and returns
+// at once.
+func TestCancelledKillWaitsOnlyInATaskWorktree(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, done := cancelledKillContext(ctx)
+	done()
+	require.ErrorIs(t, got.Err(), context.Canceled, "a call outside a worktree kills with its own context")
+	_, bounded := got.Deadline()
+	require.False(t, bounded, "a call outside a worktree does not wait for the job")
+
+	got, done = cancelledKillContext(WithTaskWorktree(ctx))
+	defer done()
+	require.NoError(t, got.Err(), "the kill does not inherit the cancelled call's context")
+	deadline, bounded := got.Deadline()
+	require.True(t, bounded, "a task worktree call waits, bounded, for its job")
+	require.WithinDuration(t, time.Now().Add(cancelledJobWait), deadline, 5*time.Second)
+}

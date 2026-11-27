@@ -9,6 +9,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 )
@@ -101,6 +104,26 @@ func findLSPClient(lspManager *lsp.Manager, filePath string) *lsp.Client {
 		}
 	}
 	return nil
+}
+
+// resolveToolPath resolves a file_path argument the way edit does: a
+// leading ~ expands to the home directory and a relative path joins
+// workingDir. An empty path stays empty, so a tool that reads it as "the
+// whole project" keeps doing so.
+func resolveToolPath(workingDir, path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepathext.SmartJoin(workingDir, home.Long(path))
+}
+
+// configWorkingDir is the workspace the LSP tools resolve paths against, or
+// "" without a config, which leaves a relative path as it is.
+func configWorkingDir(cfg *config.ConfigStore) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.WorkingDir()
 }
 
 // collectAffectedFiles extracts all unique file paths from a WorkspaceEdit.

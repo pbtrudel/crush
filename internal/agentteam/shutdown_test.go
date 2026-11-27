@@ -2,6 +2,7 @@ package agentteam
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -197,4 +198,110 @@ func TestSettlingRunRequeuesItsInboxDuringShutdown(t *testing.T) {
 	}
 	require.Equal(t, 2, members)
 	require.Equal(t, 3, runner.promptCount(), "the refused resume is the last turn attempted")
+}
+
+// gatedRefusingRunner is a gatedRunner whose gated start fails once it is
+// released, the way a model that went away does, so the resume-failure
+// write runs after Shutdown closed the Team.
+type gatedRefusingRunner struct {
+	*gatedRunner
+}
+
+func (r *gatedRefusingRunner) Start(ctx context.Context, member Member, prompt string) (Run, error) {
+	r.mu.Lock()
+	refuse := r.gateName == member.Name
+	r.mu.Unlock()
+	run, err := r.gatedRunner.Start(ctx, member, prompt)
+	if refuse {
+		return nil, errors.New("model unavailable")
+	}
+	return run, err
+}
+
+// heldShutdown runs the held-settle window: alpha owns a task, its turn
+// ends with mail queued, and Shutdown closes the Team while alpha's resume
+// is held inside the runner. It returns the durable state Shutdown left.
+func heldShutdown(t *testing.T, runner Runner, gate *gatedRunner) (State, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "team.json")
+	service, err := New(path, Config{}, runner)
+	require.NoError(t, err)
+	ctx := context.Background()
+	for _, name := range []string{"alpha", "beta"} {
+		_, err := service.SpawnTeammate(ctx, "lead", SpawnRequest{Name: name, Description: "d", Prompt: "p", ParentID: "session-a"})
+		require.NoError(t, err)
+	}
+	task, err := service.CreateTask("lead", "session-a", CreateTaskRequest{Subject: "Build", Description: "d"})
+	require.NoError(t, err)
+	_, err = service.UpdateTask("alpha", UpdateTaskRequest{TaskID: task.ID, ExpectedRevision: task.Revision, Action: "claim", SessionID: "session-a"})
+	require.NoError(t, err)
+	require.NoError(t, service.SendMessage(ctx, "lead", "session-a", SendRequest{Target: "alpha", Message: "keep going"}))
+
+	gate.gate("alpha")
+	gate.finish("alpha")
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("alpha's resume never reached the runner")
+	}
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		service.Shutdown()
+	}()
+	select {
+	case name := <-gate.canceled:
+		require.Equal(t, "beta", name, "Shutdown is closed once beta is canceled")
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown never canceled beta's run")
+	}
+	close(gate.release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not return after the held resume was released")
+	}
+	state, err := LoadState(path)
+	require.NoError(t, err)
+	return state, task.ID
+}
+
+func requireHeldReleased(t *testing.T, state State, taskID string) {
+	t.Helper()
+	task, ok := findTask(state, taskID)
+	require.True(t, ok)
+	require.Equal(t, TaskPending, task.Status, "the held task goes back to the board")
+	require.Empty(t, task.OwnerID)
+	require.Zero(t, task.Attempts, "a shutdown charges no attempt")
+	queued := 0
+	for _, message := range state.Messages {
+		if message.To == "alpha" && message.Text == "keep going" {
+			queued++
+			require.False(t, message.Delivered, "the drained mail is pending again")
+		}
+	}
+	require.Equal(t, 1, queued)
+	for _, member := range state.Members {
+		if member.Name == "alpha" {
+			require.False(t, member.Failed, "a shutdown fails no member")
+		}
+	}
+}
+
+// TestShutdownDuringAHeldResumeReleasesTheTask pins Review Focus 5 for a
+// resume that Shutdown refuses.
+func TestShutdownDuringAHeldResumeReleasesTheTask(t *testing.T) {
+	t.Parallel()
+	runner := newGatedRunner()
+	state, taskID := heldShutdown(t, runner, runner)
+	requireHeldReleased(t, state, taskID)
+}
+
+// TestRefusedResumeAfterShutdownReleasesTheTask pins Review Focus 5 for a
+// resume whose start fails on its own after Shutdown closed the Team.
+func TestRefusedResumeAfterShutdownReleasesTheTask(t *testing.T) {
+	t.Parallel()
+	gate := newGatedRunner()
+	state, taskID := heldShutdown(t, &gatedRefusingRunner{gatedRunner: gate}, gate)
+	requireHeldReleased(t, state, taskID)
 }

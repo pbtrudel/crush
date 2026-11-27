@@ -61,6 +61,9 @@ func NewReplaceSymbolTool(
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
+			// Every later use (the LSP lookup, the read, the permission
+			// request, the write) needs the same resolved path.
+			params.FilePath = resolveToolPath(configWorkingDir(cfg), params.FilePath)
 
 			action := params.Action
 			if action == "" {

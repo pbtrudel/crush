@@ -2,11 +2,13 @@ package agentteam
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,32 +20,87 @@ type fakeRun struct {
 	output string
 	err    error
 	cancel func()
+	// session is the Crush session behind the run. Empty is the default
+	// "session-fake", so tests that do not care share one id.
+	session string
+	// cancelled records that the service asked the run to stop.
+	cancelled atomic.Bool
 }
 
-func (r *fakeRun) SessionID() string { return "session-fake" }
+func (r *fakeRun) SessionID() string {
+	if r.session == "" {
+		return "session-fake"
+	}
+	return r.session
+}
+
 func (r *fakeRun) Done() <-chan struct{} {
 	return r.done
 }
 func (r *fakeRun) Output() string { return r.output }
 func (r *fakeRun) Err() error     { return r.err }
-func (r *fakeRun) Cancel()        { r.cancel() }
+func (r *fakeRun) Cancel() {
+	r.cancelled.Store(true)
+	r.cancel()
+}
 
 type fakeRunner struct {
 	mu      sync.Mutex
 	prompts []string
 	members []string
 	runs    map[string]*fakeRun
+	// session, when set, is the session every run of this runner reports.
+	session string
+	// turn, when set, is the work of every run: Cancel cancels the turn's
+	// context and done closes only when the turn function returns, like a
+	// real turn that has to return before it settles. Without it, Cancel
+	// settles the run at once.
+	turn func(ctx context.Context)
 }
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{runs: make(map[string]*fakeRun)}
 }
 
+// newFakeRunnerInSession is newFakeRunner with every run in a session of its
+// own, so a test that settles a session's background jobs cannot reach a job
+// another test started.
+func newFakeRunnerInSession(session string) *fakeRunner {
+	return &fakeRunner{runs: make(map[string]*fakeRun), session: session}
+}
+
+// setTurn makes every run a realistic turn the context cancels and only the
+// turn function ends.
+func (r *fakeRunner) setTurn(turn func(ctx context.Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turn = turn
+}
+
+// turnCancelled reports whether name's run was asked to stop.
+func (r *fakeRunner) turnCancelled(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run, ok := r.runs[name]
+	return ok && run.cancelled.Load()
+}
+
 func (r *fakeRunner) Start(_ context.Context, member Member, prompt string) (Run, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	run := &fakeRun{done: make(chan struct{})}
-	run.cancel = func() { close(run.done) }
+	run := &fakeRun{done: make(chan struct{}), session: r.session}
+	if r.turn != nil {
+		// The realistic mode: Cancel cancels the context, and the run
+		// settles only once the turn returns.
+		ctx, cancel := context.WithCancel(context.Background())
+		run.cancel = cancel
+		go func(turn func(context.Context)) {
+			defer close(run.done)
+			turn(ctx)
+		}(r.turn)
+	} else {
+		run.cancel = func() { close(run.done) }
+	}
 	r.runs[member.Name] = run
 	r.prompts = append(r.prompts, prompt)
 	r.members = append(r.members, member.Name)
@@ -982,4 +1039,60 @@ func TestPolicyDiscouragesFanOutWaves(t *testing.T) {
 	require.Contains(t, Policy, "One teammate per concrete, self-contained brief, never a wave.")
 	require.Contains(t, Policy, "Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small.")
 	require.Contains(t, Policy, "Cap a fan-out at what the task actually needs.")
+}
+
+// summaryRun is a fakeRun that reports the session summary its fork prefix
+// was rendered against.
+type summaryRun struct {
+	*fakeRun
+	summary string
+	sent    bool
+}
+
+func (r *summaryRun) ContextSummary() (string, bool) { return r.summary, r.sent }
+
+type summaryRunner struct {
+	summary string
+	sent    bool
+}
+
+func (r *summaryRunner) Start(_ context.Context, _ Member, _ string) (Run, error) {
+	run := &fakeRun{done: make(chan struct{})}
+	var once sync.Once
+	run.cancel = func() { once.Do(func() { close(run.done) }) }
+	return &summaryRun{fakeRun: run, summary: r.summary, sent: r.sent}, nil
+}
+
+// TestLaunchRecordsTheContextSummary pins that the write that records a run
+// also records the summary its fork prefix was sent against, and leaves it
+// alone when the turn sent no prefix.
+func TestLaunchRecordsTheContextSummary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sent bool
+		want string
+	}{
+		{"sent", true, "message-7"},
+		{"not sent", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, &summaryRunner{summary: "message-7", sent: tc.sent})
+			require.NoError(t, err)
+			t.Cleanup(s.Shutdown)
+			_, err = s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+				Name: "forked", Description: "d", Prompt: "p", Context: ContextFork, ParentID: "session-a",
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, memberByID(t, s, "forked").ContextSummary)
+		})
+	}
+}
+
+func TestContextSummaryIsOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(Member{ID: "member-1", Name: "a"})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "context_summary")
 }
