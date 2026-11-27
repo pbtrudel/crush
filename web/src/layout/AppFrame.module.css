@@ -1,0 +1,145 @@
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.banner {
+  margin: 0;
+  height: var(--crush-layout-banner-height);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  background: var(--dsw-alias-bg-layer-2);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.bannerText {
+  flex: 1;
+  margin: 0;
+  text-align: center;
+}
+
+.theme {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+}
+
+.themeSelect {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+}
+
+.frame {
+  flex: 1;
+  display: grid;
+  grid-template-columns:
+    var(--crush-sidebar-width, var(--crush-layout-sidebar-default))
+    1px
+    minmax(var(--crush-layout-center-min), 1fr);
+  min-height: 0;
+}
+
+/* The right column only takes a track when a caller passes one; M1 passes
+ * none and the conversation keeps the whole width. */
+.frame:has(> .right) {
+  grid-template-columns:
+    var(--crush-sidebar-width, var(--crush-layout-sidebar-default))
+    1px
+    minmax(var(--crush-layout-center-min), 1fr)
+    clamp(var(--crush-layout-center-min), var(--crush-layout-right-default), var(--crush-layout-right-max));
+}
+
+.frame[data-collapsed='true'] {
+  grid-template-columns: var(--crush-layout-sidebar-rail) 0 minmax(0, 1fr);
+}
+
+.frame[data-collapsed='true']:has(> .right) {
+  grid-template-columns:
+    var(--crush-layout-sidebar-rail)
+    0
+    minmax(0, 1fr)
+    clamp(var(--crush-layout-center-min), var(--crush-layout-right-default), var(--crush-layout-right-max));
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-1);
+  border-right: 1px solid var(--dsw-alias-border-l2);
+}
+
+.rail {
+  align-items: center;
+}
+
+.collapse {
+  margin: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.resizer {
+  cursor: col-resize;
+  background: transparent;
+}
+
+.center {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.right {
+  width: clamp(var(--crush-layout-center-min), var(--crush-layout-right-default), var(--crush-layout-right-max));
+  border-left: 1px solid var(--dsw-alias-border-l2);
+}
+
+/* Below 768px the sidebar becomes a modal drawer over the conversation,
+ * closed until the toggle opens it. */
+@media (max-width: 767px) {
+  .frame,
+  .frame[data-collapsed='true'],
+  .frame:has(> .right),
+  .frame[data-collapsed='true']:has(> .right) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .frame[data-drawer='true'] .sidebar {
+    position: fixed;
+    inset: var(--crush-layout-banner-height) auto 0 0;
+    display: flex;
+    width: min(var(--crush-layout-sidebar-max), 86vw);
+    border-right: 1px solid var(--dsw-alias-border-l3);
+    box-shadow: var(--dsw-alias-bg-mask-3) 0 0 0 100vmax;
+    z-index: 10;
+  }
+
+  .drawer:focus {
+    outline: none;
+  }
+
+  .resizer {
+    display: none;
+  }
+}

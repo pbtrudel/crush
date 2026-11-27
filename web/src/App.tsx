@@ -1,9 +1,9 @@
-import styles from './App.module.css'
+import AppFrame from './layout/AppFrame'
 
 export default function App() {
   return (
-    <div className={styles.shell}>
-      <p className={styles.banner}>Preview: the new web UI is incomplete</p>
-    </div>
+    <AppFrame sidebar={<p>Workspace</p>}>
+      <p>No session selected</p>
+    </AppFrame>
   )
 }
