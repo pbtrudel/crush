@@ -90,7 +90,9 @@ conflict.
   `running` (`AgentIsSessionBusy`), `queued` (a non-empty
   `AgentQueuedPromptsList`), `idle`.
 - The gateway publishes `session_status` only when a session's status value
-  changes; unchanged sweeps publish nothing.
+  changes; an unchanged value publishes nothing. There is no periodic status
+  poll: the status is recomputed for the affected session on the events that
+  can change it.
 - Message paging: `GET /api/sessions/{sid}/messages?before=<id>&limit=<n>`
   answers `{"messages":[…],"has_more":bool}`, oldest first, default 100,
   maximum 500. `before` is exclusive.
@@ -116,8 +118,13 @@ conflict.
   or `web/THIRD_PARTY_NOTICES.md`.
 - Theme preference lives in `localStorage` under `crush.theme`
   (`light`, `dark`, `system`), and the resolved theme is the
-  `data-ds-theme` attribute on `<html>`. Last-seen sequence numbers live in
-  `localStorage` under `crush.seen`.
+  `data-ds-theme` attribute on `<html>`. Unread markers compare a session
+  row's `updated_at` with a per-session last-seen `updated_at` kept in
+  `localStorage` under `crush.seen`. A session is marked seen when it is
+  selected or receives a frame while selected.
+- The tab subscribes the selected session plus every session whose status is
+  not `idle`, at most 32, and unsubscribes a background session when it
+  returns to `idle` and is not the selected one.
 - Auth: the token arrives in `location.hash` as `#t=<token>`, is exchanged
   with `POST /api/auth`, kept in `sessionStorage` under `crush.token`,
   stripped from the URL, sent as `Authorization: Bearer` on every fetch, and
@@ -137,7 +144,8 @@ conflict.
 1. A tab that subscribes while a turn is streaming: the `session_snapshot`
    must arrive before any live frame for that session, or a message is lost
    between the snapshot query and the subscription. Pinned by
-   `TestSubscribeThenLiveFrames` (Task 4).
+   `TestSubscribeBuffersFramesPublishedDuringTheSnapshot` and
+   `TestSubscribeSendsSnapshotBeforeLiveFrames` (Task 4).
 2. Two tabs on different sessions at once: a `message` frame for session A
    must never reach the tab subscribed only to B, and a global
    `session_status` must reach both. Pinned by
@@ -167,7 +175,8 @@ conflict.
 - Create: `internal/web/status_test.go`
 - Modify: `internal/web/stream.go` (frame constants)
 - Modify: `internal/web/gateway.go` (`Gateway` struct, `Start`, `pump`)
-- Modify: `internal/web/api.go` (`handleListSessions`)
+- Modify: `internal/web/api.go` (`handleListSessions`, `handleClearQueue`)
+- Modify: `internal/web/api_sessions.go` (`handleDeleteSession`)
 - Modify: `internal/web/pending.go` (add `interacts`)
 - Modify: `internal/web/webtest/fake.go` (add `SetSessionQueued`)
 
@@ -179,14 +188,20 @@ conflict.
   - `const statusIdle = "idle"`, `statusRunning`, `statusQueued`,
     `statusPendingInteraction` (all `string`).
   - `func (g *Gateway) sessionStatus(sessionID string) string`
-  - `func (g *Gateway) refreshSessionStatuses(ctx context.Context)`
+  - `func (g *Gateway) refreshSessionStatus(sessionID string)`
+  - `func (g *Gateway) forgetSessionStatus(sessionID string)`
   - `func (g *Gateway) seedSessionStatuses(ctx context.Context)`
+  - `func statusSessionID(ev any) string`
   - `type sessionRow struct { proto.Session; Status string }`
+  - `func sortSessionsNewestFirst(list []session.Session)` (extracted from
+    `handleListSessions`, which keeps its tie-break comment)
   - `func (g *Gateway) sessionRows(list []session.Session) []sessionRow`
   - `func (p *pending) interacts(sessionID string) bool`
   - `func (f *Fake) SetSessionQueued(id string, prompts []string)` in
     `internal/web/webtest`.
   - `frameSessionStatus = "session_status"` (Task 4 keeps it global).
+  Task 5's tests and Task 8's e2e consume the status values; Task 12 and
+  Task 15 consume the same vocabulary for the sidebar markers.
 
 - [ ] **Step 1: Write the failing status unit test**
 
@@ -199,7 +214,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/stretchr/testify/require"
 )
@@ -240,42 +259,61 @@ func TestSessionStatusCountsAQuestion(t *testing.T) {
 	require.Equal(t, statusIdle, g.sessionStatus("s1"))
 }
 
-// TestSessionStatusPublishesOnChangeOnly pins the dedupe: a sweep that
-// changes nothing publishes nothing, so a reconnect does not replay a burst
+// TestSessionStatusPublishesOnChangeOnly pins the dedupe: recomputing an
+// unchanged status publishes nothing, so a reconnect does not replay a burst
 // of unchanged values.
 func TestSessionStatusPublishesOnChangeOnly(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	g.seedSessionStatuses(t.Context())
 
-	g.refreshSessionStatuses(t.Context())
+	g.refreshSessionStatus("s1")
 	require.Empty(t, statusFrames(g), "the seeded status did not change")
 
 	fake.SetSessionBusy("s1", true)
-	g.refreshSessionStatuses(t.Context())
+	g.refreshSessionStatus("s1")
 	require.Equal(t, []string{`{"session_id":"s1","status":"running"}`}, statusFrames(g))
 
-	g.refreshSessionStatuses(t.Context())
+	g.refreshSessionStatus("s1")
 	require.Len(t, statusFrames(g), 1, "an unchanged status publishes nothing")
 
 	fake.SetSessionBusy("s1", false)
-	g.refreshSessionStatuses(t.Context())
+	g.refreshSessionStatus("s1")
 	require.Equal(t, []string{
 		`{"session_id":"s1","status":"running"}`,
 		`{"session_id":"s1","status":"idle"}`,
 	}, statusFrames(g))
 }
 
-// TestStatusClearsWhenARunEnds pins the pump path: the run_complete event
-// the workspace emits clears the marker without a reload.
+// TestStatusSessionID pins which events can change a status, and for which
+// session: the pump recomputes only that session, with no periodic poll.
+func TestStatusSessionID(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "s2", statusSessionID(permissionEvent("p1", "s2", "tc-1")))
+	require.Equal(t, "s2", statusSessionID(permissionResolvedEvent("s2", "tc-1")))
+	require.Equal(t, "s3", statusSessionID(questionEvent("b1", "s3")))
+	require.Equal(t, "s4", statusSessionID(pubsub.Event[question.Notification]{
+		Type: pubsub.UpdatedEvent, Payload: question.Notification{BatchID: "b1", SessionID: "s4"},
+	}))
+	require.Equal(t, "s1", statusSessionID(runCompleteEvent("s1")))
+	require.Equal(t, "s1", statusSessionID(pubsub.Event[message.Message]{
+		Type: pubsub.CreatedEvent, Payload: message.Message{SessionID: "s1", Role: message.User},
+	}))
+	require.Empty(t, statusSessionID(pubsub.Event[message.Message]{
+		Type: pubsub.UpdatedEvent, Payload: message.Message{SessionID: "s1", Role: message.Assistant},
+	}), "a streamed assistant chunk changes no status")
+	require.Empty(t, statusSessionID(pubsub.Event[history.File]{Type: pubsub.CreatedEvent}))
+}
+
+// TestStatusClearsWhenARunEnds pins the event path: the run_complete event
+// the workspace emits clears the marker, with no manual refresh and no
+// periodic poll anywhere in the gateway.
 func TestStatusClearsWhenARunEnds(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	fake.SetSessionBusy("s1", true)
-	require.Eventually(t, func() bool {
-		g.refreshSessionStatuses(t.Context())
-		return len(statusFrames(g)) == 1
-	}, 2*time.Second, 10*time.Millisecond)
+	g.refreshSessionStatus("s1")
+	require.Equal(t, []string{`{"session_id":"s1","status":"running"}`}, statusFrames(g))
 
 	fake.SetSessionBusy("s1", false)
 	fake.Emit(runCompleteEvent("s1"))
@@ -327,8 +365,8 @@ func runCompleteEvent(sessionID string) any {
 }
 ```
 
-and the matching imports `notify "github.com/charmbracelet/crush/internal/agent/notify"`
-and `"github.com/charmbracelet/crush/internal/pubsub"` in the import block.
+The import block at the top of the file already carries `notify`, `history`,
+`message`, `pubsub` and `question`; if `goimports` drops one, it is unused.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -343,10 +381,17 @@ new test helpers, so the build failure is the RED for the whole task.
 package web
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
+	"slices"
 
+	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/message"
+	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/wire"
 )
@@ -384,6 +429,15 @@ type sessionRow struct {
 	Status string `json:"status"`
 }
 
+// sortSessionsNewestFirst orders a session list the way the sidebar and the
+// session switcher show it: newest updated first, the ID breaking ties so two
+// sessions saved in the same second keep a stable order.
+func sortSessionsNewestFirst(list []session.Session) {
+	slices.SortFunc(list, func(a, b session.Session) int {
+		return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
+	})
+}
+
 // sessionRows turns a session list into the rows the sidebar renders,
 // keeping the caller's order.
 func (g *Gateway) sessionRows(list []session.Session) []sessionRow {
@@ -397,9 +451,9 @@ func (g *Gateway) sessionRows(list []session.Session) []sessionRow {
 	return rows
 }
 
-// seedSessionStatuses records every session's status without publishing,
-// so the first sweep only announces what really changed. A fresh gateway
-// has no listener yet and nothing to tell one.
+// seedSessionStatuses records every session's status without publishing, so
+// the first event announces only what really changed. It is the gateway's
+// one session list read for status; everything after it is per-session.
 func (g *Gateway) seedSessionStatuses(ctx context.Context) {
 	sessions, err := g.ws.ListSessions(ctx)
 	if err != nil {
@@ -413,38 +467,55 @@ func (g *Gateway) seedSessionStatuses(ctx context.Context) {
 	}
 }
 
-// refreshSessionStatuses publishes one session_status frame per session
-// whose status changed since the last sweep, and forgets sessions that are
-// gone. The check and the publish happen under statusMu, so two sweeps
-// cannot publish an older status after a newer one.
-func (g *Gateway) refreshSessionStatuses(ctx context.Context) {
-	sessions, err := g.ws.ListSessions(ctx)
-	if err != nil {
-		slog.Debug("Web session status sweep could not list sessions", "error", err)
-		return
-	}
+// refreshSessionStatus recomputes one session's status and publishes a frame
+// only when the value changed. The read and the publish happen under
+// statusMu, so two refreshes cannot publish an older status after a newer
+// one. The pump calls it for the session an event names, which is what keeps
+// the gateway off a periodic poll.
+func (g *Gateway) refreshSessionStatus(sessionID string) {
 	g.statusMu.Lock()
 	defer g.statusMu.Unlock()
-	seen := make(map[string]struct{}, len(sessions))
-	for _, s := range sessions {
-		seen[s.ID] = struct{}{}
-		// One read per session: a busy flag that flips between two reads
-		// would otherwise publish a value the map does not hold.
-		status := g.sessionStatus(s.ID)
-		if last, ok := g.statuses[s.ID]; ok && last == status {
-			continue
-		}
-		g.statuses[s.ID] = status
-		g.hub.publishJSON(frameSessionStatus, map[string]string{
-			"session_id": s.ID,
-			"status":     status,
-		})
+	status := g.sessionStatus(sessionID)
+	if last, ok := g.statuses[sessionID]; ok && last == status {
+		return
 	}
-	for id := range g.statuses {
-		if _, ok := seen[id]; !ok {
-			delete(g.statuses, id)
+	g.statuses[sessionID] = status
+	g.hub.publishJSON(frameSessionStatus, map[string]string{
+		"session_id": sessionID,
+		"status":     status,
+	})
+}
+
+// forgetSessionStatus drops a deleted session from the map, so a later
+// session that reuses the id starts from a clean slate.
+func (g *Gateway) forgetSessionStatus(sessionID string) {
+	g.statusMu.Lock()
+	defer g.statusMu.Unlock()
+	delete(g.statuses, sessionID)
+}
+
+// statusSessionID returns the session whose status ev can change: a
+// permission or question arriving or resolving, a run ending, or a user
+// prompt starting a run or joining the queue. Every other event answers "",
+// including the streamed assistant chunks that arrive many times a second.
+func statusSessionID(ev any) string {
+	switch e := ev.(type) {
+	case pubsub.Event[permission.PermissionRequest]:
+		return e.Payload.SessionID
+	case pubsub.Event[permission.PermissionNotification]:
+		return e.Payload.SessionID
+	case pubsub.Event[question.Request]:
+		return e.Payload.SessionID
+	case pubsub.Event[question.Notification]:
+		return e.Payload.SessionID
+	case pubsub.Event[notify.RunComplete]:
+		return e.Payload.SessionID
+	case pubsub.Event[message.Message]:
+		if e.Payload.Role == message.User {
+			return e.Payload.SessionID
 		}
 	}
+	return ""
 }
 ```
 
@@ -457,13 +528,13 @@ In `internal/web/stream.go`, add to the `const` block, after
 	frameSessionStatus  = "session_status"
 ```
 
-- [ ] **Step 5: Add the gateway state and the sweeps**
+- [ ] **Step 5: Add the gateway state and the event hook**
 
 In `internal/web/gateway.go`, add to the `Gateway` struct next to `modelMu`:
 
 ```go
 	// statusMu guards statuses, the last status published per session, so a
-	// sweep announces a value only when it really changed.
+	// refresh announces a value only when it really changed.
 	statusMu sync.Mutex
 	statuses map[string]string
 ```
@@ -481,7 +552,18 @@ and after `g.srv = &http.Server{…}` and before the team watcher seed, add:
 	g.seedSessionStatuses(ctx)
 ```
 
-In `pump`, extend the ticker case:
+In `pump`, leave the follow ticker alone and add one line after the
+`if g.pending.observe(ev) { g.publishSecurePrompts() }` block:
+
+```go
+			if sessionID := statusSessionID(ev); sessionID != "" {
+				g.refreshSessionStatus(sessionID)
+			}
+```
+
+That is the whole status path: no `ListSessions` call and no periodic sweep,
+so the gateway costs nothing while a session sits idle. The ticker case stays
+exactly as it is today:
 
 ```go
 		case <-ticker.C:
@@ -489,43 +571,11 @@ In `pump`, extend the ticker case:
 				last = cur
 				g.hub.publishJSON(frameFollow, map[string]string{"session_id": cur})
 			}
-			g.refreshSessionStatuses(g.ctx)
 ```
 
-and, right after the `if g.pending.observe(ev) { g.publishSecurePrompts() }`
-block, add the immediate sweep for the events that change a status:
-
-```go
-			if isStatusEvent(ev) {
-				g.refreshSessionStatuses(g.ctx)
-			}
-```
-
-with, at the end of `gateway.go`:
-
-```go
-// isStatusEvent reports whether ev can start or end a wait for the person,
-// or end a run, which are the changes worth publishing without waiting for
-// the next tick. Everything else is caught by the sweep.
-func isStatusEvent(ev any) bool {
-	switch ev.(type) {
-	case pubsub.Event[permission.PermissionRequest],
-		pubsub.Event[permission.PermissionNotification],
-		pubsub.Event[question.Request],
-		pubsub.Event[question.Notification],
-		pubsub.Event[notify.RunComplete]:
-		return true
-	}
-	return false
-}
-```
-
-Add the imports `"github.com/charmbracelet/crush/internal/agent/notify"`,
-`"github.com/charmbracelet/crush/internal/permission"`,
-`"github.com/charmbracelet/crush/internal/pubsub"` and
-`"github.com/charmbracelet/crush/internal/question"` to `gateway.go`
-(`goimports`-style, alphabetical, after `internal/agentrun`… check the
-existing block and keep it sorted).
+`statusSessionID` lives in `status.go` (Step 3), so `gateway.go` needs no
+new import for it. `permission`, `question`, `pubsub`, `notify` and
+`message` are imported by `status.go`, not here.
 
 - [ ] **Step 6: Add pending.interacts**
 
@@ -551,14 +601,39 @@ func (p *pending) interacts(sessionID string) bool {
 }
 ```
 
-- [ ] **Step 7: Serve the status in GET /api/sessions**
+- [ ] **Step 7: Serve the status and refresh it where no event fires**
 
-Replace the body of `handleListSessions` in `internal/web/api.go` after the
-sort with:
+In `handleListSessions` (`internal/web/api.go`), replace the inline
+`slices.SortFunc` block with the shared helper and answer the rows:
 
 ```go
+	sortSessionsNewestFirst(list)
 	writeJSON(w, http.StatusOK, g.sessionRows(list))
 ```
+
+Delete the now-unused `slices` and `cmp` imports from `api.go` if nothing
+else in the file uses them (`go vet` names the leftover).
+
+Two routes change a session's inputs without an event the pump sees, so they
+refresh it themselves:
+
+1. `handleClearQueue` in `internal/web/api.go`: after
+   `g.ws.AgentClearQueue(sid)` succeeds and before it answers, add
+
+```go
+	g.refreshSessionStatus(sid)
+```
+
+2. `handleDeleteSession` in `internal/web/api_sessions.go`: after
+   `g.ws.DeleteSession` succeeds and before `w.WriteHeader(http.StatusNoContent)`,
+   add
+
+```go
+	g.forgetSessionStatus(sid)
+```
+
+A deleted session publishes no status frame: the `session` deleted event
+already removes the row.
 
 - [ ] **Step 8: Add the fake setter**
 
@@ -933,8 +1008,9 @@ git commit -m "feat(web): page session messages with before and limit"
   `internal/web/team_test.go`, `internal/web/seed_m3_test.go`
 
 **Interfaces:**
-- Consumes: `pageMessages`, `messagePageSize` (Task 2); `g.sessionRows`
-  (Task 1); `g.team.current()`, `g.signInState()`, `g.pending.*`,
+- Consumes: `pageMessages`, `messagePageSize` (Task 2); `g.sessionRows` and
+  `sortSessionsNewestFirst` (Task 1); `g.team.current()`, `g.signInState()`,
+  `g.pending.*`,
   `modelInfo(g, ready bool)`, `g.fileSummaries(ctx, sid)`,
   `innerPayload`, `entities`.
 - Produces:
@@ -962,11 +1038,11 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
+	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/mcp"
-	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/web/webtest"
+	"github.com/charmbracelet/crush/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1020,6 +1096,26 @@ func TestBootstrapRouteServesIt(t *testing.T) {
 	require.Equal(t, statusIdle, b.Sessions[0].Status)
 }
 
+// TestPayloadsHaveNoNullArrays pins the contract the frontend's zod schema
+// reads: a workspace with no runs, no roster and no interactions must still
+// answer arrays, not nulls.
+func TestPayloadsHaveNoNullArrays(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	for name, v := range map[string]any{
+		"bootstrap":       g.buildBootstrap(t.Context()),
+		"sessionSnapshot": g.buildSessionSnapshot(t.Context(), "s1", "", messagePageSize),
+	} {
+		raw, err := json.Marshal(v)
+		require.NoError(t, err, name)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &fields), name)
+		for key, value := range fields {
+			require.NotEqual(t, "null", string(value), "%s.%s is null", name, key)
+		}
+	}
+}
+
 // TestSessionSnapshotCarriesOneSession pins the per-session payload.
 func TestSessionSnapshotCarriesOneSession(t *testing.T) {
 	t.Parallel()
@@ -1067,7 +1163,8 @@ func TestSessionSnapshotForAnUnknownSession(t *testing.T) {
 }
 ```
 
-Add the two helpers to the same file:
+Add the one helper this file needs to the same file (`textMessage` comes
+from Task 2 and `questionEvent` from Task 1):
 
 ```go
 func historyFile(id, sessionID, path string, version int64) history.File {
@@ -1106,14 +1203,13 @@ deletion leaves unused (`agentrun`, `config` if unused, `proto`, `pubsub`,
 package web
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
-	"slices"
 	"strconv"
 
 	"github.com/charmbracelet/crush/internal/agentrun"
+	"github.com/charmbracelet/crush/internal/agentteam"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
@@ -1179,16 +1275,24 @@ func (g *Gateway) buildBootstrap(ctx context.Context) Bootstrap {
 	readyErr := g.ws.AgentReadyErr()
 	b.Model = modelInfo(g, readyErr == nil)
 	b.AgentReady = b.Model.AgentReady
+	// Every array in the payload is non-nil: the frontend's zod schema reads
+	// a null array as a contract break, and the workspace returns nil slices
+	// when it has no runs, no roster or no questions.
 	b.Team, b.AgentRuns = g.team.current()
+	if b.AgentRuns == nil {
+		b.AgentRuns = []agentrun.Run{}
+	}
+	if b.Team.Members == nil {
+		b.Team.Members = []agentteam.Member{}
+	}
+	if b.Team.Tasks == nil {
+		b.Team.Tasks = []TeamTask{}
+	}
 	if branch, err := g.ws.GitBranch(ctx); err == nil {
 		b.Branch = branch
 	}
 	if list, err := g.ws.ListSessions(ctx); err == nil {
-		// The sidebar shows newest first, the order the session switcher
-		// uses; the ID breaks ties so the order is stable.
-		slices.SortFunc(list, func(a, b session.Session) int {
-			return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
-		})
+		sortSessionsNewestFirst(list)
 		b.Sessions = g.sessionRows(list)
 	} else {
 		slog.Debug("Web bootstrap could not list sessions", "error", err)
@@ -1208,6 +1312,7 @@ func (g *Gateway) buildBootstrap(ctx context.Context) Bootstrap {
 		}
 	}
 	b.Permissions = entities(g.pending.permissions())
+	b.Questions = []json.RawMessage{}
 	if prompts := g.pending.securePrompts(); len(prompts) > 0 {
 		b.SecurePrompts = prompts
 	}
@@ -1414,6 +1519,8 @@ git commit -m "feat(web): add GET /api/bootstrap and session snapshots"
 - Modify: `internal/web/stream.go` (frame struct, `conn`, hub, `readLoop`,
   `handleStream`, new `handleSubscribe`, `enqueueError`,
   `sessionExistsQuiet`)
+- Modify: `internal/web/webtest/fake.go` (`SetListMessagesGate`, test
+  support for the snapshot-race test)
 - Test: `internal/web/stream_test.go`
 
 **Interfaces:**
@@ -1429,10 +1536,17 @@ git commit -m "feat(web): add GET /api/bootstrap and session snapshots"
   - `func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string)`
   - `func (g *Gateway) enqueueError(c *conn, sessionID, code, message string)`
   - `func (g *Gateway) sessionExistsQuiet(ctx context.Context, sessionID string) bool`
-  - `func (h *hub) subscribe(c *conn, sessionID string, snap frame) bool`,
+  - `func (h *hub) beginSubscription(c *conn, sessionID string) bool`,
+    `func (h *hub) flushSubscription(c *conn, sessionID string, snap frame)`,
+    `func (h *hub) abortSubscription(c *conn, sessionID string)`,
     `func (h *hub) unsubscribe(c *conn, sessionID string)`,
     `func (h *hub) enqueue(c *conn, f frame)`,
-    `func (h *hub) sendLocked(c *conn, f frame)`.
+    `func (h *hub) sendLocked(c *conn, f frame)`,
+    `func (h *hub) deliverLocked(c *conn, f frame)` (Task 5 calls it from
+    `publishSession`).
+  - `func (f *Fake) SetListMessagesGate(entered chan<- struct{}, release <-chan struct{})`
+    in `internal/web/webtest`, a one-shot gate on the next `ListMessages`
+    call.
   - Test helper `subscribeStream(t *testing.T, c *websocket.Conn, sessionID string) testFrame`
     and `writeClient(t *testing.T, c *websocket.Conn, msg string)`.
   Task 5 consumes `frame.Session`, `enqueue` and `sendLocked`.
@@ -1468,7 +1582,7 @@ func TestSubscribeThenLiveFrames(t *testing.T) {
 	subscribeStream(t, c, "s1")
 
 	fake.Emit(msgEvent("m1", "s1", "hello"))
-	f := nextFrameOfType(t, c, "message")
+	f := nextFrameOfType(t.Context(), t, c, "message")
 	require.Contains(t, string(f.Payload), "hello")
 }
 
@@ -1496,7 +1610,7 @@ func TestSubscribeRefusesAnUnknownSession(t *testing.T) {
 	c := dialStream(t, g, "")
 	readFrame(t, c) // Bootstrap.
 	writeClient(t, c, `{"type":"subscribe","session_id":"nope"}`)
-	f := nextFrameOfType(t, c, frameError)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
 	require.Contains(t, string(f.Payload), "unknown_session")
 }
 
@@ -1513,7 +1627,7 @@ func TestSubscribeRefusesTooManySessions(t *testing.T) {
 		subscribeStream(t, c, "x"+strconv.Itoa(i))
 	}
 	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
-	f := nextFrameOfType(t, c, frameError)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
 	require.Contains(t, string(f.Payload), "too_many_subscriptions")
 }
 
@@ -1529,6 +1643,56 @@ func subscribeStream(t *testing.T, c *websocket.Conn, sessionID string) testFram
 	return f
 }
 
+// TestSubscribeBuffersFramesPublishedDuringTheSnapshot pins the reservation
+// at the hub, with no timing: a frame published while the snapshot is being
+// built queues behind it instead of overtaking it.
+func TestSubscribeBuffersFramesPublishedDuringTheSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	c, _, _, _ := h.attach(-1)
+	require.True(t, h.beginSubscription(c, "s1"))
+	h.publishSession("s1", "message", json.RawMessage(`{"id":"m2"}`))
+	h.flushSubscription(c, "s1", frame{Type: frameSessionSnapshot, Payload: json.RawMessage(`{"session_id":"s1"}`)})
+
+	first := <-c.ch
+	require.Equal(t, frameSessionSnapshot, first.Type)
+	second := <-c.ch
+	require.Equal(t, "message", second.Type)
+	require.Equal(t, "s1", second.Session)
+}
+
+// TestSubscribeSendsSnapshotBeforeLiveFrames pins the same ordering through
+// the real gateway: the snapshot read is held open while a message is
+// published, and the tab still reads the snapshot first.
+func TestSubscribeSendsSnapshotBeforeLiveFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "from the page"))
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.SetListMessagesGate(entered, release)
+
+	c := dialStream(t, g, "")
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the snapshot never read the messages")
+	}
+	fake.Emit(msgEvent("m2", "s1", "mid-build"))
+	close(release)
+
+	f := readFrame(t, c)
+	require.Equal(t, frameSessionSnapshot, f.Type)
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(f.Payload, &s))
+	require.Len(t, s.Messages, 1, "the page holds what the snapshot read")
+
+	live := nextFrameOfType(t.Context(), t, c, "message")
+	require.Contains(t, string(live.Payload), "mid-build")
+}
+
 // writeClient sends one text message to the gateway.
 func writeClient(t *testing.T, c *websocket.Conn, msg string) {
 	t.Helper()
@@ -1539,7 +1703,43 @@ func writeClient(t *testing.T, c *websocket.Conn, msg string) {
 ```
 
 Add the `session` and `strconv` imports to `stream_test.go` if it does not
-already have them (`grep -n 'strconv\.\|session\.' internal/web/stream_test.go`).
+already have them (`grep -n 'strconv\.\|session\.' internal/web/stream_test.go`),
+and `time` if it is missing.
+
+The snapshot-race test needs one hook in the fake. Append to
+`internal/web/webtest/fake.go`, next to `SetAgentModelGate`:
+
+```go
+// SetListMessagesGate holds the next ListMessages call until release is
+// closed, reporting on entered first. It is one-shot: later reads pass
+// through, so a test only gates the snapshot it means to hold.
+func (f *Fake) SetListMessagesGate(entered chan<- struct{}, release <-chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listMessagesGate = &agentModelGate{entered: entered, release: release}
+}
+```
+
+with a `listMessagesGate *agentModelGate` field on `Fake`, and at the top of
+`ListMessages`:
+
+```go
+	f.mu.Lock()
+	gate := f.listMessagesGate
+	f.listMessagesGate = nil
+	f.mu.Unlock()
+	if gate != nil {
+		gate.entered <- struct{}{}
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+```
+
+`entered` must be buffered by at least one slot: the call reports and then
+waits. Rename the parameter `_ context.Context` to `ctx` in `ListMessages`.
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -1587,16 +1787,24 @@ type conn struct {
 	// sessions holds the session ids this connection subscribed to. The hub
 	// lock guards it, so a publish can read it without another mutex.
 	sessions map[string]struct{}
+	// pending holds, per session whose snapshot is being built, the frames
+	// published in the meantime. It is what closes the snapshot race: the
+	// session is reserved before the read starts, so nothing is lost.
+	pending map[string][]frame
 }
 ```
 
 and add:
 
 ```go
-// subscribedTo reports whether the connection holds the session. The caller
-// holds the hub lock.
-func (c *conn) subscribedTo(sessionID string) bool {
-	_, ok := c.sessions[sessionID]
+// tracks reports whether the connection wants the session, either already
+// subscribed or reserved while its snapshot is built. The caller holds the
+// hub lock.
+func (c *conn) tracks(sessionID string) bool {
+	if _, ok := c.sessions[sessionID]; ok {
+		return true
+	}
+	_, ok := c.pending[sessionID]
 	return ok
 }
 
@@ -1633,11 +1841,22 @@ func (h *hub) enqueue(c *conn, f frame) {
 	h.sendLocked(c, f)
 }
 
-// subscribe registers a session on the connection and queues its snapshot
-// under one lock, so no live frame can arrive before the snapshot that
-// should have carried it. It reports false when the connection already
+// deliverLocked queues a per-session frame for one connection: into its
+// buffer while the subscription's snapshot is still being built, onto its
+// queue once the subscription is live. The caller holds h.mu.
+func (h *hub) deliverLocked(c *conn, f frame) {
+	if _, building := c.pending[f.Session]; building {
+		c.pending[f.Session] = append(c.pending[f.Session], f)
+		return
+	}
+	h.sendLocked(c, f)
+}
+
+// beginSubscription reserves the session on the connection before its
+// snapshot is built, so a frame published during the read is buffered for it
+// instead of arriving first. It reports false when the connection already
 // holds maxSubscriptions.
-func (h *hub) subscribe(c *conn, sessionID string, snap frame) bool {
+func (h *hub) beginSubscription(c *conn, sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.subs[c]; !ok {
@@ -1646,32 +1865,57 @@ func (h *hub) subscribe(c *conn, sessionID string, snap frame) bool {
 	if c.sessions == nil {
 		c.sessions = make(map[string]struct{})
 	}
-	if _, ok := c.sessions[sessionID]; !ok {
-		if len(c.sessions) >= maxSubscriptions {
-			return false
-		}
-		c.sessions[sessionID] = struct{}{}
+	if c.pending == nil {
+		c.pending = make(map[string][]frame)
 	}
-	// A re-subscribe after a resync gets a fresh snapshot, so the tab
-	// rebuilds the session from the state that exists now.
-	snap.Seq = h.seq
-	snap.Session = sessionID
-	h.sendLocked(c, snap)
+	if _, held := c.sessions[sessionID]; held {
+		// A re-subscribe after a resync: buffer afresh and answer a new
+		// snapshot, so the tab rebuilds the session from what exists now.
+		c.pending[sessionID] = nil
+		return true
+	}
+	if len(c.sessions)+len(c.pending) >= maxSubscriptions {
+		return false
+	}
+	c.pending[sessionID] = nil
 	return true
 }
 
-// unsubscribe drops a session from the connection.
+// flushSubscription sends the snapshot and then every frame buffered while
+// it was built, under one lock, so the tab reads the snapshot first and the
+// frames it missed after it. A buffered frame can repeat a message the
+// snapshot already carried; the store upserts by message id, so the repeat
+// costs nothing.
+func (h *hub) flushSubscription(c *conn, sessionID string, snap frame) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	buffered := c.pending[sessionID]
+	delete(c.pending, sessionID)
+	if _, ok := h.subs[c]; !ok {
+		return
+	}
+	c.sessions[sessionID] = struct{}{}
+	snap.Seq = h.seq
+	snap.Session = sessionID
+	h.sendLocked(c, snap)
+	for _, f := range buffered {
+		h.sendLocked(c, f)
+	}
+}
+
+// abortSubscription drops a reservation whose snapshot could not be built.
+func (h *hub) abortSubscription(c *conn, sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(c.pending, sessionID)
+}
+
+// unsubscribe drops a session from the connection, buffered or live.
 func (h *hub) unsubscribe(c *conn, sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(c.sessions, sessionID)
-}
-
-// subscribed reports whether the connection holds the session.
-func (h *hub) subscribed(c *conn, sessionID string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return c.subscribedTo(sessionID)
+	delete(c.pending, sessionID)
 }
 ```
 
@@ -1722,10 +1966,11 @@ and add:
 
 ```go
 // handleSubscribe answers a subscribe message with the session's snapshot.
-// The snapshot is built before the subscription exists, so a frame published
-// while it was built reaches the tab only after the snapshot; a message the
-// snapshot already carries is applied twice, which the store's upsert by
-// message id makes harmless.
+// The session is reserved on the connection before the snapshot is read, so
+// every frame published while the read runs is buffered for it; the snapshot
+// and the buffer are then flushed together, snapshot first. Without the
+// reservation a frame could arrive before the snapshot that should have
+// carried it.
 func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string) {
 	if sessionID == "" {
 		g.enqueueError(c, "", "missing_session", "subscribe needs a session_id")
@@ -1735,15 +1980,18 @@ func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string
 		g.enqueueError(c, sessionID, "unknown_session", "no such session")
 		return
 	}
+	if !g.hub.beginSubscription(c, sessionID) {
+		g.enqueueError(c, sessionID, "too_many_subscriptions",
+			"this connection holds the maximum number of session subscriptions")
+		return
+	}
 	snap := g.buildSessionSnapshot(ctx, sessionID, "", messagePageSize)
 	raw, err := json.Marshal(snap)
 	if err != nil {
+		g.hub.abortSubscription(c, sessionID)
 		return
 	}
-	if !g.hub.subscribe(c, sessionID, frame{Type: frameSessionSnapshot, Payload: raw}) {
-		g.enqueueError(c, sessionID, "too_many_subscriptions",
-			"this connection holds the maximum number of session subscriptions")
-	}
+	g.hub.flushSubscription(c, sessionID, frame{Type: frameSessionSnapshot, Payload: raw})
 }
 
 // enqueueError queues a web_error frame for one connection.
@@ -1838,14 +2086,18 @@ git commit -m "feat(web): speak crush.v2 with session subscriptions"
   `internal/web/api_agent_test.go`
 
 **Interfaces:**
-- Consumes: `frame.Session`, `conn.subscribedTo`, `hub.sendLocked`,
-  `hub.subscribed` (Task 4); `encode(ev)`; `shellOutputPayload`.
+- Consumes: `frame.Session`, `conn.tracks`, `hub.sendLocked`,
+  `hub.deliverLocked` (Task 4); `encode(ev)`; `shellOutputPayload`;
+  `textMessage` (Task 2); `msgEvent`, `dialStream`, `subscribeStream`,
+  `writeClient`, `itoa` (`stream_test.go`).
 - Produces:
   - `func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame`
   - `func (h *hub) publishSessionJSON(sessionID, typ string, v any)`
   - `func eventSessionID(ev any) string`
   The per-session frame set is exactly `message`, `file`, `shell_output` and
-  `run_complete`; every other type stays global.
+  `run_complete`; every other type stays global, delivery routes through
+  `h.deliverLocked` so a frame published during a snapshot build is buffered
+  (Task 4), and the replay ring never replays a per-session frame at all.
 
 - [ ] **Step 1: Write the failing delivery tests**
 
@@ -1864,7 +2116,7 @@ func TestPerSessionFramesReachOnlySubscribers(t *testing.T) {
 
 	fake.Emit(msgEvent("m2", "s2", "not mine"))
 	fake.Emit(msgEvent("m1", "s1", "mine"))
-	f := nextFrameOfType(t, c, "message")
+	f := nextFrameOfType(t.Context(), t, c, "message")
 	require.Contains(t, string(f.Payload), "mine")
 	require.Equal(t, "s1", f.Session, "the frame carries its session")
 	require.NotContains(t, string(f.Payload), "not mine")
@@ -1877,12 +2129,15 @@ func TestSessionStatusReachesEveryConnection(t *testing.T) {
 	c := dialStream(t, g, "")
 	readFrame(t, c) // Bootstrap.
 	fake.SetSessionBusy("s1", true)
-	f := nextFrameOfType(t, c, frameSessionStatus)
+	f := nextFrameOfType(t.Context(), t, c, frameSessionStatus)
 	require.Equal(t, "", f.Session, "a status frame is global")
 	require.Contains(t, string(f.Payload), `"status":"running"`)
 }
 
-// TestUnsubscribeStopsFrames pins the other half of the subscription.
+// TestUnsubscribeStopsFrames pins the other half of the subscription by
+// observing absence: the unsubscribed session's message is published before a
+// global sentinel the pump emits later, so any message frame before the
+// sentinel would be the leak.
 func TestUnsubscribeStopsFrames(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
@@ -1890,33 +2145,116 @@ func TestUnsubscribeStopsFrames(t *testing.T) {
 	readFrame(t, c) // Bootstrap.
 	subscribeStream(t, c, "s1")
 	writeClient(t, c, `{"type":"unsubscribe","session_id":"s1"}`)
-	require.Eventually(t, func() bool { return !g.hub.subscribedForTest(c) }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return !g.hub.tracksForTest(c, "s1") }, time.Second, 10*time.Millisecond)
 
-	fake.Emit(msgEvent("m1", "s1", "after"))
 	fake.SetSessionBusy("s1", true)
-	f := nextFrameOfType(t, c, frameSessionStatus)
-	require.Equal(t, frameSessionStatus, f.Type, "only the global frame arrives")
+	fake.Emit(msgEvent("m1", "s1", "after"))
+	// A user prompt makes the pump publish the session's status after the
+	// message above, which is the sentinel this test reads.
+	fake.Emit(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
+		ID: "u1", SessionID: "s1", Role: message.User,
+	}})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.Read(ctx)
+		require.NoError(t, err)
+		var f testFrame
+		require.NoError(t, json.Unmarshal(data, &f))
+		require.NotEqual(t, "message", f.Type, "an unsubscribed session still delivered")
+		if f.Type == frameSessionStatus {
+			return
+		}
+	}
 }
 
-// TestReplayDropsPerSessionFrames pins the resync contract: a reconnecting
-// tab gets global frames from the ring and rebuilds sessions from fresh
-// snapshots, never from stale per-session frames.
-func TestReplayDropsPerSessionFrames(t *testing.T) {
+// TestTwoSessionsOnOneConnection pins spec C4: one tab follows two sessions
+// at once and receives both streams, each tagged with its session.
+func TestTwoSessionsOnOneConnection(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
+	fake.AddSession(session.Session{ID: "s2", Title: "Other", UpdatedAt: 5})
 	c := dialStream(t, g, "")
 	readFrame(t, c) // Bootstrap.
 	subscribeStream(t, c, "s1")
+	subscribeStream(t, c, "s2")
+
 	fake.Emit(msgEvent("m1", "s1", "one"))
-	msg := nextFrameOfType(t, c, "message")
+	fake.Emit(msgEvent("m2", "s2", "two"))
+	first := nextFrameOfType(t.Context(), t, c, "message")
+	second := nextFrameOfType(t.Context(), t, c, "message")
+	require.Equal(t, "s1", first.Session)
+	require.Contains(t, string(first.Payload), "one")
+	require.Equal(t, "s2", second.Session)
+	require.Contains(t, string(second.Payload), "two")
+}
+
+// TestReplayDropsPerSessionFrames pins the resync contract: the ring's
+// per-session frames never reach a reconnecting tab, which rebuilds every
+// session from a fresh snapshot instead.
+func TestReplayDropsPerSessionFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "kept"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	fake.Emit(msgEvent("m2", "s1", "live only"))
+	msg := nextFrameOfType(t.Context(), t, c, "message")
 	c.Close(websocket.StatusNormalClosure, "")
 
+	// Reconnect inside the ring: attach replays global frames only, so the
+	// live message cannot come back, and the resubscribe answers a snapshot
+	// carrying what the workspace stored.
 	c2 := dialStream(t, g, "?since="+itoa(msg.Seq-1))
-	require.Equal(t, frameBootstrap, readFrame(t, c2).Type)
+	writeClient(t, c2, `{"type":"subscribe","session_id":"s1"}`)
+	snap := readSnapshotAfterReplay(t, c2)
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(snap.Payload, &s))
+	require.Len(t, s.Messages, 1, "the snapshot carries the stored message")
+	require.Contains(t, string(s.Payload), "kept")
+}
+
+// TestResyncRebuildsSessions pins spec C2: a tab that held a subscription,
+// loses the ring and reconnects gets a bootstrap and then a fresh snapshot
+// for the session it re-subscribes to.
+func TestResyncRebuildsSessions(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "kept"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	for i := range ringSize + 1 {
+		fake.Emit(msgEvent("m"+itoa(uint64(i)), "s1", "x"))
+	}
+	require.Eventually(t, func() bool { return g.hub.head() >= ringSize+1 }, 30*time.Second, 10*time.Millisecond)
+	c.Close(websocket.StatusNormalClosure, "")
+
+	c2 := dialStream(t, g, "?since=1")
+	require.Equal(t, frameBootstrap, readFrame(t, c2).Type, "an expired ring answers a bootstrap")
 	snap := subscribeStream(t, c2, "s1")
 	var s SessionSnapshot
 	require.NoError(t, json.Unmarshal(snap.Payload, &s))
-	require.Len(t, s.Messages, 1, "the resubscribe answers what the replay dropped")
+	require.Len(t, s.Messages, 1)
+}
+
+// readSnapshotAfterReplay reads past global replayed frames to the session
+// snapshot, failing if any per-session frame arrives first.
+func readSnapshotAfterReplay(t *testing.T, c *websocket.Conn) testFrame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.Read(ctx)
+		require.NoError(t, err)
+		var f testFrame
+		require.NoError(t, json.Unmarshal(data, &f))
+		require.Empty(t, f.Session, "a per-session frame reached the replay")
+		if f.Type == frameSessionSnapshot {
+			return f
+		}
+	}
 }
 ```
 
@@ -1924,44 +2262,29 @@ func TestReplayDropsPerSessionFrames(t *testing.T) {
 add the helper to `internal/web/stream_test.go`:
 
 ```go
-// subscribedForTest reports whether the connection holds any subscription.
-func (h *hub) subscribedForTest(c *conn) bool {
+// tracksForTest reports whether the connection still wants the session,
+// subscribed or reserved.
+func (h *hub) tracksForTest(c *conn, sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(c.sessions) > 0
+	return c.tracks(sessionID)
 }
 ```
 
-and update `TestStreamSinceReplays` (it expects a replayed `message`) into:
-
-```go
-// TestStreamSinceReplaysGlobalFramesOnly pins that the ring's per-session
-// frames are filtered: a reconnecting tab re-subscribes for session state.
-func TestStreamSinceReplaysGlobalFramesOnly(t *testing.T) {
-	t.Parallel()
-	g, fake := startTest(t)
-	c := dialStream(t, g, "")
-	readFrame(t, c) // Bootstrap.
-	subscribeStream(t, c, "s1")
-	fake.Emit(msgEvent("m1", "s1", "one"))
-	msg := nextFrameOfType(t, c, "message")
-	c.Close(websocket.StatusNormalClosure, "")
-
-	c2 := dialStream(t, g, "?since="+itoa(msg.Seq-1))
-	snap := subscribeStream(t, c2, "s1")
-	var s SessionSnapshot
-	require.NoError(t, json.Unmarshal(snap.Payload, &s))
-	require.Len(t, s.Messages, 1)
-}
-```
+Delete `TestStreamSinceReplays` outright: it expected a replayed `message`
+frame, which is the behavior this task removes, and
+`TestReplayDropsPerSessionFrames` replaces it with the surviving contract.
+`TestStreamSinceTooOldGetsBootstrap` keeps its name and its assertions: an
+expired ring still answers a bootstrap.
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `go test ./internal/web/ -run 'TestPerSessionFrames|TestSessionStatusReaches|TestUnsubscribeStops|TestReplayDrops|TestStreamSinceReplays' -count=1`
+Run: `go test ./internal/web/ -run 'TestPerSessionFrames|TestSessionStatusReaches|TestUnsubscribeStops|TestTwoSessions|TestReplayDrops|TestResync' -count=1`
 Expected: FAIL. `TestPerSessionFramesReachOnlySubscribers` gets the `"not
-mine"` message first (delivery is still broadcast), and
-`TestReplayDropsPerSessionFrames` sees the replayed `message` frame before
-the snapshot.
+mine"` message first because delivery is still broadcast,
+`TestUnsubscribeStopsFrames` reads a `message` before its sentinel, and
+`TestReplayDropsPerSessionFrames` sees a replayed `message` frame before the
+snapshot.
 
 - [ ] **Step 3: Split the ring append out of publish**
 
@@ -1999,7 +2322,8 @@ Add the per-session pair:
 
 ```go
 // publishSession tags a frame with its session, records it in the ring and
-// delivers it only to the connections subscribed to that session.
+// delivers it to every connection that tracks the session, which includes one
+// whose snapshot is still being built.
 func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2007,10 +2331,10 @@ func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame {
 	f := frame{Seq: h.seq, Type: typ, Session: sessionID, Payload: raw}
 	h.appendLocked(f)
 	for c := range h.subs {
-		if !c.subscribedTo(sessionID) {
+		if !c.tracks(sessionID) {
 			continue
 		}
-		h.sendLocked(c, f)
+		h.deliverLocked(c, f)
 	}
 	return f
 }
@@ -2031,10 +2355,10 @@ In `handleStream`'s replay loop:
 
 ```go
 	for _, f := range replay {
-		// A per-session frame only belongs to a tab that asked for the
-		// session, and a connecting tab has not asked yet: it re-subscribes
-		// and gets a fresh snapshot instead.
-		if f.Session != "" && !g.hub.subscribed(c, f.Session) {
+		// Per-session frames are never replayed. A connecting tab holds no
+		// subscriptions yet, and replaying another tab's session traffic
+		// would be worse than the snapshot it re-subscribes for.
+		if f.Session != "" {
 			continue
 		}
 		if !writeFrame(ctx, ws, f) {
@@ -2214,31 +2538,82 @@ func TestFrameGolden(t *testing.T) {
 	require.JSONEq(t, string(want), string(data))
 }
 
-// goldenFrames builds one example per frame type: the event-derived ones
-// through encode, the gateway-originated ones directly.
+// goldenFrames builds the contract: one example per event frame type, keyed
+// by that type, plus the gateway-originated frames. The key of an event frame
+// is its type and not the fixture name, because two fixtures for one type
+// would make the file depend on map iteration order; the require below fails
+// loudly if that ever happens again. A frame type with two shapes (a shell
+// chunk and its end) is keyed "type" and "type_done".
 func goldenFrames(t *testing.T) map[string]frame {
 	t.Helper()
 	out := make(map[string]frame)
 	for name, ev := range fixtureEvents() {
 		typ, raw, ok := encode(ev)
 		require.True(t, ok, name)
-		out[typ] = frame{Seq: 1, Type: typ, Payload: raw}
+		require.NotContains(t, out, typ, "two fixtures share the frame type %s", typ)
+		out[typ] = frame{Seq: 1, Type: typ, Session: eventSessionID(ev), Payload: raw}
 	}
-	for typ, f := range gatewayFrames(t) {
-		out[typ] = f
+	for name, f := range gatewayFrames(t) {
+		out[name] = f
 	}
 	return out
+}
+
+// TestGoldenCoversEveryFrameType keeps the contract complete: a frame type the
+// gateway can put on the wire without an example in the golden file fails
+// here, which is what stops the frontend's zod boundary from meeting an
+// unknown type at runtime.
+func TestGoldenCoversEveryFrameType(t *testing.T) {
+	t.Parallel()
+	frames := goldenFrames(t)
+	for _, typ := range frameTypes() {
+		require.Contains(t, frames, typ)
+	}
+}
+
+// frameTypes is every frame type this package can publish, gateway-originated
+// or forwarded from the workspace wire.
+func frameTypes() []string {
+	return []string{
+		frameBootstrap,
+		frameSessionSnapshot,
+		frameSessionStatus,
+		frameFollow,
+		frameInputMode,
+		framePlanReady,
+		frameTeamState,
+		frameAgentRuns,
+		frameModelChanged,
+		frameClosing,
+		frameError,
+		frameSecurePrompt,
+		frameSignIn,
+		frameShellOutput,
+		pubsub.PayloadTypeMessage,
+		pubsub.PayloadTypeFile,
+		pubsub.PayloadTypeSession,
+		pubsub.PayloadTypePermissionRequest,
+		pubsub.PayloadTypePermissionNotification,
+		pubsub.PayloadTypePermissionModeChanged,
+		pubsub.PayloadTypeQuestionRequest,
+		pubsub.PayloadTypeQuestionNotification,
+		pubsub.PayloadTypeRunComplete,
+		pubsub.PayloadTypeAgentEvent,
+		pubsub.PayloadTypeLSPEvent,
+		pubsub.PayloadTypeMCPEvent,
+		pubsub.PayloadTypeConfigStale,
+		pubsub.PayloadTypeConfigChanged,
+		pubsub.PayloadTypeUpdateAvailable,
+	}
 }
 
 // fixtureEvents is one example of every workspace event the gateway
 // forwards.
 func fixtureEvents() map[string]any {
 	return map[string]any{
-		"message_user": pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
-			ID: "u-1", SessionID: "s1", Role: message.User, CreatedAt: 100, UpdatedAt: 100,
-			Parts: []message.ContentPart{message.TextContent{Text: "Refactor the parser"}},
-		}},
-		"message_assistant": pubsub.Event[message.Message]{Type: pubsub.UpdatedEvent, Payload: message.Message{
+		// One message fixture, the richest: the user shape is the same
+		// message with one text part.
+		"message": pubsub.Event[message.Message]{Type: pubsub.UpdatedEvent, Payload: message.Message{
 			ID: "a-1", SessionID: "s1", Role: message.Assistant, CreatedAt: 101, UpdatedAt: 102,
 			Model: "claude", Provider: "anthropic",
 			Parts: []message.ContentPart{
@@ -2344,6 +2719,11 @@ func gatewayFrames(t *testing.T) map[string]frame {
 		frameShellOutput: mkSession(frameShellOutput, "s1", shellOutputPayload{
 			RunID: "run-1", SessionID: "s1", Chunk: "line 1\n",
 		}),
+		// The same frame type with the run's last payload: a client must
+		// accept either shape.
+		frameShellOutput + "_done": mkSession(frameShellOutput, "s1", shellDonePayload{
+			RunID: "run-1", SessionID: "s1", Done: true, ExitCode: 0,
+		}),
 	}
 }
 
@@ -2430,12 +2810,13 @@ does not exist yet).
 
 - [ ] **Step 3: Generate the golden file**
 
-Run: `go test ./internal/web/ -run TestFrameGolden -update -count=1`
+Run: `go test ./internal/web/ -run 'TestFrameGolden|TestGoldenCoversEveryFrameType' -update -count=1`
 Expected: PASS and `internal/web/testdata/frames.golden.json` appears.
-Inspect it: the top-level keys are frame types, sorted, and include
-`bootstrap`, `session_snapshot`, `session_status`, `message`, `file`,
-`run_complete`, `shell_output` and the rest of the list above. Every
-`session_snapshot`, `shell_output` and `message` entry carries
+Inspect it: the top-level keys are frame types, sorted, plus
+`shell_output_done`; they include `bootstrap`, `session_snapshot`,
+`session_status`, `message`, `file`, `run_complete`, `shell_output` and the
+rest of `frameTypes()`. Every `session_snapshot`, `shell_output`,
+`shell_output_done`, `message`, `file` and `run_complete` entry carries
 `session_id`; `bootstrap` and every other global frame does not.
 
 - [ ] **Step 4: Run the test without -update**
@@ -2473,9 +2854,11 @@ git commit -m "test(web): pin the stream frame contract in a golden file"
   - `func SeedM1(f *Fake, clock time.Time) error`
   - `func SeedM1Pending(f *Fake)`
   - Sessions `s-m1-run` (running), `s-m1-queue` (queued), `s-m1-wait`
-    (pending interaction) and `s-m1-idle`, which Task 16's specs and
-    baseline screenshots depend on.
-  Task 16 reads `WEBFAKE_SCENARIO=m1`.
+    (pending interaction) and `s-m1-idle`, which Task 17's browser specs
+    drive. Two of them (`s-m1-run`, `s-m1-wait`) are non-idle at once, which
+    is what the multi-session spec needs. There are no screenshot baselines in
+    M1; they arrive once a surface settles.
+  Task 17 reads `WEBFAKE_SCENARIO=m1`.
 
 - [ ] **Step 1: Write the failing seed test**
 
@@ -2520,7 +2903,8 @@ func TestSeedM1GivesTheShellEveryMarker(t *testing.T) {
 	require.Len(t, msgs, 2)
 }
 
-// TestSeedM1PendingOpensAPermission pins the fourth marker's source.
+// TestSeedM1PendingOpensAPermission pins the fourth marker's source: a
+// permission request the gateway's pending store keys to s-m1-wait.
 func TestSeedM1PendingOpensAPermission(t *testing.T) {
 	t.Parallel()
 	f := NewFake()
@@ -2528,7 +2912,10 @@ func TestSeedM1PendingOpensAPermission(t *testing.T) {
 	SeedM1Pending(f)
 	ev, ok := <-sub
 	require.True(t, ok)
-	require.NotNil(t, ev)
+	req, isRequest := ev.(pubsub.Event[permission.PermissionRequest])
+	require.True(t, isRequest, "the seed publishes a permission request, got %T", ev)
+	require.Equal(t, "s-m1-wait", req.Payload.SessionID)
+	require.Equal(t, "p-m1", req.Payload.ID)
 }
 ```
 
@@ -2627,9 +3014,17 @@ and after `web.Start` returns (the gateway must be subscribed first):
 
 ```go
 	if m1 {
-		webtest.SeedM1Pending(fake)
+		// The permission arrives a moment after the page loads, so the
+		// waiting marker appears without a reload; that live change is what
+		// the multi-session browser spec watches.
+		time.AfterFunc(time.Second, func() { webtest.SeedM1Pending(fake) })
 	}
 ```
+
+`webfake` already imports `time`. Add
+`"github.com/charmbracelet/crush/internal/permission"` and
+`"github.com/charmbracelet/crush/internal/pubsub"` to
+`internal/web/webtest/seed_m1_test.go` if they are not there.
 
 - [ ] **Step 6: Verify the scenario by hand**
 
@@ -2665,14 +3060,16 @@ git commit -m "test(web): seed a multi-session webfake scenario"
 **Files:**
 - Create: `web/package.json`, `web/package-lock.json` (generated),
   `web/tsconfig.json`, `web/vite.config.ts`, `web/index.html`,
-  `web/.nvmrc`, `web/THIRD_PARTY_NOTICES.md`
+  `web/.nvmrc`
 - Create: `web/src/main.tsx`, `web/src/App.tsx`, `web/src/App.module.css`,
-  `web/src/App.test.tsx`, `web/src/test/setup.ts`
+  `web/src/App.test.tsx`, `web/src/test/setup.ts`,
+  `web/src/test/memoryStorage.ts`
 - Create: `web/scripts/budget.mjs`
 - Move: `internal/web/dist/favicon.svg` → `web/public/favicon.svg`
 - Modify: `internal/web/assets_test.go` (the M0 placeholder assertions)
 - Modify: `Taskfile.yaml` (`web:*`)
 - Modify: `.github/workflows/web.yml` (frontend job)
+- Modify: `internal/web/cmd/webfake/main.go` (the dev-server hint)
 - Regenerate: `internal/web/dist/` (build output, committed)
 
 **Interfaces:**
@@ -2684,8 +3081,7 @@ git commit -m "test(web): seed a multi-session webfake scenario"
     replaces with the frame.
   - `internal/web/dist/index.html` plus hashed `assets/`, served by
     `assetHandler` at `/`.
-  - `web/THIRD_PARTY_NOTICES.md` carrying the DSH MIT notice, which Task 9
-    fills in for the copied CSS.
+  Task 9 creates `web/THIRD_PARTY_NOTICES.md` with the DSH notice.
 
 - [ ] **Step 1: Write the toolchain files**
 
@@ -2808,6 +3204,27 @@ export default defineConfig({
 import '@testing-library/jest-dom/vitest'
 ```
 
+`web/src/test/memoryStorage.ts` (the one in-memory `Storage` every unit test
+uses, instead of a copy per file):
+
+```ts
+// memoryStorage is the in-memory Storage the unit tests inject, so a test can
+// assert what a module persisted without touching the jsdom localStorage.
+export function memoryStorage(initial: Record<string, string> = {}): Storage {
+  const data = new Map(Object.entries(initial))
+  return {
+    get length() {
+      return data.size
+    },
+    clear: () => data.clear(),
+    getItem: (key: string) => data.get(key) ?? null,
+    key: (index: number) => [...data.keys()][index] ?? null,
+    removeItem: (key: string) => data.delete(key),
+    setItem: (key: string, value: string) => data.set(key, value),
+  }
+}
+```
+
 `web/scripts/budget.mjs`:
 
 ```js
@@ -2823,8 +3240,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 const dist = join(here, '..', '..', 'internal', 'web', 'dist')
 
 const html = readFileSync(join(dist, 'index.html'), 'utf8')
-const sources = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((match) => match[1])
-if (sources.length === 0) {
+// A module preload is first-paint JavaScript too: the browser fetches and
+// parses it before the first paint even though the tag is a link.
+const links = [...html.matchAll(/<link[^>]+rel="modulepreload"[^>]*href="([^"]+)"/g)].map((match) => match[1])
+const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((match) => match[1])
+const sources = [...new Set([...scripts, ...links])]
+if (scripts.length === 0) {
   console.error('budget: the built index.html loads no module script')
   process.exit(1)
 }
@@ -3029,10 +3450,20 @@ go test ./internal/web/... -count=1
 
 Expected: PASS.
 
-- [ ] **Step 10: Restore the Taskfile tasks**
+- [ ] **Step 10: Drop the placeholder wording from the webfake hint**
+
+`internal/web/cmd/webfake/main.go` still prints
+`Dev server: the web UI is being rebuilt; this serves the placeholder page.`
+Replace it with
+
+```go
+	fmt.Fprintln(os.Stderr, "Dev server: npm --prefix web run dev serves the UI from source on port 5173.")
+```
+
+- [ ] **Step 11: Restore the Taskfile tasks**
 
 Replace the `web:*` block in `Taskfile.yaml` with the real commands, and add
-`web:budget`:
+`web:budget`. `web:e2e` comes back in Task 17, with the suite it runs:
 
 ```yaml
   web:install:
@@ -3061,12 +3492,6 @@ Replace the `web:*` block in `Taskfile.yaml` with the real commands, and add
     cmds:
       - npm run budget
 
-  web:e2e:
-    desc: Run Playwright smoke tests against the fake gateway
-    dir: web
-    cmds:
-      - npm run e2e
-
   web:check:
     desc: Fail when the committed web mode build is stale
     cmds:
@@ -3081,7 +3506,7 @@ Replace the `web:*` block in `Taskfile.yaml` with the real commands, and add
       - go run ./internal/web/cmd/webfake
 ```
 
-- [ ] **Step 11: Restore the frontend CI job**
+- [ ] **Step 12: Restore the frontend CI job**
 
 In `.github/workflows/web.yml`, replace the `frontend` job's steps with:
 
@@ -3122,9 +3547,9 @@ In `.github/workflows/web.yml`, replace the `frontend` job's steps with:
       - run: go test ./internal/web/... ./internal/wire/...
 ```
 
-Leave the `e2e` job as the M0 stub; Task 16 restores it.
+Leave the `e2e` job as the M0 stub; Task 17 restores it.
 
-- [ ] **Step 12: Verify the whole task**
+- [ ] **Step 13: Verify the whole task**
 
 ```bash
 cd web && npm run typecheck && npm test && npm run build && npm run budget
@@ -3134,7 +3559,7 @@ cd .. && go build ./... && go test ./internal/web/... -count=1
 Expected: every command succeeds. `git status --short internal/web/dist`
 lists only files you are about to commit.
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add web Taskfile.yaml .github/workflows/web.yml internal/web/assets_test.go internal/web/dist
@@ -3152,7 +3577,7 @@ git commit -m "feat(web): scaffold the React shell and restore its CI"
 - Create: `web/src/theme/app.css`, `web/src/theme/index.css`,
   `web/src/theme/theme.ts`, `web/src/theme/theme.test.ts`
 - Modify: `web/src/main.tsx` (import the theme entry point)
-- Modify: `web/THIRD_PARTY_NOTICES.md` (the MIT notice)
+- Create: `web/THIRD_PARTY_NOTICES.md` (the MIT notice)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -3174,21 +3599,8 @@ git commit -m "feat(web): scaffold the React shell and restore its CI"
 ```ts
 import { describe, expect, it } from 'vitest'
 
+import { memoryStorage } from '../test/memoryStorage'
 import { applyTheme, readPreference, resolveTheme, writePreference } from './theme'
-
-function memoryStorage(initial: Record<string, string> = {}): Storage {
-  const data = new Map(Object.entries(initial))
-  return {
-    get length() {
-      return data.size
-    },
-    clear: () => data.clear(),
-    getItem: (key: string) => data.get(key) ?? null,
-    key: (index: number) => [...data.keys()][index] ?? null,
-    removeItem: (key: string) => data.delete(key),
-    setItem: (key: string, value: string) => data.set(key, value),
-  }
-}
 
 describe('resolveTheme', () => {
   it('follows the system when the preference says so', () => {
@@ -3306,10 +3718,15 @@ Adapt the two dark selectors:
 ```bash
 sed -i "s/^body\[data-ds-dark-theme\] {/html[data-ds-theme='dark'] body {/" web/src/theme/design-platform.css
 sed -i "s/^html\[data-platform='darwin'\] body\[data-ds-dark-theme\] {/html[data-platform='darwin'][data-ds-theme='dark'] body {/" web/src/theme/design-platform.css
-grep -n 'data-ds-dark-theme' web/src/theme/design-platform.css
+grep -nE '^(body\[data-ds-dark-theme\]|html\[data-platform)' web/src/theme/design-platform.css
 ```
 
-Expected: the last command prints nothing. Do not copy `brand-font.css`,
+Expected: the last command prints only the adapted
+`html[data-platform='darwin'][data-ds-theme='dark'] body {` lines, and no
+`body[data-ds-dark-theme]` selector is left. It is anchored at the line start
+on purpose: the file header names the old selector in prose.
+
+Do not copy `brand-font.css`,
 `montserrat-*.woff2` or `Montserrat-OFL.txt`: the shell uses the system
 stack from `base.css`.
 
@@ -3337,13 +3754,15 @@ stack from `base.css`.
 
 html {
   color-scheme: light;
-  background: var(--dsw-alias-bg-base);
 }
 
 html[data-ds-theme='dark'] {
   color-scheme: dark;
 }
 
+/* The --dsw-alias-* tokens are declared on body by design-platform.css, so
+ * the page background is painted here; a body background propagates to the
+ * canvas, which is what fills the viewport. */
 body {
   margin: 0;
   min-height: 100vh;
@@ -3477,8 +3896,8 @@ git commit -m "feat(web): adopt the DSH theme tokens"
     `bootstrapSchema`, `sessionSnapshotSchema`, `frameSchema`,
     `payloadSchemas: Record<string, ZodTypeAny>` and
     `parseFrame(raw: string): ParsedFrame`.
-  Task 11 consumes `ApiClient.wsProtocols`, `parseFrame` and
-  `sessionStatusSchema`; Task 12 consumes `ParsedFrame`.
+  Task 11 consumes `ApiClient.wsProtocols` and `parseFrame`; Task 12
+  consumes `ParsedFrame`, `SessionRow` and `sessionStatusSchema`.
 
 - [ ] **Step 1: Write the failing auth test**
 
@@ -3487,21 +3906,8 @@ git commit -m "feat(web): adopt the DSH theme tokens"
 ```ts
 import { describe, expect, it, vi } from 'vitest'
 
+import { memoryStorage } from '../test/memoryStorage'
 import { ApiClient, HttpError, readTokenFromHash, stripTokenFromUrl } from './http'
-
-function memoryStorage(): Storage {
-  const data = new Map<string, string>()
-  return {
-    get length() {
-      return data.size
-    },
-    clear: () => data.clear(),
-    getItem: (key) => data.get(key) ?? null,
-    key: (index) => [...data.keys()][index] ?? null,
-    removeItem: (key) => data.delete(key),
-    setItem: (key, value) => data.set(key, value),
-  }
-}
 
 describe('readTokenFromHash', () => {
   it('reads the launch token', () => {
@@ -3549,12 +3955,15 @@ describe('ApiClient', () => {
 
   it('sends the bearer header and parses JSON', async () => {
     const storage = memoryStorage()
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    )
     const client = new ApiClient({ storage, fetchImpl })
     client.setToken('abc123')
     await expect(client.get<{ ok: boolean }>('/api/health')).resolves.toEqual({ ok: true })
     const [, init] = fetchImpl.mock.calls[0]
-    expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer abc123' })
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer abc123' })
   })
 
   it('answers 204 with undefined, not a parse error', async () => {
@@ -3564,6 +3973,15 @@ describe('ApiClient', () => {
     })
     client.setToken('abc123')
     await expect(client.send('DELETE', '/api/sessions/s1')).resolves.toBeUndefined()
+  })
+
+  it('answers 202 with an empty body too, which is what follow does', async () => {
+    const client = new ApiClient({
+      storage: memoryStorage(),
+      fetchImpl: vi.fn(async () => new Response('', { status: 202 })),
+    })
+    client.setToken('abc123')
+    await expect(client.send('POST', '/api/follow', { session_id: 's1' })).resolves.toBeUndefined()
   })
 
   it('turns an error envelope into an HttpError', async () => {
@@ -3613,7 +4031,16 @@ export interface ApiClientOptions {
 
 export function readTokenFromHash(hash: string): string | null {
   const match = /(?:^#|&)t=([^&]+)/.exec(hash)
-  return match ? decodeURIComponent(match[1]) : null
+  if (!match) {
+    return null
+  }
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    // A malformed fragment is not a token: the tab shows the unauthorized
+    // screen instead of throwing on boot.
+    return null
+  }
 }
 
 export function stripTokenFromUrl(location: Location, history: History): void {
@@ -3684,10 +4111,14 @@ export class ApiClient {
     if (!response.ok) {
       throw await toHttpError(response)
     }
-    if (response.status === 204) {
+    // Several routes answer 202 or 204 with no body (follow, cancel, queue
+    // clear, detach), so the body is read as text and parsed only when it is
+    // there.
+    const text = await response.text()
+    if (text === '') {
       return undefined as T
     }
-    return (await response.json()) as T
+    return JSON.parse(text) as T
   }
 
   // wsProtocols are the entries the stream offers: the token entry beside the
@@ -3728,22 +4159,30 @@ const frames = golden as Record<string, unknown>
 
 describe('the wire contract', () => {
   it('carries at least the M1 frames', () => {
-    for (const type of ['bootstrap', 'session_snapshot', 'session_status', 'message', 'file', 'shell_output', 'run_complete']) {
+    for (const type of [
+      'bootstrap',
+      'session_snapshot',
+      'session_status',
+      'message',
+      'file',
+      'shell_output',
+      'shell_output_done',
+      'run_complete',
+    ]) {
       expect(frames[type], type).toBeDefined()
     }
   })
 
-  for (const [type, frame] of Object.entries(frames)) {
-    it(`parses the ${type} frame`, () => {
-      const schema = payloadSchemas[type]
-      expect(schema, `no schema is registered for ${type}`).toBeDefined()
+  // The key of an entry is its frame type, or "type_variant" when one type
+  // has two shapes (a shell chunk and its end), so the schema is looked up by
+  // the frame's own type.
+  for (const [name, frame] of Object.entries(frames)) {
+    it(`parses the ${name} entry`, () => {
       const parsed = frameSchema.parse(frame)
-      expect(parsed.type).toBe(type)
+      const schema = payloadSchemas[parsed.type]
+      expect(schema, `no schema is registered for ${parsed.type}`).toBeDefined()
       expect(() => schema.parse(parsed.payload)).not.toThrow()
-    })
-
-    it(`round-trips the ${type} frame through parseFrame`, () => {
-      expect(parseFrame(JSON.stringify(frame)).type).toBe(type)
+      expect(parseFrame(JSON.stringify(frame)).type).toBe(parsed.type)
     })
   }
 
@@ -3858,9 +4297,14 @@ export const payloadSchemas: Record<string, ZodTypeAny> = {
   web_error: z.object({ session_id: z.string(), code: z.string(), error: z.string() }),
   secure_prompt: z.object({ prompts: z.array(z.unknown()) }),
   signin: z.object({ flow_id: z.string() }).passthrough(),
-  shell_output: z
-    .object({ run_id: z.string(), session_id: z.string(), chunk: z.string() })
-    .passthrough(),
+  // A shell run streams chunks and then one end frame of the same type, so
+  // the schema accepts either shape.
+  shell_output: z.union([
+    z.object({ run_id: z.string(), session_id: z.string(), chunk: z.string() }).passthrough(),
+    z
+      .object({ run_id: z.string(), session_id: z.string(), done: z.boolean(), exit_code: z.number() })
+      .passthrough(),
+  ]),
   message: eventEnvelope(messageSchema),
   file: eventEnvelope(z.object({ session_id: z.string(), path: z.string() }).passthrough()),
   run_complete: eventEnvelope(z.object({ session_id: z.string(), message_id: z.string() }).passthrough()),
@@ -3876,6 +4320,9 @@ export const payloadSchemas: Record<string, ZodTypeAny> = {
   config_stale: eventEnvelope(z.unknown()),
   config_changed: eventEnvelope(z.unknown()),
   update_available: eventEnvelope(z.unknown()),
+  skills_event: eventEnvelope(z.unknown()),
+  host_theme: eventEnvelope(z.unknown()),
+  client_session: eventEnvelope(z.unknown()),
 }
 
 export const frameSchema = z
@@ -3941,7 +4388,8 @@ git commit -m "feat(web): add the gateway client and the wire contract"
   - `class StreamClient` with `start()`, `stop()`, `subscribe(sessionID)`,
     `unsubscribe(sessionID)`, `state`, `lastSeq`, and constructor options
     `{ url, protocols, handlers, createSocket?, random?, pingIntervalMs? }`.
-  Task 12 consumes the handlers; Task 14 calls `subscribe`/`unsubscribe`.
+  Task 12 consumes the handlers; Task 15's reconciler calls
+  `subscribe`/`unsubscribe`.
 
 - [ ] **Step 1: Write the failing stream tests**
 
@@ -4047,7 +4495,7 @@ describe('StreamClient', () => {
     s.stop()
   })
 
-  it('reconnects at once on 4001 and resubscribes', () => {
+  it('reconnects at once on 4001 and resubscribes on the new socket', () => {
     const s = client()
     s.start()
     const first = FakeSocket.opened[0]
@@ -4056,6 +4504,9 @@ describe('StreamClient', () => {
     first.drop(4001)
     vi.advanceTimersByTime(0)
     expect(FakeSocket.opened).toHaveLength(2)
+    const second = FakeSocket.opened[1]
+    second.open()
+    expect(second.sent).toContain(JSON.stringify({ type: 'subscribe', session_id: 's1' }))
     s.stop()
   })
 
@@ -4335,10 +4786,13 @@ git commit -m "feat(web): add the reconnecting stream client"
   - `interface AppState { connection, bootstrap, sessions, selectedSessionId,
     sessionData, lastSeen }`, `createAppStore(): AppStore`,
     `reduceFrame(state, frame): AppState`, `reduceBootstrap(state, payload)`,
-    `isUnread(state, sessionID): boolean`.
-  - `readSeen(storage?)`, `writeSeen(seen, storage?)` under `crush.seen`.
-  Task 14 consumes `AppStore.selectSession` and `isUnread`; Task 15 consumes
-  `state.sessionData`.
+    `isUnread(state, sessionID): boolean`,
+    `wantedSubscriptions(state): string[]`, `maxSubscriptions = 32`.
+  - `readSeen(storage?)`, `writeSeen(seen, storage?)` under `crush.seen`,
+    holding the last-seen `updated_at` per session.
+  Task 14 consumes `AppStore.selectSession`; Task 15 consumes `isUnread`,
+  `wantedSubscriptions` and `forgetSession`; Task 16 consumes
+  `state.sessionData` and `emptySessionData`.
 
 - [ ] **Step 1: Write the failing store tests**
 
@@ -4380,8 +4834,15 @@ describe('createStore', () => {
 import { describe, expect, it } from 'vitest'
 
 import type { Bootstrap, ParsedFrame } from '../api/wire'
-import { createAppStore, isUnread, reduceBootstrap, reduceFrame } from './app'
-import { memoryStorage } from './seen'
+import { memoryStorage } from '../test/memoryStorage'
+import {
+  createAppStore,
+  isUnread,
+  maxSubscriptions,
+  reduceBootstrap,
+  reduceFrame,
+  wantedSubscriptions,
+} from './app'
 
 const bootstrap: Bootstrap = {
   version: 'test',
@@ -4474,26 +4935,83 @@ describe('reduceFrame', () => {
     expect(next.sessionData.s2.queued).toEqual(['later'])
   })
 
-  it('marks another session unread and the selected one seen', () => {
+  it('drops a deleted message', () => {
+    const start = reduceBootstrap(createAppStore().get(), bootstrap)
+    const withMessage = reduceFrame(
+      start,
+      frame('message', { type: 'created', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 2, 's1'),
+    )
+    const next = reduceFrame(
+      withMessage,
+      frame('message', { type: 'deleted', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 3, 's1'),
+    )
+    expect(next.sessionData.s1.messages).toHaveLength(0)
+  })
+
+  it('marks a session unread when its updated_at moves past what was seen', () => {
     const start = reduceBootstrap(createAppStore().get(), bootstrap)
     const state = reduceFrame(
       start,
-      frame('message', { type: 'created', payload: { id: 'm9', role: 'user', session_id: 's2', parts: [], created_at: 1, updated_at: 1 } }, 9, 's2'),
+      frame('session', { type: 'updated', payload: { id: 's2', title: 'Tests', message_count: 3, updated_at: 40 } }, 9),
     )
     expect(isUnread(state, 's2')).toBe(true)
-    expect(isUnread(state, 's1')).toBe(false)
+    expect(isUnread(state, 's1')).toBe(false, "the open session is never unread")
+  })
+
+  it('marks the open session seen when its own update arrives', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s1')
+    store.applyFrame(frame('session', { type: 'updated', payload: { id: 's1', title: 'Parser refactor', message_count: 3, updated_at: 55 } }, 10))
+    expect(isUnread(store.get(), 's1')).toBe(false)
   })
 })
 
 describe('AppStore.selectSession', () => {
-  it('marks the session seen when it is selected', () => {
+  it('marks the row seen at its updated_at and persists it', () => {
     const storage = memoryStorage()
     const store = createAppStore(storage)
     store.applyBootstrap(bootstrap)
-    store.applyFrame(frame('message', { type: 'created', payload: { id: 'm9', role: 'user', session_id: 's2', parts: [], created_at: 1, updated_at: 1 } }, 9, 's2'))
+    store.applyFrame(frame('session', { type: 'updated', payload: { id: 's2', title: 'Tests', message_count: 3, updated_at: 40 } }, 9))
+    expect(isUnread(store.get(), 's2')).toBe(true)
     store.selectSession('s2')
     expect(isUnread(store.get(), 's2')).toBe(false)
-    expect(storage.getItem('crush.seen')).toContain('"s2":9')
+    expect(storage.getItem('crush.seen')).toContain('"s2":40')
+  })
+})
+
+describe('AppStore.forgetSession', () => {
+  it('clears the selection and the messages of the deleted session', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    store.forgetSession('s2')
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+    expect(store.get().selectedSessionId).toBeNull()
+    expect(store.get().sessionData.s2).toBeUndefined()
+  })
+})
+
+describe('wantedSubscriptions', () => {
+  it('follows the open session and every non-idle session', () => {
+    const state = reduceBootstrap(createAppStore().get(), bootstrap)
+    // bootstrap: s1 idle and current, s2 running.
+    expect(wantedSubscriptions(state)).toEqual(['s1', 's2'])
+    const other = { ...state, selectedSessionId: 's2' }
+    expect(wantedSubscriptions(other)).toEqual(['s2'])
+  })
+
+  it('caps the set at the gateway limit', () => {
+    const rows = Array.from({ length: maxSubscriptions + 5 }, (_, index) => ({
+      id: `s${index}`,
+      parent_session_id: '',
+      title: `t${index}`,
+      message_count: 0,
+      updated_at: index,
+      status: 'running' as const,
+    }))
+    const state = { ...reduceBootstrap(createAppStore().get(), bootstrap), sessions: rows, selectedSessionId: null }
+    expect(wantedSubscriptions(state)).toHaveLength(maxSubscriptions)
   })
 })
 ```
@@ -4523,7 +5041,7 @@ export function createStore<T extends object>(initial: T): Store<T> {
   return {
     get: () => state,
     set: (update) => {
-      const patch = typeof update === 'function' ? update(state) : update
+      const patch = isUpdater(update) ? update(state) : update
       let changed = false
       for (const key of Object.keys(patch) as (keyof T)[]) {
         if (!Object.is(state[key], patch[key])) {
@@ -4544,6 +5062,11 @@ export function createStore<T extends object>(initial: T): Store<T> {
       return () => listeners.delete(listener)
     },
   }
+}
+
+// isUpdater narrows the union so the strict compiler sees the callable branch.
+function isUpdater<T extends object>(update: Partial<T> | ((state: T) => Partial<T>)): update is (state: T) => Partial<T> {
+  return typeof update === 'function'
 }
 
 // useStore reads a store through useSyncExternalStore. Selectors must return
@@ -4569,20 +5092,8 @@ export function useStore<T extends object, S>(store: Store<T>, selector: (state:
 ```ts
 const seenKey = 'crush.seen'
 
-export function memoryStorage(initial: Record<string, string> = {}): Storage {
-  const data = new Map(Object.entries(initial))
-  return {
-    get length() {
-      return data.size
-    },
-    clear: () => data.clear(),
-    getItem: (key) => data.get(key) ?? null,
-    key: (index) => [...data.keys()][index] ?? null,
-    removeItem: (key) => data.delete(key),
-    setItem: (key, value) => data.set(key, value),
-  }
-}
-
+// readSeen returns the last-seen updated_at per session. It survives a Crush
+// restart because the timestamps come from the workspace, not from this run.
 export function readSeen(storage: Storage = localStorage): Record<string, number> {
   const raw = storage.getItem(seenKey)
   if (!raw) {
@@ -4607,8 +5118,8 @@ export function writeSeen(seen: Record<string, number>, storage: Storage = local
 }
 ```
 
-`memoryStorage` lives in the store module because both the test and the
-browser code use it; it is the seam Task 12's tests drive.
+`memoryStorage` comes from `web/src/test/memoryStorage.ts` (Task 8); it is
+the seam every unit test injects.
 
 - [ ] **Step 5: Write the app store**
 
@@ -4635,7 +5146,6 @@ export interface SessionData {
   busy: boolean
   queued: string[]
   files: { path: string }[]
-  lastSeq: number
 }
 
 export interface AppState {
@@ -4653,7 +5163,6 @@ export const emptySessionData: SessionData = {
   busy: false,
   queued: [],
   files: [],
-  lastSeq: 0,
 }
 
 export function createAppStore(storage: Storage = localStorage): Store<AppState> & AppStore {
@@ -4672,9 +5181,23 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     selectSession: (sessionID: string) => {
       store.set((state) => ({
         selectedSessionId: sessionID,
-        lastSeen: markSeen(state.lastSeen, sessionID, state.sessionData[sessionID]?.lastSeq ?? 0),
+        lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
       }))
       writeSeen(store.get().lastSeen, storage)
+    },
+    // forgetSession drops a deleted session at once, without waiting for the
+    // gateway's deleted frame: the row, its messages and a selection pointing
+    // at it all go.
+    forgetSession: (sessionID: string) => {
+      store.set((state) => {
+        const sessionData = { ...state.sessionData }
+        delete sessionData[sessionID]
+        return {
+          sessions: state.sessions.filter((row) => row.id !== sessionID),
+          sessionData,
+          selectedSessionId: state.selectedSessionId === sessionID ? null : state.selectedSessionId,
+        }
+      })
     },
   })
 }
@@ -4684,6 +5207,7 @@ export interface AppStore {
   applyFrame(frame: ParsedFrame): void
   setConnection(connection: ConnectionState): void
   selectSession(sessionID: string): void
+  forgetSession(sessionID: string): void
 }
 
 export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
@@ -4691,7 +5215,9 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
     ...state,
     bootstrap: payload,
     sessions: payload.sessions,
-    selectedSessionId: state.selectedSessionId ?? payload.current_session_id ?? payload.sessions[0]?.id ?? null,
+    // || and not ??: current_session_id is "" when no terminal is attached,
+    // and an empty string must fall through to the first row.
+    selectedSessionId: state.selectedSessionId || payload.current_session_id || payload.sessions[0]?.id || null,
   }
 }
 
@@ -4717,7 +5243,6 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
             busy: snapshot.busy,
             queued: snapshot.queued,
             files: snapshot.files,
-            lastSeq: frame.seq,
           },
         },
       }
@@ -4730,21 +5255,31 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       }
     }
     case 'session': {
-      // A created or renamed session arrives as a full entity; a deleted
-      // one leaves the list.
-      return { ...state, sessions: mergeSessionEvent(state.sessions, frame.payload) }
+      // A created or renamed session arrives as a full entity; a deleted one
+      // leaves the list. The selected session is marked seen at the
+      // updated_at the entity carries, which is how a tab that is open on a
+      // session never shows it unread.
+      const sessions = mergeSessionEvent(state.sessions, frame.payload)
+      const id = sessionIDOf(frame.payload)
+      const lastSeen =
+        id !== null && id === state.selectedSessionId
+          ? markSeen(state.lastSeen, id, updatedAtIn(sessions, id))
+          : state.lastSeen
+      return { ...state, sessions, lastSeen }
     }
     case 'message': {
+      // A deleted message leaves the list; a created or updated one is
+      // upserted by id, which is idempotent for a frame a snapshot echoed.
       const envelope = frame.payload as { type: string; payload: WireMessage }
       const id = envelope.payload.session_id
       const current = state.sessionData[id] ?? emptySessionData
-      const messages = upsertMessage(current.messages, envelope.payload)
+      const messages =
+        envelope.type === 'deleted'
+          ? current.messages.filter((message) => message.id !== envelope.payload.id)
+          : upsertMessage(current.messages, envelope.payload)
       return {
         ...state,
-        sessionData: {
-          ...state.sessionData,
-          [id]: { ...current, messages, lastSeq: Math.max(current.lastSeq, frame.seq) },
-        },
+        sessionData: { ...state.sessionData, [id]: { ...current, messages } },
       }
     }
     case 'run_complete': {
@@ -4753,29 +5288,12 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       const current = state.sessionData[id] ?? emptySessionData
       return {
         ...state,
-        sessionData: {
-          ...state.sessionData,
-          [id]: { ...current, busy: false, lastSeq: Math.max(current.lastSeq, frame.seq) },
-        },
+        sessionData: { ...state.sessionData, [id]: { ...current, busy: false } },
       }
     }
     default: {
-      return trackSessionSeq(state, frame)
+      return state
     }
-  }
-}
-
-function trackSessionSeq(state: AppState, frame: ParsedFrame): AppState {
-  if (!frame.sessionId) {
-    return state
-  }
-  const current = state.sessionData[frame.sessionId] ?? emptySessionData
-  return {
-    ...state,
-    sessionData: {
-      ...state.sessionData,
-      [frame.sessionId]: { ...current, lastSeq: Math.max(current.lastSeq, frame.seq) },
-    },
   }
 }
 
@@ -4815,34 +5333,57 @@ function mergeSessionEvent(rows: SessionRow[], payload: unknown): SessionRow[] {
   return next
 }
 
-function markSeen(seen: Record<string, number>, sessionID: string, seq: number): Record<string, number> {
-  if (seen[sessionID] >= seq) {
+// markSeen records the updated_at the person has seen for a session.
+function markSeen(seen: Record<string, number>, sessionID: string, updatedAt: number): Record<string, number> {
+  if ((seen[sessionID] ?? 0) >= updatedAt) {
     return seen
   }
-  return { ...seen, [sessionID]: seq }
+  return { ...seen, [sessionID]: updatedAt }
 }
 
-// isUnread reports whether a session produced frames the person has not
-// looked at since they last selected it.
+function sessionIDOf(payload: unknown): string | null {
+  const envelope = payload as { payload?: Record<string, unknown> }
+  const id = envelope.payload?.id
+  return typeof id === 'string' ? id : null
+}
+
+function updatedAtIn(rows: SessionRow[], sessionID: string): number {
+  return rows.find((row) => row.id === sessionID)?.updated_at ?? 0
+}
+
+function updatedAtOf(state: AppState, sessionID: string): number {
+  return updatedAtIn(state.sessions, sessionID)
+}
+
+// isUnread reports whether a session changed since the person last looked at
+// it. The comparison is on the row's updated_at, which the workspace owns: it
+// survives a Crush restart and needs no background subscription.
 export function isUnread(state: AppState, sessionID: string): boolean {
   if (state.selectedSessionId === sessionID) {
     return false
   }
-  const lastSeq = state.sessionData[sessionID]?.lastSeq ?? 0
-  return lastSeq > (state.lastSeen[sessionID] ?? 0)
+  return updatedAtIn(state.sessions, sessionID) > (state.lastSeen[sessionID] ?? 0)
 }
-```
 
-The `session` frame case above only drops a deleted row; a created or
-renamed session arrives as a full entity, which M1 keeps in the list from
-bootstrap plus the sidebar's own rename response. State that in the comment:
+// maxSubscriptions mirrors the gateway's per-connection cap.
+export const maxSubscriptions = 32
 
-```ts
-    case 'session': {
-      // A deleted session leaves the list; a created or renamed one is
-      // refreshed by the sidebar's own request, which answers the entity.
-      return { sessions: mergeSessionRow(state.sessions, frame.payload) }
+// wantedSubscriptions is the set a tab follows: the selected session plus
+// every session that is not idle, newest first, capped like the gateway does.
+// The status comes from the global frames, so this needs no extra traffic to
+// compute and only controls which session streams the tab receives.
+export function wantedSubscriptions(state: AppState): string[] {
+  const wanted = new Set<string>()
+  if (state.selectedSessionId !== null) {
+    wanted.add(state.selectedSessionId)
+  }
+  for (const row of state.sessions) {
+    if (row.status !== 'idle') {
+      wanted.add(row.id)
     }
+  }
+  return [...wanted].slice(0, maxSubscriptions)
+}
 ```
 
 - [ ] **Step 6: Run the store tests**
@@ -4944,6 +5485,37 @@ describe('AppFrame', () => {
     await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
     expect(frame?.getAttribute('data-collapsed')).toBe('false')
   })
+
+  it('opens the sidebar as a modal drawer below the breakpoint', async () => {
+    const user = userEvent.setup()
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    try {
+      const { container } = render(
+        <AppFrame sidebar={<p>sidebar</p>}>
+          <p>conversation</p>
+        </AppFrame>,
+      )
+      const frame = container.querySelector('[data-testid="app-frame"]')
+      expect(frame?.getAttribute('data-drawer')).toBe('false')
+      await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+      expect(frame?.getAttribute('data-drawer')).toBe('true')
+      expect(screen.getByRole('dialog', { name: 'Sessions' })).toBeInTheDocument()
+      await user.keyboard('{Escape}')
+      expect(frame?.getAttribute('data-drawer')).toBe('false')
+    } finally {
+      window.matchMedia = original
+    }
+  })
 })
 ```
 
@@ -4999,7 +5571,7 @@ export function clampSidebarWidth(px: number): number {
 
 ```tsx
 import { clsx } from 'clsx'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { clampSidebarWidth, sidebarDefaultWidth } from './sidebarWidth'
 import styles from './AppFrame.module.css'
@@ -5012,7 +5584,32 @@ export interface AppFrameProps {
 
 export default function AppFrame({ sidebar, right, children }: AppFrameProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 767px)').matches)
   const [width, setWidth] = useState(sidebarDefaultWidth)
+  const frame = useRef<HTMLDivElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const toggle = useRef<HTMLButtonElement>(null)
+
+  // The width rides a custom property on the frame element, so a drag updates
+  // the layout without re-rendering the tree.
+  useEffect(() => {
+    frame.current?.style.setProperty('--crush-sidebar-width', `${width}px`)
+  }, [width])
+
+  // The breakpoint is a live query: a window narrowed past it opens the
+  // sidebar as a drawer, and a window widened past it goes back to columns.
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)')
+    const onChange = () => setNarrow(media.matches)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+
+  // A drag installs two window listeners; releasing or unmounting takes them
+  // off, so a drag that ends outside the window still cleans up.
+  const stopDrag = useRef<(() => void) | null>(null)
+  useEffect(() => () => stopDrag.current?.(), [])
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -5024,30 +5621,79 @@ export default function AppFrame({ sidebar, right, children }: AppFrameProps) {
     const stop = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      stopDrag.current = null
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
+    stopDrag.current = stop
   }
+
+  // The drawer is modal: focus moves into it, Tab cycles inside it, and
+  // Escape closes it and returns focus to the toggle.
+  useEffect(() => {
+    if (!drawerOpen || panel.current === null) {
+      return
+    }
+    const element = panel.current
+    element.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setDrawerOpen(false)
+        toggle.current?.focus()
+        return
+      }
+      if (event.key !== 'Tab') {
+        return
+      }
+      const focusable = element.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+      if (focusable.length === 0) {
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen])
+
+  const sidebarHidden = narrow ? !drawerOpen : collapsed
 
   return (
     <div className={styles.app}>
       <p className={styles.banner}>Preview: the new web UI is incomplete</p>
       <div
+        ref={frame}
         className={styles.frame}
         data-testid="app-frame"
         data-collapsed={collapsed ? 'true' : 'false'}
-        style={{ '--crush-sidebar-width': `${width}px` } as React.CSSProperties}
+        data-drawer={drawerOpen ? 'true' : 'false'}
       >
-        <div className={clsx(styles.sidebar, collapsed && styles.rail)}>
+        <div
+          ref={panel}
+          className={clsx(styles.sidebar, collapsed && !narrow && styles.rail, narrow && drawerOpen && styles.drawer)}
+          tabIndex={-1}
+          role={narrow && drawerOpen ? 'dialog' : undefined}
+          aria-modal={narrow && drawerOpen ? true : undefined}
+          aria-label={narrow && drawerOpen ? 'Sessions' : undefined}
+        >
           <button
+            ref={toggle}
             type="button"
             className={styles.collapse}
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? 'Open sidebar' : 'Collapse sidebar'}
+            onClick={() => (narrow ? setDrawerOpen((value) => !value) : setCollapsed((value) => !value))}
+            aria-label={sidebarHidden ? 'Open sidebar' : 'Collapse sidebar'}
+            aria-expanded={!sidebarHidden}
           >
-            {collapsed ? '»' : '«'}
+            {sidebarHidden ? '»' : '«'}
           </button>
-          {collapsed ? null : sidebar}
+          {sidebarHidden ? null : sidebar}
         </div>
         <div
           className={styles.resizer}
@@ -5062,7 +5708,6 @@ export default function AppFrame({ sidebar, right, children }: AppFrameProps) {
   )
 }
 ```
-
 `web/src/layout/AppFrame.module.css`:
 
 ```css
@@ -5136,7 +5781,8 @@ export default function AppFrame({ sidebar, right, children }: AppFrameProps) {
   border-left: 1px solid var(--dsw-alias-border-l2);
 }
 
-/* Below 768px the sidebar becomes a drawer over the conversation. */
+/* Below 768px the sidebar becomes a modal drawer over the conversation,
+ * closed until the toggle opens it. */
 @media (max-width: 767px) {
   .frame,
   .frame[data-collapsed='true'] {
@@ -5144,14 +5790,21 @@ export default function AppFrame({ sidebar, right, children }: AppFrameProps) {
   }
 
   .sidebar {
+    display: none;
+  }
+
+  .frame[data-drawer='true'] .sidebar {
     position: fixed;
     inset: var(--crush-layout-banner-height) auto 0 0;
+    display: flex;
     width: min(var(--crush-layout-sidebar-max), 86vw);
+    border-right: 1px solid var(--dsw-alias-border-l3);
+    box-shadow: var(--dsw-alias-bg-mask-3) 0 0 0 100vmax;
     z-index: 10;
   }
 
-  .frame[data-collapsed='true'] .sidebar {
-    display: none;
+  .drawer:focus {
+    outline: none;
   }
 
   .resizer {
@@ -5238,7 +5891,8 @@ git commit -m "feat(web): add the three-column frame and preview banner"
   - `function useGateway(): { state: BootState; error: string | null;
     client: ApiClient; stream: StreamClient; store: Store<AppState> & AppStore }`
   - `<Unauthorized />`, the screen a tab without a token shows.
-  Task 15 renders the sidebar into the frame this task wires.
+  Task 15 renders the sidebar into the frame this task wires, and Task 16
+  renders the conversation beside it.
 
 - [ ] **Step 1: Write the failing boot tests**
 
@@ -5254,7 +5908,8 @@ function env(overrides: Partial<Parameters<typeof boot>[0]> = {}) {
     client: {
       authenticated: false,
       authenticate: vi.fn(async () => undefined),
-      get: vi.fn(async () => ({ ok: true })),
+      // Typed as the generic it stands in for, so the mock is assignable.
+      get: vi.fn(async (_path: string): Promise<unknown> => ({ ok: true })),
     },
     hash: '',
     stripHash: vi.fn(),
@@ -5379,11 +6034,11 @@ class FakeSocket {
   }
 }
 
-function harness(hash: string, authenticated: boolean) {
+function harness(hash: string, authenticated: boolean, health: () => Promise<unknown> = async () => ({ ok: true })) {
   const client = {
     authenticated,
     authenticate: vi.fn(async () => undefined),
-    get: vi.fn(async () => ({ ok: true })),
+    get: vi.fn(async (_path: string) => health()),
     wsProtocols: () => ['crush.v2', 'crush.auth.token'],
   }
   const socket = new FakeSocket()
@@ -5411,6 +6066,13 @@ describe('useGateway', () => {
     const h = harness('', false)
     const { result } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('unauthorized'))
+  })
+
+  it('reports an unreachable gateway as a network error, not a token one', async () => {
+    const h = harness('#t=abc123', false, async () => Promise.reject(new Error('offline')))
+    const { result } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('unreachable'))
+    expect(result.current.error).toBe('offline')
   })
 })
 ```
@@ -5445,7 +6107,7 @@ Expected: `boot.test.ts` passes; the hook and screen tests fail with
 ```ts
 import { useEffect, useMemo, useState } from 'react'
 
-import { ApiClient } from '../api/http'
+import { ApiClient, stripTokenFromUrl } from '../api/http'
 import { StreamClient } from '../api/stream'
 import { bootstrapSchema } from '../api/wire'
 import { createAppStore } from '../store/app'
@@ -5499,7 +6161,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
     void boot({
       client,
       hash: options.hash ?? window.location.hash,
-      stripHash: options.stripHash ?? (() => window.history.replaceState(null, '', window.location.pathname + window.location.search)),
+      stripHash: options.stripHash ?? (() => stripTokenFromUrl(window.location, window.history)),
     }).then((result) => {
       if (!mounted) {
         return
@@ -5541,6 +6203,37 @@ export default function Unauthorized() {
 }
 ```
 
+`web/src/app/Unreachable.tsx`, the screen a tab shows when the gateway does
+not answer at all (the token may be perfectly good):
+
+```tsx
+import styles from './Unauthorized.module.css'
+
+export interface UnreachableProps {
+  message: string | null
+}
+
+export default function Unreachable({ message }: UnreachableProps) {
+  return (
+    <main className={styles.screen}>
+      <h1>Crush is not answering</h1>
+      <p>The tab could not reach its gateway. Check the terminal is still running, then reload.</p>
+      {message ? <p className={styles.detail}>{message}</p> : null}
+    </main>
+  )
+}
+```
+
+Add to `Unauthorized.module.css`:
+
+```css
+.detail {
+  font-size: 12px;
+  font-family: var(--ds-font-family-code);
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+}
+```
+
 `web/src/app/Unauthorized.module.css`:
 
 ```css
@@ -5573,6 +6266,7 @@ export default function Unauthorized() {
 ```tsx
 import AppFrame from './layout/AppFrame'
 import Unauthorized from './app/Unauthorized'
+import Unreachable from './app/Unreachable'
 import { useGateway } from './app/useGateway'
 
 export default function App() {
@@ -5581,7 +6275,10 @@ export default function App() {
   if (gateway.state === 'authenticating') {
     return <p>Connecting to Crush…</p>
   }
-  if (gateway.state === 'unauthorized' || gateway.state === 'unreachable') {
+  if (gateway.state === 'unreachable') {
+    return <Unreachable message={gateway.error} />
+  }
+  if (gateway.state === 'unauthorized') {
     return <Unauthorized />
   }
 
@@ -5958,12 +6655,12 @@ export default function SessionRow({
           </button>
         )}
         <span className={styles.markers}>
-          {row.status === 'running' ? <span className={styles.running} aria-label="Running" /> : null}
-          {row.status === 'queued' ? <span className={styles.queued} aria-label="Queued" /> : null}
+          {row.status === 'running' ? <span role="img" className={styles.running} aria-label="Running" /> : null}
+          {row.status === 'queued' ? <span role="img" className={styles.queued} aria-label="Queued" /> : null}
           {row.status === 'pending_interaction' ? (
-            <span className={styles.waiting} aria-label="Waiting for you" />
+            <span role="img" className={styles.waiting} aria-label="Waiting for you" />
           ) : null}
-          {unread ? <span className={styles.unread} aria-label="Unread" /> : null}
+          {unread ? <span role="img" className={styles.unread} aria-label="Unread" /> : null}
         </span>
       </div>
       <div className={styles.actions}>
@@ -6221,11 +6918,11 @@ export default function Sidebar({
 `web/src/sidebar/SidebarContainer.tsx`:
 
 ```tsx
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ApiClient } from '../api/http'
 import type { StreamClient } from '../api/stream'
-import { isUnread, type AppState, type AppStore } from '../store/app'
+import { isUnread, wantedSubscriptions, type AppState, type AppStore } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import Sidebar from './Sidebar'
 import { sessionActions } from './actions'
@@ -6244,18 +6941,46 @@ export default function SidebarContainer({ client, stream, store }: SidebarConta
   const [error, setError] = useState<string | null>(null)
   const actions = useMemo(() => sessionActions(client), [client])
 
+  // The unread markers come from a derived string, so the list re-renders
+  // exactly when a marker changes and not on every frame.
+  const unreadIDs = useStore(store, (state) =>
+    state.sessions
+      .filter((row) => isUnread(state, row.id))
+      .map((row) => row.id)
+      .join(','),
+  )
+  const unread = useMemo(() => new Set(unreadIDs === '' ? [] : unreadIDs.split(',')), [unreadIDs])
+
+  // One effect owns the connection's subscriptions: the open session plus
+  // every session that is not idle. A background session that returns to
+  // idle and is not selected is dropped, which keeps a busy workspace under
+  // the gateway's 32-subscription cap.
+  const subscriptionKey = useStore(store, (state) => wantedSubscriptions(state).join(','))
+  const tracked = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const next = new Set(subscriptionKey === '' ? [] : subscriptionKey.split(','))
+    for (const id of tracked.current) {
+      if (!next.has(id)) {
+        stream.unsubscribe(id)
+      }
+    }
+    for (const id of next) {
+      if (!tracked.current.has(id)) {
+        stream.subscribe(id)
+      }
+    }
+    tracked.current = next
+  }, [subscriptionKey, stream])
+
   const workspaceName = workspace === '' ? 'Crush' : workspace.split('/').filter(Boolean).pop() ?? workspace
 
   const select = useCallback(
     (id: string) => {
-      const previous = store.get().selectedSessionId
-      if (previous !== null && previous !== id) {
-        stream.unsubscribe(previous)
-      }
+      // The reconciler above subscribes the new selection and drops the old
+      // one when it is idle; selecting only records the choice.
       store.selectSession(id)
-      stream.subscribe(id)
     },
-    [store, stream],
+    [store],
   )
 
   const create = useCallback(() => {
@@ -6277,13 +7002,13 @@ export default function SidebarContainer({ client, stream, store }: SidebarConta
       void actions
         .remove(id)
         .then(() => {
-          if (store.get().selectedSessionId === id) {
-            stream.unsubscribe(id)
-          }
+          // The deleted row, its messages and a selection pointing at it go
+          // at once; the gateway's deleted frame would arrive later.
+          store.forgetSession(id)
         })
         .catch((cause: unknown) => setError(message(cause)))
     },
-    [actions, store, stream],
+    [actions, store],
   )
 
   const copyId = useCallback((id: string) => {
@@ -6303,7 +7028,7 @@ export default function SidebarContainer({ client, stream, store }: SidebarConta
       branch={branch}
       sessions={sessions}
       selectedSessionId={selected}
-      unread={(id) => isUnread(store.get(), id)}
+      unread={(id) => unread.has(id)}
       error={error}
       onSelect={select}
       onCreate={create}
@@ -6320,9 +7045,10 @@ function message(cause: unknown): string {
 }
 ```
 
-The unread function reads the store directly, so the sidebar re-renders when
-the session list or the selection changes; Task 16's conversation subscribes
-to the per-session state.
+The unread set is derived from the store and memoised, so a marker change
+re-renders the list and nothing else does. The subscription effect is the one
+place that talks to the stream about sessions; Task 16's conversation only
+renders what the store holds.
 
 - [ ] **Step 9: Render it from App**
 
@@ -6330,6 +7056,7 @@ to the per-session state.
 
 ```tsx
 import Unauthorized from './app/Unauthorized'
+import Unreachable from './app/Unreachable'
 import { useGateway } from './app/useGateway'
 import AppFrame from './layout/AppFrame'
 import SidebarContainer from './sidebar/SidebarContainer'
@@ -6340,7 +7067,10 @@ export default function App() {
   if (gateway.state === 'authenticating') {
     return <p>Connecting to Crush…</p>
   }
-  if (gateway.state === 'unauthorized' || gateway.state === 'unreachable') {
+  if (gateway.state === 'unreachable') {
+    return <Unreachable message={gateway.error} />
+  }
+  if (gateway.state === 'unauthorized') {
     return <Unauthorized />
   }
 
@@ -6399,7 +7129,10 @@ git commit -m "feat(web): add the session sidebar and its actions"
     onLoadOlder />` (presentational) and `<ConversationContainer client
     stream store />` (wired).
   Markdown, syntax highlighting and the tool views arrive in M2; this task
-  renders plain text so nothing is lost and nothing is invented.
+  renders plain text so nothing is lost and nothing is invented. Chat
+  virtualization (`@tanstack/react-virtual`) is deferred to M2 with the
+  markdown renderer: plain text with paging renders a long session slowly in
+  M1 alone.
 
 - [ ] **Step 1: Write the failing message tests**
 
@@ -6673,6 +7406,21 @@ describe('Conversation', () => {
     expect(screen.queryByRole('button', { name: 'Load older messages' })).toBeNull()
   })
 
+  it('shows the reason an older page failed', () => {
+    render(
+      <Conversation
+        sessionId="s1"
+        title="t"
+        messages={messages}
+        hasMore
+        loadingOlder={false}
+        error="unknown_message"
+        onLoadOlder={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('unknown_message')
+  })
+
   it('asks for a session when none is open', () => {
     render(
       <Conversation sessionId={null} title="" messages={[]} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
@@ -6704,10 +7452,19 @@ export interface ConversationProps {
   messages: WireMessage[]
   hasMore: boolean
   loadingOlder: boolean
+  error?: string | null
   onLoadOlder(): void
 }
 
-export default function Conversation({ sessionId, title, messages, hasMore, loadingOlder, onLoadOlder }: ConversationProps) {
+export default function Conversation({
+  sessionId,
+  title,
+  messages,
+  hasMore,
+  loadingOlder,
+  error = null,
+  onLoadOlder,
+}: ConversationProps) {
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -6728,6 +7485,11 @@ export default function Conversation({ sessionId, title, messages, hasMore, load
           <button type="button" className={styles.older} onClick={onLoadOlder} disabled={loadingOlder}>
             {loadingOlder ? 'Loading…' : 'Load older messages'}
           </button>
+        ) : null}
+        {error ? (
+          <p role="alert" className={styles.error}>
+            {error}
+          </p>
         ) : null}
         {messages.map((message) => (
           <MessageView key={message.id} message={message} />
@@ -6769,6 +7531,14 @@ export default function Conversation({ sessionId, title, messages, hasMore, load
   overflow-y: auto;
 }
 
+.error {
+  margin: 0 12px;
+  padding: 6px 8px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-static-red-400-a12, var(--dsw-alias-bg-layer-2));
+  font-size: 12px;
+}
+
 .older {
   align-self: center;
   padding: 4px 10px;
@@ -6791,17 +7561,15 @@ export default function Conversation({ sessionId, title, messages, hasMore, load
 `web/src/conversation/ConversationContainer.tsx`:
 
 ```tsx
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type { ApiClient } from '../api/http'
-import type { StreamClient } from '../api/stream'
 import { emptySessionData, type AppState, type AppStore, type WireMessage } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import Conversation from './Conversation'
 
 export interface ConversationContainerProps {
   client: ApiClient
-  stream: StreamClient
   store: Store<AppState> & AppStore
 }
 
@@ -6810,44 +7578,71 @@ interface MessagesPage {
   has_more: boolean
 }
 
-export default function ConversationContainer({ client, stream, store }: ConversationContainerProps) {
+export default function ConversationContainer({ client, store }: ConversationContainerProps) {
   const sessionId = useStore(store, (state) => state.selectedSessionId)
   const title = useStore(store, (state) => state.sessions.find((row) => row.id === state.selectedSessionId)?.title ?? '')
   const data = useStore(store, (state) => (state.selectedSessionId ? state.sessionData[state.selectedSessionId] : undefined))
   const [older, setOlder] = useState<WireMessage[]>([])
+  // olderHasMore is the answer the last page gave; null means no page has been
+  // loaded yet, and the snapshot's own has_more decides.
+  const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // The bootstrap selects the terminal's session, so the conversation asks
-  // for its snapshot instead of waiting for a click.
+  // A new session starts from its snapshot, so the pages loaded for the
+  // previous one are dropped.
   useEffect(() => {
-    if (sessionId) {
-      stream.subscribe(sessionId)
-      setOlder([])
-    }
-  }, [sessionId, stream])
+    setOlder([])
+    setOlderHasMore(null)
+    setError(null)
+  }, [sessionId])
 
   const loadOlder = useCallback(() => {
     if (!sessionId) {
       return
     }
     const current = store.get().sessionData[sessionId] ?? emptySessionData
-    const before = current.messages[0]?.id
+    // The next page ends just before the oldest message already on screen,
+    // whichever page it came from.
+    const before = (older[0] ?? current.messages[0])?.id
+    const query = before ? `?before=${encodeURIComponent(before)}` : ''
     setLoadingOlder(true)
+    setError(null)
     void client
-      .get<MessagesPage>(`/api/sessions/${encodeURIComponent(sessionId)}/messages${before ? `?before=${encodeURIComponent(before)}` : ''}`)
-      .then((page) => setOlder((previous) => [...page.messages, ...previous]))
+      .get<MessagesPage>(`/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`)
+      .then((page) => {
+        setOlder((previous) => [...page.messages, ...previous])
+        setOlderHasMore(page.has_more)
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setLoadingOlder(false))
-  }, [client, sessionId, store])
+  }, [client, older, sessionId, store])
 
-  const messages = older.concat(data?.messages ?? [])
+  // A resync replaces the snapshot's messages, so a message can be in both
+  // lists; the first copy wins and the order stays oldest first.
+  const messages = useMemo(() => {
+    const seen = new Set<string>()
+    const out: WireMessage[] = []
+    for (const message of [...older, ...(data?.messages ?? [])]) {
+      if (seen.has(message.id)) {
+        continue
+      }
+      seen.add(message.id)
+      out.push(message)
+    }
+    return out
+  }, [older, data?.messages])
+
+  const hasMore = olderHasMore === null ? (data?.hasMore ?? false) : olderHasMore
 
   return (
     <Conversation
       sessionId={sessionId}
       title={title}
       messages={messages}
-      hasMore={data?.hasMore ?? false}
+      hasMore={hasMore}
       loadingOlder={loadingOlder}
+      error={error}
       onLoadOlder={loadOlder}
     />
   )
@@ -6859,7 +7654,7 @@ export default function ConversationContainer({ client, stream, store }: Convers
 In `web/src/App.tsx`, replace the frame's children placeholder with:
 
 ```tsx
-      <ConversationContainer client={gateway.client} stream={gateway.stream} store={gateway.store} />
+      <ConversationContainer client={gateway.client} store={gateway.store} />
 ```
 
 and import it. Update `App.test.tsx`'s mock so `store.get` also returns
@@ -6953,6 +7748,9 @@ export default defineConfig({
 ```ts
 import { test as base, expect } from '@playwright/test'
 import { spawn } from 'node:child_process'
+import { rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export interface Webfake {
@@ -6962,12 +7760,19 @@ export interface Webfake {
 
 const startTimeoutMs = 120_000
 
-// startWebfake runs the fake gateway, which binds a random loopback port and
-// prints its launch URL on stdout. The URL carries the token in the
-// fragment; it is never logged.
+// startWebfake builds the fake gateway once, then runs the binary for this
+// worker. It has to be a binary and not `go run`: a signal to the go tool
+// would leave the server running, and the port would leak between workers.
+// The gateway binds a random loopback port and prints its launch URL on
+// stdout; the URL carries the token in the fragment and is never logged.
 async function startWebfake(): Promise<{ app: Webfake; stop: () => void }> {
-  const root = fileURLToPath(new URL('../..', import.meta.url))
-  const child = spawn('go', ['run', './internal/web/cmd/webfake'], {
+  const root = fileURLToPath(new URL('../../..', import.meta.url))
+  const binary = join(tmpdir(), `webfake-e2e-${process.pid}`)
+  await new Promise<void>((resolve, reject) => {
+    const build = spawn('go', ['build', '-o', binary, './internal/web/cmd/webfake'], { cwd: root })
+    build.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`webfake build exited with ${code}`))))
+  })
+  const child = spawn(binary, [], {
     cwd: root,
     env: { ...process.env, WEBFAKE_SCENARIO: 'm1', WEBFAKE_PROJECT_DIR: '/tmp/crush-e2e-project' },
   })
@@ -6994,6 +7799,7 @@ async function startWebfake(): Promise<{ app: Webfake; stop: () => void }> {
     app: { origin, launchUrl },
     stop: () => {
       child.kill('SIGTERM')
+      rmSync(binary, { force: true })
     },
   }
 }
@@ -7042,6 +7848,17 @@ test('opens one session after another', async ({ page, app }) => {
   await expect(page.getByText('Port the tokenizer')).toBeVisible()
   await page.getByText('Write parser tests').click()
   await expect(page.getByText('Draft the table tests')).toBeVisible()
+})
+
+test('shows two live sessions and a marker that appears without a reload', async ({ page, app }) => {
+  await page.goto(app.launchUrl)
+  // s-m1-run is running from the seed.
+  await expect(page.locator('li', { hasText: 'Port the parser' }).locator('[aria-label="Running"]')).toBeVisible()
+  // webfake publishes s-m1-wait's permission a moment after the gateway
+  // starts, so its marker appears on a page that is already open.
+  await expect(
+    page.locator('li', { hasText: 'Rename the grammar' }).locator('[aria-label="Waiting for you"]'),
+  ).toBeVisible({ timeout: 15_000 })
 })
 
 test('keeps a background session live while another is open', async ({ page, app }) => {
@@ -7095,7 +7912,20 @@ cd web && npm run typecheck && npm run e2e
 Expected: every spec passes. The first run compiles the webfake, which
 takes a minute; the worker fixture allows two.
 
-- [ ] **Step 7: Restore the e2e CI job**
+- [ ] **Step 7: Put the Taskfile task back**
+
+`web:e2e` was removed with the suite in Task 8; restore it beside the other
+`web:*` tasks in `Taskfile.yaml`:
+
+```yaml
+  web:e2e:
+    desc: Run Playwright smoke tests against the fake gateway
+    dir: web
+    cmds:
+      - npm run e2e
+```
+
+- [ ] **Step 8: Restore the e2e CI job**
 
 In `.github/workflows/web.yml`, replace the `e2e` job's steps with:
 
@@ -7126,7 +7956,8 @@ In `.github/workflows/web.yml`, replace the `e2e` job's steps with:
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
-      - run: npx playwright test --shard=${{ matrix.shard }}/3
+      # A shard that owns no spec file must not fail the matrix.
+      - run: npx playwright test --shard=${{ matrix.shard }}/3 --pass-with-no-tests
         working-directory: web
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
@@ -7140,10 +7971,10 @@ In `.github/workflows/web.yml`, replace the `e2e` job's steps with:
 
 Also add `'web/e2e/**'` to neither trigger list: `'web/**'` already covers it.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add web .github/workflows/web.yml
+git add web Taskfile.yaml .github/workflows/web.yml
 git commit -m "test(web): run the shell in Playwright with an axe scan"
 ```
 
@@ -7224,9 +8055,11 @@ Run `go run . --web` in a real session and confirm, in the tab:
 1. The preview banner reads `Preview: the new web UI is incomplete`.
 2. The sidebar shows the workspace directory name and the branch.
 3. A running TUI turn turns the session's marker green within a second, and
-   clears when the turn ends.
-4. Selecting another session shows its conversation; the previous one keeps
-   streaming and gains an unread dot.
+   clears when the turn ends: the status frames are event-driven, so the
+   change appears as the event lands and not on a poll.
+4. A background session whose `updated_at` moves (it ran, or its title
+   changed) gains an unread dot; selecting it clears the dot, and it stays
+   cleared across a page reload.
 5. `/web` in the session copies a link that opens a second working tab.
 6. Reloading the tab keeps it signed in (the token is in `sessionStorage`).
 7. Collapsing the sidebar leaves the 56 px rail, and a window narrower than
@@ -7235,14 +8068,15 @@ Run `go run . --web` in a real session and confirm, in the tab:
 - [ ] **Step 6: Check nothing from the spec regressed**
 
 ```bash
-grep -rn '/api/snapshot' --include=*.go --include=*.ts . | grep -v docs/ || echo "snapshot route still gone"
-grep -rn 'crush\.v1' --include=*.go --include=*.ts . | grep -v docs/ || echo "no v1 client"
-grep -rn 'Montserrat' web/ || echo "no Montserrat"
-grep -rn 'token' web/e2e/*.ts web/e2e/support/*.ts || echo "no token handling in the specs"
+grep -rn '/api/snapshot' --include=*.go --include=*.ts . | grep -v docs/ | grep -v node_modules || echo "snapshot route still gone"
+grep -rnE 'crush\.v1\b' --include=*.go --include=*.ts . | grep -v docs/ | grep -v node_modules || echo "no v1 client"
+grep -rnE '@font-face|\.woff2?' web/src web/index.html || echo "no bundled fonts"
+grep -rn 'token' web/e2e/*.ts web/e2e/support/*.ts | grep -v launchUrl || echo "the specs never touch the token"
 ```
 
-Expected: `snapshot route still gone`, `no v1 client`, `no Montserrat`, and
-the token appears in the specs only through `launchUrl`, never logged.
+Expected: four echoes. `crush.v2` and the token entry stay in the client; the
+specs reach the token only through `launchUrl`, never logging it, and no font
+file is bundled (the theme uses the system stack, no Montserrat).
 
 ---
 
@@ -7250,10 +8084,23 @@ the token appears in the specs only through `launchUrl`, never logged.
 
 - Status precedence: `pending_interaction` outranks `running`, which
   outranks `queued`.
-- The status sweep runs on the existing 250 ms follow ticker, so a queue
-  change made through the queue routes reaches the sidebar within one tick
-  without a dedicated call; the interaction and run-complete events sweep
-  immediately. A sweep that finds no change publishes nothing.
+- Unread markers compare a session row's `updated_at` with a per-session
+  last-seen `updated_at` (ruling): they survive a Crush restart and need no
+  background subscription. A title-only update can fire a marker, which the
+  ruling accepts.
+- The tab subscribes the selected session plus every non-idle session, capped
+  at 32 (ruling); a background session that returns to idle and is not
+  selected is dropped.
+- `subscribe` reserves the session before reading its snapshot and buffers
+  the frames published meanwhile (ruling), so the snapshot is always first.
+- Chat virtualization is deferred to M2 with markdown (ruling).
+- There is no periodic status poll (ruling). The pump recomputes one
+  session's status on the events that can change it (permission and question
+  created or resolved, run complete, a user prompt starting a run or joining
+  the queue), and the queue-clear and delete routes call the same refresh or
+  forget directly. A recompute that finds no change publishes nothing. A
+  status change with no event at all stays stale until the next event; that
+  trade buys zero SQLite calls per second while a gateway idles.
 - `?before` with an id the session does not have answers `404
   unknown_message`; a `limit` below 1 answers `400 bad_limit`; a `limit`
   above 500 clamps to 500.
