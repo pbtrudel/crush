@@ -1,0 +1,9 @@
+.alert {
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 13px;
+}

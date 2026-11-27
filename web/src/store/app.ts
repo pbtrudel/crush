@@ -1,4 +1,4 @@
-import type { Bootstrap, ParsedFrame, SessionRow, SessionStatus } from '../api/wire'
+import type { Bootstrap, ParsedFrame, SessionRow, SessionStatus, WebError } from '../api/wire'
 import type { ConnectionState } from '../api/stream'
 import { createStore, type Store } from './store'
 import { readSeen, writeSeen } from './seen'
@@ -27,6 +27,10 @@ export interface AppState {
   selectedSessionId: string | null
   sessionData: Record<string, SessionData>
   lastSeen: Record<string, number>
+  // error is the last web_error frame the gateway sent. The frame is global,
+  // so session_id names the session it concerns and an empty one concerns
+  // the whole tab.
+  error: WebError | null
 }
 
 export const emptySessionData: SessionData = {
@@ -45,6 +49,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     selectedSessionId: null,
     sessionData: {},
     lastSeen: readSeen(storage),
+    error: null,
   })
   // persistSeen writes lastSeen through after an action. Only a new reference
   // is durable: markSeen and pruneSeen hand back their input when they
@@ -213,6 +218,9 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         sessionData: { ...state.sessionData, [id]: { ...current, busy: false } },
       }
     }
+    case 'web_error': {
+      return { ...state, error: frame.payload as WebError }
+    }
     default: {
       return state
     }
@@ -337,6 +345,20 @@ export function isUnread(state: AppState, sessionID: string): boolean {
     return false
   }
   return updatedAtIn(state.sessions, sessionID) > (state.lastSeen[sessionID] ?? 0)
+}
+
+// visibleError answers the error the tab should show for the session on
+// screen. A global error (an empty session_id) belongs to the whole tab and
+// shows whichever session is selected; one that names a session shows only
+// while that session is selected.
+export function visibleError(state: AppState): WebError | null {
+  if (state.error === null) {
+    return null
+  }
+  if (state.error.session_id === '' || state.error.session_id === state.selectedSessionId) {
+    return state.error
+  }
+  return null
 }
 
 // maxSubscriptions mirrors the gateway's per-connection cap.

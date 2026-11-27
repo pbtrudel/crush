@@ -29,6 +29,25 @@ describe('readPreference', () => {
     writePreference('dark', storage)
     expect(readPreference(storage)).toBe('dark')
   })
+
+  it('falls back to system when the browser blocks its storage', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get(): Storage {
+        throw new DOMException('blocked', 'SecurityError')
+      },
+    })
+    try {
+      // The page must paint even here: the theme builder asks for the
+      // stored preference before React renders.
+      expect(readPreference()).toBe('system')
+    } finally {
+      if (original) {
+        Object.defineProperty(window, 'localStorage', original)
+      }
+    }
+  })
 })
 
 describe('applyTheme', () => {

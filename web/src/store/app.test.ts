@@ -8,6 +8,7 @@ import {
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
+  visibleError,
   wantedSubscriptions,
 } from './app'
 
@@ -379,5 +380,25 @@ describe('wantedSubscriptions', () => {
     const state = { ...reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap), sessions: rows, selectedSessionId: null }
     expect(maxSubscriptions).toBe(32)
     expect(wantedSubscriptions(state)).toHaveLength(maxSubscriptions)
+  })
+})
+
+describe('web_error frames', () => {
+  it('keeps a global error whichever session is selected', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const next = reduceFrame(start, frame('web_error', { session_id: '', code: 'gateway', error: 'the gateway is busy' }, 7))
+    expect(visibleError(next)?.error).toBe('the gateway is busy')
+    expect(visibleError({ ...next, selectedSessionId: 's2' })?.error).toBe('the gateway is busy')
+  })
+
+  it('shows an error that names a session only for that session', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const next = reduceFrame(start, frame('web_error', { session_id: 's2', code: 'agent_busy', error: 'busy' }, 7))
+    expect(visibleError(next)).toBeNull()
+    expect(visibleError({ ...next, selectedSessionId: 's2' })?.error).toBe('busy')
+  })
+
+  it('has no error to show before one arrives', () => {
+    expect(visibleError(createAppStore(memoryStorage()).get())).toBeNull()
   })
 })

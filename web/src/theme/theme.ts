@@ -3,8 +3,17 @@ export type ResolvedTheme = 'light' | 'dark'
 
 const storageKey = 'crush.theme'
 
-export function readPreference(storage: Storage = localStorage): ThemePreference {
-  const raw = storage.getItem(storageKey)
+// readPreference answers the stored preference, defaulting to system. The
+// browser storage is read inside the try: a browser that blocks site data
+// throws a SecurityError from the getter, which must not stop the page from
+// painting. Under Node the global is undefined instead, and is covered too.
+export function readPreference(storage?: Storage): ThemePreference {
+  let raw: string | null
+  try {
+    raw = (storage ?? localStorage).getItem(storageKey)
+  } catch {
+    return 'system'
+  }
   return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'system'
 }
 
