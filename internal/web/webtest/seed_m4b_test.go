@@ -11,11 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests below set WEBFAKE_THEME, which t.Setenv forbids in a parallel
-// test, so none of them run in parallel.
+// The tests below set WEBFAKE_* variables, which t.Setenv forbids in a
+// parallel test, so they do not run in parallel.
 
 func TestSeedM4bKeepsTheM4Seams(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "")
 	f := NewFake()
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -46,15 +45,9 @@ func TestSeedM4bKeepsTheM4Seams(t *testing.T) {
 	sessions, err := f.ListSessions(t.Context())
 	require.NoError(t, err)
 	require.NotEmpty(t, sessions, "the M3 sessions are seeded")
-
-	// The tab starts on the Holodeck theme.
-	require.NotNil(t, cfg.Options)
-	require.NotNil(t, cfg.Options.WebDisplay)
-	require.Equal(t, "holodeck", cfg.Options.WebDisplay.Theme)
 }
 
 func TestSeedM4bAddsTheM4bSurfaces(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "")
 	f := NewFake()
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -101,7 +94,6 @@ func TestSeedM4bAddsTheM4bSurfaces(t *testing.T) {
 }
 
 func TestSeedM4bHonoursTheModelName(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "")
 	const name = "An extremely long model name that will not fit in the HUD at all"
 	t.Setenv("WEBFAKE_MODEL_NAME", name)
 	f := NewFake()
@@ -113,7 +105,6 @@ func TestSeedM4bHonoursTheModelName(t *testing.T) {
 }
 
 func TestSeedM4bHonoursTheHudServers(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "")
 	t.Setenv("WEBFAKE_HUD_SERVERS", "full")
 	f := NewFake()
 	done := make(chan struct{})
@@ -127,27 +118,12 @@ func TestSeedM4bHonoursTheHudServers(t *testing.T) {
 }
 
 func TestSeedM4bRefusesAnUnknownHudServers(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "")
 	t.Setenv("WEBFAKE_HUD_SERVERS", "some")
 	f := NewFake()
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
 	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
 	require.ErrorContains(t, err, "WEBFAKE_HUD_SERVERS")
-}
-
-func TestSeedM4bHonoursTheTheme(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "solid")
-	f := NewFake()
-	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
-	clock := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
-	_, err := SeedM4b(f, done, clock)
-	require.NoError(t, err)
-	cfg := f.Config()
-	require.NotNil(t, cfg.Options)
-	require.NotNil(t, cfg.Options.WebDisplay)
-	require.Equal(t, "solid", cfg.Options.WebDisplay.Theme)
 }
 
 func TestSeedM4bGivesTheBrowsedSessionAMessage(t *testing.T) {
@@ -161,15 +137,6 @@ func TestSeedM4bGivesTheBrowsedSessionAMessage(t *testing.T) {
 	msgs, err := f.ListMessages(t.Context(), "s-2")
 	require.NoError(t, err)
 	require.NotEmpty(t, msgs, "the browsed session has a message to show")
-}
-
-func TestSeedM4bRefusesAnUnknownTheme(t *testing.T) {
-	t.Setenv("WEBFAKE_THEME", "neon")
-	f := NewFake()
-	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
-	_, err := SeedM4b(f, done, time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC))
-	require.ErrorContains(t, err, "WEBFAKE_THEME")
 }
 
 // toolCallIDs lists the tool call each history version records.

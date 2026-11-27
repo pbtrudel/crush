@@ -75,8 +75,6 @@ func (g *Gateway) registerSystemRoutes(api *http.ServeMux) {
 	g.route(api, "POST /api/lsp/start", g.handleLSPStart)
 	g.route(api, "POST /api/lsp/stop", g.handleLSPStop)
 	g.route(api, "POST /api/config/reload", g.handleConfigReload)
-	g.route(api, "POST /api/config/set", g.handleConfigSet)
-	g.route(api, "POST /api/config/remove", g.handleConfigRemove)
 	g.route(api, "POST /api/agent-teams", g.handleAgentTeams)
 	// The Docker MCP routes live under their own prefix: a server named
 	// docker would make /api/mcp/docker/enable ambiguous with the

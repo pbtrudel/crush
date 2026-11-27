@@ -71,7 +71,6 @@ type Snapshot struct {
 	PermissionMode     string                `json:"permission_mode"`
 	InputMode          string                `json:"input_mode"`
 	PlanReadySessionID string                `json:"plan_ready_session_id,omitempty"`
-	Display            DisplaySettings       `json:"display"`
 	Model              ModelInfo             `json:"model"`
 	AgentReady         bool                  `json:"agent_ready"`
 	Busy               bool                  `json:"busy"`
@@ -96,7 +95,6 @@ func (g *Gateway) buildSnapshot(ctx context.Context, sessionID string) Snapshot 
 		PermissionMode:     string(proto.PermissionModeToProto(g.ws.PermissionMode())),
 		InputMode:          g.InputMode(),
 		PlanReadySessionID: g.PlanReadySessionID(),
-		Display:            g.currentDisplay(),
 	}
 	// One readiness call feeds both fields, so the snapshot cannot say the
 	// agent is ready while its model says otherwise.
