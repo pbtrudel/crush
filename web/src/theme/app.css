@@ -1,0 +1,47 @@
+/* The shell's layer over the DSH tokens: layout metrics, base type and the
+ * colour-scheme switch that keeps form controls in step with the theme. */
+:root {
+  --crush-font-size-text: 14px;
+  --crush-font-size-code: 11px;
+  --crush-font-size-terminal: 13px;
+
+  --crush-layout-sidebar-min: 264px;
+  --crush-layout-sidebar-max: 420px;
+  --crush-layout-sidebar-default: 280px;
+  --crush-layout-sidebar-rail: 56px;
+  --crush-layout-right-default: 45vw;
+  --crush-layout-right-max: 70vw;
+  --crush-layout-center-min: 400px;
+  --crush-layout-banner-height: 30px;
+}
+
+html {
+  color-scheme: light;
+}
+
+html[data-ds-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* The --dsw-alias-* tokens are declared on body by design-platform.css, so
+ * the page background is painted here; a body background propagates to the
+ * canvas, which is what fills the viewport. */
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--dsw-font-family);
+  font-size: var(--crush-font-size-text);
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+code,
+pre {
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+}
