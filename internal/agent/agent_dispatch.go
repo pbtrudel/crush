@@ -484,6 +484,13 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				}
 				sel, hasOverride = overrideSel, override
 			}
+			// A write subagent runs on its own tools, with neither the
+			// teammate's scope gate nor its worktree, so a teammate whose
+			// edits are held to a task cannot start one.
+			if access == accessWrite && c.refuseTeammateWriteDispatch(ctx) {
+				return fantasy.NewTextErrorResponse(teammateWriteDispatchRefusal), nil
+			}
+
 			agentMessageID := tools.GetMessageFromContext(ctx)
 			if agentMessageID == "" {
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
@@ -519,6 +526,9 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				agent,
 			)
 			runCtx, gen, _ := entry.claim()
+			// The detached run keeps the caller's directory and worktree,
+			// so a read subagent of a teammate looks at the worktree.
+			runCtx = withCallerWorkspace(runCtx, ctx)
 			c.dispatched.Set(key, entry)
 			c.dispatchMu.Unlock()
 
@@ -821,6 +831,13 @@ func (c *coordinator) agentSendTool(parentModel func() Model) fantasy.AgentTool 
 					)), nil
 				}
 				entry = rebuilt
+			}
+
+			// Resuming a write subagent from a teammate whose edits are held
+			// to a task would edit outside its scopes, just like starting
+			// one, so it is refused the same way.
+			if entry.Access == accessWrite && c.refuseTeammateWriteDispatch(ctx) {
+				return fantasy.NewTextErrorResponse(teammateWriteDispatchRefusal), nil
 			}
 
 			if params.switchesModel() {

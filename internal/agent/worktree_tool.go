@@ -20,6 +20,12 @@ import (
 // would describe files the teammate is not editing.
 const lspWorktreeRefusal = "LSP tools are not available in a task worktree: the language servers serve the Lead's tree only. Use view, grep and bash in your worktree instead."
 
+// teammateWriteDispatchRefusal is what a teammate whose own edits are held to
+// a task gets when it asks for a write subagent, freshly or by resuming one.
+// The subagent's tools are not held to the task, so it would edit the Lead's
+// tree outside the teammate's scopes.
+const teammateWriteDispatchRefusal = "a teammate with a task worktree or write scopes cannot dispatch a write subagent; do the edits yourself"
+
 // worktreeTool runs a teammate's tool call in the git worktree of the task
 // it holds. The workspace is looked up on every call, because a teammate
 // can claim its task in the middle of a turn, and it reaches the tool on
@@ -123,4 +129,31 @@ func (c *coordinator) memberWorkspace(ctx context.Context) (agentteam.Workspace,
 		return agentteam.Workspace{}, false
 	}
 	return team.MemberWorkspace(member)
+}
+
+// refuseTeammateWriteDispatch reports whether the caller is a teammate whose
+// edits are held to a task: it holds a task worktree, or it has claimed write
+// scopes. A subagent it dispatches gets neither, so writes it performs escape
+// both the worktree and the scope gate. The Lead and a teammate with neither
+// are free to dispatch.
+func (c *coordinator) refuseTeammateWriteDispatch(ctx context.Context) bool {
+	if agentteam.IsLead(ctx) {
+		return false
+	}
+	if _, ok := c.memberWorkspace(ctx); ok {
+		return true
+	}
+	return len(c.claimedScopes(ctx)) > 0
+}
+
+// withCallerWorkspace carries the caller's working directory and task
+// worktree onto a detached subagent's run context. A dispatched run starts
+// from a fresh background context, so without this a read subagent of a
+// teammate in a task worktree would list and read the Lead's tree.
+func withCallerWorkspace(runCtx, callerCtx context.Context) context.Context {
+	runCtx = tools.WithWorkingDir(runCtx, tools.WorkingDirFrom(callerCtx, ""))
+	if ws, ok := workspaceFrom(callerCtx); ok {
+		runCtx = withWorkspace(runCtx, ws)
+	}
+	return runCtx
 }
