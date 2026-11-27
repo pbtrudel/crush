@@ -537,3 +537,33 @@ func TestRestorePathsDoesNotReadThroughASymlinkedParent(t *testing.T) {
 	require.Equal(t, "mine\n", readRepoFile(t, outside, "leak.txt"), "the outside file is untouched")
 	require.NoFileExists(t, filepath.Join(outside, "log.txt"))
 }
+
+// TestRestoreStagesFailsWithoutClearingTheIndex pins W20.7: clearing the
+// entry and putting the conflict stages back is one index update, so a
+// failure leaves the command's staged resolution in place instead of a
+// cleared index.
+func TestRestoreStagesFailsWithoutClearingTheIndex(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	runGit(t, repo, "checkout", "-b", "other")
+	writeRepoFile(t, repo, "README.md", "theirs\n")
+	runGit(t, repo, "commit", "-am", "theirs")
+	runGit(t, repo, "checkout", "main")
+	writeRepoFile(t, repo, "README.md", "mine\n")
+	runGit(t, repo, "commit", "-am", "mine")
+	conflict := exec.CommandContext(context.Background(), "git", "-C", repo, "merge", "--no-ff", "-m", "merge", "other")
+	require.Error(t, conflict.Run(), "the merge conflicts")
+	before := snapshot(t, repo, testCaps)
+	require.Len(t, before.Files["README.md"].IndexStages, 3)
+
+	// The command resolves the conflict and stages its own content.
+	writeRepoFile(t, repo, "README.md", "resolved\n")
+	runGit(t, repo, "add", "README.md")
+	staged := gitText(t, repo, "ls-files", "-s", "README.md")
+
+	bad := append([]string{}, before.Files["README.md"].IndexStages...)
+	bad[0] = "100644 not-an-object-id 1\tREADME.md"
+	require.Error(t, restoreStages(context.Background(), repo, "README.md", bad))
+	require.Equal(t, staged, gitText(t, repo, "ls-files", "-s", "README.md"),
+		"a failed update leaves the index untouched")
+}

@@ -650,17 +650,27 @@ func restoreIndex(ctx context.Context, root string, before FileSnapshot, path st
 	return err
 }
 
+// zeroObjectID is the all-zero object id git's index-info takes to remove
+// an entry.
+const zeroObjectID = "0000000000000000000000000000000000000000"
+
 // restoreStages clears whatever the command staged and puts the conflict
-// stages back, so the merge is still in progress after the restore.
+// stages back, so the merge is still in progress after the restore. Both go
+// in one index update, which git applies only once it has read every line:
+// a failure leaves the index as it was, not cleared.
 func restoreStages(ctx context.Context, root, path string, stages []string) error {
 	if len(stages) == 0 {
 		return errors.New("no index stages were recorded for an unmerged path")
 	}
-	if _, err := gitLiteral(ctx, root, "update-index", "--force-remove", "--", path); err != nil {
-		return err
+	var input strings.Builder
+	// A mode-0 line removes the staged entry whatever it now is.
+	input.WriteString("0 " + zeroObjectID + "\t" + path + "\x00")
+	for _, stage := range stages {
+		input.WriteString(stage)
+		input.WriteString("\x00")
 	}
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "update-index", "-z", "--index-info")
-	cmd.Stdin = strings.NewReader(strings.Join(stages, "\x00") + "\x00")
+	cmd.Stdin = strings.NewReader(input.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git update-index --index-info: %w: %s", err, strings.TrimSpace(string(out)))
 	}
