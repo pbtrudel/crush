@@ -89,7 +89,7 @@ That's basically it. For the full guide on how hooks work, however, read on.
 
 ## Execution model
 
-Hooks run through Crush's embedded POSIX shell (`mvdan.cc/sh`), the same
+Hooks run through Crush's embedded POSIX shell (`mvdan.cc/sh`) — the same
 interpreter the `bash` tool uses. Inline commands and shebang-less scripts
 execute in-process; scripts with a `#!` shebang dispatch to the named
 interpreter via `os/exec`. This contract is identical on macOS, Linux, and
@@ -146,7 +146,7 @@ hook add TurnEnd \
 ```
 
 > [!IMPORTANT]
-> The `command` is resolved relative to your **current working directory**,
+> The `command` is resolved relative to your **current working directory** —
 > not relative to the config file. Relative paths like `./hooks/whatever.sh`
 > work fine in project-level `.crushrc` because the project root is also
 > your working directory. For **global** config (`~/.config/crush/`),
@@ -178,14 +178,14 @@ event name is a config error.
 | `PostToolUseFailure` | After a tool fails                             | halt, context                            | tool name | same                        |
 | `PermissionRequest`  | Permission prompt shown                        | observe                                  | tool name | same (observe only here)    |
 | `PermissionResult`   | Prompt granted, denied, or cancelled           | observe                                  | tool name | none                        |
-| `SessionStart`       | Session created, or resumed with `--continue`  | observe                                  | none      | same                        |
-| `SessionEnd`         | App exits (2s budget)                          | observe                                  | none      | same                        |
-| `TurnStart`          | Agent begins processing a prompt               | observe                                  | none      | `UserPromptSubmit`          |
-| `TurnEnd`            | Agent finishes a turn                          | continue with reason, halt               | none      | `Stop`                      |
-| `StopFailure`        | Turn ends with a provider error                | observe                                  | none      | same                        |
-| `Interrupt`          | User cancels a turn (ctrl-c, escape)           | observe                                  | none      | none                        |
-| `PreCompact`         | Before context compaction (auto or `/compact`) | block                                    | none      | same                        |
-| `PostCompact`        | After context compaction                       | observe                                  | none      | same                        |
+| `SessionStart`       | Session created, or resumed with `--continue`  | observe                                  | —         | same                        |
+| `SessionEnd`         | App exits (2s budget)                          | observe                                  | —         | same                        |
+| `TurnStart`          | Agent begins processing a prompt               | observe                                  | —         | `UserPromptSubmit`          |
+| `TurnEnd`            | Agent finishes a turn                          | continue with reason, halt               | —         | `Stop`                      |
+| `StopFailure`        | Turn ends with a provider error                | observe                                  | —         | same                        |
+| `Interrupt`          | User cancels a turn (ctrl-c, escape)           | observe                                  | —         | none                        |
+| `PreCompact`         | Before context compaction (auto or `/compact`) | block                                    | —         | same                        |
+| `PostCompact`        | After context compaction                       | observe                                  | —         | same                        |
 
 **Matcher** is a regex tested against the tool name (e.g. `^bash$`,
 `^(edit|write)$`, `^mcp_`). Omit it to match every tool. It is only accepted on
@@ -222,23 +222,23 @@ or notifying; do the heavy work elsewhere.
 
 ### What each control field does
 
-- **`decision: "allow"`**: pre-approves the tool call, skips the permission
+- **`decision: "allow"`** — pre-approves the tool call, skips the permission
   prompt. `"deny"` blocks it; the model sees the error and may retry.
-- **`halt: true`**: ends the entire turn. For `PreCompact`, blocks compaction
+- **`halt: true`** — ends the entire turn. For `PreCompact`, blocks compaction
   instead.
-- **`updated_input`**: for `PreToolUse`: shallow-merge patch against tool
+- **`updated_input`** — for `PreToolUse`: shallow-merge patch against tool
   input.
-- **`updated_output`**: for `PostToolUse`: replaces what the model sees as the
+- **`updated_output`** — for `PostToolUse`: replaces what the model sees as the
   tool's output.
-- **`context`**: string or array appended to what the model sees. Works on
+- **`context`** — string or array appended to what the model sees. Works on
   the tool events.
-- **`reason`** with `decision: "deny"` on `PostToolUse`: the tool already
+- **`reason`** with `decision: "deny"` on `PostToolUse` — the tool already
   ran, so instead of blocking anything the reason is handed to the model as
   feedback ("run the tests first"). This is Claude Code's `decision: "block"`
   and it works the same way here.
-- **`reason`, `context`, `decision: "deny"` or exit 2 on `TurnEnd`**: asks
+- **`reason`, `context`, `decision: "deny"` or exit 2 on `TurnEnd`** — asks
   Crush to continue the turn with that text instead of ending it.
-- **`halt: true` or `continue: false` on `TurnEnd`**: ends the turn there and
+- **`halt: true` or `continue: false` on `TurnEnd`** — ends the turn there and
   refuses every continuation, including the built-in checks'.
 
 Events marked "observe" ignore all control fields. They exist for logging,
@@ -253,7 +253,7 @@ hit the context limit again; send another message to carry on. A blocked
 
 ### Control field examples
 
-**PreToolUse: rewrite input:**
+**PreToolUse — rewrite input:**
 
 ```bash
 #!/usr/bin/env bash
@@ -262,7 +262,7 @@ jq -c 'select(.tool_input.command | startswith("npm "))
   | {updated_input: {command: (.tool_input.command | sub("^npm "; "bun "))}}'
 ```
 
-**PostToolUse: redact secrets from output:**
+**PostToolUse — redact secrets from output:**
 
 ```bash
 #!/usr/bin/env bash
@@ -270,7 +270,7 @@ jq -c 'select(.tool_input.command | startswith("npm "))
 jq -c '{updated_output: (.tool_response | gsub("(sk-|ghp_|AKIA)[A-Za-z0-9]{20,}"; "[REDACTED]"))}'
 ```
 
-**PostToolUse: halt on unexpected output:**
+**PostToolUse — halt on unexpected output:**
 
 ```bash
 #!/usr/bin/env bash
@@ -280,7 +280,7 @@ if jq -r '.tool_response' | grep -qi 'credential.*leak'; then
 fi
 ```
 
-**PostToolUse: send the model feedback:**
+**PostToolUse — send the model feedback:**
 
 ```bash
 #!/usr/bin/env bash
@@ -290,7 +290,7 @@ if jq -r '.tool_input.command' | grep -q '^git commit' && [ ! -f .tests-passed ]
 fi
 ```
 
-**PreCompact: skip compaction during critical work:**
+**PreCompact — skip compaction during critical work:**
 
 ```bash
 #!/usr/bin/env bash
@@ -300,7 +300,7 @@ if [ -f .migration-in-progress ]; then
 fi
 ```
 
-**PreToolUse: inject context:**
+**PreToolUse — inject context:**
 
 ```bash
 #!/usr/bin/env bash
@@ -310,7 +310,7 @@ if jq -r '.tool_input.file_path // empty' | grep -q '\.go$'; then
 fi
 ```
 
-**TurnEnd: read the reply aloud:**
+**TurnEnd — read the reply aloud:**
 
 ```bash
 #!/usr/bin/env bash
@@ -320,7 +320,7 @@ fi
 jq -r '.last_assistant_message' | say &
 ```
 
-**TurnEnd: send the model back to its work:**
+**TurnEnd — send the model back to its work:**
 
 ```bash
 #!/usr/bin/env bash
@@ -527,9 +527,9 @@ The difference between exit 2 and exit 49:
   something else.
 - **Exit 49** halts the whole turn. The agent doesn't get to respond further;
   the user takes over. Use this when something is wrong enough that the agent
-  shouldn't keep trying. 49 sits in an empty slice of the exit-code space,
+  shouldn't keep trying. 49 sits in an empty slice of the exit-code space —
   between the generic-error range (1-30), the BSD `sysexits.h` range (64-78),
-  and the killed-by-signal range (128+), so it can't be hit by accident.
+  and the killed-by-signal range (128+) — so it can't be hit by accident.
 
 That said, if you need more control, or if you need to rewrite input, you can
 use JSON on stdout. Exit 0 and print a JSON object to provide context, update
@@ -552,7 +552,7 @@ envelope can evolve without a compatibility shim.
 
 `decision: "allow"` is **affirmative**: it pre-approves the tool call and
 bypasses the permission prompt entirely. Silence (no `decision`, or
-`decision: null`) means "no opinion", the tool still goes through the
+`decision: null`) means "no opinion" — the tool still goes through the
 normal permission flow. Use `"allow"` when you want to auto-approve; omit it
 when you only want to inject context or rewrite input without also vouching
 for the call.
@@ -561,7 +561,7 @@ for the call.
 keys in `tool_input`; keys you don't include are preserved. If the model called
 `bash` with `{"command": "npm test", "timeout": 60000}` and your hook returns
 `{"updated_input": {"command": "bun test"}}`, the tool runs with
-`{"command": "bun test", "timeout": 60000}`: the timeout isn't dropped. The
+`{"command": "bun test", "timeout": 60000}` — the timeout isn't dropped. The
 merge is shallow: nested objects are replaced wholesale, not deep-merged.
 
 `halt: true` stops the turn entirely. The agent doesn't get to respond further;
@@ -605,9 +605,8 @@ When multiple hooks match the same tool call:
 - If **any** hook halts, the turn ends after the tool call is blocked.
 - If no hook denies or halts but at least one allows, the tool call proceeds
   **and the permission prompt is skipped**.
-- `context` values are concatenated in config order. Strings and arrays
-  compose uniformly: each string becomes one entry, and array entries are
-  flattened in.
+- `context` values are concatenated in config order. Strings and arrays compose
+  uniformly — each string becomes one entry, and array entries are flattened in.
 - `updated_input` patches shallow-merge in config order against the original
   tool input. Later hooks override earlier ones on colliding keys. If denied or
   halted, `updated_input` patches are ignored.
@@ -663,20 +662,20 @@ hook add PreToolUse \
   --command "echo '{\"decision\":\"allow\"}'"
 ```
 
-No script file needed: the command is inline. Every `view`/`ls`/`grep`/`glob`
+No script file needed — the command is inline. Every `view`/`ls`/`grep`/`glob`
 call now runs without prompting. Add the `bash` tool to this list at your own
 risk; consider a more targeted allowlist instead:
 
 ```bash
 #!/usr/bin/env bash
-# hooks/safe-bash.sh: auto-approve read-only bash commands.
+# hooks/safe-bash.sh — auto-approve read-only bash commands.
 
 case "$CRUSH_TOOL_INPUT_COMMAND" in
   ls*|cat*|grep*|rg*|echo*|pwd*)
     echo '{"decision":"allow"}'
     ;;
   *)
-    # Silent: fall through to the normal permission prompt.
+    # Silent — fall through to the normal permission prompt.
     exit 0
     ;;
 esac
@@ -875,7 +874,7 @@ Present in every hook event:
 }
 ```
 
-### Stdin payload: tool events
+### Stdin payload — tool events
 
 `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, and
 `PermissionResult` extend the common payload with the tool call:
@@ -926,7 +925,7 @@ Present in every hook event:
 }
 ```
 
-### Stdin payload: turn events
+### Stdin payload — turn events
 
 `TurnStart` and `Interrupt` use only the common fields. `TurnEnd` adds the
 assistant's reply and where the turn stands; `StopFailure` adds the provider
@@ -958,7 +957,7 @@ error:
 }
 ```
 
-### Stdin payload: session and compaction events
+### Stdin payload — session and compaction events
 
 ```jsonc
 {
@@ -997,7 +996,7 @@ event:
 }
 ```
 
-### Output envelope: PreToolUse
+### Output envelope — PreToolUse
 
 Extends the common envelope:
 
@@ -1019,7 +1018,7 @@ Extends the common envelope:
 }
 ```
 
-### Output envelope: PostToolUse
+### Output envelope — PostToolUse
 
 Same as the common envelope plus `updated_output`, a string that **replaces**
 what the model sees as the tool's response. The tool has already
@@ -1028,7 +1027,7 @@ output as feedback for the model instead.
 
 `PostToolUseFailure` accepts `halt` and `context` only.
 
-### Output envelope: PreCompact
+### Output envelope — PreCompact
 
 Same as the common envelope. `halt: true`, `decision: "deny"`, or exit 2
 blocks compaction and leaves the conversation as it was. Claude Code's
