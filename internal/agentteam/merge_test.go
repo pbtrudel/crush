@@ -18,7 +18,14 @@ import (
 // it its worktree.
 func scopedTask(t *testing.T, s *Service, member, subject string, verify bool) TaskView {
 	t.Helper()
-	task := createTask(t, s, CreateTaskRequest{Subject: subject, Description: "d", WriteScopes: []string{"docs"}, Verify: new(verify)})
+	return taskScoped(t, s, member, subject, verify, "docs")
+}
+
+// taskScoped is scopedTask with explicit write scopes, for a test whose work
+// is not under docs.
+func taskScoped(t *testing.T, s *Service, member, subject string, verify bool, scopes ...string) TaskView {
+	t.Helper()
+	task := createTask(t, s, CreateTaskRequest{Subject: subject, Description: "d", WriteScopes: scopes, Verify: new(verify)})
 	view := act(t, s, member, task.ID, "claim", nil)
 	require.NotEmpty(t, view.Worktree)
 	return view
@@ -108,6 +115,62 @@ func TestEmptyChangeSetStillMovesToReview(t *testing.T) {
 	act(t, s, "impl", view.ID, "complete", nil)
 	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status)
 	require.Equal(t, gitIn(t, repo, "rev-parse", "HEAD"), gitIn(t, view.Worktree, "rev-parse", "HEAD"), "no empty commit")
+}
+
+// TestCompleteCommitsOnlyInsideTheWriteScopes pins W20.1: a file a teammate
+// wrote outside the task's write scopes stays uncommitted on its branch and
+// never reaches the Lead's tree, while an in-scope file does.
+func TestCompleteCommitsOnlyInsideTheWriteScopes(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	spawnMember(t, s, "rev")
+	view := scopedTask(t, s, "impl", "Docs", true)
+	writeTreeFile(t, view.Worktree, "docs/a.md", "docs\n")
+	writeTreeFile(t, view.Worktree, "notes/stray.md", "stray\n")
+
+	act(t, s, "impl", view.ID, "complete", nil)
+	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status)
+	require.Equal(t, "docs/a.md", gitIn(t, view.Worktree, "show", "--name-only", "--format=", "HEAD"),
+		"only the write scopes are on the task branch")
+	require.Equal(t, "stray\n", readTreeFile(t, view.Worktree, "notes/stray.md"),
+		"a change outside the scopes stays uncommitted in the worktree")
+
+	passCheck(t, s, "rev", view.ID)
+	require.Equal(t, TaskCompleted, taskByID(t, s, view.ID).Status)
+	require.Equal(t, "docs\n", readTreeFile(t, repo, "docs/a.md"))
+	require.NoFileExists(t, filepath.Join(repo, "notes", "stray.md"),
+		"a change outside the scopes never reaches the Lead's tree")
+	require.NoDirExists(t, view.Worktree)
+}
+
+// TestCompleteCommitsScopesUnderTheLeadSubdirectory pins that the pathspecs
+// are joined with the subdirectory the Lead works in, so a commit still finds
+// the task's files when the repository root is above the Lead's tree.
+func TestCompleteCommitsScopesUnderTheLeadSubdirectory(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	writeTreeFile(t, repo, "sub/keep.txt", "keep\n")
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-m", "sub")
+	s, _ := newWorktreeService(t, filepath.Join(repo, "sub"), false)
+	spawnMember(t, s, "impl")
+	spawnMember(t, s, "rev")
+	view := scopedTask(t, s, "impl", "Docs", true)
+	writeTreeFile(t, view.Worktree, "sub/docs/a.md", "docs\n")
+	writeTreeFile(t, view.Worktree, "top.txt", "top\n")
+
+	act(t, s, "impl", view.ID, "complete", nil)
+	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status)
+	require.Equal(t, "sub/docs/a.md", gitIn(t, view.Worktree, "show", "--name-only", "--format=", "HEAD"),
+		"the scope is joined with the Lead's subdirectory")
+	require.Contains(t, gitIn(t, view.Worktree, "status", "--porcelain"), "top.txt")
+
+	passCheck(t, s, "rev", view.ID)
+	require.Equal(t, TaskCompleted, taskByID(t, s, view.ID).Status)
+	require.Equal(t, "docs\n", readTreeFile(t, repo, "sub/docs/a.md"))
+	require.NoFileExists(t, filepath.Join(repo, "top.txt"))
 }
 
 func TestCommitFailureRefusesComplete(t *testing.T) {
@@ -245,7 +308,7 @@ func TestMergeConflictEscalatesAndKeepsTheBranch(t *testing.T) {
 	s, _ := newWorktreeService(t, repo, false)
 	spawnMember(t, s, "impl")
 	spawnMember(t, s, "rev")
-	view := scopedTask(t, s, "impl", "Docs", true)
+	view := taskScoped(t, s, "impl", "Docs", true, "docs", "README.md")
 	writeTreeFile(t, view.Worktree, "README.md", "branch\n")
 	act(t, s, "impl", view.ID, "complete", nil)
 	// The Lead's tree moves on underneath the branch.
@@ -276,7 +339,7 @@ func TestMergeRefusedOnADirtyOrDetachedLeadTree(t *testing.T) {
 		s, _ := newWorktreeService(t, repo, false)
 		spawnMember(t, s, "impl")
 		spawnMember(t, s, "rev")
-		view := scopedTask(t, s, "impl", "Docs", true)
+		view := taskScoped(t, s, "impl", "Docs", true, "docs", "README.md")
 		writeTreeFile(t, view.Worktree, "README.md", "branch\n")
 		act(t, s, "impl", view.ID, "complete", nil)
 		writeTreeFile(t, repo, "README.md", "local\n")

@@ -34,19 +34,59 @@ func TestCommitAll(t *testing.T) {
 	repo := initPlumbingRepo(t)
 	ctx := context.Background()
 
-	committed, err := CommitAll(ctx, repo, "Nothing")
+	committed, err := CommitAll(ctx, repo, "Nothing", nil)
 	require.NoError(t, err)
 	require.False(t, committed, "an empty change set makes no commit")
 	require.Equal(t, "initial", gitText(t, repo, "log", "-1", "--format=%s"))
 
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644))
-	committed, err = CommitAll(ctx, repo, "Add things")
+	committed, err = CommitAll(ctx, repo, "Add things", nil)
 	require.NoError(t, err)
 	require.True(t, committed)
 	require.Equal(t, "Add things", gitText(t, repo, "log", "-1", "--format=%s"))
 	require.Equal(t, "Test", gitText(t, repo, "log", "-1", "--format=%an"), "the author comes from the repository config")
 	require.Empty(t, gitText(t, repo, "status", "--porcelain"))
+}
+
+// TestCommitAllStagesOnlyThePathspecs pins that a commit with pathspecs
+// leaves every change outside them in the work tree, that a pathspec is a
+// literal path and not a glob, and that a pathspec matching nothing is not
+// an error.
+func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	ctx := context.Background()
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "a.md"), []byte("docs\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "star*.md"), []byte("literal\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "starX.md"), []byte("glob\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("stray\n"), 0o644))
+
+	committed, err := CommitAll(ctx, repo, "Docs only", []string{"docs/star*.md", "docs/a.md", "docs/missing.md"})
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.ElementsMatch(t, []string{"docs/star*.md", "docs/a.md"},
+		strings.Fields(gitText(t, repo, "show", "--name-only", "--format=", "HEAD")),
+		"a pathspec is literal, and one that matches nothing commits nothing")
+	status := gitText(t, repo, "status", "--porcelain")
+	require.Contains(t, status, "M README.md", "a change outside the pathspecs stays uncommitted")
+	require.Contains(t, status, "?? stray.txt")
+	require.Contains(t, status, "?? docs/starX.md")
+
+	committed, err = CommitAll(ctx, repo, "Nothing named", []string{"docs/missing.md"})
+	require.NoError(t, err)
+	require.False(t, committed, "pathspecs that match nothing make no commit")
+
+	// A tracked path the work tree no longer holds is still in the index,
+	// so deleting it inside a scope is a change to commit.
+	require.NoError(t, os.Remove(filepath.Join(repo, "docs", "a.md")))
+	committed, err = CommitAll(ctx, repo, "Delete docs/a.md", []string{"docs/a.md"})
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.Equal(t, "docs/a.md", gitText(t, repo, "show", "--name-only", "--format=", "HEAD"))
+	require.NotContains(t, gitText(t, repo, "status", "--porcelain"), "docs/a.md")
 }
 
 // branchWithCommit makes a worktree on a new branch, writes name there, and
@@ -56,7 +96,7 @@ func branchWithCommit(t *testing.T, repo, name, content string) string {
 	path, branch, err := CreateWorktree(context.Background(), repo, "feature")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(path, name), []byte(content), 0o644))
-	committed, err := CommitAll(context.Background(), path, "Feature work")
+	committed, err := CommitAll(context.Background(), path, "Feature work", nil)
 	require.NoError(t, err)
 	require.True(t, committed)
 	return branch

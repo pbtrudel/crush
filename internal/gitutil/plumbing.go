@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -25,11 +27,24 @@ func RepoPrefix(ctx context.Context, dir string) (string, error) {
 }
 
 // CommitAll stages every change in the work tree at dir, ignored files
-// excepted, and commits it with message. It reports false with no error
-// when nothing was staged. Author, committer, signing and hooks follow the
-// repository's git config, so a failing hook refuses the commit.
-func CommitAll(ctx context.Context, dir, message string) (bool, error) {
-	if _, err := gitOutput(ctx, dir, "add", "-A"); err != nil {
+// excepted, and commits it with message, or stages and commits only the
+// changes pathspecs name. It reports false with no error when nothing was
+// staged. Author, committer, signing and hooks follow the repository's git
+// config, so a failing hook refuses the commit.
+func CommitAll(ctx context.Context, dir, message string, pathspecs []string) (bool, error) {
+	if len(pathspecs) > 0 {
+		specs, err := existingPathspecs(ctx, dir, pathspecs)
+		if err != nil {
+			return false, err
+		}
+		if len(specs) == 0 {
+			return false, nil
+		}
+		args := append([]string{"add", "-A", "--"}, specs...)
+		if _, err := gitLiteral(ctx, dir, args...); err != nil {
+			return false, fmt.Errorf("git add -A: %w", err)
+		}
+	} else if _, err := gitOutput(ctx, dir, "add", "-A"); err != nil {
 		return false, fmt.Errorf("git add -A: %w", err)
 	}
 	// diff --quiet exits 1 when something is staged and 0 when nothing is.
@@ -45,6 +60,35 @@ func CommitAll(ctx context.Context, dir, message string) (bool, error) {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	return true, nil
+}
+
+// existingPathspecs keeps the literal pathspecs that match something in the
+// work tree or the index. git refuses the whole add when one pathspec matches
+// nothing, and a write scope the task never wrote to is legitimate.
+func existingPathspecs(ctx context.Context, dir string, pathspecs []string) ([]string, error) {
+	kept := make([]string, 0, len(pathspecs))
+	for _, spec := range pathspecs {
+		if spec == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(spec))); err == nil {
+			kept = append(kept, spec)
+			continue
+		}
+		// A path the work tree no longer holds may still be in the index:
+		// deleting it inside a scope is a change to commit.
+		cmd := exec.CommandContext(ctx, "git", "-C", dir, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", spec)
+		err := cmd.Run()
+		if err == nil {
+			kept = append(kept, spec)
+			continue
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("git ls-files --error-unmatch %s: %w", spec, err)
+		}
+	}
+	return kept, nil
 }
 
 // MergeError is a merge git refused or could not finish. The work tree is

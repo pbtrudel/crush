@@ -60,6 +60,22 @@ func (s *Service) repo() (root, prefix string, ok bool) {
 	return s.repoRoot, s.repoPrefix, s.repoOK
 }
 
+// taskPathspecs returns task's write scopes as literal git pathspecs inside
+// its worktree: each scope joined with the subdirectory the Lead works in,
+// because a worktree mirrors the whole repository. A task without scopes
+// returns nil, which commits the whole work tree as before.
+func (s *Service) taskPathspecs(task Task) []string {
+	if len(task.WriteScopes) == 0 {
+		return nil
+	}
+	_, prefix, _ := s.repo()
+	specs := make([]string, 0, len(task.WriteScopes))
+	for _, scope := range task.WriteScopes {
+		specs = append(specs, prefix+scope)
+	}
+	return specs
+}
+
 // worktreeReady reports whether a teammate's scoped task can get a worktree.
 // It reads the repository repo resolved outside the locks, so callers may
 // hold s.mu; it never runs git itself.

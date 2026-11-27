@@ -30,16 +30,19 @@ func mergeRequestFor(task Task) mergeRequest {
 	}
 }
 
-// commitWork commits everything in a task worktree, with the task subject as
-// the message. An empty change set makes no commit and is no error. It holds
-// the worktree's whole-tree git lock, which a teammate's bash scope check
-// takes too, so the two never race on the index.
-func (s *Service) commitWork(ctx context.Context, worktree, subject string) error {
+// commitWork commits the changes inside task's write scopes in its worktree,
+// with the task subject as the message. A change outside the scopes stays
+// uncommitted, so it goes with the worktree instead of the branch. An empty
+// change set makes no commit and is no error. It holds the worktree's
+// whole-tree git lock, which a teammate's bash scope check takes too, so the
+// two never race on the index.
+func (s *Service) commitWork(ctx context.Context, task Task) error {
+	pathspecs := s.taskPathspecs(task)
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()
-	unlock := gitutil.LockWorktree(worktree)
+	unlock := gitutil.LockWorktree(task.Worktree)
 	defer unlock()
-	_, err := gitutil.CommitAll(ctx, worktree, subject)
+	_, err := gitutil.CommitAll(ctx, task.Worktree, task.Subject, pathspecs)
 	return err
 }
 
@@ -74,7 +77,7 @@ func (s *Service) commitHeldWork(name string) map[string]error {
 	defer cancel()
 	failed := map[string]error{}
 	for _, task := range work {
-		if err := s.commitWork(ctx, task.Worktree, task.Subject); err != nil {
+		if err := s.commitWork(ctx, task); err != nil {
 			failed[task.ID] = fmt.Errorf("could not commit the worktree of task %s: %w", task.ID, err)
 		}
 	}
@@ -83,9 +86,10 @@ func (s *Service) commitHeldWork(name string) map[string]error {
 
 // completePrep is the git work a complete needs before its write.
 type completePrep struct {
-	// commit is the worktree of in-progress work to commit, and owner the
-	// teammate whose background jobs must settle first.
-	commit, subject, owner string
+	// commit is the in-progress task to commit, and owner the teammate
+	// whose background jobs must settle first.
+	commit *Task
+	owner  string
 	// merge is in-review work the Lead accepts.
 	merge *mergeRequest
 }
@@ -108,7 +112,8 @@ func (s *Service) prepareComplete(caller string, req UpdateTaskRequest) complete
 	}
 	switch {
 	case task.Status == TaskInProgress && (member.Role == RoleLead || task.OwnerID == member.ID):
-		return completePrep{commit: task.Worktree, subject: task.Subject, owner: s.taskOwnerNameLocked(task)}
+		commit := task
+		return completePrep{commit: &commit, owner: s.taskOwnerNameLocked(task)}
 	case task.Status == TaskInReview && member.Role == RoleLead:
 		m := mergeRequestFor(task)
 		return completePrep{merge: &m}
@@ -122,16 +127,16 @@ func (s *Service) prepareComplete(caller string, req UpdateTaskRequest) complete
 // merge that ran, so a refused write can say the merge stays.
 func (s *Service) runCompletePrep(caller string, req UpdateTaskRequest) (*mergeRequest, error) {
 	prep := s.prepareComplete(caller, req)
-	if prep.commit == "" && prep.merge == nil {
+	if prep.commit == nil && prep.merge == nil {
 		return nil, nil
 	}
 	ctx, cancel := gitContext()
 	defer cancel()
-	if prep.commit != "" {
+	if prep.commit != nil {
 		s.settleJobs(ctx, prep.owner)
-		if err := s.commitWork(ctx, prep.commit, prep.subject); err != nil {
+		if err := s.commitWork(ctx, *prep.commit); err != nil {
 			return nil, newError(CodeTaskGit, "could not commit the work of task %s in %s: %v. The task is unchanged",
-				req.TaskID, prep.commit, err)
+				req.TaskID, prep.commit.Worktree, err)
 		}
 		return nil, nil
 	}
