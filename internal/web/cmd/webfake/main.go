@@ -5,11 +5,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -195,10 +193,7 @@ func main() {
 		g.SetPlanReady(fake.CurrentSessionID())
 	}
 	fmt.Println(g.LaunchURL())
-	if u, err := url.Parse(g.URL()); err == nil {
-		fmt.Fprintf(os.Stderr, "Dev server: CRUSH_WEB_DEV_PORT=%s npm --prefix web run dev, then open http://localhost:5173/#t=%s\n",
-			u.Port(), strings.TrimPrefix(g.LaunchURL(), g.URL()+"/#t="))
-	}
+	fmt.Fprintln(os.Stderr, "Dev server: the web UI is being rebuilt; this serves the placeholder page.")
 	// The terminal's signal and the browser's detach both end the fake;
 	// the cancellation releases the seeds before the shutdown closes
 	// their channels.
