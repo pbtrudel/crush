@@ -16,22 +16,13 @@ import (
 	"github.com/charmbracelet/crush/internal/workspace"
 )
 
-// SeedM4b adds the M4b surfaces on top of the M4 seeds. The tab's display
-// settings start on the Holodeck theme unless WEBFAKE_THEME names the one
-// a screenshot needs; the runs of other seeds extend this function.
+// SeedM4b adds the M4b surfaces on top of the M4 seeds; the runs of other
+// seeds extend this function.
 func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 	seams, err := SeedM4(f, done, clock)
 	if err != nil {
 		return M4Seams{}, err
 	}
-	theme, err := m4bTheme()
-	if err != nil {
-		return M4Seams{}, err
-	}
-	if f.Cfg.Options == nil {
-		f.Cfg.Options = &config.Options{}
-	}
-	f.Cfg.Options.WebDisplay = &config.WebDisplayOptions{Theme: theme}
 	// The HUD layout test asks for a model name long enough to truncate.
 	if name := os.Getenv("WEBFAKE_MODEL_NAME"); name != "" {
 		model := f.AgentModel()
@@ -90,6 +81,9 @@ func SeedM4b(f *Fake, done <-chan struct{}, clock time.Time) (M4Seams, error) {
 		Source:        skills.SourceProject,
 		UserInvocable: true,
 	})
+	if f.Cfg.Options == nil {
+		f.Cfg.Options = &config.Options{}
+	}
 	f.Cfg.Options.DisabledSkills = append(f.Cfg.Options.DisabledSkills, "crush-config")
 	seams.DockerMCPAvailable = func() bool { return true }
 	seams.Automation = m4bAutomation
@@ -131,17 +125,4 @@ func m4bAutomation(_ context.Context, _, name, args string) (string, error) {
 		return "Loops: 2 active", nil
 	}
 	return "", fmt.Errorf("unknown automation command %q", name)
-}
-
-// m4bTheme reads the theme a run starts on. Every other display field keeps
-// its default, which is what an absent web_display block means.
-func m4bTheme() (string, error) {
-	switch theme := os.Getenv("WEBFAKE_THEME"); theme {
-	case "", "holodeck":
-		return "holodeck", nil
-	case "solid":
-		return "solid", nil
-	default:
-		return "", fmt.Errorf("invalid WEBFAKE_THEME: %q", theme)
-	}
 }

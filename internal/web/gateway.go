@@ -233,15 +233,6 @@ type Gateway struct {
 	modelMu   sync.Mutex
 	lastModel ModelInfo
 	modelGen  uint64
-
-	// displayMu guards display, the tab's settings as the gateway last
-	// wrote them. It is seeded from the config at start and published
-	// from this copy rather than a re-read, so a frame never depends on
-	// when a client-mode config cache refreshes. Every config route and
-	// every publish holds it, so the disk, this copy and the frames
-	// always agree.
-	displayMu sync.Mutex
-	display   DisplaySettings
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -325,8 +316,6 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		onAutomation:         opts.OnAutomation,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
-		// The settings the tab starts from are the ones in the config.
-		display: displayFromConfig(opts.Workspace.Config()),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),

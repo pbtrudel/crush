@@ -272,8 +272,6 @@ func TestEveryRouteRequiresTheToken(t *testing.T) {
 		"POST /api/lsp/stop",
 		"POST /api/config/reload",
 		"GET /api/config",
-		"POST /api/config/set",
-		"POST /api/config/remove",
 		"POST /api/agent-teams",
 		"POST /api/docker-mcp/enable",
 		"POST /api/docker-mcp/disable",
