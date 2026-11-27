@@ -13,8 +13,8 @@ import (
 
 const (
 	// streamProtocol is the subprotocol the stream speaks. The page offers
-	// it together with the token entry, and the gateway selects it.
-	streamProtocol = "crush.v1"
+	// it beside the token entry, and the gateway selects it.
+	streamProtocol = "crush.v2"
 	// authProtocolPrefix carries the token on the WebSocket upgrade, where
 	// a browser cannot set an Authorization header.
 	authProtocolPrefix = "crush.auth."

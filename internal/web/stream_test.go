@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/web/webtest"
 	"github.com/charmbracelet/crush/internal/wire"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -25,6 +26,7 @@ import (
 type testFrame struct {
 	Seq     uint64          `json:"seq"`
 	Type    string          `json:"type"`
+	Session string          `json:"session_id,omitempty"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -413,7 +415,7 @@ func TestStreamRejectsForeignOrigin(t *testing.T) {
 // subprotocol is checked before the handshake completes: a client that
 // offers only the token entry is refused with a 400, so the upgrade never
 // happens and no workspace call runs. The page offers both entries, and
-// that pair still selects crush.v1.
+// that pair still selects crush.v2.
 func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
@@ -427,7 +429,7 @@ func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
 	if c != nil {
 		t.Cleanup(func() { c.CloseNow() })
 	}
-	require.Error(t, err, "an upgrade without crush.v1 must be refused")
+	require.Error(t, err, "an upgrade without crush.v2 must be refused")
 	require.NotNil(t, rsp)
 	defer rsp.Body.Close()
 	body, readErr := io.ReadAll(rsp.Body)
@@ -443,7 +445,7 @@ func TestStreamRefusesAnUpgradeWithoutTheStreamProtocol(t *testing.T) {
 }
 
 // TestOffersStreamProtocolReadsJoinedHeaders pins the header parse: the page
-// offers crush.v1 in the same comma-separated value as the token entry, and
+// offers crush.v2 in the same comma-separated value as the token entry, and
 // spacing or extra entries must not hide it.
 func TestOffersStreamProtocolReadsJoinedHeaders(t *testing.T) {
 	t.Parallel()
@@ -452,9 +454,9 @@ func TestOffersStreamProtocolReadsJoinedHeaders(t *testing.T) {
 		header string
 		want   bool
 	}{
-		{"page pair", "crush.v1, " + authProtocolPrefix + "token", true},
+		{"page pair", "crush.v2, " + authProtocolPrefix + "token", true},
 		{"token only", authProtocolPrefix + "token", false},
-		{"crowded value", "one, two ,crush.v1 , three", true},
+		{"crowded value", "one, two ,crush.v2 , three", true},
 		{"prefix only", "crush.v10", false},
 		{"empty", "", false},
 	} {
@@ -475,4 +477,185 @@ func TestStreamSelectsThePlainProtocol(t *testing.T) {
 	c := dialStream(t, g, "")
 	require.Equal(t, streamProtocol, c.Subprotocol())
 	require.NotContains(t, c.Subprotocol(), authProtocolPrefix)
+}
+
+// TestSubscribeAnswersASessionSnapshot pins the message a tab sends to open
+// a session and the frame it gets back.
+func TestSubscribeAnswersASessionSnapshot(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "hello"))
+	c := dialStream(t, g, "")
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
+
+	f := subscribeStream(t, c, "s1")
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(f.Payload, &s))
+	require.Equal(t, "s1", s.SessionID)
+	require.Len(t, s.Messages, 1)
+}
+
+// TestSubscribeThenLiveFrames pins the order the stream promises: the
+// snapshot first, then the session's live frames.
+func TestSubscribeThenLiveFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+
+	fake.Emit(msgEvent("m1", "s1", "hello"))
+	f := nextFrameOfType(t.Context(), t, c, "message")
+	require.Contains(t, string(f.Payload), "hello")
+}
+
+// TestResubscribeAnswersAFreshSnapshot pins the resync path: subscribing to
+// a session twice answers a new snapshot both times.
+func TestResubscribeAnswersAFreshSnapshot(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	subscribeStream(t, c, "s1")
+	fake.AddMessage(textMessage("m2", "s1", "later"))
+
+	f := subscribeStream(t, c, "s1")
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(f.Payload, &s))
+	require.Len(t, s.Messages, 1, "the second snapshot carries the new message")
+}
+
+// TestSubscribeRefusesAnUnknownSession pins the error frame a stale tab
+// gets instead of a subscription.
+func TestSubscribeRefusesAnUnknownSession(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	writeClient(t, c, `{"type":"subscribe","session_id":"nope"}`)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
+	require.Contains(t, string(f.Payload), "unknown_session")
+}
+
+// TestSubscribeRefusesTooManySessions pins the per-connection cap.
+func TestSubscribeRefusesTooManySessions(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	for i := range maxSubscriptions {
+		fake.AddSession(session.Session{ID: "x" + strconv.Itoa(i), Title: "x"})
+	}
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	for i := range maxSubscriptions {
+		subscribeStream(t, c, "x"+strconv.Itoa(i))
+	}
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
+	require.Contains(t, string(f.Payload), "too_many_subscriptions")
+}
+
+// subscribeStream asks for a session and returns its snapshot, skipping the
+// global frames that may arrive first.
+func subscribeStream(t *testing.T, c *websocket.Conn, sessionID string) testFrame {
+	t.Helper()
+	writeClient(t, c, `{"type":"subscribe","session_id":"`+sessionID+`"}`)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	f := nextFrameOfType(ctx, t, c, frameSessionSnapshot)
+	require.Equal(t, sessionID, f.Session)
+	return f
+}
+
+// TestSubscribeBuffersFramesPublishedDuringTheSnapshot pins the reservation
+// at the hub, with no timing: a frame published while the snapshot is being
+// built queues behind it instead of overtaking it.
+func TestSubscribeBuffersFramesPublishedDuringTheSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	c, _, _, _ := h.attach(-1)
+	require.True(t, h.beginSubscription(c, "s1"))
+	deliverTo(h, c, frame{Type: "message", Session: "s1", Payload: json.RawMessage(`{"id":"m2"}`)})
+	h.flushSubscription(c, "s1", frame{Type: frameSessionSnapshot, Payload: json.RawMessage(`{"session_id":"s1"}`)})
+
+	first := <-c.ch
+	require.Equal(t, frameSessionSnapshot, first.Type)
+	second := <-c.ch
+	require.Equal(t, "message", second.Type)
+	require.Equal(t, "s1", second.Session)
+}
+
+// deliverTo runs one per-session frame through the hub's delivery path for
+// one connection, the way Task 5's publishSession does for every connection
+// that tracks the session. Nothing tags a frame with its session yet, so
+// these tests hand the frame to the delivery path directly.
+func deliverTo(h *hub, c *conn, f frame) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deliverLocked(c, f)
+}
+
+// deliverSessionToEvery queues a per-session frame on every attached
+// connection, which is what Task 5's publishSession will do once the
+// gateway tags its frames.
+func deliverSessionToEvery(h *hub, f frame) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.subs {
+		h.deliverLocked(c, f)
+	}
+}
+
+// TestSubscribeSendsSnapshotBeforeLiveFrames pins the same ordering through
+// the real gateway: the snapshot read is held open while a message is
+// published, and the tab still reads the snapshot first.
+func TestSubscribeSendsSnapshotBeforeLiveFrames(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "from the page"))
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.SetListMessagesGate(entered, release)
+
+	c := dialStream(t, g, "")
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the snapshot never read the messages")
+	}
+	deliverSessionToEvery(g.hub, frame{
+		Type: "message", Session: "s1",
+		Payload: json.RawMessage(`{"payload":{"id":"m2","parts":["mid-build"]}}`),
+	})
+	close(release)
+
+	f := readFrame(t, c)
+	require.Equal(t, frameSessionSnapshot, f.Type)
+	var s SessionSnapshot
+	require.NoError(t, json.Unmarshal(f.Payload, &s))
+	require.Len(t, s.Messages, 1, "the page holds what the snapshot read")
+
+	live := nextFrameOfType(t.Context(), t, c, "message")
+	require.Contains(t, string(live.Payload), "mid-build")
+}
+
+// writeClient sends one text message to the gateway.
+func writeClient(t *testing.T, c *websocket.Conn, msg string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, c.Write(ctx, websocket.MessageText, []byte(msg)))
+}
+
+// TestEnqueueAfterDetachIsDropped pins that a reply for a connection that is
+// already gone is dropped: detach closes the queue, so a send would panic.
+func TestEnqueueAfterDetachIsDropped(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	c, _, _, _ := h.attach(-1)
+	h.detach(c)
+	require.NotPanics(t, func() {
+		h.enqueue(c, frame{Type: frameError, Payload: json.RawMessage(`{}`)})
+	}, "a detached connection must not be sent to")
 }
