@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -44,6 +45,15 @@ type SnapshotFile struct {
 	// empty when the index did not hold the path.
 	IndexMode string
 	IndexOID  string
+	// IndexStages holds the raw git ls-files -s records of an unmerged
+	// path, in the form git update-index --index-info takes them back, so
+	// a merge in progress survives a restore.
+	IndexStages []string
+	// Unmerged reports a conflicted path, whose stages IndexStages holds.
+	Unmerged bool
+	// IntentToAdd reports a path git add -N put in the index without
+	// content.
+	IntentToAdd bool
 }
 
 // FileSnapshot is the changed-file state of a work tree: its HEAD and every
@@ -72,6 +82,21 @@ func SnapshotFiles(ctx context.Context, root string, caps SnapshotCaps) (FileSna
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
 
+	// A conflicted path needs its stages, in one call for all of them.
+	var conflicted []string
+	for path, entry := range state.Entries {
+		if isUnmerged(entry) {
+			conflicted = append(conflicted, path)
+		}
+	}
+	var stages map[string][]string
+	if len(conflicted) > 0 {
+		stages, err = indexStages(ctx, root, conflicted)
+		if err != nil {
+			return FileSnapshot{}, err
+		}
+	}
+
 	snap := FileSnapshot{Head: state.Head, Files: make(map[string]SnapshotFile, len(paths))}
 	var saved int64
 	for _, path := range paths {
@@ -79,6 +104,9 @@ func SnapshotFiles(ctx context.Context, root string, caps SnapshotCaps) (FileSna
 		file := SnapshotFile{Tracked: !listed || !strings.HasPrefix(entry, "? ")}
 		if listed {
 			file.IndexMode, file.IndexOID = indexEntry(entry)
+			file.IntentToAdd = intentToAdd(entry)
+			file.Unmerged = isUnmerged(entry)
+			file.IndexStages = stages[path]
 		}
 		if err := readSnapshotFile(filepath.Join(root, filepath.FromSlash(path)), &file, caps, &saved); err != nil {
 			return FileSnapshot{}, fmt.Errorf("snapshot %s: %w", path, err)
@@ -105,6 +133,41 @@ func indexEntry(entry string) (mode, oid string) {
 		return "", ""
 	}
 	return mode, oid
+}
+
+// isUnmerged reports whether a porcelain v2 record is an unmerged path.
+func isUnmerged(entry string) bool {
+	return strings.HasPrefix(entry, "u ")
+}
+
+// intentToAdd reports whether a porcelain v2 record shows a path git add -N
+// put in the index without content: no index mode, no index object, but a
+// worktree mode.
+func intentToAdd(entry string) bool {
+	if !strings.HasPrefix(entry, "1 ") {
+		return false
+	}
+	fields := strings.SplitN(entry, " ", 9)
+	if len(fields) != 9 {
+		return false
+	}
+	return fields[1] == ".A" && fields[4] == "000000" && strings.Trim(fields[7], "0") == ""
+}
+
+// indexStages reads the stages of each unmerged path, in the form git
+// update-index --index-info takes them back, in one call.
+func indexStages(ctx context.Context, root string, paths []string) (map[string][]string, error) {
+	out, err := gitLiteral(ctx, root, append([]string{"ls-files", "-s", "-z", "--"}, paths...)...)
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files -s: %w", err)
+	}
+	byPath := map[string][]string{}
+	for record := range strings.SplitSeq(out, "\x00") {
+		if _, path, ok := strings.Cut(record, "\t"); ok {
+			byPath[path] = append(byPath[path], record)
+		}
+	}
+	return byPath, nil
 }
 
 // renamedFrom is the original path a porcelain v2 rename record names
@@ -258,7 +321,7 @@ func RestorePaths(ctx context.Context, root string, before FileSnapshot, paths [
 	}
 	defer dir.Close()
 	w := restoreRoot{root: root, dir: dir}
-	moves, ambiguous := moveOriginals(ctx, root, before, targets)
+	moves, ambiguous := moveOriginals(ctx, w, before, targets)
 	destOf := make(map[string]string, len(moves))
 	for dest, original := range moves {
 		if current, ok := destOf[original]; !ok || dest < current {
@@ -321,20 +384,20 @@ func uniquePaths(paths []string) []string {
 // moved from, for a move git names or a content match exactly one removed
 // path supports, and lists the destinations whose content matches several
 // removed paths. A copy is not a move, and empty bytes prove nothing.
-func moveOriginals(ctx context.Context, root string, before FileSnapshot, targets []string) (moves map[string]string, ambiguous map[string]bool) {
+func moveOriginals(ctx context.Context, w restoreRoot, before FileSnapshot, targets []string) (moves map[string]string, ambiguous map[string]bool) {
 	target := make(map[string]bool, len(targets))
 	for _, path := range targets {
 		target[path] = true
 	}
 	moves, ambiguous = map[string]string{}, map[string]bool{}
-	state, err := Snapshot(ctx, root)
+	state, err := Snapshot(ctx, w.root)
 	if err != nil {
-		slog.Debug("Could not read the worktree for the originals of a move", "dir", root, "error", err)
+		slog.Debug("Could not read the worktree for the originals of a move", "dir", w.root, "error", err)
 	}
 	for _, path := range targets {
 		// A rename record names its original, and a copy's original still
 		// stands, so a copy is no move.
-		if original, ok := renamedFrom(state.Entries[path]); ok && !target[original] && !isPresent(root, original) {
+		if original, ok := renamedFrom(state.Entries[path]); ok && !target[original] && !isPresent(w, original) {
 			moves[path] = original
 		}
 	}
@@ -349,20 +412,20 @@ func moveOriginals(ctx context.Context, root string, before FileSnapshot, target
 	}
 	var byBlob map[string][]string
 	if knownHead(before.Head) {
-		byBlob = headBlobs(ctx, root, before.Head, deletedPaths(state, before, target))
+		byBlob = headBlobs(ctx, w.root, before.Head, deletedPaths(state, before, target))
 	}
 	for _, path := range targets {
 		if _, named := moves[path]; named {
 			continue
 		}
-		hash, err := contentHash(root, path)
+		hash, err := contentHash(w, path)
 		if err != nil || hash == "" {
 			continue
 		}
-		candidates := removedCandidates(root, bySaved[hash], target)
+		candidates := removedCandidates(w, bySaved[hash], target)
 		if len(byBlob) > 0 {
-			if oid, err := blobOID(ctx, root, path); err == nil && oid != "" {
-				for _, candidate := range removedCandidates(root, byBlob[oid], target) {
+			if oid, err := blobOID(ctx, w.root, path); err == nil && oid != "" {
+				for _, candidate := range removedCandidates(w, byBlob[oid], target) {
 					if !slices.Contains(candidates, candidate) {
 						candidates = append(candidates, candidate)
 					}
@@ -442,10 +505,10 @@ func blobOID(ctx context.Context, root, path string) (string, error) {
 
 // removedCandidates narrows candidates to the paths that are gone from the
 // worktree and are not being restored themselves.
-func removedCandidates(root string, candidates []string, target map[string]bool) []string {
+func removedCandidates(w restoreRoot, candidates []string, target map[string]bool) []string {
 	var out []string
 	for _, path := range candidates {
-		if target[path] || isPresent(root, path) {
+		if target[path] || isPresent(w, path) {
 			continue
 		}
 		out = append(out, path)
@@ -454,10 +517,10 @@ func removedCandidates(root string, candidates []string, target map[string]bool)
 }
 
 // contentHash is the hash of the worktree file at path, or "" when nothing
-// regular or anything empty stands there: empty bytes prove no move.
-func contentHash(root, path string) (string, error) {
-	full := filepath.Join(root, filepath.FromSlash(path))
-	info, err := os.Lstat(full)
+// regular or anything empty stands there: empty bytes prove no move. It
+// reads through the root, so a symbolic link cannot point it outside.
+func contentHash(w restoreRoot, path string) (string, error) {
+	info, err := w.dir.Lstat(filepath.FromSlash(path))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
@@ -467,12 +530,28 @@ func contentHash(root, path string) (string, error) {
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return "", nil
 	}
-	return hashFile(full)
+	return hashInRoot(w, path)
 }
 
-// isPresent reports whether anything stands at the worktree path.
-func isPresent(root, path string) bool {
-	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(path)))
+// hashInRoot is the sha256 of the file at path, opened through the root so
+// that no symbolic link can lead outside the work tree.
+func hashInRoot(w restoreRoot, path string) (string, error) {
+	f, err := w.dir.Open(filepath.FromSlash(path))
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// isPresent reports whether anything stands at the worktree path, read
+// through the root.
+func isPresent(w restoreRoot, path string) bool {
+	_, err := w.dir.Lstat(filepath.FromSlash(path))
 	return err == nil
 }
 
@@ -547,16 +626,45 @@ func restorePath(ctx context.Context, w restoreRoot, before FileSnapshot, path s
 	return restoreIndex(ctx, w.root, before, path)
 }
 
-// restoreIndex puts the index entry for path back as before had it, or
-// takes the path out of the index when before did not hold it.
+// restoreIndex puts the index entry for path back as before had it: the
+// conflict stages of an unmerged path, its mode and object otherwise, an
+// intent to add, or nothing at all.
 func restoreIndex(ctx context.Context, root string, before FileSnapshot, path string) error {
-	if file, listed := before.Files[path]; listed && file.IndexOID != "" {
-		_, err := gitLiteral(ctx, root, "update-index", "--add", "--cacheinfo",
-			file.IndexMode, file.IndexOID, path)
-		return err
+	if file, listed := before.Files[path]; listed {
+		switch {
+		case file.Unmerged:
+			return restoreStages(ctx, root, path, file.IndexStages)
+		case file.IndexOID != "":
+			_, err := gitLiteral(ctx, root, "update-index", "--add", "--cacheinfo",
+				file.IndexMode, file.IndexOID, path)
+			return err
+		case file.IntentToAdd:
+			if _, err := gitLiteral(ctx, root, "update-index", "--force-remove", "--", path); err != nil {
+				return err
+			}
+			_, err := gitLiteral(ctx, root, "add", "-N", "--", path)
+			return err
+		}
 	}
 	_, err := gitLiteral(ctx, root, "update-index", "--force-remove", "--", path)
 	return err
+}
+
+// restoreStages clears whatever the command staged and puts the conflict
+// stages back, so the merge is still in progress after the restore.
+func restoreStages(ctx context.Context, root, path string, stages []string) error {
+	if len(stages) == 0 {
+		return errors.New("no index stages were recorded for an unmerged path")
+	}
+	if _, err := gitLiteral(ctx, root, "update-index", "--force-remove", "--", path); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "update-index", "-z", "--index-info")
+	cmd.Stdin = strings.NewReader(strings.Join(stages, "\x00") + "\x00")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git update-index --index-info: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // reverseMove puts the bytes a move left at dest back at original, for an

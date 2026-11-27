@@ -465,3 +465,75 @@ func TestRestorePathsReversesAMoveOntoAnExistingPath(t *testing.T) {
 	require.Equal(t, big, readRepoFile(t, repo, "big.bin"), "the moved bytes came back")
 	require.Equal(t, "theirs\n", readRepoFile(t, repo, "away.txt"), "the destination's own content is back")
 }
+
+// TestRestorePathsKeepsConflictedStages is fix round 2: a restore in the
+// middle of a merge puts the unmerged stages back instead of clearing them.
+func TestRestorePathsKeepsConflictedStages(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	runGit(t, repo, "checkout", "-b", "other")
+	writeRepoFile(t, repo, "README.md", "theirs\n")
+	runGit(t, repo, "commit", "-am", "theirs")
+	runGit(t, repo, "checkout", "main")
+	writeRepoFile(t, repo, "README.md", "mine\n")
+	runGit(t, repo, "commit", "-am", "mine")
+	conflict := exec.CommandContext(context.Background(), "git", "-C", repo, "merge", "--no-ff", "-m", "merge", "other")
+	require.Error(t, conflict.Run(), "the merge conflicts")
+	require.Equal(t, "UU README.md", gitText(t, repo, "status", "--porcelain"))
+	stages := gitText(t, repo, "ls-files", "-s", "README.md")
+	before := snapshot(t, repo, testCaps)
+	require.True(t, before.Files["README.md"].Unmerged)
+	require.Len(t, before.Files["README.md"].IndexStages, 3)
+
+	// The command resolves the conflict and stages its own content.
+	writeRepoFile(t, repo, "README.md", "resolved\n")
+	runGit(t, repo, "add", "README.md")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"README.md"})
+	require.Equal(t, []string{"README.md"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.Contains(t, readRepoFile(t, repo, "README.md"), "<<<<<<<", "the conflicted content is back")
+	require.Equal(t, stages, gitText(t, repo, "ls-files", "-s", "README.md"), "the same stages are back")
+	require.Equal(t, "UU README.md", gitText(t, repo, "status", "--porcelain"))
+	require.True(t, mergeInProgressForTest(repo), "the merge is still in progress")
+}
+
+// TestRestorePathsKeepsAnIntentToAddEntry is fix round 2: a path git add -N
+// put in the index stays an intent to add after a restore.
+func TestRestorePathsKeepsAnIntentToAddEntry(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "ita.txt", "planned\n")
+	runGit(t, repo, "add", "-N", "ita.txt")
+	before := snapshot(t, repo, testCaps)
+	require.True(t, before.Files["ita.txt"].IntentToAdd)
+	require.Empty(t, before.Files["ita.txt"].IndexOID, "an intent to add holds no object")
+
+	writeRepoFile(t, repo, "ita.txt", "changed\n")
+	result := RestorePaths(context.Background(), repo, before, []string{"ita.txt"})
+	require.Equal(t, []string{"ita.txt"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.Equal(t, "planned\n", readRepoFile(t, repo, "ita.txt"))
+	status := gitText(t, repo, "status", "--porcelain=v2")
+	require.True(t, strings.HasPrefix(status, "1 .A "), "still an intent to add: %s", status)
+}
+
+// TestRestorePathsDoesNotReadThroughASymlinkedParent is fix round 2: move
+// detection reads the worktree through the root, so a file behind a
+// symbolic link out of it is never taken for a moved in-scope file.
+func TestRestorePathsDoesNotReadThroughASymlinkedParent(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "scope/log.txt", "mine\n")
+	before := snapshot(t, repo, testCaps)
+	outside := t.TempDir()
+	writeRepoFile(t, outside, "leak.txt", "mine\n")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "scope")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(repo, "scope")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"scope/leak.txt"})
+	require.Equal(t, []string{"scope/leak.txt"}, result.Unrestored)
+	require.Empty(t, result.Restored, "the outside file is no moved in-scope file")
+	require.Equal(t, "mine\n", readRepoFile(t, outside, "leak.txt"), "the outside file is untouched")
+	require.NoFileExists(t, filepath.Join(outside, "log.txt"))
+}
