@@ -577,6 +577,9 @@ type worktreeRelease struct {
 // Lead changes it. It reports whether the claim was released, and whether
 // the Team was shutting down instead of releasing it.
 func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) (released, closed bool) {
+	// The recorded worktree is read and stat'ed before the write: the write
+	// holds s.mu, and a filesystem call never runs under it.
+	checkedPath, worktreeHere := s.recordedWorktree(r.taskID, r.sessionID)
 	var leadHook func(sessionID string)
 	_ = s.write(mustApply, func() (bool, error) {
 		if r.member != "" {
@@ -596,7 +599,7 @@ func (s *Service) releaseWorktreeClaim(r worktreeRelease, err error) (released, 
 			}
 			s.idleProvisionedLocked(r.member)
 		}
-		released = s.releaseForWorktreeLocked(r.taskID, r.sessionID, r.ownerID, err)
+		released = s.releaseForWorktreeLocked(r.taskID, r.sessionID, r.ownerID, checkedPath, worktreeHere, err)
 		if !released {
 			return false, nil
 		}
@@ -624,13 +627,31 @@ func (s *Service) worktreeFailed(start dispatchStart, err error) {
 	}, err)
 }
 
+// recordedWorktree reports the worktree the task records and whether its
+// directory exists. It reads the board under s.mu and stats outside it, so
+// the caller can pass the result into a write without a filesystem call
+// under the lock.
+func (s *Service) recordedWorktree(taskID, sessionID string) (path string, exists bool) {
+	s.mu.Lock()
+	for _, task := range s.state.Tasks {
+		if task.ID == taskID && task.SessionID == sessionID {
+			path = task.Worktree
+			break
+		}
+	}
+	s.mu.Unlock()
+	return path, path != "" && dirExists(path)
+}
+
 // releaseForWorktreeLocked puts a claimed task whose worktree failed back
 // to pending, uncharged, remembers it as refused at its new revision, and
 // tells the Lead. The claim is matched on its owner, not its revision, so an
 // edit that lands while git runs does not leave the task in progress with
-// nobody to run it. It reports false when the claim moved on and nothing was
-// released. Callers must hold s.mu.
-func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID string, err error) bool {
+// nobody to run it. checkedPath and worktreeHere are the worktree the task
+// recorded and whether it was on disk when the caller looked, so this write
+// runs no filesystem call. It reports false when the claim moved on and
+// nothing was released. Callers must hold s.mu.
+func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID, checkedPath string, worktreeHere bool, err error) bool {
 	for i := range s.state.Tasks {
 		task := &s.state.Tasks[i]
 		if task.ID != taskID || task.SessionID != sessionID {
@@ -639,10 +660,10 @@ func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID string, er
 		if task.OwnerID != ownerID || task.Status != TaskInProgress {
 			return false
 		}
-		if task.Worktree != "" && dirExists(task.Worktree) {
-			// The task already has the worktree its member works in, so
-			// this failure belongs to an older claim: releasing it would
-			// strand live work.
+		if task.Worktree != "" && (worktreeHere || task.Worktree != checkedPath) {
+			// The task already has, or meanwhile gained, a worktree its
+			// member works in, so this failure belongs to an older claim:
+			// releasing it would strand live work.
 			return false
 		}
 		task.Status = TaskPending

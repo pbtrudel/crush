@@ -935,8 +935,9 @@ func TestReleaseSkipsATaskThatHasItsWorktree(t *testing.T) {
 	view := act(t, s, "impl", task.ID, "claim", nil)
 
 	released := true
+	checkedPath, worktreeHere := s.recordedWorktree(view.ID, view.SessionID)
 	_ = s.write(mustApply, func() (bool, error) {
-		released = s.releaseForWorktreeLocked(view.ID, view.SessionID, view.OwnerID, errors.New("stale failure"))
+		released = s.releaseForWorktreeLocked(view.ID, view.SessionID, view.OwnerID, checkedPath, worktreeHere, errors.New("stale failure"))
 		return false, nil
 	})
 	require.False(t, released)
