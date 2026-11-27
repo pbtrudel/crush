@@ -529,6 +529,10 @@ type Service struct {
 	// handed back at after its worktree failed, so the dispatcher leaves
 	// it until the Lead changes it.
 	worktreeRefused map[string]int
+	// holds names the members whose next settle must leave their
+	// in-progress tasks alone, because a caller stopped their run to end
+	// the worktree those tasks work in.
+	holds map[string]bool
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -567,6 +571,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		wrote:           make(map[string]bool),
 		lockTimeout:     defaultLockTimeout,
 		worktreeRefused: make(map[string]int),
+		holds:           make(map[string]bool),
 	}, nil
 }
 
@@ -1264,6 +1269,9 @@ func (s *Service) watch(name string, run Run) {
 	}
 
 	runErr := run.Err()
+	// Commit what the turn left in its worktrees before the settle decides
+	// where that work goes; git runs with no lock held.
+	uncommitted := s.commitHeldWork(name)
 	var (
 		member    Member
 		pending   []Message
@@ -1271,6 +1279,7 @@ func (s *Service) watch(name string, run Run) {
 		hook      func(sessionID, subject string)
 		complete  []string
 		leadHook  func(sessionID string)
+		merges    []mergeRequest
 		wasClosed bool
 	)
 	// The run already happened, so its settlement must land even when
@@ -1299,9 +1308,11 @@ func (s *Service) watch(name string, run Run) {
 		// next turn owns whatever this one left in progress. Settling it
 		// here would re-review or release work its owner is about to
 		// resume on, before it has read the mail that explains why.
-		hold := runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID)
-		settled, completed := s.settleTasksLocked(member.ID, runErr, hold)
+		hold := s.takesHoldLocked(name) ||
+			(runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID))
+		settled, completed, toMerge := s.settleTasksLocked(member.ID, runErr, hold, uncommitted)
 		complete = completed
+		merges = toMerge
 		s.appendMessageLocked(name, leadName, runReport(name, output, settled, runErr, fullReport))
 		s.notifyLocked()
 		hook = s.taskCompletedHook
@@ -1332,6 +1343,13 @@ func (s *Service) watch(name string, run Run) {
 	// can act on it without waiting for a user prompt.
 	if leadHook != nil && !wasClosed {
 		leadHook(member.ParentID)
+	}
+	// Work the settle left for merging is merged now, outside every lock;
+	// each merge dispatches what its task unblocked.
+	for _, m := range merges {
+		ctx, cancel := gitContext()
+		s.mergeTask(ctx, m)
+		cancel()
 	}
 	// The settle may have freed a member or finished a blocker.
 	if !wasClosed {
@@ -1381,7 +1399,7 @@ func (s *Service) watch(name string, run Run) {
 					held = append(held, task.ID)
 				}
 			}
-			s.settleTasksLocked(member.ID, err, false)
+			s.settleTasksLocked(member.ID, err, false, nil)
 			s.failMemberLocked(name, err)
 			s.appendMessageLocked(name, leadName, resumeFailedNotice(name, err, held, pending))
 			s.notifyLocked()
@@ -1425,6 +1443,17 @@ func (s *Service) releaseHeldLocked(memberID string) {
 	}
 }
 
+// takesHoldLocked reports whether a caller stopped this member's run to end
+// the worktree it worked in, and consumes the request, so it holds one settle
+// at most. Callers must hold s.mu.
+func (s *Service) takesHoldLocked(name string) bool {
+	if !s.holds[name] {
+		return false
+	}
+	delete(s.holds, name)
+	return true
+}
+
 // requeueLocked marks drained mail pending again, so a later Service
 // delivers it. Callers must hold s.mu.
 func (s *Service) requeueLocked(messages []Message) {
@@ -1438,20 +1467,22 @@ func (s *Service) requeueLocked(messages []Message) {
 }
 
 // settleTasksLocked closes out the tasks a finished teammate left in flight.
-// A successful turn completes them, or sends them to review when they are
-// verified; a verification task is never completed this way, because a
-// verifier that never decides must not pass work by default. A failed or
-// interrupted turn releases them back to the board so they never stay
-// half-done forever. With hold set, the member is about to be resumed with
-// pending mail, so its in-progress tasks are left as they are for that turn
-// to finish. It returns the report labels and the subjects of the completed
-// tasks.
-func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (settled, completed []string) {
+// A successful turn completes them, sends them to review when they are
+// verified, or leaves them in review for a merge when they have a worktree;
+// a verification task is never completed this way, because a verifier that
+// never decides must not pass work by default. A failed or interrupted turn
+// releases them back to the board so they never stay half-done forever, and
+// so does a task whose worktree could not be committed (uncommitted). With
+// hold set, the member is about to be resumed with pending mail, so its
+// in-progress tasks are left as they are for that turn to finish. It returns
+// the report labels, the subjects of the completed tasks and the merges to
+// run once the write lands.
+func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool, uncommitted map[string]error) (settled, completed []string, merges []mergeRequest) {
 	if ownerID == "" || ownerID == leadName {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if hold {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var review []int
 	for i := range s.state.Tasks {
@@ -1460,6 +1491,11 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (se
 			continue
 		}
 		task.Revision++
+		// Work that is not on its branch must not go to review or merge.
+		taskErr := runErr
+		if taskErr == nil {
+			taskErr = uncommitted[task.ID]
+		}
 		switch {
 		case task.Verifies != "" && !s.checkWantedLocked(*task):
 			// Its task left review while the check was being reviewed, so
@@ -1469,11 +1505,11 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (se
 			task.Status = TaskDeleted
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" deleted, its task left review")
-		case runErr != nil:
+		case taskErr != nil:
 			task.Status = TaskPending
 			task.OwnerID = ""
 			settled = append(settled, task.ID+" released")
-			s.countFailedTurnLocked(task, runErr)
+			s.countFailedTurnLocked(task, taskErr)
 		case task.Verifies != "":
 			task.Status = TaskPending
 			task.OwnerID = ""
@@ -1489,6 +1525,11 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (se
 			task.Status = TaskInReview
 			settled = append(settled, task.ID+" in review")
 			review = append(review, i)
+		case task.Worktree != "":
+			// Unverified work completes once its branch is merged.
+			task.Status = TaskInReview
+			settled = append(settled, task.ID+" merging")
+			merges = append(merges, mergeRequestFor(*task))
 		default:
 			task.Status = TaskCompleted
 			settled = append(settled, task.ID+" completed")
@@ -1500,7 +1541,7 @@ func (s *Service) settleTasksLocked(ownerID string, runErr error, hold bool) (se
 	for _, i := range review {
 		s.startReviewLocked(s.state.Tasks[i])
 	}
-	return settled, completed
+	return settled, completed, merges
 }
 
 // countFailedTurnLocked charges a failed turn to a task the dispatcher owns,
@@ -2375,12 +2416,29 @@ type taskUpdate struct {
 	place bool
 	// removal is a worktree to remove once the write lands.
 	removal *worktreeRemoval
+	// merges are task branches to merge once the write lands.
+	merges []mergeRequest
 }
 
 // UpdateTask applies one compare-and-set task transition. Git work runs
-// after the write, with no lock held: a claim gets its worktree, and a
-// deleted task loses its worktree.
+// with no lock held: before the write, in-progress work is committed to its
+// branch and in-review work the Lead accepts is merged; after it, a claim
+// gets its worktree, branches left for merging are merged, and a deleted or
+// accepted task loses its worktree.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
+	var accepted *mergeRequest
+	if req.Action == "complete" {
+		merged, err := s.runCompletePrep(caller, req)
+		if err != nil {
+			return TaskView{}, err
+		}
+		accepted = merged
+	}
+	// A delete removes a worktree, so a run still working in it stops first
+	// and its settle commits what the turn left there, before the write ends
+	// the task. The interrupted member's in-progress tasks are held for that
+	// settle, so it changes nothing but the commit.
+	stopped, stoppedMember := s.stopDeleteRun(caller, req)
 	var (
 		applied  taskUpdate
 		hook     func(sessionID, subject string)
@@ -2403,6 +2461,14 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		return true, nil
 	})
 	if err != nil {
+		if stopped {
+			// The write refused, so nothing ends the work the stopped turn
+			// left: hand its held tasks back before returning.
+			s.releaseStoppedWork(stoppedMember)
+		}
+		if accepted != nil {
+			s.noteMergeStays(*accepted, err)
+		}
 		return TaskView{}, err
 	}
 	// A claim that needs a worktree gets it before anything else reacts to
@@ -2440,10 +2506,16 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			wakeLeads(leadHook, []string{applied.parentSessionID})
 		}
 	}
+	ctx, cancel := gitContext()
+	defer cancel()
+	for _, m := range applied.merges {
+		s.mergeTask(ctx, m)
+	}
 	if applied.removal != nil {
-		ctx, cancel := gitContext()
 		s.removeTaskWorktree(ctx, *applied.removal)
-		cancel()
+	}
+	if len(applied.merges) > 0 {
+		applied.view = s.refreshView(applied.view)
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil
@@ -2487,6 +2559,7 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	next := current
 	var (
 		review  bool
+		merge   bool
 		verdict string
 		notes   string
 		place   bool
@@ -2597,6 +2670,15 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 			}
 			next.Status = TaskCompleted
 			completedSubject = next.Subject
+			// Accepting the work ends the failure the task still records,
+			// as a pass does.
+			next.LastFailure = ""
+			if current.Worktree != "" {
+				// The branch was merged before this write, so the worktree
+				// and branch go, and a later reopen starts a fresh one.
+				removal = &worktreeRemoval{taskID: current.ID, sessionID: current.SessionID, path: current.Worktree, branch: current.Branch}
+				next.Worktree, next.Branch = "", ""
+			}
 			break
 		}
 		if err := authorizeOwner(); err != nil {
@@ -2612,6 +2694,14 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if current.needsVerification() {
 			next.Status = TaskInReview
 			review = true
+			break
+		}
+		if current.Worktree != "" {
+			// Unverified work completes once its branch is merged; until
+			// then it waits in review, where a refused merge leaves it for
+			// the Lead.
+			next.Status = TaskInReview
+			merge = true
 			break
 		}
 		next.Status = TaskCompleted
@@ -2730,18 +2820,24 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		place:            place,
 		removal:          removal,
 	}
+	if merge {
+		update.merges = append(update.merges, mergeRequestFor(next))
+	}
 	if review {
 		s.startReviewLocked(next)
 	}
 	if verdict != "" {
-		subject, wake, leads, wakeTask := s.applyVerdictLocked(scope, next, member, verdict, notes)
-		if subject != "" {
-			update.completedSubject = subject
+		result := s.applyVerdictLocked(scope, next, member, verdict, notes)
+		if result.completedSubject != "" {
+			update.completedSubject = result.completedSubject
 		}
-		update.wake = wake
-		update.leadSessions = leads
-		if wakeTask != "" {
-			update.taskID = wakeTask
+		update.wake = result.wake
+		update.leadSessions = result.leads
+		if result.wakeTask != "" {
+			update.taskID = result.wakeTask
+		}
+		if result.merge != nil {
+			update.merges = append(update.merges, *result.merge)
 		}
 	}
 	if current.Status == TaskInReview {
