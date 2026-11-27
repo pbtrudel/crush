@@ -206,10 +206,13 @@ export class StreamClient {
     if (frame.type === 'bootstrap') {
       // The bootstrap is the first frame of a fresh connection and carries
       // the gateway's current sequence, so it re-anchors the watermark even
-      // when a restarted gateway counts from zero again.
-      this.seq = frame.seq
-      this.hasBootstrap = true
-      this.deliver(() => this.options.handlers.onBootstrap(frame.payload))
+      // when a restarted gateway counts from zero again. A bootstrap the
+      // handler could not apply is not seen: the tab still has nothing, so
+      // the next connect asks for one again instead of resuming.
+      if (this.deliver(() => this.options.handlers.onBootstrap(frame.payload))) {
+        this.seq = frame.seq
+        this.hasBootstrap = true
+      }
       return
     }
     if (frame.seq > this.seq) {
@@ -220,12 +223,15 @@ export class StreamClient {
 
   // deliver runs one handler and contains it: a handler that throws must not
   // stop the frames behind it. Nothing about the failure is logged, because
-  // neither the frame nor the error it raised may reach the console.
-  private deliver(call: () => void): void {
+  // neither the frame nor the error it raised may reach the console. It
+  // reports whether the handler accepted the frame.
+  private deliver(call: () => void): boolean {
     try {
       call()
+      return true
     } catch {
       console.warn('web: dropping a frame the handler rejected')
+      return false
     }
   }
 

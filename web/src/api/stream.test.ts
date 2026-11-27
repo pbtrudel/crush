@@ -318,6 +318,34 @@ describe('StreamClient', () => {
     s.stop()
   })
 
+  it('asks for a bootstrap again when one failed to apply', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const onBootstrap = vi.fn(() => {
+      throw new Error('SENTINEL')
+    })
+    const s = new StreamClient({
+      url: () => 'ws://127.0.0.1:1234/api/stream',
+      protocols: () => ['crush.v2', 'crush.auth.token'],
+      handlers: { onFrame: vi.fn(), onState: vi.fn(), onBootstrap },
+      createSocket: (url, protocols) => new FakeSocket(url, protocols) as unknown as WebSocket,
+      random: () => 1,
+    })
+    s.start()
+    const first = FakeSocket.opened[0]
+    first.open()
+    first.receive({ seq: 7, type: 'bootstrap', payload: bootstrap })
+    expect(onBootstrap).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith('web: dropping a frame the handler rejected')
+    // A bootstrap the store could not apply must not count as seen: the tab
+    // has nothing yet, so the reconnect has to ask for one again.
+    expect(s.lastSeq).toBe(0)
+    first.drop()
+    vi.advanceTimersByTime(500)
+    expect(FakeSocket.opened).toHaveLength(2)
+    expect(FakeSocket.opened[1].url).toBe('ws://127.0.0.1:1234/api/stream')
+    s.stop()
+  })
+
   it('keeps processing frames when a handler throws, and logs neither', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const applied: number[] = []
@@ -367,6 +395,7 @@ describe('StreamClient', () => {
     expect(remove).toHaveBeenCalledWith('online', expect.any(Function))
     expect(remove).toHaveBeenCalledWith('offline', expect.any(Function))
     s.stop()
+    remove.mockRestore()
   })
 
   it('treats a bootstrap after heavy streaming as the new watermark', () => {
