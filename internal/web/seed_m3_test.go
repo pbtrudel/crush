@@ -123,8 +123,7 @@ func TestSeedM3FeedsTheRoutes(t *testing.T) {
 	require.Equal(t, []string{"s-2", "s-3", "s-4", "s1"}, []string{sessions[0].ID, sessions[1].ID, sessions[2].ID, sessions[3].ID})
 	require.Equal(t, "Tokenizer port", sessions[0].Title)
 
-	var snap Snapshot
-	get("/api/snapshot", &snap)
+	snap := snapshotOf(t, g, "")
 	require.Equal(t, "m1", snap.Model.ID)
 	require.True(t, snap.Model.AgentReady)
 	require.True(t, snap.AgentReady)

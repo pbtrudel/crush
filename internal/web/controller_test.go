@@ -157,14 +157,7 @@ func TestControllerReportsInputModeBeforeStart(t *testing.T) {
 	_, err := c.Start(t.Context())
 	require.NoError(t, err)
 
-	rsp, data := doJSON(t, authedClient(t, c.gw), http.MethodGet, c.gw.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var snap struct {
-		InputMode string `json:"input_mode"`
-	}
-	require.NoError(t, json.Unmarshal(data, &snap))
-	require.Equal(t, "plan", snap.InputMode)
+	require.Equal(t, "plan", snapshotOf(t, c.gw, "").InputMode)
 }
 
 // TestControllerIgnoresStaleInputModeReports checks that reports racing in
@@ -275,14 +268,7 @@ func TestControllerReportsPlanReadyBeforeStart(t *testing.T) {
 	_, err := c.Start(t.Context())
 	require.NoError(t, err)
 
-	rsp, data := doJSON(t, authedClient(t, c.gw), http.MethodGet, c.gw.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var snap struct {
-		PlanReadySessionID string `json:"plan_ready_session_id"`
-	}
-	require.NoError(t, json.Unmarshal(data, &snap))
-	require.Equal(t, "s1", snap.PlanReadySessionID)
+	require.Equal(t, "s1", snapshotOf(t, c.gw, "").PlanReadySessionID)
 }
 
 // TestControllerIgnoresStalePlanReadyReports checks that reports racing in

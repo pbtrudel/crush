@@ -35,7 +35,6 @@ func (g *Gateway) registerAPI(api *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 	g.route(api, "GET /api/stream", g.handleStream)
-	g.route(api, "GET /api/snapshot", g.handleSnapshot)
 	g.route(api, "GET /api/sessions", g.handleListSessions)
 	g.route(api, "POST /api/sessions", g.handleCreateSession)
 	g.route(api, "GET /api/sessions/{sid}", g.handleGetSession)
@@ -111,14 +110,6 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
-}
-
-func (g *Gateway) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	sid := r.URL.Query().Get("session")
-	if sid == "" {
-		sid = g.ws.CurrentSessionID()
-	}
-	writeJSON(w, http.StatusOK, g.buildSnapshot(r.Context(), sid))
 }
 
 func (g *Gateway) handleListSessions(w http.ResponseWriter, r *http.Request) {

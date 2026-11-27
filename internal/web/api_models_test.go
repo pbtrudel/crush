@@ -169,11 +169,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 	t.Parallel()
 	g, fake := startModels(t)
 
-	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
-	var snap Snapshot
-	require.NoError(t, json.Unmarshal(body, &snap))
+	snap := snapshotOf(t, g, "")
 	require.Equal(t, "m1", snap.Model.ID)
 	require.True(t, snap.Model.CanReason)
 	require.Equal(t, []string{"low", "high"}, snap.Model.EffortLevels)
@@ -185,10 +181,7 @@ func TestSnapshotModelInfo(t *testing.T) {
 
 	// A starting agent says so in both places, from one check.
 	fake.SetReadyErr(workspace.ErrAgentNotInitialized)
-	rsp, body = doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode, string(body))
-	require.NoError(t, json.Unmarshal(body, &snap))
+	snap = snapshotOf(t, g, "")
 	require.False(t, snap.Model.AgentReady)
 	require.False(t, snap.AgentReady)
 }
