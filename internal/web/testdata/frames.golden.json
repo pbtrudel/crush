@@ -1,0 +1,601 @@
+{
+  "agent_event": {
+    "seq": 1,
+    "type": "agent_event",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "error": "The provider refused the request",
+        "type": "error",
+        "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+        },
+        "provider_id": "anthropic",
+        "session_id": "s1",
+        "session_title": "Parser refactor"
+      }
+    }
+  },
+  "agent_runs": {
+    "seq": 1,
+    "type": "agent_runs",
+    "payload": [
+      {
+        "id": "sub-1",
+        "kind": "subagent",
+        "name": "Map the parser",
+        "session_id": "sub-1",
+        "parent_session_id": "s1",
+        "status": "running",
+        "started_at": "2026-11-22T12:00:00Z"
+      }
+    ]
+  },
+  "bootstrap": {
+    "seq": 1,
+    "type": "bootstrap",
+    "payload": {
+      "version": "test",
+      "working_dir": "/repo",
+      "branch": "main",
+      "current_session_id": "s1",
+      "sessions": [
+        {
+          "id": "s1",
+          "parent_session_id": "",
+          "title": "Parser refactor",
+          "message_count": 4,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "summary_message_id": "",
+          "cost": 0,
+          "created_at": 0,
+          "updated_at": 104,
+          "is_busy": false,
+          "attached_clients": 0,
+          "status": "running"
+        }
+      ],
+      "model": {
+        "id": "claude-sonnet",
+        "name": "Claude Sonnet",
+        "provider": "anthropic",
+        "context_window": 200000,
+        "can_reason": true,
+        "effort_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning_effort": "high",
+        "think": true,
+        "small": {
+          "id": "claude-haiku",
+          "provider": "anthropic"
+        },
+        "agent_ready": true
+      },
+      "agent_ready": true,
+      "permission_mode": "normal",
+      "input_mode": "code",
+      "plan_ready_session_id": "s1",
+      "lsp": {
+        "gopls": {
+          "state": "2",
+          "diagnostic_count": 2
+        }
+      },
+      "mcp": {
+        "fs": {
+          "state": "connected",
+          "tool_count": 3
+        }
+      },
+      "team": {
+        "team_id": "team-1",
+        "members": [
+          {
+            "id": "m-1",
+            "name": "alice",
+            "role": "teammate",
+            "model": "claude",
+            "model_provider": "anthropic",
+            "session_id": "team-m-1",
+            "parent_session_id": "s1",
+            "status": "running"
+          }
+        ],
+        "tasks": [
+          {
+            "id": "task-1",
+            "revision": 2,
+            "subject": "Port the parser",
+            "description": "",
+            "status": "in_progress",
+            "owner_id": "m-1",
+            "owner_name": "alice",
+            "blocked_by": [],
+            "ready": false,
+            "session_id": "s1"
+          }
+        ]
+      },
+      "agent_runs": [
+        {
+          "id": "sub-1",
+          "kind": "subagent",
+          "name": "Map the parser",
+          "session_id": "sub-1",
+          "parent_session_id": "s1",
+          "status": "running",
+          "started_at": "2026-11-22T12:00:00Z"
+        }
+      ],
+      "permissions": []
+    }
+  },
+  "config_changed": {
+    "seq": 1,
+    "type": "config_changed",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "workspace_id": "ws-1"
+      }
+    }
+  },
+  "config_stale": {
+    "seq": 1,
+    "type": "config_stale",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "changed": [
+          "/repo/crushrc"
+        ]
+      }
+    }
+  },
+  "file": {
+    "seq": 1,
+    "type": "file",
+    "session_id": "s1",
+    "payload": {
+      "payload": {
+        "created_at": 104,
+        "id": "f-1",
+        "path": "/repo/parser.go",
+        "session_id": "s1",
+        "updated_at": 104,
+        "version": 1
+      },
+      "type": "created"
+    }
+  },
+  "gateway_closing": {
+    "seq": 1,
+    "type": "gateway_closing",
+    "payload": {
+      "reason": "crush exited"
+    }
+  },
+  "input_mode_changed": {
+    "seq": 1,
+    "type": "input_mode_changed",
+    "payload": {
+      "mode": "plan"
+    }
+  },
+  "lsp_event": {
+    "seq": 1,
+    "type": "lsp_event",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "type": "state_changed",
+        "name": "gopls",
+        "state": 0,
+        "diagnostic_count": 2
+      }
+    }
+  },
+  "mcp_event": {
+    "seq": 1,
+    "type": "mcp_event",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "type": "state_changed",
+        "name": "fs",
+        "state": "connected",
+        "tool_count": 3
+      }
+    }
+  },
+  "message": {
+    "seq": 1,
+    "type": "message",
+    "session_id": "s1",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "parts": [
+          {
+            "type": "reasoning",
+            "data": {
+              "thinking": "Look at parser.go first.",
+              "signature": ""
+            }
+          },
+          {
+            "type": "text",
+            "data": {
+              "text": "Reading parser.go."
+            }
+          },
+          {
+            "type": "tool_call",
+            "data": {
+              "id": "tc-1",
+              "name": "view",
+              "input": "{\"file_path\":\"parser.go\"}",
+              "finished": true
+            }
+          },
+          {
+            "type": "finish",
+            "data": {
+              "reason": "tool_use",
+              "time": 102
+            }
+          }
+        ],
+        "id": "a-1",
+        "role": "assistant",
+        "session_id": "s1",
+        "model": "claude",
+        "provider": "anthropic",
+        "created_at": 101,
+        "updated_at": 102
+      }
+    }
+  },
+  "model_changed": {
+    "seq": 1,
+    "type": "model_changed",
+    "payload": {
+      "id": "claude-sonnet",
+      "name": "Claude Sonnet",
+      "provider": "anthropic",
+      "context_window": 200000,
+      "can_reason": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "reasoning_effort": "high",
+      "think": true,
+      "small": {
+        "id": "claude-haiku",
+        "provider": "anthropic"
+      },
+      "agent_ready": true
+    }
+  },
+  "permission_mode_changed": {
+    "seq": 1,
+    "type": "permission_mode_changed",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "mode": "yolo"
+      }
+    }
+  },
+  "permission_notification": {
+    "seq": 1,
+    "type": "permission_notification",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "session_id": "s1",
+        "tool_call_id": "tc-2",
+        "granted": true,
+        "denied": false,
+        "cancelled": false
+      }
+    }
+  },
+  "permission_request": {
+    "seq": 1,
+    "type": "permission_request",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "id": "p-1",
+        "session_id": "s1",
+        "tool_call_id": "tc-2",
+        "tool_name": "bash",
+        "description": "Run tests",
+        "action": "execute",
+        "params": {
+          "command": "go test ./..."
+        },
+        "path": ""
+      }
+    }
+  },
+  "plan_ready": {
+    "seq": 1,
+    "type": "plan_ready",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  "question_batch_notification": {
+    "seq": 1,
+    "type": "question_batch_notification",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "batch_id": "q-1",
+        "session_id": "s1"
+      }
+    }
+  },
+  "question_batch_request": {
+    "seq": 1,
+    "type": "question_batch_request",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "id": "q-1",
+        "session_id": "s1",
+        "tool_call_id": "tc-3",
+        "questions": [
+          {
+            "id": "flavor",
+            "type": "single_choice",
+            "question": "Which theme?",
+            "choices": [
+              {
+                "id": "cyan",
+                "label": "Cyan"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "run_complete": {
+    "seq": 1,
+    "type": "run_complete",
+    "session_id": "s1",
+    "payload": {
+      "type": "created",
+      "payload": {
+        "session_id": "s1",
+        "run_id": "r-1",
+        "message_id": "a-1",
+        "text": "done"
+      }
+    }
+  },
+  "secure_prompt": {
+    "seq": 1,
+    "type": "secure_prompt",
+    "payload": {
+      "prompts": [
+        {
+          "source": "pinentry",
+          "id": "p1",
+          "kind": "passphrase",
+          "title": "GPG passphrase",
+          "message": "Unlock the signing key",
+          "details": [
+            "Key: ABCDEF0123456789"
+          ]
+        }
+      ]
+    }
+  },
+  "session": {
+    "seq": 1,
+    "type": "session",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "id": "s1",
+        "parent_session_id": "",
+        "title": "Parser refactor",
+        "message_count": 4,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "summary_message_id": "",
+        "cost": 0,
+        "created_at": 0,
+        "updated_at": 104,
+        "is_busy": false,
+        "attached_clients": 0
+      }
+    }
+  },
+  "session_follow": {
+    "seq": 1,
+    "type": "session_follow",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  "session_snapshot": {
+    "seq": 1,
+    "type": "session_snapshot",
+    "session_id": "s1",
+    "payload": {
+      "session_id": "s1",
+      "session": {
+        "id": "s1",
+        "parent_session_id": "",
+        "title": "Parser refactor",
+        "message_count": 4,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "summary_message_id": "",
+        "cost": 0,
+        "created_at": 0,
+        "updated_at": 104,
+        "is_busy": false,
+        "attached_clients": 0
+      },
+      "messages": [
+        {
+          "parts": [
+            {
+              "type": "text",
+              "data": {
+                "text": "Refactor the parser"
+              }
+            }
+          ],
+          "id": "u-1",
+          "role": "user",
+          "session_id": "s1",
+          "model": "",
+          "provider": "",
+          "created_at": 100,
+          "updated_at": 100
+        }
+      ],
+      "has_more": true,
+      "files": [
+        {
+          "path": "/repo/parser.go",
+          "versions": 1,
+          "version_ids": [
+            0
+          ],
+          "version_tools": null,
+          "additions": 3,
+          "removals": 1,
+          "diagnostics": {
+            "error": 0,
+            "warning": 0
+          },
+          "updated_at": 104,
+          "session_ids": [
+            "s1"
+          ]
+        }
+      ],
+      "busy": true,
+      "queued": [
+        "and the tests"
+      ]
+    }
+  },
+  "session_status": {
+    "seq": 1,
+    "type": "session_status",
+    "payload": {
+      "session_id": "s1",
+      "status": "running"
+    }
+  },
+  "shell_output": {
+    "seq": 1,
+    "type": "shell_output",
+    "session_id": "s1",
+    "payload": {
+      "run_id": "run-1",
+      "session_id": "s1",
+      "chunk": "line 1\n"
+    }
+  },
+  "shell_output_done": {
+    "seq": 1,
+    "type": "shell_output",
+    "session_id": "s1",
+    "payload": {
+      "run_id": "run-1",
+      "session_id": "s1",
+      "done": true,
+      "exit_code": 0
+    }
+  },
+  "signin": {
+    "seq": 1,
+    "type": "signin",
+    "payload": {
+      "flow_id": "f1",
+      "provider": "copilot",
+      "provider_name": "GitHub Copilot",
+      "state": "waiting",
+      "kind": "device",
+      "user_code": "WDJB-MJHT",
+      "verification_url": "https://github.com/login/device"
+    }
+  },
+  "team_state": {
+    "seq": 1,
+    "type": "team_state",
+    "payload": {
+      "team_id": "team-1",
+      "members": [
+        {
+          "id": "m-1",
+          "name": "alice",
+          "role": "teammate",
+          "model": "claude",
+          "model_provider": "anthropic",
+          "session_id": "team-m-1",
+          "parent_session_id": "s1",
+          "status": "running"
+        }
+      ],
+      "tasks": [
+        {
+          "id": "task-1",
+          "revision": 2,
+          "subject": "Port the parser",
+          "description": "",
+          "status": "in_progress",
+          "owner_id": "m-1",
+          "owner_name": "alice",
+          "blocked_by": [],
+          "ready": false,
+          "session_id": "s1"
+        }
+      ]
+    }
+  },
+  "update_available": {
+    "seq": 1,
+    "type": "update_available",
+    "payload": {
+      "type": "updated",
+      "payload": {
+        "current_version": "0.30.0",
+        "latest_version": "0.31.0",
+        "is_development": false
+      }
+    }
+  },
+  "web_error": {
+    "seq": 1,
+    "type": "web_error",
+    "payload": {
+      "code": "agent_starting",
+      "error": "Crush is starting",
+      "session_id": "s1"
+    }
+  }
+}
