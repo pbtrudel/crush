@@ -263,10 +263,74 @@ func TestTeammateToolsRunInTheTaskWorktree(t *testing.T) {
 	require.FileExists(t, filepath.Join(coord.cfg.WorkingDir(), "docs", "lead.md"))
 }
 
+// taskStatusNow returns the board's status for the task with id.
+func taskStatusNow(t *testing.T, team *agentteam.Service, id string) agentteam.TaskStatus {
+	t.Helper()
+	list, err := team.ListTasks(agentteam.LeadName, teamTestSessionID, agentteam.TaskFilter{})
+	require.NoError(t, err)
+	for _, task := range list.Tasks {
+		if task.ID == id {
+			return task.Status
+		}
+	}
+	t.Fatalf("task %q is not on the board", id)
+	return ""
+}
+
 // TestTeammateInWorktreeKeepsLeadPrefix extends the cache tests: a teammate
 // in a task worktree sends the Lead's tools block byte for byte and the
 // Lead's system prompt plus its identity, and no tool definition names a
 // working directory.
+// TestTeammateToolsRefuseWhenTheirWorktreeGoesMissing pins W20.2: a recorded
+// worktree the filesystem no longer holds must not send the teammate's tools
+// into the Lead's tree, where bash is unchecked. Only the team board tools
+// stay usable, so the member can release the task.
+func TestTeammateToolsRefuseWhenTheirWorktreeGoesMissing(t *testing.T) {
+	coord, repo := newWorktreeTestCoordinator(t)
+	ws := claimInWorktree(t, coord, "impl", "docs")
+	task := memberTask(t, coord, "impl")
+	teammate := buildTeammateAgent(t, coord, agentteam.Member{Name: "impl", Role: agentteam.RoleTeammate})
+	list := teammate.(*sessionAgent).tools.Copy()
+	sess, err := coord.sessions.Create(t.Context(), "Teammate impl")
+	require.NoError(t, err)
+	ctx := context.WithValue(agentteam.WithMember(t.Context(), "impl"), tools.SessionIDContextKey, sess.ID)
+
+	// The worktree goes away in the middle of the turn, as a manual cleanup
+	// or another process's removal would.
+	require.NoError(t, os.RemoveAll(ws.Root))
+
+	for _, tc := range []struct{ name, input, marker string }{
+		{tools.WriteToolName, `{"file_path":"docs/lead.md","content":"in the lead tree\n"}`, "docs/lead.md"},
+		{tools.EditToolName, `{"file_path":"README.md","old_string":"hello","new_string":"edited"}`, ""},
+		{tools.BashToolName, `{"command":"pwd","description":"where"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := runIn(t, ctx, toolByName(list, tc.name), tc.input)
+			require.True(t, resp.IsError, resp.Content)
+			require.Contains(t, resp.Content, "this task's worktree is missing")
+			if tc.marker != "" {
+				require.NoFileExists(t, filepath.Join(repo, tc.marker),
+					"a refused tool must not write in the Lead's tree")
+			}
+		})
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	require.NoError(t, err)
+	require.Equal(t, "hello\n", string(data), "a refused edit must not touch the Lead's tree")
+
+	// The board tools still work, so the member can release the task and
+	// leave the missing worktree behind.
+	input, err := json.Marshal(map[string]any{
+		"task_id":           task.ID,
+		"expected_revision": task.Revision,
+		"action":            "release",
+	})
+	require.NoError(t, err)
+	resp := runIn(t, ctx, toolByName(list, TeamTaskUpdateToolName), string(input))
+	require.False(t, resp.IsError, resp.Content)
+	require.Equal(t, agentteam.TaskPending, taskStatusNow(t, coord.teamService(), task.ID))
+}
+
 func TestTeammateInWorktreeKeepsLeadPrefix(t *testing.T) {
 	coord, repo := newWorktreeTestCoordinator(t)
 	ws := claimInWorktree(t, coord, "impl", "docs")

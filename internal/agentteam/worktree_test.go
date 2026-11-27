@@ -628,16 +628,19 @@ func TestClaimRestoresAMissingWorktree(t *testing.T) {
 	gitIn(t, view.Worktree, "commit", "-m", "draft")
 	require.NoError(t, os.RemoveAll(view.Worktree))
 
-	_, ok := s.MemberWorkspace("impl")
-	require.False(t, ok, "a member is never placed in a path that is gone")
+	ws, ok := s.MemberWorkspace("impl")
+	require.True(t, ok, "the recorded worktree is still the member's")
+	require.True(t, ws.Missing, "a member is never placed in a path that is gone")
+	require.Empty(t, ws.Dir)
 
 	act(t, s, leadName, task.ID, "release", nil)
 	again := act(t, s, "impl", task.ID, "claim", nil)
 	requireSamePath(t, view.Worktree, again.Worktree)
 	require.DirExists(t, again.Worktree)
 	require.FileExists(t, filepath.Join(again.Worktree, "docs", "draft.md"), "the branch keeps its commits")
-	ws, ok := s.MemberWorkspace("impl")
+	ws, ok = s.MemberWorkspace("impl")
 	require.True(t, ok)
+	require.False(t, ws.Missing)
 	requireSamePath(t, again.Worktree, ws.Root)
 }
 

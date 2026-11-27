@@ -34,6 +34,10 @@ type Workspace struct {
 	Root   string
 	Dir    string
 	Branch string
+	// Missing reports a recorded worktree the filesystem no longer holds.
+	// A member in this state has no tree to work in, so its tools must
+	// refuse rather than fall back to the Lead's, where bash is unchecked.
+	Missing bool
 }
 
 // repo reports the repository that holds the Lead's working directory, and
@@ -92,15 +96,23 @@ func dirExists(path string) bool {
 // MemberWorkspace returns the workspace member's tools run in: the worktree
 // of the scoped task it works on, or of the task its verification task
 // checks. ok is false for the Lead and for a member with no such task; they
-// work in the Lead's tree. It holds s.mu only to read the board.
+// work in the Lead's tree. A task that records a worktree the filesystem no
+// longer holds is still reported, with Missing set and no Dir, so a tool
+// never falls back to the Lead's tree in its place. It holds s.mu only to
+// read the board.
 func (s *Service) MemberWorkspace(member string) (Workspace, bool) {
 	s.mu.Lock()
 	ws, ok := s.memberWorktreeLocked(member)
 	s.mu.Unlock()
-	if !ok || !dirExists(ws.Root) {
-		// A worktree the filesystem no longer holds places nobody: the
-		// next placement recreates it first.
+	if !ok {
 		return Workspace{}, false
+	}
+	if !dirExists(ws.Root) {
+		// A worktree the filesystem no longer holds places nobody: the
+		// next placement recreates it first, and until then the member
+		// must not run its tools anywhere else.
+		ws.Missing = true
+		return ws, true
 	}
 	_, prefix, _ := s.repo()
 	ws.Dir = filepath.Join(ws.Root, filepath.FromSlash(prefix))
