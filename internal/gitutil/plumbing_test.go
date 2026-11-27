@@ -3,11 +3,13 @@ package gitutil
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -152,4 +154,83 @@ func TestMergeNoFFLeavesAMergeInProgressAlone(t *testing.T) {
 	require.Equal(t, string(conflictedBefore), string(conflictedAfter),
 		"the conflicted file is unchanged")
 	require.NoFileExists(t, filepath.Join(repo, "other.txt"))
+}
+
+// blockingMergeGit puts a git wrapper on PATH that runs the real merge, then
+// holds the process until the test lets it go, so the test can cancel the
+// caller's context while the merge has already left its conflict behind.
+type blockingMergeGit struct {
+	startedPath string
+	releasePath string
+}
+
+func newBlockingMergeGit(t *testing.T) blockingMergeGit {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	b := blockingMergeGit{
+		startedPath: filepath.Join(dir, "started"),
+		releasePath: filepath.Join(dir, "release"),
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+	if [ "$arg" = "--abort" ]; then
+		exec %q "$@"
+	fi
+done
+for arg in "$@"; do
+	if [ "$arg" = "merge" ]; then
+		%q "$@"
+		status=$?
+		: > %q
+		i=0
+		while [ ! -f %q ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done
+		exit $status
+	fi
+done
+exec %q "$@"
+`, realGit, realGit, b.startedPath, b.releasePath, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(b.release)
+	return b
+}
+
+func (b blockingMergeGit) wait(t *testing.T) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(b.startedPath)
+		return err == nil
+	}, 10*time.Second, 5*time.Millisecond, "git must reach the merge")
+}
+
+func (b blockingMergeGit) release() {
+	_ = os.WriteFile(b.releasePath, nil, 0o644)
+}
+
+// TestMergeNoFFCleansUpAfterACancelledCaller pins the carried review item: a
+// caller that gives up during the merge never leaves the Lead's tree
+// half-merged. The test changes PATH, so it cannot run in parallel.
+func TestMergeNoFFCleansUpAfterACancelledCaller(t *testing.T) {
+	repo := initPlumbingRepo(t)
+	branch := branchWithCommit(t, repo, "README.md", "branch\n")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("main\n"), 0o644))
+	runGit(t, repo, "commit", "-am", "main change")
+	held := newBlockingMergeGit(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- MergeNoFF(ctx, repo, branch, "Merge it") }()
+	held.wait(t)
+	cancel()
+	held.release()
+	err := <-done
+	var mergeErr *MergeError
+	require.True(t, errors.As(err, &mergeErr), "%v", err)
+	require.False(t, mergeInProgressForTest(repo), "the cancelled caller's merge was aborted")
+	require.Empty(t, gitText(t, repo, "status", "--porcelain"))
+	data, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	require.NoError(t, err)
+	require.Equal(t, "main\n", string(data))
 }

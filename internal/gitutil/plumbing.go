@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// mergeCleanupTimeout bounds the merge cleanup a caller no longer waits for,
+// so a wedged git cannot hold the call forever.
+const mergeCleanupTimeout = 30 * time.Second
 
 // RepoPrefix returns dir's path inside its repository, in slash form with a
 // trailing slash, or "" at the repository root. It is what git rev-parse
@@ -78,8 +83,13 @@ func MergeNoFF(ctx context.Context, dir, branch, message string) error {
 		return nil
 	}
 	output := strings.TrimSpace(out)
-	if mergeInProgress(ctx, dir) {
-		if abortOut, abortErr := gitOutput(ctx, dir, "merge", "--abort"); abortErr != nil {
+	// A caller that gave up must not leave the merge half-done, so the
+	// check and the abort run without its cancellation, on a bound of their
+	// own.
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), mergeCleanupTimeout)
+	defer cancel()
+	if mergeInProgress(cleanup, dir) {
+		if abortOut, abortErr := gitOutput(cleanup, dir, "merge", "--abort"); abortErr != nil {
 			output += "\n\ngit merge --abort failed: " + strings.TrimSpace(abortOut)
 		}
 		return &MergeError{Reason: "the merge has conflicts and was aborted", Output: output}
