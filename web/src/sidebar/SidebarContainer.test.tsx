@@ -78,6 +78,11 @@ describe('SidebarContainer', () => {
     expect(screen.getByText('main')).toBeInTheDocument()
   })
 
+  it('names a Windows workspace after its last directory', () => {
+    setup({ bootstrap: { ...bootstrap, working_dir: 'C:\\Users\\me\\src\\crush' } })
+    expect(screen.getByText('crush')).toBeInTheDocument()
+  })
+
   it('marks an unread session through the store, not a fresh comparison', async () => {
     setup({
       sessions: [row({ id: 's1', updated_at: 10 }), row({ id: 's2', title: 'Write parser tests', updated_at: 20 })],

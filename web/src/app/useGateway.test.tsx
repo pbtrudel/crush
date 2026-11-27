@@ -6,6 +6,7 @@ import App from '../App'
 import { HttpError } from '../api/http'
 import { StreamClient } from '../api/stream'
 import type { SessionRow, SessionStatus } from '../api/wire'
+import { maxSubscriptions } from '../store/app'
 import { memoryStorage } from '../test/memoryStorage'
 import { useGateway } from './useGateway'
 
@@ -229,6 +230,29 @@ describe('useGateway', () => {
     const sent = h.socket.sent.map((raw) => JSON.parse(raw) as { type: string; session_id: string })
     expect(sent).toContainEqual({ type: 'unsubscribe', session_id: 's1' })
     expect(sent).toContainEqual({ type: 'subscribe', session_id: 's2' })
+    unmount()
+    subscribe.mockRestore()
+    unsubscribe.mockRestore()
+  })
+
+  it('unsubscribes before it subscribes when the wanted set is full', async () => {
+    const subscribe = vi.spyOn(StreamClient.prototype, 'subscribe')
+    const unsubscribe = vi.spyOn(StreamClient.prototype, 'unsubscribe')
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    const running = Array.from({ length: maxSubscriptions }, (_, index) => sessionRow(`s${index}`, 'running'))
+    act(() => result.current.store.set({ sessions: running }))
+    expect(subscribe.mock.calls).toHaveLength(maxSubscriptions)
+    subscribe.mockClear()
+    unsubscribe.mockClear()
+
+    // The tab sits at the gateway's cap, so the new selection fits only once
+    // the running session it displaces has been dropped.
+    act(() => result.current.store.selectSession('s32'))
+    expect(unsubscribe).toHaveBeenCalledWith('s31')
+    expect(subscribe).toHaveBeenCalledWith('s32')
+    expect(unsubscribe.mock.invocationCallOrder[0]).toBeLessThan(subscribe.mock.invocationCallOrder[0])
     unmount()
     subscribe.mockRestore()
     unsubscribe.mockRestore()

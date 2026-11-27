@@ -36,6 +36,9 @@ export interface AppState {
   // so session_id names the session it concerns and an empty one concerns
   // the whole tab.
   error: WebError | null
+  // gatewayClosing records the gateway_closing frame: Crush is shutting down
+  // and no reconnect can succeed until the terminal hands out a new link.
+  gatewayClosing: boolean
 }
 
 export const emptySessionData: SessionData = {
@@ -56,6 +59,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     sessionData: {},
     lastSeen: readSeen(storage),
     error: null,
+    gatewayClosing: false,
   })
   // persistSeen writes lastSeen through after an action. Only a new reference
   // is durable: markSeen and pruneSeen hand back their input when they
@@ -78,6 +82,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       persistSeen(before)
     },
     setConnection: (connection: ConnectionState) => store.set({ connection }),
+    dismissError: () => store.set({ error: null }),
     selectSession: (sessionID: string) => {
       const before = store.get().lastSeen
       store.set((state) => ({
@@ -104,6 +109,7 @@ export interface AppStore {
   setConnection(connection: ConnectionState): void
   selectSession(sessionID: string): void
   forgetSession(sessionID: string): void
+  dismissError(): void
 }
 
 export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
@@ -127,7 +133,10 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
     // would show a marker for a session the person has been reading.
     lastSeen:
       selectedSessionId === null ? pruned : markSeen(pruned, selectedSessionId, updatedAtIn(payload.sessions, selectedSessionId)),
-    error: errorForSelection(state.error, selectedSessionId),
+    // A bootstrap is a live gateway: the error from the old connection and
+    // the closing mark it left behind are both stale now.
+    error: null,
+    gatewayClosing: false,
   }
 }
 
@@ -229,6 +238,12 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     }
     case 'web_error': {
       return { ...state, error: frame.payload as WebError }
+    }
+    case 'gateway_closing': {
+      // The gateway is shutting down on purpose. The client keeps retrying
+      // until its token is refused, but the tab can say at once that the
+      // terminal is gone.
+      return { ...state, gatewayClosing: true }
     }
     default: {
       return state
@@ -356,6 +371,21 @@ export function isUnread(state: AppState, sessionID: string): boolean {
     return false
   }
   return updatedAtIn(state.sessions, sessionID) > (state.lastSeen[sessionID] ?? 0)
+}
+
+export type ConnectionNotice = 'none' | 'reconnecting' | 'ended'
+
+// connectionNotice is what the connection banner says. A stream that stopped
+// after the shell rendered is over, and so is one whose gateway announced it
+// is closing; a reconnect in progress is the only case that may recover.
+export function connectionNotice(state: AppState): ConnectionNotice {
+  if (state.gatewayClosing || state.connection === 'closed') {
+    return 'ended'
+  }
+  if (state.connection === 'reconnecting') {
+    return 'reconnecting'
+  }
+  return 'none'
 }
 
 // errorForSelection drops an error that names a session the tab is no longer

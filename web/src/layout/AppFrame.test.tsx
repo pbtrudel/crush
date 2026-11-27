@@ -21,6 +21,30 @@ describe('AppFrame', () => {
     expect(screen.getByText('conversation')).toBeInTheDocument()
   })
 
+  it('renders the connection status row above the columns', () => {
+    render(
+      <AppFrame sidebar={<p>sidebar</p>} status={<p>Reconnecting…</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const status = screen.getByText('Reconnecting…')
+    const banner = screen.getByText('Preview: the new web UI is incomplete')
+    // The row sits under the preview banner, above the sidebar and content.
+    expect(banner.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('lets the content region take focus for a dismissed alert', () => {
+    render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const main = screen.getByRole('main')
+    expect(main).toHaveAttribute('tabindex', '-1')
+    main.focus()
+    expect(document.activeElement).toBe(main)
+  })
+
   it('collapses the sidebar to the rail and back', async () => {
     const user = userEvent.setup()
     const { container } = render(

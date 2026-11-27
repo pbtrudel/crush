@@ -35,19 +35,20 @@
   cursor: pointer;
 }
 
-.error {
+.errorRow {
   display: flex;
   align-items: baseline;
   gap: 8px;
   margin: 0 8px;
+}
+
+.error {
+  flex: 1;
+  margin: 0;
   padding: 6px 8px;
   border-radius: var(--dsw-radius-sm);
   background: var(--dsw-static-red-400-a12, var(--dsw-alias-bg-layer-2));
   font-size: 12px;
-}
-
-.errorText {
-  flex: 1;
 }
 
 .dismiss {

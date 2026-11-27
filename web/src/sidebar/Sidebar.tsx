@@ -1,3 +1,5 @@
+import { useRef } from 'react'
+
 import type { SessionRow as SessionRowData } from '../api/wire'
 import SessionRow from './SessionRow'
 import styles from './Sidebar.module.css'
@@ -33,22 +35,34 @@ export default function Sidebar({
   onOpenInTerminal,
   onDismissError,
 }: SidebarProps) {
+  const newSession = useRef<HTMLButtonElement>(null)
+
+  // The error row leaves with the dismissal, so focus moves to the control
+  // that started the action before the button unmounts; otherwise it falls
+  // to the body.
+  const dismiss = () => {
+    onDismissError()
+    newSession.current?.focus()
+  }
+
   return (
     <nav className={styles.sidebar} aria-label="Sessions">
       <header className={styles.header}>
         <span className={styles.workspace}>{workspaceName}</span>
         {branch ? <span className={styles.branch}>{branch}</span> : null}
       </header>
-      <button type="button" className={styles.new} onClick={onCreate}>
+      <button ref={newSession} type="button" className={styles.new} onClick={onCreate}>
         New Session
       </button>
       {error ? (
-        <p role="alert" className={styles.error}>
-          <span className={styles.errorText}>{error}</span>
-          <button type="button" className={styles.dismiss} onClick={onDismissError}>
+        <div className={styles.errorRow}>
+          <p role="alert" className={styles.error}>
+            {error}
+          </p>
+          <button type="button" className={styles.dismiss} onClick={dismiss}>
             Dismiss
           </button>
-        </p>
+        </div>
       ) : null}
       <ul className={styles.list}>
         {sessions.map((row) => (

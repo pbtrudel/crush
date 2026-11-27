@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Bootstrap, ParsedFrame } from '../api/wire'
 import { memoryStorage } from '../test/memoryStorage'
 import {
+  connectionNotice,
   createAppStore,
   isUnread,
   maxSubscriptions,
@@ -46,6 +47,16 @@ describe('reduceBootstrap', () => {
   it('falls through an empty current session id to the first row', () => {
     const start = reduceBootstrap(createAppStore(memoryStorage()).get(), { ...bootstrap, current_session_id: '' })
     expect(start.selectedSessionId).toBe('s1')
+  })
+
+  it('clears the last web_error', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyFrame(frame('web_error', { session_id: '', code: 'gateway', error: 'the gateway is busy' }, 7))
+    expect(store.get().error).not.toBeNull()
+    // A bootstrap is the gateway saying it is alive now: an error from the
+    // previous connection must not outlive it.
+    store.applyBootstrap(bootstrap)
+    expect(store.get().error).toBeNull()
   })
 })
 
@@ -372,6 +383,52 @@ describe('a snapshot that beats the session created frame', () => {
     )
     expect(next).toBe(start)
     expect(next.sessionData.gone).toBeUndefined()
+  })
+})
+
+describe('the connection notice', () => {
+  function stateWith(overrides: Partial<ReturnType<typeof createAppStore>['get']> = {}) {
+    return { ...createAppStore(memoryStorage()).get(), ...overrides }
+  }
+
+  it('says nothing while the stream is open', () => {
+    expect(connectionNotice(stateWith({ connection: 'open' }))).toBe('none')
+    expect(connectionNotice(stateWith({ connection: 'connecting' }))).toBe('none')
+  })
+
+  it('reports a reconnecting stream', () => {
+    expect(connectionNotice(stateWith({ connection: 'reconnecting' }))).toBe('reconnecting')
+  })
+
+  it('reports the end once the stream has stopped', () => {
+    expect(connectionNotice(stateWith({ connection: 'closed' }))).toBe('ended')
+  })
+
+  it('records that the gateway is closing, even while the client retries', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyFrame(frame('gateway_closing', { reason: 'the terminal quit' }, 9))
+    expect(store.get().gatewayClosing).toBe(true)
+    store.setConnection('reconnecting')
+    expect(connectionNotice(store.get())).toBe('ended')
+  })
+
+  it('reopens the notice on a bootstrap from a live gateway', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyFrame(frame('gateway_closing', { reason: 'the terminal quit' }, 9))
+    store.applyBootstrap(bootstrap)
+    expect(store.get().gatewayClosing).toBe(false)
+    expect(connectionNotice(store.get())).toBe('none')
+  })
+})
+
+describe('AppStore.dismissError', () => {
+  it('clears the last web_error', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyFrame(frame('web_error', { session_id: '', code: 'gateway', error: 'the gateway is busy' }, 7))
+    expect(visibleError(store.get())).not.toBeNull()
+    store.dismissError()
+    expect(store.get().error).toBeNull()
+    expect(visibleError(store.get())).toBeNull()
   })
 })
 

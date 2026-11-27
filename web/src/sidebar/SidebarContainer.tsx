@@ -35,7 +35,8 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
   )
   const unread = useMemo(() => new Set(unreadIDs === '' ? [] : unreadIDs.split(',')), [unreadIDs])
 
-  const workspaceName = workspace === '' ? 'Crush' : workspace.split('/').filter(Boolean).pop() ?? workspace
+  // Both separators, so a Windows path names its last directory too.
+  const workspaceName = workspace === '' ? 'Crush' : workspace.split(/[\\/]/).filter(Boolean).pop() ?? workspace
 
   const dismissError = useCallback(() => setError(null), [])
 

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -58,5 +58,21 @@ describe('Sidebar', () => {
     render(<Sidebar {...props({ error: 'that session is gone', onDismissError })} />)
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(onDismissError).toHaveBeenCalled()
+  })
+
+  it('keeps the Dismiss button out of the live region', () => {
+    render(<Sidebar {...props({ error: 'that session is gone' })} />)
+    const alert = screen.getByRole('alert')
+    expect(within(alert).getByText('that session is gone')).toBeInTheDocument()
+    expect(within(alert).queryByRole('button')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+  })
+
+  it('moves focus to New Session after a dismissal', async () => {
+    render(<Sidebar {...props({ error: 'that session is gone' })} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    // The button unmounts with the error row, so focus must land somewhere
+    // useful rather than on the body.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'New Session' }))
   })
 })

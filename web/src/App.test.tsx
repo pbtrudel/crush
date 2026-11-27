@@ -44,6 +44,14 @@ describe('App', () => {
     expect(screen.getByText('Select a session')).toBeInTheDocument()
   })
 
+  it('shows the connection row while the stream is reconnecting', () => {
+    const store = createAppStore(memoryStorage())
+    store.setConnection('reconnecting')
+    vi.mocked(useGateway).mockReturnValue(gateway({ store }))
+    render(<App />)
+    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…')
+  })
+
   it('shows the connecting line while the tab authenticates', () => {
     vi.mocked(useGateway).mockReturnValue(gateway({ state: 'authenticating' }))
     render(<App />)

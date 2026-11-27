@@ -21,6 +21,9 @@ import { clampSidebarWidth, sidebarDefaultWidth } from './sidebarWidth'
 export interface AppFrameProps {
   sidebar: ReactNode
   right?: ReactNode
+  // status is the connection row, rendered under the banner and above the
+  // columns: the shell owns what it says, the frame owns where it goes.
+  status?: ReactNode
   children: ReactNode
   // storage carries the theme preference; a test injects an in-memory one and
   // the browser falls back to localStorage.
@@ -68,7 +71,7 @@ function rememberPreference(storage: Storage | undefined, preference: ThemePrefe
   }
 }
 
-export default function AppFrame({ sidebar, right, children, storage }: AppFrameProps) {
+export default function AppFrame({ sidebar, right, status, children, storage }: AppFrameProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [narrow, setNarrow] = useState(() => window.matchMedia(narrowQuery).matches)
@@ -240,6 +243,7 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
           </select>
         </label>
       </div>
+      {status}
       <div
         ref={frame}
         className={styles.frame}
@@ -276,7 +280,9 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
           aria-orientation="vertical"
           onPointerDown={startResize}
         />
-        <main className={styles.center} {...inert}>
+        {/* tabIndex lets a dismissed alert move focus to the region it
+            left behind instead of dropping it to the body. */}
+        <main className={styles.center} tabIndex={-1} {...inert}>
           {children}
         </main>
         {right ? <aside className={styles.right}>{right}</aside> : null}

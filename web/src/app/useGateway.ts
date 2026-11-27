@@ -176,16 +176,19 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
     const subscribed = new Set<string>()
     const reconcile = () => {
       const wanted = wantedSubscriptions(store.get())
-      for (const sessionID of wanted) {
-        if (!subscribed.has(sessionID)) {
-          subscribed.add(sessionID)
-          stream.subscribe(sessionID)
-        }
-      }
+      // Unsubscribe first: the gateway caps subscriptions per connection, so
+      // a new one is refused while the session it replaces still holds a
+      // slot. Dropping what is no longer wanted makes room for what is.
       for (const sessionID of subscribed) {
         if (!wanted.includes(sessionID)) {
           subscribed.delete(sessionID)
           stream.unsubscribe(sessionID)
+        }
+      }
+      for (const sessionID of wanted) {
+        if (!subscribed.has(sessionID)) {
+          subscribed.add(sessionID)
+          stream.subscribe(sessionID)
         }
       }
     }
