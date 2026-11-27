@@ -1,5 +1,12 @@
 # Web mode
 
+> **Note:** The web UI is being rebuilt. Web mode currently serves a
+> placeholder page: `crush --web`, `/web`, the `WEB` badge and the gateway
+> all still work, but the tab only shows a "being rebuilt" notice until the
+> new UI lands. Everything the rest of this document says about the tab is
+> history: the holodeck stage, the chronoline, the file drawer, the display
+> settings and the pin/browse toggle were removed with the old UI.
+
 Web mode serves a running Crush session to a browser tab. The terminal stays
 open next to the tab, and either side can drive the session: prompts,
 permission requests, questions, the input mode and the files are shared.
