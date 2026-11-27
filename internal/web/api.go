@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/client"
@@ -171,6 +172,64 @@ func (g *Gateway) handleInputMode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// messagePageSize is the page a tab loads first, and maxMessagePageSize the
+// most a caller may ask for.
+const (
+	messagePageSize    = 100
+	maxMessagePageSize = 500
+)
+
+// errUnknownMessage reports a ?before id the session does not have.
+var errUnknownMessage = errors.New("web: unknown message id")
+
+// pageMessages returns the page of msgs that ends just before before, oldest
+// first, and whether older messages remain. msgs is oldest first. An empty
+// before asks for the newest page.
+func pageMessages(msgs []message.Message, before string, limit int) ([]message.Message, bool, error) {
+	end := len(msgs)
+	if before != "" {
+		index := -1
+		for i, m := range msgs {
+			if m.ID == before {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, false, errUnknownMessage
+		}
+		end = index
+	}
+	start := max(0, end-limit)
+	return msgs[start:end], start > 0, nil
+}
+
+// clampMessageLimit keeps a request inside the page window.
+func clampMessageLimit(limit int) int {
+	return min(limit, maxMessagePageSize)
+}
+
+// messageLimit reads the limit query parameter: absent means the default
+// page, a value below one is refused, and anything above the cap clamps.
+func messageLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return messagePageSize, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		writeError(w, http.StatusBadRequest, "bad_limit", "limit must be a positive integer")
+		return 0, false
+	}
+	return clampMessageLimit(n), true
+}
+
+// messagesResponse is one page of a session's messages.
+type messagesResponse struct {
+	Messages []json.RawMessage `json:"messages"`
+	HasMore  bool              `json:"has_more"`
+}
+
 func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	sid := r.PathValue("sid")
 	if _, err := g.ws.GetSession(r.Context(), sid); err != nil {
@@ -181,12 +240,21 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeInternal(w, "get_session", err)
 		return
 	}
+	limit, ok := messageLimit(w, r)
+	if !ok {
+		return
+	}
 	msgs, err := g.ws.ListMessages(r.Context(), sid)
 	if err != nil {
 		writeInternal(w, "list_messages", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, entities(msgs))
+	page, hasMore, err := pageMessages(msgs, r.URL.Query().Get("before"), limit)
+	if errors.Is(err, errUnknownMessage) {
+		writeError(w, http.StatusNotFound, "unknown_message", "no message with that id in this session")
+		return
+	}
+	writeJSON(w, http.StatusOK, messagesResponse{Messages: entities(page), HasMore: hasMore})
 }
 
 // handlePrompt starts a run detached from the HTTP request, the same way

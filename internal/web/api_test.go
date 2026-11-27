@@ -290,10 +290,15 @@ func TestSessionsAndMessages(t *testing.T) {
 	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/s1/messages", "")
 	rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var msgs []map[string]any
-	require.NoError(t, json.Unmarshal(body, &msgs))
-	require.Len(t, msgs, 1)
-	require.Equal(t, "m1", msgs[0]["id"])
+	var page messagesResponse
+	require.NoError(t, json.Unmarshal(body, &page))
+	require.Len(t, page.Messages, 1)
+	var first struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(page.Messages[0], &first))
+	require.Equal(t, "m1", first.ID)
+	require.False(t, page.HasMore)
 
 	rsp, body = doJSON(t, c, http.MethodPost, g.URL()+"/api/sessions", `{"title":"New"}`)
 	defer rsp.Body.Close()
