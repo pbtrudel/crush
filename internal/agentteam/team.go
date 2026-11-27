@@ -1479,6 +1479,18 @@ func (s *Service) settleRunLocked(name string, run Run) {
 	close(settlement.done)
 }
 
+// wakeStoppedMember starts the next turn of a member a delete stopped, so the
+// mail that waited for the delete is delivered now instead of at some later
+// wake. It runs with no lock held and does nothing when no mail waits.
+func (s *Service) wakeStoppedMember(member Member) {
+	if member.Name == "" {
+		return
+	}
+	if err := s.wakeIfIdle(context.Background(), member.Name); err != nil {
+		slog.Warn("Could not wake a teammate a delete stopped", "member", member.Name, "error", err)
+	}
+}
+
 // takesHoldLocked reports whether a caller stopped this member's run to end
 // the worktree it worked in, and consumes the request, so it holds one settle
 // at most. Callers must hold s.mu.
@@ -2499,8 +2511,10 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	if err != nil {
 		if stopped {
 			// The write refused, so nothing ends the work the stopped turn
-			// left: hand its held tasks back before returning.
+			// left: hand its held tasks back and let its mail start the next
+			// turn before returning.
 			s.releaseStoppedWork(stoppedMember)
+			s.wakeStoppedMember(stoppedMember)
 		}
 		if accepted != nil {
 			s.noteMergeStays(*accepted, err)
@@ -2558,6 +2572,11 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	}
 	if len(applied.merges) > 0 {
 		applied.view = s.refreshView(applied.view)
+	}
+	if stopped {
+		// The mail that waited for the delete starts the member's next turn
+		// now, once the worktree is gone and no lock is held.
+		s.wakeStoppedMember(stoppedMember)
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil

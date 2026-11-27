@@ -359,7 +359,7 @@ type worktreeRemoval struct {
 func (s *Service) removeTaskWorktree(ctx context.Context, r worktreeRemoval, caller string, ownerStopped bool) {
 	// ownerStopped means the caller already stopped this owner's run and
 	// waited for its settle; a run that exists now belongs to a later turn
-	// and is none of this removal's business.
+	// and is none of this removal's business, so it is not cancelled either.
 	if !ownerStopped {
 		if owner := s.taskOwnerName(r.taskID, r.sessionID); owner != "" && owner != caller {
 			s.stopMemberRun(owner, false)

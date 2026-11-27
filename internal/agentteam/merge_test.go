@@ -504,10 +504,11 @@ func TestOwnDeleteDoesNotStopItsOwnRun(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(repo, "docs", "wip.md"))
 }
 
-// TestDeleteLeavesAPendingResumeAlone pins ruling W15: the settle a delete
-// waits for never resumes the member, so no turn starts on work the delete is
-// about to release, and its mail stays queued for the next wake.
-func TestDeleteLeavesAPendingResumeAlone(t *testing.T) {
+// TestDeleteWakesTheStoppedMemberAfterRemoval pins rulings W15 and W16: the
+// settle a delete waits for never resumes the member, and the delete wakes it
+// once the worktree is gone, so its queued mail starts a turn that no removal
+// cancels.
+func TestDeleteWakesTheStoppedMemberAfterRemoval(t *testing.T) {
 	t.Parallel()
 	repo := initTeamRepo(t)
 	s, runner := newWorktreeService(t, repo, false)
@@ -522,17 +523,17 @@ func TestDeleteLeavesAPendingResumeAlone(t *testing.T) {
 	act(t, s, leadName, scoped.ID, "delete", nil)
 
 	require.Equal(t, TaskDeleted, taskByID(t, s, scoped.ID).Status)
-	require.Equal(t, []string{"impl"}, runner.memberNames(), "no resumed turn starts for the held mail")
-	require.Equal(t, 1, runner.promptCount())
+	// The wake comes after the removal, so the turn it starts runs with the
+	// worktree already gone.
+	require.NoDirExists(t, scoped.Worktree)
+	require.Eventually(t, func() bool { return runner.promptCount() == 2 }, 5*time.Second, 5*time.Millisecond,
+		"the stopped member's queued mail starts its next turn")
+	require.Contains(t, runner.lastPrompt(), "Take another look.")
+	require.False(t, runner.turnCancelled("impl"), "the woken turn is never cancelled by the removal")
 	got := taskByID(t, s, other.ID)
-	require.Equal(t, TaskPending, got.Status, "its work goes back only while no turn runs for it")
+	require.Equal(t, TaskPending, got.Status, "work the stopped turn left goes back while nothing runs for it")
 	require.Empty(t, got.OwnerID)
 	require.Zero(t, got.Attempts)
-	s.mu.Lock()
-	pending := s.hasPendingLocked("impl", pipelineSession)
-	s.mu.Unlock()
-	require.True(t, pending, "the mail stays queued for the next wake")
-	require.NoDirExists(t, scoped.Worktree)
 }
 
 // TestDeleteDoesNotStrandTheMembersOtherTasks pins the other half of W14: the
