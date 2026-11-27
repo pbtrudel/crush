@@ -68,6 +68,12 @@ type BackgroundShell struct {
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
 	awaited     atomic.Bool
 	killed      atomic.Bool
+	// finishMu guards finished, finisher and note. The finisher runs once,
+	// after the command returns and before its completion is announced.
+	finishMu sync.Mutex
+	finished bool
+	finisher func() string
+	note     string
 }
 
 // SetSessionID attaches the owning session to a job that outlived its
@@ -91,6 +97,57 @@ func (bs *BackgroundShell) MarkAwaited() { bs.awaited.Store(true) }
 // MarkKilledByModel records that the model stopped this job itself, so its
 // settlement does not also earn a completion notice.
 func (bs *BackgroundShell) MarkKilledByModel() { bs.killed.Store(true) }
+
+// SetFinisher registers fn to run once the job's command returns, before
+// its completion is announced. The text fn returns leads the job's output,
+// in the completion notice and in job_output. A job that already finished
+// runs fn at once: SetFinisher then reports deferred false and returns the
+// text.
+func (bs *BackgroundShell) SetFinisher(fn func() string) (note string, deferred bool) {
+	bs.finishMu.Lock()
+	if !bs.finished {
+		bs.finisher = fn
+		bs.finishMu.Unlock()
+		return "", true
+	}
+	bs.finishMu.Unlock()
+	note = fn()
+	bs.setNote(note)
+	return note, false
+}
+
+// Note is the text the finisher returned, or "".
+func (bs *BackgroundShell) Note() string {
+	bs.finishMu.Lock()
+	defer bs.finishMu.Unlock()
+	return bs.note
+}
+
+func (bs *BackgroundShell) setNote(note string) {
+	bs.finishMu.Lock()
+	bs.note = note
+	bs.finishMu.Unlock()
+}
+
+// runFinisher marks the command finished and runs the finisher, if one was
+// set, in the job's own goroutine.
+func (bs *BackgroundShell) runFinisher() {
+	bs.finishMu.Lock()
+	bs.finished = true
+	fn := bs.finisher
+	bs.finishMu.Unlock()
+	if fn != nil {
+		bs.setNote(fn())
+	}
+}
+
+// withNote puts the finisher's text before stdout.
+func (bs *BackgroundShell) withNote(stdout string) string {
+	if note := bs.Note(); note != "" {
+		return note + "\n\n" + stdout
+	}
+	return stdout
+}
 
 // BackgroundShellManager manages background shell instances.
 type BackgroundShellManager struct {
@@ -173,6 +230,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, owner any, workingDi
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())
+		bgShell.runFinisher()
 		// A job with no owning session finished while the model was still
 		// waiting on it: its output already reached the tool response, so
 		// there is no completion to announce.
@@ -180,7 +238,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, owner any, workingDi
 		if sessionID == "" || bgShell.awaited.Load() || bgShell.killed.Load() {
 			return
 		}
-		output := bgShell.stdout.String()
+		output := bgShell.withNote(bgShell.stdout.String())
 		if stderr := bgShell.stderr.String(); stderr != "" {
 			if output != "" {
 				output += "\n"
@@ -381,7 +439,7 @@ func killShells(ctx context.Context, shells map[string]*BackgroundShell) {
 func (bs *BackgroundShell) GetOutput() (stdout string, stderr string, done bool, err error) {
 	select {
 	case <-bs.done:
-		return bs.stdout.String(), bs.stderr.String(), true, bs.exitErr
+		return bs.withNote(bs.stdout.String()), bs.stderr.String(), true, bs.exitErr
 	default:
 		return bs.stdout.String(), bs.stderr.String(), false, nil
 	}

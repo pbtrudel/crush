@@ -24,7 +24,7 @@ func fixedScopes(scopes ...string) func(context.Context) []string {
 func scopedTool(t *testing.T, name, workingDir string, scopes ...string) (fantasy.AgentTool, *fakeTool) {
 	t.Helper()
 	inner := &fakeTool{name: name, resp: fantasy.NewTextResponse("ok")}
-	return gateToolsForScopes([]fantasy.AgentTool{inner}, fixedScopes(scopes...), workingDir)[0], inner
+	return gateToolsForScopes([]fantasy.AgentTool{inner}, fixedScopes(scopes...), nil, workingDir)[0], inner
 }
 
 func runScoped(t *testing.T, tool fantasy.AgentTool, input string) fantasy.ToolResponse {
@@ -41,14 +41,17 @@ func filePathInput(path string) string {
 
 func TestScopeGateWrapsOnlyWriteTools(t *testing.T) {
 	t.Parallel()
-	list := []fantasy.AgentTool{&fakeTool{name: tools.ViewToolName}, &fakeTool{name: tools.EditToolName}, &roleMCPTool{name: "mcp_x_y", server: "x"}}
-	gated := gateToolsForScopes(list, fixedScopes("docs"), t.TempDir())
+	list := []fantasy.AgentTool{&fakeTool{name: tools.ViewToolName}, &fakeTool{name: tools.EditToolName}, &roleMCPTool{name: "mcp_x_y", server: "x"}, &fakeTool{name: tools.BashToolName}}
+	gated := gateToolsForScopes(list, fixedScopes("docs"), nil, t.TempDir())
 	require.Same(t, list[0], gated[0], "a read tool is not wrapped")
 	require.Same(t, list[2], gated[2])
 	wrapped, ok := gated[1].(*scopeGatedTool)
 	require.True(t, ok)
 	require.Equal(t, list[1].Info(), wrapped.Info(), "the gate must not change what the provider sees")
 	require.Empty(t, wrapped.MCP())
+	bash, ok := gated[3].(*scopeGatedTool)
+	require.True(t, ok, "bash is gated by what it changed, after it runs")
+	require.Equal(t, list[3].Info(), bash.Info(), "the gate must not change what the provider sees")
 }
 
 // TestScopeGateForwardsProviderOptions pins the cache contract: the gate is
@@ -57,7 +60,7 @@ func TestScopeGateWrapsOnlyWriteTools(t *testing.T) {
 func TestScopeGateForwardsProviderOptions(t *testing.T) {
 	t.Parallel()
 	recorder := &recordingTool{name: tools.EditToolName}
-	tool := gateToolsForScopes([]fantasy.AgentTool{recorder}, fixedScopes("internal/agent"), t.TempDir())[0]
+	tool := gateToolsForScopes([]fantasy.AgentTool{recorder}, fixedScopes("internal/agent"), nil, t.TempDir())[0]
 	opts := fantasy.ProviderOptions{
 		anthropic.Name: &anthropic.ProviderCacheControlOptions{
 			CacheControl: anthropic.CacheControl{Type: "ephemeral"},
@@ -236,7 +239,7 @@ func TestScopeGateRefusalRunsNoHook(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "hook-ran")
 	runner := newRunner(t, "touch '"+marker+"'")
 	inner := &fakeTool{name: tools.EditToolName, resp: fantasy.NewTextResponse("ok")}
-	tool := gateToolsForScopes(wrapToolsWithHooks([]fantasy.AgentTool{inner}, runner, false), fixedScopes("internal/agent"), t.TempDir())[0]
+	tool := gateToolsForScopes(wrapToolsWithHooks([]fantasy.AgentTool{inner}, runner, false), fixedScopes("internal/agent"), nil, t.TempDir())[0]
 
 	require.True(t, runScoped(t, tool, filePathInput("internal/ui/x.go")).IsError)
 	_, err := os.Stat(marker)

@@ -1723,7 +1723,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	// sees the call's worktree; the role gate SetTools adds goes outside
 	// all of them.
 	if role == roleTeammate {
-		filteredTools = gateToolsForScopes(filteredTools, c.claimedScopes, c.cfg.WorkingDir())
+		filteredTools = gateToolsForScopes(filteredTools, c.claimedScopes, c.memberWorkspace, c.cfg.WorkingDir())
 		filteredTools = placeToolsInWorktrees(filteredTools, c.memberWorkspace)
 	}
 
