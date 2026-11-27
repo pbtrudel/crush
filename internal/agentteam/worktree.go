@@ -279,15 +279,43 @@ func (s *Service) discardRestoredWorktree(ctx context.Context, path string) {
 	s.removeUnusedWorktree(ctx, path, "")
 }
 
-// discardPlacedWorktree removes a worktree a placement just made when no
-// task names it. A worktree created from the Lead's HEAD takes its fresh
-// branch with it; a restored one keeps its branch.
-func (s *Service) discardPlacedWorktree(ctx context.Context, claimed Task, path, branch string) {
-	if claimed.Worktree == "" {
-		s.discardWorktree(ctx, path, branch)
+// placedWorktree is the worktree a placement found or made for a task.
+type placedWorktree struct {
+	path   string
+	branch string
+	// made is set when this placement created the worktree: opened fresh
+	// from the Lead's HEAD, or restored because its directory was gone. A
+	// reused worktree was not made here, so it is never removed here.
+	made bool
+}
+
+// discardUnnamedWorktree removes a worktree this placement made when the
+// board does not name it. A worktree the task still records belongs to
+// whoever holds the task now, and a reused one was not made here, so neither
+// goes. A worktree opened from the Lead's HEAD takes its fresh branch with
+// it; a restored one keeps its branch and its commits.
+func (s *Service) discardUnnamedWorktree(ctx context.Context, claimed Task, placed placedWorktree) {
+	if !placed.made || s.recordsWorktreePath(claimed.ID, claimed.SessionID, placed.path) {
 		return
 	}
-	s.discardRestoredWorktree(ctx, path)
+	if claimed.Worktree == "" {
+		s.discardWorktree(ctx, placed.path, placed.branch)
+		return
+	}
+	s.discardRestoredWorktree(ctx, placed.path)
+}
+
+// recordsWorktreePath reports whether the board records path as the worktree
+// of the task, whoever owns it now. It holds s.mu only to read.
+func (s *Service) recordsWorktreePath(taskID, sessionID, path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, task := range s.state.Tasks {
+		if task.ID == taskID && task.SessionID == sessionID {
+			return task.Worktree == path
+		}
+	}
+	return false
 }
 
 // removeUnusedWorktree removes a worktree no task names, and its branch when
@@ -368,55 +396,57 @@ func (s *Service) placeStart(start dispatchStart) (dispatchStart, bool) {
 	}
 	ctx, cancel := gitContext()
 	defer cancel()
-	path, branch, err := s.placeWorktree(ctx, start.task)
+	placed, err := s.placeWorktree(ctx, start.task)
 	if err != nil {
 		s.worktreeFailed(start, err)
 		return start, false
 	}
-	if path == "" {
+	if placed.path == "" {
 		return start, true
 	}
-	task, outcome := s.recordPlacedWorktree(start.task, path, branch)
+	task, outcome := s.recordPlacedWorktree(start.task, placed.path, placed.branch)
 	switch outcome {
 	case placedLost:
-		s.discardPlacedWorktree(ctx, start.task, path, branch)
+		// The task still records the worktree this placement made only
+		// when the board moved on after naming it, and then it belongs to
+		// the member that holds the task now.
+		s.discardUnnamedWorktree(ctx, start.task, placed)
 		s.worktreeFailed(start, errWorktreeClaimMoved)
 		return start, false
 	case placedAdopted:
-		if path != task.Worktree || branch != task.Branch {
-			// Another claim placed this task's worktree first, so the one
-			// made here belongs to nobody.
-			s.discardPlacedWorktree(ctx, start.task, path, branch)
-		}
+		// Another claim placed this task's worktree first, so the one made
+		// here belongs to nobody.
+		s.discardUnnamedWorktree(ctx, start.task, placed)
 	}
 	start.task, start.revision = task, task.Revision
 	start.prompt = taskBrief(start.task)
 	return start, true
 }
 
-// placeWorktree gives a claimed task a usable worktree: it creates one for a
+// placeWorktree gives a claimed task a usable worktree: it opens one for a
 // task that has none, and restores a recorded one whose directory went away,
 // from its branch when the branch still exists and from the Lead's HEAD
-// otherwise. It returns empty values, and no error, when tasks share the
-// Lead's tree. Callers must hold no lock.
-func (s *Service) placeWorktree(ctx context.Context, claimed Task) (path, branch string, err error) {
+// otherwise. It returns an empty placed worktree, and no error, when tasks
+// share the Lead's tree. Callers must hold no lock.
+func (s *Service) placeWorktree(ctx context.Context, claimed Task) (placed placedWorktree, err error) {
 	if claimed.Worktree == "" {
-		return s.createWorktree(ctx, claimed.ID)
+		path, branch, err := s.createWorktree(ctx, claimed.ID)
+		return placedWorktree{path: path, branch: branch, made: path != ""}, err
 	}
 	if dirExists(claimed.Worktree) {
-		return claimed.Worktree, claimed.Branch, nil
+		return placedWorktree{path: claimed.Worktree, branch: claimed.Branch}, nil
 	}
 	if _, _, ok := s.repo(); !ok {
-		return "", "", fmt.Errorf("task %s records the worktree %s, but the working directory is not in a git repository",
+		return placedWorktree{}, fmt.Errorf("task %s records the worktree %s, but the working directory is not in a git repository",
 			claimed.ID, claimed.Worktree)
 	}
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()
 	restored, err := gitutil.RestoreWorktree(ctx, s.cfg.WorkingDir, claimed.Worktree, claimed.Branch, "HEAD")
 	if err != nil {
-		return "", "", err
+		return placedWorktree{}, err
 	}
-	return restored, claimed.Branch, nil
+	return placedWorktree{path: restored, branch: claimed.Branch, made: true}, nil
 }
 
 // recordPlacedWorktree stores the worktree a claim just got against that
@@ -528,6 +558,12 @@ func (s *Service) releaseForWorktreeLocked(taskID, sessionID, ownerID string, er
 		if task.OwnerID != ownerID || task.Status != TaskInProgress {
 			return false
 		}
+		if task.Worktree != "" && dirExists(task.Worktree) {
+			// The task already has the worktree its member works in, so
+			// this failure belongs to an older claim: releasing it would
+			// strand live work.
+			return false
+		}
 		task.Status = TaskPending
 		task.OwnerID = ""
 		task.Revision++
@@ -554,30 +590,29 @@ func (s *Service) placeClaim(view TaskView) (TaskView, error) {
 	}
 	ctx, cancel := gitContext()
 	defer cancel()
-	path, branch, err := s.placeWorktree(ctx, claimed)
+	placed, err := s.placeWorktree(ctx, claimed)
 	if err != nil {
 		released, closed := s.releaseUnplaced(view, err)
 		return TaskView{}, newError(CodeTaskGit, "could not create the git worktree of task %s: %v. %s",
 			view.ID, err, worktreeReleaseNote(released, closed))
 	}
-	if path == "" {
+	if placed.path == "" {
 		return view, nil
 	}
-	task, outcome := s.recordPlacedWorktree(claimed, path, branch)
+	_, outcome := s.recordPlacedWorktree(claimed, placed.path, placed.branch)
 	switch outcome {
 	case placedLost:
-		// The board moved the claim on between its write and this one, so
-		// the worktree belongs to nobody.
-		s.discardPlacedWorktree(ctx, claimed, path, branch)
+		// The board moved the claim on between its write and this one. A
+		// worktree the task still records stays: it is the worktree of
+		// whoever holds the task now.
+		s.discardUnnamedWorktree(ctx, claimed, placed)
 		released, closed := s.releaseUnplaced(view, errWorktreeClaimMoved)
 		return TaskView{}, newError(CodeTaskGit, "could not record the git worktree of task %s: %v. %s",
 			view.ID, errWorktreeClaimMoved, worktreeReleaseNote(released, closed))
 	case placedAdopted:
-		if path != task.Worktree || branch != task.Branch {
-			// Another claim placed this task's worktree first, so the one
-			// made here belongs to nobody.
-			s.discardPlacedWorktree(ctx, claimed, path, branch)
-		}
+		// Another claim placed this task's worktree first, so the one made
+		// here belongs to nobody.
+		s.discardUnnamedWorktree(ctx, claimed, placed)
 	}
 	// The board, not this call, is the truth: an edit that landed while git
 	// ran is reported with its revision, and an adopted worktree is the one

@@ -3,6 +3,7 @@ package agentteam
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -823,6 +824,84 @@ func TestDeleteDuringRestoreDoesNotStartTheMember(t *testing.T) {
 	claims := len(s.claims)
 	s.mu.Unlock()
 	require.Zero(t, claims)
+}
+
+// TestLostClaimKeepsTheWorktreeItDidNotMake pins P11: a claim whose record
+// misses must never remove a worktree the task still records, or the work
+// another member has not committed goes with it.
+func TestLostClaimKeepsTheWorktreeItDidNotMake(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	spawnMember(t, s, "impl2")
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", WriteScopes: []string{"docs"}})
+	stale := act(t, s, "impl", task.ID, "claim", nil)
+	writeTreeFile(t, stale.Worktree, "docs/draft.md", "unfinished\n")
+
+	// The Lead hands the task to another member while impl still holds the
+	// claim it made, so impl's placement of that claim runs late.
+	assigned := act(t, s, leadName, task.ID, "reassign", func(r *UpdateTaskRequest) { r.Owner = "impl2" })
+	requireSamePath(t, stale.Worktree, assigned.Worktree)
+	_, err := s.placeClaim(stale)
+	require.Equal(t, CodeTaskGit, ErrorCode(err))
+
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskInProgress, got.Status)
+	require.Equal(t, memberID(t, s, "impl2"), got.OwnerID)
+	requireSamePath(t, stale.Worktree, got.Worktree)
+	require.DirExists(t, stale.Worktree, "the worktree the task records is still there")
+	require.FileExists(t, filepath.Join(stale.Worktree, "docs", "draft.md"), "uncommitted work survives a lost claim")
+	worktrees, err := gitutil.ListWorktrees(context.Background(), repo)
+	require.NoError(t, err)
+	require.Len(t, worktrees, 2, "the Lead's tree and the one task worktree")
+	require.Empty(t, leadNotices(t, s, pipelineSession))
+}
+
+// TestDiscardKeepsAWorktreeThisCallDidNotMake pins the two guards behind
+// P11: a placement removes only what it made, and only when the board does
+// not record that path.
+func TestDiscardKeepsAWorktreeThisCallDidNotMake(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", WriteScopes: []string{"docs"}})
+	view := act(t, s, "impl", task.ID, "claim", nil)
+	claimed := Task{ID: view.ID, SessionID: view.SessionID, OwnerID: view.OwnerID, Worktree: view.Worktree, Branch: view.Branch}
+
+	// A reused worktree was not made here, so it stays whoever owns the
+	// task.
+	s.discardUnnamedWorktree(context.Background(), claimed, placedWorktree{path: view.Worktree, branch: view.Branch})
+	require.DirExists(t, view.Worktree)
+
+	// A restored one is this call's, but the task still records its path,
+	// so the member that holds the task now keeps it.
+	s.discardUnnamedWorktree(context.Background(), claimed, placedWorktree{path: view.Worktree, branch: view.Branch, made: true})
+	require.DirExists(t, view.Worktree)
+}
+
+// TestReleaseSkipsATaskThatHasItsWorktree pins that a stale worktree failure
+// does not hand back a task whose member already works in its worktree.
+func TestReleaseSkipsATaskThatHasItsWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, _ := newWorktreeService(t, repo, false)
+	spawnMember(t, s, "impl")
+	task := createTask(t, s, CreateTaskRequest{Subject: "Docs", Description: "d", WriteScopes: []string{"docs"}})
+	view := act(t, s, "impl", task.ID, "claim", nil)
+
+	released := true
+	_ = s.write(mustApply, func() (bool, error) {
+		released = s.releaseForWorktreeLocked(view.ID, view.SessionID, view.OwnerID, errors.New("stale failure"))
+		return false, nil
+	})
+	require.False(t, released)
+	got := taskByID(t, s, task.ID)
+	require.Equal(t, TaskInProgress, got.Status)
+	require.Equal(t, view.OwnerID, got.OwnerID)
+	requireSamePath(t, view.Worktree, got.Worktree)
+	require.Empty(t, leadNotices(t, s, pipelineSession))
 }
 
 func TestWorktreeFieldsAreOmittedWhenEmpty(t *testing.T) {
