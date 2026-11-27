@@ -283,9 +283,13 @@ names both (`worktree`, `branch`). A task that already has a worktree keeps
 it: `release`, `reopen`, a failed verification and a re-dispatch leave it
 for the next implementer, who sees the earlier commits. A worktree directory
 deleted by hand is recreated on the next start, from its branch when the
-branch still exists and from the Lead's `HEAD` otherwise. A teammate holds
-one worktree at a time, so it cannot claim or be assigned a second scoped
-task while it holds one.
+branch still exists and from the Lead's `HEAD` otherwise. While a recorded
+worktree is gone in the middle of a teammate's turn, every tool but the
+team board tools refuses ("this task's worktree is missing; release the
+task or wait for it to be recreated"), so nothing falls back to the Lead's
+tree, where `bash` is not checked. A teammate holds one worktree at a
+time, so it cannot claim or be assigned a second scoped task while it
+holds one.
 
 The teammate's tools run in the worktree: relative paths resolve there, and
 `bash` starts there. When the Lead works in a subdirectory of the
@@ -293,23 +297,27 @@ repository, the teammate starts in the same subdirectory of the worktree.
 The brief names the worktree and the branch; no tool definition and no system
 prompt changes, so the prompt cache stays shared with the Lead. LSP tools
 refuse in a worktree ("LSP tools are not available in a task worktree"),
-because the language servers index the Lead's tree. The verifier runs in the
+because the language servers index the Lead's tree. The `worktree` tool
+refuses there too: the task already owns the worktree its tools run in, and
+a sibling's worktree is not a teammate's to remove. The verifier runs in the
 worktree of the work it checks. A teammate working on a scoped task cannot
 use subagents (`agent_dispatch`, `agent_send`, or `send_message` to a
 subagent) until the task is done; a task in review still holds its worktree.
 
 When the task completes, by `complete` or by its owner's turn ending, the
 service stops the owner's running background jobs, waiting for their scope
-checks, then commits everything in the worktree to the branch, with the task
-subject as the message and the repository's git config for author, signing
-and hooks. An empty change set makes no commit. A commit that fails refuses
-`complete` with git's output, and a turn whose work cannot be committed
-releases its task. On `pass`, on the Lead's `complete` of the task in
-review, and for a task with `verify` false as soon as it completes, the
-service merges the branch into the Lead's current branch with
-`git merge --no-ff` (message `Merge team task <id>: <subject>`), then
-removes the worktree and deletes the branch. Dependents become ready only
-after the merge.
+checks, then commits the changes inside the task's write scopes to the
+branch, with the task subject as the message and the repository's git config
+for author, signing and hooks. A change outside the scopes stays
+uncommitted in the worktree and goes with it when it is removed, so it never
+reaches the branch or the Lead's tree. An empty change set makes no commit.
+A commit that fails refuses `complete` with git's output, and a turn whose
+work cannot be committed releases its task. On `pass`, on the Lead's
+`complete` of the task in review, and for a task with `verify` false as soon
+as it completes, the service merges the branch into the Lead's current
+branch with `git merge --no-ff` (message `Merge team task <id>: <subject>`),
+then removes the worktree and deletes the branch. Dependents become ready
+only after the merge.
 
 A merge that conflicts, that an uncommitted change in the Lead's tree
 blocks, that finds the Lead on a detached `HEAD`, or that finds a merge or
