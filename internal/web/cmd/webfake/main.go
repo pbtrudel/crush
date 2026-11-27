@@ -179,8 +179,18 @@ func main() {
 	if m1 {
 		// The permission arrives a moment after the page loads, so the
 		// waiting marker appears without a reload; that live change is what
-		// the multi-session browser spec watches.
-		time.AfterFunc(time.Second, func() { webtest.SeedM1Pending(fake) })
+		// the multi-session browser spec watches. WEBFAKE_M1_PENDING_ON_FILE
+		// hands the moment to the test: the spec writes the file once its page
+		// is open, so the change cannot race a page that boots slowly.
+		if pendingFile := os.Getenv("WEBFAKE_M1_PENDING_ON_FILE"); pendingFile != "" {
+			go func() {
+				if waitForFile(runCtx, pendingFile) {
+					webtest.SeedM1Pending(fake)
+				}
+			}()
+		} else {
+			time.AfterFunc(time.Second, func() { webtest.SeedM1Pending(fake) })
+		}
 	}
 	go func() {
 		for plan := range modeRequests {

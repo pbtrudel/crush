@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs'
+
 import type { Page } from '@playwright/test'
 
 import { expect, test } from './support/webfake'
@@ -12,7 +14,8 @@ test('boots from the launch link and drops the token from the URL', async ({ pag
   await page.goto(app.launchUrl)
   await expect(page.getByText('Preview: the new web UI is incomplete')).toBeVisible()
   await expect(page.getByTestId('app-frame')).toBeVisible()
-  expect(page.url()).not.toContain('#t=')
+  // A plain boolean keeps a failure from printing the token with the URL.
+  expect(page.url().includes('#t='), 'the token stayed in the URL').toBe(false)
 })
 
 test('lists the seeded sessions with their markers', async ({ page, app }) => {
@@ -34,19 +37,18 @@ test('opens one session after another', async ({ page, app }) => {
 })
 
 test('shows a marker that appears without a reload', async ({ page, freshApp }) => {
-  // This spec gets its own gateway: webfake publishes s-m1-wait's permission
-  // one second after the server starts, and the worker's gateway has long
-  // passed that, so only a fresh one can show the change happening.
+  // This spec gets its own gateway, and that gateway holds s-m1-wait's
+  // permission until the file below is written: the change cannot land while
+  // the page is still booting, however slow the runner is.
   await page.goto(freshApp.launchUrl)
   // The row must be on screen before its missing marker means anything.
   const waiting = row(page, 'Rename the grammar')
   await expect(waiting).toBeVisible()
   await expect(row(page, 'Port the parser').locator('[aria-label="Running"]')).toBeVisible()
-  // Nothing waits for the person yet; the page loaded before webfake opened
-  // p-m1.
   await expect(waiting.locator('[aria-label="Waiting for you"]')).toHaveCount(0)
   // The permission is published on a page that is already open: no reload
   // stands between the two assertions.
+  writeFileSync(freshApp.pendingFile, '')
   await expect(waiting.locator('[aria-label="Waiting for you"]')).toBeVisible({ timeout: 15_000 })
 })
 
