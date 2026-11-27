@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCancelledBashWaitsForItsJob pins M1: a bash call whose context is
-// cancelled waits, bounded, for the job it started to end, so the scope
-// check that follows sees a write a detached child makes after the kill.
+// TestCancelledBashWaitsForItsJob pins M1: a bash call in a task worktree
+// whose context is cancelled waits, bounded, for the job it started to end,
+// so the scope check that follows sees a write a detached child makes after
+// the kill.
 func TestCancelledBashWaitsForItsJob(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -24,7 +25,7 @@ func TestCancelledBashWaitsForItsJob(t *testing.T) {
 		t.Skip("setsid is not on PATH")
 	}
 	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(WithTaskWorktree(t.Context()))
 	defer cancel()
 	started := filepath.Join(dir, "started")
 	go func() {

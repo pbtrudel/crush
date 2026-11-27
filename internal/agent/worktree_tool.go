@@ -107,6 +107,7 @@ func (w *worktreeTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.
 		}
 	}
 	ctx = tools.WithWorkingDir(ctx, ws.Dir)
+	ctx = tools.WithTaskWorktree(ctx)
 	ctx = withWorkspace(ctx, ws)
 	return w.inner.Run(ctx, call)
 }

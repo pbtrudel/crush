@@ -71,6 +71,18 @@ const (
 	cancelledJobWait = 10 * time.Second
 )
 
+// cancelledKillContext is the context a cancelled call kills its job with.
+// A call in a task worktree gets a fresh bounded context, because the
+// cancelled one would let Kill return before a descendant it did not reach
+// has written, and the scope check that follows the call must see that
+// write. Every other call kills with its own cancelled context.
+func cancelledKillContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if !InTaskWorktree(ctx) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), cancelledJobWait)
+}
+
 //go:embed bash.md.tpl
 var bashDescriptionTmpl []byte
 
@@ -686,13 +698,10 @@ func executeBashCommand(ctx context.Context, params BashParams, execWorkingDir, 
 	case <-timer.C:
 	case <-ctx.Done():
 		// Incoming context was cancelled before we moved to background.
-		// Kill the shell and wait, bounded, for it to end: a descendant the
-		// kill does not reach can still write, and the scope check that
-		// follows the call must see that write. The cancelled context would
-		// let Kill return at once, so it gets a fresh bounded one. Kill's
-		// "may still be exiting" error is expected here and not worth
-		// reporting.
-		killCtx, killCancel := context.WithTimeout(context.WithoutCancel(ctx), cancelledJobWait)
+		// Kill the shell with the context the cancelledKillContext gives it;
+		// Kill's "may still be exiting" error is expected here and not
+		// worth reporting.
+		killCtx, killCancel := cancelledKillContext(ctx)
 		_ = bgManager.Kill(killCtx, bgShell.ID)
 		killCancel()
 		// The result is still stored, from this metadata and the error,

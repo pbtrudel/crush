@@ -24,3 +24,19 @@ func WorkingDirFrom(ctx context.Context, fallback string) string {
 	}
 	return fallback
 }
+
+type taskWorktreeKey struct{}
+
+// WithTaskWorktree marks ctx as a call running in a task worktree, where the
+// changes a bash call makes are checked against the task's write scopes after
+// it returns. It travels on the call's context only, so no tool description
+// or system prompt changes.
+func WithTaskWorktree(ctx context.Context) context.Context {
+	return context.WithValue(ctx, taskWorktreeKey{}, true)
+}
+
+// InTaskWorktree reports whether ctx is a call running in a task worktree.
+func InTaskWorktree(ctx context.Context) bool {
+	in, _ := ctx.Value(taskWorktreeKey{}).(bool)
+	return in
+}
