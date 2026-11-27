@@ -47,6 +47,11 @@ func TestBootstrapCarriesGlobalState(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{"s1": statusIdle, "s2": statusPendingInteraction}, statuses,
 		"the open question outranks the busy run it waits on")
+
+	// The terminal owns the current session, so a switch moves the
+	// bootstrap with it.
+	fake.SetCurrent("other")
+	require.Equal(t, "other", bootstrapOf(t, g).CurrentSessionID)
 }
 
 // TestBootstrapRouteServesIt pins the endpoint the shell loads with.
