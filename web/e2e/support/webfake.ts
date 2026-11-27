@@ -161,7 +161,9 @@ export const test = base.extend<{ freshApp: PendingWebfake }, { app: Webfake }>(
       await use(running.app)
       await running.stop()
     },
-    { scope: 'worker' },
+    // A cold `go build` of the fake on a CI runner can take minutes, and this
+    // fixture pays for it on the first spec.
+    { scope: 'worker', timeout: 300_000 },
   ],
   // freshApp is a gateway started for one test, for a spec that has to see a
   // change happen on a page that is already open. Its M1 permission waits for

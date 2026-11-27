@@ -75,6 +75,9 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
+      # Warm the Go build cache so the fixture's own build of the fake
+      # gateway is quick and does not eat the first spec's setup time.
+      - run: go build -o "$RUNNER_TEMP/webfake-warm" ./internal/web/cmd/webfake
       # A shard that owns no spec file must not fail the matrix.
       - run: npx playwright test --shard=${{ matrix.shard }}/3 --pass-with-no-tests
         working-directory: web
