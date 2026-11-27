@@ -406,9 +406,10 @@ func TestMergeRefusedTextReportsAFailedAbort(t *testing.T) {
 	t.Parallel()
 	m := mergeRequest{taskID: "task-1", subject: "Docs", branch: "crush/team-task-1", worktree: "/tmp/wt"}
 
-	failed := mergeRefusedText(m, &gitutil.MergeError{Reason: "the merge has conflicts and was aborted", AbortFailed: true})
+	failed := mergeRefusedText(m, &gitutil.MergeError{Reason: "the merge has conflicts and could not be aborted", AbortFailed: true})
 	require.Contains(t, failed, "could not be aborted")
 	require.Contains(t, failed, m.branch)
+	require.NotContains(t, failed, "was aborted")
 	require.NotContains(t, failed, "as git left it")
 
 	refused := mergeRefusedText(m, &gitutil.MergeError{Reason: "git refused the merge"})
@@ -501,6 +502,37 @@ func TestOwnDeleteDoesNotStopItsOwnRun(t *testing.T) {
 	require.NoDirExists(t, view.Worktree)
 	require.False(t, branchExists(repo, view.Branch))
 	require.NoFileExists(t, filepath.Join(repo, "docs", "wip.md"))
+}
+
+// TestDeleteLeavesAPendingResumeAlone pins ruling W15: the settle a delete
+// waits for never resumes the member, so no turn starts on work the delete is
+// about to release, and its mail stays queued for the next wake.
+func TestDeleteLeavesAPendingResumeAlone(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, runner := newWorktreeService(t, repo, false)
+	runner.setTurn(func(ctx context.Context) { <-ctx.Done() })
+	spawnMember(t, s, "impl")
+	scoped := scopedTask(t, s, "impl", "Docs", false)
+	other := createTask(t, s, CreateTaskRequest{Subject: "Research", Description: "d"})
+	act(t, s, "impl", other.ID, "claim", nil)
+	require.NoError(t, s.SendMessage(t.Context(), leadName, pipelineSession,
+		SendRequest{Target: "impl", Message: "Take another look."}))
+
+	act(t, s, leadName, scoped.ID, "delete", nil)
+
+	require.Equal(t, TaskDeleted, taskByID(t, s, scoped.ID).Status)
+	require.Equal(t, []string{"impl"}, runner.memberNames(), "no resumed turn starts for the held mail")
+	require.Equal(t, 1, runner.promptCount())
+	got := taskByID(t, s, other.ID)
+	require.Equal(t, TaskPending, got.Status, "its work goes back only while no turn runs for it")
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts)
+	s.mu.Lock()
+	pending := s.hasPendingLocked("impl", pipelineSession)
+	s.mu.Unlock()
+	require.True(t, pending, "the mail stays queued for the next wake")
+	require.NoDirExists(t, scoped.Worktree)
 }
 
 // TestDeleteDoesNotStrandTheMembersOtherTasks pins the other half of W14: the

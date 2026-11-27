@@ -153,7 +153,7 @@ func (s *Service) mergeTask(ctx context.Context, m mergeRequest, caller string) 
 		return
 	}
 	if s.settleMerge(m, err) {
-		s.removeTaskWorktree(ctx, worktreeRemoval{taskID: m.taskID, sessionID: m.sessionID, path: m.worktree, branch: m.branch}, caller)
+		s.removeTaskWorktree(ctx, worktreeRemoval{taskID: m.taskID, sessionID: m.sessionID, path: m.worktree, branch: m.branch}, caller, false)
 	}
 	s.dispatch(context.Background(), m.sessionID)
 }

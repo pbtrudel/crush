@@ -1286,11 +1286,15 @@ func (s *Service) watch(name string, run Run) {
 		complete  []string
 		leadHook  func(sessionID string)
 		merges    []mergeRequest
+		held      bool
 		wasClosed bool
 	)
 	// The run already happened, so its settlement must land even when
 	// another process keeps the state lock.
 	_ = s.write(mustApply, func() (bool, error) {
+		// Closed in this write, so a caller waiting on the settle never
+		// mistakes a later run of the same member for this one.
+		defer s.settleRunLocked(name, run)
 		if s.runs[name] == run {
 			delete(s.runs, name)
 		}
@@ -1314,8 +1318,8 @@ func (s *Service) watch(name string, run Run) {
 		// next turn owns whatever this one left in progress. Settling it
 		// here would re-review or release work its owner is about to
 		// resume on, before it has read the mail that explains why.
-		hold := s.takesHoldLocked(name) ||
-			(runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID))
+		held = s.takesHoldLocked(name)
+		hold := held || (runErr == nil && !s.closed && s.hasPendingLocked(name, member.ParentID))
 		settled, completed, toMerge := s.settleTasksLocked(member.ID, runErr, hold, uncommitted)
 		complete = completed
 		merges = toMerge
@@ -1330,6 +1334,12 @@ func (s *Service) watch(name string, run Run) {
 			// outlive the wait.
 			return true, nil
 		}
+		if held {
+			// The caller that stopped this run ends the work it held, so no
+			// new turn starts on that work before it does. The mail stays
+			// queued for the next wake.
+			return true, nil
+		}
 		pending = s.drainLocked(name, member.ParentID)
 		runner = s.runner
 		if len(pending) > 0 {
@@ -1340,9 +1350,6 @@ func (s *Service) watch(name string, run Run) {
 		}
 		return true, nil
 	})
-	// The settle write landed, so a caller waiting to remove the worktree
-	// this turn worked in can go on.
-	s.markRunSettled(name, run)
 	if hook != nil {
 		for _, subject := range complete {
 			hook(member.ParentID, subject)
@@ -1459,17 +1466,16 @@ type runSettlement struct {
 	done chan struct{}
 }
 
-// markRunSettled closes the channel a caller may be waiting on for run, once
-// its settle write landed, and forgets it. It holds s.mu only to read.
-func (s *Service) markRunSettled(name string, run Run) {
-	s.mu.Lock()
+// settleRunLocked closes the channel a caller may be waiting on for run, once
+// its settle write landed, and forgets it. It runs inside that write, so a
+// launch that follows cannot replace the record the waiter holds. Callers
+// must hold s.mu.
+func (s *Service) settleRunLocked(name string, run Run) {
 	settlement, ok := s.runSettled[name]
 	if !ok || settlement.run != run {
-		s.mu.Unlock()
 		return
 	}
 	delete(s.runSettled, name)
-	s.mu.Unlock()
 	close(settlement.done)
 }
 
@@ -2548,7 +2554,7 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		s.mergeTask(ctx, m, caller)
 	}
 	if applied.removal != nil {
-		s.removeTaskWorktree(ctx, *applied.removal, caller)
+		s.removeTaskWorktree(ctx, *applied.removal, caller, stopped)
 	}
 	if len(applied.merges) > 0 {
 		applied.view = s.refreshView(applied.view)

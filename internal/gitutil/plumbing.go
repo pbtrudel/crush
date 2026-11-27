@@ -96,6 +96,9 @@ func MergeNoFF(ctx context.Context, dir, branch, message string) error {
 		if abortOut, abortErr := gitOutput(cleanup, dir, "merge", "--abort"); abortErr != nil {
 			output += "\n\ngit merge --abort failed: " + strings.TrimSpace(abortOut)
 			mergeErr.AbortFailed = true
+			// The tree is still mid-merge, so the reason must not claim the
+			// merge was aborted.
+			mergeErr.Reason = "the merge has conflicts and could not be aborted"
 		}
 		mergeErr.Output = output
 		return mergeErr

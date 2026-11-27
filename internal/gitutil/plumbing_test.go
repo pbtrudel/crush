@@ -270,5 +270,7 @@ func TestMergeNoFFReportsAFailedAbort(t *testing.T) {
 	require.True(t, mergeErr.AbortFailed)
 	require.Contains(t, mergeErr.Output, "abort refused")
 	require.Contains(t, mergeErr.Reason, "conflict")
+	require.Contains(t, mergeErr.Reason, "could not be aborted")
+	require.NotContains(t, mergeErr.Reason, "was aborted", "a reason never says the merge was aborted when it was not")
 	require.True(t, mergeInProgressForTest(repo), "the merge is still in progress")
 }

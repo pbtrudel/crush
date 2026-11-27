@@ -352,11 +352,18 @@ type worktreeRemoval struct {
 // call of that turn reaches the Lead's tree once the worktree is gone. The
 // caller's own run is never stopped: it cannot settle until the tool call it
 // is running returns, and its later calls already resolve to the Lead's tree
-// once the task leaves. It is best effort: a failure is logged and told to
-// the Lead, and the state change stands. Callers must hold no lock.
-func (s *Service) removeTaskWorktree(ctx context.Context, r worktreeRemoval, caller string) {
-	if owner := s.taskOwnerName(r.taskID, r.sessionID); owner != "" && owner != caller {
-		s.stopMemberRun(owner, false)
+// once the task leaves. ownerStopped says the caller already stopped the
+// owner's run, so no later turn of that member is touched. It is best effort:
+// a failure is logged and told to the Lead, and the state change stands.
+// Callers must hold no lock.
+func (s *Service) removeTaskWorktree(ctx context.Context, r worktreeRemoval, caller string, ownerStopped bool) {
+	// ownerStopped means the caller already stopped this owner's run and
+	// waited for its settle; a run that exists now belongs to a later turn
+	// and is none of this removal's business.
+	if !ownerStopped {
+		if owner := s.taskOwnerName(r.taskID, r.sessionID); owner != "" && owner != caller {
+			s.stopMemberRun(owner, false)
+		}
 	}
 	s.gitMu.Lock()
 	err := gitutil.RemoveWorktree(ctx, s.cfg.WorkingDir, r.path, true)
@@ -764,15 +771,21 @@ func (s *Service) stopDeleteRun(caller string, req UpdateTaskRequest) (stopped b
 	return stopped, member
 }
 
-// releaseStoppedWork hands back the in-progress tasks a stopped run left when
-// the write that was meant to end them refused, so they never stay in
-// progress under a member nothing runs. Callers must hold no lock.
+// releaseStoppedWork hands back the in-progress tasks a stopped run left, so
+// they never stay in progress under a member nothing runs. A member with a
+// live or starting run is left alone: whatever it holds is that turn's to
+// finish. Callers must hold no lock.
 func (s *Service) releaseStoppedWork(member Member) {
 	if member.ID == "" {
 		return
 	}
 	_ = s.write(mustApply, func() (bool, error) {
 		if s.closed {
+			return false, nil
+		}
+		if _, live := s.runs[member.Name]; live || s.starting[member.Name] {
+			// A turn owns this member's work now, so it decides when the
+			// work goes back to the board.
 			return false, nil
 		}
 		held := false
