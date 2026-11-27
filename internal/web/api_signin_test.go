@@ -225,11 +225,9 @@ func TestAPIKeyNeverLogged(t *testing.T) {
 			require.NotContains(t, string(fr.Payload), k)
 		}
 	}
-	rsp, snap := doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	snap := snapshotJSON(t, g, "")
 	for _, k := range keys {
-		require.NotContains(t, string(snap), k)
+		require.NotContains(t, snap, k)
 	}
 	for _, k := range keys {
 		require.NotContains(t, logs.String(), k)
@@ -872,10 +870,7 @@ func TestSignInSnapshotCarriesTheState(t *testing.T) {
 	g, _ := signInGatewayWithFlow(t, flow)
 	c := authedClient(t, g)
 	st := startSignIn(t, c, g, "copilot")
-	rsp, snap := doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	require.Contains(t, string(snap), `"signin":{"flow_id":"`+st.FlowID+`"`)
+	require.Contains(t, snapshotJSON(t, g, ""), `"signin":{"flow_id":"`+st.FlowID+`"`)
 }
 
 func TestSignInCancelUnknownFlow(t *testing.T) {
@@ -1310,9 +1305,7 @@ func TestSignInImportIsRecorded(t *testing.T) {
 	rsp.Body.Close()
 	require.Contains(t, string(status), `"flow_id":"`+st.FlowID+`"`)
 	require.Contains(t, string(status), `"imported":true`)
-	rsp, snap := doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.Contains(t, string(snap), `"signin":{"flow_id":"`+st.FlowID+`"`)
+	require.Contains(t, snapshotJSON(t, g, ""), `"signin":{"flow_id":"`+st.FlowID+`"`)
 	frame := frameUntil(t, stream, `"imported":true`)
 	var framed SignInState
 	require.NoError(t, json.Unmarshal(frame.Payload, &framed))

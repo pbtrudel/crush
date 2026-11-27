@@ -130,11 +130,7 @@ func TestTeamFramesKeepLastGoodRuns(t *testing.T) {
 		}
 	}
 	// The snapshot keeps the last good runs as well.
-	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var later Snapshot
-	require.NoError(t, json.Unmarshal(body, &later))
+	later := snapshotOf(t, g, "")
 	require.Len(t, later.AgentRuns, 1)
 	require.Equal(t, "sub-1", later.AgentRuns[0].ID)
 

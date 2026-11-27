@@ -50,6 +50,27 @@ func doJSON(t *testing.T, c *http.Client, method, target, body string) (*http.Re
 	return rsp, data
 }
 
+// snapshotOf builds the payload the gateway sends as the first frame of a
+// stream. An empty session ID means the terminal's current session, as it
+// does for the stream; GET /api/snapshot served the same payload until M0
+// removed it.
+func snapshotOf(t *testing.T, g *Gateway, sessionID string) Snapshot {
+	t.Helper()
+	if sessionID == "" {
+		sessionID = g.ws.CurrentSessionID()
+	}
+	return g.buildSnapshot(t.Context(), sessionID)
+}
+
+// snapshotJSON is snapshotOf as JSON, for the tests that assert a secret
+// never reaches a tab.
+func snapshotJSON(t *testing.T, g *Gateway, sessionID string) string {
+	t.Helper()
+	raw, err := json.Marshal(snapshotOf(t, g, sessionID))
+	require.NoError(t, err)
+	return string(raw)
+}
+
 // runResult is what the fake agent run reports back to the test goroutine.
 // OnRun executes on the handler's goroutine, where FailNow is not valid.
 type runResult struct {
@@ -289,30 +310,30 @@ func TestHealthAndSnapshot(t *testing.T) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	require.JSONEq(t, `{"ok":true}`, string(body))
 
-	rsp, body = doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var snap Snapshot
-	require.NoError(t, json.Unmarshal(body, &snap))
+	snap := snapshotOf(t, g, "")
 	require.Equal(t, "s1", snap.CurrentSessionID)
 	require.NotNil(t, snap.Session)
 	require.Equal(t, "main", snap.Branch)
 
-	rsp, body = doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot?session=missing", "")
-	rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var missing Snapshot
-	require.NoError(t, json.Unmarshal(body, &missing))
+	missing := snapshotOf(t, g, "missing")
 	require.Equal(t, "missing", missing.CurrentSessionID)
 	require.Nil(t, missing.Session)
 
 	// The terminal's current session changes the default.
 	fake.SetCurrent("other")
-	rsp, body = doJSON(t, c, http.MethodGet, g.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	require.NoError(t, json.Unmarshal(body, &snap))
-	require.Equal(t, "other", snap.CurrentSessionID)
+	require.Equal(t, "other", snapshotOf(t, g, "").CurrentSessionID)
+}
+
+// TestSnapshotRouteIsGone pins the M0 removal: a tab loads a bootstrap plus
+// per-session snapshots now, so the old full-state route is a 404 even for
+// a signed-in client.
+func TestSnapshotRouteIsGone(t *testing.T) {
+	t.Parallel()
+	g, _ := startTest(t)
+	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusNotFound, rsp.StatusCode)
+	require.NotContains(t, string(body), "current_session_id")
 }
 
 // TestSnapshotExposesEveryPendingBatch checks that a reload restores each
@@ -323,18 +344,15 @@ func TestSnapshotExposesEveryPendingBatch(t *testing.T) {
 	emitQuestion(t, g, fake, question.Request{ID: "b1", SessionID: "s2"})
 	emitQuestion(t, g, fake, question.Request{ID: "b2", SessionID: "s3"})
 
-	rsp, body := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	defer rsp.Body.Close()
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	var snap struct {
-		Questions []struct {
-			ID string `json:"id"`
-		} `json:"questions"`
-	}
-	require.NoError(t, json.Unmarshal(body, &snap))
+	snap := snapshotOf(t, g, "")
 	require.Len(t, snap.Questions, 2)
-	require.Equal(t, "b1", snap.Questions[0].ID)
-	require.Equal(t, "b2", snap.Questions[1].ID)
+	var first, second struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(snap.Questions[0], &first))
+	require.NoError(t, json.Unmarshal(snap.Questions[1], &second))
+	require.Equal(t, "b1", first.ID)
+	require.Equal(t, "b2", second.ID)
 }
 
 func TestListSessions(t *testing.T) {
@@ -840,12 +858,7 @@ func TestSnapshotReportsAgentReady(t *testing.T) {
 			t.Parallel()
 			g, fake := startTest(t)
 			fake.SetReadyErr(tc.ready)
-			rsp, data := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-			rsp.Body.Close()
-			require.Equal(t, http.StatusOK, rsp.StatusCode)
-			var snap Snapshot
-			require.NoError(t, json.Unmarshal(data, &snap))
-			require.Equal(t, tc.want, snap.AgentReady)
+			require.Equal(t, tc.want, snapshotOf(t, g, "").AgentReady)
 		})
 	}
 }

@@ -328,9 +328,7 @@ func TestSecureAnswerRefusedForgetsThePrompt(t *testing.T) {
 	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
 	require.Empty(t, g.pending.securePrompts())
-	rsp, snap := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.NotContains(t, string(snap), `"id":"p1"`, "a reload does not restore a ghost prompt")
+	require.NotContains(t, snapshotJSON(t, g, ""), `"id":"p1"`, "a reload does not restore a ghost prompt")
 }
 
 // TestSecureCancelRefusedForgetsThePrompt is the cancel side of the same
@@ -351,9 +349,7 @@ func TestSecureCancelRefusedForgetsThePrompt(t *testing.T) {
 	fr := nextFrameOfType(ctx, t, c, frameSecurePrompt)
 	require.JSONEq(t, `{"prompts":[]}`, string(fr.Payload), "the dialog closes on the tab")
 	require.Empty(t, g.pending.securePrompts())
-	rsp, snap := doJSON(t, authedClient(t, g), http.MethodGet, g.URL()+"/api/snapshot", "")
-	rsp.Body.Close()
-	require.NotContains(t, string(snap), `"id":"s6"`, "a reload does not restore a ghost prompt")
+	require.NotContains(t, snapshotJSON(t, g, ""), `"id":"s6"`, "a reload does not restore a ghost prompt")
 }
 
 // TestOversizeSecretBodyIsRefused pins the shared secret body decoder: a
