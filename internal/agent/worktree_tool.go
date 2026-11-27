@@ -29,6 +29,12 @@ const lspWorktreeRefusal = "LSP tools are not available in a task worktree: the 
 // worktree and outside the scope gate.
 const scopedTeammateSubagentRefusal = "a teammate working on a scoped task cannot use subagents; finish or release the task first"
 
+// worktreeToolRefusal is what a teammate in a task worktree gets when it
+// calls the worktree tool. The task already owns the worktree the teammate
+// runs in, and another worktree is not its to remove: a force removal would
+// destroy a sibling's uncommitted work.
+const worktreeToolRefusal = "the worktree tool is not available in a task worktree: your task already owns the worktree its tools run in. Release the task with team_task_update instead of managing worktrees by hand."
+
 // missingWorktreeRefusal is what a teammate gets when the worktree its task
 // records is gone. Its tools must not run in the Lead's tree instead, where
 // bash is unchecked; the team board tools stay available so it can release
@@ -91,6 +97,9 @@ func (w *worktreeTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.
 	}
 	if strings.HasPrefix(name, "lsp_") {
 		return fantasy.NewTextErrorResponse(lspWorktreeRefusal), nil
+	}
+	if name == tools.WorktreeToolName {
+		return fantasy.NewTextErrorResponse(worktreeToolRefusal), nil
 	}
 	if name == tools.BashToolName {
 		if refusal := refuseBashOutsideWorktree(ws, call.Input); refusal != "" {

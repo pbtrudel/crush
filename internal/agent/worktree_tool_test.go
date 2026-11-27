@@ -277,10 +277,6 @@ func taskStatusNow(t *testing.T, team *agentteam.Service, id string) agentteam.T
 	return ""
 }
 
-// TestTeammateInWorktreeKeepsLeadPrefix extends the cache tests: a teammate
-// in a task worktree sends the Lead's tools block byte for byte and the
-// Lead's system prompt plus its identity, and no tool definition names a
-// working directory.
 // TestTeammateToolsRefuseWhenTheirWorktreeGoesMissing pins W20.2: a recorded
 // worktree the filesystem no longer holds must not send the teammate's tools
 // into the Lead's tree, where bash is unchecked. Only the team board tools
@@ -331,6 +327,41 @@ func TestTeammateToolsRefuseWhenTheirWorktreeGoesMissing(t *testing.T) {
 	require.Equal(t, agentteam.TaskPending, taskStatusNow(t, coord.teamService(), task.ID))
 }
 
+// TestTeammateInWorktreeCannotManageWorktrees pins W20.3: the worktree tool
+// is refused for a teammate in a task worktree, so it cannot force-remove a
+// sibling's worktree from inside its own. The refusal also covers a worktree
+// that went missing, so nothing is removed then either.
+func TestTeammateInWorktreeCannotManageWorktrees(t *testing.T) {
+	coord, _ := newWorktreeTestCoordinator(t)
+	ws := claimInWorktree(t, coord, "impl", "docs")
+	sibling := claimInWorktree(t, coord, "other", "internal")
+	teammate := buildTeammateAgent(t, coord, agentteam.Member{Name: "impl", Role: agentteam.RoleTeammate})
+	list := teammate.(*sessionAgent).tools.Copy()
+	require.NotNil(t, toolByName(list, tools.WorktreeToolName))
+	sess, err := coord.sessions.Create(t.Context(), "Teammate impl")
+	require.NoError(t, err)
+	ctx := context.WithValue(agentteam.WithMember(t.Context(), "impl"), tools.SessionIDContextKey, sess.ID)
+
+	input, err := json.Marshal(tools.WorktreeParams{Action: "remove", Path: sibling.Root, Force: true})
+	require.NoError(t, err)
+	resp := runIn(t, ctx, toolByName(list, tools.WorktreeToolName), string(input))
+	require.True(t, resp.IsError, resp.Content)
+	require.Contains(t, resp.Content, "not available in a task worktree")
+	require.DirExists(t, sibling.Root, "a sibling's worktree is not the teammate's to remove")
+
+	// The missing state refuses the tool too, so a teammate whose worktree
+	// went away cannot tidy up by hand either.
+	require.NoError(t, os.RemoveAll(ws.Root))
+	resp = runIn(t, ctx, toolByName(list, tools.WorktreeToolName), `{"action":"list"}`)
+	require.True(t, resp.IsError, resp.Content)
+	require.Contains(t, resp.Content, "this task's worktree is missing")
+	require.DirExists(t, sibling.Root)
+}
+
+// TestTeammateInWorktreeKeepsLeadPrefix extends the cache tests: a teammate
+// in a task worktree sends the Lead's tools block byte for byte and the
+// Lead's system prompt plus its identity, and no tool definition names a
+// working directory.
 func TestTeammateInWorktreeKeepsLeadPrefix(t *testing.T) {
 	coord, repo := newWorktreeTestCoordinator(t)
 	ws := claimInWorktree(t, coord, "impl", "docs")
