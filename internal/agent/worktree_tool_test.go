@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -317,54 +316,22 @@ func TestTeammateInWorktreeRefusesDelegation(t *testing.T) {
 	require.Contains(t, resp.Content, "nested delegation is not supported inside a teammate")
 }
 
-// worktreeProbeModel is a scripted provider for a dispatched subagent: it
-// reads one relative file with view, then waits for the test to release it so
-// the run cannot settle and start a report turn before the test is done. It
-// records the tool results, which is what shows whether the read followed the
-// subagent's run context.
-type worktreeProbeModel struct {
+// answerModel is a scripted provider that answers in text and calls no tool,
+// so a dispatched subagent it runs settles without a network call.
+type answerModel struct {
 	fakeLanguageModel
-	probed     chan struct{}
-	release    chan struct{}
-	probeOnce  sync.Once
-	releaseOne sync.Once
-	mu         sync.Mutex
-	results    []string
+	text string
 }
 
-func newWorktreeProbeModel() *worktreeProbeModel {
-	return &worktreeProbeModel{probed: make(chan struct{}), release: make(chan struct{})}
-}
-
-// releaseRun releases the held run once.
-func (m *worktreeProbeModel) releaseRun() {
-	m.releaseOne.Do(func() { close(m.release) })
-}
-
-func (m *worktreeProbeModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	if len(call.Tools) == 0 {
-		// Title generation sends no tools.
-		return func(yield func(fantasy.StreamPart) bool) {
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
-		}, nil
-	}
-	results := toolResultTexts(call)
-	if len(results) == 0 {
-		return func(yield func(fantasy.StreamPart) bool) {
-			if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolCall, ID: "probe-1", ToolCallName: tools.ViewToolName, ToolCallInput: `{"file_path":"worktree-only.txt"}`}) {
-				return
-			}
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
-		}, nil
-	}
-	m.mu.Lock()
-	m.results = append(m.results, results...)
-	m.mu.Unlock()
-	m.probeOnce.Do(func() { close(m.probed) })
-	<-m.release
+func (m *answerModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	return func(yield func(fantasy.StreamPart) bool) {
+		if len(call.Tools) == 0 {
+			// Title generation sends no tools.
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
+			return
+		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"})
-		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: "done"}) {
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: m.text}) {
 			return
 		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
@@ -372,32 +339,9 @@ func (m *worktreeProbeModel) Stream(_ context.Context, call fantasy.Call) (fanta
 	}, nil
 }
 
-func (m *worktreeProbeModel) toolResults() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]string(nil), m.results...)
-}
-
-// toolResultTexts collects the text of a request's tool results.
-func toolResultTexts(call fantasy.Call) []string {
-	var out []string
-	for _, msg := range call.Prompt {
-		for _, part := range msg.Content {
-			result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
-			if !ok {
-				continue
-			}
-			if text, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentText](result.Output); ok {
-				out = append(out, text.Text)
-			}
-		}
-	}
-	return out
-}
-
-// installWorktreeTestModel points every model the coordinator builds agents
-// with at model, so a dispatched subagent runs the scripted provider.
-func installWorktreeTestModel(coord *coordinator, model fantasy.LanguageModel) Model {
+// installTestModel points every model the coordinator builds agents with at
+// model, so a dispatched subagent runs the scripted provider.
+func installTestModel(coord *coordinator, model fantasy.LanguageModel) Model {
 	large := coord.mainModels().Large
 	large.Model = model
 	large.CatwalkCfg = catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}
@@ -405,63 +349,32 @@ func installWorktreeTestModel(coord *coordinator, model fantasy.LanguageModel) M
 	return large
 }
 
-// TestTeammateInWorktreeDispatchStaysInTheWorktree pins the detached
-// delegation path: a teammate whose edits are held to a task cannot dispatch
-// a write subagent, and a read subagent it dispatches reads the worktree
-// rather than the Lead's tree, because the run context carries it.
-func TestTeammateInWorktreeDispatchStaysInTheWorktree(t *testing.T) {
-	coord, repo := newWorktreeTestCoordinator(t)
-	ws := claimInWorktree(t, coord, "impl", "docs")
-	require.NoError(t, os.WriteFile(filepath.Join(ws.Root, "worktree-only.txt"), []byte("only in the worktree\n"), 0o644))
-	require.NoFileExists(t, filepath.Join(repo, "worktree-only.txt"))
-
-	probe := newWorktreeProbeModel()
-	t.Cleanup(probe.releaseRun)
-	model := installWorktreeTestModel(coord, probe)
-
-	parent, err := coord.sessions.Create(t.Context(), "Teammate impl")
-	require.NoError(t, err)
-	assistant, err := coord.messages.Create(t.Context(), parent.ID, message.CreateMessageParams{
+// dispatchCallCtx is the context a delegation tool call runs with: the
+// member identity (empty for the Lead), the session and a message id, which
+// agent_dispatch requires.
+func dispatchCallCtx(t *testing.T, coord *coordinator, member, sessionID string) context.Context {
+	t.Helper()
+	assistant, err := coord.messages.Create(t.Context(), sessionID, message.CreateMessageParams{
 		Role:  message.Assistant,
 		Parts: []message.ContentPart{message.TextContent{Text: "dispatching"}},
 	})
 	require.NoError(t, err)
-	ctx := context.WithValue(agentteam.WithMember(t.Context(), "impl"), tools.SessionIDContextKey, parent.ID)
+	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, assistant.ID)
-
-	dispatch, err := coord.agentDispatchTool(ctx, config.AgentCoder, func() Model { return model })
-	require.NoError(t, err)
-	wrapped := placeToolsInWorktrees([]fantasy.AgentTool{dispatch}, coord.memberWorkspace)[0]
-
-	// A write subagent would edit with its own tools, outside the scope
-	// gate and outside the worktree, so it is refused.
-	resp := runIn(t, ctx, wrapped, `{"prompt":"edit the docs","label":"writer","access":"write"}`)
-	require.True(t, resp.IsError, resp.Content)
-	require.Contains(t, resp.Content, "cannot dispatch a write subagent")
-	_, started := coord.dispatched.Get(dispatchKey(parent.ID, "writer"))
-	require.False(t, started, "a refused write dispatch starts no subagent")
-
-	// A read subagent runs in the worktree: it sees the file only the
-	// worktree has.
-	resp = runIn(t, ctx, wrapped, `{"prompt":"read the file","label":"reader","access":"read"}`)
-	require.False(t, resp.IsError, resp.Content)
-	var meta AgentDispatchResponseMetadata
-	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
-	entry, ok := coord.dispatched.Get(dispatchKey(parent.ID, meta.Label))
-	require.True(t, ok)
-	select {
-	case <-probe.probed:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the dispatched subagent never read the file")
+	if member != "" {
+		ctx = agentteam.WithMember(ctx, member)
 	}
-	// Stopped before it can settle on its own, so no report turn starts on
-	// the parent and nothing else touches the test database after this.
+	return ctx
+}
+
+// settleDispatch stops a started subagent and waits until its run has
+// recorded its report, so nothing touches the test database afterwards.
+func settleDispatch(t *testing.T, coord *coordinator, parentID string, entry *dispatchedAgent) {
+	t.Helper()
 	entry.stop("test done")
-	probe.releaseRun()
 	require.True(t, entry.awaitSettled(10*time.Second))
-	require.Contains(t, strings.Join(probe.toolResults(), "\n"), "only in the worktree")
 	require.Eventually(t, func() bool {
-		msgs, err := coord.messages.List(context.Background(), parent.ID)
+		msgs, err := coord.messages.List(context.Background(), parentID)
 		if err != nil {
 			return false
 		}
@@ -474,51 +387,139 @@ func TestTeammateInWorktreeDispatchStaysInTheWorktree(t *testing.T) {
 	}, 10*time.Second, 10*time.Millisecond)
 }
 
-// TestTeammateInWorktreeRefusesSendingToAWriteSubagent pins the agent_send
-// half: a teammate whose edits are held to a task cannot resume a write
-// subagent either, for the same reason.
-func TestTeammateInWorktreeRefusesSendingToAWriteSubagent(t *testing.T) {
+// TestScopedTeammateRefusesDispatch pins W13: a teammate whose edits are held
+// to a task worktree cannot start a dispatched subagent at all, read or
+// write. A read subagent's tools still include bash and download, which write
+// outside the worktree and outside the scope gate, so access level does not
+// make delegation safe for a scoped teammate.
+func TestScopedTeammateRefusesDispatch(t *testing.T) {
 	coord, _ := newWorktreeTestCoordinator(t)
 	_ = claimInWorktree(t, coord, "impl", "docs")
-	parent, err := coord.sessions.Create(t.Context(), "Teammate impl")
+	sess, err := coord.sessions.Create(t.Context(), "Teammate impl")
 	require.NoError(t, err)
-	ctx := context.WithValue(agentteam.WithMember(t.Context(), "impl"), tools.SessionIDContextKey, parent.ID)
+	ctx := dispatchCallCtx(t, coord, "impl", sess.ID)
 
-	release := make(chan struct{})
+	dispatch, err := coord.agentDispatchTool(ctx, config.AgentCoder, func() Model { return coord.mainModels().Large })
+	require.NoError(t, err)
+	wrapped := placeToolsInWorktrees([]fantasy.AgentTool{dispatch}, coord.memberWorkspace)[0]
+
+	for _, access := range []string{"", "read", "write"} {
+		label := "sub" + access
+		input, err := json.Marshal(AgentDispatchParams{Prompt: "do the work", Label: label, Access: access})
+		require.NoError(t, err)
+		resp := runIn(t, ctx, wrapped, string(input))
+		require.True(t, resp.IsError, resp.Content)
+		require.Contains(t, resp.Content, "cannot use subagents")
+		_, started := coord.dispatched.Get(dispatchKey(sess.ID, label))
+		require.False(t, started, "access %q must start no subagent", access)
+	}
+}
+
+// TestScopedTeammateRefusesSendingToASubagent pins the agent_send half: a
+// scoped teammate cannot resume any dispatched subagent, of either access
+// level.
+func TestScopedTeammateRefusesSendingToASubagent(t *testing.T) {
+	coord, _ := newWorktreeTestCoordinator(t)
+	_ = claimInWorktree(t, coord, "impl", "docs")
+	sess, err := coord.sessions.Create(t.Context(), "Teammate impl")
+	require.NoError(t, err)
+	ctx := dispatchCallCtx(t, coord, "impl", sess.ID)
+
 	agent := newMockAgent(coord.mainModels().Large.ModelCfg.Provider, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
-		<-release
 		return agentResultWithText("done"), nil
 	})
-	writer := newDispatchedAgent("writer", accessWrite, "", "child-writer", parent.ID, agent)
-	coord.dispatched.Set(dispatchKey(parent.ID, "writer"), writer)
 	send := coord.agentSendTool(func() Model { return coord.mainModels().Large })
+	for _, access := range []string{accessRead, accessWrite} {
+		label := "sub-" + access
+		entry := newDispatchedAgent(label, access, "", "child-"+access, sess.ID, agent)
+		coord.dispatched.Set(dispatchKey(sess.ID, label), entry)
 
-	resp := runIn(t, ctx, send, `{"label":"writer","message":"carry on"}`)
+		input, err := json.Marshal(AgentSendParams{Label: label, Message: "carry on"})
+		require.NoError(t, err)
+		resp := runIn(t, ctx, send, string(input))
+		require.True(t, resp.IsError, resp.Content)
+		require.Contains(t, resp.Content, "cannot use subagents")
+		require.False(t, entry.running(), "a refused send must not resume a %s subagent", access)
+	}
+}
+
+// TestScopedTeammateRefusesSendMessageToASubagent pins the send_message door:
+// a message addressed to a subagent falls back to the dispatch registry, and
+// a scoped teammate is refused before anything resumes.
+func TestScopedTeammateRefusesSendMessageToASubagent(t *testing.T) {
+	coord, _ := newWorktreeTestCoordinator(t)
+	_ = claimInWorktree(t, coord, "impl", "docs")
+	sess, err := coord.sessions.Create(t.Context(), "Teammate impl")
+	require.NoError(t, err)
+	ctx := dispatchCallCtx(t, coord, "impl", sess.ID)
+
+	agent := newMockAgent(coord.mainModels().Large.ModelCfg.Provider, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		return agentResultWithText("done"), nil
+	})
+	entry := newDispatchedAgent("writer", accessWrite, "", "child-writer", sess.ID, agent)
+	coord.dispatched.Set(dispatchKey(sess.ID, "writer"), entry)
+
+	send := coord.sendMessageTool("impl")
+	resp := runIn(t, ctx, send, `{"target":"writer","message":"carry on"}`)
 	require.True(t, resp.IsError, resp.Content)
-	require.Contains(t, resp.Content, "cannot dispatch a write subagent")
-	require.False(t, writer.running(), "a refused send must not resume the subagent")
+	require.Contains(t, resp.Content, "cannot use subagents")
+	require.False(t, entry.running(), "a refused message must not resume the subagent")
+}
 
-	// A read subagent is not refused: its tools cannot edit the Lead's
-	// tree.
-	reader := newDispatchedAgent("reader", accessRead, "", "child-reader", parent.ID, agent)
-	coord.dispatched.Set(dispatchKey(parent.ID, "reader"), reader)
-	resp = runIn(t, ctx, send, `{"label":"reader","message":"carry on"}`)
+// TestUnscopedTeammateStillDispatches pins the other side: a teammate that
+// holds no task worktree and no write scopes delegates as it did before.
+func TestUnscopedTeammateStillDispatches(t *testing.T) {
+	coord, _ := newWorktreeTestCoordinator(t)
+	_, err := coord.teamService().SpawnTeammate(t.Context(), agentteam.LeadName, agentteam.SpawnRequest{Name: "free", Description: "d", Prompt: "p", ParentID: teamTestSessionID})
+	require.NoError(t, err)
+	model := installTestModel(coord, &answerModel{text: "done"})
+	sess, err := coord.sessions.Create(t.Context(), "Teammate free")
+	require.NoError(t, err)
+	ctx := dispatchCallCtx(t, coord, "free", sess.ID)
+
+	dispatch, err := coord.agentDispatchTool(ctx, config.AgentCoder, func() Model { return model })
+	require.NoError(t, err)
+	wrapped := placeToolsInWorktrees([]fantasy.AgentTool{dispatch}, coord.memberWorkspace)[0]
+
+	resp := runIn(t, ctx, wrapped, `{"prompt":"do the work","label":"free-sub","access":"read"}`)
 	require.False(t, resp.IsError, resp.Content)
-	reader.stop("test done")
-	close(release)
-	require.True(t, reader.awaitSettled(10*time.Second))
-	require.Eventually(t, func() bool {
-		msgs, err := coord.messages.List(context.Background(), parent.ID)
-		if err != nil {
-			return false
-		}
-		for _, msg := range msgs {
-			if len(msg.SubAgentReports()) > 0 {
-				return true
-			}
-		}
-		return false
-	}, 10*time.Second, 10*time.Millisecond)
+	var meta AgentDispatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	entry, ok := coord.dispatched.Get(dispatchKey(sess.ID, meta.Label))
+	require.True(t, ok, "an unscoped teammate still starts a subagent")
+	settleDispatch(t, coord, sess.ID, entry)
+}
+
+// TestLeadStillDelegates pins that the refusal is a teammate rule: the Lead
+// dispatches and sends while a teammate holds a worktree in the same team.
+func TestLeadStillDelegates(t *testing.T) {
+	coord, _ := newWorktreeTestCoordinator(t)
+	_ = claimInWorktree(t, coord, "impl", "docs")
+	model := installTestModel(coord, &answerModel{text: "done"})
+	sess, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	ctx := dispatchCallCtx(t, coord, "", sess.ID)
+
+	dispatch, err := coord.agentDispatchTool(ctx, config.AgentCoder, func() Model { return model })
+	require.NoError(t, err)
+	resp := runIn(t, ctx, dispatch, `{"prompt":"do the work","label":"lead-sub","access":"write"}`)
+	require.False(t, resp.IsError, resp.Content)
+	var meta AgentDispatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	entry, ok := coord.dispatched.Get(dispatchKey(sess.ID, meta.Label))
+	require.True(t, ok, "the Lead still starts a write subagent")
+	settleDispatch(t, coord, sess.ID, entry)
+
+	// agent_send from the Lead to a write subagent is not refused either.
+	idle := newDispatchedAgent("idle-writer", accessWrite, "", "child-idle", sess.ID,
+		newMockAgent(coord.mainModels().Large.ModelCfg.Provider, 4096, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+			return agentResultWithText("done"), nil
+		}))
+	coord.dispatched.Set(dispatchKey(sess.ID, idle.Label), idle)
+	send := coord.agentSendTool(func() Model { return coord.mainModels().Large })
+	resp = runIn(t, ctx, send, `{"label":"idle-writer","message":"carry on"}`)
+	require.False(t, resp.IsError, resp.Content)
+	settleDispatch(t, coord, sess.ID, idle)
 }
 
 // TestTeammateInWorktreeScopeGateResolvesInTheWorktree pins that the write

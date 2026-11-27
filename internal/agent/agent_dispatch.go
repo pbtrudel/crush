@@ -435,6 +435,13 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 			if refusal, off := c.refuseAgentsOff(); off {
 				return refusal, nil
 			}
+			// A subagent runs on its own tools, with neither the teammate's
+			// scope gate nor its worktree, and even the read variant can
+			// write through bash and download. A teammate whose edits are
+			// held to a task cannot start one, whatever its access.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
+			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
 			}
@@ -484,13 +491,6 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				}
 				sel, hasOverride = overrideSel, override
 			}
-			// A write subagent runs on its own tools, with neither the
-			// teammate's scope gate nor its worktree, so a teammate whose
-			// edits are held to a task cannot start one.
-			if access == accessWrite && c.refuseTeammateWriteDispatch(ctx) {
-				return fantasy.NewTextErrorResponse(teammateWriteDispatchRefusal), nil
-			}
-
 			agentMessageID := tools.GetMessageFromContext(ctx)
 			if agentMessageID == "" {
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
@@ -526,9 +526,6 @@ func (c *coordinator) agentDispatchTool(ctx context.Context, parentAgentID strin
 				agent,
 			)
 			runCtx, gen, _ := entry.claim()
-			// The detached run keeps the caller's directory and worktree,
-			// so a read subagent of a teammate looks at the worktree.
-			runCtx = withCallerWorkspace(runCtx, ctx)
 			c.dispatched.Set(key, entry)
 			c.dispatchMu.Unlock()
 
@@ -833,11 +830,11 @@ func (c *coordinator) agentSendTool(parentModel func() Model) fantasy.AgentTool 
 				entry = rebuilt
 			}
 
-			// Resuming a write subagent from a teammate whose edits are held
-			// to a task would edit outside its scopes, just like starting
-			// one, so it is refused the same way.
-			if entry.Access == accessWrite && c.refuseTeammateWriteDispatch(ctx) {
-				return fantasy.NewTextErrorResponse(teammateWriteDispatchRefusal), nil
+			// Resuming a subagent from a teammate whose edits are held to a
+			// task is refused like starting one: the resumed run's tools are
+			// not held to the task either.
+			if c.refuseScopedTeammateSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), nil
 			}
 
 			if params.switchesModel() {
@@ -923,7 +920,10 @@ func (c *coordinator) deliverToTeammate(ctx context.Context, label, text string)
 }
 
 // deliverToSubagent delivers a Team message to a dispatched subagent when the
-// name is not a teammate. It reports whether a subagent took the message.
+// name is not a teammate. It reports whether a subagent took the message. A
+// message resumes the subagent, whose tools are not held to the task, so a
+// teammate whose edits are held to a task is refused once a subagent is what
+// the name resolves to.
 func (c *coordinator) deliverToSubagent(ctx context.Context, label, text string) (fantasy.ToolResponse, bool) {
 	parentSessionID := tools.GetSessionFromContext(ctx)
 	if parentSessionID == "" || c.dispatched == nil {
@@ -937,6 +937,9 @@ func (c *coordinator) deliverToSubagent(ctx context.Context, label, text string)
 			return fantasy.ToolResponse{}, false
 		}
 		entry = rebuilt
+	}
+	if c.refuseScopedTeammateSubagent(ctx) {
+		return fantasy.NewTextErrorResponse(scopedTeammateSubagentRefusal), true
 	}
 	return c.deliverDispatched(ctx, parentSessionID, entry, label, text), true
 }
