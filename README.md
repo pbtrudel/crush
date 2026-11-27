@@ -894,18 +894,17 @@ does not get reaped before it can attach.
 
 ### Web mode
 
-`crush --web` starts the session with a browser tab that mirrors the
-terminal: same chat, same prompts, same permission requests, same files. The
-TUI keeps working next to it, and either side can drive the session. In a
-running session, `/web` copies the link and opens another tab in the
-background, and shows the link in a notification so a slow or missing browser
-never hides it. To turn it on by default, use `option web true` in your
-`crushrc`, or `"options": {"web": true}` in `crush.json`.
+`crush --web` opens a browser tab for the session, and `/web` does the same
+from a running session, showing the link in a notification so a slow or
+missing browser never hides it. To turn it on by default, use
+`option web true` in your `crushrc`, or `"options": {"web": true}` in
+`crush.json`.
 
-The gateway is loopback only, with a per-run token sent as a header, and a
-private launch file for the browser opener. See
-[docs/web-mode.md](docs/web-mode.md) for sign-in, prompts, client/server mode
-and troubleshooting.
+The web UI is being rebuilt, so the tab serves a placeholder page for now;
+the terminal, the gateway and the `WEB` badge keep working. The gateway is
+loopback only, with a per-run token sent as a header, and a private launch
+file for the browser opener. See [docs/web-mode.md](docs/web-mode.md) for
+the security model, client/server mode and troubleshooting.
 
 ### Global context files
 
