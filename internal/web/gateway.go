@@ -233,6 +233,11 @@ type Gateway struct {
 	modelMu   sync.Mutex
 	lastModel ModelInfo
 	modelGen  uint64
+
+	// statusMu guards statuses, the last status published per session, so a
+	// refresh announces a value only when it really changed.
+	statusMu sync.Mutex
+	statuses map[string]string
 }
 
 // Start binds 127.0.0.1 on a random port and serves until Shutdown.
@@ -316,11 +321,13 @@ func Start(ctx context.Context, opts Options) (*Gateway, error) {
 		onAutomation:         opts.OnAutomation,
 		inputMode:            normalizeInputMode(opts.InputMode),
 		planReady:            opts.PlanReady,
+		statuses:             make(map[string]string),
 	}
 	g.srv = &http.Server{
 		Handler:           g.guard(g.routes(assets)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	g.seedSessionStatuses(ctx)
 	// Seed the team watcher without publishing, so the first snapshot
 	// already carries the roster and a fresh hub still starts at seq 0.
 	g.team.poll()
@@ -620,6 +627,9 @@ func (g *Gateway) pump(events <-chan any, last string) {
 			}
 			if g.pending.observe(ev) {
 				g.publishSecurePrompts()
+			}
+			if sessionID := statusSessionID(ev); sessionID != "" {
+				g.refreshSessionStatus(sessionID)
 			}
 			if typ, raw, ok := encode(ev); ok {
 				g.hub.publish(typ, raw)

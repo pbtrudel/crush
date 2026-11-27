@@ -76,6 +76,10 @@ func (g *Gateway) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceError(w, "delete_session", err)
 		return
 	}
+	// A deleted session publishes no status frame: the session deleted
+	// event already removes the row. Forgetting the cached status keeps a
+	// later session that reuses the id from starting stale.
+	g.forgetSessionStatus(sid)
 	w.WriteHeader(http.StatusNoContent)
 }
 

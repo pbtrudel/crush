@@ -309,3 +309,21 @@ func (p *pending) forgetSecure(source, id string) bool {
 	defer p.mu.Unlock()
 	return p.removeSecureLocked(source, id)
 }
+
+// interacts reports whether a permission or a question for sessionID still
+// waits for an answer.
+func (p *pending) interacts(sessionID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, req := range p.perms {
+		if req.SessionID == sessionID {
+			return true
+		}
+	}
+	for _, batch := range p.qs {
+		if batch.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}

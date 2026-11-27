@@ -1,7 +1,6 @@
 package web
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/client"
@@ -121,10 +119,8 @@ func (g *Gateway) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	// The switcher shows newest first. UpdatedAt alone can tie (two
 	// sessions start within the same second), so the ID breaks ties and
 	// keeps the order stable across requests.
-	slices.SortFunc(list, func(a, b session.Session) int {
-		return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
-	})
-	writeJSON(w, http.StatusOK, entities(list))
+	sortSessionsNewestFirst(list)
+	writeJSON(w, http.StatusOK, g.sessionRows(list))
 }
 
 func (g *Gateway) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +264,11 @@ func (g *Gateway) handleQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleClearQueue(w http.ResponseWriter, r *http.Request) {
-	g.ws.AgentClearQueue(r.PathValue("sid"))
+	sid := r.PathValue("sid")
+	g.ws.AgentClearQueue(sid)
+	// Clearing the queue changes the status without an event the pump
+	// sees, so the route refreshes it itself.
+	g.refreshSessionStatus(sid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
