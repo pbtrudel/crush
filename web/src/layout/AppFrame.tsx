@@ -157,6 +157,13 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
     setPreference(next)
   }
 
+  // Closing the drawer returns focus to the opener outside it, so the next
+  // Tab starts where the user left off instead of on <body>.
+  const closeDrawer = () => {
+    setDrawerOpen(false)
+    opener.current?.focus()
+  }
+
   // The drawer is modal: focus moves to its first control, Tab cycles inside
   // it, and Escape closes it and returns focus to the opener outside it.
   useEffect(() => {
@@ -169,8 +176,7 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
     ;(firstControl ?? element).focus()
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setDrawerOpen(false)
-        opener.current?.focus()
+        closeDrawer()
         return
       }
       if (event.key !== 'Tab') {
@@ -254,7 +260,7 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
           <button
             type="button"
             className={styles.collapse}
-            onClick={() => (narrow ? setDrawerOpen(false) : setCollapsed((value) => !value))}
+            onClick={() => (narrow ? closeDrawer() : setCollapsed((value) => !value))}
             aria-label={narrow ? 'Close sidebar' : collapsed ? 'Open sidebar' : 'Collapse sidebar'}
             aria-expanded={narrow ? drawerOpen : !collapsed}
             aria-controls={panelId}

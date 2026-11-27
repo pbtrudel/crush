@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { memoryStorage } from '../test/memoryStorage'
 import { setMediaQueryMatches } from '../test/mediaQueries'
@@ -106,7 +106,7 @@ describe('AppFrame', () => {
     expect(main?.hasAttribute('inert')).toBe(false)
   })
 
-  it('closes the drawer and drops the key handler when the window widens', async () => {
+  it('returns focus to the opener when the drawer close button is used', async () => {
     const user = userEvent.setup()
     setMediaQueryMatches(narrowQuery, true)
     const { container } = render(
@@ -115,15 +115,46 @@ describe('AppFrame', () => {
       </AppFrame>,
     )
     const frame = container.querySelector('[data-testid="app-frame"]')
-    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    const opener = screen.getByRole('button', { name: 'Open sidebar' })
+    await user.click(opener)
     expect(frame?.getAttribute('data-drawer')).toBe('true')
 
-    act(() => setMediaQueryMatches(narrowQuery, false))
+    await user.click(screen.getByRole('button', { name: 'Close sidebar' }))
     expect(frame?.getAttribute('data-drawer')).toBe('false')
+    expect(document.activeElement).toBe(opener)
+  })
 
-    const focused = document.activeElement
-    await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(focused)
+  it('closes the drawer and drops the key handler when the window widens', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    const addSpy = vi.spyOn(window, 'addEventListener')
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    try {
+      const { container } = render(
+        <AppFrame sidebar={<p>sidebar</p>}>
+          <p>conversation</p>
+        </AppFrame>,
+      )
+      const frame = container.querySelector('[data-testid="app-frame"]')
+      await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+      expect(frame?.getAttribute('data-drawer')).toBe('true')
+
+      const keyHandlers = addSpy.mock.calls
+        .filter(([type]) => type === 'keydown')
+        .map(([, listener]) => listener)
+      expect(keyHandlers).toHaveLength(1)
+
+      act(() => setMediaQueryMatches(narrowQuery, false))
+      expect(frame?.getAttribute('data-drawer')).toBe('false')
+      expect(removeSpy).toHaveBeenCalledWith('keydown', keyHandlers[0])
+
+      const focusBefore = document.activeElement
+      await user.keyboard('{Escape}')
+      expect(document.activeElement).toBe(focusBefore)
+    } finally {
+      addSpy.mockRestore()
+      removeSpy.mockRestore()
+    }
   })
 
   it('traps Tab inside the drawer', async () => {
