@@ -2386,6 +2386,11 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		hook     func(sessionID, subject string)
 		leadHook func(sessionID string)
 	)
+	// A claim decides about worktrees under the lock, so the repository is
+	// resolved once, here, with no lock held.
+	if req.Action == "claim" || req.Action == "reassign" {
+		s.repo()
+	}
 	err := s.write(refusable, func() (bool, error) {
 		next, err := s.applyTaskUpdateLocked(caller, req)
 		if err != nil {
@@ -2501,11 +2506,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		}
 		if !lead && current.wantsWorktree() && s.holdsWorktreeLocked(member.ID, current.ID) {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition,
-				"you already hold a task with its own git worktree; complete or release it before claiming another task with write scopes")
+				"you already hold a task with its own git worktree; finish or release it before claiming another task with write scopes")
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = member.ID
-		place = !lead && current.wantsWorktree() && current.Worktree == ""
+		place = !lead && current.wantsWorktree()
 	case "release":
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
@@ -2674,11 +2679,11 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		teammate := assignee.Role != RoleLead
 		if teammate && current.wantsWorktree() && s.holdsWorktreeLocked(assignee.ID, current.ID) {
 			return taskUpdate{}, newError(CodeTaskInvalidTransition,
-				"%s already holds a task with its own git worktree; it works in one at a time", req.Owner)
+				"%s already holds a task with its own git worktree; it must finish or release it before taking this one", req.Owner)
 		}
 		next.Status = TaskInProgress
 		next.OwnerID = assignee.ID
-		place = teammate && current.wantsWorktree() && current.Worktree == ""
+		place = teammate && current.wantsWorktree()
 	case "delete":
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
