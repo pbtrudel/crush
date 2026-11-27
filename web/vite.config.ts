@@ -29,5 +29,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['src/test/setup.ts'],
     css: true,
+    // The Playwright specs under e2e/ are browser tests and share the
+    // .spec.ts suffix with vitest; they only run under Playwright.
+    include: ['src/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
 })

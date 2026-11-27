@@ -1,5 +1,10 @@
 const tokenKey = 'crush.token'
 
+// fetch is a window method, and the browser refuses one called as a property
+// of another object with "Illegal invocation". The default stays a free
+// function, so the call reaches window.fetch with the global as its receiver.
+const browserFetch: typeof fetch = (input, init) => globalThis.fetch(input, init)
+
 export class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -46,7 +51,7 @@ export class ApiClient {
   }
 
   private get fetchImpl(): typeof fetch {
-    return this.options.fetchImpl ?? fetch
+    return this.options.fetchImpl ?? browserFetch
   }
 
   get authenticated(): boolean {

@@ -227,6 +227,12 @@ tasks:
     cmds:
       - npm run budget
 
+  web:e2e:
+    desc: Run Playwright smoke tests against the fake gateway
+    dir: web
+    cmds:
+      - npm run e2e
+
   web:check:
     desc: Fail when the committed web mode build is stale
     cmds:

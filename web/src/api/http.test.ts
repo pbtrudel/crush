@@ -119,6 +119,25 @@ describe('ApiClient', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('calls the default fetch as a global, not as a client method', async () => {
+    // A window method called as a property of another object is refused by
+    // the browser with "Illegal invocation", which the jsdom stub never
+    // showed: the browser suite found it on the first boot.
+    const receivers: unknown[] = []
+    vi.stubGlobal('fetch', function (this: unknown) {
+      receivers.push(this)
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    try {
+      const client = new ApiClient({ storage: memoryStorage() })
+      client.setToken('abc123')
+      await expect(client.get('/api/health')).resolves.toEqual({})
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(receivers).toEqual([globalThis])
+  })
+
   it('forgets the token on clearToken', () => {
     const storage = memoryStorage()
     const client = new ApiClient({ storage })
