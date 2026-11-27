@@ -87,7 +87,7 @@ func startStrayJob(t *testing.T, worktree, session string) *shell.BackgroundShel
 // branchTree lists the files at the tip of branch, or "" when it has no
 // commit. It never fails the test, so it suits a wait loop.
 func branchTree(repo, branch string) string {
-	out, err := exec.Command("git", "-C", repo, "ls-tree", "-r", "--name-only", branch).Output()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", repo, "ls-tree", "-r", "--name-only", branch).Output()
 	if err != nil {
 		return ""
 	}
