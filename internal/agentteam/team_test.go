@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,8 @@ type fakeRun struct {
 	output string
 	err    error
 	cancel func()
+	// cancelled records that the service asked the run to stop.
+	cancelled atomic.Bool
 }
 
 func (r *fakeRun) SessionID() string { return "session-fake" }
@@ -27,24 +30,59 @@ func (r *fakeRun) Done() <-chan struct{} {
 }
 func (r *fakeRun) Output() string { return r.output }
 func (r *fakeRun) Err() error     { return r.err }
-func (r *fakeRun) Cancel()        { r.cancel() }
+func (r *fakeRun) Cancel() {
+	r.cancelled.Store(true)
+	r.cancel()
+}
 
 type fakeRunner struct {
 	mu      sync.Mutex
 	prompts []string
 	members []string
 	runs    map[string]*fakeRun
+	// turn, when set, is the work of every run: Cancel cancels the turn's
+	// context and done closes only when the turn function returns, like a
+	// real turn that has to return before it settles. Without it, Cancel
+	// settles the run at once.
+	turn func(ctx context.Context)
 }
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{runs: make(map[string]*fakeRun)}
 }
 
+// setTurn makes every run a realistic turn the context cancels and only the
+// turn function ends.
+func (r *fakeRunner) setTurn(turn func(ctx context.Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turn = turn
+}
+
+// turnCancelled reports whether name's run was asked to stop.
+func (r *fakeRunner) turnCancelled(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run, ok := r.runs[name]
+	return ok && run.cancelled.Load()
+}
+
 func (r *fakeRunner) Start(_ context.Context, member Member, prompt string) (Run, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	run := &fakeRun{done: make(chan struct{})}
-	run.cancel = func() { close(run.done) }
+	if r.turn != nil {
+		// The realistic mode: Cancel cancels the context, and the run
+		// settles only once the turn returns.
+		ctx, cancel := context.WithCancel(context.Background())
+		run.cancel = cancel
+		go func(turn func(context.Context)) {
+			defer close(run.done)
+			turn(ctx)
+		}(r.turn)
+	} else {
+		run.cancel = func() { close(run.done) }
+	}
 	r.runs[member.Name] = run
 	r.prompts = append(r.prompts, prompt)
 	r.members = append(r.members, member.Name)

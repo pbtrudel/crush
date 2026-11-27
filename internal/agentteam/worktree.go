@@ -347,13 +347,15 @@ type worktreeRemoval struct {
 }
 
 // removeTaskWorktree removes a task's worktree and branch after the state
-// change that ends them landed. A run still working in the worktree is
-// stopped first, and its settle waited for, so no tool call of that turn
-// reaches the Lead's tree once the worktree is gone. It is best effort: a
-// failure is logged and told to the Lead, and the state change stands.
-// Callers must hold no lock.
-func (s *Service) removeTaskWorktree(ctx context.Context, r worktreeRemoval) {
-	if owner := s.taskOwnerName(r.taskID, r.sessionID); owner != "" {
+// change that ends them landed. A run still working in the worktree, other
+// than caller's own, is stopped first and its settle waited for, so no tool
+// call of that turn reaches the Lead's tree once the worktree is gone. The
+// caller's own run is never stopped: it cannot settle until the tool call it
+// is running returns, and its later calls already resolve to the Lead's tree
+// once the task leaves. It is best effort: a failure is logged and told to
+// the Lead, and the state change stands. Callers must hold no lock.
+func (s *Service) removeTaskWorktree(ctx context.Context, r worktreeRemoval, caller string) {
+	if owner := s.taskOwnerName(r.taskID, r.sessionID); owner != "" && owner != caller {
 		s.stopMemberRun(owner, false)
 	}
 	s.gitMu.Lock()
@@ -663,12 +665,9 @@ func (s *Service) releaseUnplaced(view TaskView, err error) (released, closed bo
 	}, err)
 }
 
-// runSettlePoll and runSettleWait bound the wait for a stopped run to settle,
-// so a wedged turn cannot hold a tool call forever.
-const (
-	runSettlePoll = 5 * time.Millisecond
-	runSettleWait = 30 * time.Second
-)
+// runSettleWait bounds the wait for a stopped run to settle, so a wedged turn
+// cannot hold a tool call forever.
+const runSettleWait = 30 * time.Second
 
 // taskByIDLocked finds the copy of the task with id in sessionID. Old files
 // may hold one id twice, so the first copy wins. Callers must hold s.mu.
@@ -716,9 +715,11 @@ func (s *Service) taskOwnerName(taskID, sessionID string) string {
 // run's settle commits the work the turn left there before the delete
 // removes the worktree. The member's in-progress tasks are held for that
 // settle, which the caller's write then ends. A delete the write would refuse
-// stops nothing, so a stale or unauthorized request never interrupts a turn.
-// It returns the member whose run was stopped, so a refused write can hand
-// its held work back. Callers must hold no lock.
+// stops nothing, so a stale or unauthorized request never interrupts a turn,
+// and a member deleting its own task stops nothing either: its own run cannot
+// settle until that call returns. It returns the member whose run was
+// stopped, so the caller can hand its held work back. Callers must hold no
+// lock.
 func (s *Service) stopDeleteRun(caller string, req UpdateTaskRequest) (stopped bool, member Member) {
 	if req.Action != "delete" {
 		return false, Member{}
@@ -750,7 +751,7 @@ func (s *Service) stopDeleteRun(caller string, req UpdateTaskRequest) (stopped b
 	}
 	name := s.taskOwnerNameLocked(task)
 	s.mu.Unlock()
-	if name == "" {
+	if name == "" || name == caller {
 		return false, Member{}
 	}
 	stopped, _ = s.stopMemberRun(name, true)
@@ -818,24 +819,27 @@ func (s *Service) stopMemberRun(name string, hold bool) (stopped, settled bool) 
 	return true, settled
 }
 
-// waitRunSettled waits until run is no longer the live run of name, which
-// means the settle write that records the turn landed and the turn can no
-// longer touch its worktree. It reports false when the wait ran out or the
-// Team shut down first.
+// waitRunSettled waits until the settle write that records run landed, so
+// the turn can no longer touch its worktree. It reports false when the wait
+// ran out or the Team shut down first.
 func (s *Service) waitRunSettled(name string, run Run) bool {
-	deadline := time.Now().Add(runSettleWait)
-	for {
-		s.mu.Lock()
-		current, live := s.runs[name]
-		closed := s.closed
-		s.mu.Unlock()
-		if !live || current != run {
-			return true
-		}
-		if closed || time.Now().After(deadline) {
-			slog.Warn("A stopped team run did not settle in time", "member", name)
-			return false
-		}
-		time.Sleep(runSettlePoll)
+	s.mu.Lock()
+	settlement, ok := s.runSettled[name]
+	s.mu.Unlock()
+	if !ok || settlement.run != run {
+		// Its settle write already landed.
+		return true
+	}
+	timer := time.NewTimer(runSettleWait)
+	defer timer.Stop()
+	select {
+	case <-settlement.done:
+		return true
+	case <-s.done:
+		slog.Warn("A stopped team run did not settle before shutdown", "member", name)
+		return false
+	case <-timer.C:
+		slog.Warn("A stopped team run did not settle in time", "member", name)
+		return false
 	}
 }

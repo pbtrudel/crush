@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/charmbracelet/crush/internal/gitutil"
 )
 
 // scopedTask creates a docs-scoped task and has member claim it, which gives
@@ -350,7 +352,7 @@ func TestMergeAfterTheBoardMovedKeepsTheMerge(t *testing.T) {
 
 	stale := mergeRequestFor(taskByID(t, s, view.ID))
 	stale.revision--
-	s.mergeTask(context.Background(), stale)
+	s.mergeTask(context.Background(), stale, leadName)
 	require.Equal(t, "docs\n", readTreeFile(t, repo, "docs/a.md"), "the merge happened")
 	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status, "the write did not apply to a moved task")
 	require.DirExists(t, view.Worktree)
@@ -398,6 +400,131 @@ func TestCompleteNeedsTheOwnerOrTheLead(t *testing.T) {
 	require.Equal(t, "docs\n", readTreeFile(t, view.Worktree, "docs/a.md"))
 }
 
+// TestMergeRefusedTextReportsAFailedAbort pins that a notice never claims the
+// Lead's tree was left clean when the abort itself failed.
+func TestMergeRefusedTextReportsAFailedAbort(t *testing.T) {
+	t.Parallel()
+	m := mergeRequest{taskID: "task-1", subject: "Docs", branch: "crush/team-task-1", worktree: "/tmp/wt"}
+
+	failed := mergeRefusedText(m, &gitutil.MergeError{Reason: "the merge has conflicts and was aborted", AbortFailed: true})
+	require.Contains(t, failed, "could not be aborted")
+	require.Contains(t, failed, m.branch)
+	require.NotContains(t, failed, "as git left it")
+
+	refused := mergeRefusedText(m, &gitutil.MergeError{Reason: "git refused the merge"})
+	require.Contains(t, refused, "as git left it")
+	require.NotContains(t, refused, "could not be aborted")
+}
+
+// TestMergeStaysTextKeepsItsClaimAboutTheWorktree pins that the notice says
+// the worktree is kept only when the board still holds it.
+func TestMergeStaysTextKeepsItsClaimAboutTheWorktree(t *testing.T) {
+	t.Parallel()
+	m := mergeRequest{taskID: "task-1", subject: "Docs", branch: "crush/team-task-1", worktree: "/tmp/wt"}
+
+	kept := mergeStaysText(m, "the task update was refused", true)
+	require.Contains(t, kept, "The merge stays in the Lead's tree")
+	require.Contains(t, kept, "worktree at /tmp/wt is kept")
+
+	gone := mergeStaysText(m, "the task update was refused", false)
+	require.Contains(t, gone, "The merge stays in the Lead's tree")
+	require.NotContains(t, gone, "is kept")
+	require.Contains(t, gone, "/tmp/wt")
+}
+
+// actPrompt applies action at the task's current revision and fails when the
+// call takes longer than a teammate tool call should, which is what happens
+// when the service waits for the caller's own run to settle.
+func actPrompt(t *testing.T, s *Service, caller, taskID, action string, edit func(*UpdateTaskRequest)) TaskView {
+	t.Helper()
+	req := updateRequest(s, taskID, action, edit)
+	type result struct {
+		view TaskView
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		view, err := s.UpdateTask(caller, req)
+		done <- result{view: view, err: err}
+	}()
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		return got.view
+	case <-time.After(2 * time.Second):
+		t.Fatal("the call waited for the caller's own run to settle")
+	}
+	return TaskView{}
+}
+
+// TestOwnUnverifiedCompleteDoesNotStopItsOwnRun pins ruling W14: a member's
+// own complete never interrupts its own turn, which cannot settle until the
+// tool call returns.
+func TestOwnUnverifiedCompleteDoesNotStopItsOwnRun(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, runner := newWorktreeService(t, repo, false)
+	// The turn is inside the tool call, so it cannot settle until the call
+	// returns.
+	release := make(chan struct{})
+	runner.setTurn(func(ctx context.Context) { <-release })
+	t.Cleanup(func() { close(release) })
+	spawnMember(t, s, "impl")
+	view := scopedTask(t, s, "impl", "Docs", false)
+	writeTreeFile(t, view.Worktree, "docs/a.md", "docs\n")
+
+	actPrompt(t, s, "impl", view.ID, "complete", nil)
+
+	require.Equal(t, TaskCompleted, taskByID(t, s, view.ID).Status)
+	require.Equal(t, "docs\n", readTreeFile(t, repo, "docs/a.md"))
+	require.NoDirExists(t, view.Worktree, "the merged worktree goes")
+	require.False(t, runner.turnCancelled("impl"), "a member never interrupts its own run")
+	require.False(t, runSettled(runner, "impl"), "the turn is still running")
+}
+
+// TestOwnDeleteDoesNotStopItsOwnRun is the same pin for a delete.
+func TestOwnDeleteDoesNotStopItsOwnRun(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, runner := newWorktreeService(t, repo, false)
+	release := make(chan struct{})
+	runner.setTurn(func(ctx context.Context) { <-release })
+	t.Cleanup(func() { close(release) })
+	spawnMember(t, s, "impl")
+	view := scopedTask(t, s, "impl", "Docs", false)
+	writeTreeFile(t, view.Worktree, "docs/wip.md", "wip\n")
+
+	actPrompt(t, s, "impl", view.ID, "delete", nil)
+
+	require.Equal(t, TaskDeleted, taskByID(t, s, view.ID).Status)
+	require.False(t, runner.turnCancelled("impl"), "a member never interrupts its own run")
+	require.NoDirExists(t, view.Worktree)
+	require.False(t, branchExists(repo, view.Branch))
+	require.NoFileExists(t, filepath.Join(repo, "docs", "wip.md"))
+}
+
+// TestDeleteDoesNotStrandTheMembersOtherTasks pins the other half of W14: the
+// delete holds the member's tasks only for the settle that commits the work,
+// and the member's other in-progress tasks go back to the board.
+func TestDeleteDoesNotStrandTheMembersOtherTasks(t *testing.T) {
+	t.Parallel()
+	repo := initTeamRepo(t)
+	s, runner := newWorktreeService(t, repo, false)
+	runner.setTurn(func(ctx context.Context) { <-ctx.Done() })
+	spawnMember(t, s, "impl")
+	scoped := scopedTask(t, s, "impl", "Docs", false)
+	other := createTask(t, s, CreateTaskRequest{Subject: "Research", Description: "d"})
+	act(t, s, "impl", other.ID, "claim", nil)
+
+	act(t, s, leadName, scoped.ID, "delete", nil)
+
+	require.Equal(t, TaskDeleted, taskByID(t, s, scoped.ID).Status)
+	got := taskByID(t, s, other.ID)
+	require.Equal(t, TaskPending, got.Status, "the stopped member's other task never stays in progress")
+	require.Empty(t, got.OwnerID)
+	require.Zero(t, got.Attempts, "the interruption is not the work's failure")
+}
+
 // TestDeleteInterruptsTheRunningOwner pins controller ruling W3: a delete
 // that ends a worktree its owner still runs in stops that run first, so no
 // tool call of the turn reaches the Lead's tree once the worktree is gone.
@@ -405,6 +532,9 @@ func TestDeleteInterruptsTheRunningOwner(t *testing.T) {
 	t.Parallel()
 	repo := initTeamRepo(t)
 	s, runner := newWorktreeService(t, repo, false)
+	// A turn that stops when its context is cancelled, like a real one
+	// between tool calls.
+	runner.setTurn(func(ctx context.Context) { <-ctx.Done() })
 	spawnMember(t, s, "impl")
 	view := scopedTask(t, s, "impl", "Docs", false)
 	writeTreeFile(t, view.Worktree, "docs/wip.md", "wip\n")
@@ -428,6 +558,7 @@ func TestDeleteCommitsTheHeldWorkFirst(t *testing.T) {
 	t.Parallel()
 	repo := initTeamRepo(t)
 	s, runner := newWorktreeService(t, repo, false)
+	runner.setTurn(func(ctx context.Context) { <-ctx.Done() })
 	spawnMember(t, s, "impl")
 	view := scopedTask(t, s, "impl", "Docs", false)
 	writeTreeFile(t, view.Worktree, "docs/wip.md", "wip\n")

@@ -55,6 +55,9 @@ type MergeError struct {
 	Reason string
 	// Output is git's own output for the failed step.
 	Output string
+	// AbortFailed reports that git could not abort the merge it started, so
+	// the tree is still mid-merge. A notice must not claim otherwise.
+	AbortFailed bool
 }
 
 func (e *MergeError) Error() string {
@@ -89,10 +92,13 @@ func MergeNoFF(ctx context.Context, dir, branch, message string) error {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), mergeCleanupTimeout)
 	defer cancel()
 	if mergeInProgress(cleanup, dir) {
+		mergeErr := &MergeError{Reason: "the merge has conflicts and was aborted"}
 		if abortOut, abortErr := gitOutput(cleanup, dir, "merge", "--abort"); abortErr != nil {
 			output += "\n\ngit merge --abort failed: " + strings.TrimSpace(abortOut)
+			mergeErr.AbortFailed = true
 		}
-		return &MergeError{Reason: "the merge has conflicts and was aborted", Output: output}
+		mergeErr.Output = output
+		return mergeErr
 	}
 	return &MergeError{Reason: "git refused the merge", Output: output}
 }

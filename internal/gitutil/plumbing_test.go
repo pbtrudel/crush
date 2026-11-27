@@ -234,3 +234,41 @@ func TestMergeNoFFCleansUpAfterACancelledCaller(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "main\n", string(data))
 }
+
+// failingAbortGit puts a git wrapper on PATH that refuses to abort a merge.
+func failingAbortGit(t *testing.T) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+	if [ "$arg" = "--abort" ]; then
+		echo "abort refused" >&2
+		exit 1
+	fi
+done
+exec %q "$@"
+`, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestMergeNoFFReportsAFailedAbort pins that a merge git could not abort is
+// reported, so no notice claims the tree is clean. The test changes PATH, so
+// it cannot run in parallel.
+func TestMergeNoFFReportsAFailedAbort(t *testing.T) {
+	repo := initPlumbingRepo(t)
+	branch := branchWithCommit(t, repo, "README.md", "branch\n")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("main\n"), 0o644))
+	runGit(t, repo, "commit", "-am", "main change")
+	failingAbortGit(t)
+
+	err := MergeNoFF(context.Background(), repo, branch, "Merge it")
+	var mergeErr *MergeError
+	require.True(t, errors.As(err, &mergeErr), "%v", err)
+	require.True(t, mergeErr.AbortFailed)
+	require.Contains(t, mergeErr.Output, "abort refused")
+	require.Contains(t, mergeErr.Reason, "conflict")
+	require.True(t, mergeInProgressForTest(repo), "the merge is still in progress")
+}

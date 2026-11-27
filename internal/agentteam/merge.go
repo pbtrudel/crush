@@ -144,15 +144,16 @@ func (s *Service) mergeBranch(ctx context.Context, m mergeRequest) error {
 }
 
 // mergeTask merges m's branch, records the outcome and, after a merge, removes
-// the worktree and starts what the completed task unblocked. Callers must
-// hold no lock.
-func (s *Service) mergeTask(ctx context.Context, m mergeRequest) {
+// the worktree and starts what the completed task unblocked. caller is the
+// member whose tool call or settle runs the merge, so its own run is never
+// stopped to remove the worktree. Callers must hold no lock.
+func (s *Service) mergeTask(ctx context.Context, m mergeRequest, caller string) {
 	err := s.mergeBranch(ctx, m)
 	if errors.Is(err, errShutdown) {
 		return
 	}
 	if s.settleMerge(m, err) {
-		s.removeTaskWorktree(ctx, worktreeRemoval{taskID: m.taskID, sessionID: m.sessionID, path: m.worktree, branch: m.branch})
+		s.removeTaskWorktree(ctx, worktreeRemoval{taskID: m.taskID, sessionID: m.sessionID, path: m.worktree, branch: m.branch}, caller)
 	}
 	s.dispatch(context.Background(), m.sessionID)
 }
@@ -203,7 +204,7 @@ func (s *Service) settleMerge(m mergeRequest, mergeErr error) bool {
 			if mergeErr != nil {
 				return false, nil
 			}
-			s.noteLeadLocked(m.sessionID, mergeStaysText(m, "the board moved the task on before the merge was recorded"))
+			s.noteLeadLocked(m.sessionID, mergeStaysText(m, "the board moved the task on before the merge was recorded", s.worktreeKeptLocked(m)))
 			noted = true
 		}
 		s.notifyLocked()
@@ -230,7 +231,7 @@ func (s *Service) noteMergeStays(m mergeRequest, cause error) {
 			return false, nil
 		}
 		leadHook = s.leadNotifyHook
-		s.noteLeadLocked(m.sessionID, mergeStaysText(m, "the task update was refused: "+cause.Error()))
+		s.noteLeadLocked(m.sessionID, mergeStaysText(m, "the task update was refused: "+cause.Error(), s.worktreeKeptLocked(m)))
 		s.notifyLocked()
 		noted = true
 		return true, nil
@@ -240,10 +241,23 @@ func (s *Service) noteMergeStays(m mergeRequest, cause error) {
 	}
 }
 
-// mergeStaysText is the Lead notice for a merge no write recorded.
-func mergeStaysText(m mergeRequest, reason string) string {
-	return fmt.Sprintf("Task %s (%s) was merged from branch %s, but %s. The merge stays in the Lead's tree, and the worktree at %s is kept.",
+// mergeStaysText is the Lead notice for a merge no write recorded. kept says
+// whether the board still holds the worktree, so the notice never claims a
+// worktree another write already removed.
+func mergeStaysText(m mergeRequest, reason string, kept bool) string {
+	if kept {
+		return fmt.Sprintf("Task %s (%s) was merged from branch %s, but %s. The merge stays in the Lead's tree, and the worktree at %s is kept.",
+			m.taskID, m.subject, m.branch, reason, m.worktree)
+	}
+	return fmt.Sprintf("Task %s (%s) was merged from branch %s, but %s. The merge stays in the Lead's tree; the task no longer holds the worktree at %s, so nothing else is left behind.",
 		m.taskID, m.subject, m.branch, reason, m.worktree)
+}
+
+// worktreeKeptLocked reports whether the board still holds m's worktree.
+// Callers must hold s.mu.
+func (s *Service) worktreeKeptLocked(m mergeRequest) bool {
+	task, ok := s.taskByIDLocked(m.taskID, m.sessionID)
+	return ok && task.Worktree == m.worktree
 }
 
 // mergeRefusedText is the Lead notice, and the Lead's error, for a merge git
@@ -252,17 +266,21 @@ func mergeStaysText(m mergeRequest, reason string) string {
 // tree is as git left it.
 func mergeRefusedText(m mergeRequest, err error) string {
 	detail := err.Error()
+	cleanup := "The merge was aborted or never started, and the Lead's tree is as git left it."
 	var mergeErr *gitutil.MergeError
 	if errors.As(err, &mergeErr) {
 		detail = mergeErr.Reason
 		if mergeErr.Output != "" {
 			detail += ":\n\n" + mergeErr.Output
 		}
+		if mergeErr.AbortFailed {
+			cleanup = "The merge could not be aborted, so it is still in progress in the Lead's tree; finish it, or undo it with git merge --abort."
+		}
 	}
 	return fmt.Sprintf("Task %s (%s) could not be merged from branch %s into the Lead's tree: %s\n\n"+
-		"The merge was aborted or never started, and the Lead's tree is as git left it. The task stays in review, "+
-		"escalated, with its worktree at %s. Merge the branch by hand and complete the task to accept it, or reopen it.",
-		m.taskID, m.subject, m.branch, detail, m.worktree)
+		"%s The task stays in review, escalated, with its worktree at %s. "+
+		"Merge the branch by hand and complete the task to accept it, or reopen it.",
+		m.taskID, m.subject, m.branch, detail, cleanup, m.worktree)
 }
 
 // refreshView returns the current view of the task view shows, or view

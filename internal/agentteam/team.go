@@ -533,6 +533,10 @@ type Service struct {
 	// in-progress tasks alone, because a caller stopped their run to end
 	// the worktree those tasks work in.
 	holds map[string]bool
+	// runSettled holds the channel of each live run, closed once the settle
+	// write that records it landed, so a caller that stopped a run can wait
+	// for exactly that run.
+	runSettled map[string]runSettlement
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -572,6 +576,7 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 		lockTimeout:     defaultLockTimeout,
 		worktreeRefused: make(map[string]int),
 		holds:           make(map[string]bool),
+		runSettled:      make(map[string]runSettlement),
 	}, nil
 }
 
@@ -1211,6 +1216,7 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 		// hand back for this member.
 		delete(s.claims, member.Name)
 		s.runs[member.Name] = run
+		s.runSettled[member.Name] = runSettlement{run: run, done: make(chan struct{})}
 		s.mine[member.Name] = true
 		for i := range s.state.Members {
 			if s.state.Members[i].Name != member.Name {
@@ -1334,6 +1340,9 @@ func (s *Service) watch(name string, run Run) {
 		}
 		return true, nil
 	})
+	// The settle write landed, so a caller waiting to remove the worktree
+	// this turn worked in can go on.
+	s.markRunSettled(name, run)
 	if hook != nil {
 		for _, subject := range complete {
 			hook(member.ParentID, subject)
@@ -1348,7 +1357,7 @@ func (s *Service) watch(name string, run Run) {
 	// each merge dispatches what its task unblocked.
 	for _, m := range merges {
 		ctx, cancel := gitContext()
-		s.mergeTask(ctx, m)
+		s.mergeTask(ctx, m, name)
 		cancel()
 	}
 	// The settle may have freed a member or finished a blocker.
@@ -1441,6 +1450,27 @@ func (s *Service) releaseHeldLocked(memberID string) {
 		task.OwnerID = ""
 		task.Revision++
 	}
+}
+
+// runSettlement is a live run and the channel closed once the settle write
+// that records it landed.
+type runSettlement struct {
+	run  Run
+	done chan struct{}
+}
+
+// markRunSettled closes the channel a caller may be waiting on for run, once
+// its settle write landed, and forgets it. It holds s.mu only to read.
+func (s *Service) markRunSettled(name string, run Run) {
+	s.mu.Lock()
+	settlement, ok := s.runSettled[name]
+	if !ok || settlement.run != run {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.runSettled, name)
+	s.mu.Unlock()
+	close(settlement.done)
 }
 
 // takesHoldLocked reports whether a caller stopped this member's run to end
@@ -2471,6 +2501,12 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 		}
 		return TaskView{}, err
 	}
+	if stopped {
+		// The settle held every in-progress task of the stopped member for
+		// this delete, but the delete ends only the one task. Hand the rest
+		// back, so nothing stays in progress under a member nothing runs.
+		s.releaseStoppedWork(stoppedMember)
+	}
 	// A claim that needs a worktree gets it before anything else reacts to
 	// the claim, so the teammate's next tool call already runs there.
 	if applied.place {
@@ -2509,10 +2545,10 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	ctx, cancel := gitContext()
 	defer cancel()
 	for _, m := range applied.merges {
-		s.mergeTask(ctx, m)
+		s.mergeTask(ctx, m, caller)
 	}
 	if applied.removal != nil {
-		s.removeTaskWorktree(ctx, *applied.removal)
+		s.removeTaskWorktree(ctx, *applied.removal, caller)
 	}
 	if len(applied.merges) > 0 {
 		applied.view = s.refreshView(applied.view)
