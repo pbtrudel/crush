@@ -138,3 +138,51 @@ func TestForkPrefixFirstTurnOnly(t *testing.T) {
 	require.Equal(t, teammateTaskMessage(member, "New messages."), later)
 	require.NotContains(t, later, "fix the failing tests")
 }
+
+// TestForkPrefixResentAfterCompaction pins the follow-up: compaction
+// replaces a fork teammate's history, inherited Lead context included, with
+// a summary. The first turn after it carries the inherited context again,
+// without the role block, and the turn after that does not.
+func TestForkPrefixResentAfterCompaction(t *testing.T) {
+	coord := newTeammateTestCoordinator(t)
+	runner := &teamRunner{c: coord}
+
+	lead, err := coord.sessions.Create(t.Context(), "Lead")
+	require.NoError(t, err)
+	_, err = coord.messages.Create(t.Context(), lead.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: "fix the failing tests"}},
+	})
+	require.NoError(t, err)
+	member := agentteam.Member{
+		ID: "member-1", Name: "db-layer", Role: agentteam.RoleTeammate,
+		ParentID: lead.ID, Context: agentteam.ContextFork, RoleName: "implementer",
+	}
+	inherited := runner.forkPrefix(t.Context(), member)
+	require.Contains(t, inherited, "fix the failing tests")
+
+	first, sent := runner.teammatePromptFor(t.Context(), member, "Start.", true, "")
+	require.True(t, sent)
+	require.True(t, strings.HasPrefix(first, inherited))
+
+	resent, sent := runner.teammatePromptFor(t.Context(), member, "Next.", false, "message-summary")
+	require.True(t, sent, "a new summary means the inherited context is gone from the history")
+	require.Equal(t, inherited+teammateTaskMessage(member, "Next."), resent, "the role block is first-turn only")
+
+	member.ContextSummary = "message-summary"
+	later, sent := runner.teammatePromptFor(t.Context(), member, "Again.", false, "message-summary")
+	require.False(t, sent)
+	require.Equal(t, teammateTaskMessage(member, "Again."), later)
+
+	fresh := member
+	fresh.Context = agentteam.ContextFresh
+	fresh.ContextSummary = ""
+	plain, sent := runner.teammatePromptFor(t.Context(), fresh, "x", false, "message-summary")
+	require.False(t, sent, "a fresh member inherits nothing")
+	require.Equal(t, teammateTaskMessage(fresh, "x"), plain)
+
+	run := &teamRun{contextSummary: "message-summary", forkSent: true}
+	summary, ok := run.ContextSummary()
+	require.True(t, ok)
+	require.Equal(t, "message-summary", summary)
+}

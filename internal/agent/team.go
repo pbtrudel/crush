@@ -53,30 +53,36 @@ func teammateTaskMessage(member agentteam.Member, task string) string {
 	return fmt.Sprintf("You are teammate %q.\n\n%s", member.Name, task)
 }
 
-// teammatePrompt is the message a teammate turn starts from. On the member's
-// first turn only, it carries the inherited context a fork member gets, then
-// its role block; every turn carries its name, then the task. Later turns
-// already hold both in their history, so repeating them would only resend
-// bytes.
+// teammatePrompt is teammatePromptFor with the summary the member last got
+// its fork prefix on, which never re-sends it.
+func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string, first bool) string {
+	prompt, _ := r.teammatePromptFor(ctx, member, task, first, member.ContextSummary)
+	return prompt
+}
+
+// teammatePromptFor is the message a teammate turn starts from. On the
+// member's first turn only, it carries its role block; every turn carries
+// its name, then the task. A fork member also gets the inherited context on
+// its first turn and on the first turn after its session was compacted:
+// summary is the session's summary message id, and one that differs from
+// the member's recorded value means the summary replaced the copy in its
+// history. It reports whether the inherited context was sent.
 //
 // The inherited context goes first because it is the same bytes for every fork
 // sibling of one Lead. The role block follows because it is the same bytes for
 // every sibling with that role; the per-sibling name comes after both, so the
 // shared prefix runs through the whole role block.
-func (r *teamRunner) teammatePrompt(ctx context.Context, member agentteam.Member, task string, first bool) string {
+func (r *teamRunner) teammatePromptFor(ctx context.Context, member agentteam.Member, task string, first bool, summary string) (string, bool) {
 	task = teammateTaskMessage(member, task)
-	if !first {
-		return task
-	}
-	if member.RoleName != "" {
+	if first && member.RoleName != "" {
 		if role, refusal := resolveRole(r.c.cfg.Config(), member.RoleName); refusal == "" {
 			task = roles.Block(*role) + task
 		}
 	}
-	if member.Context == agentteam.ContextFork {
-		return r.forkPrefix(ctx, member) + task
+	if member.Context == agentteam.ContextFork && (first || summary != member.ContextSummary) {
+		return r.forkPrefix(ctx, member) + task, true
 	}
-	return task
+	return task, false
 }
 
 // teammateFirstTurn reports whether this turn is the member's first, the
@@ -204,6 +210,10 @@ type teamRun struct {
 	output    string
 	err       error
 	cancel    context.CancelFunc
+	// contextSummary is the session's summary id when the turn started;
+	// forkSent says the turn's message carried the fork prefix.
+	contextSummary string
+	forkSent       bool
 }
 
 func (r *teamRun) SessionID() string     { return r.sessionID }
@@ -211,6 +221,9 @@ func (r *teamRun) Done() <-chan struct{} { return r.done }
 func (r *teamRun) Output() string        { return r.output }
 func (r *teamRun) Err() error            { return r.err }
 func (r *teamRun) Cancel()               { r.cancel() }
+
+// ContextSummary reports the summary the turn's fork prefix was sent on.
+func (r *teamRun) ContextSummary() (string, bool) { return r.contextSummary, r.forkSent }
 
 // Start builds the teammate's agent, then creates or reuses its session and
 // runs one turn.
@@ -250,13 +263,15 @@ func (r *teamRunner) Start(ctx context.Context, member agentteam.Member, promptT
 		}
 	}
 
-	promptText = r.teammatePrompt(memberCtx, member, promptText, teammateFirstTurn(created, sess))
+	promptText, forkSent := r.teammatePromptFor(memberCtx, member, promptText, teammateFirstTurn(created, sess), sess.SummaryMessageID)
 
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(memberCtx), 30*time.Minute)
 	run := &teamRun{
-		sessionID: sess.ID,
-		done:      make(chan struct{}),
-		cancel:    cancel,
+		sessionID:      sess.ID,
+		done:           make(chan struct{}),
+		cancel:         cancel,
+		contextSummary: sess.SummaryMessageID,
+		forkSent:       forkSent,
 	}
 	r.c.startTeammateRun(sess, member)
 	go func() {

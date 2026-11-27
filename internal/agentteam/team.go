@@ -207,6 +207,10 @@ type Member struct {
 	Status        Status      `json:"status,omitempty"`
 	Failed        bool        `json:"failed,omitempty"`
 	Diagnostics   []string    `json:"diagnostics,omitempty"`
+	// ContextSummary is the summary message id of the teammate session when
+	// its fork prefix was last sent. A different id at the next start means
+	// the session was compacted since, and the prefix is sent again.
+	ContextSummary string `json:"context_summary,omitempty"`
 }
 
 // MemberView is the model-facing roster row.
@@ -400,6 +404,12 @@ type Run interface {
 // Runner starts teammate turns. Implementations own agent construction.
 type Runner interface {
 	Start(ctx context.Context, member Member, prompt string) (Run, error)
+}
+
+// contextSummaryRun is a Run that reports the session summary its fork
+// prefix was rendered against; sent is false when the turn sent none.
+type contextSummaryRun interface {
+	ContextSummary() (summary string, sent bool)
 }
 
 // Config bounds a Team.
@@ -1176,6 +1186,13 @@ func (s *Service) launch(ctx context.Context, runner Runner, member Member, prom
 			s.state.Members[i].SessionID = run.SessionID()
 			s.state.Members[i].Failed = false
 			s.state.Members[i].Status = StatusRunning
+			// Recorded in the write that starts the run, so the next
+			// start compares against the summary this turn was sent on.
+			if reporter, ok := run.(contextSummaryRun); ok {
+				if summary, sent := reporter.ContextSummary(); sent {
+					s.state.Members[i].ContextSummary = summary
+				}
+			}
 		}
 		view = s.viewLocked(s.stateMemberLocked(member.Name))
 		s.notifyLocked()

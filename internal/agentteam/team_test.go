@@ -2,6 +2,7 @@ package agentteam
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -982,4 +983,60 @@ func TestPolicyDiscouragesFanOutWaves(t *testing.T) {
 	require.Contains(t, Policy, "One teammate per concrete, self-contained brief, never a wave.")
 	require.Contains(t, Policy, "Do not spawn near-identical teammates for a small or routine job: do the work inline when it is small.")
 	require.Contains(t, Policy, "Cap a fan-out at what the task actually needs.")
+}
+
+// summaryRun is a fakeRun that reports the session summary its fork prefix
+// was rendered against.
+type summaryRun struct {
+	*fakeRun
+	summary string
+	sent    bool
+}
+
+func (r *summaryRun) ContextSummary() (string, bool) { return r.summary, r.sent }
+
+type summaryRunner struct {
+	summary string
+	sent    bool
+}
+
+func (r *summaryRunner) Start(_ context.Context, _ Member, _ string) (Run, error) {
+	run := &fakeRun{done: make(chan struct{})}
+	var once sync.Once
+	run.cancel = func() { once.Do(func() { close(run.done) }) }
+	return &summaryRun{fakeRun: run, summary: r.summary, sent: r.sent}, nil
+}
+
+// TestLaunchRecordsTheContextSummary pins that the write that records a run
+// also records the summary its fork prefix was sent against, and leaves it
+// alone when the turn sent no prefix.
+func TestLaunchRecordsTheContextSummary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sent bool
+		want string
+	}{
+		{"sent", true, "message-7"},
+		{"not sent", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := New(filepath.Join(t.TempDir(), "team.json"), Config{}, &summaryRunner{summary: "message-7", sent: tc.sent})
+			require.NoError(t, err)
+			t.Cleanup(s.Shutdown)
+			_, err = s.SpawnTeammate(t.Context(), leadName, SpawnRequest{
+				Name: "forked", Description: "d", Prompt: "p", Context: ContextFork, ParentID: "session-a",
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, memberByID(t, s, "forked").ContextSummary)
+		})
+	}
+}
+
+func TestContextSummaryIsOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(Member{ID: "member-1", Name: "a"})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "context_summary")
 }
