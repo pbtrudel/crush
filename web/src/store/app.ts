@@ -102,7 +102,9 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
   // || and not ??: current_session_id is "" when no terminal is attached,
   // and an empty string must fall through to the first row.
   const selectedSessionId = stillListed ? current : payload.current_session_id || payload.sessions[0]?.id || null
-  const pruned = pruneSeen(state.lastSeen, payload.sessions)
+  // An empty list means ListSessions failed, not that every session vanished:
+  // pruning then would throw away every seen mark the person has.
+  const pruned = payload.sessions.length === 0 ? state.lastSeen : pruneSeen(state.lastSeen, payload.sessions)
   return {
     ...state,
     bootstrap: payload,
@@ -121,6 +123,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     case 'session_snapshot': {
       const snapshot = frame.payload as {
         session_id: string
+        session?: { id?: string }
         messages: WireMessage[]
         has_more: boolean
         busy: boolean
@@ -128,13 +131,20 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         files: { path: string }[]
       }
       const id = snapshot.session_id
-      // A snapshot for a session the bootstrap does not list would leave an
-      // orphan entry the session list never renders or forgets.
+      let sessions = state.sessions
       if (!hasSession(state, id)) {
-        return state
+        // A subscribe snapshot can beat the session created frame. When it
+        // carries a non-empty entity the row comes from it; without one this
+        // is a snapshot the tab cannot place and so must not keep.
+        const entity = snapshot.session
+        if (entity === undefined || typeof entity.id !== 'string' || entity.id === '') {
+          return state
+        }
+        sessions = mergeSessionEvent(state.sessions, { type: 'created', payload: { ...entity, id } })
       }
       return {
         ...state,
+        sessions,
         sessionData: {
           ...state.sessionData,
           [id]: {

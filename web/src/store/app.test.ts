@@ -312,6 +312,50 @@ describe('seen pruning', () => {
     expect(store.get().lastSeen.s1).toBe(20)
     expect(storage.getItem('crush.seen')).not.toContain('gone')
   })
+
+  it('keeps every seen mark when the gateway sends no sessions', () => {
+    const seeded = { s1: 20, s2: 10 }
+    const storage = memoryStorage({ 'crush.seen': JSON.stringify(seeded) })
+    const store = createAppStore(storage)
+    // ListSessions failed, so the gateway answers an empty list. That is not
+    // proof that every session vanished, and the seen marks must survive it.
+    store.applyBootstrap({ ...bootstrap, current_session_id: '', sessions: [] })
+    expect(store.get().lastSeen).toEqual(seeded)
+    expect(storage.getItem('crush.seen')).toBe(JSON.stringify(seeded))
+  })
+})
+
+describe('a snapshot that beats the session created frame', () => {
+  it('adds the row the snapshot carries', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const next = reduceFrame(
+      start,
+      frame('session_snapshot', {
+        session_id: 's4',
+        session: { id: 's4', title: 'Fresh', message_count: 1, updated_at: 50 },
+        messages: [{ id: 'm4', role: 'user', session_id: 's4', parts: [], created_at: 1, updated_at: 1 }],
+        has_more: false,
+        files: [],
+        busy: true,
+        queued: [],
+      }, 2, 's4'),
+    )
+    expect(next.sessions.map((row) => row.id)).toEqual(['s4', 's1', 's2'])
+    expect(next.sessions[0].title).toBe('Fresh')
+    expect(next.sessions[0].status).toBe('idle')
+    expect(next.sessionData.s4.messages).toHaveLength(1)
+    expect(next.sessionData.s4.busy).toBe(true)
+  })
+
+  it('still drops a snapshot with no session entity', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const next = reduceFrame(
+      start,
+      frame('session_snapshot', { session_id: 'gone', messages: [], has_more: false, files: [], busy: true, queued: [] }, 2, 'gone'),
+    )
+    expect(next).toBe(start)
+    expect(next.sessionData.gone).toBeUndefined()
+  })
 })
 
 describe('wantedSubscriptions', () => {
