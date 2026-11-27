@@ -3,6 +3,7 @@ package gitutil
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -204,20 +205,210 @@ func TestRestorePathsRestoresACleanFileMovedAway(t *testing.T) {
 	require.Empty(t, gitText(t, repo, "status", "--porcelain"))
 }
 
-// TestRestorePathsReportsASourceItCannotSave is W7's other half: a source
-// the snapshot hashed but did not save cannot come back, so it is reported.
-func TestRestorePathsReportsASourceItCannotSave(t *testing.T) {
+// TestRestorePathsReversesAMoveItCannotRestore is W10: an over-cap source
+// cannot be rewritten from the snapshot, so the moved bytes are renamed
+// back instead of being deleted with the destination.
+func TestRestorePathsReversesAMoveItCannotRestore(t *testing.T) {
 	t.Parallel()
 	repo := initPlumbingRepo(t)
-	writeRepoFile(t, repo, "big.bin", strings.Repeat("x", 2<<20))
+	big := strings.Repeat("x", 2<<20)
+	writeRepoFile(t, repo, "big.bin", big)
+	before := snapshot(t, repo, testCaps)
+	require.False(t, before.Files["big.bin"].Saved, "hashed, not saved")
+	require.NoError(t, os.Rename(filepath.Join(repo, "big.bin"), filepath.Join(repo, "away.bin")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.bin"})
+	require.ElementsMatch(t, []string{"away.bin", "big.bin"}, result.Restored, "the move was reversed")
+	require.Empty(t, result.Unrestored)
+	require.NoFileExists(t, filepath.Join(repo, "away.bin"))
+	require.Equal(t, big, readRepoFile(t, repo, "big.bin"), "the only copy of the bytes moved back")
+}
+
+// TestRestorePathsKeepsTheDirtyContentOfAMovedFile is W10: a dirty tracked
+// file over the cap must keep its dirty bytes, not HEAD's.
+func TestRestorePathsKeepsTheDirtyContentOfAMovedFile(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	base := strings.Repeat("a", 2<<20)
+	dirty := strings.Repeat("b", 2<<20)
+	writeRepoFile(t, repo, "big.bin", base)
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	writeRepoFile(t, repo, "big.bin", dirty)
 	before := snapshot(t, repo, testCaps)
 	require.False(t, before.Files["big.bin"].Saved)
 	require.NoError(t, os.Rename(filepath.Join(repo, "big.bin"), filepath.Join(repo, "away.bin")))
 
 	result := RestorePaths(context.Background(), repo, before, []string{"away.bin"})
-	require.Equal(t, []string{"away.bin"}, result.Restored)
-	require.Equal(t, []string{"big.bin"}, result.Unrestored, "the source is reported, not silently lost")
+	require.ElementsMatch(t, []string{"away.bin", "big.bin"}, result.Restored)
+	require.Empty(t, result.Unrestored)
 	require.NoFileExists(t, filepath.Join(repo, "away.bin"))
+	require.Equal(t, dirty, readRepoFile(t, repo, "big.bin"), "the dirty content is kept, not HEAD's")
+	require.Equal(t, "M big.bin", gitText(t, repo, "status", "--porcelain"))
+}
+
+// TestRestorePathsKeepsAMoveItCannotReverse is W10's fallback: when the
+// bytes cannot be put back where they came from, the destination stays and
+// both paths are reported rather than deleted.
+func TestRestorePathsKeepsAMoveItCannotReverse(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	big := strings.Repeat("x", 2<<20)
+	writeRepoFile(t, repo, "sub/big.bin", big)
+	before := snapshot(t, repo, testCaps)
+	require.NoError(t, os.Rename(filepath.Join(repo, "sub", "big.bin"), filepath.Join(repo, "away.bin")))
+	require.NoError(t, os.Remove(filepath.Join(repo, "sub")))
+	writeRepoFile(t, repo, "sub", "not a directory\n")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.bin"})
+	require.ElementsMatch(t, []string{"away.bin", "sub/big.bin"}, result.Unrestored)
+	require.Empty(t, result.Restored)
+	require.Equal(t, big, readRepoFile(t, repo, "away.bin"), "the only copy of the bytes stays")
+}
+
+// TestRestorePathsStaysInsideTheWorktree is W10: a parent replaced by a
+// symbolic link out of the worktree is never written through.
+func TestRestorePathsStaysInsideTheWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "sub/notes.txt", "mine\n")
+	before := snapshot(t, repo, testCaps)
+	outside := t.TempDir()
+	writeRepoFile(t, outside, "notes.txt", "outside\n")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "sub")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(repo, "sub")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"sub/notes.txt"})
+	require.Equal(t, []string{"sub/notes.txt"}, result.Unrestored)
+	require.Equal(t, "outside\n", readRepoFile(t, outside, "notes.txt"), "the link out of the worktree is untouched")
+}
+
+// TestRestorePathsDoesNotDeleteThroughASymlinkedParent is W10: a delete
+// never follows a parent symbolic link out of the worktree.
+func TestRestorePathsDoesNotDeleteThroughASymlinkedParent(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "sub/notes.txt", "mine\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	require.NoError(t, os.Remove(filepath.Join(repo, "sub", "notes.txt")))
+	before := snapshot(t, repo, testCaps)
+	require.False(t, before.Files["sub/notes.txt"].Exists)
+	outside := t.TempDir()
+	writeRepoFile(t, outside, "notes.txt", "outside\n")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "sub")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(repo, "sub")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"sub/notes.txt"})
+	require.Equal(t, []string{"sub/notes.txt"}, result.Unrestored)
+	require.Equal(t, "outside\n", readRepoFile(t, outside, "notes.txt"), "the link out of the worktree is untouched")
+}
+
+// TestRestorePathsRefusesPathsOutsideTheWorktree is W10: an absolute path,
+// a path that climbs out and a path in .git are all left alone.
+func TestRestorePathsRefusesPathsOutsideTheWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	before := snapshot(t, repo, testCaps)
+	config := readRepoFile(t, repo, ".git/config")
+	paths := []string{"../evil.txt", filepath.ToSlash(filepath.Join(repo, "abs.txt")), ".git/config"}
+
+	result := RestorePaths(context.Background(), repo, before, paths)
+	require.ElementsMatch(t, paths, result.Unrestored)
+	require.Empty(t, result.Restored)
+	require.NoFileExists(t, filepath.Join(filepath.Dir(repo), "evil.txt"))
+	require.Equal(t, config, readRepoFile(t, repo, ".git/config"), "the git directory is untouched")
+}
+
+// TestRestorePathsKeepsAnInScopeDeletion is W10: an empty file proves no
+// move, so a deletion the scopes allowed stays.
+func TestRestorePathsKeepsAnInScopeDeletion(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "scope/__init__.py", "")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	before := snapshot(t, repo, testCaps)
+
+	require.NoError(t, os.Remove(filepath.Join(repo, "scope", "__init__.py")))
+	writeRepoFile(t, repo, "other/x.log", "")
+	after := snapshot(t, repo, SnapshotCaps{})
+	require.ElementsMatch(t, []string{"other/x.log", "scope/__init__.py"}, changed(t, repo, before, after))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"other/x.log"})
+	require.Equal(t, []string{"other/x.log"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.NoFileExists(t, filepath.Join(repo, "other", "x.log"))
+	require.NoFileExists(t, filepath.Join(repo, "scope", "__init__.py"), "an empty deletion is no source of a move")
+}
+
+// TestRestorePathsLeavesAnAmbiguousMove is W10: when several removed paths
+// hold the same bytes, the destination stays, since it may be the last copy.
+func TestRestorePathsLeavesAnAmbiguousMove(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "a.txt", "same\n")
+	writeRepoFile(t, repo, "b.txt", "same\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	before := snapshot(t, repo, testCaps)
+	require.NoError(t, os.Remove(filepath.Join(repo, "a.txt")))
+	require.NoError(t, os.Remove(filepath.Join(repo, "b.txt")))
+	writeRepoFile(t, repo, "away.txt", "same\n")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.txt"})
+	require.Equal(t, []string{"away.txt"}, result.Unrestored)
+	require.Empty(t, result.Restored)
+	require.Equal(t, "same\n", readRepoFile(t, repo, "away.txt"), "the bytes are kept rather than deleted")
+}
+
+// TestRestorePathsRestoresTheStagedIndex is W10: a staged index entry the
+// command changed comes back as it was, and an untracked path the command
+// staged leaves the index.
+func TestRestorePathsRestoresTheStagedIndex(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "README.md", "staged\n")
+	runGit(t, repo, "add", "README.md")
+	writeRepoFile(t, repo, "README.md", "worktree\n")
+	writeRepoFile(t, repo, "notes.txt", "kept\n")
+	before := snapshot(t, repo, testCaps)
+
+	writeRepoFile(t, repo, "README.md", "theirs\n")
+	runGit(t, repo, "add", "README.md")
+	writeRepoFile(t, repo, "notes.txt", "theirs\n")
+	runGit(t, repo, "add", "notes.txt")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"README.md", "notes.txt"})
+	require.ElementsMatch(t, []string{"README.md", "notes.txt"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.Equal(t, "worktree\n", readRepoFile(t, repo, "README.md"))
+	require.Equal(t, "staged", gitText(t, repo, "show", ":README.md"), "the index entry from before is back")
+	require.Equal(t, "kept\n", readRepoFile(t, repo, "notes.txt"))
+	err := exec.CommandContext(context.Background(), "git", "-C", repo, "ls-files", "--error-unmatch", "notes.txt").Run()
+	require.Error(t, err, "the untracked path left the index")
+}
+
+// TestSnapshotFilesKeepsBracketNames is W10: only a rename record names an
+// original, so a file called "x <- y.txt" never yields a phantom "y.txt".
+func TestSnapshotFilesKeepsBracketNames(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "y.txt", "keep\n")
+	writeRepoFile(t, repo, "x <- y.txt", "star\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	before := snapshot(t, repo, testCaps)
+	writeRepoFile(t, repo, "x <- y.txt", "changed\n")
+	after := snapshot(t, repo, testCaps)
+	require.ElementsMatch(t, []string{"x <- y.txt"}, keys(after.Files), "a name with <- is not a rename record")
+
+	paths := changed(t, repo, before, after)
+	require.Equal(t, []string{"x <- y.txt"}, paths)
+	result := RestorePaths(context.Background(), repo, before, paths)
+	require.Equal(t, []string{"x <- y.txt"}, result.Restored)
+	require.Equal(t, "star\n", readRepoFile(t, repo, "x <- y.txt"))
+	require.Equal(t, "keep\n", readRepoFile(t, repo, "y.txt"), "the path named in the file is untouched")
 }
 
 // TestRestorePathsFollowsAStagedRename is W7 for a rename git reports: the
@@ -252,4 +443,25 @@ func TestRestorePathsKeepsACopiedFile(t *testing.T) {
 	require.Equal(t, []string{"away.txt"}, result.Restored)
 	require.NoFileExists(t, filepath.Join(repo, "away.txt"))
 	require.Equal(t, "mine\n", readRepoFile(t, repo, "notes.txt"), "a copied original stays as it was")
+}
+
+// TestRestorePathsReversesAMoveOntoAnExistingPath is W10 too: the
+// destination gets its own saved content back while the over-cap original
+// comes back by reversing the move onto it.
+func TestRestorePathsReversesAMoveOntoAnExistingPath(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	big := strings.Repeat("x", 2<<20)
+	writeRepoFile(t, repo, "big.bin", big)
+	writeRepoFile(t, repo, "away.txt", "theirs\n")
+	before := snapshot(t, repo, testCaps)
+	require.True(t, before.Files["away.txt"].Saved)
+	require.False(t, before.Files["big.bin"].Saved)
+	require.NoError(t, os.Rename(filepath.Join(repo, "big.bin"), filepath.Join(repo, "away.txt")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.txt"})
+	require.ElementsMatch(t, []string{"away.txt", "big.bin"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.Equal(t, big, readRepoFile(t, repo, "big.bin"), "the moved bytes came back")
+	require.Equal(t, "theirs\n", readRepoFile(t, repo, "away.txt"), "the destination's own content is back")
 }

@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,6 +39,11 @@ type SnapshotFile struct {
 	Saved   bool
 	Content []byte
 	Mode    fs.FileMode
+	// IndexMode and IndexOID are the mode and object git reported for the
+	// path's index entry, in the form git update-index takes. Both are
+	// empty when the index did not hold the path.
+	IndexMode string
+	IndexOID  string
 }
 
 // FileSnapshot is the changed-file state of a work tree: its HEAD and every
@@ -59,9 +63,10 @@ func SnapshotFiles(ctx context.Context, root string, caps SnapshotCaps) (FileSna
 	paths := make([]string, 0, len(state.Entries))
 	for path, entry := range state.Entries {
 		paths = append(paths, path)
-		// A rename names its original path only inside its entry.
-		if _, orig, ok := strings.Cut(entry, " <- "); ok && orig != "" {
-			paths = append(paths, orig)
+		// A rename names its original path inside its own record, while a
+		// path that merely holds " <- " is only a name.
+		if original, ok := renamedFrom(entry); ok {
+			paths = append(paths, original)
 		}
 	}
 	slices.Sort(paths)
@@ -72,12 +77,47 @@ func SnapshotFiles(ctx context.Context, root string, caps SnapshotCaps) (FileSna
 	for _, path := range paths {
 		entry, listed := state.Entries[path]
 		file := SnapshotFile{Tracked: !listed || !strings.HasPrefix(entry, "? ")}
+		if listed {
+			file.IndexMode, file.IndexOID = indexEntry(entry)
+		}
 		if err := readSnapshotFile(filepath.Join(root, filepath.FromSlash(path)), &file, caps, &saved); err != nil {
 			return FileSnapshot{}, fmt.Errorf("snapshot %s: %w", path, err)
 		}
 		snap.Files[path] = file
 	}
 	return snap, nil
+}
+
+// indexEntry is the index mode and object a porcelain v2 record reports for
+// its path, empty when the index did not hold the path.
+func indexEntry(entry string) (mode, oid string) {
+	if len(entry) < 2 || entry[1] != ' ' || (entry[0] != '1' && entry[0] != '2') {
+		return "", ""
+	}
+	// Both record kinds carry the index mode fourth and its object last
+	// before the path.
+	fields := strings.SplitN(entry, " ", 9)
+	if len(fields) != 9 {
+		return "", ""
+	}
+	mode, oid = fields[4], fields[7]
+	if mode == "000000" || strings.Trim(oid, "0") == "" {
+		return "", ""
+	}
+	return mode, oid
+}
+
+// renamedFrom is the original path a porcelain v2 rename record names
+// after its own path, for a record that is a rename.
+func renamedFrom(entry string) (string, bool) {
+	if len(entry) < 4 || !strings.HasPrefix(entry, "2 ") {
+		return "", false
+	}
+	if entry[2] != 'R' && entry[3] != 'R' {
+		return "", false
+	}
+	_, original, ok := strings.Cut(entry, " <- ")
+	return original, ok && original != ""
 }
 
 // readSnapshotFile fills file from the path on disk, saving its bytes while
@@ -178,25 +218,83 @@ func knownHead(head string) bool {
 type RestoreResult struct {
 	Restored []string
 	// Unrestored lists paths whose content was not saved (over the caps, a
-	// symlink, a special file) and paths whose restore failed.
+	// symlink, a special file), paths a restore refused because they leave
+	// the work tree, and paths whose restore failed.
 	Unrestored []string
+}
+
+// restoreRoot is the top of a work tree, opened so that no restore can
+// reach outside it.
+type restoreRoot struct {
+	root string
+	dir  *os.Root
 }
 
 // RestorePaths puts each path under root back to its state in before. A
 // path before did not list was clean: it is restored from before.Head when
 // that commit has it, and removed (from the index too) when it is new. A
 // listed path is rewritten from its saved content, or removed when it did
-// not exist.
+// not exist, and its index entry is put back as before had it.
 //
 // A path to restore can be the destination of a move whose original is not
 // among paths, typically a file the caller's scopes allowed the command to
-// change. The original is restored too, from before or from before.Head,
-// so undoing an out-of-scope write does not take an in-scope file with it.
-// An original the snapshot cannot supply is reported in Unrestored.
+// change. The original is restored first, from before or from before.Head,
+// and when the snapshot cannot supply it the moved bytes are renamed back
+// to it. Only when neither works is the destination left in place and both
+// paths reported in Unrestored: a restore never deletes the last copy.
+//
+// A path must lie inside root, never inside its .git, and never behind a
+// symbolic link that leaves root; a path that does not is reported in
+// Unrestored and left untouched.
 func RestorePaths(ctx context.Context, root string, before FileSnapshot, paths []string) RestoreResult {
+	targets := uniquePaths(paths)
+	if len(targets) == 0 {
+		return RestoreResult{}
+	}
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		slog.Warn("Could not open the worktree to restore paths", "dir", root, "error", err)
+		return RestoreResult{Unrestored: targets}
+	}
+	defer dir.Close()
+	w := restoreRoot{root: root, dir: dir}
+	moves, ambiguous := moveOriginals(ctx, root, before, targets)
+	destOf := make(map[string]string, len(moves))
+	for dest, original := range moves {
+		if current, ok := destOf[original]; !ok || dest < current {
+			destOf[original] = dest
+		}
+	}
 	var result RestoreResult
-	for _, path := range restoreTargets(ctx, root, before, paths) {
-		if err := restorePath(ctx, root, before, path); err != nil {
+	settled := make(map[string]bool, len(targets))
+	// An original comes first: its destination may hold the only copy.
+	for _, original := range slices.Sorted(maps.Keys(destOf)) {
+		dest := destOf[original]
+		if err := restorePath(ctx, w, before, original); err == nil {
+			result.Restored = append(result.Restored, original)
+			continue
+		}
+		// The snapshot cannot supply the original: move the bytes back, so
+		// restoring the destination cannot delete the only copy.
+		if err := reverseMove(ctx, w, before, dest, original); err != nil {
+			result.Unrestored = append(result.Unrestored, original, dest)
+			settled[dest] = true
+			continue
+		}
+		// The destination is restored below, now that the move is undone.
+		result.Restored = append(result.Restored, original)
+	}
+	for _, path := range targets {
+		if settled[path] {
+			continue
+		}
+		if ambiguous[path] {
+			// The bytes may be the only copy of a path the command
+			// removed, so the destination stays.
+			result.Unrestored = append(result.Unrestored, path)
+			continue
+		}
+		if err := restorePath(ctx, w, before, path); err != nil {
 			result.Unrestored = append(result.Unrestored, path)
 			continue
 		}
@@ -205,106 +303,81 @@ func RestorePaths(ctx context.Context, root string, before FileSnapshot, paths [
 	return result
 }
 
-// restoreTargets adds to paths the originals of the moves into them. It
-// reads the worktree before anything is restored, since a move leaves no
-// trace once its destination is gone.
-func restoreTargets(ctx context.Context, root string, before FileSnapshot, paths []string) []string {
-	targets := make([]string, 0, len(paths))
+// uniquePaths drops empty and repeated paths, keeping their order.
+func uniquePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
 	seen := make(map[string]bool, len(paths))
 	for _, path := range paths {
 		if path == "" || seen[path] {
 			continue
 		}
 		seen[path] = true
-		targets = append(targets, path)
+		out = append(out, path)
 	}
-	if len(targets) == 0 {
-		return targets
-	}
-	for _, original := range moveOriginals(ctx, root, before, targets) {
-		if !seen[original] {
-			seen[original] = true
-			targets = append(targets, original)
-		}
-	}
-	return targets
+	return out
 }
 
-// moveOriginals lists, sorted, the originals of the moves into targets: the
-// original a rename record names, and a path whose content a destination
-// now holds that the command emptied. A copy is not a move, since its
-// original still stands.
-func moveOriginals(ctx context.Context, root string, before FileSnapshot, targets []string) []string {
+// moveOriginals maps each destination in targets to the original it was
+// moved from, for a move git names or a content match exactly one removed
+// path supports, and lists the destinations whose content matches several
+// removed paths. A copy is not a move, and empty bytes prove nothing.
+func moveOriginals(ctx context.Context, root string, before FileSnapshot, targets []string) (moves map[string]string, ambiguous map[string]bool) {
 	target := make(map[string]bool, len(targets))
 	for _, path := range targets {
 		target[path] = true
 	}
-	// By content hash: the paths before saw, plus the clean tracked paths
-	// whose content lives in before.Head.
-	byContent := map[string][]string{}
-	for path, file := range before.Files {
-		if file.Exists && isContentHash(file.Hash) {
-			byContent[file.Hash] = append(byContent[file.Hash], path)
-		}
-	}
+	moves, ambiguous = map[string]string{}, map[string]bool{}
 	state, err := Snapshot(ctx, root)
 	if err != nil {
 		slog.Debug("Could not read the worktree for the originals of a move", "dir", root, "error", err)
 	}
-	found := map[string]bool{}
 	for _, path := range targets {
-		if original, ok := renamedFrom(state.Entries[path]); ok {
-			found[original] = true
+		// A rename record names its original, and a copy's original still
+		// stands, so a copy is no move.
+		if original, ok := renamedFrom(state.Entries[path]); ok && !target[original] && !isPresent(root, original) {
+			moves[path] = original
 		}
 	}
-	hashes := make(map[string]string, len(targets))
+	// The bytes the worktree held before, as before saved or hashed them,
+	// and those only before.Head still holds for a clean tracked path.
+	bySaved := map[string][]string{}
+	for path, file := range before.Files {
+		if !file.Exists || !isContentHash(file.Hash) || (file.Saved && len(file.Content) == 0) {
+			continue
+		}
+		bySaved[file.Hash] = append(bySaved[file.Hash], path)
+	}
+	var byBlob map[string][]string
+	if knownHead(before.Head) {
+		byBlob = headBlobs(ctx, root, before.Head, deletedPaths(state, before, target))
+	}
 	for _, path := range targets {
-		hash, err := contentHash(filepath.Join(root, filepath.FromSlash(path)))
+		if _, named := moves[path]; named {
+			continue
+		}
+		hash, err := contentHash(root, path)
 		if err != nil || hash == "" {
 			continue
 		}
-		hashes[path] = hash
-	}
-	// The content a clean tracked path had before lives only in HEAD, so
-	// those paths are hashed only when a destination needs them.
-	if knownHead(before.Head) && needsHead(hashes, byContent) {
-		for path, entry := range state.Entries {
-			if target[path] || !deletedEntry(entry) {
-				continue
-			}
-			if _, listed := before.Files[path]; listed {
-				continue
-			}
-			if hash, ok := headBlobHash(ctx, root, before.Head, path); ok {
-				byContent[hash] = append(byContent[hash], path)
+		candidates := removedCandidates(root, bySaved[hash], target)
+		if len(byBlob) > 0 {
+			if oid, err := blobOID(ctx, root, path); err == nil && oid != "" {
+				for _, candidate := range removedCandidates(root, byBlob[oid], target) {
+					if !slices.Contains(candidates, candidate) {
+						candidates = append(candidates, candidate)
+					}
+				}
 			}
 		}
-	}
-	for _, hash := range hashes {
-		for _, original := range slices.Sorted(slices.Values(byContent[hash])) {
-			if target[original] || isPresent(root, original) {
-				continue
-			}
-			found[original] = true
-			break
+		switch len(candidates) {
+		case 1:
+			moves[path] = candidates[0]
+		case 0:
+		default:
+			ambiguous[path] = true
 		}
 	}
-	return slices.DeleteFunc(slices.Sorted(maps.Keys(found)), func(path string) bool {
-		return target[path] || isPresent(root, path)
-	})
-}
-
-// renamedFrom is the original path a porcelain v2 rename record names after
-// its own path, for a record that is a rename.
-func renamedFrom(entry string) (string, bool) {
-	if len(entry) < 4 || !strings.HasPrefix(entry, "2 ") {
-		return "", false
-	}
-	if entry[2] != 'R' && entry[3] != 'R' {
-		return "", false
-	}
-	_, original, ok := strings.Cut(entry, " <- ")
-	return original, ok && original != ""
+	return moves, ambiguous
 }
 
 // deletedEntry reports whether a porcelain v2 record shows a path gone from
@@ -313,31 +386,77 @@ func deletedEntry(entry string) bool {
 	return len(entry) > 3 && strings.HasPrefix(entry, "1 ") && (entry[2] == 'D' || entry[3] == 'D')
 }
 
-// needsHead reports whether a destination holds content that nothing before
-// saw, so a clean tracked path may be its original.
-func needsHead(hashes map[string]string, byContent map[string][]string) bool {
-	for _, hash := range hashes {
-		if len(byContent[hash]) == 0 {
-			return true
+// deletedPaths lists the tracked paths git reports gone that before did not
+// list, whose content therefore lives only in before.Head.
+func deletedPaths(state WorktreeState, before FileSnapshot, target map[string]bool) []string {
+	var paths []string
+	for path, entry := range state.Entries {
+		if target[path] || !deletedEntry(entry) {
+			continue
 		}
+		if _, listed := before.Files[path]; listed {
+			continue
+		}
+		paths = append(paths, path)
 	}
-	return false
+	slices.Sort(paths)
+	return paths
 }
 
-// headBlobHash is the content hash of path in commit, for a path before did
-// not list because it was clean.
-func headBlobHash(ctx context.Context, root, commit, path string) (string, bool) {
-	blob, err := exec.CommandContext(ctx, "git", "-C", root, "cat-file", "blob", commit+":"+path).Output()
+// headBlobs maps each object id in commit to the paths that held it, for
+// the paths git reports gone from the worktree. One ls-tree call serves
+// them all.
+func headBlobs(ctx context.Context, root, commit string, paths []string) map[string][]string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out, err := gitLiteral(ctx, root, append([]string{"ls-tree", "-z", "-l", commit, "--"}, paths...)...)
 	if err != nil {
-		return "", false
+		slog.Debug("Could not list the files a command removed", "dir", root, "error", err)
+		return nil
 	}
-	sum := sha256.Sum256(blob)
-	return hex.EncodeToString(sum[:]), true
+	byBlob := map[string][]string{}
+	for record := range strings.SplitSeq(out, "\x00") {
+		// "<mode> SP <type> SP <object> SP <size> TAB <path>".
+		meta, path, ok := strings.Cut(record, "\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) != 4 || fields[1] != "blob" || fields[3] == "0" {
+			continue
+		}
+		byBlob[fields[2]] = append(byBlob[fields[2]], path)
+	}
+	return byBlob
 }
 
-// contentHash is the hash of the regular file at full, or "" when nothing
-// regular stands there.
-func contentHash(full string) (string, error) {
+// blobOID is the object id git gives the worktree file at path.
+func blobOID(ctx context.Context, root, path string) (string, error) {
+	out, err := gitOutput(ctx, root, "hash-object", "--", filepath.FromSlash(path))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// removedCandidates narrows candidates to the paths that are gone from the
+// worktree and are not being restored themselves.
+func removedCandidates(root string, candidates []string, target map[string]bool) []string {
+	var out []string
+	for _, path := range candidates {
+		if target[path] || isPresent(root, path) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+// contentHash is the hash of the worktree file at path, or "" when nothing
+// regular or anything empty stands there: empty bytes prove no move.
+func contentHash(root, path string) (string, error) {
+	full := filepath.Join(root, filepath.FromSlash(path))
 	info, err := os.Lstat(full)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
@@ -345,7 +464,7 @@ func contentHash(full string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return "", nil
 	}
 	return hashFile(full)
@@ -371,47 +490,136 @@ func isContentHash(hash string) bool {
 	return true
 }
 
-// errNotSaved marks a path whose content the snapshot did not keep.
-var errNotSaved = errors.New("content not saved")
+var (
+	// errNotSaved marks a path whose content the snapshot did not keep.
+	errNotSaved = errors.New("content not saved")
+	// errOutsideWorktree marks a path that leaves the work tree.
+	errOutsideWorktree = errors.New("path is outside the worktree")
+	// errGitDir marks a path inside the work tree's git directory.
+	errGitDir = errors.New("path is inside the git directory")
+)
 
-func restorePath(ctx context.Context, root string, before FileSnapshot, path string) error {
-	full := filepath.Join(root, filepath.FromSlash(path))
+// restorePath puts one path back to its state in before, through the root so
+// that no write or delete can follow a symbolic link out of the work tree.
+func restorePath(ctx context.Context, w restoreRoot, before FileSnapshot, path string) error {
+	if err := checkContained(w, path); err != nil {
+		return err
+	}
+	osPath := filepath.FromSlash(path)
 	file, listed := before.Files[path]
 	if !listed {
-		if knownHead(before.Head) && inCommit(ctx, root, before.Head, path) {
-			_, err := gitLiteral(ctx, root, "restore", "--source="+before.Head, "--staged", "--worktree", "--", path)
+		if knownHead(before.Head) && inCommit(ctx, w.root, before.Head, path) {
+			_, err := gitLiteral(ctx, w.root, "restore", "--source="+before.Head, "--staged", "--worktree", "--", path)
 			return err
 		}
-		if _, err := gitLiteral(ctx, root, "rm", "--cached", "--quiet", "--ignore-unmatch", "--", path); err != nil {
+		if _, err := gitLiteral(ctx, w.root, "rm", "--cached", "--quiet", "--ignore-unmatch", "--", path); err != nil {
 			return err
 		}
-		return removeIfPresent(full)
+		return removeIfPresent(w, osPath)
 	}
 	if !file.Exists {
-		return removeIfPresent(full)
+		if err := removeIfPresent(w, osPath); err != nil {
+			return err
+		}
+		return restoreIndex(ctx, w.root, before, path)
 	}
 	if !file.Saved {
 		return errNotSaved
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	// Whatever now stands in the way (a symlink, a directory) is replaced,
-	// never written through.
-	if info, err := os.Lstat(full); err == nil && !info.Mode().IsRegular() {
-		if err := os.RemoveAll(full); err != nil {
+	if dir := filepath.Dir(osPath); dir != "." {
+		if err := w.dir.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(full, file.Content, file.Mode); err != nil {
+	// Whatever now stands in the way (a symlink, a directory) is replaced,
+	// never written through.
+	if info, err := w.dir.Lstat(osPath); err == nil && !info.Mode().IsRegular() {
+		if err := w.dir.RemoveAll(osPath); err != nil {
+			return err
+		}
+	}
+	if err := w.dir.WriteFile(osPath, file.Content, file.Mode); err != nil {
 		return err
 	}
-	return os.Chmod(full, file.Mode)
+	if err := w.dir.Chmod(osPath, file.Mode); err != nil {
+		return err
+	}
+	return restoreIndex(ctx, w.root, before, path)
 }
 
-func removeIfPresent(full string) error {
-	if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
+// restoreIndex puts the index entry for path back as before had it, or
+// takes the path out of the index when before did not hold it.
+func restoreIndex(ctx context.Context, root string, before FileSnapshot, path string) error {
+	if file, listed := before.Files[path]; listed && file.IndexOID != "" {
+		_, err := gitLiteral(ctx, root, "update-index", "--add", "--cacheinfo",
+			file.IndexMode, file.IndexOID, path)
 		return err
+	}
+	_, err := gitLiteral(ctx, root, "update-index", "--force-remove", "--", path)
+	return err
+}
+
+// reverseMove puts the bytes a move left at dest back at original, for an
+// original the snapshot cannot supply, and puts both index entries back.
+func reverseMove(ctx context.Context, w restoreRoot, before FileSnapshot, dest, original string) error {
+	if err := checkContained(w, original); err != nil {
+		return err
+	}
+	if err := checkContained(w, dest); err != nil {
+		return err
+	}
+	originalPath := filepath.FromSlash(original)
+	if dir := filepath.Dir(originalPath); dir != "." {
+		if err := w.dir.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if err := w.dir.Rename(filepath.FromSlash(dest), originalPath); err != nil {
+		return err
+	}
+	if file, listed := before.Files[original]; listed && file.Mode != 0 {
+		if err := w.dir.Chmod(originalPath, file.Mode); err != nil {
+			return err
+		}
+	}
+	if err := restoreIndex(ctx, w.root, before, original); err != nil {
+		return err
+	}
+	return restoreIndex(ctx, w.root, before, dest)
+}
+
+func removeIfPresent(w restoreRoot, osPath string) error {
+	if err := w.dir.Remove(osPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// checkContained rejects a path a restore must never touch, and one whose
+// parents resolve outside the work tree.
+func checkContained(w restoreRoot, path string) error {
+	if err := checkRestorablePath(path); err != nil {
+		return err
+	}
+	if _, err := w.dir.Lstat(filepath.FromSlash(path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// checkRestorablePath rejects an absolute path, one that climbs out of the
+// work tree, and one inside the work tree's git directory.
+func checkRestorablePath(path string) error {
+	if path == "" || filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
+		return errOutsideWorktree
+	}
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == "" || part == "." || part == ".." {
+			return errOutsideWorktree
+		}
+		if strings.EqualFold(part, ".git") {
+			return errGitDir
+		}
 	}
 	return nil
 }
