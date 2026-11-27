@@ -117,3 +117,56 @@ func TestSymbolsToolExplainsMissingLanguageServer(t *testing.T) {
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "no language server is configured for .zzz files")
 }
+
+// TestResolveToolPath pins the path rule the LSP tools share with edit: a
+// relative path joins the working directory, an absolute one is kept, and
+// an empty one stays empty so diagnostics still means the whole project.
+func TestResolveToolPath(t *testing.T) {
+	t.Parallel()
+	wd := t.TempDir()
+	require.Equal(t, filepath.Join(wd, "a.go"), resolveToolPath(wd, "a.go"))
+	require.Equal(t, filepath.Join(wd, "sub", "a.go"), resolveToolPath(wd, "./sub/a.go"))
+	abs := filepath.Join(t.TempDir(), "b.go")
+	require.Equal(t, abs, resolveToolPath(wd, abs))
+	require.Empty(t, resolveToolPath(wd, ""))
+}
+
+// TestLSPToolsResolveRelativePaths pins the follow-up from the pipeline
+// branch: lsp_symbols and lsp_replace_symbol used a relative file_path as
+// is, so it resolved against the process directory and a workspace file
+// read as outside the workspace.
+func TestLSPToolsResolveRelativePaths(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	cfg := newLSPMissStore(t, workspace)
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "a.zzz"), []byte("zzz\n"), 0o644))
+	want := "no LSP client handles file " + filepath.Join(workspace, "a.zzz") + ": no language server is configured for .zzz files"
+
+	symbols := NewSymbolsTool(cfg, lsp.NewManager(cfg))
+	resp, err := symbols.Run(t.Context(), fantasy.ToolCall{ID: "s1", Name: SymbolsToolName, Input: `{"file_path":"a.zzz"}`})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, want)
+
+	replace := NewReplaceSymbolTool(cfg, lsp.NewManager(cfg), nil, nil, nil)
+	resp, err = replace.Run(t.Context(), fantasy.ToolCall{
+		ID: "r1", Name: ReplaceSymbolToolName,
+		Input: `{"symbol":"X","file_path":"a.zzz","replacement":"y"}`,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, want)
+}
+
+// TestDiagnosticsToolTakesTheConfig pins the constructor the coordinator
+// calls: diagnostics needs the working directory to resolve file_path.
+func TestDiagnosticsToolTakesTheConfig(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	cfg := newLSPMissStore(t, workspace)
+	tool := NewDiagnosticsTool(cfg, lsp.NewManager(cfg))
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "d1", Name: DiagnosticsToolName, Input: `{"file_path":"a.go"}`})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+}

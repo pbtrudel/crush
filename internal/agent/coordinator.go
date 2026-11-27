@@ -1642,7 +1642,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, role a
 	if len(c.cfg.Config().LSP) > 0 || c.cfg.Config().Options.AutoLSP == nil || *c.cfg.Config().Options.AutoLSP {
 		allTools = append(
 			allTools,
-			tools.NewDiagnosticsTool(c.lspManager),
+			tools.NewDiagnosticsTool(c.cfg, c.lspManager),
 			tools.NewReferencesTool(c.lspManager),
 			tools.NewLSPRestartTool(c.lspManager),
 			tools.NewSymbolsTool(c.cfg, c.lspManager),

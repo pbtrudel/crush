@@ -31,6 +31,7 @@ func NewSymbolsTool(cfg *config.ConfigStore, lspManager *lsp.Manager) fantasy.Ag
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
+			params.FilePath = resolveToolPath(configWorkingDir(cfg), params.FilePath)
 			lspManager.Start(ctx, params.FilePath)
 
 			client := findLSPClient(lspManager, params.FilePath)
