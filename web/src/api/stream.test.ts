@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { StreamClient, backoffDelay } from './stream'
+import type { ParsedFrame } from './wire'
 
 class FakeSocket {
   static opened: FakeSocket[] = []
@@ -266,6 +267,105 @@ describe('StreamClient', () => {
     s.subscribe('s1')
     s.subscribe('s1')
     expect(socket.sent.filter((data) => data === subscribeFrame('s1'))).toHaveLength(1)
+    s.stop()
+  })
+
+  it('connects without a since and resumes from the last seen frame', () => {
+    const s = client()
+    s.start()
+    expect(FakeSocket.opened[0].url).toBe('ws://127.0.0.1:1234/api/stream')
+    const first = FakeSocket.opened[0]
+    first.open()
+    first.receive({ seq: 0, type: 'bootstrap', payload: bootstrap })
+    for (let seq = 1; seq <= 3; seq++) {
+      first.receive({ seq, type: 'agent_runs', payload: [] })
+    }
+    expect(s.lastSeq).toBe(3)
+    first.drop()
+    vi.advanceTimersByTime(500)
+    expect(FakeSocket.opened).toHaveLength(2)
+    expect(FakeSocket.opened[1].url).toBe('ws://127.0.0.1:1234/api/stream?since=3')
+    s.stop()
+  })
+
+  it('sends no since before it has seen a bootstrap', () => {
+    const s = client()
+    s.start()
+    const first = FakeSocket.opened[0]
+    first.open()
+    first.receive({ seq: 4, type: 'agent_runs', payload: [] })
+    first.drop()
+    vi.advanceTimersByTime(500)
+    expect(FakeSocket.opened[1].url).toBe('ws://127.0.0.1:1234/api/stream')
+    s.stop()
+  })
+
+  it('carries since on a 4001 reconnect and resubscribes', () => {
+    const s = client()
+    s.start()
+    const first = FakeSocket.opened[0]
+    first.open()
+    s.subscribe('s1')
+    first.receive({ seq: 0, type: 'bootstrap', payload: bootstrap })
+    first.receive({ seq: 5, type: 'agent_runs', payload: [] })
+    first.drop(4001)
+    vi.advanceTimersByTime(0)
+    expect(FakeSocket.opened).toHaveLength(2)
+    const second = FakeSocket.opened[1]
+    expect(second.url).toBe('ws://127.0.0.1:1234/api/stream?since=5')
+    second.open()
+    expect(second.sent).toContain(subscribeFrame('s1'))
+    s.stop()
+  })
+
+  it('keeps processing frames when a handler throws, and logs neither', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const applied: number[] = []
+    const onFrame = vi.fn((frame: ParsedFrame) => {
+      if (frame.seq === 1) {
+        throw new Error('SENTINEL')
+      }
+      applied.push(frame.seq)
+    })
+    const onBootstrap = vi.fn(() => {
+      throw new Error('SENTINEL')
+    })
+    const s = new StreamClient({
+      url: () => 'ws://127.0.0.1:1234/api/stream',
+      protocols: () => ['crush.v2', 'crush.auth.token'],
+      handlers: { onFrame, onState: vi.fn(), onBootstrap },
+      createSocket: (url, protocols) => new FakeSocket(url, protocols) as unknown as WebSocket,
+      random: () => 1,
+    })
+    s.start()
+    const socket = FakeSocket.opened[0]
+    socket.open()
+    socket.receive({ seq: 1, type: 'agent_runs', payload: [] })
+    socket.receive({ seq: 2, type: 'agent_runs', payload: [] })
+    socket.receive({ seq: 3, type: 'bootstrap', payload: bootstrap })
+    socket.receive({ seq: 4, type: 'agent_runs', payload: [] })
+    expect(applied).toEqual([2, 4])
+    expect(onBootstrap).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalledWith('web: dropping a frame the handler rejected')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SENTINEL')
+    expect(s.lastSeq).toBe(4)
+    s.stop()
+  })
+
+  it('takes its network listeners down on the no-token path', () => {
+    const remove = vi.spyOn(window, 'removeEventListener')
+    const onState = vi.fn()
+    const s = new StreamClient({
+      url: () => 'ws://127.0.0.1:1234/api/stream',
+      protocols: () => ['crush.v2', 'crush.auth.'],
+      handlers: { onFrame: vi.fn(), onState, onBootstrap: vi.fn() },
+      createSocket: (url, protocols) => new FakeSocket(url, protocols) as unknown as WebSocket,
+      random: () => 1,
+    })
+    s.start()
+    expect(remove).toHaveBeenCalledWith('online', expect.any(Function))
+    expect(remove).toHaveBeenCalledWith('offline', expect.any(Function))
     s.stop()
   })
 

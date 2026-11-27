@@ -54,6 +54,7 @@ export class StreamClient {
   private pingTimer: number | null = null
   private stopped = true
   private isOffline = false
+  private hasBootstrap = false
   private readonly subscriptions = new Set<string>()
   private seq = 0
   private currentState: ConnectionState = 'closed'
@@ -124,11 +125,10 @@ export class StreamClient {
 
   private connect(): void {
     // A socket without the token entry is refused by the gateway before the
-    // handshake completes. Report the state and wait to be started again.
+    // handshake completes, so the client stops here, listeners and all, and
+    // waits to be started again once a token arrives.
     if (!hasAuthToken(this.options.protocols())) {
-      this.stopped = true
-      this.clearTimers()
-      this.setState('closed')
+      this.stop()
       return
     }
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting')
@@ -138,7 +138,7 @@ export class StreamClient {
       return
     }
     const socket = (this.options.createSocket ?? ((url, protocols) => new WebSocket(url, protocols)))(
-      this.options.url(),
+      this.resumeURL(),
       this.options.protocols(),
     )
     this.socket = socket
@@ -208,13 +208,36 @@ export class StreamClient {
       // the gateway's current sequence, so it re-anchors the watermark even
       // when a restarted gateway counts from zero again.
       this.seq = frame.seq
-      this.options.handlers.onBootstrap(frame.payload)
+      this.hasBootstrap = true
+      this.deliver(() => this.options.handlers.onBootstrap(frame.payload))
       return
     }
     if (frame.seq > this.seq) {
       this.seq = frame.seq
     }
-    this.options.handlers.onFrame(frame)
+    this.deliver(() => this.options.handlers.onFrame(frame))
+  }
+
+  // deliver runs one handler and contains it: a handler that throws must not
+  // stop the frames behind it. Nothing about the failure is logged, because
+  // neither the frame nor the error it raised may reach the console.
+  private deliver(call: () => void): void {
+    try {
+      call()
+    } catch {
+      console.warn('web: dropping a frame the handler rejected')
+    }
+  }
+
+  // resumeURL is the socket address with the resume point attached. The value
+  // is this client's own watermark: a caller that sent since=0 on its first
+  // connect would replay the ring and lose the bootstrap that starts it.
+  private resumeURL(): string {
+    const url = this.options.url()
+    if (!this.hasBootstrap) {
+      return url
+    }
+    return `${url}${url.includes('?') ? '&' : '?'}since=${this.seq}`
   }
 
   private send(message: unknown): void {
