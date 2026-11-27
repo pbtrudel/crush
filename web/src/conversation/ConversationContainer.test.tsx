@@ -32,8 +32,8 @@ function message(id: string, value: string, role = 'assistant', sessionID = 's1'
   }
 }
 
-function data(messages: WireMessage[], hasMore = false): SessionData {
-  return { messages, hasMore, busy: false, queued: [], files: [] }
+function data(messages: WireMessage[], hasMore = false, snapshotSeq = 0): SessionData {
+  return { messages, hasMore, busy: false, queued: [], files: [], snapshotSeq }
 }
 
 const bootstrap = bootstrapSchema.parse({
@@ -205,6 +205,26 @@ describe('ConversationContainer', () => {
     expect(screen.getByRole('button', { name: 'Load older messages' })).toBeInTheDocument()
   })
 
+  it('drops the loaded pages when the snapshot counter moves for the same messages', async () => {
+    // A resubscribe can answer the very same page: the message list is
+    // identical, so only the snapshot counter says the history was rebuilt.
+    const { store } = setup(
+      { sessions: [row()], selectedSessionId: 's1', sessionData: { s1: data([message('m2', 'hi there')], true) } },
+      async () => ({ messages: [message('m1', 'hello', 'user')], has_more: true }),
+    )
+    const frame = snapshotFrame('s1', [message('m2', 'hi there')])
+    act(() => {
+      store.applyFrame(frame)
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    await screen.findByText('hello')
+    act(() => {
+      store.applyFrame(frame)
+    })
+    await waitFor(() => expect(screen.queryByText('hello')).toBeNull())
+    expect(articles()).toEqual(['hi there'])
+  })
+
   it('keeps the loaded pages when a live message frame arrives', async () => {
     const { store } = setup(
       { sessions: [row()], selectedSessionId: 's1', sessionData: { s1: data([message('m2', 'hi there')], true) } },
@@ -266,6 +286,7 @@ describe('ConversationContainer', () => {
   it('renders the pane for a session the list does not carry yet', () => {
     setup({ sessions: [], selectedSessionId: 's9', sessionData: {} })
     expect(screen.getByRole('region', { name: 'Conversation' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Untitled session' })).toBeInTheDocument()
     expect(screen.queryByText('Select a session')).toBeNull()
     expect(screen.queryAllByRole('article')).toHaveLength(0)
   })

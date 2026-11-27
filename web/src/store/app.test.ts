@@ -108,6 +108,22 @@ describe('reduceFrame', () => {
     expect(next.sessionData.s2.queued).toEqual(['later'])
   })
 
+  it('counts the snapshots it applies for a session', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const snapshot = frame('session_snapshot', {
+      session_id: 's2',
+      messages: [],
+      has_more: false,
+      files: [],
+      busy: false,
+      queued: [],
+    }, 6, 's2')
+    const once = reduceFrame(start, snapshot)
+    const twice = reduceFrame(once, snapshot)
+    expect(once.sessionData.s2.snapshotSeq).toBe(1)
+    expect(twice.sessionData.s2.snapshotSeq).toBe(2)
+  })
+
   it('drops a deleted message', () => {
     const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
     const withMessage = reduceFrame(

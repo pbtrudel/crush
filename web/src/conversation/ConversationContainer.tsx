@@ -21,119 +21,142 @@ interface MessagesPage {
 // amount of history on screen does not depend on the gateway's default.
 const messagePageLimit = 100
 
-// ConversationContainer wires the presentational conversation to the store
-// and the gateway. The snapshot's last page comes from the store; the pages
-// before it are read on demand and kept here, because nothing else needs
-// them.
+// noPages is the empty list of a session with nothing paged in. It is one
+// value, so an empty list keeps its identity between renders.
+const noPages: WireMessage[] = []
+
+// ConversationContainer hands the selected session to its own conversation.
+// The paging state belongs to one session, so a new selection renders a new
+// one rather than the old conversation with the new snapshot: that key is
+// what keeps a page loaded for one session from appearing beside another,
+// not even for a single render.
 export default function ConversationContainer({ client, store }: ConversationContainerProps) {
   const sessionId = useStore(store, (state) => state.selectedSessionId)
   const title = useStore(
     store,
     (state) => state.sessions.find((row) => row.id === state.selectedSessionId)?.title ?? '',
   )
+  return (
+    <SessionConversation
+      key={sessionId ?? ''}
+      sessionId={sessionId}
+      title={title}
+      client={client}
+      store={store}
+    />
+  )
+}
+
+interface SessionConversationProps extends ConversationContainerProps {
+  sessionId: string | null
+  title: string
+}
+
+// OlderPages is the history the tab read before the snapshot on screen.
+interface OlderPages {
+  // snapshotSeq is the snapshot these pages were read against. A page from
+  // another snapshot is not shown at all, so a rebuilt list never mixes
+  // with it, not even for the render before the effect clears it.
+  snapshotSeq: number
+  messages: WireMessage[]
+  // hasMore is the answer the last page gave; null means none was read, and
+  // the snapshot's own has_more decides.
+  hasMore: boolean | null
+  loading: boolean
+  error: string | null
+}
+
+function emptyPages(snapshotSeq: number): OlderPages {
+  return { snapshotSeq, messages: noPages, hasMore: null, loading: false, error: null }
+}
+
+function SessionConversation({ sessionId, title, client, store }: SessionConversationProps) {
   const data = useStore(store, (state) =>
-    state.selectedSessionId ? state.sessionData[state.selectedSessionId] : undefined,
+    sessionId === null ? undefined : state.sessionData[sessionId],
   )
   // A resync replaces the bootstrap, and the snapshots that follow it are new
   // pages of history: what was read under the old one cannot be reused.
   const bootstrap = useStore(store, (state) => state.bootstrap)
+  const snapshotSeq = data?.snapshotSeq ?? 0
   const snapshotMessages = data?.messages
-  const [older, setOlder] = useState<WireMessage[]>([])
-  // olderHasMore is the answer the last page gave; null means no page has
-  // been loaded yet, and the snapshot's own has_more decides.
-  const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null)
-  const [loadingOlder, setLoadingOlder] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // epoch names the snapshot the loaded pages belong to. A reset bumps it, so
-  // a page that comes back after the snapshot it was read against was
-  // replaced is dropped instead of mixed into the new one.
-  const epoch = useRef(0)
+  const [pages, setPages] = useState<OlderPages>(() => emptyPages(snapshotSeq))
 
-  const dropPages = useCallback(() => {
-    epoch.current += 1
-    setOlder((pages) => (pages.length === 0 ? pages : []))
-    setOlderHasMore(null)
-    setLoadingOlder(false)
-    setError((previous) => (previous === null ? previous : null))
-  }, [])
-
-  // A new selection starts from its snapshot, and a resync replaces it, so
-  // the pages loaded for the old one are dropped.
+  // Every snapshot and every resync replaces the history the loaded pages
+  // were read against, so they go. The snapshot counter is what a rebuilt
+  // list looks like from here: the message objects say nothing about it,
+  // because a resubscribe can answer the very same page.
+  const seen = useRef({ snapshotSeq, bootstrap })
   useEffect(() => {
-    dropPages()
-  }, [dropPages, sessionId, bootstrap])
-
-  // A snapshot rebuilds every message from the wire, so not one object of the
-  // previous list survives; a live frame keeps the messages it did not touch.
-  // Seeing a rebuilt list means the pages on screen were read against a
-  // snapshot that is gone, so they go with it.
-  const previousSnapshot = useRef<WireMessage[] | null>(null)
-  useEffect(() => {
-    const previous = previousSnapshot.current
-    previousSnapshot.current = snapshotMessages ?? null
-    if (previous === null || snapshotMessages === undefined || previous === snapshotMessages) {
+    const previous = seen.current
+    if (previous.snapshotSeq === snapshotSeq && previous.bootstrap === bootstrap) {
       return
     }
-    if (snapshotMessages.length > 0 && snapshotMessages[0] === previous[0]) {
-      return
-    }
-    dropPages()
-  }, [dropPages, snapshotMessages])
+    seen.current = { snapshotSeq, bootstrap }
+    setPages(emptyPages(snapshotSeq))
+  }, [snapshotSeq, bootstrap])
+
+  // Pages from another snapshot are not rendered, so the render before the
+  // effect above runs still shows the snapshot alone.
+  const current = pages.snapshotSeq === snapshotSeq
+  const older = current ? pages.messages : noPages
+  const hasMore = current && pages.hasMore !== null ? pages.hasMore : (data?.hasMore ?? false)
+  const loadingOlder = current && pages.loading
+  const error = current ? pages.error : null
 
   const loadOlder = useCallback(() => {
-    if (!sessionId) {
+    if (sessionId === null) {
       return
     }
-    const current = store.get().sessionData[sessionId] ?? emptySessionData
+    const snapshot = store.get().sessionData[sessionId] ?? emptySessionData
     // The next page ends just before the oldest message already on screen,
     // whichever page it came from.
-    const before = (older[0] ?? current.messages[0])?.id
+    const before = (older[0] ?? snapshot.messages[0])?.id
     const query = before
       ? `?before=${encodeURIComponent(before)}&limit=${messagePageLimit}`
       : `?limit=${messagePageLimit}`
-    const at = epoch.current
-    setLoadingOlder(true)
-    setError(null)
+    const at = snapshotSeq
+    setPages((previous) =>
+      previous.snapshotSeq === at ? { ...previous, loading: true, error: null } : previous,
+    )
     void client
       .get<MessagesPage>(`/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`)
       .then((page) => {
-        if (epoch.current !== at) {
-          return
-        }
-        // A page is older than the ones on screen, so it goes in front of
-        // them; an overlapping message is already there and stays once.
-        setOlder((previous) => prependPage(previous, page.messages))
-        setOlderHasMore(page.has_more)
+        setPages((previous) =>
+          previous.snapshotSeq === at
+            ? {
+                ...previous,
+                // A page is older than the ones on screen, so it goes in
+                // front of them; an overlapping message stays there once.
+                messages: prependPage(previous.messages, page.messages),
+                hasMore: page.has_more,
+                loading: false,
+              }
+            : previous,
+        )
       })
       .catch((cause: unknown) => {
-        if (epoch.current !== at) {
-          return
-        }
-        setError(message(cause))
+        setPages((previous) =>
+          previous.snapshotSeq === at
+            ? { ...previous, loading: false, error: message(cause) }
+            : previous,
+        )
       })
-      .finally(() => {
-        if (epoch.current === at) {
-          setLoadingOlder(false)
-        }
-      })
-  }, [client, older, sessionId, store])
+  }, [client, older, sessionId, snapshotSeq, store])
 
   // A resync can echo a message the tab already paged in, so the first copy
   // wins and the order stays oldest first.
   const messages = useMemo(() => {
-    const seen = new Set<string>()
+    const seenIDs = new Set<string>()
     const out: WireMessage[] = []
     for (const entry of [...older, ...(snapshotMessages ?? [])]) {
-      if (seen.has(entry.id)) {
+      if (seenIDs.has(entry.id)) {
         continue
       }
-      seen.add(entry.id)
+      seenIDs.add(entry.id)
       out.push(entry)
     }
     return out
   }, [older, snapshotMessages])
-
-  const hasMore = olderHasMore === null ? (data?.hasMore ?? false) : olderHasMore
 
   return (
     <Conversation

@@ -18,6 +18,11 @@ export interface SessionData {
   busy: boolean
   queued: string[]
   files: { path: string }[]
+  // snapshotSeq counts the snapshots the tab has applied for the session.
+  // A snapshot replaces the messages, so history paged in against an older
+  // one belongs to a list that is gone; the conversation reads this to drop
+  // it.
+  snapshotSeq: number
 }
 
 export interface AppState {
@@ -39,6 +44,7 @@ export const emptySessionData: SessionData = {
   busy: false,
   queued: [],
   files: [],
+  snapshotSeq: 0,
 }
 
 export function createAppStore(storage: Storage = localStorage): Store<AppState> & AppStore {
@@ -160,6 +166,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
             busy: snapshot.busy,
             queued: snapshot.queued,
             files: snapshot.files,
+            snapshotSeq: (state.sessionData[id]?.snapshotSeq ?? 0) + 1,
           },
         },
       }
