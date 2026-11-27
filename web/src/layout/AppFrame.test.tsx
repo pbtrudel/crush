@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
@@ -67,6 +67,65 @@ describe('AppFrame', () => {
     }
   })
 
+  it('opens the narrow drawer from a visible opener outside the panel', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const panel = screen.getByTestId('sidebar-panel')
+    const opener = screen.getByRole('button', { name: 'Open sidebar' })
+    expect(panel.contains(opener)).toBe(false)
+    expect(opener.getAttribute('aria-controls')).toBe(panel.id)
+
+    await user.click(opener)
+    expect(screen.getByRole('dialog', { name: 'Sessions' })).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(opener)
+    expect(panel.contains(document.activeElement)).toBe(false)
+  })
+
+  it('marks the conversation inert while the modal drawer is open', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    const { container } = render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const main = container.querySelector('main')
+    expect(main?.hasAttribute('inert')).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    expect(main?.hasAttribute('inert')).toBe(true)
+
+    await user.keyboard('{Escape}')
+    expect(main?.hasAttribute('inert')).toBe(false)
+  })
+
+  it('closes the drawer and drops the key handler when the window widens', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    const { container } = render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+
+    act(() => setMediaQueryMatches(narrowQuery, false))
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
+
+    const focused = document.activeElement
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(focused)
+  })
+
   it('traps Tab inside the drawer', async () => {
     const user = userEvent.setup()
     setMediaQueryMatches(narrowQuery, true)
@@ -84,27 +143,85 @@ describe('AppFrame', () => {
     )
     await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
     const dialog = screen.getByRole('dialog', { name: 'Sessions' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close sidebar' }))
     expect(dialog.contains(document.activeElement)).toBe(true)
 
     await user.click(screen.getByRole('button', { name: 'two' }))
     await user.tab()
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close sidebar' }))
 
     await user.tab({ shift: true })
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'two' }))
   })
 
-  it('returns focus to the toggle when Escape closes the drawer', async () => {
+  it('keeps Shift+Tab inside the drawer right after opening', async () => {
     const user = userEvent.setup()
     setMediaQueryMatches(narrowQuery, true)
+    render(
+      <AppFrame
+        sidebar={
+          <>
+            <button type="button">one</button>
+            <button type="button">two</button>
+          </>
+        }
+      >
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    const dialog = screen.getByRole('dialog', { name: 'Sessions' })
+
+    await user.tab({ shift: true })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+
+    screen.getByRole('button', { name: 'Open sidebar' }).focus()
+    await user.tab()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+  })
+
+  it('labels the resizer and points the wide toggle at the panel', () => {
     render(
       <AppFrame sidebar={<p>sidebar</p>}>
         <p>conversation</p>
       </AppFrame>,
     )
-    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
-    await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open sidebar' }))
+    const panel = screen.getByTestId('sidebar-panel')
+    expect(screen.getByRole('separator', { name: 'Resize sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' }).getAttribute('aria-controls')).toBe(
+      panel.id,
+    )
+  })
+
+  it('ignores a drag that does not start with the primary button', () => {
+    const { container } = render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector<HTMLElement>('[data-testid="app-frame"]')
+    const separator = screen.getByRole('separator')
+    fireEvent(separator, new MouseEvent('pointerdown', { bubbles: true, button: 2, clientX: 300 }))
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 360 }))
+    fireEvent(window, new MouseEvent('pointerup'))
+    expect(frame?.style.getPropertyValue('--crush-sidebar-width')).toBe('280px')
+  })
+
+  it('drops the drag listeners when the pointer is cancelled', () => {
+    const { container } = render(
+      <AppFrame sidebar={<p>sidebar</p>}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector<HTMLElement>('[data-testid="app-frame"]')
+    const separator = screen.getByRole('separator')
+    fireEvent(separator, new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 300 }))
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 330 }))
+    expect(frame?.style.getPropertyValue('--crush-sidebar-width')).toBe('310px')
+
+    fireEvent(window, new Event('pointercancel'))
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 400 }))
+    expect(frame?.style.getPropertyValue('--crush-sidebar-width')).toBe('310px')
   })
 
   it('sets the sidebar width through a custom property on the frame', () => {

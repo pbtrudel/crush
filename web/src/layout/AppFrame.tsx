@@ -29,6 +29,7 @@ export interface AppFrameProps {
 
 const narrowQuery = '(max-width: 767px)'
 const darkQuery = '(prefers-color-scheme: dark)'
+const panelId = 'crush-sidebar'
 const focusableSelector =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
@@ -76,7 +77,7 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
   const [preference, setPreference] = useState<ThemePreference>(() => storedPreference(store))
   const frame = useRef<HTMLDivElement>(null)
   const panel = useRef<HTMLDivElement>(null)
-  const toggle = useRef<HTMLButtonElement>(null)
+  const opener = useRef<HTMLButtonElement>(null)
 
   // The width rides a custom property on the frame element, so a drag updates
   // the layout without re-rendering the tree and the CSP sees no inline
@@ -86,10 +87,16 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
   }, [width])
 
   // The breakpoint is a live query: a window narrowed past it opens the
-  // sidebar as a drawer, and a window widened past it goes back to columns.
+  // sidebar as a drawer, and a window widened past it goes back to columns
+  // and closes a drawer left open.
   useEffect(() => {
     const media = window.matchMedia(narrowQuery)
-    const onChange = () => setNarrow(media.matches)
+    const onChange = () => {
+      setNarrow(media.matches)
+      if (!media.matches) {
+        setDrawerOpen(false)
+      }
+    }
     media.addEventListener('change', onChange)
     return () => media.removeEventListener('change', onChange)
   }, [])
@@ -103,33 +110,43 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
     }
     paint(preference)
     const onChange = () => {
-      if (storedPreference(store) === 'system') {
+      if (preference === 'system') {
         paint('system')
       }
     }
     media.addEventListener('change', onChange)
     return () => media.removeEventListener('change', onChange)
-  }, [preference, store])
+  }, [preference])
 
-  // A drag installs two window listeners; releasing or unmounting takes them
-  // off, so a drag that ends outside the window still cleans up.
+  // A drag installs four window listeners; releasing, cancelling or unmounting
+  // takes them off, so a drag that ends outside the window still cleans up.
   const stopDrag = useRef<(() => void) | null>(null)
   useEffect(() => () => stopDrag.current?.(), [])
 
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return
+    }
     event.preventDefault()
+    const target = event.currentTarget
+    const pointerId = event.pointerId
     const originX = event.clientX
     const originWidth = width
+    target.setPointerCapture(pointerId)
     const move = (moveEvent: PointerEvent) => {
       setWidth(clampSidebarWidth(originWidth + (moveEvent.clientX - originX)))
     }
     const stop = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      window.removeEventListener('lostpointercapture', stop)
       stopDrag.current = null
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+    window.addEventListener('lostpointercapture', stop)
     stopDrag.current = stop
   }
 
@@ -140,46 +157,73 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
     setPreference(next)
   }
 
-  // The drawer is modal: focus moves into it, Tab cycles inside it, and
-  // Escape closes it and returns focus to the toggle.
+  // The drawer is modal: focus moves to its first control, Tab cycles inside
+  // it, and Escape closes it and returns focus to the opener outside it.
   useEffect(() => {
-    if (!drawerOpen || panel.current === null) {
+    if (!narrow || !drawerOpen || panel.current === null) {
       return
     }
     const element = panel.current
-    element.focus()
+    const controls = () => [...element.querySelectorAll<HTMLElement>(focusableSelector)]
+    const firstControl = controls()[0]
+    ;(firstControl ?? element).focus()
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDrawerOpen(false)
-        toggle.current?.focus()
+        opener.current?.focus()
         return
       }
       if (event.key !== 'Tab') {
         return
       }
-      const focusable = element.querySelectorAll<HTMLElement>(focusableSelector)
+      const focusable = controls()
       if (focusable.length === 0) {
+        event.preventDefault()
+        element.focus()
         return
       }
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      const active = document.activeElement
+      if (active === element || !element.contains(active)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+        return
+      }
+      if (event.shiftKey && active === first) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && active === last) {
         event.preventDefault()
         first.focus()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drawerOpen])
+  }, [drawerOpen, narrow])
 
   const sidebarHidden = narrow ? !drawerOpen : collapsed
+  const drawerModal = narrow && drawerOpen
+  // React 18 does not know the inert attribute, so it arrives as an unknown
+  // string attribute: any value other than undefined means inert.
+  const inert = drawerModal ? { inert: '' } : {}
 
   return (
     <div className={styles.app}>
       <div className={styles.banner}>
+        {narrow ? (
+          <button
+            ref={opener}
+            type="button"
+            className={styles.opener}
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open sidebar"
+            aria-controls={panelId}
+            aria-expanded={drawerOpen}
+          >
+            »
+          </button>
+        ) : null}
         <p className={styles.bannerText}>Preview: the new web UI is incomplete</p>
         <label className={styles.theme}>
           <span>Theme</span>
@@ -199,31 +243,36 @@ export default function AppFrame({ sidebar, right, children, storage }: AppFrame
       >
         <div
           ref={panel}
+          id={panelId}
+          data-testid="sidebar-panel"
           className={clsx(styles.sidebar, collapsed && !narrow && styles.rail, narrow && drawerOpen && styles.drawer)}
           tabIndex={-1}
-          role={narrow && drawerOpen ? 'dialog' : undefined}
-          aria-modal={narrow && drawerOpen ? true : undefined}
-          aria-label={narrow && drawerOpen ? 'Sessions' : undefined}
+          role={drawerModal ? 'dialog' : undefined}
+          aria-modal={drawerModal ? true : undefined}
+          aria-label={drawerModal ? 'Sessions' : undefined}
         >
           <button
-            ref={toggle}
             type="button"
             className={styles.collapse}
-            onClick={() => (narrow ? setDrawerOpen((value) => !value) : setCollapsed((value) => !value))}
-            aria-label={sidebarHidden ? 'Open sidebar' : 'Collapse sidebar'}
-            aria-expanded={!sidebarHidden}
+            onClick={() => (narrow ? setDrawerOpen(false) : setCollapsed((value) => !value))}
+            aria-label={narrow ? 'Close sidebar' : collapsed ? 'Open sidebar' : 'Collapse sidebar'}
+            aria-expanded={narrow ? drawerOpen : !collapsed}
+            aria-controls={panelId}
           >
-            {sidebarHidden ? '»' : '«'}
+            {narrow ? '«' : collapsed ? '»' : '«'}
           </button>
           {sidebarHidden ? null : sidebar}
         </div>
         <div
           className={styles.resizer}
           role="separator"
+          aria-label="Resize sidebar"
           aria-orientation="vertical"
           onPointerDown={startResize}
         />
-        <main className={styles.center}>{children}</main>
+        <main className={styles.center} {...inert}>
+          {children}
+        </main>
         {right ? <aside className={styles.right}>{right}</aside> : null}
       </div>
     </div>

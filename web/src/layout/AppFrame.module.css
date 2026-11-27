@@ -38,6 +38,17 @@
   border-radius: var(--dsw-radius-sm);
 }
 
+/* Below the breakpoint the drawer's own toggle is hidden with the panel, so
+ * the banner carries this opener instead. */
+.opener {
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
 .frame {
   flex: 1;
   display: grid;
@@ -96,6 +107,7 @@
 .resizer {
   cursor: col-resize;
   background: transparent;
+  touch-action: none;
 }
 
 .center {

@@ -31,6 +31,14 @@ if (typeof window.matchMedia !== 'function') {
     }) as MediaQueryList
 }
 
+// jsdom has no pointer capture, and the sidebar resizer captures the pointer
+// for the length of a drag.
+if (typeof Element.prototype.setPointerCapture !== 'function') {
+  Element.prototype.setPointerCapture = () => undefined
+  Element.prototype.releasePointerCapture = () => undefined
+  Element.prototype.hasPointerCapture = () => false
+}
+
 beforeEach(() => {
   resetMediaQueries()
 })
