@@ -91,6 +91,9 @@ func TestStatusSessionID(t *testing.T) {
 	require.Equal(t, "s1", statusSessionID(pubsub.Event[message.Message]{
 		Type: pubsub.CreatedEvent, Payload: message.Message{SessionID: "s1", Role: message.User},
 	}))
+	require.Equal(t, "s1", statusSessionID(pubsub.Event[message.Message]{
+		Type: pubsub.CreatedEvent, Payload: message.Message{SessionID: "s1", Role: message.Assistant},
+	}), "an assistant message starting a hidden turn refreshes the status")
 	require.Empty(t, statusSessionID(pubsub.Event[message.Message]{
 		Type: pubsub.UpdatedEvent, Payload: message.Message{SessionID: "s1", Role: message.Assistant},
 	}), "a streamed assistant chunk changes no status")
@@ -115,6 +118,42 @@ func TestStatusClearsWhenARunEnds(t *testing.T) {
 	require.Equal(t, `{"session_id":"s1","status":"idle"}`, statusFrames(g)[1])
 }
 
+// TestStatusSettlesWhenBusyOutlivesTheRunEnd pins the bounded re-check: the
+// agent clears its busy flag after it publishes run_complete, so the refresh
+// the event triggers can still read running, and only a later re-check
+// clears the marker.
+func TestStatusSettlesWhenBusyOutlivesTheRunEnd(t *testing.T) {
+	// The waits are a package var, so this test keeps the sequential pass
+	// and no parallel test runs beside it. The restore is registered
+	// before startTest's, so it runs after Shutdown cancelled every timer.
+	originalDelays := statusSettleDelays
+	statusSettleDelays = []time.Duration{20 * time.Millisecond, 50 * time.Millisecond, time.Second}
+	t.Cleanup(func() { statusSettleDelays = originalDelays })
+
+	g, fake := startTest(t)
+	fake.SetSessionBusy("s1", true)
+	g.refreshSessionStatus("s1")
+	require.Equal(t, []string{`{"session_id":"s1","status":"running"}`}, statusFrames(g))
+
+	fake.Emit(runCompleteEvent("s1"))
+	// The pump publishes the run_complete frame after it refreshed the
+	// status, so seeing that frame means the refresh already read the
+	// still-busy agent.
+	require.Eventually(t, func() bool {
+		return hasFrame(g, string(pubsub.PayloadTypeRunComplete))
+	}, 5*time.Second, time.Millisecond)
+	fake.SetSessionBusy("s1", false)
+
+	require.Eventually(t, func() bool {
+		frames := statusFrames(g)
+		return len(frames) == 2 && frames[1] == `{"session_id":"s1","status":"idle"}`
+	}, 5*time.Second, time.Millisecond)
+	require.Equal(t, []string{
+		`{"session_id":"s1","status":"running"}`,
+		`{"session_id":"s1","status":"idle"}`,
+	}, statusFrames(g))
+}
+
 // statusFrames returns every session_status payload in the replay ring,
 // oldest first, as JSON text.
 func statusFrames(g *Gateway) []string {
@@ -125,6 +164,16 @@ func statusFrames(g *Gateway) []string {
 		}
 	}
 	return out
+}
+
+// hasFrame reports whether the replay ring holds a frame of type typ.
+func hasFrame(g *Gateway, typ string) bool {
+	for _, f := range g.hub.frames() {
+		if f.Type == typ {
+			return true
+		}
+	}
+	return false
 }
 
 func permissionEvent(id, sessionID, toolCallID string) any {
