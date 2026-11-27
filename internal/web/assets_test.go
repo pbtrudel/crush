@@ -24,7 +24,14 @@ func TestRootServesTheShell(t *testing.T) {
 	page := string(body)
 	require.Contains(t, page, `<div id="root">`)
 	require.Contains(t, page, `/assets/`)
-	require.NotContains(t, page, "<script>", "the CSP allows no inline script")
+	// Every script tag must load an external module: an inline script is
+	// blocked by the CSP and leaves the tab blank.
+	tags := regexp.MustCompile(`<script[^>]*>`).FindAllString(page, -1)
+	require.NotEmpty(t, tags, "the built page loads no script")
+	for _, tag := range tags {
+		require.Contains(t, tag, "src=", "the CSP allows no inline script")
+	}
+	require.NotContains(t, page, "<style", "the CSP allows no inline style block")
 	require.NotContains(t, page, `style="`, "the CSP allows no inline style")
 }
 
