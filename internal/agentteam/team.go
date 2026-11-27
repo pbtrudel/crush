@@ -142,6 +142,7 @@ const (
 	CodeInvalidArgument       = "TEAM_INVALID_ARGUMENT"
 	CodeInvalidWriteScope     = "TEAM_INVALID_WRITE_SCOPE"
 	CodeStateBusy             = "TEAM_STATE_BUSY"
+	CodeTaskGit               = "TEAM_TASK_GIT"
 )
 
 // Error is a typed Team failure.
@@ -263,6 +264,12 @@ type Task struct {
 	// next implementer's brief carries them even when the mail that took
 	// them to the owner is gone. A pass and a Lead edit clear it.
 	LastFailure string `json:"last_failure,omitempty"`
+	// Worktree is the absolute path of the task's own git worktree, and
+	// Branch its branch. They are set when the task is first given to a
+	// teammate inside a git repository and kept through release, reopen
+	// and failed verification; a merge or a delete removes the worktree.
+	Worktree string `json:"worktree,omitempty"`
+	Branch   string `json:"branch,omitempty"`
 }
 
 // TaskView is the model-facing task row.
@@ -284,6 +291,8 @@ type TaskView struct {
 	Verifies           string     `json:"verifies,omitempty"`
 	Attempts           int        `json:"attempts,omitempty"`
 	Escalated          bool       `json:"escalated,omitempty"`
+	Worktree           string     `json:"worktree,omitempty"`
+	Branch             string     `json:"branch,omitempty"`
 }
 
 // Message is one inbox entry.
@@ -423,6 +432,10 @@ type Config struct {
 	// RoleExists reports whether a role name still resolves. Nil means every
 	// role exists.
 	RoleExists func(name string) bool
+	// WorkingDir is the Lead's working directory. Inside a git repository,
+	// a scoped task given to a teammate gets its own worktree; empty, or
+	// outside a repository, every member shares this tree.
+	WorkingDir string
 }
 
 func (c Config) autostart() bool { return c.Autostart == nil || c.Autostart() }
@@ -502,6 +515,20 @@ type Service struct {
 	// the Lead's inbox, so an idle Lead can be woken to read it. It runs
 	// without the service lock and is best-effort.
 	leadNotifyHook func(sessionID string)
+	// gitMu serializes the service's git commands, which share one
+	// repository. It is never held with s.mu, the write slot or the file
+	// lock.
+	gitMu sync.Mutex
+	// repoOnce resolves, once and outside every lock, whether WorkingDir is
+	// in a git repository and where.
+	repoOnce   sync.Once
+	repoRoot   string
+	repoPrefix string
+	repoOK     bool
+	// worktreeRefused maps a task (refusalKey) to the revision it was
+	// handed back at after its worktree failed, so the dispatcher leaves
+	// it until the Lead changes it.
+	worktreeRefused map[string]int
 }
 
 // New opens (or creates) the Team state at path. A nil runner supports
@@ -525,20 +552,21 @@ func New(path string, cfg Config, runner Runner) (*Service, error) {
 	}
 	repairCounters(&state)
 	return &Service{
-		state:       state,
-		path:        path,
-		cfg:         cfg.withDefaults(),
-		runner:      runner,
-		runs:        make(map[string]Run),
-		starting:    make(map[string]bool),
-		claims:      make(map[string]dispatchClaim),
-		done:        make(chan struct{}),
-		changes:     make(chan struct{}),
-		now:         time.Now,
-		stamp:       stamp,
-		mine:        make(map[string]bool),
-		wrote:       make(map[string]bool),
-		lockTimeout: defaultLockTimeout,
+		state:           state,
+		path:            path,
+		cfg:             cfg.withDefaults(),
+		runner:          runner,
+		runs:            make(map[string]Run),
+		starting:        make(map[string]bool),
+		claims:          make(map[string]dispatchClaim),
+		done:            make(chan struct{}),
+		changes:         make(chan struct{}),
+		now:             time.Now,
+		stamp:           stamp,
+		mine:            make(map[string]bool),
+		wrote:           make(map[string]bool),
+		lockTimeout:     defaultLockTimeout,
+		worktreeRefused: make(map[string]int),
 	}, nil
 }
 
@@ -2342,9 +2370,16 @@ type taskUpdate struct {
 	taskID string
 	// leadSessions are the Lead sessions a notice was written for.
 	leadSessions []string
+	// place is set for a claim or assignment that needs its worktree
+	// created once the write lands.
+	place bool
+	// removal is a worktree to remove once the write lands.
+	removal *worktreeRemoval
 }
 
-// UpdateTask applies one compare-and-set task transition.
+// UpdateTask applies one compare-and-set task transition. Git work runs
+// after the write, with no lock held: a claim gets its worktree, and a
+// deleted task loses its worktree.
 func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, error) {
 	var (
 		applied  taskUpdate
@@ -2364,6 +2399,15 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 	})
 	if err != nil {
 		return TaskView{}, err
+	}
+	// A claim that needs a worktree gets it before anything else reacts to
+	// the claim, so the teammate's next tool call already runs there.
+	if applied.place {
+		view, err := s.placeClaim(applied.view)
+		if err != nil {
+			return TaskView{}, err
+		}
+		applied.view = view
 	}
 	// The hooks run outside every lock, and only once the record is durable.
 	if applied.completedSubject != "" && hook != nil {
@@ -2390,6 +2434,11 @@ func (s *Service) UpdateTask(caller string, req UpdateTaskRequest) (TaskView, er
 			})
 			wakeLeads(leadHook, []string{applied.parentSessionID})
 		}
+	}
+	if applied.removal != nil {
+		ctx, cancel := gitContext()
+		s.removeTaskWorktree(ctx, *applied.removal)
+		cancel()
 	}
 	s.dispatch(context.Background(), applied.parentSessionID)
 	return applied.view, nil
@@ -2435,6 +2484,8 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		review  bool
 		verdict string
 		notes   string
+		place   bool
+		removal *worktreeRemoval
 	)
 	switch req.Action {
 	case "claim":
@@ -2448,8 +2499,13 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 			return taskUpdate{}, newError(CodeTaskUnauthorized,
 				"an agent cannot claim the verification task of its own work")
 		}
+		if !lead && current.wantsWorktree() && s.holdsWorktreeLocked(member.ID, current.ID) {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"you already hold a task with its own git worktree; complete or release it before claiming another task with write scopes")
+		}
 		next.Status = TaskInProgress
 		next.OwnerID = member.ID
+		place = !lead && current.wantsWorktree() && current.Worktree == ""
 	case "release":
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
@@ -2615,8 +2671,14 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 		if !ok || !s.memberVisibleLocked(scope, req.Owner) {
 			return taskUpdate{}, newError(CodeMemberNotFound, "Team member %q not found", req.Owner)
 		}
+		teammate := assignee.Role != RoleLead
+		if teammate && current.wantsWorktree() && s.holdsWorktreeLocked(assignee.ID, current.ID) {
+			return taskUpdate{}, newError(CodeTaskInvalidTransition,
+				"%s already holds a task with its own git worktree; it works in one at a time", req.Owner)
+		}
 		next.Status = TaskInProgress
 		next.OwnerID = assignee.ID
+		place = teammate && current.wantsWorktree() && current.Worktree == ""
 	case "delete":
 		if err := authorizeOwner(); err != nil {
 			return taskUpdate{}, err
@@ -2628,6 +2690,12 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 			}
 		}
 		next.Status = TaskDeleted
+		if current.Worktree != "" {
+			removal = &worktreeRemoval{
+				taskID: current.ID, sessionID: current.SessionID,
+				path: current.Worktree, branch: current.Branch, forceBranch: true,
+			}
+		}
 	default:
 		return taskUpdate{}, newError(CodeInvalidArgument, "unsupported task action %q", req.Action)
 	}
@@ -2650,7 +2718,13 @@ func (s *Service) applyTaskUpdateLocked(caller string, req UpdateTaskRequest) (t
 	// Written by index: an old file may hold the same id twice, and the
 	// copy the caller acted on is the one in its scope.
 	s.state.Tasks[index] = next
-	update := taskUpdate{parentSessionID: parentSessionID, completedSubject: completedSubject, taskID: current.ID}
+	update := taskUpdate{
+		parentSessionID:  parentSessionID,
+		completedSubject: completedSubject,
+		taskID:           current.ID,
+		place:            place,
+		removal:          removal,
+	}
 	if review {
 		s.startReviewLocked(next)
 	}
@@ -2743,6 +2817,13 @@ func (t Task) needsVerification() bool {
 		return *t.Verify
 	}
 	return t.Role == implementerRole
+}
+
+// wantsWorktree reports whether t gets its own git worktree when a teammate
+// takes it: it has write scopes and is not a verification task, which runs
+// in the worktree of the work it checks.
+func (t Task) wantsWorktree() bool {
+	return len(t.WriteScopes) > 0 && t.Verifies == ""
 }
 
 // normalizeTaskRole validates a task role. The tool layer already checked
@@ -2838,6 +2919,8 @@ func projectTaskView(state State, task Task) TaskView {
 		Verifies:    task.Verifies,
 		Attempts:    task.Attempts,
 		Escalated:   task.Escalated,
+		Worktree:    task.Worktree,
+		Branch:      task.Branch,
 	}
 	if task.OwnerID != "" {
 		if task.OwnerID == leadName {
