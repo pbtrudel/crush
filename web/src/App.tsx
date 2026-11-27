@@ -3,6 +3,7 @@ import Unauthorized from './app/Unauthorized'
 import Unreachable from './app/Unreachable'
 import { useGateway } from './app/useGateway'
 import AppFrame from './layout/AppFrame'
+import SidebarContainer from './sidebar/SidebarContainer'
 
 export default function App() {
   const gateway = useGateway()
@@ -17,10 +18,10 @@ export default function App() {
     return <Unauthorized />
   }
 
-  // Task 15 replaces the sidebar placeholder and Task 16 the conversation
-  // one; the error row belongs to the shell and stays.
+  // Task 16 replaces the conversation placeholder; the sidebar and the error
+  // row belong to the shell and stay.
   return (
-    <AppFrame sidebar={<p>Workspace</p>}>
+    <AppFrame sidebar={<SidebarContainer client={gateway.client} store={gateway.store} />}>
       <Alert store={gateway.store} />
       <p>Select a session</p>
     </AppFrame>

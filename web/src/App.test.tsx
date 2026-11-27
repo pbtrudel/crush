@@ -14,7 +14,7 @@ function gateway(overrides: Partial<Gateway> = {}): Gateway {
   return {
     state: 'ready',
     error: null,
-    client: {} as ApiClient,
+    client: { send: vi.fn() } as unknown as ApiClient,
     stream: {} as StreamClient,
     store: createAppStore(memoryStorage()),
     ...overrides,
@@ -29,6 +29,12 @@ describe('App', () => {
   it('shows the preview banner once the tab is ready', () => {
     render(<App />)
     expect(screen.getByText('Preview: the new web UI is incomplete')).toBeInTheDocument()
+  })
+
+  it('offers the session sidebar once the tab is ready', () => {
+    render(<App />)
+    expect(screen.getByRole('navigation', { name: 'Sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
   })
 
   it('shows the connecting line while the tab authenticates', () => {
