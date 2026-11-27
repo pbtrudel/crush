@@ -129,6 +129,9 @@ func TestCompleteCommitsOnlyInsideTheWriteScopes(t *testing.T) {
 	view := scopedTask(t, s, "impl", "Docs", true)
 	writeTreeFile(t, view.Worktree, "docs/a.md", "docs\n")
 	writeTreeFile(t, view.Worktree, "notes/stray.md", "stray\n")
+	// Something outside the scopes, a verifier's staging for example, may
+	// already have the stray path in the index.
+	gitIn(t, view.Worktree, "add", "notes/stray.md")
 
 	act(t, s, "impl", view.ID, "complete", nil)
 	require.Equal(t, TaskInReview, taskByID(t, s, view.ID).Status)

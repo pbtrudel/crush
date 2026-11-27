@@ -63,6 +63,8 @@ func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "star*.md"), []byte("literal\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "starX.md"), []byte("glob\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("stray\n"), 0o644))
+	// A change another path already staged stays out of the commit too.
+	runGit(t, repo, "add", "stray.txt")
 
 	committed, err := CommitAll(ctx, repo, "Docs only", []string{"docs/star*.md", "docs/a.md", "docs/missing.md"})
 	require.NoError(t, err)
@@ -72,7 +74,7 @@ func TestCommitAllStagesOnlyThePathspecs(t *testing.T) {
 		"a pathspec is literal, and one that matches nothing commits nothing")
 	status := gitText(t, repo, "status", "--porcelain")
 	require.Contains(t, status, "M README.md", "a change outside the pathspecs stays uncommitted")
-	require.Contains(t, status, "?? stray.txt")
+	require.Contains(t, status, "A  stray.txt", "a staged change outside the pathspecs stays out of the commit")
 	require.Contains(t, status, "?? docs/starX.md")
 
 	committed, err = CommitAll(ctx, repo, "Nothing named", []string{"docs/missing.md"})

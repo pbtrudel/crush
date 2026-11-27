@@ -32,23 +32,35 @@ func RepoPrefix(ctx context.Context, dir string) (string, error) {
 // staged. Author, committer, signing and hooks follow the repository's git
 // config, so a failing hook refuses the commit.
 func CommitAll(ctx context.Context, dir, message string, pathspecs []string) (bool, error) {
-	if len(pathspecs) > 0 {
-		specs, err := existingPathspecs(ctx, dir, pathspecs)
+	specs := pathspecs
+	if len(specs) > 0 {
+		var err error
+		specs, err = existingPathspecs(ctx, dir, specs)
 		if err != nil {
 			return false, err
 		}
 		if len(specs) == 0 {
 			return false, nil
 		}
-		args := append([]string{"add", "-A", "--"}, specs...)
-		if _, err := gitLiteral(ctx, dir, args...); err != nil {
+	}
+	if len(specs) == 0 {
+		if _, err := gitOutput(ctx, dir, "add", "-A"); err != nil {
 			return false, fmt.Errorf("git add -A: %w", err)
 		}
-	} else if _, err := gitOutput(ctx, dir, "add", "-A"); err != nil {
+	} else if _, err := gitLiteral(ctx, dir, append([]string{"add", "-A", "--"}, specs...)...); err != nil {
 		return false, fmt.Errorf("git add -A: %w", err)
 	}
 	// diff --quiet exits 1 when something is staged and 0 when nothing is.
-	err := exec.CommandContext(ctx, "git", "-C", dir, "diff", "--cached", "--quiet").Run()
+	// With pathspecs it looks at those paths only, and the commit that
+	// follows commits only them too, so a change another path already has
+	// staged stays out of the commit.
+	diffArgs := []string{"diff", "--cached", "--quiet"}
+	commitArgs := []string{"commit", "-m", message}
+	if len(specs) > 0 {
+		diffArgs = append(append(diffArgs, "--"), specs...)
+		commitArgs = append(append(commitArgs, "--"), specs...)
+	}
+	err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, diffArgs...)...).Run()
 	if err == nil {
 		return false, nil
 	}
@@ -56,7 +68,7 @@ func CommitAll(ctx context.Context, dir, message string, pathspecs []string) (bo
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		return false, fmt.Errorf("git diff --cached: %w", err)
 	}
-	if _, err := gitOutput(ctx, dir, "commit", "-m", message); err != nil {
+	if _, err := gitOutput(ctx, dir, commitArgs...); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	return true, nil
