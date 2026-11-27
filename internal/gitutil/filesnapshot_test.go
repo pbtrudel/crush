@@ -1,0 +1,255 @@
+package gitutil
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+var testCaps = SnapshotCaps{PerFile: 1 << 20, Total: 32 << 20}
+
+func writeRepoFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+}
+
+func readRepoFile(t *testing.T, root, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func snapshot(t *testing.T, root string, caps SnapshotCaps) FileSnapshot {
+	t.Helper()
+	snap, err := SnapshotFiles(context.Background(), root, caps)
+	require.NoError(t, err)
+	return snap
+}
+
+func changed(t *testing.T, root string, before, after FileSnapshot) []string {
+	t.Helper()
+	paths, err := ChangedPaths(context.Background(), root, before, after)
+	require.NoError(t, err)
+	return paths
+}
+
+func TestSnapshotFilesListsChangedPaths(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, ".gitignore", "build/\n")
+	writeRepoFile(t, repo, "gone.txt", "bye\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+
+	writeRepoFile(t, repo, "README.md", "dirty\n")
+	writeRepoFile(t, repo, "docs/new.md", "new\n")
+	writeRepoFile(t, repo, "build/out.bin", "ignored\n")
+	require.NoError(t, os.Remove(filepath.Join(repo, "gone.txt")))
+
+	snap := snapshot(t, repo, testCaps)
+	require.Equal(t, gitText(t, repo, "rev-parse", "HEAD"), snap.Head)
+	require.ElementsMatch(t, []string{"README.md", "docs/new.md", "gone.txt"}, keys(snap.Files), "ignored files are not listed")
+	require.True(t, snap.Files["README.md"].Tracked)
+	require.True(t, snap.Files["README.md"].Saved)
+	require.Equal(t, "dirty\n", string(snap.Files["README.md"].Content))
+	require.False(t, snap.Files["docs/new.md"].Tracked)
+	require.False(t, snap.Files["gone.txt"].Exists)
+}
+
+func keys(files map[string]SnapshotFile) []string {
+	out := make([]string, 0, len(files))
+	for path := range files {
+		out = append(out, path)
+	}
+	return out
+}
+
+func TestChangedPathsSeesEveryKindOfChange(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "clean.txt", "clean\n")
+	writeRepoFile(t, repo, "reverted.txt", "base\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	writeRepoFile(t, repo, "README.md", "dirty\n")
+	writeRepoFile(t, repo, "reverted.txt", "dirty\n")
+	before := snapshot(t, repo, testCaps)
+
+	writeRepoFile(t, repo, "clean.txt", "edited\n")  // Clean before, now listed.
+	writeRepoFile(t, repo, "README.md", "dirtier\n") // Listed both times, new hash.
+	writeRepoFile(t, repo, "reverted.txt", "base\n") // Listed before, left the list.
+	writeRepoFile(t, repo, "fresh.txt", "fresh\n")   // New and untracked.
+	after := snapshot(t, repo, SnapshotCaps{})
+
+	require.Equal(t, []string{"README.md", "clean.txt", "fresh.txt", "reverted.txt"}, changed(t, repo, before, after))
+	require.Empty(t, changed(t, repo, after, snapshot(t, repo, SnapshotCaps{})), "nothing changed since")
+}
+
+func TestChangedPathsFollowsAMovedHead(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	before := snapshot(t, repo, testCaps)
+	writeRepoFile(t, repo, "README.md", "committed\n")
+	runGit(t, repo, "commit", "-am", "inside the command")
+	after := snapshot(t, repo, SnapshotCaps{})
+	require.Empty(t, after.Files, "a committed file leaves the status list")
+	require.Equal(t, []string{"README.md"}, changed(t, repo, before, after))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"README.md"})
+	require.Equal(t, []string{"README.md"}, result.Restored)
+	require.Equal(t, "hello\n", readRepoFile(t, repo, "README.md"), "restored from the HEAD taken before")
+}
+
+func TestRestorePathsUndoesEachKind(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "dirty.txt", "base\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	writeRepoFile(t, repo, "dirty.txt", "mine\n")
+	writeRepoFile(t, repo, "untracked.txt", "kept\n")
+	writeRepoFile(t, repo, "big.bin", strings.Repeat("x", 2<<20))
+	before := snapshot(t, repo, testCaps)
+	require.False(t, before.Files["big.bin"].Saved, "a file over the per-file cap is hashed, not saved")
+
+	writeRepoFile(t, repo, "README.md", "theirs\n")     // Clean tracked.
+	writeRepoFile(t, repo, "dirty.txt", "theirs\n")     // Dirty tracked.
+	writeRepoFile(t, repo, "untracked.txt", "theirs\n") // Untracked that existed.
+	writeRepoFile(t, repo, "new/added.txt", "new\n")    // New untracked.
+	runGit(t, repo, "add", "new/added.txt")             // Even when staged.
+	writeRepoFile(t, repo, "big.bin", "small now\n")    // Over the cap.
+
+	paths := changed(t, repo, before, snapshot(t, repo, SnapshotCaps{}))
+	result := RestorePaths(context.Background(), repo, before, paths)
+	require.ElementsMatch(t, []string{"README.md", "dirty.txt", "untracked.txt", "new/added.txt"}, result.Restored)
+	require.Equal(t, []string{"big.bin"}, result.Unrestored)
+
+	require.Equal(t, "hello\n", readRepoFile(t, repo, "README.md"))
+	require.Equal(t, "mine\n", readRepoFile(t, repo, "dirty.txt"), "a dirty file gets its saved content back, not HEAD's")
+	require.Equal(t, "kept\n", readRepoFile(t, repo, "untracked.txt"))
+	require.NoFileExists(t, filepath.Join(repo, "new", "added.txt"))
+	require.Equal(t, "small now\n", readRepoFile(t, repo, "big.bin"), "a path over the cap is reported, not restored")
+	require.NotContains(t, gitText(t, repo, "status", "--porcelain"), "new/added.txt", "the staged new file left the index")
+}
+
+func TestRestorePathsTreatsPathspecMagicLiterally(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file names cannot hold *")
+	}
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "*.md", "star\n")
+	writeRepoFile(t, repo, "other.md", "other\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "setup")
+	before := snapshot(t, repo, testCaps)
+	writeRepoFile(t, repo, "*.md", "changed\n")
+	writeRepoFile(t, repo, "other.md", "changed\n")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"*.md"})
+	require.Equal(t, []string{"*.md"}, result.Restored)
+	require.Equal(t, "star\n", readRepoFile(t, repo, "*.md"))
+	require.Equal(t, "changed\n", readRepoFile(t, repo, "other.md"), "the glob matched only its own name")
+}
+
+// TestRestorePathsRestoresTheSourceOfAMove is controller ruling W7: a
+// command that moves an in-scope file onto an out-of-scope path leaves the
+// in-scope original missing when only the out-of-scope path is restored.
+func TestRestorePathsRestoresTheSourceOfAMove(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "dirty.txt", "base\n")
+	runGit(t, repo, "add", "dirty.txt")
+	runGit(t, repo, "commit", "-m", "setup")
+	writeRepoFile(t, repo, "dirty.txt", "mine\n")
+	writeRepoFile(t, repo, "untracked.txt", "kept\n")
+	before := snapshot(t, repo, testCaps)
+
+	require.NoError(t, os.Rename(filepath.Join(repo, "dirty.txt"), filepath.Join(repo, "away-dirty.txt")))
+	require.NoError(t, os.Rename(filepath.Join(repo, "untracked.txt"), filepath.Join(repo, "away-new.txt")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away-dirty.txt", "away-new.txt"})
+	require.ElementsMatch(t, []string{"away-dirty.txt", "away-new.txt", "dirty.txt", "untracked.txt"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+
+	require.NoFileExists(t, filepath.Join(repo, "away-dirty.txt"))
+	require.NoFileExists(t, filepath.Join(repo, "away-new.txt"))
+	require.Equal(t, "mine\n", readRepoFile(t, repo, "dirty.txt"), "the dirty original came back from the snapshot")
+	require.Equal(t, "kept\n", readRepoFile(t, repo, "untracked.txt"), "the untracked original came back from the snapshot")
+	require.Equal(t, "M dirty.txt\n?? untracked.txt", gitText(t, repo, "status", "--porcelain"))
+}
+
+// TestRestorePathsRestoresACleanFileMovedAway is W7 too: a clean tracked
+// file the command moved out of scope has no saved content, so it comes
+// back from the HEAD taken before.
+func TestRestorePathsRestoresACleanFileMovedAway(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	before := snapshot(t, repo, testCaps)
+	require.NoError(t, os.Rename(filepath.Join(repo, "README.md"), filepath.Join(repo, "away.md")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.md"})
+	require.ElementsMatch(t, []string{"away.md", "README.md"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.NoFileExists(t, filepath.Join(repo, "away.md"))
+	require.Equal(t, "hello\n", readRepoFile(t, repo, "README.md"))
+	require.Empty(t, gitText(t, repo, "status", "--porcelain"))
+}
+
+// TestRestorePathsReportsASourceItCannotSave is W7's other half: a source
+// the snapshot hashed but did not save cannot come back, so it is reported.
+func TestRestorePathsReportsASourceItCannotSave(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "big.bin", strings.Repeat("x", 2<<20))
+	before := snapshot(t, repo, testCaps)
+	require.False(t, before.Files["big.bin"].Saved)
+	require.NoError(t, os.Rename(filepath.Join(repo, "big.bin"), filepath.Join(repo, "away.bin")))
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.bin"})
+	require.Equal(t, []string{"away.bin"}, result.Restored)
+	require.Equal(t, []string{"big.bin"}, result.Unrestored, "the source is reported, not silently lost")
+	require.NoFileExists(t, filepath.Join(repo, "away.bin"))
+}
+
+// TestRestorePathsFollowsAStagedRename is W7 for a rename git reports: the
+// original named by the rename record is restored too.
+func TestRestorePathsFollowsAStagedRename(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	before := snapshot(t, repo, testCaps)
+	runGit(t, repo, "mv", "README.md", "away.md")
+	after := snapshot(t, repo, testCaps)
+	require.ElementsMatch(t, []string{"README.md", "away.md"}, keys(after.Files), "a rename lists both paths")
+	require.False(t, after.Files["README.md"].Exists)
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.md"})
+	require.ElementsMatch(t, []string{"away.md", "README.md"}, result.Restored)
+	require.Empty(t, result.Unrestored)
+	require.NoFileExists(t, filepath.Join(repo, "away.md"))
+	require.Equal(t, "hello\n", readRepoFile(t, repo, "README.md"))
+	require.Empty(t, gitText(t, repo, "status", "--porcelain"))
+}
+
+// TestRestorePathsKeepsACopiedFile is W7's other side: a copy leaves its
+// original in place, so only the new path is restored.
+func TestRestorePathsKeepsACopiedFile(t *testing.T) {
+	t.Parallel()
+	repo := initPlumbingRepo(t)
+	writeRepoFile(t, repo, "notes.txt", "mine\n")
+	before := snapshot(t, repo, testCaps)
+	writeRepoFile(t, repo, "away.txt", "mine\n")
+
+	result := RestorePaths(context.Background(), repo, before, []string{"away.txt"})
+	require.Equal(t, []string{"away.txt"}, result.Restored)
+	require.NoFileExists(t, filepath.Join(repo, "away.txt"))
+	require.Equal(t, "mine\n", readRepoFile(t, repo, "notes.txt"), "a copied original stays as it was")
+}
