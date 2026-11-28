@@ -274,6 +274,21 @@ func (f *Fake) AddMessage(m message.Message) {
 	f.mu.Unlock()
 }
 
+// UpsertMessage replaces the stored message with the same ID, or appends
+// it, so a streamed message reads back the way its last frame left it.
+func (f *Fake) UpsertMessage(m message.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	msgs := f.messages[m.SessionID]
+	for i := range msgs {
+		if msgs[i].ID == m.ID {
+			msgs[i] = m
+			return
+		}
+	}
+	f.messages[m.SessionID] = append(msgs, m)
+}
+
 // AddSession stores a session, such as a child session with a parent.
 func (f *Fake) AddSession(s session.Session) {
 	f.mu.Lock()
@@ -1082,19 +1097,38 @@ func (f *Fake) GetSessionCalls() int {
 	return f.getSessionCalls
 }
 
-// ListSessions answers newest updated first, with the ID breaking ties,
-// the same order the real session service and the gateway use.
+// ListSessions answers the top-level sessions newest updated first, with
+// the ID breaking ties, the same order and the same filter the real session
+// service and the gateway use: a subagent's session has a parent and never
+// reaches the sidebar. GetSession still finds it for a subscribe.
 func (f *Fake) ListSessions(context.Context) ([]session.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]session.Session, 0, len(f.sessions))
 	for _, s := range f.sessions {
+		if s.ParentSessionID != "" {
+			continue
+		}
 		out = append(out, s)
 	}
 	slices.SortFunc(out, func(a, b session.Session) int {
 		return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.ID, b.ID))
 	})
 	return out, nil
+}
+
+// allSessions answers every stored session, children included, in no
+// particular order. ListSessions hides children the way the real service
+// does; a helper that scans them, such as the scripted fake's history
+// versioning, reads this instead.
+func (f *Fake) allSessions() []session.Session {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]session.Session, 0, len(f.sessions))
+	for _, s := range f.sessions {
+		out = append(out, s)
+	}
+	return out
 }
 
 func (f *Fake) CreateSession(_ context.Context, title string) (session.Session, error) {
