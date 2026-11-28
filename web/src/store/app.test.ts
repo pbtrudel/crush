@@ -987,7 +987,7 @@ describe('subagent sessions', () => {
     store.applyBootstrap(bootstrapPayload([top]))
     store.applyFrame(childFrame('created'))
     // The tab has to know the child exists: a watch sent before then answers
-    // unknown_session and is never retried.
+    // unknown_session, and this frame is what lets the row try again.
     expect(store.get().knownChildren).toEqual([child.id])
     expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
   })

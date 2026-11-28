@@ -96,7 +96,7 @@ export const emptySessionData: SessionData = {
 
 // unknownSessionCode is the gateway's answer to a subscribe for a session it
 // does not have (internal/web/stream.go handleSubscribe).
-const unknownSessionCode = 'unknown_session'
+export const unknownSessionCode = 'unknown_session'
 
 // noMessages is the one empty list, so an empty page keeps its identity.
 const noMessages: WireMessage[] = []
@@ -218,8 +218,9 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       })
     },
     // watchChild is not ref-counted: a subagent's session id names one tool
-    // call and one message, so each call owns one watch for as long as its
-    // row is open, and a second one for the same id is the same watch.
+    // call and one message, so a second watch for the same id is the same
+    // watch. The gateway can refuse it while the row stays open; the refusal
+    // drops the watch, and the frame that announces the child takes it again.
     watchChild: (sessionID: string) => {
       store.set((state) => {
         if (state.watchedChildren.includes(sessionID)) {

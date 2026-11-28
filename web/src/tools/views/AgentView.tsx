@@ -4,16 +4,12 @@ import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'rea
 import type { SessionStatus, WebError } from '../../api/wire'
 import Markdown from '../../chat/markdown/Markdown'
 import { isTurnActive } from '../../chat/toolStatus'
-import type { WireMessage } from '../../store/app'
+import { unknownSessionCode, type WireMessage } from '../../store/app'
 import { ToolEnvironmentContext, type ChatStore } from '../environment'
 import { firstLine, stringField } from '../input'
 import OutputBlock, { ToolSection } from '../OutputBlock'
 import styles from '../Tools.module.css'
 import type { ToolBodyProps, ToolView } from '../view'
-
-// unknownSessionCode is the gateway's answer to a subscribe for a session it
-// does not have (internal/web/stream.go handleSubscribe).
-const unknownSessionCode = 'unknown_session'
 
 // maxAgentDepth stops the tree: a subagent's subagent's subagent shows its
 // answer only, so one runaway delegation cannot nest the log forever.
@@ -60,8 +56,9 @@ function useChildMessages(store: ChatStore | null, sessionID: string): WireMessa
 }
 
 // useKnownChild answers whether the gateway has announced this child's
-// session. A watch sent before then answers unknown_session and is never
-// retried, so it is the row's signal that a subscription can be taken.
+// session. A watch sent before then answers unknown_session and is dropped,
+// so this is the row's signal to take one: the announcement is also what
+// lifts the refusal and lets a row that gave up try again.
 function useKnownChild(store: ChatStore | null, sessionID: string): boolean {
   return useSyncExternalStore(
     store === null ? noSubscribe : store.subscribe,

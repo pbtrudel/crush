@@ -223,7 +223,8 @@ describe('the agent view', () => {
     render(<Harness chat={chat} call={call} />)
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
     // The call has started streaming, but nothing says its session exists:
-    // a watch here answers unknown_session and is never retried.
+    // a watch here answers unknown_session, so the row waits for the frame
+    // that announces the child and retries on it.
     expect(chat.get().watchedChildren).toEqual([])
     expect(screen.queryByText('Loading the subagent…')).toBeNull()
 
