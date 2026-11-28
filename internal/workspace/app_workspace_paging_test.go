@@ -84,3 +84,23 @@ func TestListMessagesPageLeavesABusySessionAlone(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, reloaded.IsFinished(), "a live run's turn is not finished by a page")
 }
+
+// TestListMessagesPageSettlesBeforeTheAgentExists pins the tab that opens
+// before the coder agent has initialised: with no coordinator nothing can be
+// running the session, so the page still settles what a dead process left.
+func TestListMessagesPageSettlesBeforeTheAgentExists(t *testing.T) {
+	w, a, sess := shellTestWorkspace(t)
+	require.Nil(t, a.Agent(), "the workspace starts with no coordinator")
+	assistant := openToolCall(t, a.Messages, sess.ID, "call_killed")
+
+	page, _, err := w.ListMessagesPage(t.Context(), sess.ID, "", 50)
+	require.NoError(t, err)
+
+	result, ok := resultsOf(page)["call_killed"]
+	require.True(t, ok, "a page read before the agent exists still settles the orphan")
+	require.True(t, result.IsError)
+
+	reloaded, err := a.Messages.Get(t.Context(), assistant.ID)
+	require.NoError(t, err)
+	require.True(t, reloaded.IsFinished())
+}

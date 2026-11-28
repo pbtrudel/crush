@@ -127,10 +127,14 @@ func (w *AppWorkspace) ListMessagesPage(ctx context.Context, sessionID, before s
 		if err := coord.SettleSession(ctx, sessionID); err != nil {
 			return nil, false, err
 		}
-	} else if err := w.app.Messages.FlushAll(ctx); err != nil {
-		// No agent means nothing can be settling; the page still has to see
-		// the writes a debounced update left pending.
-		return nil, false, err
+	} else {
+		// A tab can open before the agent exists. No run can own a session
+		// without a coordinator, so the page still settles what a dead
+		// process left behind.
+		noRun := func(string) bool { return false }
+		if err := agent.SettleSession(ctx, w.app.Messages, noRun, sessionID); err != nil {
+			return nil, false, err
+		}
 	}
 	return w.app.Messages.PageMessages(ctx, sessionID, before, limit)
 }
